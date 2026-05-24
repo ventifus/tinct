@@ -310,7 +310,7 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 | `src/resolve.rs` | Variable resolution pass: de Bruijn slot assignment, free-variable detection |
 | `src/imports.rs` | Shared import resolution: `build_prelude_env()`, `collect_include_paths()`, `build_type_env()` |
 | `src/types.rs` | Type system: `Type` enum (including `Union`, `Intersection`, `Negation`, `Never`, `Top`, `Map`); `Row` (flat, no tail after BAS); `Substitution` (kinded unification); `TypeEnv`, `TypeError`, `InferState` (levels-based generalization) |
-| `src/type_env.rs` | Builtin type registrations: seeds `TypeEnv` with types for all builtins; `%pwd`/`%libdir`/`%stdin` cap types |
+| `src/type_env.rs` | Builtin type registrations: seeds `TypeEnv` with types for all builtins; `%cwd`/`%libdir`/`%stdin` cap types |
 | `src/type_unify.rs` | Unification engine: `unify()`, occurs check, row unification, level adjustment |
 | `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, five-pass dict inference, TypeAssert enforcement, type alias expansion, polymorphic `check_call`, row polymorphism |
 | `src/typecheck_annot.rs` | Annotation type inference helpers |

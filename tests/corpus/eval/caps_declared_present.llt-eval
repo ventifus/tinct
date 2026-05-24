@@ -1,5 +1,5 @@
 # Test: capability declared and provided
---- caps: [%pwd: @DirCap]
+--- caps: [%cwd: @DirCap]
 [result: "ok"]
 
 === out

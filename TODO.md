@@ -550,16 +550,16 @@ Benefits:
 
 Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where tinct was run from). Scripts needing sibling-relative resolution can construct the path themselves or use `[include %libdir ...]` for stdlib.
 
-- [ ] Rename `%pwd` → `%cwd` throughout: `src/main.rs` (injection and `--no-pwd` flag → `--no-cwd`), `src/imports.rs` (TypeEnv seeding), all corpus tests and stdlib files that reference `%pwd`. (`src/main.rs:1321-1353`, `src/imports.rs:238,258,1025`) [Major]
+- [x] Rename `%pwd` → `%cwd` throughout: `src/main.rs` (injection and `--no-pwd` flag → `--no-cwd`), `src/imports.rs` (TypeEnv seeding), all corpus tests and stdlib files that reference `%pwd`. (`src/main.rs:1321-1353`, `src/imports.rs:238,258,1025`) [Major]
 - [ ] Change the injected value from script-parent-dir to `std::env::current_dir()` — the actual process CWD at invocation time.
-- [ ] Update `samples/versions.llt` to use `%cwd` and remove the `--no-pwd --cap-fs pwd=.:r` workaround from `just versions` once this lands.
-- [ ] Grep for all `%pwd` uses in corpus tests and stdlib to update them.
+- [x] Update `samples/versions.llt` to use `%cwd` and remove the `--no-cwd --cap-fs cwd=.:r` workaround from `just versions` once this lands.
+- [x] Grep for all `%pwd` uses in corpus tests and stdlib to update them.
 
 ### user-include-rust-modules: `[include %libdir "net.llt"]` fails from user scripts with `%rust` undefined
 
 Discovered via `just versions` (2026-05-23). `net.llt` uses `[include %rust "net"]` / `[include %rust "io"]` to load Rust-native builtins during stdlib bootstrap. These work during prelude loading (where `%rust` is injected into the bootstrap environment), but fail when `net.llt` is included from a user script — `%rust` is not in the user evaluation environment. The include cache would prevent re-evaluation if net.llt were already cached by the prelude, but the prelude doesn't load net.llt, so every user-script inclusion triggers a fresh evaluation that fails. `strings.llt` works because the prelude caches `%rust "string"` via its own string builtins.
 
-- [ ] Fix: inject `%rust` into the include evaluation environment for all stdlib includes, not just prelude bootstrap. (`src/imports.rs` or `src/eval_pipeline.rs`) [Major]
+- [x] Fix: inject `%rust` into the include evaluation environment for all stdlib includes, not just prelude bootstrap. (`src/imports.rs` — added to `build_type_env_with_cap`) [Major]
 - [ ] Alternative: pre-warm the include cache for all stdlib files during prelude loading [Alternative]
 
 ### http2-session-async-drop-panic: Dropping http2-session inside async evaluator context panics
@@ -574,8 +574,8 @@ This makes `just versions` (which uses `http-request` + `http2-session`) non-fun
 
 Discovered via `samples/versions.llt` rewrite (2026-05-23). Writing `[@[Handle Readable] expr]` causes the type checker to panic with `[T000]: resolved_type written twice — elaboration invariant violated`. The TypeAssert elaboration is writing to the same AST node's resolved_type slot twice. Workaround: remove the annotation; the Handle type mismatch (T003) is then reported as a non-fatal warning instead.
 
-- [ ] Find the double-write in `src/typecheck_annot.rs` or `src/typecheck.rs` — specifically the TypeAssert elaboration for parameterized Handle types like `Handle[Readable]`; add guard to prevent double-write or fix the root cause (`src/typecheck.rs`, `src/typecheck_annot.rs`)
-- [ ] Verify `[@[Handle Readable] [open %pwd "file.txt" Readable]]` type-checks cleanly after fix
+- [x] Find the double-write in `src/typecheck_annot.rs` or `src/typecheck.rs` — specifically the TypeAssert elaboration for parameterized Handle types like `Handle[Readable]`; add guard to prevent double-write or fix the root cause (`src/typecheck.rs`, `src/typecheck_annot.rs`)
+- [ ] Verify `[@[Handle Readable] [open %cwd "file.txt" Readable]]` type-checks cleanly after fix
 - [x] `open` builtin TypeEnv signature is stale: runtime now accepts Variant flags (`Readable`, `Writable`) not String modes (`"r"`, `"w"`), but the type checker still says mode is `String`. This causes T003 when passing `Readable`. Update `open` TypeEnv signature. (`src/type_env.rs`) [Major]
 - [x] `open` return type should be parameterized: `Readable` → `Handle[Readable]`, `Writable` → `Handle[Writable]` — implemented via `check_open` special case in `src/typecheck.rs` that synthesizes `Handle(cap_row)` from statically-known flag VarRefs
 

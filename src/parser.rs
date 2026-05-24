@@ -8282,14 +8282,14 @@ mod tests {
         }
     }
 
-    /// `%pwd` in value position parses as `VarRef("%pwd")`.
+    /// `%cwd` in value position parses as `VarRef("%cwd")`.
     /// `%` is a plain bare-word character — no special-case path in the lexer or parser.
     #[test]
     fn test_percent_pwd_as_varref() {
-        let expr = parse_expr("%pwd");
+        let expr = parse_expr("%cwd");
         match &expr.node {
-            Expr::VarRef { name, .. } => assert_eq!(name, "%pwd"),
-            other => panic!("expected VarRef(\"%pwd\"), got {other:?}"),
+            Expr::VarRef { name, .. } => assert_eq!(name, "%cwd"),
+            other => panic!("expected VarRef(\"%cwd\"), got {other:?}"),
         }
     }
 
@@ -8313,27 +8313,27 @@ mod tests {
         }
     }
 
-    /// `%pwd.field` parses as `DotAccess { expr: VarRef("%pwd"), field: DotKey::Ident("field") }`.
-    /// The `%pwd` identifier is consumed as one token; `.` emits Dot; `field` is the access field.
+    /// `%cwd.field` parses as `DotAccess { expr: VarRef("%cwd"), field: DotKey::Ident("field") }`.
+    /// The `%cwd` identifier is consumed as one token; `.` emits Dot; `field` is the access field.
     #[test]
     fn test_percent_pwd_dot_access() {
-        let expr = parse_expr("%pwd.field");
+        let expr = parse_expr("%cwd.field");
         match &expr.node {
             Expr::DotAccess { expr: inner, field } => {
                 assert_eq!(*field, DotKey::Ident("field".to_string()));
                 match &inner.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "%pwd"),
-                    other => panic!("expected VarRef(\"%pwd\") inside DotAccess, got {other:?}"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "%cwd"),
+                    other => panic!("expected VarRef(\"%cwd\") inside DotAccess, got {other:?}"),
                 }
             }
             other => panic!("expected DotAccess, got {other:?}"),
         }
     }
 
-    /// `[open %pwd "Cargo.toml" "r"]` parses as a Call with `%pwd` as a positional arg.
+    /// `[open %cwd "Cargo.toml" "r"]` parses as a Call with `%cwd` as a positional arg.
     #[test]
     fn test_percent_pwd_as_call_arg() {
-        let expr = parse_expr("[open %pwd \"Cargo.toml\" \"r\"]");
+        let expr = parse_expr("[open %cwd \"Cargo.toml\" \"r\"]");
         match &expr.node {
             Expr::Call { func, args, .. } => {
                 match &func.node {
@@ -8341,10 +8341,10 @@ mod tests {
                     other => panic!("expected VarRef(\"open\") as func, got {other:?}"),
                 }
                 assert_eq!(args.len(), 3);
-                // First arg: %pwd (args contains Arc<SurfaceNode> directly)
+                // First arg: %cwd (args contains Arc<SurfaceNode> directly)
                 match &args[0].node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "%pwd"),
-                    other => panic!("expected VarRef(\"%pwd\") as first arg, got {other:?}"),
+                    Expr::VarRef { name, .. } => assert_eq!(name, "%cwd"),
+                    other => panic!("expected VarRef(\"%cwd\") as first arg, got {other:?}"),
                 }
             }
             other => panic!("expected Call, got {other:?}"),

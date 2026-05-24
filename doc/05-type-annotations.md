@@ -822,7 +822,7 @@ Tinct uses capability types to statically track I/O permissions. Three capabilit
 
 | Type | Meaning | Example binding |
 |------|---------|-----------------|
-| `DirCap` | Directory capability — filesystem access | `%pwd`, `%libdir`, user-declared |
+| `DirCap` | Directory capability — filesystem access | `%cwd`, `%libdir`, user-declared |
 | `NetCap` | Network capability — outbound connection allowlist | User-declared |
 | `Handle` | File/stream handle — readable/writable I/O channel | Returned by `open`, `connect` |
 
@@ -858,7 +858,7 @@ Capability tags registered in TypeEnv: `Readable`, `Writable`, `Appendable`, `Bi
 
 Subtyping is covariant in the capability row: `Handle[Readable Writable] <: Handle[Readable]` (more capabilities satisfy fewer). `Type::Unknown` as the inner type represents unknown capabilities (gradual typing fallback).
 
-The `%pwd`, `%libdir`, and `%stdin` capability variables are injected into the TypeEnv automatically; they do not need `caps:` declarations.
+The `%cwd`, `%libdir`, and `%stdin` capability variables are injected into the TypeEnv automatically; they do not need `caps:` declarations.
 
 ### 21. Recursive Type Aliases
 

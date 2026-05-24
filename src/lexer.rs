@@ -396,7 +396,7 @@ impl<'a> Lexer<'a> {
                 self.lex_var_ref()
             }
             '%' => {
-                // % is a plain bare-word character. `%`, `%pwd`, `%nc` all lex as
+                // % is a plain bare-word character. `%`, `%cwd`, `%nc` all lex as
                 // Identifier tokens through the normal bare-word path — no special case.
                 // is_var_ident_char does not list '%' in its denylist, so lex_bare_word_or_number
                 // consumes the entire `%word` as a single Identifier token.
@@ -1546,7 +1546,7 @@ mod tests {
             vec![Token::Identifier("%raw_data".into())]
         );
         // Injected cap names
-        assert_eq!(tok("%pwd"), vec![Token::Identifier("%pwd".into())]);
+        assert_eq!(tok("%cwd"), vec![Token::Identifier("%cwd".into())]);
         assert_eq!(tok("%libdir"), vec![Token::Identifier("%libdir".into())]);
         assert_eq!(tok("%stdin"), vec![Token::Identifier("%stdin".into())]);
         assert_eq!(tok("%nc"), vec![Token::Identifier("%nc".into())]);
@@ -1575,11 +1575,11 @@ mod tests {
                 Token::Identifier("port".into()),
             ]
         );
-        // %pwd.field — injected cap dot access
+        // %cwd.field — injected cap dot access
         assert_eq!(
-            tok("%pwd.field"),
+            tok("%cwd.field"),
             vec![
-                Token::Identifier("%pwd".into()),
+                Token::Identifier("%cwd".into()),
                 Token::Dot,
                 Token::Identifier("field".into()),
             ]

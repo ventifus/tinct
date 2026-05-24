@@ -148,7 +148,7 @@ impl DocumentState {
                 } else {
                     base_dir
                 };
-                // Pass the eval context's cap_std Dir so that %pwd file reads use RESOLVE_BENEATH
+                // Pass the eval context's cap_std Dir so that %cwd file reads use RESOLVE_BENEATH
                 // semantics (kernel-level path confinement) instead of plain std::fs calls.
                 let type_cap_dir = &eval_ctx.config.base_dir;
                 let (seeded_env, include_bindings) =
@@ -168,13 +168,13 @@ impl DocumentState {
                 // Build the LSP eval environment, mirroring what main.rs does at startup.
                 // The type checker gets runtime percent-vars via build_type_env(); we inject
                 // real DirCap values here so the evaluator can resolve [include %libdir ...]
-                // and [include %pwd ...] without spurious E002 errors.
+                // and [include %cwd ...] without spurious E002 errors.
                 // Evaluation intentionally skipped in LSP context.
                 //
                 // The type checker (above) provides everything LSP features need: type_map
                 // for hover, doc_map for docs, scheme_map for constraints, type_errors for
                 // diagnostics. Running the evaluator here causes false-positive diagnostics
-                // for any program that uses caps (%pwd, %nc, etc.) because the LSP cannot
+                // for any program that uses caps (%cwd, %nc, etc.) because the LSP cannot
                 // supply real capability values — file I/O, network, and env access all fail
                 // with misleading errors (E080 file-not-found, E002 undefined-var, etc.).
                 //
@@ -182,7 +182,7 @@ impl DocumentState {
                 // declaring no caps and using no % variables.
                 //
                 // Historical note: Prior to security-sprint, this code constructed DirPerms::full()
-                // DirCaps for %pwd and %libdir, then immediately discarded them. That construction
+                // DirCaps for %cwd and %libdir, then immediately discarded them. That construction
                 // has been removed — the LSP does not evaluate code, so eval env setup is unnecessary.
             }
         }

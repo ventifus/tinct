@@ -1,6 +1,6 @@
 # versions.llt — check Rust toolchain and dependency versions
 # Run from project root:
-#   tinct run --no-pwd --cap-fs pwd=.:r --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 samples/versions.llt
+#   tinct run --no-cwd --cap-fs cwd=.:r --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 samples/versions.llt
 # or via justfile:
 #   just versions
 #
@@ -15,8 +15,8 @@
 
 [
 
-cargo-toml-text: [slurp [open %pwd "Cargo.toml" Readable]]
-cargo-lock-text: [slurp [open %pwd "Cargo.lock" Readable]]
+cargo-toml-text: [slurp [open %cwd "Cargo.toml" Readable]]
+cargo-lock-text: [slurp [open %cwd "Cargo.lock" Readable]]
 
 # Minimal HTTPS GET using raw builtins — returns response dict or raises on error.
 # Uses http2-session (reqwest, HTTP/2 via ALPN) for HTTPS.

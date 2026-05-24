@@ -83,11 +83,11 @@ runtime:
 
 **`pwd`** — a `DirCap` for the working directory at the time `llt eval` is
 invoked. Used for project-local file access: `[include pwd "config.llt"]`,
-`[open pwd "output.yaml" Writable]`. Suppressed by `--no-pwd`.
+`[open pwd "output.yaml" Writable]`. Suppressed by `--no-cwd`.
 
 **`libdir`** — a `DirCap` for the system library directory: where tinct's
 standard libraries reside. Used as `[include libdir "io.llt"]`. Survives
-`--no-pwd` — it is language infrastructure equivalent to builtins. Suppressed
+`--no-cwd` — it is language infrastructure equivalent to builtins. Suppressed
 only by `--no-libdir`. The backing source (installed files, embedded bytes, or
 a `--libdir-path` override) is an implementation detail; `libdir` is the stable
 interface.
@@ -396,7 +396,7 @@ secrets in CI and container environments (`DATABASE_URL`, `AWS_SECRET_ACCESS_KEY
 
 ```bash
 # Fully sandboxed — no env access
-llt eval --no-pwd --no-env --timeout 5s script.llt
+llt eval --no-cwd --no-env --timeout 5s script.llt
 
 # Specific variable allowlist
 llt eval --allow-env DATABASE_URL --allow-env APP_ENV script.llt
@@ -421,7 +421,7 @@ and cannot connect to hosts other than `schema.internal`.
 The `--no-*` flags suppress individual runtime-injected values by name:
 
 ```bash
---no-pwd      # pwd not injected — [include pwd ...] and [open pwd ...] fail
+--no-cwd      # pwd not injected — [include pwd ...] and [open pwd ...] fail
 --no-libdir   # libdir not injected — [include libdir ...] fails
 --no-stdin    # stdin not injected — [slurp stdin] fails
 --no-env      # env returns Null for all names
@@ -430,7 +430,7 @@ The `--no-*` flags suppress individual runtime-injected values by name:
 A fully sandboxed invocation:
 
 ```bash
-llt eval --no-pwd --no-stdin --no-env --timeout 5s --max-memory 64M script.llt
+llt eval --no-cwd --no-stdin --no-env --timeout 5s --max-memory 64M script.llt
 ```
 
 (`libdir` is retained even in sandboxed invocations so stdlib is accessible.
@@ -570,7 +570,7 @@ I/O builtins documented with Mycroft (1981) strictness annotations in
 | `lines` | S | `Seq` | Opens coinductive stream; each `tail` forces one readline |
 | `env` | S | `Str\|Null` | Reads env var; returns Null under `--no-env` or if not in `--allow-env` list |
 | `stdin` | — | `Handle` | Runtime-injected handle to fd 0; suppressed by `--no-stdin` |
-| `pwd` | — | `DirCap` | Runtime-injected DirCap for the working directory; suppressed by `--no-pwd` |
+| `pwd` | — | `DirCap` | Runtime-injected DirCap for the working directory; suppressed by `--no-cwd` |
 | `libdir` | — | `DirCap` | Runtime-injected DirCap for the system library directory; suppressed by `--no-libdir` |
 
 ### Type System Integration
@@ -638,7 +638,7 @@ allowed names; `Null` otherwise. Under neither flag: reads freely.
 startup. Suppressed by `--no-stdin`.
 
 **`pwd`:** `Value::DirCap` for the working directory, injected into the root
-environment at startup. Suppressed by `--no-pwd`.
+environment at startup. Suppressed by `--no-cwd`.
 
 **`libdir`:** `Value::DirCap` for the system library directory, injected into
 the root environment at startup. Suppressed by `--no-libdir`. The backing
@@ -683,7 +683,7 @@ root environment. Allowlist-checked. Repeatable.
 **`--cap-net NAME=ENTRY`:** Accumulate entries into `NetCap` for `$NAME`.
 Repeatable; multiple uses of the same name accumulate into one cap.
 
-**`--no-pwd`:** Suppress the `pwd` runtime injection.
+**`--no-cwd`:** Suppress the `pwd` runtime injection.
 
 **`--no-libdir`:** Suppress the `libdir` runtime injection. Programs cannot load
 stdlib via `[include libdir ...]`.
@@ -703,7 +703,7 @@ When any `--allow-env` flag is present, `env` returns `Null` for unlisted names.
 
 The cap model supplements the OS-level sandbox. `--allow-path` gates `dir-cap`.
 `--allow-network` gates `net-cap`. Landlock and seccomp remain as
-defense-in-depth. The `--no-pwd`, `--no-stdin`, and `--no-env` flags add
+defense-in-depth. The `--no-cwd`, `--no-stdin`, and `--no-env` flags add
 language-level restrictions on top of the OS layer, suppressing individual
 runtime-injected values by name.
 

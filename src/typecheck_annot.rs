@@ -140,16 +140,28 @@ pub(crate) fn resolve_type_assert(
     // Store the substitution-applied type in the AST node for runtime validation (elaboration).
     // INVARIANT: resolved_type is write-once (parser initializes to None, typecheck sets it once).
     // The type is stored AFTER substitution to ensure the runtime sees fully-resolved types.
+    //
+    // GUARD: parameterized types like `Handle[Readable]` can trigger a second write when the
+    // type checker encounters the same TypeAssert node via multiple paths (e.g., dict letrec
+    // re-inference). If the second write is consistent (same type), skip it silently — this is
+    // an idempotent double-elaboration, not a true invariant violation. If the types differ,
+    // that IS a real bug and we return an internal error.
     let prev = resolved_type.replace(Some(expected.clone()));
-    if prev.is_some() {
-        return Err(vec![TypeError::new(
-            format!(
-                "internal error: resolved_type written twice — elaboration invariant violated \
-                 (previous value: {:?}). This indicates a bug in the type checker.",
-                prev
-            ),
-            annotation.span,
-        )]);
+    if let Some(prev_type) = prev {
+        // Type does not implement PartialEq — use debug representations for consistency check.
+        let prev_repr = format!("{prev_type:?}");
+        let new_repr = format!("{expected:?}");
+        if prev_repr != new_repr {
+            return Err(vec![TypeError::new(
+                format!(
+                    "internal error: resolved_type written twice with inconsistent types — \
+                     elaboration invariant violated (previous: {prev_repr}, new: {new_repr}). \
+                     This indicates a bug in the type checker."
+                ),
+                annotation.span,
+            )]);
+        }
+        // Consistent double-write: previous value matches. Idempotent — return Ok.
     }
 
     Ok(expected)

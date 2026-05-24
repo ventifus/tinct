@@ -542,7 +542,7 @@ Tinct provides multiple unprivileged sandboxing layers to restrict what evaluati
 - **Landlock** (Linux 5.13+): Kernel-enforced filesystem ACLs as defense-in-depth (auto-triggered from `--cap-fs`)
 - **seccomp-bpf** (Linux): Network/process syscall blocking
 - **rlimit caps**: `--max-memory`, `--max-cpu`, `--max-fds` resource limits
-- **Object capability flags**: `--no-pwd`, `--no-libdir`, `--cap-fs NAME=PATH`, `--cap-net NAME=ENTRY`, `--cap-file NAME=PATH:MODE` (injects as `%NAME`)
+- **Object capability flags**: `--no-cwd`, `--no-libdir`, `--cap-fs NAME=PATH`, `--cap-net NAME=ENTRY`, `--cap-file NAME=PATH:MODE` (injects as `%NAME`)
 
 ### Object Capability Model (io-phase1)
 
@@ -552,13 +552,13 @@ The runtime injects three capability values into the root environment at startup
 
 | Name | Type | Authority | Suppressed by |
 |------|------|-----------|---------------|
-| `%pwd` | `DirCap` | Current working directory at `tinct run` time | `--no-pwd` |
+| `%cwd` | `DirCap` | Current working directory at `tinct run` time | `--no-cwd` |
 | `%libdir` | `DirCap` | Tinct standard library directory | `--no-libdir` |
 | `%stdin` | `Handle` | File descriptor 0 (standard input) | Only injected when `-i`/`--input` is present |
 
-The `%` prefix on injected cap names makes them visually distinct from user-defined variables. User programs use `%pwd`, `%libdir`, and `%stdin` directly as identifiers (no `$` needed — they are plain bare-word identifiers that happen to start with `%`).
+The `%` prefix on injected cap names makes them visually distinct from user-defined variables. User programs use `%cwd`, `%libdir`, and `%stdin` directly as identifiers (no `$` needed — they are plain bare-word identifiers that happen to start with `%`).
 
-**`--no-pwd`** — Suppresses `%pwd`. Programs that attempt `[open %pwd ...]` or `[include %pwd ...]` receive an undefined variable error. Use for programs that should not access the filesystem even via the working directory.
+**`--no-cwd`** — Suppresses `%cwd`. Programs that attempt `[open %cwd ...]` or `[include %cwd ...]` receive an undefined variable error. Use for programs that should not access the filesystem even via the working directory.
 
 **`%stdin` injection** — `%stdin` is only injected into the root environment when `-i`/`--input` is present on the command line (indicating a formatter pipeline that reads from stdin). When `-i` is absent, stdin is consumed by the JSON auto-detection path instead. There is no `--no-stdin` flag; stdin access is controlled by the presence or absence of `-i`.
 
@@ -634,7 +634,7 @@ write    [cap@[DirCap [Writable ...]]  path@String content@String]
 
 A caller passing `[DirCap [Readable Listable Writable]]` to `write` satisfies `[DirCap [Writable ...]]` because `Writable` is present and `...` absorbs the remaining flags. Without the tail, `[DirCap [Writable]]` would be an exact type that rejects caps holding additional flags.
 
-**`%pwd` default permissions.** `%pwd` is injected with all seven flags — full authority over the working directory, matching the previous all-or-nothing behavior but now tracked in the type system as `[DirCap [Readable Listable Statable Writable Appendable Deletable Renameable]]`.
+**`%cwd` default permissions.** `%cwd` is injected with all seven flags — full authority over the working directory, matching the previous all-or-nothing behavior but now tracked in the type system as `[DirCap [Readable Listable Statable Writable Appendable Deletable Renameable]]`.
 
 **In-script attenuation.** A script can further restrict a `DirCap` before passing it to untrusted helpers using `narrow` with an explicit flag list:
 
@@ -667,15 +667,15 @@ Mode suffix:
 - `w` — write-only, text (`$write-handle` writes a String; file is created/truncated)
 - `wb` — write-only, binary (`$write-handle` writes Bytes; file is created/truncated)
 
-**`--no-fs`** also suppresses `--cap-file` Handle injection — when `--no-fs` is set, no filesystem caps of any kind are available (`%pwd`, `%libdir`, `--cap-fs`, and `--cap-file` are all blocked).
+**`--no-fs`** also suppresses `--cap-file` Handle injection — when `--no-fs` is set, no filesystem caps of any kind are available (`%cwd`, `%libdir`, `--cap-fs`, and `--cap-file` are all blocked).
 
 **`--no-env`** and **`--allow-env NAME`** — Control environment variable access via the `$env` builtin. `--no-env` causes `$env` to return `Null` for all names. `--allow-env NAME` (repeatable) creates an explicit allowlist: only the listed names return their values; all others return `Null`. See §Environment Variable Access.
 
 **Fully sandboxed invocation:**
 
 ```bash
-# No filesystem caps (not even %pwd), no env vars, 5s timeout
-tinct run --no-pwd --no-env --timeout 5s script.llt
+# No filesystem caps (not even %cwd), no env vars, 5s timeout
+tinct run --no-cwd --no-env --timeout 5s script.llt
 ```
 
 `%libdir` is retained even in sandboxed invocations so stdlib modules remain accessible. Suppress it explicitly with `--no-libdir` if needed.
@@ -696,7 +696,7 @@ The following sections describe the sandboxing layers in detail.
 
 ### Filesystem Sandbox (cap-std + Landlock)
 
-Filesystem access is controlled via the object capability model: `$include` requires a DirCap as its first argument. DirCaps are created via `--cap-fs NAME=PATH` flags or injected automatically as `%pwd` and `%libdir`. Each DirCap is backed by cap-std's RESOLVE_BENEATH enforcement, which confines all file access to the cap's root directory at the OS level.
+Filesystem access is controlled via the object capability model: `$include` requires a DirCap as its first argument. DirCaps are created via `--cap-fs NAME=PATH` flags or injected automatically as `%cwd` and `%libdir`. Each DirCap is backed by cap-std's RESOLVE_BENEATH enforcement, which confines all file access to the cap's root directory at the OS level.
 
 **cap-std RESOLVE_BENEATH:** Primary enforcement. Every DirCap wraps a `cap_std::fs::Dir` that confines all file operations (open, canonicalize, etc.) to its root directory. Absolute paths are rejected. Symlinks and `../` traversal are resolved, but the final path must remain within the root. This is path-based confinement at the syscall level — works on all platforms.
 
@@ -704,12 +704,12 @@ Filesystem access is controlled via the object capability model: `$include` requ
 
 **Sandboxing model:**
 
-- Every file access requires a DirCap. No ambient `$include "path.llt"` — must be `[include %pwd "path.llt"]` or `[include %libdir "io.llt"]`.
-- `%pwd` and `%libdir` are injected automatically (suppress with `--no-pwd` / `--no-libdir`).
+- Every file access requires a DirCap. No ambient `$include "path.llt"` — must be `[include %cwd "path.llt"]` or `[include %libdir "io.llt"]`.
+- `%cwd` and `%libdir` are injected automatically (suppress with `--no-cwd` / `--no-libdir`).
 - `--cap-fs data=/var/data` injects `%data` as a DirCap for `/var/data`. Repeatable.
 - `--no-fs` disables all filesystem access — `$include` returns an error immediately, bypassing cap checks.
 - Stdlib is embedded via `include_str!` at compile time — no filesystem access, unaffected by sandboxing.
-- REPL: `%pwd` defaults to cwd. LSP: `%pwd` defaults to workspace root (or document directory if no workspace).
+- REPL: `%cwd` defaults to cwd. LSP: `%cwd` defaults to workspace root (or document directory if no workspace).
 
 **Check ordering in `$include`:** cap-std RESOLVE_BENEATH → cache lookup → cycle detection → read file → **hash check (if hash provided)** → cache store → parse. Cache lookup and cycle detection are cheap in-memory operations; the read and hash are deferred until after both pass. On a cache hit, the stored hash map (recorded on first read) is checked against the caller's expected algorithm and digest; if they match, the cached result is returned without re-reading. The cache is session-scoped (in-memory only; not persisted to disk).
 
@@ -781,7 +781,7 @@ include: hash mismatch for 'config/settings.llt'
 tinct run --require-integrity --cap-fs vendor=./vendor main.llt
 ```
 
-Note: `--no-fs` disables `$include` entirely, making `--require-integrity` redundant. `--require-integrity` is meaningful when DirCaps are available (`%pwd`, `%libdir`, `--cap-fs`), requiring all `$include` calls to carry a hash.
+Note: `--no-fs` disables `$include` entirely, making `--require-integrity` redundant. `--require-integrity` is meaningful when DirCaps are available (`%cwd`, `%libdir`, `--cap-fs`), requiring all `$include` calls to carry a hash.
 
 **Use cases:** Pinning a shared config file in CI so an unreviewed change fails loudly. Verifying third-party tinct libraries. High-security evaluation environments where all includes must be content-addressed.
 
@@ -831,7 +831,7 @@ Sandbox setup in `run_eval()` follows this sequence:
 5. Load stdlib (`create_stdlib_env()` — uses `include_str!`, no filesystem access)
 6. Set up Landlock (filesystem ACLs from `--cap-fs` paths, auto-triggered)
 7. Set up seccomp-bpf (network block, process block)
-8. Inject capabilities (`%pwd`, `%stdin`, `%libdir`, `--cap-fs`, `--cap-net`)
+8. Inject capabilities (`%cwd`, `%stdin`, `%libdir`, `--cap-fs`, `--cap-net`)
 9. Dispatch evaluation
 
 Landlock and seccomp are applied after stdlib loading (stdlib uses `include_str!` at compile time, so no filesystem access is needed). `prctl(PR_SET_NO_NEW_PRIVS)` is called before seccomp installation.

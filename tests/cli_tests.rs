@@ -1398,7 +1398,7 @@ fn no_fs_suppresses_cap_fs_injection() {
 
 // NOTE: The --allow-path and --allow-host flags were removed in cap-simplify sprint.
 // Filesystem access is controlled via the object capability model:
-//   - %cwd (injected automatically, suppress with --no-pwd)
+//   - %cwd (injected automatically, suppress with --no-cwd)
 //   - %libdir (injected automatically, suppress with --no-libdir)
 //   - --cap-fs NAME=PATH:MODE (injects %NAME as a DirCap)
 // Each DirCap is backed by cap-std RESOLVE_BENEATH enforcement.
@@ -1788,7 +1788,7 @@ fn cap_fs_read_only_permits_readable() {
     let output = Command::new(tinct_bin())
         .args([
             "run",
-            "--no-pwd",
+            "--no-cwd",
             "--no-libdir",
             "--cap-fs",
             &format!("mydir={}:r", dir_str),
@@ -1816,7 +1816,7 @@ fn cap_fs_read_only_write_fails() {
     let output = Command::new(tinct_bin())
         .args([
             "run",
-            "--no-pwd",
+            "--no-cwd",
             "--no-libdir",
             "--cap-fs",
             &format!("mydir={}:r", dir_str),
@@ -1852,7 +1852,7 @@ fn cap_fs_read_write_permits_writable() {
     let output = Command::new(tinct_bin())
         .args([
             "run",
-            "--no-pwd",
+            "--no-cwd",
             "--no-libdir",
             "--cap-fs",
             &format!("mydir={}:rw", data_str),
@@ -1984,7 +1984,7 @@ fn cap_file_no_mode_defaults_to_r() {
             "run",
             "-o",
             "json",
-            "--no-pwd",
+            "--no-cwd",
             "--no-libdir",
             "--cap-file",
             &format!("cfg={}", file_str),
@@ -2019,7 +2019,7 @@ fn cap_file_read_mode_succeeds() {
     let output = Command::new(tinct_bin())
         .args([
             "run",
-            "--no-pwd",
+            "--no-cwd",
             "--no-libdir",
             "--cap-file",
             &format!("cfg={}:r", file_str),
@@ -3984,7 +3984,7 @@ fn cap_file_readable_slurp() {
             "run",
             "-o",
             "json",
-            "--no-pwd",
+            "--no-cwd",
             "--no-libdir",
             "--cap-file",
             &format!("cfg={}:r", data_path.to_str().unwrap()),

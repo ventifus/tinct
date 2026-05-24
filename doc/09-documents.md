@@ -476,7 +476,7 @@ DOC-PIPELINE (with `d = 0`, `Σ₀ = {}`):
 
 Data flows between documents via `%`, a variable injected into each document's root scope containing the previous document's output. For the first document in a file, `%` is `[]` (empty dict). `%` is `VarRef("%")` — an ordinary identifier with no grammar special case.
 
-**`%name` identifiers** are plain bare-word identifiers that happen to start with `%`. The `%` prefix is a convention: the CLI uses it to mark injected capability variables (`%pwd`, `%libdir`, `%stdin`, `%nc`, etc.) so they are visually distinct from user-defined variables. Named pipeline sections also bind as `%name`. User programs may define `%`-prefixed variables freely — the prefix has no special meaning to the evaluator.
+**`%name` identifiers** are plain bare-word identifiers that happen to start with `%`. The `%` prefix is a convention: the CLI uses it to mark injected capability variables (`%cwd`, `%libdir`, `%stdin`, `%nc`, etc.) so they are visually distinct from user-defined variables. Named pipeline sections also bind as `%name`. User programs may define `%`-prefixed variables freely — the prefix has no special meaning to the evaluator.
 
 **Named sections** bind a document's output as `%name` for use by all subsequent documents:
 
@@ -564,11 +564,11 @@ error: %config@Handle is required but not provided
   inject it with:  tinct run --cap-file config=PATH:r ...
 ```
 
-Auto-injected caps (`%pwd`, `%libdir`, `%stdin`) produce a different hint if missing:
+Auto-injected caps (`%cwd`, `%libdir`, `%stdin`) produce a different hint if missing:
 
 ```text
-error: %pwd@DirCap is required but not provided
-  note: %pwd is injected automatically — did you pass --no-pwd?
+error: %cwd@DirCap is required but not provided
+  note: %cwd is injected automatically — did you pass --no-cwd?
 ```
 
 The CLI flag name is derived from the cap name by stripping the `%` prefix: `%nc` → `--cap-net nc=...`.

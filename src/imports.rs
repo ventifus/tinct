@@ -1042,6 +1042,10 @@ pub fn build_type_env_with_cap(
             Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
         );
     }
+    // %rust is a legacy virtual module cap — stdlib files (net.llt, io.llt) may reference it.
+    // The runtime module system was deleted, but the type checker must still accept the identifier
+    // without raising "undefined variable: %rust" errors during stdlib include type-checking.
+    env.insert("%rust".to_string(), crate::types::Type::Unknown);
     let mut env = Rc::new(env);
 
     let mut include_bindings = HashMap::new();

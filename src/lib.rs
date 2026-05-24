@@ -290,20 +290,20 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // 'undefined variable: %do-infer:N' at eval time. This is expected degraded behavior.
     ctx.set_boundary_guards(infer_state.boundary_guards);
     ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
-    // Inject `%pwd` and `%libdir` DirCaps (mirrors the CLI run_eval behavior).
+    // Inject `%cwd` and `%libdir` DirCaps (mirrors the CLI run_eval behavior).
     // This allows corpus tests and included files to use cap-qualified includes.
     if !no_fs {
-        // AMBIENT-OK: injecting %pwd DirCap for corpus tests; CWD was already opened above.
+        // AMBIENT-OK: injecting %cwd DirCap for corpus tests; CWD was already opened above.
         #[allow(clippy::disallowed_methods)]
-        if let Ok(pwd_dir) =
+        if let Ok(cwd_dir) =
             cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         {
-            let pwd_val = Value::DirCap {
-                dir: Rc::new(pwd_dir),
+            let cwd_val = Value::DirCap {
+                dir: Rc::new(cwd_dir),
                 perms: value::DirPerms::full(),
             };
-            let pwd_thunk = Arc::new(Thunk::new_materialized(pwd_val, Span::origin()));
-            env.write().unwrap().insert("%pwd".to_string(), pwd_thunk);
+            let cwd_thunk = Arc::new(Thunk::new_materialized(cwd_val, Span::origin()));
+            env.write().unwrap().insert("%cwd".to_string(), cwd_thunk);
         }
         if let Some(libdir_path) = find_libdir_path() {
             // AMBIENT-OK: injecting %libdir DirCap from fixed stdlib path.
@@ -443,17 +443,17 @@ pub fn eval_source_with_cap_net(
     ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
 
     if !no_fs {
-        // AMBIENT-OK: injecting %pwd DirCap for corpus tests; CWD was already opened above.
+        // AMBIENT-OK: injecting %cwd DirCap for corpus tests; CWD was already opened above.
         #[allow(clippy::disallowed_methods)]
-        if let Ok(pwd_dir) =
+        if let Ok(cwd_dir) =
             cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         {
-            let pwd_val = Value::DirCap {
-                dir: Rc::new(pwd_dir),
+            let cwd_val = Value::DirCap {
+                dir: Rc::new(cwd_dir),
                 perms: value::DirPerms::full(),
             };
-            let pwd_thunk = Arc::new(Thunk::new_materialized(pwd_val, Span::origin()));
-            env.write().unwrap().insert("%pwd".to_string(), pwd_thunk);
+            let cwd_thunk = Arc::new(Thunk::new_materialized(cwd_val, Span::origin()));
+            env.write().unwrap().insert("%cwd".to_string(), cwd_thunk);
         }
     }
 

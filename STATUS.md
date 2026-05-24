@@ -25,9 +25,9 @@ Every sprint from TODO.md has been implemented and moved to DONE.md. Summary of 
 | Typing cluster — Phase C (algebraic types) | ✓ Complete — multi-entry `[type ...]` ADT declarations (C1), `Value::Variant` unit constructors (C2), payload constructors + `Pattern::Constructor` (C3), Maranget exhaustiveness checking (C5) |
 | Typing cluster — Phase D (advanced typing) | ✓ Complete — full type classes with dictionary passing (D1), Simple-sub algebraic subtyping (D2), recursive ADTs (D3), blame tracking (D4), range/Decimal/BigInt/repr: numeric types (D5) |
 | Structural contracts | ✓ Complete — `%@Type` pipeline input annotation (SC1), `validate` builtin (SC2), `tinct describe` CLI (SC3), pipeline blame (SC4) |
-| Object capability model | ✓ Complete — `dir-cap`/`net-cap` builtins removed; all caps flow from CLI (`--cap-fs`, `--cap-net`, `--cap-file`) or runtime injection (`%pwd`, `%libdir`, `%stdin`); `%` prefix convention |
+| Object capability model | ✓ Complete — `dir-cap`/`net-cap` builtins removed; all caps flow from CLI (`--cap-fs`, `--cap-net`, `--cap-file`) or runtime injection (`%cwd`, `%libdir`, `%stdin`); `%` prefix convention |
 | `---` header pragmas | ✓ Complete — `%name@Type`, `expects:`, `caps:` on document separators; type checker and runtime validation |
-| `caps:` pragma type-checker awareness | ✓ Complete — cap-qualified `[include %libdir "path"]` understood by type checker; `%pwd`/`%libdir`/`%stdin` seeded in `TypeEnv` |
+| `caps:` pragma type-checker awareness | ✓ Complete — cap-qualified `[include %libdir "path"]` understood by type checker; `%cwd`/`%libdir`/`%stdin` seeded in `TypeEnv` |
 | TLS / HTTPS networking | ✓ Complete — `tls-layer` (Handle upgrade), CA roots (system + Mozilla + custom bundle), mTLS, ALPN, SPKI pinning |
 | Composable networking v2 | ✓ Complete — transport-generic `connect` (Tcp/Udp/UnixStream/UnixDatagram/Icmp), `tls-layer`, QUIC sessions (`quic-session`), HTTP/3 (`http3-session`), HTTP/2 via reqwest (`http2-session`), `http-request` builtin; `protocols/` subdirectory (DNS, WebSocket, SOCKS5, gRPC) |
 | Boolean-Algebraic Subtyping | ✓ Complete — `Union`/`Intersection`/`Negation`/`Never` type algebra; S-RcdTop, S-ClsBot; RDNF simplification; BAS negation narrowing; Rémy row variables removed |
@@ -100,7 +100,7 @@ Every sprint from TODO.md has been implemented and moved to DONE.md. Summary of 
 - **Evaluator split:** `src/eval.rs` (core), `src/eval_call.rs` (function calls), `src/eval_materialize.rs` (forcing), `src/eval_access.rs` (dot/bracket), `src/eval_dict.rs` (dict construction), `src/eval_pipeline.rs` (document pipeline), `src/eval_deep.rs` (deep materialize)
 - **Builtins split:** `src/builtins.rs` (registry + core), `src/builtins_io.rs` (I/O, connect, TLS), `src/builtins_math.rs`, `src/builtins_string.rs`, `src/builtins_meta.rs`, `src/builtins_bytes.rs`, `src/builtins_uri.rs`, `src/builtins_datetime.rs`, `src/builtins_dict.rs`, `src/builtins_seq_prim.rs`, `src/builtins_seq_xform.rs`, `src/builtins_seq_gen.rs`, `src/builtins_seq_reduce.rs`
 - **Key invariants:** All thunks carry `Thunk.span` (creation span). `EvalError` carries `secondary_span: Option<(Span, String)>`. `BuiltinDef` carries `pos_strictness: &'static [Strictness]`. `ThunkState` is monotonic (no backwards transitions). Sequential named bindings are forced to WHNF at bind time.
-- **Capabilities:** All caps flow from CLI (`--cap-fs`, `--cap-net`, `--cap-file`) or runtime injection (`%pwd`, `%libdir`, `%stdin`). `%` prefix is added by tinct; user-supplied names have no prefix.
+- **Capabilities:** All caps flow from CLI (`--cap-fs`, `--cap-net`, `--cap-file`) or runtime injection (`%cwd`, `%libdir`, `%stdin`). `%` prefix is added by tinct; user-supplied names have no prefix.
 - **Security:** `--no-fs` (LSP default), `--timeout` (SIGALRM), Landlock (Linux), seccomp-bpf (Linux), rlimit caps, `--require-integrity`, `cargo audit` CI gate.
 - **Fuzzing:** `just fuzz parse|eval_source|typecheck_source [seconds]` — requires nightly Rust.
 - **Full design history:** `doc/whatif/` (proposal docs + `completed/` archive), `doc/*.md` (formal spec chapters), `DONE.md` (completed sprint archive).
