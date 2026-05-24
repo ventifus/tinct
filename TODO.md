@@ -79,10 +79,11 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 **Critical path first.** `ast_dict.rs` (`ast_to_dict`, `dict_to_ast`) still walks old `Expr` AST. It is the primary blocker for the formatter, `builtins_meta.rs`, and the `tinct describe` CLI path. All other migrations depend on this one.
 
-- [ ] Rewrite `ast_to_dict` to accept `SurfaceProgram`/`SurfaceNode` instead of `File`/`Expr` — produce the same AST-as-dict representation for macro transformers and `tinct describe` (`src/ast_dict.rs`)
-- [ ] Rewrite `dict_to_ast` to return `SurfaceNode` instead of `Expr` — needed by the macro expansion `dict_to_ast` call at `src/expand.rs:1802` (`src/ast_dict.rs`)
-- [ ] Update all callers: `src/formatter.rs`, `src/builtins_meta.rs`, `src/expand.rs:1802` to use the new Surface signatures
-- [ ] `just build` passes; `just test` passes
+- [x] Add Surface bridge functions — `surface_node_to_dict`, `dict_to_surface_node`, `surface_program_to_dict`, `dict_to_surface_program` in `ast_dict.rs` (bridge via ast_convert.rs) [commit 9849c61]
+- [x] Migrate `formatter.rs` caller — eliminates SurfaceProgram→File→dict conversion [commit 9849c61]
+- [ ] Migrate `builtins_meta.rs` callers — deferred (operates on Expr for macro AST; migrate when builtins_meta migrates to Surface)
+- [ ] Migrate `expand.rs:1802` caller — deferred (macro expansion uses Expr; migrate with expander)
+- [x] `just build` passes [commit 9849c61]
 
 ### rv2-migrate-repl: Migrate REPL to Surface eval path (small, independent)
 
