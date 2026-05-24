@@ -1,6 +1,6 @@
 # Test: UnixDatagram arity error (needs path, not host+port)
 # no_fs
-[connect %pwd UnixDatagram]
+[connect %cwd UnixDatagram]
 
 === error
 [E080] connect: UnixDatagram transport requires path (3 args total), got 2

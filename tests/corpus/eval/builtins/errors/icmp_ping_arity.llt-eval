@@ -1,6 +1,6 @@
 # Test: icmp-ping with wrong argument count returns arity error
 # no_fs
-[icmp-ping %pwd]
+[icmp-ping %cwd]
 
 === error
 [E080] icmp-ping: expected 3 arguments (cap host timeout-ms), got 1

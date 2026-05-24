@@ -1,8 +1,8 @@
 # copy-file : copy a file from one DirCap/path to another DirCap/path
 # Copies Cargo.toml to target/ and verifies the copy exists
-[copy-file %pwd "Cargo.toml" [narrow %pwd "target"] "tinct-test-copy-file.toml"]
+[copy-file %cwd "Cargo.toml" [narrow %cwd "target"] "tinct-test-copy-file.toml"]
 ---
 %
-[call $exists [narrow %pwd "target"] "tinct-test-copy-file.toml"]
+[call $exists [narrow %cwd "target"] "tinct-test-copy-file.toml"]
 === out
 Bool(true)

@@ -1,5 +1,5 @@
 # stat-symlink : get metadata without following symlinks (lstat equivalent)
 # On a regular file, is-symlink is false and is-file is true
-[builtin-get "is-symlink" [call $stat-symlink %pwd "Cargo.toml"]]
+[builtin-get "is-symlink" [call $stat-symlink %cwd "Cargo.toml"]]
 === out
 Bool(false)

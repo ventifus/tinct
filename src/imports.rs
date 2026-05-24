@@ -243,7 +243,7 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // Inject capability variable types that the CLI always provides.
     // These are runtime-injected by the CLI (see main.rs:905, 955, 934),
     // so the type checker needs to know about them to avoid false "undefined variable" errors.
-    env.insert("%pwd".to_string(), crate::types::Type::DirCap);
+    env.insert("%cwd".to_string(), crate::types::Type::DirCap);
     env.insert("%libdir".to_string(), crate::types::Type::DirCap);
     // %stdin is Handle[Readable Text]
     {
@@ -263,7 +263,7 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // Type-check prelude
     let mut builtins_env = TypeEnv::with_builtins();
     // Inject capability types into builtins_env for prelude type-checking
-    builtins_env.insert("%pwd".to_string(), crate::types::Type::DirCap);
+    builtins_env.insert("%cwd".to_string(), crate::types::Type::DirCap);
     builtins_env.insert("%libdir".to_string(), crate::types::Type::DirCap);
     builtins_env.insert(
         "%stdin".to_string(),
@@ -502,7 +502,7 @@ fn extract_bindings_from_node_to_vec(
 ///
 /// Walks the AST looking for `[include ...]` patterns and extracts
 /// the string literal paths. Returns a list of `(span, cap_name, path)` tuples
-/// where `cap_name` is `Some("%libdir")` or `Some("%pwd")` for cap-qualified includes,
+/// where `cap_name` is `Some("%libdir")` or `Some("%cwd")` for cap-qualified includes,
 /// or `None` for deprecated bare includes.
 ///
 /// Skips dynamic includes (computed paths).
@@ -631,7 +631,7 @@ fn collect_include_paths_from_node(
 ///
 /// Cap-qualified includes:
 /// - `%libdir` → resolve relative to `libdir` parameter
-/// - `%pwd` → resolve relative to `base_dir` parameter
+/// - `%cwd` → resolve relative to `base_dir` parameter
 /// - Other caps → skip silently (e.g., `%custom_cap` is not supported)
 ///
 /// Returns a tuple of:
@@ -663,7 +663,7 @@ fn resolve_includes(
         // Determine the base directory based on the cap variable
         let resolve_base = match cap_name.as_deref() {
             Some("%libdir") => libdir,
-            Some("%pwd") => base_dir,
+            Some("%cwd") => base_dir,
             Some(_other) => {
                 // Unknown cap variable — skip this include silently
                 continue;
@@ -709,8 +709,8 @@ fn resolve_includes(
         visited.insert(path_key);
 
         // Enforce the same 10 MB limit as the runtime $include.
-        // Use cap_std for %pwd paths (RESOLVE_BENEATH semantics); fall back to std::fs for %libdir paths.
-        let use_cap = cap_name.as_deref() == Some("%pwd");
+        // Use cap_std for %cwd paths (RESOLVE_BENEATH semantics); fall back to std::fs for %libdir paths.
+        let use_cap = cap_name.as_deref() == Some("%cwd");
         let file_len = if use_cap {
             // Derive relative path by stripping the canonical base prefix.
             let canonical_base = base_dir.and_then(|b| b.canonicalize().ok());
@@ -733,7 +733,7 @@ fn resolve_includes(
             continue;
         }
 
-        // Read the file — use cap_std RESOLVE_BENEATH for %pwd paths.
+        // Read the file — use cap_std RESOLVE_BENEATH for %cwd paths.
         let content = if use_cap {
             let canonical_base = base_dir.and_then(|b| b.canonicalize().ok());
             let relative = if let Some(ref base) = canonical_base {
@@ -994,7 +994,7 @@ fn apply_include_type_to_node(
 /// fully-populated type environment for a given program.
 ///
 /// 1. Start with the prelude environment from `build_prelude_env()`
-/// 2. Seed the environment with always-available cap variables (`%pwd`, `%libdir`, `%stdin`)
+/// 2. Seed the environment with always-available cap variables (`%cwd`, `%libdir`, `%stdin`)
 /// 3. If `base_dir` is provided, collect include paths from `program` and
 ///    resolve them recursively, extending the environment with each included
 ///    file's top-level bindings.
@@ -1016,9 +1016,9 @@ pub fn build_type_env(
     build_type_env_with_cap(program, base_dir, &cwd_cap)
 }
 
-/// Like `build_type_env`, but also accepts a `cap_std::fs::Dir` for `%pwd` I/O.
+/// Like `build_type_env`, but also accepts a `cap_std::fs::Dir` for `%cwd` I/O.
 ///
-/// When `base_cap_dir` is `Some`, file reads for `%pwd`-qualified includes go through
+/// When `base_cap_dir` is `Some`, file reads for `%cwd`-qualified includes go through
 /// the cap-std Dir (RESOLVE_BENEATH semantics) instead of plain `std::fs` calls.
 /// This provides kernel-level path confinement rather than software-only path checks.
 pub fn build_type_env_with_cap(
@@ -1030,7 +1030,7 @@ pub fn build_type_env_with_cap(
 
     // Seed with always-available cap types
     let mut env = TypeEnv::with_parent(&prelude_env);
-    env.insert("%pwd".to_string(), crate::types::Type::DirCap);
+    env.insert("%cwd".to_string(), crate::types::Type::DirCap);
     env.insert("%libdir".to_string(), crate::types::Type::DirCap);
     // %stdin is Handle[Readable Text]
     {
@@ -1108,13 +1108,13 @@ mod tests {
     #[test]
     fn test_collect_include_paths_finds_cap_qualified_includes() {
         let source = r#"
-            [include %pwd "foo.llt"]
+            [include %cwd "foo.llt"]
             [include %libdir "bar.llt"]
         "#;
         let program = parser::parse(source).unwrap().program;
         let paths = collect_include_paths(&program);
         assert_eq!(paths.len(), 2);
-        assert_eq!(paths[0].1, Some("%pwd".to_string()));
+        assert_eq!(paths[0].1, Some("%cwd".to_string()));
         assert_eq!(paths[0].2, "foo.llt");
         assert_eq!(paths[1].1, Some("%libdir".to_string()));
         assert_eq!(paths[1].2, "bar.llt");
@@ -1173,11 +1173,11 @@ mod tests {
     /// Both parse to the same `SurfaceExpression::Call` node with `func = VarRef { name: "include" }`.
     #[test]
     fn collect_include_paths_finds_explicit_call_form() {
-        let source = r#"[call $include %pwd "foo.llt"]"#;
+        let source = r#"[call $include %cwd "foo.llt"]"#;
         let program = parser::parse(source).unwrap().program;
         let paths = collect_include_paths(&program);
         assert_eq!(paths.len(), 1, "expected exactly one include path");
-        assert_eq!(paths[0].1, Some("%pwd".to_string()));
+        assert_eq!(paths[0].1, Some("%cwd".to_string()));
         assert_eq!(paths[0].2, "foo.llt");
     }
 
@@ -1200,7 +1200,7 @@ mod tests {
         let base_env = Rc::new(TypeEnv::with_builtins());
         let include_paths = vec![(
             Span::origin(),
-            Some("%pwd".to_string()),
+            Some("%cwd".to_string()),
             "nonexistent_file_xyz.llt".to_string(),
         )];
         let tmp = std::env::temp_dir();
@@ -1238,13 +1238,13 @@ mod tests {
         let (env, _bindings) = build_type_env(&program, None);
 
         // Check that cap variables are present with correct types
-        assert!(env.get("%pwd").is_some(), "expected %pwd in type env");
+        assert!(env.get("%cwd").is_some(), "expected %cwd in type env");
         assert!(env.get("%libdir").is_some(), "expected %libdir in type env");
         assert!(env.get("%stdin").is_some(), "expected %stdin in type env");
 
         // Verify types
         use crate::types::Type;
-        assert_eq!(env.get("%pwd").unwrap().body, Type::DirCap);
+        assert_eq!(env.get("%cwd").unwrap().body, Type::DirCap);
         assert_eq!(env.get("%libdir").unwrap().body, Type::DirCap);
         // %stdin is Handle[Readable Text] (updated to use concrete capability row)
         if let Type::Handle(inner) = &env.get("%stdin").unwrap().body {
@@ -1294,8 +1294,8 @@ mod tests {
         use std::collections::HashMap;
 
         // Parse a source with a cap-qualified include call.
-        // We use %pwd (cap var) with a path literal "foo.llt".
-        let source = r#"[include %pwd "foo.llt"]"#;
+        // We use %cwd (cap var) with a path literal "foo.llt".
+        let source = r#"[include %cwd "foo.llt"]"#;
         let program = parser::parse(source).unwrap().program;
 
         // Find the span of the path string argument ("foo.llt") by walking the AST.
@@ -1317,7 +1317,7 @@ mod tests {
         apply_include_type_post_pass(&program, &include_bindings, &mut type_map);
 
         // The post-pass should have injected a Record type at the call expression's span.
-        // The call expression span is the full "[include %pwd "foo.llt"]" span.
+        // The call expression span is the full "[include %cwd "foo.llt"]" span.
         // Since the source starts at offset 0, the call's span is (0, source.len()).
         let call_key = (0usize, source.len());
         let injected = type_map.get(&call_key);
@@ -1354,7 +1354,7 @@ mod tests {
         use crate::types::Type;
         use std::collections::HashMap;
 
-        let source = r#"[include %pwd "foo.llt"]"#;
+        let source = r#"[include %cwd "foo.llt"]"#;
         let program = parser::parse(source).unwrap().program;
 
         let include_bindings: HashMap<Span, Vec<(String, Type)>> = HashMap::new();
@@ -1377,7 +1377,7 @@ mod tests {
         use std::collections::HashMap;
 
         // The include call is nested inside a dict entry.
-        let source = r#"[io: [include %pwd "io.llt"]]"#;
+        let source = r#"[io: [include %cwd "io.llt"]]"#;
         let program = parser::parse(source).unwrap().program;
 
         // Find the path-argument span.

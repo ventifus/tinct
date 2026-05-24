@@ -1,5 +1,5 @@
 # Test: DirCap capability declared and present
---- caps: [%pwd: @DirCap]
+--- caps: [%cwd: @DirCap]
 [result: "ok"]
 
 === out

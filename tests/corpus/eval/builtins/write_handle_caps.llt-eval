@@ -2,11 +2,11 @@
 # and that the read handle has the expected Readable cap
 # % is used as an intermediate expression to force the write side-effect.
 # has-cap? is now in stdlib/io.llt — include it in the same doc as the usage
-[write [narrow %pwd "target"] "tinct-test-write-caps.txt" "caps check"]
+[write [narrow %cwd "target"] "tinct-test-write-caps.txt" "caps check"]
 ---
 %
 [include %libdir "io.llt"]
-[has-cap? [open [narrow %pwd "target"] "tinct-test-write-caps.txt" Readable] "Readable"]
+[has-cap? [open [narrow %cwd "target"] "tinct-test-write-caps.txt" Readable] "Readable"]
 === out
 Bool(true)
 === warn

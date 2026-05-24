@@ -1,6 +1,6 @@
 # Test: NamedPipe returns "not supported" error
 # no_fs
-[connect %pwd NamedPipe "/tmp/test.pipe"]
+[connect %cwd NamedPipe "/tmp/test.pipe"]
 
 === error
 [E080] connect: NamedPipe is a Windows-only transport and is not supported on this platform

@@ -1,6 +1,6 @@
 # Test: UnixStream arity error (needs path, not host+port)
 # no_fs
-[connect %pwd UnixStream]
+[connect %cwd UnixStream]
 
 === error
 [E080] connect: UnixStream transport requires path (3 args total), got 2

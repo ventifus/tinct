@@ -1,8 +1,8 @@
 # Test: include was removed in include-decomp-prelude sprint.
-# The old [include %pwd "..."] form now raises undefined variable error for
-# both `include` and `%pwd`. The path traversal security guarantee is preserved
+# The old [include %cwd "..."] form now raises undefined variable error for
+# both `include` and `%cwd`. The path traversal security guarantee is preserved
 # because include does not exist at all.
 
-[include %pwd "../../etc/passwd"]
+[include %cwd "../../etc/passwd"]
 === error
 [E002]

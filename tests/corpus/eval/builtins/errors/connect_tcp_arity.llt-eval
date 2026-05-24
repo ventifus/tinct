@@ -1,6 +1,6 @@
 # Test: connect with Tcp transport but missing host/port produces arity error
 # no_fs
-[connect %pwd Tcp]
+[connect %cwd Tcp]
 
 === error
 [E080] connect: Tcp transport requires host and port (4 args total), got 2

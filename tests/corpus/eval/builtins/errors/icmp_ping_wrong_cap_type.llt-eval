@@ -1,6 +1,6 @@
 # Test: icmp-ping with DirCap instead of NetCap returns type error
 # no_fs
-[icmp-ping %pwd "localhost" 1000]
+[icmp-ping %cwd "localhost" 1000]
 
 === error
 [E010] icmp-ping: expected NetCap, got DirCap

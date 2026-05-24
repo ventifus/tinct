@@ -1,6 +1,6 @@
 # Test: UDP connect with wrong arg count produces arity error
 # no_fs
-[connect %pwd Udp "localhost"]
+[connect %cwd Udp "localhost"]
 
 === error
 [E080] connect: Udp transport requires host and port (4 args total), got 3

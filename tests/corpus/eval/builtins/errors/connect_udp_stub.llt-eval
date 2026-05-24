@@ -1,6 +1,6 @@
 # Test: UDP connect with DirCap instead of NetCap produces type error
 # no_fs
-[connect %pwd Udp "localhost" 1234]
+[connect %cwd Udp "localhost" 1234]
 
 === error
 [E010] connect: expected NetCap, got DirCap

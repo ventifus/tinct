@@ -48,9 +48,9 @@ enum Commands {
         #[arg(long)]
         eval: bool,
 
-        /// Disable all filesystem access: suppresses %pwd, %libdir, and any caps injected
+        /// Disable all filesystem access: suppresses %cwd, %libdir, and any caps injected
         /// via --cap-fs or --cap-file. Scripts that attempt filesystem operations fail.
-        /// Use --no-pwd or --no-libdir for fine-grained suppression.
+        /// Use --no-cwd or --no-libdir for fine-grained suppression.
         #[arg(long)]
         no_fs: bool,
 
@@ -98,10 +98,10 @@ enum Commands {
         #[arg(long, value_name = "NAME")]
         allow_env: Vec<String>,
 
-        /// Do not inject `%pwd` DirCap into the root environment.
-        /// When set, [open %pwd ...] and [include %pwd ...] fail with undefined variable.
+        /// Do not inject `%cwd` DirCap into the root environment.
+        /// When set, [open %cwd ...] and [include %cwd ...] fail with undefined variable.
         #[arg(long)]
-        no_pwd: bool,
+        no_cwd: bool,
 
         /// Do not inject `%libdir` DirCap into the root environment.
         /// When set, [include %libdir ...] fails with undefined variable.
@@ -368,7 +368,7 @@ fn main() {
             max_fds,
             no_env,
             allow_env,
-            no_pwd,
+            no_cwd,
             no_libdir,
             libdir_path,
             cap_fs,
@@ -393,7 +393,7 @@ fn main() {
             max_fds,
             no_env,
             allow_env,
-            no_pwd,
+            no_cwd,
             no_libdir,
             libdir_path,
             cap_fs,
@@ -1137,7 +1137,7 @@ fn run_eval(
     max_fds: Option<u64>,
     no_env: bool,
     allow_env: Vec<String>,
-    no_pwd: bool,
+    no_cwd: bool,
     no_libdir: bool,
     libdir_path: Option<String>,
     cap_fs: Vec<String>,
@@ -1317,19 +1317,19 @@ fn run_eval(
     #[cfg(not(target_os = "linux"))]
     let _ = allow_network;
 
-    // Inject `%pwd` DirCap into the root environment (unless --no-pwd is set).
-    // `%pwd` points to the directory of the first input file (or the process cwd when
-    // evaluating stdin/inline expressions). This allows `[include %pwd "sibling.llt"]`
+    // Inject `%cwd` DirCap into the root environment (unless --no-cwd is set).
+    // `%cwd` points to the directory of the first input file (or the process cwd when
+    // evaluating stdin/inline expressions). This allows `[include %cwd "sibling.llt"]`
     // to resolve relative to the evaluated file, which is the most natural behavior.
-    // --no-pwd enforcement: when the flag is set, `%pwd` is NOT injected, so
-    // any reference to `%pwd` in the program will fail with "undefined variable".
-    if !no_pwd && !no_fs {
+    // --no-cwd enforcement: when the flag is set, `%cwd` is NOT injected, so
+    // any reference to `%cwd` in the program will fail with "undefined variable".
+    if !no_cwd && !no_fs {
         use tinct::Value;
-        // Determine %pwd: file's parent dir if a file is given, otherwise cwd.
+        // Determine %cwd: file's parent dir if a file is given, otherwise cwd.
         // Use canonicalize() so symlinks are resolved; fall back to cwd if the
         // parent directory doesn't exist (e.g., the file itself is missing —
         // the open error will be reported shortly with the correct message).
-        let pwd_path = {
+        let cwd_path = {
             let first_file = file_paths.iter().find(|p| p.as_str() != "-");
             match first_file {
                 Some(fp) => {
@@ -1343,24 +1343,24 @@ fn run_eval(
                                 .unwrap_or_else(|_| std::path::PathBuf::from("."))
                         }),
                         None => std::env::current_dir().map_err(|e| {
-                            format!("cannot determine working directory for %pwd: {e}")
+                            format!("cannot determine working directory for %cwd: {e}")
                         })?,
                     }
                 }
                 None => std::env::current_dir()
-                    .map_err(|e| format!("cannot determine working directory for %pwd: {e}"))?,
+                    .map_err(|e| format!("cannot determine working directory for %cwd: {e}"))?,
             }
         };
-        let pwd_dir = cap_std::fs::Dir::open_ambient_dir(&pwd_path, cap_std::ambient_authority())
-            .map_err(|e| format!("cannot open %pwd directory: {e}"))?;
-        let pwd_value = Value::DirCap {
-            dir: Rc::new(pwd_dir),
+        let cwd_dir = cap_std::fs::Dir::open_ambient_dir(&cwd_path, cap_std::ambient_authority())
+            .map_err(|e| format!("cannot open %cwd directory: {e}"))?;
+        let cwd_value = Value::DirCap {
+            dir: Rc::new(cwd_dir),
             perms: tinct::DirPerms::full(),
         };
-        let pwd_thunk = tinct::Thunk::new_materialized(pwd_value, tinct::Span::origin());
+        let cwd_thunk = tinct::Thunk::new_materialized(cwd_value, tinct::Span::origin());
         env.write()
             .unwrap()
-            .insert("%pwd".to_string(), Arc::new(pwd_thunk));
+            .insert("%cwd".to_string(), Arc::new(cwd_thunk));
     }
 
     // Inject `%stdin` Handle for fd 0 into the root environment only when `-i` is present.
@@ -2434,7 +2434,7 @@ fn run_literate(config: &LiterateConfig) -> Result<(), String> {
 /// typecheck → eval → materialize → JSON).
 /// The base directory is derived from the Markdown file's parent directory.
 ///
-/// Literate mode always runs with --no-pwd and --no-env (hard-coded).
+/// Literate mode always runs with --no-cwd and --no-env (hard-coded).
 /// Capabilities are injected via cap_fs and cap_net. %libdir is always available.
 /// %clock is set to a fixed ClockCap from the markdown file's mtime.
 // AMBIENT-OK: CLI literate-eval reading markdown file metadata for mtime.
@@ -2687,7 +2687,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
 /// - `--in-place`: write output to .tmp then rename to source file (instead of stdout)
 ///
 /// **Literate-specific behavior:**
-/// - Always runs with --no-pwd and --no-env (hard-coded)
+/// - Always runs with --no-cwd and --no-env (hard-coded)
 /// - %clock is set to a fixed ClockCap from markdown file mtime
 /// - %libdir is always available
 /// - Capabilities injected via cap_fs and cap_net

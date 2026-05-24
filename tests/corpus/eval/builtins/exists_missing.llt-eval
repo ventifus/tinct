@@ -1,4 +1,4 @@
 # exists : returns false for a path that does not exist
-[call $exists %pwd "this-file-does-not-exist-in-tinct-project.llt"]
+[call $exists %cwd "this-file-does-not-exist-in-tinct-project.llt"]
 === out
 Bool(false)

@@ -1,4 +1,4 @@
 # exists : check if a path exists within a DirCap
-[call $exists %pwd "Cargo.toml"]
+[call $exists %cwd "Cargo.toml"]
 === out
 Bool(true)
