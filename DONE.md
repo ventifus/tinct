@@ -30,8 +30,12 @@ Completed milestones and sprints, moved from TODO.md.
 
 **surface_program_to_file status after this sprint:**
 - `src/parser.rs`: zero production callers ✅
-- `src/typecheck.rs:497`: ONE production caller remains (`typecheck_surface_program_with_types_and_env` bridge). NOT yet deletable — tracked in rv2-delete-old-ast.
+- `src/typecheck.rs:497`: ONE production caller remains (`typecheck_surface_program` bridge). NOT yet deletable — tracked in rv2-delete-old-ast.
 - All other callers are `#[cfg(test)]` test helpers or comments.
+
+**surface_program_to_file status after rv2-migrate-annotation final commit (2026-05-23):**
+- `src/typecheck.rs:497`: ✅ DONE — `typecheck_surface_program` now delegates to `typecheck_surface_program_with_env` (native Surface walk). Zero production callers remain across all of `src/`.
+- All remaining callers are `#[cfg(test)]` test helpers or comments.
 
 **Build:** `just fmt && just build && just test-lib` — exit 0, all tests pass.
 
@@ -166,6 +170,12 @@ This allows TypeVar-to-concrete unification during instance lookup while maintai
 - [x] Delete span-based bridge helpers (~300 lines of dead code)
 - [x] `just fmt && just build` passes (exit 0, 0 warnings)
 - [x] `just test-lib` — 341 passed, 7 failed (2 pre-existing `undefined variable: get` failures; 5 from unrelated dirty working-tree changes in `builtins.rs`/`prelude.llt` — not caused by this sprint)
+
+**Final deletion (rv2-migrate-annotation final commit, 2026-05-23):**
+- [x] Delete `surface_program_to_file()` call from `typecheck_surface_program` — now delegates to `typecheck_surface_program_with_env` (native Surface walk)
+- [x] Mark `typecheck_file_with_types_and_env`, `typecheck_file_with_types_and_env_and_source`, `typecheck_file_with_types_and_env_and_source_returning_state`, `reset_elaboration`, `reset_expr`, `extract_doc_strings`, `extract_doc_from_expr`, `typecheck_document` as `#[cfg(test)]` (all callers are now test-only)
+- [x] Move `Document` and `SurfaceExpression` imports to `#[cfg(test)]` scope
+- [x] Zero production callers of `surface_program_to_file` remain in `src/` ✅
 
 ## Async
 

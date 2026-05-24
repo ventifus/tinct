@@ -6,10 +6,11 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::ast::{
-    node_id, Annotation, Document, Entry, Expr, File, NamedArg, Param, Pattern, Span, Spanned,
-    SurfaceDeclaration, SurfaceDocument, SurfaceExpression, SurfaceItem, SurfaceProgram,
-    TypeAnnotationTable,
+    node_id, Annotation, Entry, Expr, File, NamedArg, Param, Pattern, Span, Spanned,
+    SurfaceDeclaration, SurfaceDocument, SurfaceItem, SurfaceProgram, TypeAnnotationTable,
 };
+#[cfg(test)]
+use crate::ast::{Document, SurfaceExpression};
 use crate::coverage;
 use crate::types::{
     generalize, instantiate_at_level, instantiate_scheme, resolve_has_field, unify, InferState,
@@ -45,6 +46,7 @@ pub use crate::types::SchemeMap;
 /// invariant assertion in resolve_type_assert.
 ///
 /// Uses interior mutability via RefCell, so only needs &File (not &mut File).
+#[cfg(test)]
 fn reset_elaboration(file: &File) {
     for doc in &file.documents {
         for expr in &doc.node.expressions {
@@ -54,6 +56,7 @@ fn reset_elaboration(file: &File) {
 }
 
 /// Recursively reset resolved_type in all TypeAssert nodes.
+#[cfg(test)]
 fn reset_expr(expr: &Spanned<Expr>) {
     match &expr.node {
         // Literals: no children
@@ -244,6 +247,7 @@ fn typecheck_file_with_types(
 /// Like [`typecheck_file_with_types`], but accepts a custom initial environment.
 /// This is used by the LSP to seed the type environment with prelude names,
 /// suppressing false "undefined variable" errors for stdlib functions.
+#[cfg(test)]
 fn typecheck_file_with_types_and_env(
     file: &File,
     initial_env: Rc<TypeEnv>,
@@ -261,6 +265,7 @@ fn typecheck_file_with_types_and_env(
 ///
 /// Like [`typecheck_file_with_types_and_env`], but accepts an optional source path
 /// for diagnostics that need to know the source file.
+#[cfg(test)]
 fn typecheck_file_with_types_and_env_and_source(
     file: &File,
     initial_env: Rc<TypeEnv>,
@@ -299,6 +304,7 @@ fn typecheck_file_with_types_and_env_and_source(
 /// to the returned env (their partial env is discarded). Callers requiring best-effort
 /// coverage (e.g., `imports::typecheck_and_merge_stdlib_module`) should fall back to
 /// the [`TypeMap`] for any bindings missing from the returned env.
+#[cfg(test)]
 fn typecheck_file_with_types_and_env_and_source_returning_state(
     file: &File,
     initial_env: Rc<TypeEnv>,
@@ -468,22 +474,21 @@ pub fn typecheck_surface_program_annotation_table(
     (errors, table)
 }
 
-/// Type-check a `SurfaceProgram` with a given initial type environment, returning a
-/// span-keyed [`TypeMap`].
+/// Type-check a `SurfaceProgram` with a given initial type environment.
 ///
-/// This is the surface-based replacement for [`typecheck_file_with_types_and_env`].
-/// Internally it converts the `SurfaceProgram` to a `File` via
-/// [`crate::ast_convert::surface_program_to_file`] and delegates to the existing
-/// file-based typecheck machinery, so behaviour is identical to the old path.
-///
-/// Callers that previously called `typecheck_file_with_types_and_env` after running
-/// `surface_program_to_file` manually should switch to this function so the
-/// `surface_program_to_file` step is encapsulated here and can be removed in a
-/// follow-up sprint once the type checker is fully SurfaceExpr-native.
+/// This is the native-Surface implementation — it delegates to
+/// [`typecheck_surface_program_with_env`] which walks `program.documents` directly via
+/// [`typecheck_surface_document`] without any conversion through the old `File` AST.
+/// The span-keyed [`TypeMap`] in the return tuple is always empty; callers that need
+/// per-expression type information should use the [`TypeAnnotationTable`] returned by
+/// [`typecheck_surface_program_with_env`] instead.
 ///
 /// # Returns
 ///
 /// `(errors, type_map, doc_map, scheme_map, diagnostics)`
+///
+/// `type_map` is always empty. Use [`typecheck_surface_program_with_env`] to obtain a
+/// `TypeAnnotationTable` keyed by `NodeId`.
 pub fn typecheck_surface_program(
     program: &SurfaceProgram,
     parent_env: Rc<TypeEnv>,
@@ -494,8 +499,9 @@ pub fn typecheck_surface_program(
     SchemeMap,
     Vec<crate::error::TypeDiagnostic>,
 ) {
-    let file = crate::ast_convert::surface_program_to_file(program);
-    typecheck_file_with_types_and_env(&file.node, parent_env)
+    let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _env, _annotation_table) =
+        typecheck_surface_program_with_env(program, parent_env, true, false);
+    (errors, type_map, doc_map, scheme_map, diagnostics)
 }
 
 /// Type-check a `SurfaceProgram` with full control over scheme-map generation and the
@@ -1056,6 +1062,7 @@ pub(crate) fn typecheck_surface_document_native(
 ///
 /// Walks the AST looking for `doc:` properties in `@[...]` annotations.
 /// Populates the doc_map with entries like `param_name -> "doc string"`.
+#[cfg(test)]
 fn extract_doc_strings(file: &File, doc_map: &mut DocMap) {
     for document in &file.documents {
         for expr in &document.node.expressions {
@@ -1068,6 +1075,7 @@ fn extract_doc_strings(file: &File, doc_map: &mut DocMap) {
 ///
 /// `binding_name`: When recursing into a dict entry value, this is the entry's binding name
 /// (used to key function-level doc strings extracted from return annotations).
+#[cfg(test)]
 fn extract_doc_from_expr(expr: &Expr, doc_map: &mut DocMap, binding_name: Option<&str>) {
     match expr {
         Expr::Fn {
@@ -1190,6 +1198,7 @@ fn typecheck_document_simple(
 /// `expects:` and `output_type` annotation errors are advisory — they are returned inside the
 /// `Ok` tuple so callers can propagate pipeline types even when an annotation check fails.
 /// Fatal body errors (inference failures, undefined variables, etc.) are returned as `Err`.
+#[cfg(test)]
 fn typecheck_document(
     doc: &Spanned<Document>,
     parent_env: &Rc<TypeEnv>,
