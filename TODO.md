@@ -55,7 +55,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `expand_document()` walks `SurfaceDocument.items`; `SurfaceDeclaration::Splice` flattened — **Bridge**: `expand_surface_program()` converts via bridge, expansion runs on old `Expr` path; full cutover after Rc→Arc (`src/expand.rs`)
 - [x] Macro round-trip bridge: `surface_node_to_expr()` + `expr_to_surface_node()` in `ast_convert.rs` (`src/expand.rs`)
 - [x] `surface_node_from_value()` in `src/surface_fields.rs` — macro output reconstruction; fast path for `Value::Expression`, slow path via `dict_to_ast` bridge (`src/surface_fields.rs`)
-- [ ] **Remaining**: full expander cutover to SurfaceExpression (delete bridge, update `expand_macros` internals) — **BLOCKED on E1–E3** (desugar/eval pipeline still consumes `File`; all 15 `expand_macros` call sites feed `expand_result.file` into `desugar_file()`; cannot cut over until evaluator is migrated to `CoreExpr` and `desugar.rs` deleted)
+- [ ] **Remaining**: full expander cutover to SurfaceExpression (delete bridge, update `expand_macros` internals) — **BLOCKED on typecheck bridge** (macro expansion still operates on old `Expr` AST; expand.rs:39 imports `Document, Entry, Expr, MatchArm, NamedArg, Param` from ast; `desugar_file` is already deleted, `CoreExpr` eval is live — the remaining blocker is `typecheck.rs` internal bridge via `surface_program_to_file`)
 
 **Part D remaining** (`src/surface_fields.rs`):
 - [x] Sequence fields in `surface_node_get_field()` — already handled in existing implementation (`src/surface_fields.rs`)
@@ -68,7 +68,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Migrate eval_call.rs, eval_dict.rs, eval_materialize.rs to CoreExpr — deleted old eval_dict/eval_call functions; ~30 new_unevaluated call sites converted; force_step handles CoreExpr::DotAccess/TypeAssert/RuntimeTypeCheck inline; eval_step deleted; Action::EvalCore added
 - [x] Delete `src/eval_deep.rs` — moved deep_materialize to eval_materialize.rs; file deleted ✓ (commit 92ff2fc)
 - [x] Migrate eval_pipeline.rs to SurfaceProgram — added eval_surface_document/eval_surface_file/eval_surface_file_with_input; lib.rs callers (eval_source_with_config, eval_source_with_cap_net) now call eval_surface_file; resolution_table kept (no longer discarded); TODO(surface-typecheck): wire TypeAnnotationTable from surface typecheck path so TypeAssert nodes get statically-resolved types (currently empty table → RuntimeTypeCheck fallback)
-- [ ] Delete: `src/eval_pipeline.rs`, `src/ast_dict.rs`, `src/desugar.rs`, `src/ast_convert.rs` — **PARTIALLY UNBLOCKED**: eval_document/eval_file/eval_file_with_input now deleted from eval_pipeline.rs; eval_pipeline.rs itself still needed for eval_surface_*; Expr/File/Document still used by typecheck, builtins_meta.rs include cache, formatter, repl, LSP
+- [ ] Delete: `src/eval_pipeline.rs` (eval_surface_* functions stay), `src/ast_dict.rs` (Expr internals replaced by Surface bridges), `src/ast_convert.rs` (dead cluster deleted 2026-05-23; remaining functions still have callers) — `src/desugar.rs` is NOT being deleted (Surface API only, actively used); `Expr/File/Document` still used by typecheck, formatter, repl, LSP, expand, parser
 - [x] Update `IncludeCacheEntry::Cached` — **DONE**
 - [x] Rc→Arc migration — **DONE (commit b0aa803)**: 34 files, 2450 ins, 2437 del
 - [x] **`cargo check` clean** — `just build` passes with -D warnings ✓ (commit 18711a0)
@@ -93,24 +93,15 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 **Remaining work:** This sprint can be deleted. The ACTUAL blockers for rv2-delete-old-ast are expand.rs (3 call sites) and eval.rs (2 call sites for unquote handling).
 
-### rv2-migrate-expand-macro: Migrate expand.rs macro expansion to Surface ast_dict API
+### rv2-migrate-expand-macro: Migrate expand.rs macro expansion to Surface ast_dict API ✅
 
-**Goal:** Replace 3 `ast_to_dict_expr`/`dict_to_ast` calls in `src/expand.rs` with Surface bridge functions. This + rv2-migrate-builtins-meta removes all external callers of old ast_dict functions.
+**DONE (2026-05-23):** All `ast_to_dict_expr`/`dict_to_ast` calls in `expand.rs` and `eval.rs` already replaced with Surface bridge functions. Verified by grep — zero remaining callers.
 
-**Exact call sites (from grep):**
-- `src/expand.rs:1661` — `ast_to_dict_expr(arg, &opts, ctx)?` — converts macro argument to dict for transformer
-- `src/eval.rs:992` — `ast_to_dict_expr(...)` — unquote handling (eval.rs also needs migration)
-- `src/eval.rs:1004` — `ast_to_dict_expr(...)` — unquote handling
-- `src/expand.rs:1694` — `ast_to_dict_expr(&binding_rc, &opts, ctx)?` — converts binding to dict
-- `src/expand.rs:1802` — `dict_to_ast(&deep_result, ctx)` — reconstructs AST from transformer output
-
-**Note:** Lines 1661 and 1694 take `Spanned<Expr>` inputs. These come from `eval_recursive`/`expand_macros` which work on old Expr AST. Convert to SurfaceNode via `expr_to_surface_node()` from ast_convert.rs before calling `surface_node_to_dict`. For line 1802, the result dict → SurfaceNode via `dict_to_surface_node`, then back to Expr via `surface_node_to_expr` if the rest of the expander still needs Expr output.
-
-- [ ] Update `expand.rs:1661`: `ast_to_dict_expr(arg, &opts, ctx)` → `surface_node_to_dict(&expr_to_surface_node(arg), &opts, ctx)` (or equivalent wrapper)
-- [ ] Update `expand.rs:1694`: same pattern for binding_rc
-- [ ] Update `expand.rs:1802`: `dict_to_ast(&deep_result, ctx)` → `dict_to_surface_node(&deep_result, ctx)` then convert result to Expr via `surface_node_to_expr` for the rest of the expander chain
-- [ ] Remove `use crate::ast_dict::{ast_to_dict_expr, dict_to_ast, AstToDictOpts}` import from expand.rs; add appropriate Surface bridge imports
-- [ ] `just build` passes; run macro expansion corpus tests to verify
+- [x] `expand.rs:1661` → `surface_node_to_dict(&expr_to_surface_node(arg), &opts, ctx)` ✅
+- [x] `expand.rs:1694` → same pattern for binding_rc ✅
+- [x] `expand.rs:1802` → `dict_to_surface_node(&deep_result, ctx).map(|n| surface_node_to_expr(&n))` ✅
+- [x] `eval.rs` unquote handling → migrated to Value::Expression path (Part G) ✅
+- [x] `expand.rs` imports `dict_to_surface_node, surface_node_to_dict` from ast_dict ✅
 
 ### rv2-delete-eval-pipeline-old: Delete old eval_document/eval_file from eval_pipeline.rs ✅
 
@@ -179,16 +170,17 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 **Depends on:** rv2-migrate-ast-dict ✅(partial), rv2-migrate-repl ✅, rv2-migrate-lsp ✅, rv2-migrate-typecheck-api ✅
 
 **Still BLOCKED on (these callers must be migrated first):**
-- `src/expand.rs:1661,1694,1802` — 3 calls to `ast_to_dict_expr` / `dict_to_ast` in macro expansion (converts macro args to dict, reconstructs AST from transformer output)
-- `src/eval.rs:992,1004` — 2 calls to `dict_to_ast` in unquote handling (Expr::Unquote, Expr::UnquoteSplice)
+- ~~`src/expand.rs:1661,1694,1802`~~ — ✅ DONE (2026-05-23): expand.rs already uses `surface_node_to_dict`/`dict_to_surface_node`
+- ~~`src/eval.rs:992,1004`~~ — ✅ DONE (Part G): unquote handling migrated to `Value::Expression` path
 - `src/typecheck.rs` internal bridge — `typecheck_surface_program` still converts via `surface_program_to_file` internally; old `typecheck_file_*` functions still exist as private (can delete after bridge is removed)
 - ~~`src/eval_pipeline.rs`~~ — ✅ old `eval_document`/`eval_file`/`eval_file_with_input` DELETED (2026-05-23)
 
 **Once ALL above are migrated:**
-- [ ] Delete `src/desugar.rs` — `desugar_surface_program` is the live path; old `desugar_file` no longer called
-- [ ] Delete `src/ast_convert.rs` — `file_to_surface_program`, `surface_program_to_file`, `expr_to_core_expr` callers all migrated
-- [ ] Delete `src/ast_dict.rs` old Expr-based functions (replaced by rv2-migrate-ast-dict surface wrappers)
+- [ ] Delete `src/ast_convert.rs` dead code DONE (2026-05-23): deleted `file_to_surface_program_with_types` + 4 private helpers; remaining live functions (`file_to_surface_program`, `surface_program_to_file`, `expr_to_core_expr`, etc.) still needed
+- [ ] Delete `src/ast_convert.rs` entirely — once `file_to_surface_program`, `surface_program_to_file`, `expr_to_core_expr` callers are all migrated
+- [ ] Delete `src/ast_dict.rs` old Expr-based functions (`ast_to_dict`, `ast_to_dict_expr`, `dict_to_ast`, `dict_to_file`) — these now have ZERO external callers; only internal use by the Surface bridge wrappers and tests. Blocked on: rewriting `ast_dict.rs` internals to walk SurfaceNode instead of Expr (rv2-migrate-ast-dict full rewrite)
 - [ ] Delete `Expr`, `Document`, `File` from `src/ast.rs` — all consumers migrated
+- [ ] `src/desugar.rs` — NOT deletable: old `desugar_file` was already deleted; `desugar_surface_program`/`desugar_surface_node` are the live API and will remain
 - [ ] `just build` passes; `just test` passes
 
 ---
@@ -539,6 +531,14 @@ Benefits:
 
 - [x] Add `test_caps()` with `OnceLock<TestCaps>` pattern — all test ambient opens replaced across 11 files
 - [x] All test `open_ambient_dir` calls → `test_caps().root` / `test_caps().stdlib`
+
+### typecheck-handle-annotation-bug: `@[Handle Readable]` TypeAssert triggers T000 internal error
+
+Discovered via `samples/versions.llt` rewrite (2026-05-23). Writing `[@[Handle Readable] expr]` causes the type checker to panic with `[T000]: resolved_type written twice — elaboration invariant violated`. The TypeAssert elaboration is writing to the same AST node's resolved_type slot twice. Workaround: remove the annotation; the Handle type mismatch (T003) is then reported as a non-fatal warning instead.
+
+- [ ] Find the double-write in `src/typecheck_annot.rs` or `src/typecheck.rs` — specifically the TypeAssert elaboration for parameterized Handle types like `Handle[Readable]`; add guard to prevent double-write or fix the root cause (`src/typecheck.rs`, `src/typecheck_annot.rs`)
+- [ ] Verify `[@[Handle Readable] [open %pwd "file.txt" "r"]]` type-checks cleanly after fix
+- [ ] `open` builtin's return type is not parameterized by mode string (`"r"` → `Handle[Readable]`) — track as a separate type precision improvement once the above bug is fixed
 
 ### lint-clippy-hotfix: Fix 4 new clippy errors from eval-hot-path-fixes (2026-05-23)
 

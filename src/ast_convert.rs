@@ -26,9 +26,9 @@
 use std::sync::Arc;
 
 use crate::ast::{
-    node_id, Document, Entry, Expr, File, MatchArm, Spanned, SurfaceDeclaration, SurfaceDocument,
+    Document, Entry, Expr, File, MatchArm, Spanned, SurfaceDeclaration, SurfaceDocument,
     SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceMatchArm, SurfaceNamedArg, SurfaceNode,
-    SurfaceParam, SurfaceProgram, TypeAnnotationTable,
+    SurfaceParam, SurfaceProgram,
 };
 
 /// Convert a parsed `File` to a `SurfaceProgram`.
@@ -48,176 +48,6 @@ pub fn file_to_surface_program(file: &File) -> SurfaceProgram {
                 Spanned::new(document_to_surface(&doc_spanned.node), doc_spanned.span)
             })
             .collect(),
-    }
-}
-
-/// Convert a typechecked `File` to a `SurfaceProgram` AND extract `TypeAnnotationTable`.
-///
-/// Requires that type checking has already been run on the file so that
-/// `TypeAssert.resolved_type` RefCells are populated. During the bridge conversion,
-/// each `TypeAssert` node in the old File that has a resolved type is recorded in
-/// the table keyed by the corresponding `SurfaceNode`'s `NodeId`.
-///
-/// Deleted in Part E when the typechecker directly produces `TypeAnnotationTable`.
-#[allow(dead_code)] // Used in Part B when typechecker integration lands
-pub fn file_to_surface_program_with_types(file: &File) -> (SurfaceProgram, TypeAnnotationTable) {
-    let mut table = TypeAnnotationTable::new();
-    let program = file_to_surface_program_collecting(file, &mut table);
-    (program, table)
-}
-
-#[allow(dead_code)] // Helper for file_to_surface_program_with_types (Part B)
-fn file_to_surface_program_collecting(
-    file: &File,
-    table: &mut TypeAnnotationTable,
-) -> SurfaceProgram {
-    SurfaceProgram {
-        documents: file
-            .documents
-            .iter()
-            .map(|doc_spanned| {
-                Spanned::new(
-                    document_to_surface_collecting(&doc_spanned.node, table),
-                    doc_spanned.span,
-                )
-            })
-            .collect(),
-    }
-}
-
-#[allow(dead_code)] // Helper for file_to_surface_program_with_types (Part B)
-fn document_to_surface_collecting(
-    doc: &Document,
-    table: &mut TypeAnnotationTable,
-) -> SurfaceDocument {
-    let items = doc
-        .expressions
-        .iter()
-        .map(|expr_rc| expr_to_surface_item_collecting(expr_rc, table))
-        .collect();
-    SurfaceDocument {
-        stage: doc.stage.clone(),
-        name: doc.name.clone(),
-        items,
-        output_type: doc.output_type.clone(),
-        expects: doc.expects.clone(),
-        caps: doc.caps.clone(),
-    }
-}
-
-#[allow(dead_code)] // Helper for file_to_surface_program_with_types (Part B)
-fn expr_to_surface_item_collecting(
-    spanned: &Spanned<Expr>,
-    table: &mut TypeAnnotationTable,
-) -> SurfaceItem {
-    // First convert to item
-    let item = expr_to_surface_item(spanned);
-    // Then extract TypeAnnotationTable entries from TypeAssert nodes
-    if let SurfaceItem::Expr(ref node) = item {
-        collect_type_annotations_from_expr(spanned, node, table);
-    }
-    item
-}
-
-#[allow(dead_code)] // Helper for file_to_surface_program_with_types (Part B)
-fn collect_type_annotations_from_expr(
-    old_expr: &Spanned<Expr>,
-    new_node: &Arc<SurfaceNode>,
-    table: &mut TypeAnnotationTable,
-) {
-    match &old_expr.node {
-        Expr::TypeAssert {
-            resolved_type,
-            expr: inner,
-            ..
-        } => {
-            // Extract resolved type from RefCell if typechecking has populated it
-            if let Some(ty) = resolved_type.borrow().as_ref().cloned() {
-                table.insert(node_id(new_node), ty);
-            }
-            // Recurse into inner — find the corresponding SurfaceNode
-            if let SurfaceExpression::TypeAssert {
-                expr: inner_surface,
-                ..
-            } = &new_node.expr
-            {
-                collect_type_annotations_from_expr(inner, inner_surface, table);
-            }
-        }
-        // Recurse into children for all other expressions
-        Expr::Dict(entries) => {
-            if let SurfaceExpression::Dict(surface_entries) = &new_node.expr {
-                for (old_e, new_e) in entries.iter().zip(surface_entries.iter()) {
-                    if let Some(ref old_key) = old_e.node.key {
-                        if let Some(ref new_key) = new_e.node.key {
-                            collect_type_annotations_from_expr(old_key, new_key, table);
-                        }
-                    }
-                    collect_type_annotations_from_expr(&old_e.node.value, &new_e.node.value, table);
-                }
-            }
-        }
-        Expr::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } => {
-            if let SurfaceExpression::Call {
-                func: sf,
-                args: sa,
-                named_args: sna,
-                ..
-            } = &new_node.expr
-            {
-                collect_type_annotations_from_expr(func, sf, table);
-                for (old_a, new_a) in args.iter().zip(sa.iter()) {
-                    collect_type_annotations_from_expr(old_a, new_a, table);
-                }
-                for (old_na, new_na) in named_args.iter().zip(sna.iter()) {
-                    collect_type_annotations_from_expr(
-                        &old_na.node.value,
-                        &new_na.node.value,
-                        table,
-                    );
-                }
-            }
-        }
-        Expr::Fn { body, .. } => {
-            if let SurfaceExpression::Fn { body: sb, .. } = &new_node.expr {
-                collect_type_annotations_from_expr(body, sb, table);
-            }
-        }
-        Expr::Sequential(exprs) => {
-            if let SurfaceExpression::Sequential(surface_exprs) = &new_node.expr {
-                for (old_e, new_e) in exprs.iter().zip(surface_exprs.iter()) {
-                    collect_type_annotations_from_expr(old_e, new_e, table);
-                }
-            }
-        }
-        Expr::DotAccess { expr, .. } => {
-            if let SurfaceExpression::DotAccess { expr: se, .. } = &new_node.expr {
-                collect_type_annotations_from_expr(expr, se, table);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            if let SurfaceExpression::Match {
-                scrutinee: ss,
-                arms: sa,
-            } = &new_node.expr
-            {
-                collect_type_annotations_from_expr(scrutinee, ss, table);
-                for (old_arm, new_arm) in arms.iter().zip(sa.iter()) {
-                    if let Some(ref old_g) = old_arm.guard {
-                        if let Some(ref new_g) = new_arm.guard {
-                            collect_type_annotations_from_expr(old_g, new_g, table);
-                        }
-                    }
-                    collect_type_annotations_from_expr(&old_arm.body, &new_arm.body, table);
-                }
-            }
-        }
-        _ => {} // Literals and non-recursive forms have no TypeAssert children
     }
 }
 
@@ -1160,19 +990,6 @@ pub fn surface_program_to_file(program: &SurfaceProgram) -> Spanned<File> {
             },
         },
     )
-}
-
-/// Parse tinct source and return a `SurfaceProgram`.
-///
-/// This is a temporary bridge until the parser directly produces `SurfaceProgram`.
-/// Currently converts the parsed File to SurfaceProgram.
-#[allow(dead_code)] // Used in Part B when parser integration changes
-pub fn parse_to_surface(
-    input: &str,
-) -> Result<(SurfaceProgram, crate::parser::ParseOutput), crate::parser::ParseError> {
-    let output = crate::parser::parse(input)?;
-    let program = output.program.clone();
-    Ok((program, output))
 }
 
 #[cfg(test)]
