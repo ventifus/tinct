@@ -4,6 +4,20 @@ Completed milestones and sprints, moved from TODO.md.
 
 ## Type System
 
+### builtin-privacy-arithmetic-fd: Preserve arithmetic operator FD precision through prelude wrapping
+
+**Problem:** When `+`/`-`/`*`/`/` come from prelude wrappers (`[fn@Number [let a@Number b@Number] [builtin-add a b]]`), they have a TypeScheme of `Fn Number [Number Number]`. CALL-MONO infers `Number` for `[+ 1 2]` instead of `Int`, breaking `test_call_mono_lambda_arg_uses_check_expr` and user programs depending on `[+ Int Int] → Int` precision.
+
+**Fix:** Added name-dispatch special cases in `src/typecheck.rs` before the general call path. For `+`/`-`/`*`/`builtin-add`/`builtin-sub`/`builtin-mul`, `check_arithmetic` infers actual arg types and refines the return type: `Int op Int → Int`, `Float op _ → Float`, `Number op Number → Number`. For `/`/`builtin-div`, `check_div` always returns `Float` (IEEE division). Both functions mirror the existing `check_open`/`check_slurp` pattern.
+
+- [x] Implemented `check_arithmetic` (shared by `+`/`-`/`*` and `builtin-*` aliases) in `src/typecheck.rs`
+- [x] Implemented `check_div` (always `Float`) for `/`/`builtin-div` in `src/typecheck.rs`
+- [x] Added `NumericKind` enum and `normalize_numeric` helper for `IntLiteral → Int` promotion
+- [x] Wired dispatch in `Expr::Call` for `+`/`-`/`*`/`/` and `builtin-{add,sub,mul,div}` aliases
+- [x] Added 10 tests (`test_arithmetic_*`) verifying Int+Int→Int, Float promotion, div→Float, Number fallback, and the original prelude precision bug
+- [x] `test_call_mono_lambda_arg_uses_check_expr` passes (the original blocker)
+- [x] `just fmt && just build && just test-lib` all pass
+
 ### indexable-map-fd: Fix Map/Seq FD improvement via lookup_mptc
 
 **Problem:** After `indexable-typeclass` sprint, `[builtin-get "key" map]` where `map : Map[Str Int]` returned `Unknown` instead of `Int`. 

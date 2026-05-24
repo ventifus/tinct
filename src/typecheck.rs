@@ -2944,6 +2944,51 @@ fn infer_expr(
                     let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
                     return check_tls_layer(args, env, expr.span, state, type_map);
                 }
+
+                // Special case: `+` / `builtin-add` refines return type when both args are known.
+                //
+                // The prelude wrapper `[fn@Number [let a@Number b@Number] [builtin-add a b]]`
+                // gives `+` a TypeScheme of `Fn Number [Number Number]`, so CALL-MONO always
+                // returns `Number`. This special case inspects actual arg types:
+                // - Int + Int → Int
+                // - Float (or Int + Float) → Float
+                // - Number + Number → Number (unchanged)
+                // - Unknown/TypeVar → Number (gradual fallback)
+                if (name == "+" || name == "builtin-add")
+                    && named_args.is_empty()
+                    && args.len() == 2
+                {
+                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_arithmetic(args, env, expr.span, state, type_map);
+                }
+
+                // Special case: `-` / `builtin-sub` — same refinement as `+`.
+                if (name == "-" || name == "builtin-sub")
+                    && named_args.is_empty()
+                    && args.len() == 2
+                {
+                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_arithmetic(args, env, expr.span, state, type_map);
+                }
+
+                // Special case: `*` / `builtin-mul` — same refinement as `+`.
+                if (name == "*" || name == "builtin-mul")
+                    && named_args.is_empty()
+                    && args.len() == 2
+                {
+                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_arithmetic(args, env, expr.span, state, type_map);
+                }
+
+                // Special case: `/` / `builtin-div` — always returns Float in IEEE arithmetic.
+                // Int / Int = Float (unlike + / - / * which preserve Int).
+                if (name == "/" || name == "builtin-div")
+                    && named_args.is_empty()
+                    && args.len() == 2
+                {
+                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_div(args, env, expr.span, state, type_map);
+                }
             }
 
             // Special case: do-infer sentinel — inferred [do] form monad resolution.
@@ -4814,6 +4859,124 @@ fn check_tls_layer(
             // (This should ideally be a type error, but we're being conservative)
             Ok(Type::Handle(Box::new(Type::Unknown)))
         }
+    }
+}
+
+/// Type check binary arithmetic (`+`, `-`, `*`, `builtin-add`, `builtin-sub`, `builtin-mul`).
+///
+/// The prelude wrapper gives these operators a scheme of `Fn Number [Number Number]`, so
+/// CALL-MONO always returns `Number`. This function inspects the actual argument types after
+/// substitution and refines the return type:
+///
+/// - `Int op Int` → `Int`
+/// - `Float op _` or `_ op Float` → `Float`
+/// - `Number op Number` → `Number` (no further precision)
+/// - `Unknown`, `TypeVar`, or other → `Number` (gradual fallback)
+///
+/// Division is handled separately by `check_div` because IEEE arithmetic always produces
+/// `Float` regardless of operand types.
+fn check_arithmetic(
+    args: &[Rc<Spanned<Expr>>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    // Arity guard (dispatch already checked, but be defensive)
+    if args.len() != 2 {
+        return Err(vec![TypeError::new(
+            format!(
+                "arity mismatch: arithmetic operator requires exactly 2 arguments, got {}",
+                args.len()
+            ),
+            span,
+        )]);
+    }
+
+    // Infer both argument types and apply substitution
+    let arg0_ty = infer_expr(&args[0], env, state, type_map)?;
+    let arg0_ty = state.subst.apply(&arg0_ty);
+
+    let arg1_ty = infer_expr(&args[1], env, state, type_map)?;
+    let arg1_ty = state.subst.apply(&arg1_ty);
+
+    // Numeric literal types promote: IntLiteral ≡ Int, StringLiteral is not numeric
+    let arg0_num = normalize_numeric(&arg0_ty);
+    let arg1_num = normalize_numeric(&arg1_ty);
+
+    let result = match (arg0_num, arg1_num) {
+        // Both Int (or IntLiteral) → Int
+        (NumericKind::Int, NumericKind::Int) => Type::Int,
+        // Either Float → Float
+        (NumericKind::Float, _) | (_, NumericKind::Float) => Type::Float,
+        // Both Number (or one Number, one Int) → Number
+        (NumericKind::Number, NumericKind::Int)
+        | (NumericKind::Int, NumericKind::Number)
+        | (NumericKind::Number, NumericKind::Number) => Type::Number,
+        // Unknown / TypeVar / other → Number (gradual fallback, not Unknown)
+        _ => Type::Number,
+    };
+
+    Ok(result)
+}
+
+/// Type check `/` / `builtin-div` — division always returns `Float` in IEEE arithmetic.
+///
+/// Unlike `+`, `-`, `*` where `Int op Int → Int`, division of two integers yields a
+/// float in LLT (e.g., `[/ 7 2]` is `3.5`, not `3`). So the return type is always
+/// at least `Float`; we never refine to `Int`.
+///
+/// - `Int / Int` → `Float` (integer division yields fractional result)
+/// - `Float / _` or `_ / Float` → `Float`
+/// - `Number / Number` → `Float`
+/// - Unknown / TypeVar / other → `Float` (gradual fallback)
+fn check_div(
+    args: &[Rc<Spanned<Expr>>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    // Arity guard
+    if args.len() != 2 {
+        return Err(vec![TypeError::new(
+            format!(
+                "arity mismatch: `/` requires exactly 2 arguments, got {}",
+                args.len()
+            ),
+            span,
+        )]);
+    }
+
+    // Infer args to propagate constraints (we don't use the types for refinement)
+    infer_expr(&args[0], env, state, type_map)?;
+    infer_expr(&args[1], env, state, type_map)?;
+
+    // Division always produces Float
+    Ok(Type::Float)
+}
+
+/// Numeric kind used for arithmetic return-type refinement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumericKind {
+    Int,
+    Float,
+    Number,
+    Other,
+}
+
+/// Normalize a type to its `NumericKind` for arithmetic refinement.
+///
+/// - `Int` and `IntLiteral(_)` → `Int`
+/// - `Float` → `Float`
+/// - `Number` → `Number`
+/// - Anything else (Unknown, TypeVar, Str, …) → `Other`
+fn normalize_numeric(ty: &Type) -> NumericKind {
+    match ty {
+        Type::Int | Type::IntLiteral(_) => NumericKind::Int,
+        Type::Float => NumericKind::Float,
+        Type::Number => NumericKind::Number,
+        _ => NumericKind::Other,
     }
 }
 
@@ -15781,5 +15944,111 @@ mod tests {
             result1, tc1, result2, tc2, result3, tc3, result4, tc4
         );
         eprintln!("{}", out);
+    }
+
+    // -- check_arithmetic / check_div: arithmetic return-type refinement --
+
+    /// Helper: type-check a single-document with `TypeEnv::with_builtins()` and return
+    /// the type of the named field. Panics if the field is absent or parsing fails.
+    fn infer_with_builtins(input: &str, field: &str) -> Type {
+        let env = doc_env_with_builtins(input);
+        env.get(field)
+            .unwrap_or_else(|| panic!("field '{field}' not found in env"))
+            .body
+            .clone()
+    }
+
+    #[test]
+    fn test_arithmetic_add_int_int_returns_int() {
+        // [+ 1 2]: both args are IntLiteral → refined to Int (not Number)
+        // Uses TypeEnv::with_builtins() which has `+` with Addable FD.
+        let ty = infer_with_builtins("[x: [+ 1 2]]", "x");
+        assert!(
+            matches!(ty, Type::Int | Type::IntLiteral(_)),
+            "[+ 1 2] should infer Int (not Number), got {ty}"
+        );
+    }
+
+    #[test]
+    fn test_arithmetic_add_float_int_returns_float() {
+        // [+ 1.0 2]: one Float arg → Float
+        let ty = infer_with_builtins("[x: [+ 1.0 2]]", "x");
+        assert_eq!(ty, Type::Float, "[+ 1.0 2] should infer Float, got {ty}");
+    }
+
+    #[test]
+    fn test_arithmetic_add_int_float_returns_float() {
+        // [+ 1 2.0]: other arg is Float → Float
+        let ty = infer_with_builtins("[x: [+ 1 2.0]]", "x");
+        assert_eq!(ty, Type::Float, "[+ 1 2.0] should infer Float, got {ty}");
+    }
+
+    #[test]
+    fn test_arithmetic_sub_int_int_returns_int() {
+        // [- 10 3]: both Int → Int
+        let ty = infer_with_builtins("[x: [- 10 3]]", "x");
+        assert!(
+            matches!(ty, Type::Int | Type::IntLiteral(_)),
+            "[- 10 3] should infer Int (not Number), got {ty}"
+        );
+    }
+
+    #[test]
+    fn test_arithmetic_mul_int_int_returns_int() {
+        // [* 3 4]: both Int → Int
+        let ty = infer_with_builtins("[x: [* 3 4]]", "x");
+        assert!(
+            matches!(ty, Type::Int | Type::IntLiteral(_)),
+            "[* 3 4] should infer Int (not Number), got {ty}"
+        );
+    }
+
+    #[test]
+    fn test_arithmetic_div_int_int_returns_float() {
+        // [/ 7 2]: division always yields Float (IEEE semantics)
+        let ty = infer_with_builtins("[x: [/ 7 2]]", "x");
+        assert_eq!(ty, Type::Float, "[/ 7 2] should infer Float, got {ty}");
+    }
+
+    #[test]
+    fn test_arithmetic_div_float_int_returns_float() {
+        // [/ 1.0 2]: Float dividend → Float
+        let ty = infer_with_builtins("[x: [/ 1.0 2]]", "x");
+        assert_eq!(ty, Type::Float, "[/ 1.0 2] should infer Float, got {ty}");
+    }
+
+    #[test]
+    fn test_arithmetic_builtin_add_alias_refines() {
+        // [builtin-add 1 2] via the stable alias should also refine to Int
+        let ty = infer_with_builtins("[x: [builtin-add 1 2]]", "x");
+        assert!(
+            matches!(ty, Type::Int | Type::IntLiteral(_)),
+            "[builtin-add 1 2] should infer Int, got {ty}"
+        );
+    }
+
+    #[test]
+    fn test_arithmetic_add_number_number_stays_number() {
+        // [+ n m] where both are annotated Number → Number (no further refinement possible)
+        let ty = infer_with_builtins(
+            "[f: [fn [let n@Number m@Number] [+ n m]]]\n[x: [f 1 2]]",
+            "x",
+        );
+        assert!(
+            matches!(ty, Type::Number | Type::Int | Type::IntLiteral(_)),
+            "[+ n m] with Number params should infer Number or more precise, got {ty}"
+        );
+    }
+
+    #[test]
+    fn test_arithmetic_add_int_int_through_prelude_refinement() {
+        // The original motivating case: the prelude wrapper gives `+` a scheme of
+        // `Fn Number [Number Number]`, causing CALL-MONO to return Number instead of Int.
+        // check_arithmetic intercepts the name-dispatch for `+`/`builtin-add` and refines to Int.
+        let ty = infer_with_builtins("[result: [+ 1 2]]", "result");
+        assert!(
+            matches!(ty, Type::Int | Type::IntLiteral(_)),
+            "[+ 1 2] should refine to Int via check_arithmetic, got {ty}"
+        );
     }
 }

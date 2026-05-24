@@ -651,8 +651,8 @@ Options (choose one):
 
 Option 1 is preferred — it keeps type precision purely in the type checker where it belongs, without coupling `merge_env_bindings_into` to specific operator names.
 
-- [ ] Implement `check_add`/`check_sub`/`check_mul`/`check_div` special forms in `src/typecheck.rs` that refine return type to `Int` when both args are `Int` (or `Float` when either is `Float`). Mirror the `check_open` pattern at `src/typecheck.rs:4278-4350`.
-- [ ] Verify `test_call_mono_lambda_arg_uses_check_expr` passes with this fix applied.
+- [x] Implement `check_add`/`check_sub`/`check_mul`/`check_div` special forms in `src/typecheck.rs` that refine return type to `Int` when both args are `Int` (or `Float` when either is `Float`). Mirror the `check_open` pattern at `src/typecheck.rs:4278-4350`.
+- [x] Verify `test_call_mono_lambda_arg_uses_check_expr` passes with this fix applied.
 - [ ] Retry Phase 2 change (`TypeEnv::new()`) — should now land cleanly.
 
 #### Phase 3 (migrate + lint)
