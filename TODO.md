@@ -608,6 +608,29 @@ Health Review #22 (integration-fixes ✅, clippy-cap-std-lints ✅) and Codebase
 - [ ] Corpus test for handle capability mismatch — `handle_capability_mismatch.llt-eval` deleted (parser doesn't support `Handle[Type]` in @annotation position); tracked in test-coverage-cycle311
 - [ ] Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
+### open-api-migration: Migrate open() from string mode to capability flag types
+
+**Accepted design (2026-05-07 decision, mempalace `tinct/decisions`):** The string mode argument `"r"/"w"/"a"` is replaced by nominal capability flag types as positional arguments. `[open cap path]` with NO flags = type error (explicit intent required).
+
+**New API:**
+```
+[open cap path Readable]               # was: [open cap path "r"]
+[open cap path Writable]               # was: [open cap path "w"]
+[open cap path Writable Appendable]    # was: [open cap path "a"]
+[open cap path Binary Readable]        # binary read
+[open cap path Readable Writable]      # read+write
+[open cap path Writable Exclusive]     # fail if exists
+```
+
+**Motivation:** Capability flags are already registered as type-level symbols (Readable, Writable, etc.). Using them as positional args instead of opaque strings allows the type checker to parameterize the return Handle type from the call arguments. `"r"` → `Handle[Readable]`, `"w"` → `Handle[Writable]`, etc.
+
+**Tasks:**
+- [ ] Update `builtin_open` in `src/builtins_io.rs` — parse positional args after path as capability flag types (Readable, Writable, Appendable, Binary, Exclusive, Sync, NoFollow) instead of string mode (`"r"/"w"/"a"`). `[open cap path]` with no flags after path → arity error. (`src/builtins_io.rs:183-330`)
+- [ ] Update type signature in `src/type_env.rs` — `open` return type is `Handle(cap_row)` where `cap_row` is synthesized from the flag arguments actually present in the call
+- [ ] Update all corpus tests and examples using `[open ... "r"]` / `[open ... "w"]` / `[open ... "a"]` to use capability flag syntax
+- [ ] Update `doc/feature/io.md:604`, `doc/11a-builtins.md:367-369`, `doc/12-tooling.md:630` to reflect new syntax
+- [ ] `just build` passes; `just test` passes
+
 ### io-cap-std-gaps: Add symlink, copy-file, set-permissions, stat-symlink, exists builtins
 
 Five operations cap-std's `Dir` supports that tinct does not yet expose.
