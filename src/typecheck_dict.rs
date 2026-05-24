@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::{infer_expr, resolve_annotation, resolve_type_expr, TypeMap};
-use crate::ast::{Entry, Expr, Span, Spanned};
+use crate::ast::{Entry, Expr, Span, Spanned, SurfaceEntry};
 use crate::types::{
     generalize_with_doc, unify, InferState, Row, Substitution, Type, TypeAlias, TypeEnv, TypeError,
     TypeScheme,
@@ -773,6 +773,41 @@ pub(crate) fn infer_dict(
     } else {
         Err(errors)
     }
+}
+
+/// Surface entry point for dict type inference.
+///
+/// Converts each [`SurfaceEntry`] to a [`Spanned<Entry>`] via
+/// [`crate::ast_convert::surface_node_to_expr`] and delegates to [`infer_dict`].
+/// This is a thin wrapper — all inference logic lives in `infer_dict`.
+///
+/// Callers that have a `SurfaceExpression::Dict` should use this instead of
+/// converting the entire dict to `Expr::Dict` before calling `infer_dict`.
+#[allow(dead_code)]
+pub(crate) fn infer_surface_dict(
+    entries: &[Spanned<SurfaceEntry>],
+    env: &Rc<TypeEnv>,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+    span: Span,
+) -> Result<(Type, HashMap<String, TypeScheme>), Vec<TypeError>> {
+    // Convert each SurfaceEntry to the Expr-based Entry expected by infer_dict.
+    let expr_entries: Vec<Spanned<Entry>> = entries
+        .iter()
+        .map(|spanned_entry| {
+            let key = spanned_entry
+                .node
+                .key
+                .as_ref()
+                .map(crate::ast_convert::surface_node_to_expr);
+            let value = Rc::new(crate::ast_convert::surface_node_to_expr(
+                &spanned_entry.node.value,
+            ));
+            Spanned::new(Entry { key, value }, spanned_entry.span)
+        })
+        .collect();
+
+    infer_dict(&expr_entries, env, state, type_map, span)
 }
 
 pub(crate) fn entry_key_name(

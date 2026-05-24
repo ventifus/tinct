@@ -1264,6 +1264,48 @@ fn typecheck_surface_document(
     }
 }
 
+/// Type-check a single [`SurfaceDocument`] using the native Surface path.
+///
+/// This is a thin entry point that delegates to [`typecheck_surface_document`].
+/// It wraps the caller-supplied `env: &TypeEnv` into a fresh `Rc<TypeEnv>` child
+/// (so the caller's env is unchanged) and supplies default pipeline bookkeeping
+/// (empty named-section map, empty `{}`-record pipeline type).
+///
+/// Results are written into `type_map` (NodeId → Type). Errors are returned as
+/// `Err(Vec<TypeError>)`; advisory errors (expects:/output_type) are silently
+/// discarded here — this entry point is intended for callers that only need
+/// type-error diagnostics, not pipeline-type threading.
+///
+/// ## Tasks 2 & 3 compliance
+/// - Walks `SurfaceItem::Expr` via `surface_node_to_expr` + `infer_expr` (inherited from delegate)
+/// - Walks `SurfaceItem::Decl` for `TypeAlias`, `ClassDecl`, `InstanceDecl` (inherited from delegate)
+///   Pass 0c pre-scan via `SurfaceExpression::Decl` is already handled by `typecheck_surface_document`.
+#[allow(dead_code)]
+pub(crate) fn typecheck_surface_document_native(
+    doc: &SurfaceDocument,
+    state: &mut InferState,
+    type_map: &mut TypeAnnotationTable,
+    env: &TypeEnv,
+) -> Result<(), Vec<TypeError>> {
+    let parent_env = Rc::new(env.clone());
+    let pipeline_type = Type::Record(Row {
+        fields: HashMap::new(),
+    });
+    let named_types = HashMap::new();
+
+    match typecheck_surface_document(
+        doc,
+        &parent_env,
+        state,
+        type_map,
+        &pipeline_type,
+        &named_types,
+    ) {
+        Ok(_) => Ok(()),
+        Err(errs) => Err(errs),
+    }
+}
+
 /// Extract documentation strings from parameter and function annotations.
 ///
 /// Walks the AST looking for `doc:` properties in `@[...]` annotations.

@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::{check_expr, contains_unknown_or_top, infer_expr, TypeMap};
-use crate::ast::{Annotation, Entry, Expr, Span, Spanned};
+use crate::ast::{Annotation, Entry, Expr, Span, Spanned, SurfaceNode};
 use crate::types::{Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
 
 /// Find the closest match to `target` in `candidates` using Levenshtein distance.
@@ -3462,4 +3462,25 @@ fn try_resolve_fn_type_expr(
         ret: Box::new(ret),
         variadic: false,
     }))
+}
+
+/// Surface entry point for type annotation resolution.
+///
+/// Converts the [`SurfaceNode`] to a [`Spanned<Expr>`] via
+/// [`crate::ast_convert::surface_node_to_expr`] and delegates to
+/// [`resolve_type_expr`]. This is a thin wrapper for callers that hold a
+/// Surface-native type expression (e.g., inside a `SurfaceExpression::TypeAssert`
+/// or a dict-entry annotation) and do not want to pre-convert to `Expr`.
+///
+/// `ann_mapping` and `row_ann_mapping` work identically to `resolve_type_expr`.
+#[allow(dead_code)]
+pub(crate) fn resolve_surface_annotation(
+    node: &Arc<SurfaceNode>,
+    env: &TypeEnv,
+    state: &mut InferState,
+    ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
+) -> Result<Type, TypeError> {
+    let expr = crate::ast_convert::surface_node_to_expr(node);
+    resolve_type_expr(&expr, env, state, ann_mapping, row_ann_mapping)
 }
