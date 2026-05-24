@@ -238,17 +238,23 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // Type errors are advisory; evaluation proceeds regardless.
     // Use the surface-based path: typecheck_surface_program_with_env bridges to the
     // File-based path internally via surface_program_to_file, eliminating the manual
-    // surface_program_to_file step here.
-    let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state, _final_env) =
-        typecheck::typecheck_surface_program_with_env(
-            &program,
-            crate::imports::build_prelude_env(),
-            false, // disable scheme_map (not needed for eval)
-            false, // not in prelude load
-        );
-    // Also get the TypeAnnotationTable for use in eval (enables static type resolution in TypeAssert nodes).
-    let (_annotation_errors, type_annotation_table) =
-        typecheck::typecheck_surface_program_annotation_table(&program);
+    // surface_program_to_file step here. The TypeAnnotationTable is now populated
+    // directly by typecheck_surface_program_with_env — no second typecheck call needed.
+    let (
+        _type_errors,
+        _type_map,
+        _doc_map,
+        _scheme_map,
+        _diagnostics,
+        infer_state,
+        _final_env,
+        type_annotation_table,
+    ) = typecheck::typecheck_surface_program_with_env(
+        &program,
+        crate::imports::build_prelude_env(),
+        false, // disable scheme_map (not needed for eval)
+        false, // not in prelude load
+    );
     let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
     // Use create_stdlib_env_with_arena so the eval context shares the stdlib's ThunkArena.
@@ -388,17 +394,23 @@ pub fn eval_source_with_cap_net(
     };
     // Use the surface-based path: typecheck_surface_program_with_env bridges to the
     // File-based path internally via surface_program_to_file, eliminating the manual
-    // surface_program_to_file step here.
-    let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, infer_state, _final_env) =
-        typecheck::typecheck_surface_program_with_env(
-            &program,
-            crate::imports::build_prelude_env(),
-            false, // disable scheme_map (not needed for eval)
-            false, // not in prelude load
-        );
-    // Also get the TypeAnnotationTable for use in eval (enables static type resolution in TypeAssert nodes).
-    let (_annotation_errors, type_annotation_table) =
-        typecheck::typecheck_surface_program_annotation_table(&program);
+    // surface_program_to_file step here. The TypeAnnotationTable is now populated
+    // directly by typecheck_surface_program_with_env — no second typecheck call needed.
+    let (
+        _type_errors,
+        _type_map,
+        _doc_map,
+        _scheme_map,
+        _diagnostics,
+        infer_state,
+        _final_env,
+        type_annotation_table,
+    ) = typecheck::typecheck_surface_program_with_env(
+        &program,
+        crate::imports::build_prelude_env(),
+        false, // disable scheme_map (not needed for eval)
+        false, // not in prelude load
+    );
     let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
     let (env, stdlib_arena) =

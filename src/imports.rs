@@ -117,8 +117,16 @@ fn typecheck_and_merge_stdlib_module(
     //
     // typecheck_surface_program_with_env bridges to the File-based path internally via
     // surface_program_to_file, so no manual conversion is needed here.
-    let (_type_errors, _type_map, _doc_map, _scheme_map, _diagnostics, state, final_env) =
-        typecheck_surface_program_with_env(&program, Rc::clone(parent_env), false, true);
+    let (
+        _type_errors,
+        _type_map,
+        _doc_map,
+        _scheme_map,
+        _diagnostics,
+        state,
+        final_env,
+        _annotation_table, // not needed for stdlib module type merging
+    ) = typecheck_surface_program_with_env(&program, Rc::clone(parent_env), false, true);
 
     // Merge the generalized schemes from the final env into the output env.
     //

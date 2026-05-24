@@ -2028,7 +2028,7 @@ impl TypeEnv {
         // use Handle(Unknown) with an inline justification at the call site.
         // See doc/05-type-annotations.md §20 for the capability type specification.
         //
-        // `open` is SPECIAL-CASED in the type checker (typecheck.rs `infer_open_return_type`):
+        // `open` is SPECIAL-CASED in the type checker (typecheck.rs `check_open`):
         // when flag arguments are statically known VarRefs (e.g., Readable, Writable, Binary),
         // the type checker synthesizes a precise Handle(cap_row) return type. This static return
         // type is the fallback used only when flag argument names cannot be determined at
@@ -2045,9 +2045,17 @@ impl TypeEnv {
         env.insert(
             "open".to_string(),
             Type::Function {
-                params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Top)],
+                params: vec![
+                    (None, Type::DirCap),
+                    (None, Type::Str),
+                    // Variadic flag params: each flag is a Top-typed value (any value accepted).
+                    // In practice only Readable/Writable/Appendable/Binary/Text/Seekable variants
+                    // are meaningful; the type checker special-case (check_open in typecheck.rs)
+                    // overrides this with a precise Handle(cap_row) when flags are literal VarRef names.
+                    (None, Type::Seq(Box::new(Type::Top))),
+                ],
                 // Fallback: Handle(Unknown) for cases where flag names are not statically known.
-                // The type checker special-case (infer_open_return_type) overrides this with a
+                // The type checker special-case (check_open) overrides this with a
                 // precise Handle(cap_row) when flags are literal VarRef names like Readable/Writable.
                 ret: Box::new(Type::Handle(Box::new(Type::Unknown))),
                 variadic: true,

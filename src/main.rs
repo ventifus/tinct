@@ -1872,6 +1872,7 @@ fn run_eval(
             type_diagnostics,
             infer_state,
             _final_env,
+            type_annotation_table_from_env,
         ) = tinct::typecheck::typecheck_surface_program_with_env(
             &program, type_env, false, // disable scheme_map (not needed for eval)
             false, // not in prelude load
@@ -1941,10 +1942,9 @@ fn run_eval(
         eval_ctx.set_boundary_guards(infer_state.boundary_guards);
         eval_ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
 
-        // Get TypeAnnotationTable from typecheck for static type resolution in TypeAssert nodes.
-        let (_annotation_errors, type_annotation_table) =
-            tinct::typecheck::typecheck_surface_program_annotation_table(&program);
-        let type_annotation_table = std::sync::Arc::new(type_annotation_table);
+        // TypeAnnotationTable was populated directly by typecheck_surface_program_with_env
+        // above — no second typecheck call needed.
+        let type_annotation_table = std::sync::Arc::new(type_annotation_table_from_env);
         let file_result = tinct::async_rt::block_on(tinct::eval_surface_file_with_input(
             &program,
             Arc::clone(&env),

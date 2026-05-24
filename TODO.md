@@ -564,8 +564,8 @@ Discovered via `samples/versions.llt` rewrite (2026-05-23). Writing `[@[Handle R
 
 - [ ] Find the double-write in `src/typecheck_annot.rs` or `src/typecheck.rs` — specifically the TypeAssert elaboration for parameterized Handle types like `Handle[Readable]`; add guard to prevent double-write or fix the root cause (`src/typecheck.rs`, `src/typecheck_annot.rs`)
 - [ ] Verify `[@[Handle Readable] [open %pwd "file.txt" Readable]]` type-checks cleanly after fix
-- [ ] `open` builtin TypeEnv signature is stale: runtime now accepts Variant flags (`Readable`, `Writable`) not String modes (`"r"`, `"w"`), but the type checker still says mode is `String`. This causes T003 when passing `Readable`. Update `open` TypeEnv signature. (`src/type_env.rs`) [Major]
-- [ ] `open` return type should be parameterized: `Readable` → `Handle[Readable]`, `Writable` → `Handle[Writable]` — once TypeEnv is updated
+- [x] `open` builtin TypeEnv signature is stale: runtime now accepts Variant flags (`Readable`, `Writable`) not String modes (`"r"`, `"w"`), but the type checker still says mode is `String`. This causes T003 when passing `Readable`. Update `open` TypeEnv signature. (`src/type_env.rs`) [Major]
+- [x] `open` return type should be parameterized: `Readable` → `Handle[Readable]`, `Writable` → `Handle[Writable]` — implemented via `check_open` special case in `src/typecheck.rs` that synthesizes `Handle(cap_row)` from statically-known flag VarRefs
 
 ### typecheck-typeassert-no-narrowing: `[@String expr]` TypeAssert doesn't narrow inferred type at call sites
 
