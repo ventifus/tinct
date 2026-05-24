@@ -1645,8 +1645,43 @@ fn eval_core_expr<'a>(
                             let guard_thunk = eval_core_expr(guard_expr, &arm_env, ctx).await?;
                             let guard_value =
                                 materialize(&guard_thunk, Some(&guard_expr.span), ctx).await?;
-                            // Guard is not Bool(true) — skip this arm and try the next one.
-                            if !matches!(guard_value, Value::Bool(true)) {
+
+                            // PM1: If the guard evaluated to a callable (predicate function),
+                            // invoke it with the scrutinee value and use the result as the guard.
+                            // This handles `[is: positive?]` style guards where the `is:` value
+                            // is a function reference rather than an inline boolean expression.
+                            let guard_value = match guard_value {
+                                Value::Function { .. } | Value::Builtin(_) => {
+                                    // Wrap the predicate function as a materialized thunk.
+                                    let pred_thunk = Arc::new(Thunk::new_materialized(
+                                        guard_value,
+                                        guard_expr.span,
+                                    ));
+                                    // Create a PendingCall: pred(scrutinee_value)
+                                    let call_thunk = Arc::new(Thunk::new_pending_call(
+                                        pred_thunk,
+                                        vec![Arc::clone(&scrutinee_thunk)],
+                                        IndexMap::new(),
+                                        guard_expr.span,
+                                        Arc::clone(env),
+                                        guard_expr.span,
+                                        None,
+                                        Arc::clone(ctx),
+                                    ));
+                                    // Force the call to get the predicate result.
+                                    materialize(&call_thunk, Some(&guard_expr.span), ctx).await?
+                                }
+                                other => other,
+                            };
+
+                            // Guard is falsy — skip this arm and try the next one.
+                            // Bool(false) and empty Dict (null []) are falsy; everything else is truthy.
+                            let is_truthy = match &guard_value {
+                                Value::Bool(b) => *b,
+                                Value::Dict(map) => !map.is_empty(),
+                                _ => true,
+                            };
+                            if !is_truthy {
                                 continue;
                             }
                         }
@@ -2881,6 +2916,30 @@ fn match_pattern<'a>(
                         }
 
                         Ok(Some(result_env))
+                    }
+                    Value::Overlay(l_id, r_id) => {
+                        // PM2: Overlay (e.g., from $merge) has type_name() == "Dict" and must
+                        // be matchable by Pattern::Dict. Flatten to a concrete map first, then
+                        // re-run the Dict matching logic on the flattened result.
+                        let flat_map = crate::builtins::flatten_overlay(
+                            l_id,
+                            r_id,
+                            "dict pattern match",
+                            ctx,
+                            *value_span,
+                        )?;
+                        // Re-use the Value::Dict matching path by recursing with the flattened value.
+                        match_pattern(
+                            &Pattern::Dict {
+                                fields: fields.clone(),
+                                rest: *rest,
+                            },
+                            &Value::Dict(flat_map),
+                            env,
+                            value_span,
+                            ctx,
+                        )
+                        .await
                     }
                     _ => {
                         // Value is not a dict

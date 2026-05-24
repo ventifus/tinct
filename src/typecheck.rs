@@ -2888,7 +2888,7 @@ fn infer_expr(
             // Without one of these types, the match is dynamically correct but
             // statically unverified (consistent with Karachalias et al. 2015).
             let sig = match &scrutinee_ty {
-                Type::Union(members) => Some(coverage::ConstructorSignature::from_union(members)),
+                Type::Union(members) => coverage::ConstructorSignature::from_union(members),
                 Type::NominalVariant { tag, fields } => Some(
                     coverage::ConstructorSignature::from_nominal_variant(tag, fields),
                 ),

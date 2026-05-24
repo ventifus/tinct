@@ -109,7 +109,7 @@ impl fmt::Display for CoveragePattern {
                             // Multi-field dict — display fields
                             write!(f, "[")?;
                             for (i, (field, sub)) in
-                                key.split(',').zip(sub_patterns.iter()).enumerate()
+                                key.split('\x00').zip(sub_patterns.iter()).enumerate()
                             {
                                 if i > 0 {
                                     write!(f, " ")?;
@@ -167,8 +167,13 @@ pub struct ConstructorSignature {
 
 impl ConstructorSignature {
     /// Build a constructor signature from a `Type::Union`.
-    pub fn from_union(members: &[Type]) -> Self {
+    ///
+    /// Returns `None` if any union member is a type that cannot be represented
+    /// as a finite constructor set (e.g., `Function`, `Unknown`, `TypeVar`, `Top`).
+    /// Callers should treat `None` as "skip coverage checking" — not as exhaustive.
+    pub fn from_union(members: &[Type]) -> Option<Self> {
         let mut constructors = Vec::new();
+        let mut skipped_any = false;
         for member in members {
             match member {
                 Type::Record(row) => {
@@ -188,15 +193,27 @@ impl ConstructorSignature {
                             .iter()
                             .map(|k| k.as_str())
                             .collect::<Vec<_>>()
-                            .join(",");
+                            .join("\x00");
                         constructors.push((ConstructorTag::DictKey(combined), row.fields.len()));
                     }
                 }
                 Type::Int => constructors.push((ConstructorTag::TypeTag("Int".into()), 0)),
                 Type::Float => constructors.push((ConstructorTag::TypeTag("Float".into()), 0)),
                 Type::Str => constructors.push((ConstructorTag::TypeTag("String".into()), 0)),
-                Type::Bool => constructors.push((ConstructorTag::TypeTag("Bool".into()), 0)),
-                Type::Number => constructors.push((ConstructorTag::TypeTag("Number".into()), 0)),
+                Type::Bool => {
+                    // Bool expands to two literal constructors — matches LiteralBool patterns.
+                    // TypeTag("Bool") would never match LiteralBool(true/false) patterns.
+                    constructors.push((ConstructorTag::LiteralBool(true), 0));
+                    constructors.push((ConstructorTag::LiteralBool(false), 0));
+                }
+                Type::Number => {
+                    // Number is not a constructor — it is a supertype of Int and Float.
+                    // Expand to the two concrete constructors so they match TypeTag("Int")
+                    // and TypeTag("Float") patterns (including the Number Or-pattern expansion
+                    // in ast_pattern_to_coverage).
+                    constructors.push((ConstructorTag::TypeTag("Int".into()), 0));
+                    constructors.push((ConstructorTag::TypeTag("Float".into()), 0));
+                }
                 Type::Seq(_) => constructors.push((ConstructorTag::TypeTag("Seq".into()), 0)),
                 Type::StringLiteral(s) => {
                     constructors.push((ConstructorTag::LiteralStr(s.clone()), 0));
@@ -210,25 +227,38 @@ impl ConstructorSignature {
                     // nominal variants use the declared variant name as the constructor (Variant tag)
                     // because they are nominally typed — [IntLit value: 42] is not a subtype of
                     // {value: Int}, it is a distinct nominal variant.
-                    // Arity = number of fields in the payload.
-                    constructors.push((ConstructorTag::Variant(tag.clone()), fields.fields.len()));
+                    // Arity is 0 for unit variants (no payload) or 1 for payload variants.
+                    // The pattern side (ast_pattern_to_coverage) produces at most one
+                    // sub_pattern (the binding), so arity must agree: using fields.len()
+                    // would produce width mismatches when wildcard rows are expanded.
+                    let arity = if fields.fields.is_empty() { 0 } else { 1 };
+                    constructors.push((ConstructorTag::Variant(tag.clone()), arity));
                 }
                 _ => {
-                    // Unknown type variant in union — skip (conservative: don't claim exhaustiveness)
+                    // Type has no finite constructor set (Function, Handle, Unknown, TypeVar,
+                    // Top, Error, Intersection, etc.) — cannot verify exhaustiveness statically.
+                    skipped_any = true;
                 }
             }
         }
-        ConstructorSignature { constructors }
+        if skipped_any {
+            // At least one member was unrepresentable. Returning a partial signature
+            // would cause false exhaustiveness: the algorithm would think all
+            // constructors are covered when some are invisible to it.
+            None
+        } else {
+            Some(ConstructorSignature { constructors })
+        }
     }
 
     /// Create a signature from a bare NominalVariant (not wrapped in Union).
     /// Extracts a single constructor from the NominalVariant's tag and fields.
     /// Used when coverage checking a match on a bare variant type.
     pub fn from_nominal_variant(tag: &str, fields: &crate::type_def::Row) -> Self {
-        let constructors = vec![(
-            ConstructorTag::Variant(tag.to_string()),
-            fields.fields.len(),
-        )];
+        // Arity matches the pattern side: 0 for unit variants, 1 for payload variants.
+        // (ast_pattern_to_coverage produces at most 1 sub_pattern — the binding.)
+        let arity = if fields.fields.is_empty() { 0 } else { 1 };
+        let constructors = vec![(ConstructorTag::Variant(tag.to_string()), arity)];
         ConstructorSignature { constructors }
     }
 
@@ -326,7 +356,7 @@ pub fn ast_pattern_to_coverage(pat: &ast::Pattern) -> CoveragePattern {
                     .iter()
                     .map(|(k, _)| k.as_str())
                     .collect::<Vec<_>>()
-                    .join(",");
+                    .join("\x00");
                 let sub_pats: Vec<CoveragePattern> = sorted_fields
                     .iter()
                     .map(|(_, p)| ast_pattern_to_coverage(&p.node))
@@ -1292,7 +1322,8 @@ mod tests {
                 fields: [("err".to_string(), Type::Str)].into_iter().collect(),
             }),
         ];
-        let sig = ConstructorSignature::from_union(&union_members);
+        let sig = ConstructorSignature::from_union(&union_members)
+            .expect("all members are representable");
         assert_eq!(sig.constructors.len(), 2);
         let tags = sig.tags();
         assert!(tags.contains(&ConstructorTag::DictKey("ok".to_string())));
@@ -1302,7 +1333,8 @@ mod tests {
     #[test]
     fn test_sig_from_union_primitive_types() {
         let union_members = vec![Type::Int, Type::Str];
-        let sig = ConstructorSignature::from_union(&union_members);
+        let sig = ConstructorSignature::from_union(&union_members)
+            .expect("all members are representable");
         assert_eq!(sig.constructors.len(), 2);
         let tags = sig.tags();
         assert!(tags.contains(&ConstructorTag::TypeTag("Int".to_string())));
@@ -1315,8 +1347,71 @@ mod tests {
             Type::StringLiteral("ok".to_string()),
             Type::StringLiteral("err".to_string()),
         ];
-        let sig = ConstructorSignature::from_union(&union_members);
+        let sig = ConstructorSignature::from_union(&union_members)
+            .expect("all members are representable");
         assert_eq!(sig.constructors.len(), 2);
+    }
+
+    #[test]
+    fn test_sig_from_union_with_unrepresentable_type_returns_none() {
+        // Function types cannot be expressed as a finite constructor set.
+        // from_union must return None rather than a partial (unsound) signature.
+        let union_members = vec![
+            Type::Int,
+            Type::Function {
+                params: vec![],
+                ret: Box::new(Type::Int),
+                variadic: false,
+            },
+        ];
+        let sig = ConstructorSignature::from_union(&union_members);
+        assert!(
+            sig.is_none(),
+            "union containing Function must return None — cannot verify exhaustiveness"
+        );
+    }
+
+    #[test]
+    fn test_sig_from_union_bool_expands_to_literal_bool() {
+        // Type::Bool must expand to LiteralBool(true) and LiteralBool(false),
+        // not TypeTag("Bool"), so it matches LiteralBool patterns.
+        let union_members = vec![Type::Bool];
+        let sig = ConstructorSignature::from_union(&union_members).expect("Bool is representable");
+        let tags = sig.tags();
+        assert!(
+            tags.contains(&ConstructorTag::LiteralBool(true)),
+            "Bool must produce LiteralBool(true)"
+        );
+        assert!(
+            tags.contains(&ConstructorTag::LiteralBool(false)),
+            "Bool must produce LiteralBool(false)"
+        );
+        assert!(
+            !tags.contains(&ConstructorTag::TypeTag("Bool".to_string())),
+            "Bool must NOT produce TypeTag(\"Bool\") — patterns use LiteralBool"
+        );
+    }
+
+    #[test]
+    fn test_sig_from_union_number_expands_to_int_and_float() {
+        // Type::Number must expand to TypeTag("Int") and TypeTag("Float"),
+        // not TypeTag("Number"), so it matches Number or-pattern expansion.
+        let union_members = vec![Type::Number];
+        let sig =
+            ConstructorSignature::from_union(&union_members).expect("Number is representable");
+        let tags = sig.tags();
+        assert!(
+            tags.contains(&ConstructorTag::TypeTag("Int".to_string())),
+            "Number must produce TypeTag(\"Int\")"
+        );
+        assert!(
+            tags.contains(&ConstructorTag::TypeTag("Float".to_string())),
+            "Number must produce TypeTag(\"Float\")"
+        );
+        assert!(
+            !tags.contains(&ConstructorTag::TypeTag("Number".to_string())),
+            "Number must NOT produce TypeTag(\"Number\") — no such constructor"
+        );
     }
 
     // ===== Witness formatting tests =====
