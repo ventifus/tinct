@@ -156,7 +156,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] `surface_program_to_file` / `expr_to_surface_node` in ast_convert.rs — still needed by typecheck.rs, expand.rs
 
 **Tracked separately:**
-- [ ] (grammar-doc-polish) `ClassDecl.superclasses` silently dropped in `surface_decl_to_thunk_id` — `Vec<(String, String)>` not yet in schema. Design decision: add `superclasses: List` key or omit permanently. Sprint: grammar-doc-polish.
+- [ ] NEEDS_DESIGN: (grammar-doc-polish) `ClassDecl.superclasses` silently dropped in `surface_decl_to_thunk_id` — `Vec<(String, String)>` not yet in schema. Design decision: add `superclasses: List` key or omit permanently. Requires `/rnd` design session before sprint. Sprint: grammar-doc-polish.
 
 ### rv2-migrate-repl: Migrate REPL to Surface eval path (small, independent)
 
@@ -688,7 +688,7 @@ Root cause: the include/typecheck pipeline uses the same TypeEnv for included st
 - [ ] `just versions` passes after fix
 
 **Also:**
-- [ ] Migrate net.llt to use `builtin-*` stable aliases (defense in depth — makes net.llt work even if included in user context before the above fix)
+- [x] Migrate net.llt to use `builtin-*` stable aliases (defense in depth — makes net.llt work even if included in user context before the above fix)
 
 ### annotation-propertydict-migration: Complete Annotation::PropertyDict SurfaceEntry migration
 
@@ -713,16 +713,16 @@ Follow-up from builtin-privacy Phase 3. Three issues discovered when making `sam
 - [x] `@NetCap` / `@DirCap` / `@Handle` in user code fail with T002 "undefined type" after Phase 2 changed user TypeEnv to start from `TypeEnv::new()`. Fix: propagate type aliases from `builtins_env` into the user-facing env at end of `build_prelude_env_inner()` → `src/imports.rs`, `src/type_env.rs`
 
 **Audit remaining missing wrappers:**
-- [ ] Run `tinct lint --strict` on all samples/ files to find any remaining raw builtin references
-- [ ] Run `tinct lint --strict` on any user-facing example scripts to verify full coverage
-- [ ] Update `doc/11a-builtins.md` to document `builtin-trim`, `builtin-emit`, `builtin-env`
-- [ ] Update builtin count in `standard_builtins_contains_all` test (was 284, now +3)
+- [x] Run `tinct lint --strict` on all samples/ files to find any remaining raw builtin references — only T010 span bug fires (pre-existing); T002/T003 clean
+- [x] Run `tinct lint --strict` on any user-facing example scripts to verify full coverage — samples/basic.llt clean (T002/T003 only; T010 is span bug)
+- [x] Update `doc/11a-builtins.md` to document `builtin-trim`, `builtin-emit`, `builtin-env`
+- [x] Update builtin count in `standard_builtins_contains_all` test (was 284, now +3 = 301; already correct)
 
 **Also update `just lint-file` test for all samples:**
 - [ ] `just lint-file samples/versions.llt` — currently fails due to T010 at 0:0 (scan_type_quality span bug); T002/T003 are clean
-- [ ] `just lint-file samples/basic.llt` — verify not regressed
+- [x] `just lint-file samples/basic.llt` — verified: T002/T003 clean; T010 is pre-existing span bug (not a regression)
 - [ ] `just versions` — currently fails E099 (blocked on `include-libdir-stdlib-typecheck` above)
-- [ ] Update `standard_builtins_contains_all` test count (+3: builtin-trim, builtin-emit, builtin-env)
+- [x] Update `standard_builtins_contains_all` test count (+3: builtin-trim, builtin-emit, builtin-env) — already 301 ✓
 
 ---
 

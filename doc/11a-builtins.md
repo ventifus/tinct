@@ -1001,6 +1001,9 @@ The `builtin-*` aliases provide access to the raw Rust implementations by stable
 | `builtin-decimal` | `decimal` | Stable name for raw decimal conversion |
 | `builtin-big-int` | `big-int` | Stable name for raw big integer conversion |
 | `builtin-proxy` | `proxy` | Stable name for raw proxy construction |
+| `builtin-trim` | `trim` | Stable name for raw string whitespace trimming |
+| `builtin-emit` | `emit` | Stable name for raw stdout emit |
+| `builtin-env` | `env` | Stable name for raw environment variable lookup |
 
 These exist so that prelude wrappers (e.g., `>` implemented via `<` and `not`) call through to the underlying Rust primitive even when the public name is shadowed by user code. When a user writes `<: [fn [a b] ...]`, prelude's `>` still calls `builtin-lt` (unchanged).
 
