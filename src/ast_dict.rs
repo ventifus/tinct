@@ -13,7 +13,7 @@ use indexmap::IndexMap;
 use crate::arena::ThunkId;
 use crate::ast::{
     Annotation, Document, DotKey, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned,
-    Stage,
+    Stage, SurfaceEntry, SurfaceExpression, SurfaceNamedArg, SurfaceNode, SurfaceParam,
 };
 use crate::error::EvalResult;
 use crate::value::{string_val, Key, Thunk, Value};
@@ -116,30 +116,623 @@ pub fn ast_to_dict_expr(
 }
 
 // ============================================================================
-// Surface AST Bridge Functions
+// Surface AST Functions (Phase 2 — native SurfaceExpression path)
 // ============================================================================
 //
-// These bridge functions convert between SurfaceNode/SurfaceProgram and the
-// dict representation via the old Expr type. This is a TRANSITIONAL approach
-// to enable the runtime-v2 migration without rewriting the entire 1500-line
-// ast_dict.rs implementation.
+// `surface_node_to_dict` now delegates directly to `surface_node_to_thunk_id`,
+// which walks `SurfaceExpression` natively for all variants.
 //
-// The bridge uses ast_convert.rs's surface_node_to_expr() and
-// expr_to_surface_node() to convert at the boundary.
+// `surface_program_to_dict` still bridges through `ast_convert` (File-based).
+// `dict_to_surface_node` / `dict_to_surface_program` still bridge through the
+// old Expr-based `dict_to_ast` path.
 //
-// These functions will be deleted when ast_dict.rs is rewritten to work
-// directly with Surface types (Part E).
+// Remaining bridge functions will be removed in Phase 3 (Steps 4-9 of the
+// migration plan in doc/whatif/plans/ast-dict-surface-migration-notes.md).
 
 /// Convert a SurfaceNode to a dict representation.
 ///
-/// Bridges through the old Expr type — will be replaced when ast_dict is fully rewritten.
+/// Phase 2 native path: walks `SurfaceExpression` directly without going through
+/// `ast_convert`. All `SurfaceExpression` variants are handled natively.
 pub fn surface_node_to_dict(
-    node: &Arc<crate::ast::SurfaceNode>,
+    node: &Arc<SurfaceNode>,
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
-    let expr = crate::ast_convert::surface_node_to_expr(node);
-    ast_to_dict_expr(&expr, opts, ctx)
+    surface_node_to_dict_inner(node, opts, ctx)
+}
+
+/// Walk a SurfaceNode natively, producing the same dict schema as `expr_to_thunk_id`.
+///
+/// Handles all `SurfaceExpression` variants (Group A from the migration notes) directly,
+/// without going through `ast_convert`. Group B variants (`SurfaceDeclaration`) are not
+/// `SurfaceExpression` variants and are handled separately via `surface_decl_to_thunk_id`
+/// (Phase 3, Step 3 of the migration plan).
+fn surface_node_to_dict_inner(
+    node: &Arc<SurfaceNode>,
+    opts: &AstToDictOpts,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
+    let id = surface_node_to_thunk_id(node, opts, ctx)?;
+    Ok(ctx.thunk_arena.lock().unwrap().get(id).clone())
+}
+
+/// Convert a SurfaceNode to a ThunkId containing its dict representation.
+///
+/// This is the surface-native equivalent of `expr_to_thunk_id`. Handles all
+/// `SurfaceExpression` variants. Schema (Variant tags, key names) is identical to the
+/// old Expr-based emitter — existing tinct metaprogramming code sees no change.
+fn surface_node_to_thunk_id(
+    node: &Arc<SurfaceNode>,
+    opts: &AstToDictOpts,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<ThunkId> {
+    let expr = &node.expr;
+    let span = node.span;
+
+    let capacity = match expr {
+        SurfaceExpression::Int(_) | SurfaceExpression::Float(_) | SurfaceExpression::Bool(_) => 2,
+        SurfaceExpression::Str(_) => 3,
+        SurfaceExpression::VarRef { .. } => 1,
+        SurfaceExpression::DotAccess { .. } => 2,
+        SurfaceExpression::Pipe { .. } => 2,
+        SurfaceExpression::Sequential(_) => 1,
+        SurfaceExpression::Dict(_) => 1,
+        SurfaceExpression::Call { .. } => 4,
+        SurfaceExpression::Fn { .. } => 4,
+        SurfaceExpression::TypeAssert { .. } => 2,
+        SurfaceExpression::Annotated { .. } => 2,
+        SurfaceExpression::Rest(_) => 1,
+        SurfaceExpression::Quote(_)
+        | SurfaceExpression::Unquote(_)
+        | SurfaceExpression::UnquoteSplice(_) => 1,
+        SurfaceExpression::Match { .. } => 2,
+        SurfaceExpression::PatternDecl { .. } | SurfaceExpression::LetDecl { .. } => 1,
+        SurfaceExpression::CaseArm { .. } => 2,
+        SurfaceExpression::Placeholder => 0,
+        SurfaceExpression::TypeApp { .. } => 2,
+        SurfaceExpression::Error(_) => 1,
+    };
+
+    let mut dict = IndexMap::with_capacity(capacity);
+    let variant_tag: &str;
+
+    match expr {
+        SurfaceExpression::Int(n) => {
+            variant_tag = "Literal";
+            dict.insert(
+                Key::String("kind".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("int"), span))),
+            );
+            dict.insert(
+                Key::String("value".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(*n), span))),
+            );
+        }
+
+        SurfaceExpression::Float(f) => {
+            variant_tag = "Literal";
+            dict.insert(
+                Key::String("kind".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("float"), span))),
+            );
+            dict.insert(
+                Key::String("value".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Float(*f), span))),
+            );
+        }
+
+        SurfaceExpression::Bool(b) => {
+            variant_tag = "Literal";
+            dict.insert(
+                Key::String("kind".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("bool"), span))),
+            );
+            dict.insert(
+                Key::String("value".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Bool(*b), span))),
+            );
+        }
+
+        SurfaceExpression::Str(s) => {
+            variant_tag = "Literal";
+            dict.insert(
+                Key::String("kind".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("str"), span))),
+            );
+            dict.insert(
+                Key::String("value".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(s), span))),
+            );
+            let bare = opts
+                .source
+                .map(|src| {
+                    let offset = span.start.offset;
+                    src.as_bytes()
+                        .get(offset)
+                        .map(|&b| b != b'"')
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            dict.insert(
+                Key::String("bare".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Bool(bare), span))),
+            );
+        }
+
+        SurfaceExpression::VarRef { name, .. } => {
+            variant_tag = "VarRef";
+            dict.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+            );
+        }
+
+        SurfaceExpression::DotAccess { expr: target, field } => {
+            variant_tag = "DotAccess";
+            dict.insert(
+                Key::String("target".into()),
+                surface_node_to_thunk_id(target, opts, ctx)?,
+            );
+            match field {
+                DotKey::Ident(s) => {
+                    dict.insert(
+                        Key::String("field".into()),
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(s), span))),
+                    );
+                }
+                DotKey::Int(n) => {
+                    dict.insert(
+                        Key::String("field".into()),
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(*n), span))),
+                    );
+                }
+            }
+        }
+
+        SurfaceExpression::Pipe { lhs, rhs } => {
+            variant_tag = "Pipe";
+            dict.insert(
+                Key::String("lhs".into()),
+                surface_node_to_thunk_id(lhs, opts, ctx)?,
+            );
+            dict.insert(
+                Key::String("rhs".into()),
+                surface_node_to_thunk_id(rhs, opts, ctx)?,
+            );
+        }
+
+        SurfaceExpression::Sequential(exprs) => {
+            variant_tag = "Sequential";
+            let expr_ids: Vec<_> = exprs
+                .iter()
+                .map(|e| surface_node_to_thunk_id(e, opts, ctx))
+                .collect::<EvalResult<Vec<_>>>()?;
+            dict.insert(
+                Key::String("exprs".into()),
+                list_to_thunk_id(expr_ids.into_iter(), span, ctx)?,
+            );
+        }
+
+        SurfaceExpression::Dict(entries) => {
+            variant_tag = "Dict";
+            let entry_ids: Vec<_> = entries
+                .iter()
+                .map(|e| surface_entry_to_thunk_id(&e.node, e.span, opts, ctx))
+                .collect::<EvalResult<Vec<_>>>()?;
+            dict.insert(
+                Key::String("entries".into()),
+                list_to_thunk_id(entry_ids.into_iter(), span, ctx)?,
+            );
+        }
+
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            implied,
+        } => {
+            variant_tag = "Call";
+            dict.insert(
+                Key::String("fn".into()),
+                surface_node_to_thunk_id(func, opts, ctx)?,
+            );
+            let arg_ids: Vec<_> = args
+                .iter()
+                .map(|a| surface_node_to_thunk_id(a, opts, ctx))
+                .collect::<EvalResult<Vec<_>>>()?;
+            dict.insert(
+                Key::String("args".into()),
+                list_to_thunk_id(arg_ids.into_iter(), span, ctx)?,
+            );
+            let named_arg_ids: Vec<_> = named_args
+                .iter()
+                .map(|na| surface_named_arg_to_thunk_id(&na.node, na.span, opts, ctx))
+                .collect::<EvalResult<Vec<_>>>()?;
+            dict.insert(
+                Key::String("named-args".into()),
+                list_to_thunk_id(named_arg_ids.into_iter(), span, ctx)?,
+            );
+            dict.insert(
+                Key::String("implied".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Bool(*implied),
+                    span,
+                ))),
+            );
+        }
+
+        SurfaceExpression::Fn {
+            return_ann,
+            params,
+            body,
+            desugared,
+        } => {
+            variant_tag = "Fn";
+            let param_ids: Vec<_> = params
+                .iter()
+                .map(|p| surface_param_to_thunk_id(&p.node, span, ctx))
+                .collect::<EvalResult<Vec<_>>>()?;
+            dict.insert(
+                Key::String("params".into()),
+                list_to_thunk_id(param_ids.into_iter(), span, ctx)?,
+            );
+            dict.insert(
+                Key::String("return-ann".into()),
+                match return_ann {
+                    Some(a) => annotation_to_thunk_id(&a.node, span, ctx)?,
+                    None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Dict(IndexMap::new()),
+                        span,
+                    ))),
+                },
+            );
+            dict.insert(
+                Key::String("body".into()),
+                surface_node_to_thunk_id(body, opts, ctx)?,
+            );
+            dict.insert(
+                Key::String("desugared".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Bool(*desugared),
+                    span,
+                ))),
+            );
+        }
+
+        SurfaceExpression::TypeAssert { annotation, expr: inner } => {
+            variant_tag = "TypeAssert";
+            dict.insert(
+                Key::String("annotation".into()),
+                annotation_to_thunk_id(&annotation.node, span, ctx)?,
+            );
+            dict.insert(
+                Key::String("expr".into()),
+                surface_node_to_thunk_id(inner, opts, ctx)?,
+            );
+        }
+
+        SurfaceExpression::Annotated { name, annotation } => {
+            variant_tag = "Annotated";
+            dict.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+            );
+            dict.insert(
+                Key::String("annotation".into()),
+                annotation_to_thunk_id(&annotation.node, span, ctx)?,
+            );
+        }
+
+        SurfaceExpression::Rest(name_opt) => {
+            variant_tag = "Rest";
+            dict.insert(
+                Key::String("name".into()),
+                match name_opt {
+                    Some(s) => {
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(s), span)))
+                    }
+                    None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Dict(IndexMap::new()),
+                        span,
+                    ))),
+                },
+            );
+        }
+
+        SurfaceExpression::Quote(inner) => {
+            variant_tag = "Quote";
+            dict.insert(
+                Key::String("expr".into()),
+                surface_node_to_thunk_id(inner, opts, ctx)?,
+            );
+        }
+
+        SurfaceExpression::Unquote(inner) => {
+            variant_tag = "Unquote";
+            dict.insert(
+                Key::String("expr".into()),
+                surface_node_to_thunk_id(inner, opts, ctx)?,
+            );
+        }
+
+        SurfaceExpression::UnquoteSplice(inner) => {
+            variant_tag = "UnquoteSplice";
+            dict.insert(
+                Key::String("expr".into()),
+                surface_node_to_thunk_id(inner, opts, ctx)?,
+            );
+        }
+
+        SurfaceExpression::Match { scrutinee, arms } => {
+            variant_tag = "Match";
+            dict.insert(
+                Key::String("scrutinee".into()),
+                surface_node_to_thunk_id(scrutinee, opts, ctx)?,
+            );
+            let arms_thunks: Vec<ThunkId> = arms
+                .iter()
+                .map(|arm| {
+                    let mut arm_dict = IndexMap::new();
+                    arm_dict.insert(
+                        Key::String("pattern".into()),
+                        pattern_to_thunk_id(&arm.pattern.node, arm.pattern.span, ctx)?,
+                    );
+                    if let Some(guard) = &arm.guard {
+                        arm_dict.insert(
+                            Key::String("guard".into()),
+                            surface_node_to_thunk_id(guard, opts, ctx)?,
+                        );
+                    }
+                    arm_dict.insert(
+                        Key::String("body".into()),
+                        surface_node_to_thunk_id(&arm.body, opts, ctx)?,
+                    );
+                    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Dict(arm_dict),
+                        arm.pattern.span,
+                    ))))
+                })
+                .collect::<EvalResult<Vec<_>>>()?;
+            let arms_dict: IndexMap<Key, ThunkId> = arms_thunks
+                .into_iter()
+                .enumerate()
+                .map(|(i, id)| (Key::Int(i as i64), id))
+                .collect();
+            dict.insert(
+                Key::String("arms".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(arms_dict),
+                    span,
+                ))),
+            );
+        }
+
+        SurfaceExpression::PatternDecl { bindings } => {
+            variant_tag = "PatternDecl";
+            let bindings_dict: IndexMap<Key, ThunkId> = bindings
+                .iter()
+                .enumerate()
+                .map(|(i, b)| {
+                    Ok((
+                        Key::Int(i as i64),
+                        surface_node_to_thunk_id(b, opts, ctx)?,
+                    ))
+                })
+                .collect::<EvalResult<IndexMap<_, _>>>()?;
+            dict.insert(
+                Key::String("bindings".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(bindings_dict),
+                    span,
+                ))),
+            );
+        }
+
+        SurfaceExpression::LetDecl { bindings } => {
+            variant_tag = "LetDecl";
+            let bindings_dict: IndexMap<Key, ThunkId> = bindings
+                .iter()
+                .enumerate()
+                .map(|(i, b)| {
+                    Ok((
+                        Key::Int(i as i64),
+                        surface_node_to_thunk_id(b, opts, ctx)?,
+                    ))
+                })
+                .collect::<EvalResult<IndexMap<_, _>>>()?;
+            dict.insert(
+                Key::String("bindings".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(bindings_dict),
+                    span,
+                ))),
+            );
+        }
+
+        SurfaceExpression::CaseArm { pattern, body } => {
+            variant_tag = "CaseArm";
+            dict.insert(
+                Key::String("pattern".into()),
+                surface_node_to_thunk_id(pattern, opts, ctx)?,
+            );
+            dict.insert(
+                Key::String("body".into()),
+                surface_node_to_thunk_id(body, opts, ctx)?,
+            );
+        }
+
+        SurfaceExpression::Placeholder => {
+            variant_tag = "Placeholder";
+        }
+
+        SurfaceExpression::TypeApp { func, arg } => {
+            variant_tag = "TypeApp";
+            dict.insert(
+                Key::String("func".into()),
+                surface_node_to_thunk_id(func, opts, ctx)?,
+            );
+            dict.insert(
+                Key::String("arg".into()),
+                surface_node_to_thunk_id(arg, opts, ctx)?,
+            );
+        }
+
+        SurfaceExpression::Error(error_span) => {
+            variant_tag = "AstError";
+            dict.insert(
+                Key::String("span".into()),
+                span_to_thunk_id(*error_span, ctx)?,
+            );
+            let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Dict(dict),
+                *error_span,
+            )));
+            return Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Variant {
+                    tag: variant_tag.to_string(),
+                    payload: Some(payload_id),
+                },
+                *error_span,
+            ))));
+        }
+    }
+
+    dict.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
+    let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span)));
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::Variant {
+            tag: variant_tag.to_string(),
+            payload: Some(payload_id),
+        },
+        span,
+    ))))
+}
+
+/// Surface-native equivalent of `entry_to_thunk_id`. Uses `SurfaceEntry` instead of `Entry`.
+fn surface_entry_to_thunk_id(
+    entry: &SurfaceEntry,
+    entry_span: Span,
+    opts: &AstToDictOpts,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<ThunkId> {
+    let span = entry.value.span;
+    let mut dict = IndexMap::new();
+
+    dict.insert(
+        Key::String("type".into()),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("entry"), span))),
+    );
+
+    dict.insert(
+        Key::String("key".into()),
+        match &entry.key {
+            Some(k) => surface_node_to_thunk_id(k, opts, ctx)?,
+            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                span,
+            ))),
+        },
+    );
+
+    dict.insert(
+        Key::String("value".into()),
+        surface_node_to_thunk_id(&entry.value, opts, ctx)?,
+    );
+
+    let blank_before = opts
+        .comments
+        .as_ref()
+        .and_then(|maps| maps.blank_before.get(&entry_span.start.offset))
+        .copied()
+        .unwrap_or(false);
+    dict.insert(
+        Key::String("blank-before".into()),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Bool(blank_before),
+            span,
+        ))),
+    );
+
+    if let Some(comment_maps) = &opts.comments {
+        if let Some(comments) = comment_maps.leading_comments.get(&entry_span.start.offset) {
+            if !comments.is_empty() {
+                let comment_ids: Vec<ThunkId> = comments
+                    .iter()
+                    .map(|c| {
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(c), span)))
+                    })
+                    .collect();
+                dict.insert(
+                    Key::String("leading-comments".into()),
+                    list_to_thunk_id(comment_ids.into_iter(), span, ctx)?,
+                );
+            }
+        }
+        if let Some(comment) = comment_maps.trailing_comments.get(&entry_span.start.offset) {
+            dict.insert(
+                Key::String("trailing-comment".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(comment), span))),
+            );
+        }
+    }
+
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+}
+
+/// Surface-native equivalent of `named_arg_to_thunk_id`. Uses `SurfaceNamedArg`.
+fn surface_named_arg_to_thunk_id(
+    named_arg: &SurfaceNamedArg,
+    span: Span,
+    opts: &AstToDictOpts,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<ThunkId> {
+    let mut dict = IndexMap::new();
+    dict.insert(
+        Key::String("name".into()),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            string_val(&named_arg.name),
+            span,
+        ))),
+    );
+    dict.insert(
+        Key::String("value".into()),
+        surface_node_to_thunk_id(&named_arg.value, opts, ctx)?,
+    );
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+}
+
+/// Surface-native equivalent of `param_to_thunk_id`. Uses `SurfaceParam`.
+fn surface_param_to_thunk_id(
+    param: &SurfaceParam,
+    span: Span,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<ThunkId> {
+    let mut dict = IndexMap::new();
+    dict.insert(
+        Key::String("name".into()),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            string_val(&param.name),
+            span,
+        ))),
+    );
+    dict.insert(
+        Key::String("annotation".into()),
+        match &param.annotation {
+            Some(a) => annotation_to_thunk_id(&a.node, span, ctx)?,
+            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                span,
+            ))),
+        },
+    );
+    dict.insert(
+        Key::String("variadic".into()),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Bool(param.variadic),
+            span,
+        ))),
+    );
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
 
 /// Convert a SurfaceProgram to a dict representation.
