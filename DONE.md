@@ -9186,3 +9186,7 @@ Decision: remove `%pwd` entirely, replace with `%cwd` = the process CWD (where t
 
 - [x] Injected `%rust` into include environment for all stdlib includes (prior sprint).
 - [x] Removed all `[include %rust "..."]` from 5 stdlib files: net.llt (3 lines), io.llt (1), datetime.llt (1), encoding.llt (3), math.llt (1). All builtins are globally available via `standard_builtins()`. `[include %rust ...]` is now prelude-only bootstrap.
+
+### fix-doc06-predicate-names: Fix `has_type_vars` predicate name in doc/06-type-inference.md
+
+- [x] Replaced all 7 occurrences of `has_type_vars` with `has_inference_vars` in doc/06-type-inference.md (lines 140, 156, 160, 166, 185, 196, 380). Code uses `has_inference_vars()` which also covers `Type::Operator(_)`.

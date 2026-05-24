@@ -1299,10 +1299,3 @@ Two findings from prior reviews — both verified **FIXED** (2026-05-23):
 
 ## Codebase Health Audit Findings (Cycle #216, 2026-05-23)
 
-### fix-doc06-predicate-names: Fix `has_type_vars` predicate name in doc/06-type-inference.md
-
-**Sources:** grammar-architect, computer-scientist, integration-verifier (Cycle #221 fix-later)
-
-The formal rules in `doc/06-type-inference.md` use `has_type_vars(...)` as the predicate discriminator for CALL-MONO vs CALL-POLY (lines 140, 156, 160, 166, 185, 196, 380). The actual code guard (`src/typecheck.rs:5459`) uses `has_inference_vars()`, which is a strict superset also covering `Type::Operator(_)` variables. The predicate name is stale at 7 locations.
-
-- [ ] Replace all 7 occurrences of `has_type_vars` with `has_inference_vars` in `doc/06-type-inference.md` (lines 140, 156, 160, 166, 185, 196, 380). [Minor]

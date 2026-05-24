@@ -137,7 +137,7 @@ For each param pᵢ:
     else: σᵢ = fresh TypeVar at current level
 Γ' = Γ, p₁:σ₁, ..., pₙ:σₙ
 If return annotation @σᵣ given:
-    if has_type_vars(σᵣ):
+    if has_inference_vars(σᵣ):
         Γ' ⊢ body ⇒ τ_body                           [synthesis mode]
         unify(τ_body, σᵣ, S)                          [unification mode]
     else:
@@ -153,17 +153,17 @@ Else:
 
 ```text
 Γ ⊢ [fn@σᵣ [p₁@τ₁ ... pₙ@τₙ] body] ⇐ Fn(σ₁...σₙ → σ_exp)
-    where ¬has_type_vars(Fn(σ₁...σₙ → σ_exp))       (expected type fully concrete)
+    where ¬has_inference_vars(Fn(σ₁...σₙ → σ_exp))       (expected type fully concrete)
 For each param pᵢ:
     if variadic: β fresh; use Seq(β)
     else if annotated pᵢ@τᵢ:
-        if has_type_vars(τᵢ): unify(σᵢ, τᵢ, S)       (annotation with TypeVars)
+        if has_inference_vars(τᵢ): unify(σᵢ, τᵢ, S)       (annotation with TypeVars)
         else: check σᵢ <: τᵢ                         (contravariant check)
         use τᵢ
     else: use σᵢ                                     (propagate expected type)
 Γ' = Γ, p₁:τ₁, ..., pₙ:τₙ
 If return annotation @σᵣ given:
-    if has_type_vars(σᵣ): unify(σᵣ, σ_exp, S)       (annotation with TypeVars)
+    if has_inference_vars(σᵣ): unify(σᵣ, σ_exp, S)       (annotation with TypeVars)
     else: check σᵣ <: σ_exp                          (covariant check)
     Γ' ⊢ body ⇐ σᵣ
 Else:
@@ -182,7 +182,7 @@ When a return annotation is present, the dispatch depends on whether σᵣ conta
 Three rules depending on the function type. Arity is always checked.
 
 ```text
-Γ ⊢ f ⇒ Fn(σ₁...σₙ → σᵣ),  has_type_vars(Fn(...)) = false
+Γ ⊢ f ⇒ Fn(σ₁...σₙ → σᵣ),  has_inference_vars(Fn(...)) = false
 Γ ⊢ aᵢ ⇐ σᵢ                 for lambda args i      [CHECK-FN / checking mode]
 Γ ⊢ aⱼ ⇒ τⱼ,  τⱼ ≤ σⱼ       for non-lambda args j  [infer + subsume]
 |args| = |params|
@@ -193,7 +193,7 @@ Three rules depending on the function type. Arity is always checked.
 Monomorphic path with a per-argument mode split. Lambda arguments are **checked** via `check_expr` (⇐ mode), which propagates the expected parameter type into the lambda body and enables bidirectional lambda checking mode ([CHECK-FN]). Non-lambda arguments are **synthesized** via `infer_expr` (⇒ mode), producing an inferred type τⱼ, which is then subsumed against σⱼ inline: the check passes when `τⱼ ≤ σⱼ` (i.e., `is_subtype(τⱼ, σⱼ)` holds, or when Unknown/Top is involved, `is_consistent(τⱼ, σⱼ)`). This split avoids the double-inference that would occur if `check_expr` were called on an already-inferred non-lambda expression. The net effect is the same as uniform [SUB]-based checking for ground parameter types: `[add "hello"]` where `add : Fn(Int Int → Int)` produces a type error because `String ≮: Int`.
 
 ```text
-Γ ⊢ f ⇒ Fn(σ₁...σₙ → σᵣ),  has_type_vars(Fn(...)) = true
+Γ ⊢ f ⇒ Fn(σ₁...σₙ → σᵣ),  has_inference_vars(Fn(...)) = true
 Γ ⊢ aᵢ ⇒ τᵢ  for i = 1..n                          [synthesis]
 |args| = |params|
 (σ'₁...σ'ₙ → σ'ᵣ) = instantiate(σ₁...σₙ → σᵣ)
@@ -377,7 +377,7 @@ Record unification delegates entirely to row unification — see [Type System Ex
 Subsumptive fallback for concrete types (no type variables on either side):
 
 ```text
-unify(σ, τ, S) where ¬has_type_vars(σ) ∧ ¬has_type_vars(τ):
+unify(σ, τ, S) where ¬has_inference_vars(σ) ∧ ¬has_inference_vars(τ):
     if is_subtype(σ, τ) ∨ is_subtype(τ, σ): S   [U-SUBSUME]
     else: error                                  [U-FAIL]
 ```
