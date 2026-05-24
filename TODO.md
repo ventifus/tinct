@@ -144,13 +144,16 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - Note: `dict_to_surface_node` / `dict_to_surface_program` still bridge through old Expr path (reverse direction; see Phase 5)
 
 **Phase 5 — Rewrite dict_to_surface_node_inner (reverse direction):**
-- [ ] In `ast_dict.rs`, add `fn dict_to_surface_node_inner(dict: &IndexMap<Key, ThunkId>, span: Span, ctx: &EvalContext) -> Arc<SurfaceNode>` that reconstructs `Arc<SurfaceNode>` from a dict. Fix the 4 missing deserialization cases: `"Match"`, `"ClassDecl"`, `"InstanceDecl"`, `"PatternDecl"`.
-- [ ] Update `dict_to_surface_node()` to call inner function directly (remove `dict_to_ast` + `expr_to_surface_node` bridge)
-- [ ] Update `dict_to_surface_program()` similarly (add native `dict_to_surface_document_inner`)
+- [x] `dict_to_surface_node_inner`: native reconstruction for 10 common variants; unknown tags = hard EvalError (no fallback) [commit 85f82bb]
+- [x] Fixed 4 missing dict_to_ast cases: Match, ClassDecl, InstanceDecl, PatternDecl; new `dict_to_pattern` helper [commit 85f82bb]
+- [x] `dict_to_surface_node()` calls inner directly; no bridge via ast_convert [commit 85f82bb]
 
-**Phase 6 — Migrate callers + delete bridge layer:**
-- [ ] Once reverse direction is native: delete the old `ast_to_dict(file, ...)`, `ast_to_dict_expr(expr, ...)`, `dict_to_ast(...)`, `dict_to_file(...)` from `ast_dict.rs`
-- [ ] Delete `surface_program_to_file` / `file_to_surface_program` / `expr_to_surface_node` from `ast_convert.rs` once no callers remain
+**Phase 6 — Delete bridge layer:**
+- [x] Deleted `ast_to_dict(file, ...)` and `document_to_dict` — zero production callers [commit 38a7e7b]
+- [x] Unit tests rewritten to use `surface_program_to_dict` [commit 38a7e7b]
+- [ ] `ast_to_dict_expr` — still live via `annotation_to_thunk_id` PropertyDict arm (Annotation migration dependency)
+- [ ] `dict_to_ast`, `dict_to_file` — still live via `dict_to_surface_program` reverse path
+- [ ] `surface_program_to_file` / `expr_to_surface_node` in ast_convert.rs — still needed by typecheck.rs, expand.rs
 
 **Tracked separately:**
 - [ ] (grammar-doc-polish) `ClassDecl.superclasses` silently dropped in `surface_decl_to_thunk_id` — `Vec<(String, String)>` not yet in schema. Design decision: add `superclasses: List` key or omit permanently. Sprint: grammar-doc-polish.
