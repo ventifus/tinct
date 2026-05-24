@@ -183,7 +183,8 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 **Scope:** ~50 match arms in typecheck.rs + typecheck_dict.rs + typecheck_annot.rs
 
-- [ ] Survey: count all `Expr::` and `Spanned<Expr>` match arms in typecheck.rs, typecheck_dict.rs, typecheck_annot.rs
+- [x] Survey: count all `Expr::` and `Spanned<Expr>` match arms in typecheck.rs, typecheck_dict.rs, typecheck_annot.rs
+  <!-- Result: 31 Expr variants total. 24 have direct SurfaceExpression equivalents. 7 map to SurfaceExpression::Decl(SurfaceDeclaration::*): TypeAlias, ClassDecl, InstanceDecl, DefMacro, MacroDecl, Splice, SyntaxClass. No Expr variant is left without a Surface representation — all 7 "missing" ones route through SurfaceDeclaration. Arm counts (non-test code): typecheck.rs ~100+ sites, typecheck_dict.rs ~47 sites, typecheck_annot.rs ~92 sites. -->
 - [ ] Add `typecheck_surface_document_native(doc: &SurfaceDocument, state, ...)` that walks SurfaceItem::Expr and SurfaceItem::Decl natively
 - [ ] Migrate Pass 0c (pre-scan for ClassDecl, TypeAlias, InstanceDecl) to walk SurfaceDeclaration variants directly
 - [ ] Migrate Pass 1-3 dict inference in typecheck_dict.rs to walk SurfaceExpression variants
