@@ -2134,6 +2134,13 @@ narrow@[doc: "Narrow a capability to a subset of operations"]: builtin-narrow
 # I/O / parsing
 from-json@[doc: "Parse a JSON string into a value"]: builtin-from-json
 
+# String trimming
+trim@[doc: "Remove leading and trailing whitespace from a string"]: builtin-trim
+
+# I/O primitives (used directly by user code and samples)
+emit@[doc: "Emit a string to stdout without a trailing newline"]: builtin-emit
+env@[doc: "Read an environment variable by name; returns null if unset"]: builtin-env
+
 # ============================================================================
 # Numeric Range Predicates
 # ============================================================================

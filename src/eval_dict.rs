@@ -232,10 +232,15 @@ pub(crate) async fn eval_key_core(
     parent_env: &Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Key> {
-    // Fast path for literal keys
+    // Fast path for static keys — avoids thunk creation and materialization
     match &key_expr.node {
         CoreExpr::Str(s) => return Ok(Key::String(Rc::from(s.as_str()))),
         CoreExpr::Int(n) => return Ok(Key::Int(*n)),
+        // Annotated keys (e.g., `name@[doc: "..."]`) always resolve to the bare name.
+        // eval_core_expr for CoreExpr::Annotated already returns string_val(name);
+        // skipping the thunk/materialize round-trip is both faster and avoids any
+        // environment-dependent lookup that could produce a wrong result.
+        CoreExpr::Annotated { name, .. } => return Ok(Key::String(Rc::from(name.as_str()))),
         _ => {}
     }
     // General path: must materialize because IndexMap requires concrete Key values

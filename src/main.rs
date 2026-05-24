@@ -3418,7 +3418,8 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
                     for entry in entries {
                         if let Some(ref key_node) = entry.node.key {
                             if let tinct::SurfaceExpression::Str(ref key_name) = key_node.expr {
-                                let value_expr = tinct::ast_convert::surface_node_to_expr(&entry.node.value);
+                                let value_expr =
+                                    tinct::ast_convert::surface_node_to_expr(&entry.node.value);
                                 fields.insert(
                                     key_name.clone(),
                                     describe_annotation_value(&value_expr.node),

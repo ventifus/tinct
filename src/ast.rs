@@ -453,9 +453,7 @@ impl Annotation {
             Annotation::PropertyDict(entries) => entries.iter().find_map(|entry| {
                 let key_node = entry.node.key.as_ref()?;
                 match &key_node.expr {
-                    SurfaceExpression::Str(name) if name == key => {
-                        Some(&entry.node.value)
-                    }
+                    SurfaceExpression::Str(name) if name == key => Some(&entry.node.value),
                     _ => None,
                 }
             }),
@@ -1277,11 +1275,22 @@ mod tests {
     fn test_display_type_assert_with_property_dict() {
         // Annotation keys from the parser are always SurfaceExpression::Str (bare words).
         let zero_span = Span {
-            start: Position { offset: 0, line: 0, column: 0 },
-            end: Position { offset: 0, line: 0, column: 0 },
+            start: Position {
+                offset: 0,
+                line: 0,
+                column: 0,
+            },
+            end: Position {
+                offset: 0,
+                line: 0,
+                column: 0,
+            },
         };
         let mk_node = |expr: SurfaceExpression| -> Arc<SurfaceNode> {
-            Arc::new(SurfaceNode { expr, span: zero_span })
+            Arc::new(SurfaceNode {
+                expr,
+                span: zero_span,
+            })
         };
         let entries = vec![
             sp(SurfaceEntry {
@@ -1313,11 +1322,22 @@ mod tests {
     #[test]
     fn test_display_annotated_with_property_dict() {
         let zero_span = Span {
-            start: Position { offset: 0, line: 0, column: 0 },
-            end: Position { offset: 0, line: 0, column: 0 },
+            start: Position {
+                offset: 0,
+                line: 0,
+                column: 0,
+            },
+            end: Position {
+                offset: 0,
+                line: 0,
+                column: 0,
+            },
         };
         let mk_node = |expr: SurfaceExpression| -> Arc<SurfaceNode> {
-            Arc::new(SurfaceNode { expr, span: zero_span })
+            Arc::new(SurfaceNode {
+                expr,
+                span: zero_span,
+            })
         };
         let entries = vec![sp(SurfaceEntry {
             key: Some(mk_node(SurfaceExpression::VarRef {
@@ -1509,11 +1529,22 @@ mod tests {
     fn test_display_annotation_property_dict_with_entries() {
         // Annotation keys from the parser are always SurfaceExpression::Str (bare words).
         let zero_span = Span {
-            start: Position { offset: 0, line: 0, column: 0 },
-            end: Position { offset: 0, line: 0, column: 0 },
+            start: Position {
+                offset: 0,
+                line: 0,
+                column: 0,
+            },
+            end: Position {
+                offset: 0,
+                line: 0,
+                column: 0,
+            },
         };
         let mk_node = |expr: SurfaceExpression| -> Arc<SurfaceNode> {
-            Arc::new(SurfaceNode { expr, span: zero_span })
+            Arc::new(SurfaceNode {
+                expr,
+                span: zero_span,
+            })
         };
         let ann = Annotation::PropertyDict(vec![
             sp(SurfaceEntry {

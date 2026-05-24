@@ -2628,12 +2628,9 @@ fn annotation_to_thunk_id(
                     // SurfaceEntry.key is Arc<SurfaceNode>; SurfaceEntry.value is Arc<SurfaceNode>.
                     let key_id = match &e.node.key {
                         Some(k) => match &k.expr {
-                            crate::ast::SurfaceExpression::Str(s) => {
-                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                    string_val(s),
-                                    k.span,
-                                )))
-                            }
+                            crate::ast::SurfaceExpression::Str(s) => ctx.alloc_thunk(Arc::new(
+                                Thunk::new_materialized(string_val(s), k.span),
+                            )),
                             _ => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                 Value::Dict(IndexMap::new()),
                                 k.span,
@@ -2651,18 +2648,12 @@ fn annotation_to_thunk_id(
                     // or full AST dicts for compound values like [a: Numeric] or Seq@Int.
                     // TODO(rv2-migrate-annotation Phase 7): use surface_node_to_thunk_id natively.
                     let value_id = match &e.node.value.expr {
-                        crate::ast::SurfaceExpression::Str(s) => {
-                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                string_val(s),
-                                e.node.value.span,
-                            )))
-                        }
-                        crate::ast::SurfaceExpression::Int(n) => {
-                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                Value::Int(*n),
-                                e.node.value.span,
-                            )))
-                        }
+                        crate::ast::SurfaceExpression::Str(s) => ctx.alloc_thunk(Arc::new(
+                            Thunk::new_materialized(string_val(s), e.node.value.span),
+                        )),
+                        crate::ast::SurfaceExpression::Int(n) => ctx.alloc_thunk(Arc::new(
+                            Thunk::new_materialized(Value::Int(*n), e.node.value.span),
+                        )),
                         _ => ctx.alloc_thunk(surface_node_to_dict(
                             &e.node.value,
                             &AstToDictOpts::default(),
