@@ -208,6 +208,12 @@ pub(crate) fn builtin_reduce_dict_step(
 /// Helper for reduce on Seq: processes head/tail chain.
 ///
 /// Args: (f, acc, seq)
+///
+/// NOTE: `args[2]` (the seq) may be a lazy thunk — the tail of a Seq is a ThunkId that
+/// may not have been evaluated yet. We must `materialize` it rather than using
+/// `try_get_materialized` (which panics if the thunk is not yet in Materialized state).
+/// Failing to materialize caused hangs and panics when the formatter script used `reduce`
+/// on AST sequences containing lazily-constructed tails (e.g., from `[do result ...]` forms).
 pub(crate) fn builtin_reduce_seq_step(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -221,9 +227,10 @@ pub(crate) fn builtin_reduce_seq_step(
 
         let f_thunk = Arc::clone(&args[0]);
         let acc_thunk = Arc::clone(&args[1]);
-        let seq_val = args[2]
-            .try_get_materialized()
-            .expect("seq should be materialized");
+        // Materialize the seq thunk before dispatching: the tail of a Seq is a ThunkId
+        // in the arena that may be Unevaluated. `try_get_materialized` would panic on
+        // an unevaluated tail; `materialize` forces evaluation and memoizes the result.
+        let seq_val = materialize(&args[2], None, &ctx).await?;
 
         match seq_val {
             Value::Dict(_) => {

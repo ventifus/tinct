@@ -5225,7 +5225,7 @@ pub(crate) fn builtin_quic_open_datagram(
 /// - `base_url`: String — `scheme://host[:port]` origin (e.g. `"https://api.example.com"`)
 /// - `opts`: Dict — future options (currently unused; pass `[]`)
 ///
-/// Returns an `Http2Session` wrapping a `reqwest::blocking::Client` configured
+/// Returns an `Http2Session` wrapping a `reqwest::Client` (async) configured
 /// to prefer HTTP/2 via ALPN for HTTPS connections. The client reuses the
 /// underlying connection pool across multiple `http-request` calls.
 pub(crate) fn builtin_http2_session(
@@ -5286,10 +5286,17 @@ pub(crate) fn builtin_http2_session(
 
         check_net_cap_allowlist(&entries, &host, port, call_span)?;
 
-        // Build the reqwest blocking client. Use rustls TLS (already the default via
+        // Build the async reqwest client. Use rustls TLS (already the default via
         // the "rustls" feature flag in Cargo.toml with default-features = false).
         // The client automatically negotiates HTTP/2 via ALPN for HTTPS connections.
-        let client = reqwest::blocking::Client::builder()
+        //
+        // IMPORTANT: We use reqwest::Client (async) rather than reqwest::blocking::Client
+        // to avoid a panic on drop. reqwest::blocking::Client creates an internal tokio
+        // runtime. Dropping that runtime from inside an async CEK context panics with
+        // "Cannot drop a runtime in a context where blocking is not allowed."
+        // The async client piggybacks on the existing outer tokio runtime and is safe to
+        // drop from any context.
+        let client = reqwest::Client::builder()
             .use_rustls_tls()
             .user_agent("tinct/0.1 (https://github.com/anthropics/tinct)")
             .build()
@@ -5547,16 +5554,19 @@ pub(crate) fn builtin_http_request(
                 call_span,
                 &ctx,
             ),
-            Value::Http2Session { client, base_url } => http_request_h2(&Http2RequestConfig {
-                client: &client,
-                base_url: &base_url,
-                method_str: &method_str,
-                path_str: &path_str,
-                req_headers: &req_headers,
-                body_str: &body_str,
-                span: call_span,
-                ctx: &ctx,
-            }),
+            Value::Http2Session { client, base_url } => {
+                http_request_h2(&Http2RequestConfig {
+                    client: &client,
+                    base_url: &base_url,
+                    method_str: &method_str,
+                    path_str: &path_str,
+                    req_headers: &req_headers,
+                    body_str: &body_str,
+                    span: call_span,
+                    ctx: &ctx,
+                })
+                .await
+            }
             other => Err(EvalError::type_mismatch_ctx(
                 "http-request".to_string(),
                 "Http2Session or Http3Session",
@@ -5570,7 +5580,7 @@ pub(crate) fn builtin_http_request(
 
 /// Configuration for HTTP/2 requests.
 struct Http2RequestConfig<'a> {
-    client: &'a Rc<reqwest::blocking::Client>,
+    client: &'a Rc<reqwest::Client>,
     base_url: &'a str,
     method_str: &'a str,
     path_str: &'a str,
@@ -5580,12 +5590,16 @@ struct Http2RequestConfig<'a> {
     ctx: &'a crate::eval::EvalContext,
 }
 
-/// Issue an HTTP/2 (or HTTP/1.1) request using a `reqwest::blocking::Client`.
+/// Issue an HTTP/2 (or HTTP/1.1) request using a `reqwest::Client` (async).
 ///
 /// The client was configured in `builtin_http2_session` to prefer HTTP/2 via ALPN.
 /// Path is resolved relative to `base_url` (the origin stored in the session).
 /// Returns `{ok: {status: Int, headers: Dict, body: String}}` or `{err: String}`.
-fn http_request_h2(config: &Http2RequestConfig) -> EvalResult<Arc<Thunk>> {
+///
+/// Uses the async reqwest API and `.await` — safe to call from within the async CEK loop.
+/// The async client does not create an internal tokio runtime, so it can be dropped
+/// from any async context without panic.
+async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thunk>> {
     let client = config.client;
     let base_url = config.base_url;
     let method_str = config.method_str;
@@ -5629,7 +5643,7 @@ fn http_request_h2(config: &Http2RequestConfig) -> EvalResult<Arc<Thunk>> {
         builder = builder.body(body_str.to_string());
     }
 
-    let response = match builder.send() {
+    let response = match builder.send().await {
         Ok(r) => r,
         Err(e) => {
             return http_request_err_val(format!("http-request: request failed: {}", e), span, ctx);
@@ -5650,7 +5664,7 @@ fn http_request_h2(config: &Http2RequestConfig) -> EvalResult<Arc<Thunk>> {
     }
 
     // Collect body as a String (UTF-8, lossy).
-    let body_bytes = match response.bytes() {
+    let body_bytes = match response.bytes().await {
         Ok(b) => b,
         Err(e) => {
             return http_request_err_val(

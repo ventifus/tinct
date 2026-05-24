@@ -603,11 +603,14 @@ pub enum Value {
     /// `quic-open-stream` and `quic-open-datagram`.
     QuicSession(Rc<quinn::Connection>),
     /// HTTP/2 session — multiplexed HTTP connection (RFC 9113).
-    /// Wraps a `reqwest::blocking::Client` configured to prefer HTTP/2 via ALPN.
+    /// Wraps a `reqwest::Client` (async) configured to prefer HTTP/2 via ALPN.
+    /// Using the async client avoids creating a nested tokio runtime inside the blocking
+    /// wrapper — dropping `reqwest::blocking::Client` from within an async context panics
+    /// with "Cannot drop a runtime in a context where blocking is not allowed."
     /// Created by `http2-session`, consumed by `http-request`.
     /// `base_url` is the `scheme://host:port` origin used to resolve relative paths.
     Http2Session {
-        client: Rc<reqwest::blocking::Client>,
+        client: Rc<reqwest::Client>,
         base_url: String,
     },
     /// HTTP/3 session — HTTP over QUIC (RFC 9114).

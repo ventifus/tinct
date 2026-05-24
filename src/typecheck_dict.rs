@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::{infer_expr, resolve_type_expr, TypeMap};
+use super::{infer_expr, resolve_annotation, resolve_type_expr, TypeMap};
 use crate::ast::{Entry, Expr, Span, Spanned};
 use crate::types::{
     generalize_with_doc, unify, InferState, Row, Substitution, Type, TypeAlias, TypeEnv, TypeError,
@@ -420,6 +420,35 @@ pub(crate) fn infer_dict(
                 // to the function being inferred, not leak across dict entries.
                 let saved_constraints = std::mem::take(&mut state.constraints);
 
+                // If the value is wrapped in TypeAssert (e.g., `x: [@T expr]`), extract the
+                // asserted type upfront. When inference of the inner expression fails, the
+                // asserted type is used as the public field type instead of Type::Unknown.
+                // This preserves the declared interface type T even when the body has errors,
+                // so callers see T rather than Unknown (which defeats the annotation's purpose).
+                //
+                // We resolve the annotation in a fresh mapping scope — the same approach used
+                // by `resolve_type_assert` — to avoid leaking TypeVars into the outer scope.
+                let type_assert_ty: Option<Type> =
+                    if let Expr::TypeAssert { annotation, .. } = &entry.node.value.node {
+                        let mut ann_mapping: Option<std::collections::HashMap<String, String>> =
+                            Some(std::collections::HashMap::new());
+                        let mut ann_mapping_opt = ann_mapping.as_mut();
+                        let mut row_ann_mapping_opt: Option<
+                            &mut std::collections::HashMap<String, String>,
+                        > = None;
+                        resolve_annotation(
+                            &annotation.node,
+                            &dict_env_rc,
+                            annotation.span,
+                            state,
+                            &mut ann_mapping_opt,
+                            &mut row_ann_mapping_opt,
+                        )
+                        .ok()
+                    } else {
+                        None
+                    };
+
                 // Special case: if the value is a Dict, call infer_dict directly to capture schemes
                 let (value_ty, nested_schemes_opt) =
                     if let Expr::Dict(nested_entries) = &entry.node.value.node {
@@ -490,15 +519,22 @@ pub(crate) fn infer_dict(
                     }
                     Err(mut errs) => {
                         errors.append(&mut errs);
-                        field_types.insert(name.clone(), Type::Unknown);
+                        // If the entry was wrapped in TypeAssert ([@T expr]), use the asserted
+                        // type T as the public field type even when the body has errors. This
+                        // ensures callers see the declared type T rather than Unknown, preserving
+                        // the purpose of the annotation as a type-interface boundary.
+                        // Fall back to Unknown only when no assertion type is available.
+                        let fallback_ty = type_assert_ty.unwrap_or(Type::Unknown);
+                        field_types.insert(name.clone(), fallback_ty.clone());
                         state.failed_bindings.insert(name.clone(), entry.span);
-                        // Populate type_map with Unknown for LSP hover on failed dict value expressions
+                        // Populate type_map for LSP hover on failed dict value expressions.
+                        // Use the asserted type if available so hover shows T instead of Unknown.
                         if let Some(ref mut map) = type_map {
                             let key = (
                                 entry.node.value.span.start.offset,
                                 entry.node.value.span.end.offset,
                             );
-                            map.insert(key, Type::Unknown);
+                            map.insert(key, fallback_ty);
                         }
                     }
                 }
