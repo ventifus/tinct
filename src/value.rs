@@ -104,7 +104,7 @@ impl fmt::Debug for BuiltinDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
     Int(i64),
-    String(String),
+    String(Rc<str>),
 }
 
 impl PartialOrd for Key {
@@ -144,7 +144,7 @@ pub(crate) struct StrKey<'a>(pub &'a str);
 impl Hash for StrKey<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // Hash the String discriminant from Key enum
-        std::mem::discriminant(&Key::String(String::new())).hash(state);
+        std::mem::discriminant(&Key::String(Rc::from(""))).hash(state);
         // Then hash the string content
         self.0.hash(state);
     }
@@ -153,7 +153,7 @@ impl Hash for StrKey<'_> {
 impl Equivalent<Key> for StrKey<'_> {
     fn equivalent(&self, key: &Key) -> bool {
         match key {
-            Key::String(s) => self.0 == s.as_str(),
+            Key::String(s) => self.0 == s.as_ref(),
             Key::Int(_) => false,
         }
     }

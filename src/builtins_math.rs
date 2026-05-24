@@ -18,6 +18,8 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 
+use std::rc::Rc;
+
 use crate::ast::Span;
 use crate::builtins::{check_float_result, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
@@ -99,7 +101,7 @@ async fn try_dispatch_method(
     let instance_val = materialize(&instance_thunk, Some(&call_span), &ctx)?;
 
     // The instance dict has method names as string keys.
-    let method_key = Key::String(method_name.to_string());
+    let method_key = Key::String(Rc::from(method_name));
     let method_id = match &instance_val {
         Value::Dict(map) => match map.get(&method_key) {
             Some(id) => *id,

@@ -521,7 +521,7 @@ pub(crate) fn builtin_apply_impl(
             match key {
                 Key::Int(n) => int_entries.push((*n, thunk)),
                 Key::String(s) => {
-                    named_args.insert(s.clone(), thunk);
+                    named_args.insert(s.to_string(), thunk);
                 }
             }
         }
@@ -1482,7 +1482,7 @@ pub fn json_to_value(
             for (k, v) in obj {
                 let thunk = json_to_value(v, depth + 1, span, ctx)?;
                 let thunk_id = ctx.alloc_thunk(thunk);
-                map.insert(Key::String(k.clone()), thunk_id);
+                map.insert(Key::String(k.as_str().into()), thunk_id);
             }
             ok_val(Value::Dict(map), span)
         }
@@ -1883,7 +1883,7 @@ pub(crate) fn builtin_eval(
                             child_env
                                 .write()
                                 .unwrap()
-                                .insert(name.clone(), ctx.get_thunk(*thunk_id));
+                                .insert(name.to_string(), ctx.get_thunk(*thunk_id));
                         }
                     }
                     child_env
@@ -2071,7 +2071,7 @@ pub(crate) fn builtin_eval_types(
                             child_env
                                 .write()
                                 .unwrap()
-                                .insert(name.clone(), ctx.get_thunk(*thunk_id));
+                                .insert(name.to_string(), ctx.get_thunk(*thunk_id));
                         }
                     }
                     child_env
@@ -2629,7 +2629,7 @@ fn validate_value(
                     let field_schema_val = materialize_sync(&field_schema_thunk, Some(&span), ctx)?;
                     if let Value::Dict(ref field_schema) = field_schema_val {
                         let field_name = match field_key {
-                            Key::String(s) => s.clone(),
+                            Key::String(s) => s.to_string(),
                             Key::Int(i) => i.to_string(),
                         };
 

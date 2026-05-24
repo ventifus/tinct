@@ -851,7 +851,7 @@ impl ValueVisitor for JsonVisitor {
                 .map(|(k, v)| {
                     let ks = match k {
                         value::Key::Int(n) => n.to_string(),
-                        value::Key::String(s) => s,
+                        value::Key::String(s) => s.to_string(),
                     };
                     (ks, v)
                 })

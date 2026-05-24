@@ -722,7 +722,7 @@ fn test_handle_capability_partialeq_limitation() {
     let mut state = InferState::new();
     let mut subst = Substitution::new();
 
-    let result = unify(&handle_a, &handle_b, &mut state, &mut subst, Span::origin());
+    let result = unify(&handle_a, &handle_b, &mut subst, &mut state, Span::origin());
 
     assert!(
         result.is_ok(),

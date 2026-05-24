@@ -2166,7 +2166,7 @@ fn load_stdlib_module(
     // Insert the module's bindings into the environment
     for (key, thunk_id) in dict {
         let name = match key {
-            Key::String(s) => s,
+            Key::String(s) => s.to_string(),
             Key::Int(n) => n.to_string(),
         };
         let thunk = ctx.get_thunk(thunk_id);
@@ -2387,7 +2387,7 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
             // Insert bindings into type-stage env
             for (key, thunk_id) in dict {
                 let name = match key {
-                    Key::String(s) => s,
+                    Key::String(s) => s.to_string(),
                     Key::Int(n) => n.to_string(),
                 };
                 let thunk = bootstrap_ctx.get_thunk(thunk_id);

@@ -71,7 +71,7 @@ pub(crate) fn builtin_keys(
         for (i, (key, _)) in map.iter().enumerate() {
             let key_value = match key {
                 Key::Int(n) => Value::Int(*n),
-                Key::String(s) => string_val(s),
+                Key::String(s) => string_val(&**s),
             };
             let thunk = Arc::new(Thunk::new_materialized(key_value, origin));
             let thunk_id = ctx.alloc_thunk(thunk);
@@ -257,7 +257,7 @@ pub(crate) fn builtin_get(
                 end,
             } => {
                 let s = &source[start..end];
-                Key::String(s.to_string())
+                Key::String(s.into())
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -339,7 +339,7 @@ pub(crate) fn builtin_get_optional(
                 end,
             } => {
                 let s = &source[start..end];
-                Key::String(s.to_string())
+                Key::String(s.into())
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -523,7 +523,7 @@ pub(crate) fn builtin_each_key(
             let (head_key, _) = map.get_index(offset).unwrap();
             let head_val = match head_key {
                 Key::Int(n) => Value::Int(*n),
-                Key::String(s) => string_val(s),
+                Key::String(s) => string_val(&**s),
             };
             let head = ok_val(head_val, call_span)?;
 
@@ -626,13 +626,13 @@ pub(crate) fn builtin_each_kv(
             let mut head_dict = IndexMap::new();
             let key_val = match head_key {
                 Key::Int(n) => Value::Int(*n),
-                Key::String(s) => string_val(s),
+                Key::String(s) => string_val(&**s),
             };
             head_dict.insert(
-                Key::String("key".to_string()),
+                Key::String("key".into()),
                 ctx.alloc_thunk(ok_val(key_val, call_span)?),
             );
-            head_dict.insert(Key::String("value".to_string()), *head_val_id);
+            head_dict.insert(Key::String("value".into()), *head_val_id);
             let head = ok_val(Value::Dict(head_dict), call_span)?;
 
             // Build tail: if more elements remain, recurse with (same_dict_thunk, offset+1).
@@ -729,7 +729,7 @@ pub(crate) fn builtin_builder_get_or(
                 end,
             } => {
                 let s = &source[start..end];
-                Key::String(s.to_string())
+                Key::String(s.into())
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -820,7 +820,7 @@ pub(crate) fn builtin_build_dict(
                                 .keys()
                                 .map(|k| match k {
                                     Key::Int(n) => n.to_string(),
-                                    Key::String(s) => s.clone(),
+                                    Key::String(s) => s.to_string(),
                                 })
                                 .collect(),
                             call_span,
@@ -834,7 +834,7 @@ pub(crate) fn builtin_build_dict(
                                 .keys()
                                 .map(|k| match k {
                                     Key::Int(n) => n.to_string(),
-                                    Key::String(s) => s.clone(),
+                                    Key::String(s) => s.to_string(),
                                 })
                                 .collect(),
                             call_span,
@@ -853,7 +853,7 @@ pub(crate) fn builtin_build_dict(
                             end,
                         } => {
                             let s = &source[start..end];
-                            Key::String(s.to_string())
+                            Key::String(s.into())
                         }
                         other => {
                             return Err(EvalError::type_mismatch_ctx(
@@ -1045,7 +1045,7 @@ pub(crate) fn builtin_builder_set(
                 end,
             } => {
                 let s = &source[start..end];
-                Key::String(s.to_string())
+                Key::String(s.into())
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -1118,7 +1118,7 @@ pub(crate) fn builtin_builder_delete(
                 end,
             } => {
                 let s = &source[start..end];
-                Key::String(s.to_string())
+                Key::String(s.into())
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -1275,7 +1275,7 @@ pub(crate) fn builtin_builder_has(
                 end,
             } => {
                 let s = &source[start..end];
-                Key::String(s.to_string())
+                Key::String(s.into())
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -1345,7 +1345,7 @@ pub(crate) fn builtin_builder_get(
                 end,
             } => {
                 let s = &source[start..end];
-                Key::String(s.to_string())
+                Key::String(s.into())
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(

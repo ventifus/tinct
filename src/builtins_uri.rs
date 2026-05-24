@@ -47,7 +47,7 @@ pub(crate) fn builtin_uri(
 
             // scheme (lowercase)
             dict.insert(
-                Key::String("scheme".to_string()),
+                Key::String("scheme".into()),
                 ctx.alloc_thunk(ok_val(string_val(parsed.scheme()), call_span)?),
             );
 
@@ -58,7 +58,7 @@ pub(crate) fn builtin_uri(
                 string_val(parsed.username())
             };
             dict.insert(
-                Key::String("username".to_string()),
+                Key::String("username".into()),
                 ctx.alloc_thunk(ok_val(username, call_span)?),
             );
 
@@ -68,7 +68,7 @@ pub(crate) fn builtin_uri(
                 None => Value::Dict(IndexMap::new()),
             };
             dict.insert(
-                Key::String("password".to_string()),
+                Key::String("password".into()),
                 ctx.alloc_thunk(ok_val(password, call_span)?),
             );
 
@@ -78,7 +78,7 @@ pub(crate) fn builtin_uri(
                 None => Value::Dict(IndexMap::new()),
             };
             dict.insert(
-                Key::String("host".to_string()),
+                Key::String("host".into()),
                 ctx.alloc_thunk(ok_val(host, call_span)?),
             );
 
@@ -88,13 +88,13 @@ pub(crate) fn builtin_uri(
                 None => Value::Dict(IndexMap::new()),
             };
             dict.insert(
-                Key::String("port".to_string()),
+                Key::String("port".into()),
                 ctx.alloc_thunk(ok_val(port, call_span)?),
             );
 
             // path (always present per RFC 3986)
             dict.insert(
-                Key::String("path".to_string()),
+                Key::String("path".into()),
                 ctx.alloc_thunk(ok_val(string_val(parsed.path()), call_span)?),
             );
 
@@ -104,7 +104,7 @@ pub(crate) fn builtin_uri(
                 None => Value::Dict(IndexMap::new()),
             };
             dict.insert(
-                Key::String("query".to_string()),
+                Key::String("query".into()),
                 ctx.alloc_thunk(ok_val(query, call_span)?),
             );
 
@@ -114,7 +114,7 @@ pub(crate) fn builtin_uri(
                 None => Value::Dict(IndexMap::new()),
             };
             dict.insert(
-                Key::String("fragment".to_string()),
+                Key::String("fragment".into()),
                 ctx.alloc_thunk(ok_val(fragment, call_span)?),
             );
 
@@ -137,14 +137,14 @@ pub(crate) fn builtin_uri(
         let mut dict = IndexMap::new();
 
         dict.insert(
-            Key::String("scheme".to_string()),
+            Key::String("scheme".into()),
             ctx.alloc_thunk(ok_val(string_val(&scheme.to_lowercase()), call_span)?),
         );
 
         // Non-hierarchical URIs: all null for userinfo/host/port
         for key in ["username", "password", "host", "port"] {
             dict.insert(
-                Key::String(key.to_string()),
+                Key::String(key.into()),
                 ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), call_span)?),
             );
         }
@@ -153,14 +153,14 @@ pub(crate) fn builtin_uri(
         // For mailto:user@example.com, path is "user@example.com"
         // For urn:isbn:123, path is "isbn:123"
         dict.insert(
-            Key::String("path".to_string()),
+            Key::String("path".into()),
             ctx.alloc_thunk(ok_val(string_val(rest), call_span)?),
         );
 
         // query and fragment: null (non-hierarchical URIs typically don't have these)
         for key in ["query", "fragment"] {
             dict.insert(
-                Key::String(key.to_string()),
+                Key::String(key.into()),
                 ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), call_span)?),
             );
         }
@@ -211,7 +211,7 @@ pub(crate) fn builtin_url(
 
         // scheme (lowercase)
         dict.insert(
-            Key::String("scheme".to_string()),
+            Key::String("scheme".into()),
             ctx.alloc_thunk(ok_val(string_val(parsed.scheme()), call_span)?),
         );
 
@@ -222,7 +222,7 @@ pub(crate) fn builtin_url(
             string_val(parsed.username())
         };
         dict.insert(
-            Key::String("username".to_string()),
+            Key::String("username".into()),
             ctx.alloc_thunk(ok_val(username, call_span)?),
         );
 
@@ -232,13 +232,13 @@ pub(crate) fn builtin_url(
             None => Value::Dict(IndexMap::new()),
         };
         dict.insert(
-            Key::String("password".to_string()),
+            Key::String("password".into()),
             ctx.alloc_thunk(ok_val(password, call_span)?),
         );
 
         // host (always present for URLs; unwrap is safe)
         dict.insert(
-            Key::String("host".to_string()),
+            Key::String("host".into()),
             ctx.alloc_thunk(ok_val(string_val(parsed.host_str().unwrap()), call_span)?),
         );
 
@@ -249,7 +249,7 @@ pub(crate) fn builtin_url(
             0
         });
         dict.insert(
-            Key::String("port".to_string()),
+            Key::String("port".into()),
             ctx.alloc_thunk(ok_val(Value::Int(i64::from(port)), call_span)?),
         );
 
@@ -260,7 +260,7 @@ pub(crate) fn builtin_url(
             parsed.path()
         };
         dict.insert(
-            Key::String("path".to_string()),
+            Key::String("path".into()),
             ctx.alloc_thunk(ok_val(string_val(path), call_span)?),
         );
 
@@ -270,7 +270,7 @@ pub(crate) fn builtin_url(
             None => Value::Dict(IndexMap::new()),
         };
         dict.insert(
-            Key::String("query".to_string()),
+            Key::String("query".into()),
             ctx.alloc_thunk(ok_val(query, call_span)?),
         );
 
@@ -280,7 +280,7 @@ pub(crate) fn builtin_url(
             None => Value::Dict(IndexMap::new()),
         };
         dict.insert(
-            Key::String("fragment".to_string()),
+            Key::String("fragment".into()),
             ctx.alloc_thunk(ok_val(fragment, call_span)?),
         );
 
@@ -368,11 +368,11 @@ pub(crate) fn builtin_urn(
         let mut dict = IndexMap::new();
 
         dict.insert(
-            Key::String("nid".to_string()),
+            Key::String("nid".into()),
             ctx.alloc_thunk(ok_val(string_val(nid), call_span)?),
         );
         dict.insert(
-            Key::String("nss".to_string()),
+            Key::String("nss".into()),
             ctx.alloc_thunk(ok_val(string_val(nss), call_span)?),
         );
 
@@ -382,7 +382,7 @@ pub(crate) fn builtin_urn(
             None => Value::Dict(IndexMap::new()),
         };
         dict.insert(
-            Key::String("r-component".to_string()),
+            Key::String("r-component".into()),
             ctx.alloc_thunk(ok_val(r_val, call_span)?),
         );
 
@@ -392,7 +392,7 @@ pub(crate) fn builtin_urn(
             None => Value::Dict(IndexMap::new()),
         };
         dict.insert(
-            Key::String("q-component".to_string()),
+            Key::String("q-component".into()),
             ctx.alloc_thunk(ok_val(q_val, call_span)?),
         );
 
@@ -402,7 +402,7 @@ pub(crate) fn builtin_urn(
             None => Value::Dict(IndexMap::new()),
         };
         dict.insert(
-            Key::String("fragment".to_string()),
+            Key::String("fragment".into()),
             ctx.alloc_thunk(ok_val(frag_val, call_span)?),
         );
 

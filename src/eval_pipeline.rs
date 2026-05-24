@@ -239,12 +239,12 @@ pub async fn eval_surface_document(
             ))));
             for (key, val_thunk_id) in map {
                 if let Key::String(name) = key {
-                    if static_key_set.contains(&name) {
+                    if static_key_set.contains(name.as_ref()) {
                         let val_thunk = ctx.get_thunk(val_thunk_id);
                         let forced_value = materialize(&val_thunk, Some(&node_span), ctx).await?;
                         let strict_thunk =
                             Arc::new(Thunk::new_materialized(forced_value, node_span));
-                        child_env.write().unwrap().insert(name, strict_thunk);
+                        child_env.write().unwrap().insert(name.to_string(), strict_thunk);
                     }
                 }
             }

@@ -279,7 +279,7 @@ impl ReplSession {
             for (key, val_thunk_id) in map {
                 if let Key::String(name) = key {
                     let val_thunk = self.ctx.get_thunk(*val_thunk_id);
-                    child_env.write().unwrap().insert(name.clone(), val_thunk);
+                    child_env.write().unwrap().insert(name.to_string(), val_thunk);
                 }
             }
             self.env = child_env;

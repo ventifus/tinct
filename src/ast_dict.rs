@@ -654,7 +654,7 @@ fn surface_decl_to_thunk_id(
                     method.node.key.as_ref().and_then(|key| {
                         if let SurfaceExpression::Str(key_str) = &key.expr {
                             Some((
-                                Key::String(key_str.clone()),
+                                Key::String(Rc::from(key_str.as_str())),
                                 surface_node_to_thunk_id(&method.node.value, opts, ctx).ok()?,
                             ))
                         } else {
@@ -732,7 +732,7 @@ fn surface_decl_to_thunk_id(
                             method.node.key.as_ref().and_then(|key| {
                                 if let SurfaceExpression::Str(key_str) = &key.expr {
                                     Some((
-                                        Key::String(key_str.clone()),
+                                        Key::String(Rc::from(key_str.as_str())),
                                         surface_node_to_thunk_id(&method.node.value, opts, ctx)
                                             .ok()?,
                                     ))
@@ -1985,7 +1985,7 @@ fn expr_to_thunk_id(
                     method.node.key.as_ref().and_then(|key| {
                         if let Expr::Str(key_str) = &key.node {
                             Some((
-                                Key::String(key_str.clone()),
+                                Key::String(Rc::from(key_str.as_str())),
                                 expr_to_thunk_id(
                                     &method.node.value.node,
                                     method.node.value.span,
@@ -2069,7 +2069,7 @@ fn expr_to_thunk_id(
                             method.node.key.as_ref().and_then(|key| {
                                 if let Expr::Str(key_str) = &key.node {
                                     Some((
-                                        Key::String(key_str.clone()),
+                                        Key::String(Rc::from(key_str.as_str())),
                                         expr_to_thunk_id(
                                             &method.node.value.node,
                                             method.node.value.span,
@@ -2309,7 +2309,7 @@ fn pattern_to_thunk_id(
                     pattern_to_thunk_id(&pat.node, pat.span, ctx)?,
                 );
                 fields_dict.insert(
-                    Key::String(i.to_string()),
+                    Key::String(Rc::from(i.to_string().as_str())),
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(field_dict),
                         pat.span,
@@ -3254,7 +3254,7 @@ fn dict_to_ast_from_dict(
                             let value_expr = dict_to_ast(&val, ctx)?;
                             let entry_span = value_expr.span;
                             let key_expr =
-                                Spanned::new(Expr::Str(method_name.clone()), entry_span);
+                                Spanned::new(Expr::Str(method_name.to_string()), entry_span);
                             method_entries.push(Spanned::new(
                                 crate::ast::Entry {
                                     key: Some(key_expr),
@@ -3335,7 +3335,7 @@ fn dict_to_ast_from_dict(
                                 let value_expr = dict_to_ast(&val, ctx)?;
                                 let entry_span = value_expr.span;
                                 let key_expr =
-                                    Spanned::new(Expr::Str(method_name.clone()), entry_span);
+                                    Spanned::new(Expr::Str(method_name.to_string()), entry_span);
                                 method_entries.push(Spanned::new(
                                     crate::ast::Entry {
                                         key: Some(key_expr),
@@ -3803,7 +3803,7 @@ fn dict_to_pattern(
             // Iterate integer-keyed fields in order
             let mut fields = Vec::new();
             let mut i = 0i64;
-            while let Some(field_thunk_id) = fields_dict.get(&Key::String(i.to_string())) {
+            while let Some(field_thunk_id) = fields_dict.get(&Key::String(Rc::from(i.to_string().as_str()))) {
                 let field_thunk = ctx.get_thunk(*field_thunk_id);
                 let field_val = field_thunk.try_get_materialized().ok_or_else(|| AstError {
                     message: format!("dict pattern field {} is not materialized", i),

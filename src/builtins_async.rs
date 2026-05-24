@@ -1318,8 +1318,8 @@ pub(crate) fn builtin_with_cancel(
         let child_ctx_id =
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(child_ctx_val, call_span)));
         let cancel_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(cancel_val, call_span)));
-        result.insert(Key::String("child-ctx".to_string()), child_ctx_id);
-        result.insert(Key::String("cancel".to_string()), cancel_id);
+        result.insert(Key::String("child-ctx".into()), child_ctx_id);
+        result.insert(Key::String("cancel".into()), cancel_id);
 
         ok_val(Value::Dict(result), call_span)
     })

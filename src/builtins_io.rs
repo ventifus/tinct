@@ -2552,19 +2552,19 @@ pub(crate) fn builtin_list_dir(
             use crate::value::Key;
             let mut dict = IndexMap::new();
             dict.insert(
-                Key::String("name".to_string()),
+                Key::String("name".into()),
                 ctx.alloc_thunk(ok_val(string_val(&name), call_span)?),
             );
             dict.insert(
-                Key::String("type".to_string()),
+                Key::String("type".into()),
                 ctx.alloc_thunk(ok_val(string_val(file_type), call_span)?),
             );
             dict.insert(
-                Key::String("size".to_string()),
+                Key::String("size".into()),
                 ctx.alloc_thunk(ok_val(Value::Int(metadata.len() as i64), call_span)?),
             );
             dict.insert(
-                Key::String("mtime".to_string()),
+                Key::String("mtime".into()),
                 ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span)?),
             );
 
@@ -2662,35 +2662,35 @@ pub(crate) fn builtin_stat(
         use crate::value::Key;
         let mut dict = IndexMap::new();
         dict.insert(
-            Key::String("name".to_string()),
+            Key::String("name".into()),
             ctx.alloc_thunk(ok_val(string_val(&path), call_span)?),
         );
         dict.insert(
-            Key::String("type".to_string()),
+            Key::String("type".into()),
             ctx.alloc_thunk(ok_val(string_val(file_type), call_span)?),
         );
         dict.insert(
-            Key::String("size".to_string()),
+            Key::String("size".into()),
             ctx.alloc_thunk(ok_val(Value::Int(metadata.len() as i64), call_span)?),
         );
         dict.insert(
-            Key::String("mtime".to_string()),
+            Key::String("mtime".into()),
             ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span)?),
         );
         dict.insert(
-            Key::String("mode".to_string()),
+            Key::String("mode".into()),
             ctx.alloc_thunk(ok_val(Value::Int(mode), call_span)?),
         );
         dict.insert(
-            Key::String("is-dir".to_string()),
+            Key::String("is-dir".into()),
             ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_dir()), call_span)?),
         );
         dict.insert(
-            Key::String("is-file".to_string()),
+            Key::String("is-file".into()),
             ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_file()), call_span)?),
         );
         dict.insert(
-            Key::String("is-symlink".to_string()),
+            Key::String("is-symlink".into()),
             ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_symlink()), call_span)?),
         );
 
@@ -2818,35 +2818,35 @@ pub(crate) fn builtin_stat_symlink(
         use crate::value::Key;
         let mut dict = IndexMap::new();
         dict.insert(
-            Key::String("name".to_string()),
+            Key::String("name".into()),
             ctx.alloc_thunk(ok_val(string_val(&path), call_span)?),
         );
         dict.insert(
-            Key::String("type".to_string()),
+            Key::String("type".into()),
             ctx.alloc_thunk(ok_val(string_val(file_type), call_span)?),
         );
         dict.insert(
-            Key::String("size".to_string()),
+            Key::String("size".into()),
             ctx.alloc_thunk(ok_val(Value::Int(metadata.len() as i64), call_span)?),
         );
         dict.insert(
-            Key::String("mtime".to_string()),
+            Key::String("mtime".into()),
             ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span)?),
         );
         dict.insert(
-            Key::String("mode".to_string()),
+            Key::String("mode".into()),
             ctx.alloc_thunk(ok_val(Value::Int(mode), call_span)?),
         );
         dict.insert(
-            Key::String("is-dir".to_string()),
+            Key::String("is-dir".into()),
             ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_dir()), call_span)?),
         );
         dict.insert(
-            Key::String("is-file".to_string()),
+            Key::String("is-file".into()),
             ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_file()), call_span)?),
         );
         dict.insert(
-            Key::String("is-symlink".to_string()),
+            Key::String("is-symlink".into()),
             ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_symlink()), call_span)?),
         );
 
@@ -3841,7 +3841,7 @@ fn build_tls_config(
 
     // Check no-system-roots
     let no_system_roots = if let Some(thunk_id) =
-        opts_dict.get(&crate::value::Key::String("no-system-roots".to_string()))
+        opts_dict.get(&crate::value::Key::String("no-system-roots".into()))
     {
         let thunk = ctx.get_thunk(*thunk_id);
         let val = materialize(&thunk, Some(&opts_span), ctx)?;
@@ -3893,7 +3893,7 @@ fn build_tls_config(
 
     // Load mozilla-roots if requested
     let mozilla_roots = if let Some(thunk_id) =
-        opts_dict.get(&crate::value::Key::String("mozilla-roots".to_string()))
+        opts_dict.get(&crate::value::Key::String("mozilla-roots".into()))
     {
         let thunk = ctx.get_thunk(*thunk_id);
         let val = materialize(&thunk, Some(&opts_span), ctx)?;
@@ -3919,7 +3919,7 @@ fn build_tls_config(
     }
 
     // Load ca-bundle if provided
-    if let Some(thunk_id) = opts_dict.get(&crate::value::Key::String("ca-bundle".to_string())) {
+    if let Some(thunk_id) = opts_dict.get(&crate::value::Key::String("ca-bundle".into())) {
         let thunk = ctx.get_thunk(*thunk_id);
         let handle_val = materialize(&thunk, Some(&opts_span), ctx)?;
         let pem_bytes = slurp_handle_bytes(&handle_val, opts_span)?;
@@ -3946,9 +3946,9 @@ fn build_tls_config(
 
     // Build config with client auth
     let has_client_cert =
-        opts_dict.contains_key(&crate::value::Key::String("client-cert".to_string()));
+        opts_dict.contains_key(&crate::value::Key::String("client-cert".into()));
     let has_client_key =
-        opts_dict.contains_key(&crate::value::Key::String("client-key".to_string()));
+        opts_dict.contains_key(&crate::value::Key::String("client-key".into()));
 
     let mut config = if has_client_cert || has_client_key {
         if !has_client_cert || !has_client_key {
@@ -3961,13 +3961,13 @@ fn build_tls_config(
         }
 
         let cert_thunk_id = opts_dict
-            .get(&crate::value::Key::String("client-cert".to_string()))
+            .get(&crate::value::Key::String("client-cert".into()))
             .unwrap();
         let cert_thunk = ctx.get_thunk(*cert_thunk_id);
         let cert_handle = materialize(&cert_thunk, Some(&opts_span), ctx)?;
 
         let key_thunk_id = opts_dict
-            .get(&crate::value::Key::String("client-key".to_string()))
+            .get(&crate::value::Key::String("client-key".into()))
             .unwrap();
         let key_thunk = ctx.get_thunk(*key_thunk_id);
         let key_handle = materialize(&key_thunk, Some(&opts_span), ctx)?;
@@ -4016,7 +4016,7 @@ fn build_tls_config(
     };
 
     // Set ALPN protocols
-    if let Some(thunk_id) = opts_dict.get(&crate::value::Key::String("alpn".to_string())) {
+    if let Some(thunk_id) = opts_dict.get(&crate::value::Key::String("alpn".into())) {
         let thunk = ctx.get_thunk(*thunk_id);
         let alpn_val = materialize(&thunk, Some(&opts_span), ctx)?;
         let alpn_protocols = extract_alpn_protocols(&alpn_val, opts_span, ctx)?;
@@ -4178,7 +4178,7 @@ fn validate_spki_pins(
         };
 
         let algorithm_thunk_id = pin_dict
-            .get(&crate::value::Key::String("algorithm".to_string()))
+            .get(&crate::value::Key::String("algorithm".into()))
             .ok_or_else(|| {
                 EvalError::user_error(
                     "tls-connect: SpkiPin missing 'algorithm' field".to_string(),
@@ -4189,7 +4189,7 @@ fn validate_spki_pins(
         let algorithm_val = materialize(&algorithm_thunk, Some(&span), ctx)?;
 
         let fingerprint_thunk_id = pin_dict
-            .get(&crate::value::Key::String("fingerprint".to_string()))
+            .get(&crate::value::Key::String("fingerprint".into()))
             .ok_or_else(|| {
                 EvalError::user_error(
                     "tls-connect: SpkiPin missing 'fingerprint' field".to_string(),
@@ -4298,7 +4298,7 @@ fn extract_cert_info(
     // Store the raw cert DER bytes so tls-peer-cert can parse it later
     use crate::value::Key;
     info.insert(
-        Key::String("_raw_der".to_string()),
+        Key::String("_raw_der".into()),
         ctx.alloc_thunk(ok_val(
             Value::Bytes {
                 source: Rc::from(cert_der.as_ref()),
@@ -4539,7 +4539,7 @@ pub(crate) fn builtin_tls_layer(
         // Validate SPKI pins if provided
         if let Value::Dict(opts_map) = &opts_val {
             if let Some(pins_thunk_id) =
-                opts_map.get(&crate::value::Key::String("pins".to_string()))
+                opts_map.get(&crate::value::Key::String("pins".into()))
             {
                 let pins_thunk = ctx.get_thunk(*pins_thunk_id);
                 let pins_val = materialize(&pins_thunk, Some(&call_span), &ctx)?;
@@ -4653,7 +4653,7 @@ pub(crate) fn builtin_tls_peer_cert(
 
                 // Extract the _raw_der bytes from the dict
                 let raw_der_thunk_id =
-                    dict.get(&Key::String("_raw_der".to_string()))
+                    dict.get(&Key::String("_raw_der".into()))
                         .ok_or_else(|| {
                             EvalError::user_error(
                                 "tls-peer-cert: TLS capability missing _raw_der field".to_string(),
@@ -4711,27 +4711,27 @@ pub(crate) fn builtin_tls_peer_cert(
                 // Build the result dict
                 let mut cert_info = IndexMap::new();
                 cert_info.insert(
-                    Key::String("subject".to_string()),
+                    Key::String("subject".into()),
                     ctx.alloc_thunk(ok_val(string_val(&subject), call_span)?),
                 );
                 cert_info.insert(
-                    Key::String("issuer".to_string()),
+                    Key::String("issuer".into()),
                     ctx.alloc_thunk(ok_val(string_val(&issuer), call_span)?),
                 );
                 cert_info.insert(
-                    Key::String("sans".to_string()),
+                    Key::String("sans".into()),
                     ctx.alloc_thunk(ok_val(sans, call_span)?),
                 );
                 cert_info.insert(
-                    Key::String("not-before".to_string()),
+                    Key::String("not-before".into()),
                     ctx.alloc_thunk(ok_val(Value::Int(not_before), call_span)?),
                 );
                 cert_info.insert(
-                    Key::String("not-after".to_string()),
+                    Key::String("not-after".into()),
                     ctx.alloc_thunk(ok_val(Value::Int(not_after), call_span)?),
                 );
                 cert_info.insert(
-                    Key::String("spki-sha256".to_string()),
+                    Key::String("spki-sha256".into()),
                     ctx.alloc_thunk(ok_val(string_val(&spki_hex), call_span)?),
                 );
 
@@ -5030,7 +5030,7 @@ pub(crate) fn builtin_quic_session(
         // build_tls_config sets alpn_protocols to ["http/1.1"] by default; replace with h3.
         // We check opts for an explicit alpn key to respect caller overrides.
         let has_explicit_alpn = matches!(&opts_val, Value::Dict(d)
-        if d.contains_key(&crate::value::Key::String("alpn".to_string())));
+        if d.contains_key(&crate::value::Key::String("alpn".into())));
         if !has_explicit_alpn {
             tls_config.alpn_protocols = vec![b"h3".to_vec()];
         }
@@ -5515,7 +5515,7 @@ pub(crate) fn builtin_http_request(
                 let mut out = Vec::with_capacity(map.len());
                 for (key, val_id) in map.iter() {
                     let key_str = match key {
-                        crate::value::Key::String(s) => s.clone(),
+                        crate::value::Key::String(s) => s.to_string(),
                         crate::value::Key::Int(i) => i.to_string(),
                     };
                     let thunk = ctx.thunk_arena.lock().unwrap().get(*val_id).clone();
@@ -5641,7 +5641,7 @@ fn http_request_h2(config: &Http2RequestConfig) -> EvalResult<Arc<Thunk>> {
     // Collect response headers.
     let mut headers_map = IndexMap::new();
     for (name, value) in response.headers() {
-        let k = crate::value::Key::String(name.as_str().to_string());
+        let k = crate::value::Key::String(name.as_str().into());
         let v = match value.to_str() {
             Ok(s) => s.to_string(),
             Err(_) => String::from_utf8_lossy(value.as_bytes()).into_owned(),
@@ -5665,20 +5665,20 @@ fn http_request_h2(config: &Http2RequestConfig) -> EvalResult<Arc<Thunk>> {
     // Build {ok: {status: Int, headers: Dict, body: String}}
     let mut inner = IndexMap::new();
     inner.insert(
-        crate::value::Key::String("status".to_string()),
+        crate::value::Key::String("status".into()),
         ctx.alloc_thunk(ok_val(Value::Int(status), span)?),
     );
     inner.insert(
-        crate::value::Key::String("headers".to_string()),
+        crate::value::Key::String("headers".into()),
         ctx.alloc_thunk(ok_val(Value::Dict(headers_map), span)?),
     );
     inner.insert(
-        crate::value::Key::String("body".to_string()),
+        crate::value::Key::String("body".into()),
         ctx.alloc_thunk(ok_val(string_val(&body_string), span)?),
     );
     let mut result = IndexMap::new();
     result.insert(
-        crate::value::Key::String("ok".to_string()),
+        crate::value::Key::String("ok".into()),
         ctx.alloc_thunk(ok_val(Value::Dict(inner), span)?),
     );
     ok_val(Value::Dict(result), span)
@@ -5768,7 +5768,7 @@ fn http_request_h3(
     // Collect response headers into an LLT dict.
     let mut headers_map = IndexMap::new();
     for (name, value) in response.headers() {
-        let k = crate::value::Key::String(name.to_string());
+        let k = crate::value::Key::String(name.as_str().into());
         let v = match value.to_str() {
             Ok(s) => s.to_string(),
             Err(_) => {
@@ -5809,22 +5809,22 @@ fn http_request_h3(
     // Build inner response dict: {status: Int, headers: Dict, body: String}
     let mut inner = IndexMap::new();
     inner.insert(
-        crate::value::Key::String("status".to_string()),
+        crate::value::Key::String("status".into()),
         ctx.alloc_thunk(ok_val(Value::Int(status), span)?),
     );
     inner.insert(
-        crate::value::Key::String("headers".to_string()),
+        crate::value::Key::String("headers".into()),
         ctx.alloc_thunk(ok_val(Value::Dict(headers_map), span)?),
     );
     inner.insert(
-        crate::value::Key::String("body".to_string()),
+        crate::value::Key::String("body".into()),
         ctx.alloc_thunk(ok_val(string_val(&body_string), span)?),
     );
 
     // Wrap as {ok: inner}
     let mut result = IndexMap::new();
     result.insert(
-        crate::value::Key::String("ok".to_string()),
+        crate::value::Key::String("ok".into()),
         ctx.alloc_thunk(ok_val(Value::Dict(inner), span)?),
     );
     ok_val(Value::Dict(result), span)
@@ -5838,7 +5838,7 @@ fn http_request_err_val(
 ) -> EvalResult<Arc<Thunk>> {
     let mut result = IndexMap::new();
     result.insert(
-        crate::value::Key::String("err".to_string()),
+        crate::value::Key::String("err".into()),
         ctx.alloc_thunk(ok_val(string_val(&msg), span)?),
     );
     ok_val(Value::Dict(result), span)
@@ -5932,7 +5932,7 @@ fn icmp_err_val(msg: String, span: Span, ctx: &crate::eval::EvalContext) -> Eval
     use crate::value::Key;
     let mut result = IndexMap::new();
     result.insert(
-        Key::String("err".to_string()),
+        Key::String("err".into()),
         ctx.alloc_thunk(ok_val(string_val(&msg), span)?),
     );
     ok_val(Value::Dict(result), span)
@@ -5948,13 +5948,13 @@ fn icmp_ok_val(
     // Inner dict: {latency-ms: Int}
     let mut inner = IndexMap::new();
     inner.insert(
-        Key::String("latency-ms".to_string()),
+        Key::String("latency-ms".into()),
         ctx.alloc_thunk(ok_val(Value::Int(latency_ms), span)?),
     );
     // Outer dict: {ok: {latency-ms: Int}}
     let mut result = IndexMap::new();
     result.insert(
-        Key::String("ok".to_string()),
+        Key::String("ok".into()),
         ctx.alloc_thunk(ok_val(Value::Dict(inner), span)?),
     );
     ok_val(Value::Dict(result), span)
@@ -6326,7 +6326,7 @@ pub(crate) fn builtin_recv_datagram(
                 };
                 let mut dict = IndexMap::new();
                 dict.insert(
-                    Key::String("data".to_string()),
+                    Key::String("data".into()),
                     ctx.alloc_thunk(ok_val(data_bytes, call_span)?),
                 );
                 ok_val(Value::Dict(dict), call_span)

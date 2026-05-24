@@ -7,6 +7,7 @@
 //! All evaluation is CoreExpr-native via `eval_dict_core` / `eval_key_core`.
 //! The old Expr-based `eval_dict` / `eval_key` were removed in the Parts-B+E migration.
 
+use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
@@ -24,7 +25,7 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<Key> {
             ref source,
             start,
             end,
-        } => Ok(Key::String(source[*start..*end].to_string())),
+        } => Ok(Key::String(Rc::from(&source[*start..*end]))),
         Value::Int(n) => Ok(Key::Int(*n)),
         _ => Err(EvalError::type_mismatch("String or Int", value.type_name(), *span).into()),
     }
@@ -173,7 +174,7 @@ pub(crate) async fn eval_dict_core(
                 if let Some(ref env) = dict_env {
                     env.write()
                         .unwrap()
-                        .insert(name.clone(), Arc::clone(&thunk));
+                        .insert(name.to_string(), Arc::clone(&thunk));
                 }
             }
         }
@@ -224,7 +225,7 @@ pub(crate) async fn eval_key_core(
 ) -> EvalResult<Key> {
     // Fast path for literal keys
     match &key_expr.node {
-        CoreExpr::Str(s) => return Ok(Key::String(s.clone())),
+        CoreExpr::Str(s) => return Ok(Key::String(Rc::from(s.as_str()))),
         CoreExpr::Int(n) => return Ok(Key::Int(*n)),
         _ => {}
     }

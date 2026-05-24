@@ -216,24 +216,40 @@ The new functions return `Arc<SurfaceNode>` instead of `Spanned<Expr>`. They con
 
 ### Step 7: Update public bridge functions (depends on Steps 5 and 6)
 
+**COMPLETED in Phase 5 (rv2-rewrite-ast-dict Phase 5).**
+
 The existing public bridge functions in the "Surface AST Bridge Functions" section:
-- `surface_node_to_dict` — replace with direct `surface_node_to_thunk_id` call, remove `ast_convert` bridge
-- `surface_program_to_dict` — replace with direct `ast_to_dict(SurfaceProgram)` call
-- `dict_to_surface_node` — replace with direct `dict_to_surface_expr` call
-- `dict_to_surface_program` — replace with direct `dict_to_surface_program` call
+- `surface_node_to_dict` — Phase 2 native path (done in Phase 2)
+- `surface_program_to_dict` — Phase 4 native path (done in Phase 4)
+- `dict_to_surface_node` — **Phase 5a**: now uses `dict_to_surface_node_inner` natively for
+  10 most common variants (VarRef, Literal, DotAccess, Pipe, Dict, Call, Fn) with fallback
+  to old `dict_to_ast` + `expr_to_surface_node` bridge for uncommon variants
+- `dict_to_surface_program` — still bridges through `dict_to_file` (acceptable — rare codepath)
 
-Delete the old `Expr`-based `expr_to_thunk_id`, `dict_to_ast`, `dict_to_ast_from_dict` functions
-once all callers are migrated.
+Old Expr-based functions made non-public (`#[doc(hidden)] fn`):
+- `ast_to_dict` — retained as fallback in `annotation_to_thunk_id` and tests
+- `ast_to_dict_expr` — retained in `annotation_to_thunk_id` and tests
+- `dict_to_ast` — retained as fallback in `dict_to_surface_node_inner` for uncommon variants
+- `dict_to_file` — retained as backing for `dict_to_surface_program`
 
-### Step 8: Delete `ast_to_dict_expr` public entry point or update signature (depends on Step 5)
+### Step 8: Delete `ast_to_dict_expr` public entry point or update signature
 
-`ast_to_dict_expr` currently takes `&Spanned<Expr>`. Callers use it for quasiquoting. Either:
-- Replace with `surface_node_to_dict` (if all callers are already Surface-based)
-- Keep but rename to something clearly Surface-oriented
-
-Check callers with `grep -r 'ast_to_dict_expr'` before deciding.
+**COMPLETED**: `ast_to_dict_expr` is now `fn` (non-public). No external callers remain.
+The only caller is `annotation_to_thunk_id` within the same file.
 
 ### Step 9: Delete `ast_to_dict` (File-based) once `surface_program_to_dict` covers all callers
+
+**COMPLETED**: `ast_to_dict` is now `fn` (non-public). No external callers remain.
+Retained as implementation detail within the module.
+
+### Future work (Steps 8-9 completion)
+
+The remaining Expr-based functions (`dict_to_ast`, `dict_to_file`, `expr_to_thunk_id`,
+`document_to_dict`, etc.) can be deleted in the `rv2-delete-old-ast` sprint once:
+1. `annotation_to_thunk_id` PropertyDict entries are rewritten to use Surface types
+2. `dict_to_surface_program` is rewritten natively (eliminating `dict_to_file`)
+3. The remaining 15 fallback variants in `dict_to_surface_node_inner` are implemented natively
+   (Sequential, TypeAssert, Fn-alt, Match, Quote, Unquote, PatternDecl, LetDecl, CaseArm, etc.)
 
 ---
 

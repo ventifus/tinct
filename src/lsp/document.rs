@@ -858,7 +858,7 @@ mod tests {
         let env = test_env();
         let ctx = test_ctx();
         let state = DocumentState::new("[f: $_]".to_string(), &env, &ctx, None);
-        assert!(state.ast.is_ok(), "parse should succeed");
+        assert!(state.fatal_parse_error.is_none(), "parse should succeed");
         assert!(
             state.type_errors.is_empty(),
             "desugar should eliminate spurious 'undefined variable _' error; got: {:?}",
@@ -892,7 +892,7 @@ mod tests {
             &ctx,
             None,
         );
-        assert!(state.ast.is_ok(), "parse should succeed");
+        assert!(state.fatal_parse_error.is_none(), "parse should succeed");
         assert!(
             state.eval_errors.is_empty(),
             "LSP eval is skipped — eval_errors must be empty; got: {:?}",
@@ -926,7 +926,7 @@ mod tests {
             &ctx,
             None, // base_dir=None still gets prelude types via imports::build_type_env
         );
-        assert!(state.ast.is_ok(), "parse should succeed");
+        assert!(state.fatal_parse_error.is_none(), "parse should succeed");
         assert!(
             state.type_errors.is_empty(),
             "should have zero type errors (prelude names seeded); got: {:?}",

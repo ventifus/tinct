@@ -813,7 +813,7 @@ pub(crate) fn validate_and_wrap_record(
     // Shape check: verify all required fields exist
     // Per doc/07:117, try Key::String first, then Key::Int fallback
     for (field_name, _field_type) in row.fields.iter() {
-        let has_field = entries.contains_key(&Key::String(field_name.clone()))
+        let has_field = entries.contains_key(&Key::String(Rc::from(field_name.as_str())))
             || field_name
                 .parse::<i64>()
                 .ok()
@@ -852,13 +852,13 @@ pub(crate) fn validate_and_wrap_record(
     for (key, &thunk_id) in entries.iter() {
         // Try to find a matching field type
         let field_type = match key {
-            Key::String(field_name) => row.fields.get(field_name),
+            Key::String(field_name) => row.fields.get(field_name.as_ref()),
             Key::Int(n) => row.fields.get(&n.to_string()),
         };
 
         if let Some(field_type) = field_type {
             let field_name = match key {
-                Key::String(s) => s.clone(),
+                Key::String(s) => s.to_string(),
                 Key::Int(n) => n.to_string(),
             };
 
@@ -1000,7 +1000,7 @@ fn value_to_expr(value: &Value, span: Span, ctx: &Arc<EvalContext>) -> EvalResul
         }
         Value::Dict(dict) => {
             // Check if this is an AST dict (has a "type" field)
-            if dict.contains_key(&Key::String("type".to_string())) {
+            if dict.contains_key(&Key::String("type".into())) {
                 // It's an AST dict — convert via surface bridge
                 crate::ast_dict::dict_to_surface_node(value, ctx)
                     .map(|node| crate::ast_convert::surface_node_to_expr(&node))
@@ -1510,9 +1510,9 @@ fn eval_core_expr<'a>(
                         )));
                         for (key, val_thunk_id) in map {
                             if let Key::String(name) = key {
-                                if static_key_set.contains(&name) {
+                                if static_key_set.contains(name.as_ref()) {
                                     let val_thunk = ctx.get_thunk(val_thunk_id);
-                                    child_env.write().unwrap().insert(name, val_thunk);
+                                    child_env.write().unwrap().insert(name.to_string(), val_thunk);
                                 }
                             }
                         }
@@ -2962,7 +2962,7 @@ fn match_pattern<'a>(
                         for (key, field_pattern) in fields {
                             // Look up the field in the dict
                             if let Some(field_thunk_id) =
-                                dict_thunk_ids.get(&Key::String(key.clone()))
+                                dict_thunk_ids.get(&Key::String(Rc::from(key.as_str())))
                             {
                                 // Force the field value
                                 let field_thunk = ctx.get_thunk(*field_thunk_id);
@@ -3002,7 +3002,7 @@ fn match_pattern<'a>(
                                 fields.iter().map(|(k, _)| k.as_str()).collect();
                             for dict_key in dict_thunk_ids.keys() {
                                 let key_matches = match dict_key {
-                                    Key::String(s) => pattern_keys.contains(s.as_str()),
+                                    Key::String(s) => pattern_keys.contains(s.as_ref()),
                                     Key::Int(_) => false,
                                 };
                                 if !key_matches {
@@ -3187,7 +3187,7 @@ fn match_pattern<'a>(
                                             *value_span,
                                         )));
                                     payload_map
-                                        .insert(Key::String((*field_name).to_string()), thunk_id);
+                                        .insert(Key::String(Rc::from(*field_name)), thunk_id);
                                 }
                                 let payload_val = Value::Dict(payload_map);
                                 match_pattern(
@@ -8066,11 +8066,11 @@ mod tests {
         let mut entries: IndexMap<Key, ThunkId> = IndexMap::new();
         let span = test_span(1, 1, 1, 5);
         entries.insert(
-            Key::String("x".to_string()),
+            Key::String("x".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
         );
         entries.insert(
-            Key::String("z".to_string()),
+            Key::String("z".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(99), span))),
         );
 
@@ -8174,7 +8174,7 @@ mod tests {
             ))),
         );
         entries.insert(
-            Key::String("name".to_string()),
+            Key::String("name".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val("y".into()),
                 span,
@@ -8223,7 +8223,7 @@ mod tests {
             ))),
         );
         entries.insert(
-            Key::String("name".to_string()),
+            Key::String("name".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val("y".into()),
                 span,

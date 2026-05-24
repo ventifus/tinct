@@ -643,42 +643,42 @@ pub fn builtin_timestamp_parts(
 
         let mut map = IndexMap::new();
         map.insert(
-            Key::String("year".to_string()),
+            Key::String("year".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.year() as i64),
                 args.call_span,
             ))),
         );
         map.insert(
-            Key::String("month".to_string()),
+            Key::String("month".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.month() as i64),
                 args.call_span,
             ))),
         );
         map.insert(
-            Key::String("day".to_string()),
+            Key::String("day".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.day() as i64),
                 args.call_span,
             ))),
         );
         map.insert(
-            Key::String("hour".to_string()),
+            Key::String("hour".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.hour() as i64),
                 args.call_span,
             ))),
         );
         map.insert(
-            Key::String("minute".to_string()),
+            Key::String("minute".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.minute() as i64),
                 args.call_span,
             ))),
         );
         map.insert(
-            Key::String("second".to_string()),
+            Key::String("second".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.second() as i64),
                 args.call_span,
@@ -989,56 +989,56 @@ pub fn builtin_timestamp_in_tz(
 
         let mut map = IndexMap::new();
         map.insert(
-            Key::String("year".to_string()),
+            Key::String("year".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.year() as i64),
                 args.call_span,
             ))),
         );
         map.insert(
-            Key::String("month".to_string()),
+            Key::String("month".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.month() as i64),
                 args.call_span,
             ))),
         );
         map.insert(
-            Key::String("day".to_string()),
+            Key::String("day".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.day() as i64),
                 args.call_span,
             ))),
         );
         map.insert(
-            Key::String("hour".to_string()),
+            Key::String("hour".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.hour() as i64),
                 args.call_span,
             ))),
         );
         map.insert(
-            Key::String("minute".to_string()),
+            Key::String("minute".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.minute() as i64),
                 args.call_span,
             ))),
         );
         map.insert(
-            Key::String("second".to_string()),
+            Key::String("second".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.second() as i64),
                 args.call_span,
             ))),
         );
         map.insert(
-            Key::String("offset-seconds".to_string()),
+            Key::String("offset-seconds".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.offset().seconds() as i64),
                 args.call_span,
             ))),
         );
         map.insert(
-            Key::String("tz-name".to_string()),
+            Key::String("tz-name".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val(dt.time_zone().iana_name().unwrap_or("Unknown")),
                 args.call_span,
