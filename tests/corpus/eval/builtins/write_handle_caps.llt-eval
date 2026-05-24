@@ -6,7 +6,7 @@
 ---
 %
 [include %libdir "io.llt"]
-[has-cap? [open [narrow %pwd "target"] "tinct-test-write-caps.txt" "r"] "Readable"]
+[has-cap? [open [narrow %pwd "target"] "tinct-test-write-caps.txt" Readable] "Readable"]
 === out
 Bool(true)
 === warn

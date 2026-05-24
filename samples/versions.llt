@@ -1,41 +1,57 @@
 # versions.llt — check Rust toolchain and dependency versions
 # Run from project root:
-#   tinct run --strict --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 samples/versions.llt
+#   tinct run --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 samples/versions.llt
 # or via justfile:
 #   just versions
+#
+# Note: net.llt cannot be included from user scripts until [include %rust ...] is fixed in the
+# stdlib include mechanism. HTTP fetch is implemented inline using raw Rust builtins.
 
 --- caps: [%nc: @NetCap]
 
 [
   strings: [include %libdir "strings.llt"]
-  net:     [include %libdir "net.llt"]
 ]
 
 [
 
-cargo-toml-text: [slurp [open %pwd "Cargo.toml" "r"]]
-cargo-lock-text: [slurp [open %pwd "Cargo.lock" "r"]]
+cargo-toml-text: [slurp [open %pwd "Cargo.toml" Readable]]
+cargo-lock-text: [slurp [open %pwd "Cargo.lock" Readable]]
+
+# Minimal HTTPS GET using raw builtins — returns response dict or raises on error.
+# Uses http2-session (reqwest, HTTP/2 via ALPN) for HTTPS.
+https-get: [fn@Dict [let cap@NetCap url-string@String]
+  [u: [url url-string]]
+  [http-request
+    [http2-session cap [str u.scheme "://" u.host] []]
+    "GET"
+    [str u.path [if [null? u.query] "" [str "?" u.query]]]
+    []
+    ""]]
+
+# Like https-get but returns Ok[resp] | Err[msg] — never throws.
+fetch: [fn@Dict [let cap@NetCap url-string@String]
+  [try [fn [] [https-get cap url-string]]]]
 
 # Fetch Rust stable channel TOML, extract version — returns "?" on any failure.
 latest-rust: [result-or "?"
-  [and-then
-    [net.http-get %nc [url "https://static.rust-lang.org/dist/channel-rust-stable.toml"]]
-    [fn@[Ok Err] [let resp@Dict]
-      [ver: [reduce
-        [fn@Dict [let state@Dict line@String]
-          [t: [trim line]]
-          [if [= state.version ""]
-            [if [str-contains? t "[pkg.rust]"]
-              [set state "in-pkg-rust" true]
-              [if [and state.in-pkg-rust [starts-with? t "version = \""]]
-                [set state "version" [str-slice t 11 [trunc [- [length t] 1]]]]
-                state]]
-            state]]
-        [set [set [] "in-pkg-rust" false] "version" ""]
-        [split "\n" resp.body]].version]
-      [if [= [length ver] 0] [Err "version not found"] [Ok ver]]]]]
+  [do result
+    [resp: [fetch %nc "https://static.rust-lang.org/dist/channel-rust-stable.toml"]]
+    [ver: [reduce
+      [fn@Dict [let state@Dict line@String]
+        [t: [trim line]]
+        [if [= state.version ""]
+          [if [str-contains? t "[pkg.rust]"]
+            [set state "in-pkg-rust" true]
+            [if [and state.in-pkg-rust [starts-with? t "version = \""]]
+              [set state "version" [str-slice t 11 [trunc [- [length t] 1]]]]
+              state]]
+          state]]
+      [in-pkg-rust: false  version: ""]
+      [split "\n" resp.body]].version]
+    [if [= [length ver] 0] [Err "version not found"] [Ok ver]]]]
 
-latest-rust-short: [if [= [length latest-rust] 0] "?" [first [split " " latest-rust]]]
+latest-rust-short: [@String [if [= [length latest-rust] 0] "?" [first [split " " latest-rust]]]]
 
 # Collect direct dep names from all dependency sections in Cargo.toml.
 dep-name-from: [fn@String [let t@String]
@@ -53,7 +69,7 @@ dep-names: [sorted [reduce
       [if [and state.in-deps [and [< 0 [length t]] [not [starts-with? t "#"]]]]
         [dep-name-append state t]
         state]]]
-  [set [set [] "in-deps" false] "names" []]
+  [in-deps: false  names: []]
   [split "\n" cargo-toml-text]].names]
 
 # Find a package's locked version in Cargo.lock.
@@ -70,14 +86,13 @@ find-locked: [fn@String [let name@String]
 # Fetch the latest stable version for a crate from crates.io — "?" on failure.
 crate-latest: [fn@String [let name@String]
   [result-or "?"
-    [and-then
-      [net.http-get %nc [url [str "https://crates.io/api/v1/crates/" name]]]
-      [fn@[Ok Err] [let resp@Dict]
-        [if [= [length resp.body] 0]
-          [Err "empty response"]
-          [Ok [get "max_stable_version" [get "crate" [from-json resp.body]]]]]]]]]
+    [do result
+      [resp: [fetch %nc [str "https://crates.io/api/v1/crates/" name]]]
+      [if [= [length resp.body] 0]
+        [Err "empty response"]
+        [Ok [get "max_stable_version" [get "crate" [from-json resp.body]]]]]]]]
 
-rust-version: [env "RUST_VERSION"]
+rust-version: [@String [env "RUST_VERSION"]]
 mark: [fn@String [let a@String b@String] [if [= a b] "✓" "←"]]
 
 dep-row: [fn@String [let name@String]
@@ -90,9 +105,7 @@ dep-row: [fn@String [let name@String]
     "  " [mark locked latest]
     "\n"]]
 
-]
-
-[emit [str
+_: [emit [str
   "\nRust toolchain\n"
   "  " [strings.pad-right "pinned:" 10 " "] " " rust-version "\n"
   "  " [strings.pad-right "latest:" 10 " "] " " latest-rust-short
@@ -106,3 +119,5 @@ dep-row: [fn@String [let name@String]
     "  " [strings.pad-right "──────────" 12 " "] "\n"
   [join "" [map dep-row dep-names]]
   "\n"]]
+
+]

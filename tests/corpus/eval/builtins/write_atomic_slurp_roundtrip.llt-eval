@@ -3,6 +3,6 @@
 [write-atomic [narrow %pwd "target"] "tinct-test-write-atomic-slurp.txt" "atomic write works"]
 ---
 %
-[slurp [open [narrow %pwd "target"] "tinct-test-write-atomic-slurp.txt" "r"]]
+[slurp [open [narrow %pwd "target"] "tinct-test-write-atomic-slurp.txt" Readable]]
 === out
 String("atomic write works")

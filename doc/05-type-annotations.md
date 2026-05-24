@@ -829,7 +829,7 @@ Tinct uses capability types to statically track I/O permissions. Three capabilit
 ```tinct
 # Annotations
 read-file: [fn@String [cap@DirCap  path@String]
-  [slurp [open cap path "r"]]]
+  [slurp [open cap path Readable]]]
 
 connect: [fn@Handle [nc@NetCap  host@String  port@Int] ...]
 

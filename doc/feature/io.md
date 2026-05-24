@@ -83,7 +83,7 @@ runtime:
 
 **`pwd`** — a `DirCap` for the working directory at the time `llt eval` is
 invoked. Used for project-local file access: `[include pwd "config.llt"]`,
-`[open pwd "output.yaml" "w"]`. Suppressed by `--no-pwd`.
+`[open pwd "output.yaml" Writable]`. Suppressed by `--no-pwd`.
 
 **`libdir`** — a `DirCap` for the system library directory: where tinct's
 standard libraries reside. Used as `[include libdir "io.llt"]`. Survives
@@ -118,7 +118,7 @@ in the Miller sense (Dennis & Van Horn 1966).
 
 ```tinct
 # Cap check at open time — fs is a DirCap for /var/data
-[fh: [open fs "secrets/key" "r"]]
+[fh: [open fs "secrets/key" Readable]]
 
 # Handle IS the capability — fs not needed again
 # fh has authority over this one file; it cannot open others
@@ -192,9 +192,9 @@ dropped. Revocation at the `NetCap` level is not provided.
 # Open a file within a DirCap
 # narrow calls Dir::open(subpath) — RESOLVE_BENEATH applies to the subpath,
 # so "../.." fails at narrow time, not at first open
-[fh:      [open fs "config/settings.yaml" "r"]]
-[out:     [open fs "output/result.yaml"    "w"]]
-[log:     [open fs "logs/app.log"          "a"]]
+[fh:      [open fs "config/settings.yaml" Readable]]
+[out:     [open fs "output/result.yaml"    Writable]]
+[log:     [open fs "logs/app.log"          Writable Appendable]]
 
 # Narrow to a subdirectory (attenuation)
 [log-cap: [narrow fs "logs/app"]]
@@ -245,7 +245,7 @@ Handles are consumed by three Rust builtins that take no cap argument:
 [conn-written: [write conn "GET / HTTP/1.0\r\n\r\n"]]
 
 # Lazy coinductive stream of lines — each line read on demand
-[log-lines: [lines [open log-cap "access.log" "r"]]]
+[log-lines: [lines [open log-cap "access.log" Readable]]]
 ```
 
 ### `write` Returns the Handle: Sequencing via Data Dependency
@@ -450,9 +450,9 @@ Suppress it explicitly with `--no-libdir` if needed.)
 
 ```tinct
 # stdlib/io.llt
-read-file:  [fn [cap path]    [slurp [open cap path "r"]]]
-write-file: [fn [cap path s]  [write [open cap path "w"] s]]
-read-lines: [fn [cap path]    [lines [open cap path "r"]]]
+read-file:  [fn [cap path]    [slurp [open cap path Readable]]]
+write-file: [fn [cap path s]  [write [open cap path Writable] s]]
+read-lines: [fn [cap path]    [lines [open cap path Readable]]]
 println:    [fn [s]           [emit [str s "\n"]]]
 ```
 
@@ -601,9 +601,11 @@ Allowlist-checked against `--allow-path`; fails if the path is not allowlisted.
 allowlist entries (exact hostnames, host:port, IPv4/IPv6 CIDR). Strict.
 Requires `--allow-network`; fails if network access is not permitted.
 
-**`open dir-cap path mode`:** Open file at path relative to `DirCap`. On
+**`open dir-cap path flag...`:** Open file at path relative to `DirCap`. On
 Linux 5.6+: `openat2(RESOLVE_BENEATH)`. On older kernels/macOS: cap-std
-userspace emulation. Mode: `"r"`, `"w"`, `"a"`. Returns `Value::Handle`.
+userspace emulation. At least one capability flag is required: `Readable`,
+`Writable`, or `Appendable` (may combine `Writable Appendable`). Optional
+flags: `Binary`, `Text`, `Seekable`. Returns `Value::Handle`.
 
 **`connect net-cap host port`:** Resolve hostname, check against NetCap
 allowlist (hostname entries pre-DNS, CIDR entries post-DNS), open TCP socket.

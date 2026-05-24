@@ -1,6 +1,6 @@
 # Type error: passing wrong type where DirCap expected
 # open expects DirCap as first arg, but we pass a String
 
-[call $open "not-a-cap" "test.llt" "r"]
+[call $open "not-a-cap" "test.llt" Readable]
 === out
 cannot unify DirCap with

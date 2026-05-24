@@ -196,7 +196,7 @@ write-module: [fn@[return: String  doc: """
   Write documentation for one stdlib file to %docdir and return the module name,
   or "" if the file has no annotated bindings.
 """] [let full-path@String]
-  [text: [str [slurp [open %libdir full-path "r"]]]]
+  [text: [str [slurp [open %libdir full-path Readable]]]]
   [docs: [extract-docs text]]
   [name: [mod-name full-path]]
   [if [empty? docs]

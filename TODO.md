@@ -532,13 +532,32 @@ Benefits:
 - [x] Add `test_caps()` with `OnceLock<TestCaps>` pattern — all test ambient opens replaced across 11 files
 - [x] All test `open_ambient_dir` calls → `test_caps().root` / `test_caps().stdlib`
 
+### user-include-rust-modules: `[include %libdir "net.llt"]` fails from user scripts with `%rust` undefined
+
+Discovered via `just versions` (2026-05-23). `net.llt` uses `[include %rust "net"]` / `[include %rust "io"]` to load Rust-native builtins during stdlib bootstrap. These work during prelude loading (where `%rust` is injected into the bootstrap environment), but fail when `net.llt` is included from a user script — `%rust` is not in the user evaluation environment. The include cache would prevent re-evaluation if net.llt were already cached by the prelude, but the prelude doesn't load net.llt, so every user-script inclusion triggers a fresh evaluation that fails. `strings.llt` works because the prelude caches `%rust "string"` via its own string builtins.
+
+- [ ] Fix: inject `%rust` into the include evaluation environment for all stdlib includes, not just prelude bootstrap. (`src/imports.rs` or `src/eval_pipeline.rs`) [Major]
+- [ ] Alternative: pre-warm the include cache for all stdlib files during prelude loading [Alternative]
+
 ### typecheck-handle-annotation-bug: `@[Handle Readable]` TypeAssert triggers T000 internal error
 
 Discovered via `samples/versions.llt` rewrite (2026-05-23). Writing `[@[Handle Readable] expr]` causes the type checker to panic with `[T000]: resolved_type written twice — elaboration invariant violated`. The TypeAssert elaboration is writing to the same AST node's resolved_type slot twice. Workaround: remove the annotation; the Handle type mismatch (T003) is then reported as a non-fatal warning instead.
 
 - [ ] Find the double-write in `src/typecheck_annot.rs` or `src/typecheck.rs` — specifically the TypeAssert elaboration for parameterized Handle types like `Handle[Readable]`; add guard to prevent double-write or fix the root cause (`src/typecheck.rs`, `src/typecheck_annot.rs`)
-- [ ] Verify `[@[Handle Readable] [open %pwd "file.txt" "r"]]` type-checks cleanly after fix
-- [ ] `open` builtin's return type is not parameterized by mode string (`"r"` → `Handle[Readable]`) — track as a separate type precision improvement once the above bug is fixed
+- [ ] Verify `[@[Handle Readable] [open %pwd "file.txt" Readable]]` type-checks cleanly after fix
+- [ ] `open` builtin's return type is not parameterized by capability flags (`Readable` → `Handle[Readable]`) — track as a separate type precision improvement once the above bug is fixed (tracked in open-api-migration)
+
+### typecheck-typeassert-no-narrowing: `[@String expr]` TypeAssert doesn't narrow inferred type at call sites
+
+Discovered via `samples/versions.llt` (2026-05-23). Writing `rust-version: [@String [env "RUST_VERSION"]]` should make `rust-version` have type `String` at call sites. But the type checker still infers `String | []` (the underlying type of `env`), causing T003 errors when passing `rust-version` to a function expecting `String`. The TypeAssert is validated at runtime but the type checker doesn't use it to narrow the inferred type for downstream uses.
+
+- [ ] When a dict entry has a TypeAssert annotation `[@T expr]`, the entry's inferred type for callers should be `T` (the asserted type), not the underlying expression type. Fix the type annotation propagation in dict entry type inference. (`src/typecheck_dict.rs` or `src/typecheck.rs`)
+
+### fmt-panic-seq-materialized: `just fmt-llt-check` panics with "seq should be materialized"
+
+Discovered via `samples/versions.llt` rewrite (2026-05-23). Running `tinct fmt --check` on a file containing `[do result ...]` macro expansion causes a panic in `src/builtins_seq_reduce.rs:226:14` with message "seq should be materialized". The formatter is triggering a reduce operation on an unmaterialized Seq. Likely caused by the `do` macro expanding to `[and-then ...]` chains that the formatter tries to evaluate or partially execute.
+
+- [ ] Reproduce with a minimal `[do result [x: [Ok 1]] [Ok x]]` file; find why the formatter forces the Seq; fix the formatter to avoid materializing or add a graceful error path. (`src/builtins_seq_reduce.rs:226`, `src/formatter.rs`)
 
 ### lint-clippy-hotfix: Fix 4 new clippy errors from eval-hot-path-fixes (2026-05-23)
 
@@ -625,10 +644,10 @@ Health Review #22 (integration-fixes ✅, clippy-cap-std-lints ✅) and Codebase
 **Motivation:** Capability flags are already registered as type-level symbols (Readable, Writable, etc.). Using them as positional args instead of opaque strings allows the type checker to parameterize the return Handle type from the call arguments. `"r"` → `Handle[Readable]`, `"w"` → `Handle[Writable]`, etc.
 
 **Tasks:**
-- [ ] Update `builtin_open` in `src/builtins_io.rs` — parse positional args after path as capability flag types (Readable, Writable, Appendable, Binary, Exclusive, Sync, NoFollow) instead of string mode (`"r"/"w"/"a"`). `[open cap path]` with no flags after path → arity error. (`src/builtins_io.rs:183-330`)
+- [x] Update `builtin_open` in `src/builtins_io.rs` — parse positional args after path as capability flag types (Readable, Writable, Appendable, Binary, Exclusive, Sync, NoFollow) instead of string mode (`"r"/"w"/"a"`). `[open cap path]` with no flags after path → arity error. (`src/builtins_io.rs:183-330`)
 - [ ] Update type signature in `src/type_env.rs` — `open` return type is `Handle(cap_row)` where `cap_row` is synthesized from the flag arguments actually present in the call
-- [ ] Update all corpus tests and examples using `[open ... "r"]` / `[open ... "w"]` / `[open ... "a"]` to use capability flag syntax
-- [ ] Update `doc/feature/io.md:604`, `doc/11a-builtins.md:367-369`, `doc/12-tooling.md:630` to reflect new syntax
+- [x] Update all corpus tests and examples using `[open ... "r"]` / `[open ... "w"]` / `[open ... "a"]` to use capability flag syntax
+- [x] Update `doc/feature/io.md:604`, `doc/11a-builtins.md:367-369`, `doc/12-tooling.md:630` to reflect new syntax
 - [ ] `just build` passes; `just test` passes
 
 ### io-cap-std-gaps: Add symlink, copy-file, set-permissions, stat-symlink, exists builtins

@@ -571,7 +571,7 @@ The `%` prefix on injected cap names makes them visually distinct from user-defi
 tinct run --cap-fs data=/var/data --cap-fs out=/tmp/output script.llt
 ```
 
-Inside `script.llt`, `%data` and `%out` are available as DirCaps. The program can call `[open %data "config.json" "r"]` but cannot open files outside `/var/data` via `%data`, because the cap's RESOLVE_BENEATH enforcement prevents path traversal.
+Inside `script.llt`, `%data` and `%out` are available as DirCaps. The program can call `[open %data "config.json" Readable]` but cannot open files outside `/var/data` via `%data`, because the cap's RESOLVE_BENEATH enforcement prevents path traversal.
 
 **DirCap permission flags.** `DirCap` carries a set of orthogonal permission flags that restrict what operations the cap authorizes. The optional `:MODE` suffix on `--cap-fs` controls which flags are granted:
 
@@ -580,7 +580,7 @@ Inside `script.llt`, `%data` and `%out` are available as DirCaps. The program ca
 | `Readable` | Open files for reading (`open`, `slurp`, `lines`) |
 | `Statable` | Read file metadata — name, type, size, mtime — via `stat`-style queries; does not allow reading file content |
 | `Listable` | Enumerate directory entries via `list-dir`; implies `Statable` |
-| `Writable` | Write and create files: `open "w"`, `write`, `write-atomic` |
+| `Writable` | Write and create files: `open Writable`, `write`, `write-atomic` |
 | `Appendable` | Open files in append mode; no overwrite, no delete |
 | `Deletable` | Remove files and directories: `delete-file` |
 | `Renameable` | Rename or move files within the tree: `rename-file` |
@@ -627,7 +627,7 @@ The extended form is detected by the mode starting with `[`. Flag names are case
 The `...` row tail (same as in record types) expresses "at least these flags, plus possibly others":
 
 ```tinct
-open     [cap@[DirCap [Readable ...]]  path@String "r"] → Handle@[Readable ...]
+open     [cap@[DirCap [Readable ...]]  path@String Readable] → Handle@[Readable ...]
 list-dir [cap@[DirCap [Listable ...]]  path@String]     → [Seq Dict]
 write    [cap@[DirCap [Writable ...]]  path@String content@String]
 ```

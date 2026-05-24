@@ -4,6 +4,6 @@
 [write [narrow %pwd "target"] "tinct-test-write-slurp.txt" "hello tinct"]
 ---
 %
-[slurp [open [narrow %pwd "target"] "tinct-test-write-slurp.txt" "r"]]
+[slurp [open [narrow %pwd "target"] "tinct-test-write-slurp.txt" Readable]]
 === out
 String("hello tinct")

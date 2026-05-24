@@ -350,11 +350,11 @@ File loading, JSON parsing, and text output.
 
 | Flag | Required by |
 |------|------------|
-| `Readable` | `open` in read mode (`"r"`), `slurp`, `lines` |
+| `Readable` | `open` with `Readable` flag, `slurp`, `lines` |
 | `Statable` | `stat`-style metadata queries on known paths |
 | `Listable` | `list-dir`; implies `Statable` |
-| `Writable` | `open` in write mode (`"w"`), `write`, `write-atomic` |
-| `Appendable` | `open` in append mode (`"a"`) |
+| `Writable` | `open` with `Writable` flag, `write`, `write-atomic` |
+| `Appendable` | `open` with `Appendable` flag (use with `Writable`) |
 | `Deletable` | `delete-file` |
 | `Renameable` | `rename-file` |
 | `Symlinkable` | `symlink`; create symbolic links within the DirCap's directory |
@@ -364,9 +364,9 @@ File loading, JSON parsing, and text output.
 **Row-polymorphic signatures** express capability requirements without over-constraining the DirCap:
 
 ```text
-open             [cap@[DirCap [Readable ...]]            path@String "r"] → Handle@[Readable ...]
-open             [cap@[DirCap [Writable ...]]            path@String "w"] → Handle@[Writable ...]
-open             [cap@[DirCap [Appendable ...]]          path@String "a"] → Handle@[Appendable ...]
+open             [cap@[DirCap [Readable ...]]            path@String Readable]           → Handle@[Readable ...]
+open             [cap@[DirCap [Writable ...]]            path@String Writable]           → Handle@[Writable ...]
+open             [cap@[DirCap [Appendable ...]]          path@String Writable Appendable] → Handle@[Appendable ...]
 list-dir         [cap@[DirCap [Listable ...]]            path@String]     → [Seq Dict]
 write            [cap@[DirCap [Writable ...]]            path@String content@String]
 symlink          [cap@[DirCap [Symlinkable ...]]         target@String link@String]

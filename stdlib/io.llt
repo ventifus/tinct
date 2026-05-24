@@ -8,13 +8,13 @@
 # cap: DirCap, path: String
 # Returns: [Ok content] or [Error message]
 read-file@[doc: "Read an entire file as a string"]: [fn@Dict [cap@DirCap path@String]
-  [try [fn [] [slurp [open cap path "r"]]]]]
+  [try [fn [] [slurp [open cap path Readable]]]]]
 
 # Read a file as a lazy sequence of lines.
 # cap: DirCap, path: String
 # Returns: [Ok seq] or [Error message]
 read-lines@[doc: "Read a file as a lazy sequence of lines"]: [fn@Dict [cap@DirCap path@String]
-  [try [fn [] [lines [open cap path "r"]]]]]
+  [try [fn [] [lines [open cap path Readable]]]]]
 
 # Print a string followed by a newline to stdout.
 println@[doc: "Print a string followed by a newline to stdout"]: [fn@Null [s@String]
@@ -42,19 +42,19 @@ write-line@[doc: "Write a line to a WriteHandle, appending a newline and flushin
 # Append content to a file (creates if doesn't exist).
 # cap: DirCap, path: String, content: String
 append-file@[doc: "Append content to a file (creates if doesn't exist)"]: [fn@Null [cap@DirCap path@String content@String]
-  [write-handle [open cap path "a"] content]]
+  [write-handle [open cap path Writable Appendable] content]]
 
 # Open a file for writing (creates or truncates, returns handle).
 # cap: DirCap, path: String
 # Returns: WriteHandle
 open-write@[doc: "Open a file for writing (creates or truncates, returns handle)"]: [fn@WriteHandle [cap@DirCap path@String]
-  [open cap path "w"]]
+  [open cap path Writable]]
 
 # Open a file for appending (creates if doesn't exist, returns handle).
 # cap: DirCap, path: String
 # Returns: WriteHandle
 open-append@[doc: "Open a file for appending (creates if doesn't exist, returns handle)"]: [fn@WriteHandle [cap@DirCap path@String]
-  [open cap path "a"]]
+  [open cap path Writable Appendable]]
 
 # Write a sequence of lines to a WriteHandle.
 # handle: WriteHandle, lines: Seq
