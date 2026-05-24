@@ -13,7 +13,8 @@ use indexmap::IndexMap;
 use crate::arena::ThunkId;
 use crate::ast::{
     Annotation, Document, DotKey, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned,
-    Stage, SurfaceEntry, SurfaceExpression, SurfaceNamedArg, SurfaceNode, SurfaceParam,
+    Stage, SurfaceDeclaration, SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceItem,
+    SurfaceNamedArg, SurfaceNode, SurfaceParam, SurfaceProgram,
 };
 use crate::error::EvalResult;
 use crate::value::{string_val, Key, Thunk, Value};
@@ -116,18 +117,17 @@ pub fn ast_to_dict_expr(
 }
 
 // ============================================================================
-// Surface AST Functions (Phase 2 — native SurfaceExpression path)
+// Surface AST Functions (Phases 2-4 — native SurfaceExpression/SurfaceDeclaration path)
 // ============================================================================
 //
-// `surface_node_to_dict` now delegates directly to `surface_node_to_thunk_id`,
-// which walks `SurfaceExpression` natively for all variants.
-//
-// `surface_program_to_dict` still bridges through `ast_convert` (File-based).
-// `dict_to_surface_node` / `dict_to_surface_program` still bridge through the
-// old Expr-based `dict_to_ast` path.
-//
-// Remaining bridge functions will be removed in Phase 3 (Steps 4-9 of the
-// migration plan in doc/whatif/plans/ast-dict-surface-migration-notes.md).
+// Phase 2: `surface_node_to_thunk_id` walks `SurfaceExpression` natively for all variants.
+// Phase 3: `surface_decl_to_thunk_id` walks `SurfaceDeclaration` natively.
+//          `surface_document_to_thunk_id` iterates `SurfaceDocument::items` natively.
+// Phase 4: `surface_program_to_dict` rewritten to use native SurfaceDocument iteration.
+//          `dict_to_surface_node` still bridges through the old Expr-based `dict_to_ast`
+//          path (the reverse direction is unchanged — see Steps 6-9 of the migration plan
+//          in doc/whatif/plans/ast-dict-surface-migration-notes.md).
+//          `dict_to_surface_program` still bridges through the old File-based `dict_to_file`.
 
 /// Convert a SurfaceNode to a dict representation.
 ///
@@ -608,6 +608,395 @@ fn surface_node_to_thunk_id(
     ))))
 }
 
+/// Convert a `SurfaceDeclaration` to a ThunkId containing its dict representation.
+///
+/// This is the surface-native handler for Group B variants (compile-time-only declaration
+/// forms that moved from `SurfaceExpression` to `SurfaceDeclaration`). Schema (Variant tags,
+/// key names) is identical to the old Expr-based emitter — existing tinct metaprogramming
+/// code sees no change.
+///
+/// # `ClassDecl.superclasses`
+/// The old Expr-based emitter silently drops `superclasses`. This function continues that
+/// behavior — superclasses are not yet represented in the dict schema. Tracked in TODO.md
+/// under "grammar-doc-polish: ClassDecl.superclasses silently dropped".
+fn surface_decl_to_thunk_id(
+    decl: &SurfaceDeclaration,
+    span: Span,
+    opts: &AstToDictOpts,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<ThunkId> {
+    let mut dict = IndexMap::new();
+    let variant_tag: &str;
+
+    match decl {
+        SurfaceDeclaration::TypeAlias { params, body } => {
+            variant_tag = "TypeAlias";
+            if !params.is_empty() {
+                let params_thunk_ids: Vec<ThunkId> = params
+                    .iter()
+                    .map(|p| {
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(p), span)))
+                    })
+                    .collect();
+                dict.insert(
+                    Key::String("params".into()),
+                    list_to_thunk_id(params_thunk_ids.into_iter(), span, ctx)?,
+                );
+            }
+            dict.insert(
+                Key::String("expr".into()),
+                surface_node_to_thunk_id(body, opts, ctx)?,
+            );
+        }
+
+        SurfaceDeclaration::ClassDecl {
+            name,
+            params,
+            superclasses: _, // TODO (grammar-doc-polish): ClassDecl.superclasses silently dropped — design decision needed on schema representation
+            methods,
+            determines,
+            resolver,
+            resolver_injective,
+        } => {
+            variant_tag = "ClassDecl";
+            dict.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+            );
+            // params: integer-keyed list of param name strings
+            let params_dict: IndexMap<Key, ThunkId> = params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    (
+                        Key::Int(i as i64),
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(p), span))),
+                    )
+                })
+                .collect();
+            dict.insert(
+                Key::String("params".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(params_dict),
+                    span,
+                ))),
+            );
+            // methods: string-keyed dict of method expression dicts
+            // Keys are SurfaceExpression::Str bare words; values are the full entry value nodes.
+            let methods_dict: IndexMap<Key, ThunkId> = methods
+                .iter()
+                .filter_map(|method| {
+                    method.node.key.as_ref().and_then(|key| {
+                        if let SurfaceExpression::Str(key_str) = &key.expr {
+                            Some((
+                                Key::String(key_str.clone()),
+                                surface_node_to_thunk_id(&method.node.value, opts, ctx).ok()?,
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+            dict.insert(
+                Key::String("methods".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(methods_dict),
+                    span,
+                ))),
+            );
+            // determines: optional integer-keyed list of expression dicts
+            if !determines.is_empty() {
+                let determines_dict: IndexMap<Key, ThunkId> = determines
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, fd_node)| {
+                        Some((
+                            Key::Int(i as i64),
+                            surface_node_to_thunk_id(fd_node, opts, ctx).ok()?,
+                        ))
+                    })
+                    .collect();
+                dict.insert(
+                    Key::String("determines".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Dict(determines_dict),
+                        span,
+                    ))),
+                );
+            }
+            // resolver: optional expression dict
+            if let Some(resolver_node) = resolver {
+                dict.insert(
+                    Key::String("resolver".into()),
+                    surface_node_to_thunk_id(resolver_node, opts, ctx)?,
+                );
+            }
+            // injective: optional bool (only emitted when true)
+            if *resolver_injective {
+                dict.insert(
+                    Key::String("injective".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Bool(true), span))),
+                );
+            }
+        }
+
+        SurfaceDeclaration::InstanceDecl { class_name, arms } => {
+            variant_tag = "InstanceDecl";
+            dict.insert(
+                Key::String("class".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(class_name),
+                    span,
+                ))),
+            );
+            // arms: integer-keyed list of {pattern, methods} dicts
+            let arms_dict: IndexMap<Key, ThunkId> = arms
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (pattern_node, methods))| {
+                    let mut arm_dict = IndexMap::new();
+                    arm_dict.insert(
+                        Key::String("pattern".into()),
+                        surface_node_to_thunk_id(pattern_node, opts, ctx).ok()?,
+                    );
+                    // methods: string-keyed dict matching ClassDecl.methods format
+                    let methods_dict: IndexMap<Key, ThunkId> = methods
+                        .iter()
+                        .filter_map(|method| {
+                            method.node.key.as_ref().and_then(|key| {
+                                if let SurfaceExpression::Str(key_str) = &key.expr {
+                                    Some((
+                                        Key::String(key_str.clone()),
+                                        surface_node_to_thunk_id(&method.node.value, opts, ctx)
+                                            .ok()?,
+                                    ))
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                        .collect();
+                    arm_dict.insert(
+                        Key::String("methods".into()),
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                            Value::Dict(methods_dict),
+                            span,
+                        ))),
+                    );
+                    Some((
+                        Key::Int(i as i64),
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                            Value::Dict(arm_dict),
+                            span,
+                        ))),
+                    ))
+                })
+                .collect();
+            dict.insert(
+                Key::String("arms".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(arms_dict),
+                    span,
+                ))),
+            );
+        }
+
+        SurfaceDeclaration::DefMacro { name, params, body } => {
+            variant_tag = "DefMacro";
+            dict.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+            );
+            dict.insert(
+                Key::String("params".into()),
+                surface_node_to_thunk_id(params, opts, ctx)?,
+            );
+            dict.insert(
+                Key::String("body".into()),
+                surface_node_to_thunk_id(body, opts, ctx)?,
+            );
+        }
+
+        SurfaceDeclaration::MacroDecl { name, params, body } => {
+            variant_tag = "MacroDecl";
+            dict.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+            );
+            dict.insert(
+                Key::String("params".into()),
+                surface_node_to_thunk_id(params, opts, ctx)?,
+            );
+            dict.insert(
+                Key::String("body".into()),
+                surface_node_to_thunk_id(body, opts, ctx)?,
+            );
+        }
+
+        SurfaceDeclaration::SyntaxClass { name, pattern, message } => {
+            variant_tag = "SyntaxClass";
+            dict.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+            );
+            dict.insert(
+                Key::String("pattern".into()),
+                surface_node_to_thunk_id(pattern, opts, ctx)?,
+            );
+            if let Some(msg) = message {
+                dict.insert(
+                    Key::String("message".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(msg), span))),
+                );
+            }
+        }
+
+        SurfaceDeclaration::Splice(forms) => {
+            variant_tag = "Splice";
+            let mut form_list = Vec::new();
+            for form in forms {
+                form_list.push(surface_node_to_thunk_id(form, opts, ctx)?);
+            }
+            dict.insert(
+                Key::String("forms".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(
+                        form_list
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, v)| (Key::Int(i as i64), v))
+                            .collect(),
+                    ),
+                    span,
+                ))),
+            );
+        }
+    }
+
+    dict.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
+    let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span)));
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::Variant {
+            tag: variant_tag.to_string(),
+            payload: Some(payload_id),
+        },
+        span,
+    ))))
+}
+
+/// Convert a `SurfaceDocument` to a ThunkId containing its dict representation.
+///
+/// Phase 3 native path: iterates `doc.items` directly (instead of `doc.expressions`),
+/// dispatching on `SurfaceItem::Expr` → `surface_node_to_thunk_id` and
+/// `SurfaceItem::Decl` → `surface_decl_to_thunk_id`. The emitted schema is identical
+/// to the old `document_to_dict` function — all fields and their types are unchanged.
+fn surface_document_to_thunk_id(
+    doc: &SurfaceDocument,
+    span: Span,
+    opts: &AstToDictOpts,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<ThunkId> {
+    let mut dict = IndexMap::new();
+
+    dict.insert(
+        Key::String("type".into()),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            string_val("document"),
+            span,
+        ))),
+    );
+
+    // expressions: list of expression/declaration dicts (all SurfaceItems, both Expr and Decl)
+    let item_ids: Vec<_> = doc
+        .items
+        .iter()
+        .map(|item| match item {
+            SurfaceItem::Expr(node) => surface_node_to_thunk_id(node, opts, ctx),
+            SurfaceItem::Decl(decl) => surface_decl_to_thunk_id(&decl.node, decl.span, opts, ctx),
+        })
+        .collect::<EvalResult<Vec<_>>>()?;
+
+    dict.insert(
+        Key::String("expressions".into()),
+        list_to_thunk_id(item_ids.into_iter(), span, ctx)?,
+    );
+
+    // name: string or []
+    dict.insert(
+        Key::String("name".into()),
+        match &doc.name {
+            Some(s) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(s), span))),
+            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                span,
+            ))),
+        },
+    );
+
+    // output-type: annotation or []
+    dict.insert(
+        Key::String("output-type".into()),
+        match &doc.output_type {
+            Some(a) => annotation_to_thunk_id(&a.node, span, ctx)?,
+            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                span,
+            ))),
+        },
+    );
+
+    // expects: annotation or []
+    dict.insert(
+        Key::String("expects".into()),
+        match &doc.expects {
+            Some(a) => annotation_to_thunk_id(&a.node, span, ctx)?,
+            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                span,
+            ))),
+        },
+    );
+
+    // stage: [Runtime] | [Type] — nominal variant based on document stage annotation
+    let stage_tag = match &doc.stage {
+        Some(Stage::Type) => "Type",
+        Some(Stage::Runtime) | None => "Runtime",
+    };
+    dict.insert(
+        Key::String("stage".into()),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Variant {
+                tag: stage_tag.to_string(),
+                payload: None,
+            },
+            span,
+        ))),
+    );
+
+    // leading-comments: absent when None or empty
+    if let Some(comment_maps) = &opts.comments {
+        if let Some(comments) = comment_maps.leading_comments.get(&span.start.offset) {
+            if !comments.is_empty() {
+                let comment_ids: Vec<ThunkId> = comments
+                    .iter()
+                    .map(|c| {
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(c), span)))
+                    })
+                    .collect();
+                dict.insert(
+                    Key::String("leading-comments".into()),
+                    list_to_thunk_id(comment_ids.into_iter(), span, ctx)?,
+                );
+            }
+        }
+    }
+
+    dict.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
+
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+}
+
 /// Surface-native equivalent of `entry_to_thunk_id`. Uses `SurfaceEntry` instead of `Entry`.
 fn surface_entry_to_thunk_id(
     entry: &SurfaceEntry,
@@ -737,34 +1126,71 @@ fn surface_param_to_thunk_id(
 
 /// Convert a SurfaceProgram to a dict representation.
 ///
-/// Bridges through the old File type — will be replaced when ast_dict is fully rewritten.
+/// Phase 4 native path: iterates `program.documents` directly, emitting each document
+/// via `surface_document_to_thunk_id`. No longer bridges through `ast_convert`.
+/// Schema is identical to the old File-based `ast_to_dict` — existing tinct
+/// metaprogramming code sees no change.
 pub fn surface_program_to_dict(
-    program: &crate::ast::SurfaceProgram,
+    program: &SurfaceProgram,
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
-    let file = crate::ast_convert::surface_program_to_file(program);
-    ast_to_dict(&file.node, opts, ctx)
+    let span = program
+        .documents
+        .first()
+        .map(|d| d.span)
+        .unwrap_or_else(Span::origin);
+    let mut root = IndexMap::new();
+
+    root.insert(
+        Key::String("type".into()),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("file"), span))),
+    );
+
+    root.insert(
+        Key::String("schema-version".into()),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
+    );
+
+    // documents: list of document dicts
+    let docs: Vec<_> = program
+        .documents
+        .iter()
+        .map(|doc| surface_document_to_thunk_id(&doc.node, doc.span, opts, ctx))
+        .collect::<EvalResult<Vec<_>>>()?;
+
+    root.insert(
+        Key::String("documents".into()),
+        list_to_thunk_id(docs.into_iter(), span, ctx)?,
+    );
+
+    root.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
+
+    Ok(Arc::new(Thunk::new_materialized(Value::Dict(root), span)))
 }
 
 /// Convert a dict representation back to a SurfaceNode.
 ///
-/// Bridges through the old Expr type.
+/// Bridges through the old Expr-based `dict_to_ast` path. The reverse (dict→Surface)
+/// native rewrite is Step 6 of the migration plan in
+/// `doc/whatif/plans/ast-dict-surface-migration-notes.md`.
 pub fn dict_to_surface_node(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<Arc<crate::ast::SurfaceNode>, AstError> {
+) -> Result<Arc<SurfaceNode>, AstError> {
     let expr = dict_to_ast(val, ctx)?;
     Ok(crate::ast_convert::expr_to_surface_node(&expr))
 }
 
 /// Convert a dict representation back to a SurfaceProgram.
 ///
-/// Bridges through the old File type.
+/// Bridges through the old File-based `dict_to_file` path. The reverse (dict→Surface)
+/// native rewrite is Step 6 of the migration plan in
+/// `doc/whatif/plans/ast-dict-surface-migration-notes.md`.
 pub fn dict_to_surface_program(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<crate::ast::SurfaceProgram, AstError> {
+) -> Result<SurfaceProgram, AstError> {
     let file = dict_to_file(val, ctx)?;
     Ok(crate::ast_convert::file_to_surface_program(&file))
 }

@@ -131,20 +131,29 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Identify Surface variants: 9-step implementation order documented; `SurfaceItem::Decl` dispatch needed for declarations [commit 7f1f721]
 
 **Phase 2 — Rewrite ast_to_dict_expr → surface_node_to_dict_inner:**
-- [ ] In `ast_dict.rs`, add `fn surface_node_to_dict_inner(node: &Arc<SurfaceNode>, depth: u32) -> Value` that walks `SurfaceExpression` variants natively. Start with the most common: `Dict`, `Fn`, `Call`, `VarRef`, `Str`, `Int`, `Float`, `Bool`. Use `todo!()` for less-common variants initially.
-- [ ] Update `surface_node_to_dict()` (already exists as bridge) to call `surface_node_to_dict_inner` instead of going via `surface_node_to_expr + ast_to_dict_expr`
+- [x] Add `fn surface_node_to_thunk_id(node: &Arc<SurfaceNode>, opts, ctx)` that walks all `SurfaceExpression` variants natively (all 24 Group A variants handled)
+- [x] `surface_node_to_dict()` now calls `surface_node_to_thunk_id` directly (no bridge through ast_convert)
 
-**Phase 3 — Rewrite dict_to_ast → dict_to_surface_node_inner:**
-- [ ] In `ast_dict.rs`, add `fn dict_to_surface_node_inner(dict: &IndexMap<Key, ThunkId>, span: Span, ctx: &EvalContext) -> Arc<SurfaceNode>` that reconstructs SurfaceNode from a dict representation. Handle the "node" key for dispatch.
-- [ ] Update `dict_to_surface_node()` bridge to call inner function directly
+**Phase 3 — surface_decl_to_thunk_id + surface_document_to_thunk_id:**
+- [x] Add `fn surface_decl_to_thunk_id(decl: &SurfaceDeclaration, span, opts, ctx)` handling all 7 Group B variants (TypeAlias, ClassDecl, InstanceDecl, DefMacro, MacroDecl, SyntaxClass, Splice). Schema matches old Expr-based emitter.
+- [x] Add `fn surface_document_to_thunk_id(doc: &SurfaceDocument, span, opts, ctx)` iterating `doc.items` natively, dispatching `SurfaceItem::Expr` → `surface_node_to_thunk_id`, `SurfaceItem::Decl` → `surface_decl_to_thunk_id`
+- [x] Note: `ClassDecl.superclasses` still silently dropped (tracked separately below)
 
-**Phase 4 — Migrate callers:**
-- [ ] Update `builtins_meta.rs` to use `surface_node_to_dict`/`dict_to_surface_node` (unblocks these callers from deferred state above)
-- [ ] Update `expand.rs:1802` to use `dict_to_surface_node`
+**Phase 4 — Rewrite surface_program_to_dict:**
+- [x] `surface_program_to_dict` rewritten to iterate `program.documents` natively via `surface_document_to_thunk_id` — no longer bridges through `ast_convert::surface_program_to_file`
+- Note: `dict_to_surface_node` / `dict_to_surface_program` still bridge through old Expr path (reverse direction; see Phase 5)
 
-**Phase 5 — Delete bridge layer:**
-- [ ] Once all callers use Surface API: delete the old `ast_to_dict(file, ...)`, `ast_to_dict_expr(expr, ...)`, `dict_to_ast(...)`, `dict_to_file(...)` from `ast_dict.rs`
-- [ ] Delete the `surface_node_to_expr`/`expr_to_surface_node` bridge calls from the Surface wrapper functions
+**Phase 5 — Rewrite dict_to_surface_node_inner (reverse direction):**
+- [ ] In `ast_dict.rs`, add `fn dict_to_surface_node_inner(dict: &IndexMap<Key, ThunkId>, span: Span, ctx: &EvalContext) -> Arc<SurfaceNode>` that reconstructs `Arc<SurfaceNode>` from a dict. Fix the 4 missing deserialization cases: `"Match"`, `"ClassDecl"`, `"InstanceDecl"`, `"PatternDecl"`.
+- [ ] Update `dict_to_surface_node()` to call inner function directly (remove `dict_to_ast` + `expr_to_surface_node` bridge)
+- [ ] Update `dict_to_surface_program()` similarly (add native `dict_to_surface_document_inner`)
+
+**Phase 6 — Migrate callers + delete bridge layer:**
+- [ ] Once reverse direction is native: delete the old `ast_to_dict(file, ...)`, `ast_to_dict_expr(expr, ...)`, `dict_to_ast(...)`, `dict_to_file(...)` from `ast_dict.rs`
+- [ ] Delete `surface_program_to_file` / `file_to_surface_program` / `expr_to_surface_node` from `ast_convert.rs` once no callers remain
+
+**Tracked separately:**
+- [ ] (grammar-doc-polish) `ClassDecl.superclasses` silently dropped in `surface_decl_to_thunk_id` — `Vec<(String, String)>` not yet in schema. Design decision: add `superclasses: List` key or omit permanently. Sprint: grammar-doc-polish.
 
 ### rv2-migrate-repl: Migrate REPL to Surface eval path (small, independent)
 
