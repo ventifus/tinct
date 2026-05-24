@@ -614,10 +614,10 @@ The `doc/whatif/completed/builtin-privacy.md` whatif is **accepted** (2026-05-11
 
 **Whatif:** `doc/whatif/completed/builtin-privacy.md`
 
-#### Phase 1 (verify)
+#### Phase 1 (verify) — COMPLETE
 
-- [ ] Wire `inject_builtin_aliases()` to be called ONLY during prelude type-checking (it is already, but verify no other call sites exist).
-- [ ] Verify that all prelude stdlib functions that currently call canonical builtin names (`split`, `str`, etc.) have been migrated to `builtin-*` names — or that the canonical names are re-exported by prelude from the prelude dict.
+- [x] Wire `inject_builtin_aliases()` to be called ONLY during prelude type-checking (it is already, but verify no other call sites exist).
+- [x] Verify that all prelude stdlib functions that currently call canonical builtin names (`split`, `str`, etc.) have been migrated to `builtin-*` names — or that the canonical names are re-exported by prelude from the prelude dict.
 
 #### Phase 2 (implement)
 
