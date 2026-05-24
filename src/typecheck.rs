@@ -222,12 +222,11 @@ fn reset_expr(expr: &Spanned<Expr>) {
 /// Automatically resets elaboration state before typechecking, allowing
 /// re-typechecking of cached ASTs (LSP use case) without triggering the
 /// write-once invariant assertion in resolve_type_assert.
-///
-/// # Precondition
-///
-/// **`desugar::desugar_surface_program` must be called on the [`SurfaceProgram`] before
-/// converting to [`File`] and passing it here.**
-pub fn typecheck_file_with_types(
+
+/// Test-only convenience wrapper: typecheck with default prelude env.
+/// All external callers now use `typecheck_surface_program*`.
+#[cfg(test)]
+fn typecheck_file_with_types(
     file: &File,
 ) -> (
     Vec<TypeError>,
@@ -244,7 +243,7 @@ pub fn typecheck_file_with_types(
 /// Like [`typecheck_file_with_types`], but accepts a custom initial environment.
 /// This is used by the LSP to seed the type environment with prelude names,
 /// suppressing false "undefined variable" errors for stdlib functions.
-pub fn typecheck_file_with_types_and_env(
+fn typecheck_file_with_types_and_env(
     file: &File,
     initial_env: Rc<TypeEnv>,
 ) -> (
@@ -261,7 +260,7 @@ pub fn typecheck_file_with_types_and_env(
 ///
 /// Like [`typecheck_file_with_types_and_env`], but accepts an optional source path
 /// for diagnostics that need to know the source file.
-pub fn typecheck_file_with_types_and_env_and_source(
+fn typecheck_file_with_types_and_env_and_source(
     file: &File,
     initial_env: Rc<TypeEnv>,
     // source_path was previously used for T009 builtin-* alias diagnostics.
@@ -299,7 +298,7 @@ pub fn typecheck_file_with_types_and_env_and_source(
 /// to the returned env (their partial env is discarded). Callers requiring best-effort
 /// coverage (e.g., `imports::typecheck_and_merge_stdlib_module`) should fall back to
 /// the [`TypeMap`] for any bindings missing from the returned env.
-pub fn typecheck_file_with_types_and_env_and_source_returning_state(
+fn typecheck_file_with_types_and_env_and_source_returning_state(
     file: &File,
     initial_env: Rc<TypeEnv>,
     enable_scheme_map: bool,
