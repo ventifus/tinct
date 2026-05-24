@@ -252,6 +252,12 @@ pub enum ErrorKind {
         /// the stack was populated.
         cycle_path: Vec<(String, Span)>,
     },
+    /// Non-exhaustive match: no pattern arm matched the scrutinee.
+    /// `scrutinee_type` is the runtime type of the value that failed to match
+    /// (e.g., `"Int"`, `"String"`, `"Dict"`).
+    MatchExhaustion {
+        scrutinee_type: String,
+    },
 
     /// User-generated (E080-E089)
     UserError {
@@ -516,6 +522,14 @@ impl PartialEq for ErrorKind {
                 },
             ) => e1 == e2 && g1 == g2,
             (Self::Internal { message: m1 }, Self::Internal { message: m2 }) => m1 == m2,
+            (
+                Self::MatchExhaustion {
+                    scrutinee_type: t1,
+                },
+                Self::MatchExhaustion {
+                    scrutinee_type: t2,
+                },
+            ) => t1 == t2,
 
             // Different variants are never equal
             _ => false,
@@ -562,6 +576,7 @@ impl ErrorKind {
             Self::JsonRange => "E062",
             Self::UriParseError { .. } => "E063",
             Self::CircularDependency { .. } => "E070",
+            Self::MatchExhaustion { .. } => "E071",
             Self::UserError { .. } => "E080",
             Self::Unimplemented { .. } => "E081",
             Self::BuilderFinished { .. } => "E082",
@@ -890,6 +905,12 @@ impl fmt::Display for ErrorKind {
                 }
                 Ok(())
             }
+            Self::MatchExhaustion { scrutinee_type } => {
+                write!(
+                    f,
+                    "non-exhaustive match: no pattern matched the {scrutinee_type} value"
+                )
+            }
             Self::UserError { message } => write!(f, "{message}"),
             Self::Unimplemented { message } => write!(f, "{message}"),
             Self::BuilderFinished { op } => {
@@ -1098,6 +1119,21 @@ impl EvalError {
             kind: ErrorKind::CircularDependency {
                 name: name.to_string(),
                 cycle_path,
+            },
+            definition_span,
+            materialization_span: None,
+            stack: SmallVec::new(),
+            secondary_span: None,
+            macro_expansion: None,
+            blame: None,
+            pipeline_stage: None,
+        }
+    }
+
+    pub fn match_exhaustion(scrutinee_type: &str, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::MatchExhaustion {
+                scrutinee_type: scrutinee_type.to_string(),
             },
             definition_span,
             materialization_span: None,
