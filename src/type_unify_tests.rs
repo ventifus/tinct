@@ -701,3 +701,31 @@ fn test_types_are_not_disjoint_function_vs_function() {
         "Different function types should NOT be disjoint (conservative)"
     );
 }
+
+/// Handle capability PartialEq limitation: structural equality fails when capability rows
+/// contain TypeVars with different names, even if they are unifiable.
+/// Known-safe: unify() drives type checking, PartialEq only affects HashMap lookups
+/// (false negatives are conservative).
+#[test]
+fn test_handle_capability_partialeq_limitation() {
+    // Create two Handle types with different TypeVar names
+    let handle_a = Type::Handle(Box::new(Type::TypeVar("a".to_string(), 0)));
+    let handle_b = Type::Handle(Box::new(Type::TypeVar("b".to_string(), 0)));
+
+    // PartialEq will return false (structural inequality)
+    assert_ne!(
+        handle_a, handle_b,
+        "Handle types with different TypeVar names are not structurally equal"
+    );
+
+    // However, they should unify successfully
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+
+    let result = unify(&handle_a, &handle_b, &mut state, &mut subst, Span::origin());
+
+    assert!(
+        result.is_ok(),
+        "Handle types with different TypeVar names should unify successfully"
+    );
+}

@@ -1983,6 +1983,20 @@ impl TypeEnv {
             Type::Record(Row { fields })
         }
 
+        // Helper: create Handle capability row with multiple flags
+        fn cap_flags(flags: &[&str]) -> Type {
+            let mut fields = HashMap::new();
+            for flag in flags {
+                fields.insert(
+                    format!("__cap_flag_{}", flag),
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                    }),
+                );
+            }
+            Type::Record(Row { fields })
+        }
+
         // I/O
         env.insert(
             "emit".to_string(),
@@ -2009,6 +2023,11 @@ impl TypeEnv {
                 variadic: false,
             },
         );
+        // Handle capability type policy (gradual typing):
+        // When runtime mode determines capabilities (e.g., `open` — mode flag decides read/write),
+        // or when capabilities are passed through unchanged (e.g., `flush`, `seek`, `tls-layer`),
+        // use Handle(Unknown) with an inline justification at the call site.
+        // See doc/05-type-annotations.md §20 for the capability type specification.
         env.insert(
             "open".to_string(),
             Type::Function {
@@ -2121,22 +2140,7 @@ impl TypeEnv {
                 // Returns Handle (stream) or DatagramHandle (datagram) depending on transport.
                 // Stream handles (Tcp, UnixStream) are bidirectional → readable+writable.
                 ret: Box::new(Type::normalize_union(vec![
-                    Type::Handle(Box::new({
-                        let mut fields = HashMap::new();
-                        fields.insert(
-                            "__cap_flag_readable".to_string(),
-                            Type::Record(Row {
-                                fields: HashMap::new(),
-                            }),
-                        );
-                        fields.insert(
-                            "__cap_flag_writable".to_string(),
-                            Type::Record(Row {
-                                fields: HashMap::new(),
-                            }),
-                        );
-                        Type::Record(Row { fields })
-                    })),
+                    Type::Handle(Box::new(cap_flags(&["readable", "writable"]))),
                     Type::DatagramHandle,
                 ])),
                 variadic: false,
@@ -2227,22 +2231,7 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::QuicSession)],
                 // QUIC streams are bidirectional by default → readable + writable
-                ret: Box::new(Type::Handle(Box::new({
-                    let mut fields = HashMap::new();
-                    fields.insert(
-                        "__cap_flag_readable".to_string(),
-                        Type::Record(Row {
-                            fields: HashMap::new(),
-                        }),
-                    );
-                    fields.insert(
-                        "__cap_flag_writable".to_string(),
-                        Type::Record(Row {
-                            fields: HashMap::new(),
-                        }),
-                    );
-                    Type::Record(Row { fields })
-                }))),
+                ret: Box::new(Type::Handle(Box::new(cap_flags(&["readable", "writable"])))),
                 variadic: false,
             },
         );

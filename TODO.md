@@ -738,12 +738,12 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] **[Critical]** Add name verification to `get_by_slot` fast path — compare returned entry's key against the expected variable name; on mismatch, fall back to name-based `get()` instead of silently returning the wrong thunk. This converts the silent-wrong-value bug into a correct fallback. (`src/value.rs:1843`, `src/eval.rs:1341-1345`)
 - [x] **[Critical]** Fix dict slot-shift: in `eval_dict_core`, track a separate `string_key_insertion_count` and verify it matches the resolver's static-key count for the scope, OR exclude computed-string keys from `dict_env` slot assignment (insert them into the output dict only, not the scope env). (`src/eval_dict.rs:142-148`, `src/resolve.rs:352-367`)
 - [x] **[Critical]** Fix Sequential/document slot-shift: same root cause — `child_env` receives all `Key::String` entries from the materialized dict including computed ones. (`src/eval.rs:1440-1450`, `src/eval_pipeline.rs:447-459`, `src/resolve.rs:118-135`)
-- [ ] **[Major]** Fix type-stage document named sections corrupting `%name` slot indices — resolver includes named `stage: type` documents in `named_sections` (resolve.rs:342-344) but runtime skips them (eval_pipeline.rs:507), leaving subsequent `%name` slots off by one. Fix: skip type-stage documents in `resolve_surface_program`'s `named_sections` accumulation to match runtime behavior. (`src/resolve.rs:326-348`, `src/eval_pipeline.rs:505-545`)
-- [ ] **[Minor]** Add `debug_assert_eq!(slot_idx, static_key_count)` after the Phase-3 arena fill loop in `eval_dict_core` to catch future drift between `count_static_keys_core` and the resolver's static-key definition. (`src/eval_dict.rs:52-63`)
-- [x] **[Minor]** Add corpus test for named-arg-fills-optional-slot slot correctness: `[fn [let a b@[default: 0]] $b]` called with one positional arg — verifies `b` at slot 1 returns default value 0.
-- [ ] **[Minor]** Add corpus test for Sequential/doc computed-key scope: 3-expression document where the MIDDLE expression is a Dict with a computed key (e.g., `[$k: 1  x: 2]`) — tests the active-exclusion branch of the static_keys filter in `eval_pipeline.rs` (intermediate has a computed key that is excluded). Example: `[k: "z"] [$k: 1  x: 2] $x`. (`tests/corpus/eval/regressions/`)
-- [ ] **[Minor]** Move slot-soundness corpus tests from `eval/builtins/` to `eval/regressions/`: `computed_key_slot_correctness.llt-eval` and `named_arg_default_slot.llt-eval` test evaluator core slot behavior, not builtin functions. Better home is `tests/corpus/eval/regressions/`.
-- [ ] **[Minor]** `flatten_overlay` is called in `eval_pipeline.rs` before the `static_keys` guard runs (wasted work when `static_keys` returns `None`). Consider moving `flatten_overlay` inside the `Some(keys)` branch, or using a `peek_static_keys` that doesn't require flattening. (`src/eval_pipeline.rs`)
+- [x] Fix type-stage document named sections — resolver skips stage:type docs from named_sections to match runtime behavior (`src/resolve.rs:348-363`) [Major]
+- [x] debug_assert for slot count drift — replaced with explanatory comment (tautological assert; proper check needs resolver per-scope count) [Minor]
+- [x] Add corpus test: named-arg-fills-optional-slot [Minor]
+- [x] Add corpus test: computed_key_sequential_scope.llt-eval in `eval/regressions/` [Minor]
+- [x] Move slot-soundness corpus tests to `eval/regressions/`: computed_key_slot_correctness + named_arg_default_slot [Minor]
+- [x] Move flatten_overlay inside static_keys guard in eval_pipeline.rs + eval.rs [Minor]
 
 ### key-string-rc: Change Key::String from owned String to Rc<str>
 

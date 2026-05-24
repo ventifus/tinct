@@ -1721,6 +1721,8 @@ pub(crate) fn builtin_load(
         let res_table = crate::resolve::resolve_surface_program(&program);
         // Typecheck to populate TypeAnnotationTable for static type resolution in TypeAssert nodes.
         // This enables included files to use the resolved type path instead of RuntimeTypeCheck fallback.
+        // Type errors are advisory — eval proceeds regardless. Callers that care
+        // about type errors use `builtin_eval_types`.
         let (_annotation_errors, type_annotation_table) =
             crate::typecheck::typecheck_surface_program_annotation_table(&program);
         let program_value = Value::Program {
@@ -1783,6 +1785,8 @@ pub(crate) fn builtin_expand(
                 let new_resolutions = crate::resolve::resolve_surface_program(&new_surface_program);
 
                 // Typecheck to populate TypeAnnotationTable for static type resolution in TypeAssert nodes.
+                // Type errors are advisory — eval proceeds regardless. Callers that care
+                // about type errors use `builtin_eval_types`.
                 let (_annotation_errors, type_annotation_table) =
                     crate::typecheck::typecheck_surface_program_annotation_table(
                         &new_surface_program,
