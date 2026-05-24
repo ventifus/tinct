@@ -65,54 +65,6 @@ pub struct CommentMaps<'a> {
     pub blank_before: &'a std::collections::BTreeMap<usize, bool>,
 }
 
-/// Converts a full File AST to a tinct thunk matching the canonical schema.
-///
-/// The root dict carries `schema-version: 1` and wraps documents as a list.
-///
-/// # Visibility
-/// Not part of the public API — callers should use `surface_program_to_dict` instead.
-/// Retained for `#[cfg(test)]` usage and the `ast_to_dict_expr` fallback path.
-#[doc(hidden)]
-#[allow(dead_code)]
-fn ast_to_dict(
-    file: &File,
-    opts: &AstToDictOpts,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
-    let span = file
-        .documents
-        .first()
-        .map(|d| d.span)
-        .unwrap_or_else(Span::origin);
-    let mut root = IndexMap::new();
-
-    root.insert(
-        Key::String("type".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("file"), span))),
-    );
-
-    root.insert(
-        Key::String("schema-version".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
-    );
-
-    // documents: list of document dicts
-    let docs: Vec<_> = file
-        .documents
-        .iter()
-        .map(|doc| document_to_dict(&doc.node, doc.span, opts, ctx))
-        .collect::<EvalResult<Vec<_>>>()?;
-
-    root.insert(
-        Key::String("documents".into()),
-        list_to_thunk_id(docs.into_iter(), span, ctx)?,
-    );
-
-    root.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
-
-    Ok(Arc::new(Thunk::new_materialized(Value::Dict(root), span)))
-}
-
 /// Converts a single expression to a thunk. Used by quasiquoting.
 ///
 /// # Visibility
@@ -136,12 +88,11 @@ fn ast_to_dict_expr(
 //          `surface_document_to_thunk_id` iterates `SurfaceDocument::items` natively.
 // Phase 4: `surface_program_to_dict` rewritten to use native SurfaceDocument iteration.
 // Phase 5: `dict_to_surface_node` rewrites the reverse (dict→Surface) direction natively
-//          for the 10 most common variants (VarRef, Literal, DotAccess, Pipe, Dict, Call,
-//          Fn). Less common variants fall back to `dict_to_ast` + `expr_to_surface_node`.
+//          for all variants. Unknown tags return a hard AstError; there is no fallback.
 //          `dict_to_surface_program` still bridges through the old File-based `dict_to_file`.
-//          Old Expr-based functions (`ast_to_dict`, `ast_to_dict_expr`, `dict_to_ast`,
-//          `dict_to_file`) are made non-public (#[doc(hidden)] fn). They are retained as
-//          fallback paths and for `#[cfg(test)]` usage.
+// Phase 6: `ast_to_dict` and `document_to_dict` (old File/Document-based emitters) deleted.
+//          `ast_to_dict_expr` retained — still used by `annotation_to_thunk_id` for
+//          compound annotation values (non-Str/Int `Expr` nodes in PropertyDict).
 
 /// Convert a SurfaceNode to a dict representation.
 ///
@@ -1142,8 +1093,8 @@ fn surface_param_to_thunk_id(
 ///
 /// Phase 4 native path: iterates `program.documents` directly, emitting each document
 /// via `surface_document_to_thunk_id`. No longer bridges through `ast_convert`.
-/// Schema is identical to the old File-based `ast_to_dict` — existing tinct
-/// metaprogramming code sees no change.
+/// Schema matches the canonical AST schema in `doc/feature/ast-schema.md` — existing
+/// tinct metaprogramming code sees no change.
 pub fn surface_program_to_dict(
     program: &SurfaceProgram,
     opts: &AstToDictOpts,
@@ -1185,9 +1136,9 @@ pub fn surface_program_to_dict(
 
 /// Convert a dict representation back to a SurfaceNode.
 ///
-/// Phase 5a native path: reads the Variant tag or `type:` field and dispatches directly
-/// to `SurfaceExpression` construction for the 10 most common variants. Less common
-/// variants fall back to the old Expr-based bridge path via `dict_to_ast` + `expr_to_surface_node`.
+/// Reads the Variant tag or `type:` field and dispatches to the native `SurfaceExpression`
+/// constructor. All variants are handled natively. Unknown tags return a hard `AstError`;
+/// there is no Expr-based fallback path.
 pub fn dict_to_surface_node(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1197,11 +1148,11 @@ pub fn dict_to_surface_node(
 
 /// Inner implementation of `dict_to_surface_node`.
 ///
-/// Extracts the Variant tag (or legacy `type:` string), dispatches to the native
-/// `SurfaceExpression` constructor for the 10 most common variants, and falls back
-/// to the old `dict_to_ast` + `expr_to_surface_node` bridge for the remainder.
+/// Extracts the Variant tag (or legacy `type:` string) and dispatches to the native
+/// `SurfaceExpression` constructor. All known variants are handled here. Unknown tags
+/// return a hard `AstError` — there is no Expr-based fallback bridge.
 ///
-/// The 10 native variants handled here:
+/// Variants handled here:
 /// - `"VarRef"`, `"Literal"` (Int/Float/Bool/Str), `"Dict"`, `"Fn"`,
 ///   `"Call"`, `"DotAccess"`, `"Pipe"`
 fn dict_to_surface_node_inner(
@@ -1380,10 +1331,12 @@ fn dict_to_surface_node_inner(
             SurfaceExpression::Fn { return_ann, params, body, desugared }
         }
 
-        // ---- All other variants: fall back to old Expr-based bridge ----
+        // ---- Unknown variant: hard error (all variants must be handled natively) ----
         _ => {
-            let spanned_expr = dict_to_ast(val, ctx)?;
-            return Ok(crate::ast_convert::expr_to_surface_node(&spanned_expr));
+            return Err(AstError {
+                message: format!("dict_to_surface_node: unknown node type: {}", tag),
+                field_path: vec![],
+            });
         }
     };
 
@@ -1500,112 +1453,12 @@ pub fn dict_to_surface_program(
 }
 
 // ============================================================================
-// Internal Implementation (old Expr-based)
+// Internal Implementation (Expr-based helpers)
+//
+// These functions back `ast_to_dict_expr` (still used by `annotation_to_thunk_id`
+// for compound PropertyDict values) and `dict_to_ast`/`dict_to_file` (used by
+// `dict_to_surface_program` and `#[cfg(test)]` usage).
 // ============================================================================
-
-#[allow(dead_code)]
-fn document_to_dict(
-    doc: &Document,
-    span: Span,
-    opts: &AstToDictOpts,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<ThunkId> {
-    let mut dict = IndexMap::new();
-
-    dict.insert(
-        Key::String("type".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            string_val("document"),
-            span,
-        ))),
-    );
-
-    // expressions: list of expression dicts
-    let exprs: Vec<_> = doc
-        .expressions
-        .iter()
-        .map(|e| expr_to_thunk_id(&e.node, e.span, opts, ctx))
-        .collect::<EvalResult<Vec<_>>>()?;
-
-    dict.insert(
-        Key::String("expressions".into()),
-        list_to_thunk_id(exprs.into_iter(), span, ctx)?,
-    );
-
-    // name: string or []
-    dict.insert(
-        Key::String("name".into()),
-        match &doc.name {
-            Some(s) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(s), span))),
-            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
-                span,
-            ))),
-        },
-    );
-
-    // output-type: annotation or []
-    dict.insert(
-        Key::String("output-type".into()),
-        match &doc.output_type {
-            Some(a) => annotation_to_thunk_id(&a.node, span, ctx)?,
-            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
-                span,
-            ))),
-        },
-    );
-
-    // expects: annotation or []
-    dict.insert(
-        Key::String("expects".into()),
-        match &doc.expects {
-            Some(a) => annotation_to_thunk_id(&a.node, span, ctx)?,
-            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
-                span,
-            ))),
-        },
-    );
-
-    // stage: [Runtime] | [Type] — nominal variant based on document stage annotation
-    let stage_tag = match &doc.stage {
-        Some(Stage::Type) => "Type",
-        Some(Stage::Runtime) | None => "Runtime",
-    };
-    dict.insert(
-        Key::String("stage".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Variant {
-                tag: stage_tag.to_string(),
-                payload: None,
-            },
-            span,
-        ))),
-    );
-
-    // leading-comments: absent when None or empty
-    if let Some(comment_maps) = &opts.comments {
-        if let Some(comments) = comment_maps.leading_comments.get(&span.start.offset) {
-            if !comments.is_empty() {
-                let comment_ids: Vec<ThunkId> = comments
-                    .iter()
-                    .map(|c| {
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(c), span)))
-                    })
-                    .collect();
-                dict.insert(
-                    Key::String("leading-comments".into()),
-                    list_to_thunk_id(comment_ids.into_iter(), span, ctx)?,
-                );
-            }
-        }
-    }
-
-    dict.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
-
-    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
-}
 
 fn expr_to_thunk(
     expr: &Expr,
@@ -2890,8 +2743,7 @@ fn list_to_thunk_id(
 ///
 /// # Visibility
 /// Not part of the public API — callers should use `dict_to_surface_node` instead.
-/// Retained as the fallback path in `dict_to_surface_node_inner` for uncommon variants,
-/// and for `#[cfg(test)]` usage.
+/// Retained for `#[cfg(test)]` usage only; no longer used as a fallback path.
 #[doc(hidden)]
 fn dict_to_ast(
     val: &Value,
@@ -4080,24 +3932,23 @@ fn dict_to_pattern(
     }
 }
 
-/// Converts a dict (from `ast_to_dict`) back to a File AST.
+/// Converts a file-schema dict back to a `File` AST.
 ///
-/// This is the file-level inverse of `ast_to_dict`. It reconstructs a `File` struct
-/// from the schema emitted by `document_to_dict`:
+/// Reconstructs a `File` struct from the schema emitted by `surface_program_to_dict`:
 /// - `documents`: list of document dicts, each containing:
 ///   - `expressions`: seq of expression AST dicts (converted via `dict_to_ast`)
 ///   - `name`: string or empty dict
 ///   - `stage`: `[Runtime]` or `[Type]` nominal variant
 ///   - `output-type`, `expects`: annotation dicts or empty dict
-/// - `caps`: always `None` (not serialized by `document_to_dict`)
+/// - `caps`: always `None` (not serialized)
 /// - Spans recovered from each node's `span:` field via `extract_span`
 ///
-/// Used internally by `dict_to_surface_program` via the old File bridge.
+/// Used internally by `dict_to_surface_program` via the File bridge.
 ///
 /// **Root type constraint**: `dict_to_file` requires a `Value::Dict` root (the full file schema).
 /// Unlike `dict_to_ast` which accepts both `Dict` and `Variant`, the file root must be a `Dict`
-/// with a `documents` field. This asymmetry is correct: `ast_to_dict` always emits `Dict` for
-/// file roots, never `Variant`, so the round-trip is consistent.
+/// with a `documents` field. This asymmetry is correct: `surface_program_to_dict` always emits
+/// `Dict` for file roots, never `Variant`, so the round-trip is consistent.
 ///
 /// # Visibility
 /// Not part of the public API — callers should use `dict_to_surface_program` instead.
@@ -4296,20 +4147,13 @@ mod tests {
     }
 
     #[test]
-    fn test_ast_to_dict_file_schema_version() {
-        let file = File {
-            documents: vec![sp(Document {
-                expressions: vec![Rc::new(sp(Expr::Int(1)))],
-                name: None,
-                output_type: None,
-                expects: None,
-                caps: None,
-                stage: None,
-            })],
-        };
+    fn test_surface_program_to_dict_file_schema_version() {
+        use crate::parser::parse;
+
+        let parse_output = parse("1").unwrap();
         let opts = AstToDictOpts::default();
         let ctx = test_ctx();
-        let thunk = ast_to_dict(&file, &opts, &ctx).unwrap();
+        let thunk = surface_program_to_dict(&parse_output.program, &opts, &ctx).unwrap();
 
         match thunk.try_get_materialized() {
             Some(Value::Dict(map)) => {
@@ -4338,12 +4182,7 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(
-            &crate::ast_convert::surface_program_to_file(&parse_output.program).node,
-            &opts,
-            &ctx,
-        )
-        .unwrap();
+        let thunk = surface_program_to_dict(&parse_output.program, &opts, &ctx).unwrap();
 
         // Navigate to the first document's first expression (the dict)
         match thunk.try_get_materialized() {
@@ -4436,12 +4275,7 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(
-            &crate::ast_convert::surface_program_to_file(&parse_output.program).node,
-            &opts,
-            &ctx,
-        )
-        .unwrap();
+        let thunk = surface_program_to_dict(&parse_output.program, &opts, &ctx).unwrap();
 
         // Navigate to the key and check bare: false
         match thunk.try_get_materialized() {
@@ -4536,12 +4370,7 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(
-            &crate::ast_convert::surface_program_to_file(&parse_output.program).node,
-            &opts,
-            &ctx,
-        )
-        .unwrap();
+        let thunk = surface_program_to_dict(&parse_output.program, &opts, &ctx).unwrap();
 
         // Navigate to the entry and check for leading-comments
         match thunk.try_get_materialized() {
@@ -4656,12 +4485,7 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(
-            &crate::ast_convert::surface_program_to_file(&parse_output.program).node,
-            &opts,
-            &ctx,
-        )
-        .unwrap();
+        let thunk = surface_program_to_dict(&parse_output.program, &opts, &ctx).unwrap();
 
         // Navigate to the second entry and check blank-before: true
         match thunk.try_get_materialized() {
@@ -4747,12 +4571,7 @@ mod tests {
         };
         let ctx = test_ctx();
 
-        let thunk = ast_to_dict(
-            &crate::ast_convert::surface_program_to_file(&parse_output.program).node,
-            &opts,
-            &ctx,
-        )
-        .unwrap();
+        let thunk = surface_program_to_dict(&parse_output.program, &opts, &ctx).unwrap();
 
         // Navigate to the key and check bare: false (default when source is None)
         match thunk.try_get_materialized() {
