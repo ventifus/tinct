@@ -252,11 +252,12 @@ impl InstanceEnv {
     /// The key is `(class_name, determining_type_strings)` derived from `inst.det_positions`.
     /// For single-parameter classes the key is `(class_name, [instance_type_string])`.
     ///
-    /// KNOWN ISSUE (F4): This function does NOT detect or reject overlapping instances whose
-    /// keys differ but whose patterns unify. String-key dedup catches exact duplicates but not
-    /// structural overlap (e.g., `[Seq a]` vs `[Seq Int]` have different keys but overlap).
-    /// Overlap checking requires unification probes at insert time, which would need state save/restore
-    /// (same pattern as F1 fix) to avoid leaking probe mutations. Deferred to chr-overlap-insert sprint.
+    /// This method does NOT perform structural overlap checking (string-key dedup only).
+    /// For overlap detection at user-facing definition time, callers should call
+    /// `check_structural_overlap` before inserting (see `typecheck.rs` instance registration).
+    /// Built-in and prelude instance registration skips overlap checking intentionally —
+    /// the built-in instances are known-disjoint and overlap detection at prelude-load time
+    /// would require a live InferState.
     pub fn insert(&mut self, inst: InstanceDecl) -> Result<(), String> {
         let key = Self::build_key(&inst);
         if self.instances.contains_key(&key) {
@@ -265,6 +266,82 @@ impl InstanceEnv {
             return Ok(());
         }
         self.instances.insert(key, inst);
+        Ok(())
+    }
+
+    /// Check whether a candidate instance structurally overlaps any already-registered instance
+    /// for the same class.
+    ///
+    /// Two instances overlap when their head types can be unified — i.e., there exists a ground
+    /// type that satisfies both patterns. For example, `[Seq a]` and `[Seq Int]` overlap because
+    /// substituting `a = Int` satisfies both. Overlapping instances cause non-deterministic
+    /// resolution: whichever instance is found first "wins", violating coherence.
+    ///
+    /// This is a pure probe: all state mutations from the unification attempt are discarded
+    /// (same save/restore pattern as F1 fix in `lookup_mptc`). The check uses freshened copies
+    /// of both the candidate and existing instance types so that shared type variable names
+    /// do not accidentally unify across distinct instances.
+    ///
+    /// Returns `Ok(())` if no overlap is detected, or `Err(message)` identifying the overlapping
+    /// pair. The caller is responsible for converting the message into a `TypeError`.
+    ///
+    /// This method takes `&self` (read-only) and `&mut InferState` (for freshening and probing).
+    /// Callers that do not have a live `InferState` (built-in registration, prelude seeding)
+    /// should skip this check — those instances are known-disjoint by construction.
+    pub fn check_structural_overlap(
+        &self,
+        candidate: &InstanceDecl,
+        state: &mut InferState,
+    ) -> Result<(), String> {
+        for ((cname, _), existing) in &self.instances {
+            if cname != &candidate.class_name {
+                continue;
+            }
+
+            // Save ALL fields BEFORE freshening — instantiate_at_level increments name_counter
+            // and extends state.levels with fresh type variable entries. Saving before the call
+            // means both the freshening allocations and the unification probe are fully rolled back,
+            // making this check completely side-effect-free (mirrors patterns_overlap in typecheck.rs).
+            let saved_levels = state.levels.clone();
+            let saved_constraints = state.constraints.clone();
+            let saved_kind_env = state.kind_env.clone();
+            let saved_deferred = state.deferred_equalities.clone();
+            let saved_subst = state.subst.clone();
+            let saved_name_counter = state.name_counter;
+
+            // Freshen both instance types independently so that a type variable named
+            // `a` in `[Seq a]` and a type variable named `a` in another instance map
+            // to distinct fresh variables and do not accidentally unify.
+            let fresh_existing = instantiate_at_level(&existing.instance_type, state);
+            let fresh_candidate = instantiate_at_level(&candidate.instance_type, state);
+
+            let mut temp_subst = state.subst.clone();
+            let overlaps = unify(
+                &fresh_existing,
+                &fresh_candidate,
+                &mut temp_subst,
+                state,
+                Span::origin(),
+            )
+            .is_ok();
+
+            // Always restore state — this is a pure probe.
+            state.levels = saved_levels;
+            state.constraints = saved_constraints;
+            state.kind_env = saved_kind_env;
+            state.deferred_equalities = saved_deferred;
+            state.subst = saved_subst;
+            state.name_counter = saved_name_counter;
+
+            if overlaps {
+                return Err(format!(
+                    "overlapping instances for class '{}': new instance '{}' overlaps with existing instance '{}'",
+                    candidate.class_name,
+                    candidate.instance_type,
+                    existing.instance_type,
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -516,5 +593,141 @@ pub fn type_to_string_key(ty: &Type) -> String {
         Type::IntLiteral(_) => "Int".to_string(),
         Type::StringLiteral(_) => "Str".to_string(),
         _ => ty.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::type_infer::InferState;
+    use std::collections::HashMap;
+
+    fn make_seq_a() -> Type {
+        Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))
+    }
+
+    fn make_seq_int() -> Type {
+        Type::Seq(Box::new(Type::Int))
+    }
+
+    fn make_appendable_instance(instance_type: Type) -> InstanceDecl {
+        InstanceDecl {
+            class_name: "Appendable".to_string(),
+            instance_type,
+            det_positions: vec![],
+            method_types: HashMap::new(),
+        }
+    }
+
+    /// Two disjoint concrete instances (Int vs Str) must NOT be reported as overlapping.
+    #[test]
+    fn test_no_overlap_disjoint_concrete() {
+        let mut state = InferState::new();
+        let mut env = InstanceEnv::new();
+
+        let int_inst = make_appendable_instance(Type::Int);
+        let str_inst = make_appendable_instance(Type::Str);
+
+        env.insert(int_inst).unwrap();
+
+        // Str does not overlap with Int — should be Ok
+        assert!(
+            env.check_structural_overlap(&str_inst, &mut state).is_ok(),
+            "Int and Str instances should not overlap"
+        );
+    }
+
+    /// `[Seq a]` and `[Seq Int]` overlap: substituting a=Int satisfies both.
+    #[test]
+    fn test_overlap_seq_a_vs_seq_int() {
+        let mut state = InferState::new();
+        let mut env = InstanceEnv::new();
+
+        let seq_a_inst = make_appendable_instance(make_seq_a());
+        let seq_int_inst = make_appendable_instance(make_seq_int());
+
+        env.insert(seq_a_inst).unwrap();
+
+        // [Seq Int] overlaps with [Seq a] — must detect overlap
+        let result = env.check_structural_overlap(&seq_int_inst, &mut state);
+        assert!(
+            result.is_err(),
+            "Seq[a] and Seq[Int] should be detected as overlapping instances"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("overlapping instances"),
+            "Error message should mention overlapping instances, got: {msg}"
+        );
+        assert!(
+            msg.contains("Appendable"),
+            "Error message should mention the class name, got: {msg}"
+        );
+    }
+
+    /// `[Seq a]` and `[Seq b]` overlap: both accept any Seq, so they are universally overlapping.
+    #[test]
+    fn test_overlap_seq_a_vs_seq_b() {
+        let mut state = InferState::new();
+        let mut env = InstanceEnv::new();
+
+        let seq_a_inst = make_appendable_instance(Type::Seq(Box::new(Type::TypeVar(
+            "a".to_string(),
+            0,
+        ))));
+        let seq_b_inst = make_appendable_instance(Type::Seq(Box::new(Type::TypeVar(
+            "b".to_string(),
+            0,
+        ))));
+
+        env.insert(seq_a_inst).unwrap();
+
+        // [Seq b] overlaps with [Seq a] — they are structurally equivalent
+        let result = env.check_structural_overlap(&seq_b_inst, &mut state);
+        assert!(
+            result.is_err(),
+            "Seq[a] and Seq[b] should be detected as overlapping (both accept any Seq)"
+        );
+    }
+
+    /// Checking overlap against an empty registry never reports overlap.
+    #[test]
+    fn test_no_overlap_empty_registry() {
+        let mut state = InferState::new();
+        let env = InstanceEnv::new();
+        let inst = make_appendable_instance(make_seq_a());
+        assert!(
+            env.check_structural_overlap(&inst, &mut state).is_ok(),
+            "Empty registry should never report overlap"
+        );
+    }
+
+    /// check_structural_overlap is side-effect-free: state must not change.
+    #[test]
+    fn test_overlap_check_is_side_effect_free() {
+        let mut state = InferState::new();
+        let mut env = InstanceEnv::new();
+
+        env.insert(make_appendable_instance(make_seq_a())).unwrap();
+
+        let counter_before = state.name_counter;
+        let levels_before = state.levels.clone();
+        let constraints_before = state.constraints.clone();
+
+        // This will detect overlap and return Err — but state must be restored.
+        let _ = env.check_structural_overlap(&make_appendable_instance(make_seq_int()), &mut state);
+
+        assert_eq!(
+            state.name_counter, counter_before,
+            "name_counter must be restored after overlap check"
+        );
+        assert_eq!(
+            state.levels, levels_before,
+            "levels must be restored after overlap check"
+        );
+        assert_eq!(
+            state.constraints, constraints_before,
+            "constraints must be restored after overlap check"
+        );
     }
 }

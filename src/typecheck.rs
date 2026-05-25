@@ -2919,6 +2919,23 @@ fn infer_instance_decl_from_surface(
             method_types,
         };
 
+        // Structural overlap check: detect instances whose head types unify even if
+        // their string keys differ (e.g., `[Seq a]` vs `[Seq Int]`).
+        // Clone the instance_env to satisfy the borrow checker — check_structural_overlap
+        // takes &self (read-only) but state is also needed mutably for freshening.
+        // This follows the same clone pattern used in resolve_instance callers.
+        // The check is skipped during prelude loading (in_prelude_load) because prelude
+        // instances are registered in a separate session before user code is type-checked,
+        // and cross-session overlap is detected when user code re-declares prelude instances
+        // (string-key dedup handles exact duplicates; structural overlap in the prelude itself
+        // is an authoring error caught by the prelude test suite).
+        if !state.in_prelude_load {
+            let inst_env_snapshot = state.instance_env.clone();
+            if let Err(msg) = inst_env_snapshot.check_structural_overlap(&instance_decl, state) {
+                return Err(vec![TypeError::new(msg, span)]);
+            }
+        }
+
         if let Err(msg) = state.instance_env.insert(instance_decl) {
             return Err(vec![TypeError::new(msg, span)]);
         }

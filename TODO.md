@@ -1513,7 +1513,10 @@ The code is authoritative: `src/typecheck.rs:5501` confirms `None => Ok(Type::Un
 
 **type-theorist Minor 3.** `src/type_class.rs:255-258` (KNOWN ISSUE F4): string-key dedup prevents exact duplicates but `[Seq a]` and `[Seq Int]` have different keys yet overlap structurally.
 
-- [ ] Sprint: `chr-overlap-insert` — add structural overlap detection at insert time using probe unification (save/restore state)
+- [x] Sprint: `chr-overlap-insert` — add structural overlap detection at insert time using probe unification (save/restore state)
+  - **Implemented**: `InstanceEnv::check_structural_overlap` in `src/type_class.rs:272-346`
+  - Called from `typecheck.rs:2922` before `insert`, guarded by `!state.in_prelude_load`
+  - Unit tests in `src/type_class.rs:599-733` (5 tests covering disjoint/overlapping/side-effect-free)
 - **Files:** `src/type_class.rs:255-258`
 
 ### inject-adt-constructors-compound: inject_adt_constructors_expr skips compound forms [Minor]
