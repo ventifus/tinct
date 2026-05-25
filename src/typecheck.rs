@@ -4548,7 +4548,7 @@ fn check_call_with_scheme(
                     if matches!(arg_ty, Type::Unknown) && is_concrete_type(param_ty) {
                         // Record the argument span and expected type for gradual typing
                         // boundary guard insertion at eval time. HashMap ensures O(1)
-                        // lookup per span in eval_recursive.
+                        // lookup per span in eval_core_expr.
                         if idx < args.len() {
                             state
                                 .boundary_guards

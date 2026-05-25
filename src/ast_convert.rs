@@ -8,7 +8,7 @@
 //!
 //! 2. **expr_to_core_expr** (Expr → CoreExpr) — FORWARD BRIDGE
 //!    - Converts old Expr to CoreExpr for E1-eval-cutover
-//!    - Used by eval_recursive to route all evaluation through CoreExpr
+//!    - Used by test helpers and eval_core_expr_pub to route evaluation through CoreExpr
 //!    - Deleted when all Value/thunk types are migrated to CoreExpr (post-E3)
 //!
 //! 3. **core_expr_to_expr** (CoreExpr → Expr) — REVERSE BRIDGE

@@ -109,7 +109,7 @@ pub struct InferState {
     /// When a call-site argument has inferred type `Unknown` and the function parameter
     /// has a concrete type (not Unknown, not TypeVar), this records the boundary crossing.
     /// Used for automatic guard insertion in gradual typing (see doc/feature/gradual-typing.md).
-    /// HashMap for O(1) lookup at thunk creation time in eval_recursive.
+    /// HashMap for O(1) lookup at thunk creation time in eval_core_expr.
     pub boundary_guards: HashMap<Span, Type>,
     /// Current functional dependency improvement recursion depth.
     /// Prevents infinite loops through the improve_functional_dependency → unify →
