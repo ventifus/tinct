@@ -1330,10 +1330,10 @@ Both `Symlinkable` and `PosixPermissions` DirPerms flags exist and are correctly
 - Line 1461: "`deep_materialize` in `eval_deep.rs`" — `eval_deep.rs` deleted; moved to `eval_materialize.rs`
 - Line 1419: compile-time assertion cited at "line 252" — actual `src/eval_materialize.rs:349`
 
-- [ ] Rewrite lines 1377-1470: Action enum listing (EvalCore, Continue, Materialize), Cont enum (6 variants), run() loop referencing eval_core_expr_pub()
-- [ ] Fix line 1007 Sequential routing note (no eval_recursive)
-- [ ] Fix line 1461 deep_materialize location
-- [ ] Fix line 1419 assertion line number
+- [x] Rewrite Action enum listing → EvalCore/Continue/Materialize; Cont enum → 6 variants; run() loop → eval_core_expr_pub() (lines 1399, 1430-1440, 1474)
+- [x] Fix line 1007 Sequential routing note (no eval_recursive; references cek-match-sequential-rust-stack)
+- [x] Fix line 1468 deep_materialize → eval_materialize.rs (eval_deep.rs deleted)
+- [x] Fix line 1419 assertion line number → src/eval_materialize.rs:349
 - **File:** `doc/08-evaluation.md`
 
 ### doc-16-rv2-stale-refs: doc/16-architecture.md still has stale post-rv2 references [Major]

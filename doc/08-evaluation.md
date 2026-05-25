@@ -1004,7 +1004,7 @@ When a function body contains multiple expressions, the parser wraps them in `Ex
 - **Environment extension:** Each intermediate expression (if it's a dict) adds its bindings to the environment for subsequent expressions
 - **Lazy intermediate bindings:** Intermediate dict values remain as unevaluated thunks — they are only materialized when accessed
 - **Result is final expression:** The value of the last expression in the sequence is the function's return value
-- **CEK machine routing:** The CEK machine routes `Sequential` to `eval_recursive` via the `eval_materialize.rs` fallback (continuations like `SeqRest` manage the sequence)
+- **CEK machine routing:** `CoreExpr::Sequential` is handled directly inside `eval_core_expr` in `eval.rs` via a recursive async call — it iterates the expression list, materializing each intermediate dict to extend the scope chain, then tail-calls into the final expression. This path uses the Rust async call stack rather than the CEK continuation stack (see `cek-match-sequential-rust-stack` in TODO.md)
 
 This is identical to how document-level expression sequences work (see [Documents](09-documents.md) §Scope Chain Semantics), but scoped within a single function body rather than across documents.
 
@@ -1396,7 +1396,7 @@ Per execution context:
 enum Action {
     Continue(EvalResult<Value>),
     Materialize { thunk: Arc<Thunk>, mat_span: Option<Span> },
-    Eval { expr: Rc<Spanned<Expr>>, env: Arc<RwLock<Environment>>, ctx: Arc<EvalContext> },
+    EvalCore { expr: Arc<Spanned<CoreExpr>>, env: Arc<RwLock<Environment>>, ctx: Arc<EvalContext> },
 }
 ```
 
@@ -1416,7 +1416,7 @@ enum Cont {
 }
 ```
 
-All `Cont` variant payloads are boxed to keep the `Cont` enum ≤96 bytes (one cache line). The compile-time assertion at `src/eval_materialize.rs:252` enforces this.
+All `Cont` variant payloads are boxed to keep the `Cont` enum ≤96 bytes (one cache line). The compile-time assertion at `src/eval_materialize.rs:349` enforces this.
 
 The main loop is a two-register machine — `action` (what's happening now) and `stack` (what's waiting):
 
@@ -1427,9 +1427,16 @@ pub(crate) async fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<V
 
     loop {
         match action {
-            Action::Eval { expr, env, ctx: action_ctx } => {
-                // eval_step() handles the expression and may push continuations
-                action = eval_step(expr, env, &action_ctx, &mut stack).await;
+            Action::EvalCore { expr, env, ctx: action_ctx } => {
+                // eval_core_expr_pub() evaluates the CoreExpr to a thunk; if already
+                // materialized, take the fast path; otherwise dispatch to Materialize
+                action = match eval_core_expr_pub(&expr, &env, &action_ctx).await {
+                    Ok(thunk) => match thunk.try_get_materialized() {
+                        Some(value) => Action::Continue(Ok(value)),
+                        None => Action::Materialize { thunk, mat_span: Some(expr.span) },
+                    },
+                    Err(e) => Action::Continue(Err(e)),
+                };
             }
             Action::Materialize { thunk, mat_span } => {
                 // force_step() dispatches on thunk state, pushes Memoize continuation
@@ -1458,13 +1465,13 @@ pub(crate) async fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<V
 
 This is **structurally determined** by the `Cont` variant on the stack, not inferred at runtime. Each `Cont` variant statically knows whether it needs a materialized value or accepts a thunk. The strictness signature table (§Selective Materialization — Formal Specification) declares per-argument strictness for builtin *inputs*; the continuation context determines strictness for builtin *outputs*. Builtins like `$if` and `$get` return lazy thunks that must not be auto-materialized when used as dict values or function arguments.
 
-**deep_materialize:** Implemented as a separate recursive function in `eval_deep.rs`, calling `materialize()` per dict entry and seq element with cycle detection and sharing preservation via a `HashMap` cache. The target architecture expresses this as `DeepEntries` and `DeepSeqTail` continuations within the CEK loop, eliminating the separate recursive helper.
+**deep_materialize:** Implemented as a separate recursive function in `eval_materialize.rs`, calling `materialize()` per dict entry and seq element with cycle detection and sharing preservation via a `HashMap` cache. The target architecture expresses this as `DeepEntries` and `DeepSeqTail` continuations within the CEK loop, eliminating the separate recursive helper.
 
 **Tail-call optimization:** In tail position (e.g., last expression in a function body), set `action = Action::Eval { body, ... }` without pushing a `Cont`. The current frame is reused. TCO for recursive stdlib functions (`fold`, `map`, `filter`) follows the same pattern: detect tail calls during the variable resolution pass, mark them, and skip the continuation push. TCO applies to user-defined function calls only. Builtin calls always push a continuation — builtins rely on `PendingBuiltin` thunk deferral for lazy behavior, not tail-call elimination.
 
 **Error stack traces:** Walk `Vec<Cont>` to reconstruct the call stack. Each `Cont::CallForceFunc` carries the call-site span and label, replacing the current `EvalError::stack` vector. This gives precise "materialized at" context for every frame in the stack.
 
-**Cont variant count:** ~18-20 variants, one per continuation point in the current recursive evaluator. Each variant stores only its specific continuation data (Rc pointers + Span + small fields). Target frame size: ≤96 bytes per Cont (achieved by boxing large fields in the biggest variants).
+**Cont variant count:** 6 variants — `Memoize`, `PendingCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `DotAccessForce`, `TypeAssertCheck`. Each variant stores only its specific continuation data (Arc pointers + Span + small fields). Frame size: ≤96 bytes per Cont (enforced by the compile-time assertion at `src/eval_materialize.rs:349`).
 
 **Relationship to allocation strategy:** Arena allocation and flat environments integrate naturally with the CEK machine: `Cont` variants hold `ThunkId` handles into the arena, and the `Vec<Cont>` stack's lifetime defines the arena's lifetime scope.
 
