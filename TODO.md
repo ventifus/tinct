@@ -63,7 +63,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 **Part E — Evaluator cutover + delete old types:**
 ✅ **Rc→Arc migration DONE (commit b0aa803)** — Arc<Thunk>, Arc<RwLock<Environment>>, Arc<EvalContext>, Mutex<ThunkState> throughout. E1-E3 are now UNBLOCKED.
-- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File` — **PARTIALLY UNBLOCKED**: `ast_convert.rs` is deleted. `typecheck.rs` and `parser.rs` test modules now use SurfaceNode directly. Remaining blocker: eval.rs tests (~80 tests) still build `Expr` nodes directly via `eval_expr_for_test` shim (inline bridge in test module). Requires migrating eval.rs tests to use `parse_surface_expression` or build `CoreExpr` directly. Sprint: **rv2-delete-eval-expr-tests**
+- [x] Delete from `src/ast.rs`: `Expr`, `Document`, `File` — **DONE (2026-05-25, commit 2448336)**. Also deleted: `Entry`, `NamedArg`, `MatchArm`, Display impls. Runtime-v2 migration fully complete.
 - [x] **MAJOR MILESTONE**: UnevaluatedState::Expr DELETED (commit 18711a0) — evaluator fully CoreExpr-based
 - [x] Migrate eval_call.rs, eval_dict.rs, eval_materialize.rs to CoreExpr — deleted old eval_dict/eval_call functions; ~30 new_unevaluated call sites converted; force_step handles CoreExpr::DotAccess/TypeAssert/RuntimeTypeCheck inline; eval_step deleted; Action::EvalCore added
 - [x] Delete `src/eval_deep.rs` — moved deep_materialize to eval_materialize.rs; file deleted ✓ (commit 92ff2fc)
@@ -218,7 +218,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 **Remaining (only integration test API blocker):**
 - [x] `parse_expression` in parser.rs is used by `corpus_tests.rs` (integration test, external crate) — migrated: `parse_surface_expression` added to parser.rs; corpus_tests.rs now uses `parse_surface_expression`; `SurfaceExpression`/`SurfaceDeclaration` Display extended to cover all variants; `parse_expression` marked `#[deprecated]`. Option (a) completed.
-- [ ] Delete `ast_convert.rs` entirely — **BLOCKED**: `parse_expression` (still pub for backward compat) still calls `ast_convert`; formatter.rs/eval.rs test code still call `parse_expression` directly. Once those remaining callers are migrated, delete `parse_expression` and then `ast_convert.rs`.
+- [x] Delete `ast_convert.rs` entirely — **DONE (2026-05-25, commit dd9886f)**. `parse_expression` deleted; corpus_tests.rs migrated to `parse_surface_expression`; all ast_convert callers migrated.
 
 **STATUS**: `corpus_tests.rs` is now ast_convert-free. `parse_expression` is deprecated. Remaining ast_convert callers: `parse_expression` body (deprecated), formatter.rs×4 tests, eval.rs×1 test.
 
