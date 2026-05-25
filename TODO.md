@@ -210,7 +210,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Phase 3: Fn/Match/TypeAssert/Decl/RuntimeTypeCheck arms migrated natively in infer_surface_expr (commit e90f830)
 - [x] Phase 4: All 16 `check_*` helpers migrated to `Arc<SurfaceNode>`; infer_surface_expr Call arm passes args directly (commit 4c87d4c)
 - [x] Phase 5-6: `infer_expr` DELETED (943 lines, commit e90f830); `infer_if`, `infer_fn`, `typecheck_case_arm` migrated to SurfaceNode; `infer_class_decl_from_expr`/`infer_instance_decl_from_expr` helpers still use Expr internally (future cleanup)
-- [ ] Final cleanup: Migrate `extract_narrowings(cond: &Spanned<Expr>)` → `&Arc<SurfaceNode>` + rewrite `infer_class_decl_from_expr`/`infer_instance_decl_from_expr` without Expr; then remove `use crate::ast::Expr;` production import from typecheck.rs (`src/typecheck.rs`, `src/typecheck_annot.rs`)
+- [x] Final cleanup: All production Expr usage removed from typecheck.rs + typecheck_annot.rs (commits 0244164, 79e4f91, a5e487a, d8846b5). `use crate::ast::Expr;` moved to `#[cfg(test)]`. Remaining Expr dependencies: eval.rs (quote/unquote: expr_to_core_expr, core_expr_to_expr), expand.rs (macro body Expr::Fn), parser.rs, desugar.rs, eval_pipeline.rs — these are evaluator-layer bridges not part of this sprint.
 
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files
 
