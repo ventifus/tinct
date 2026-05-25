@@ -191,24 +191,28 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 
 
-### rv2-resolve-type-expr: Migrate resolve_type_expr from Spanned<Expr> to Arc<SurfaceNode>
+### rv2-resolve-type-expr: Migrate resolve_type_expr from Spanned<Expr> to Arc<SurfaceNode> ✅ DONE (2026-05-24, commit 8abb6e9)
 
-**Blocks:** rv2-delete-old-ast (7 bridge calls across typecheck.ts, typecheck_annot.ts, typecheck_dict.ts)
+9 functions migrated to SurfaceNode: resolve_type_expr, resolve_type_expr_with_guard, resolve_type_dict, resolve_type_dict_with_guard, try_resolve_fn_type_expr, resolve_fn_metadata, expand_type_alias, resolve_property_dict_as_record, entries_look_like_type_dict. surface_entries_to_entries deleted (dead code). All 7 surface_node_to_expr bridges removed.
 
-`resolve_type_expr` in `src/typecheck_annot.rs` takes `&Spanned<Expr>` and is called after bridge conversions from SurfaceNode. Migration eliminates 7 `surface_node_to_expr` bridge calls.
-
-- [ ] Change `resolve_type_expr` signature from `&Spanned<Expr>` to `&Arc<SurfaceNode>` in `src/typecheck_annot.rs`; update match arms from `Expr::*` to `SurfaceExpression::*`
-- [ ] Migrate all callers in typecheck.ts (lines 835, 2432, 2578), typecheck_annot.ts (lines 89-90, 1346, 3339), typecheck_dict.ts (line 325) to pass SurfaceNode directly
+- [x] resolve_type_expr → Arc<SurfaceNode> + match arms updated
+- [x] All callers migrated; surface_entries_to_entries deleted
 
 ### rv2-migrate-evaluator-bridges: Migrate eval.rs and expand.rs ast_convert bridges
 
-**Blocks:** rv2-delete-old-ast (remaining ast_convert callers in evaluator layer)
-**Depends on:** rv2-resolve-type-expr
+**Blocks:** rv2-delete-old-ast (remaining ast_convert callers in evaluator/macro layer)
+**Depends on:** rv2-resolve-type-expr ✅
 
-- [ ] Migrate `eval.rs` quote/unquote handling: remove `expr_to_core_expr`/`core_expr_to_expr` bridges (lines 918, 976, 999-1034)
-- [ ] Migrate `expand.rs` macro body evaluation: replace `Expr::Fn` construction with direct SurfaceNode evaluation (lines 1401, 1474)
-- [ ] Migrate `eval_materialize.rs` TypeAssert CoreExpr bridges (lines 2312-2358)
-- [ ] Verify `surface_program_to_file`/`file_to_surface_program` have zero callers; delete from ast_convert.rs
+**Completed so far:**
+- [x] `surface_entries_to_entries` deleted (dead code, 2026-05-24 commit 42d3108)
+- [x] `eval_materialize.rs` TypeAssert/RuntimeTypeCheck: consolidated double-bridge to `surface_node_to_core_expr` helper (commit 42d3108)
+
+**Remaining (macro system bridges):**
+- [ ] Migrate `eval.rs` quote/unquote handling (lines 918, 976, 999-1034): `expr_to_core_expr`/`core_expr_to_expr`/`expr_to_surface_node` — macro AST roundtrip bridges
+- [ ] Migrate `expand.rs` macro body evaluation (lines 1401, 1474): replace `surface_node_to_expr` + `Expr::Fn` with direct SurfaceNode evaluation
+- [ ] Retire `parse_expression` (parser.rs line 5789): move to `#[cfg(test)]`; update production caller at parser.rs:148 to use `parse()` directly
+- [ ] Delete `surface_program_to_file`/`file_to_surface_program` from ast_convert.rs (test-only callers)
+- [ ] After all callers removed: delete `ast_convert.rs` entirely
 
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files
 
