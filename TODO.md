@@ -151,8 +151,8 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 **Phase 6 — Delete bridge layer:**
 - [x] Deleted `ast_to_dict(file, ...)` and `document_to_dict` — zero production callers [commit 38a7e7b]
 - [x] Unit tests rewritten to use `surface_program_to_dict` [commit 38a7e7b]
-- [ ] `ast_to_dict_expr` — still live via `annotation_to_thunk_id` PropertyDict arm (Annotation migration dependency)
-- [ ] `dict_to_ast`, `dict_to_file` — still live via `dict_to_surface_program` reverse path
+- [x] `ast_to_dict_expr`, `expr_to_thunk_id`, `entry_to_thunk_id`, `named_arg_to_thunk_id`, `param_to_thunk_id` deleted — zero production callers
+- [x] `dict_to_ast`, `dict_to_ast_from_dict`, `dict_to_entry`, `dict_to_named_arg`, `dict_to_param`, `dict_to_pattern`, `dict_to_file`, `dict_to_surface_program` deleted — zero production callers; `dict_to_annotation` rewritten natively with `dict_to_surface_entry`
 - [ ] `surface_program_to_file` / `expr_to_surface_node` in ast_convert.rs — still needed by typecheck.rs, expand.rs
 
 **Tracked separately:**
@@ -179,15 +179,15 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 ### rv2-migrate-annotation: Migrate `Annotation::PropertyDict` from `Vec<Spanned<Entry>>` to `Vec<Spanned<SurfaceEntry>>` ✅ DONE (2026-05-23, Phases 1-5)
 
-### rv2-e3b-stdlib-macro-scanner: Migrate register_stdlib_macros_from_env + pre_scan_expr to SurfaceExpression
+### rv2-e3b-stdlib-macro-scanner: Migrate register_stdlib_macros_from_env + pre_scan_expr to SurfaceExpression ✅ DONE (2026-05-23)
 
 **Blocks:** `expand.rs` standalone `use crate::ast::Expr;` removal → rv2-delete-old-ast
 
 `register_stdlib_macros_from_env` and its helper `pre_scan_expr` scan stdlib files for macro declarations using old Expr AST. They need to be migrated to use `pre_scan_surface_document` (already added) instead.
 
-- [ ] Migrate `register_stdlib_macros_from_env` to call `pre_scan_surface_document` instead of converting to File and calling `pre_scan_expr` (`src/expand.rs`)
-- [ ] Delete `pre_scan_expr`, `pre_scan_expr_spanned`, `pre_scan_expr_value`, `expand_expr`, `expand_expr_inner`, `expand_macro_call`, `validate_syntax_class`, `validate_against_pattern` dead-code functions (`src/expand.rs`)
-- [ ] Remove standalone `use crate::ast::Expr;` from `src/expand.rs`
+- [x] Migrate `register_stdlib_macros_from_env` to call `pre_scan_surface_document` instead of converting to File and calling `pre_scan_expr` (`src/expand.rs`)
+- [x] Delete `pre_scan_expr`, `pre_scan_expr_spanned`, `pre_scan_expr_value`, `expand_expr`, `expand_expr_inner`, `expand_macro_call`, `validate_syntax_class`, `validate_against_pattern` dead-code functions (`src/expand.rs`)
+- [x] Remove standalone `use crate::ast::Expr;` from `src/expand.rs`
 
 
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files
@@ -211,7 +211,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 **Once ALL above are migrated:**
 - [ ] Delete `src/ast_convert.rs` dead code DONE (2026-05-23): deleted `file_to_surface_program_with_types` + 4 private helpers; remaining live functions (`file_to_surface_program`, `surface_program_to_file`, `expr_to_core_expr`, etc.) still needed
 - [ ] Delete `src/ast_convert.rs` entirely — once `file_to_surface_program`, `surface_program_to_file`, `expr_to_core_expr` callers are all migrated
-- [ ] Delete `src/ast_dict.rs` old Expr-based functions (`ast_to_dict`, `ast_to_dict_expr`, `dict_to_ast`, `dict_to_file`) — these now have ZERO external callers; only internal use by the Surface bridge wrappers and tests. Blocked on: rewriting `ast_dict.rs` internals to walk SurfaceNode instead of Expr (rv2-migrate-ast-dict full rewrite)
+- [x] Delete `src/ast_dict.rs` old Expr-based functions (`ast_to_dict`, `ast_to_dict_expr`, `dict_to_ast`, `dict_to_file`, `dict_to_surface_program`, `expr_to_thunk_id`, `entry_to_thunk_id`, `named_arg_to_thunk_id`, `param_to_thunk_id`) — DONE
 - [ ] Delete `Expr`, `Document`, `File` from `src/ast.rs` — all consumers migrated
 - [ ] `src/desugar.rs` — NOT deletable: old `desugar_file` was already deleted; `desugar_surface_program`/`desugar_surface_node` are the live API and will remain
 - [x] `just build` passes; `just test` passes

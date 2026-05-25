@@ -4,6 +4,34 @@ Completed milestones and sprints, moved from TODO.md.
 
 ## runtime-v2 Migration
 
+### rv2-e3b-stdlib-macro-scanner: Migrate register_stdlib_macros_from_env + pre_scan_expr to SurfaceExpression ✅ DONE (2026-05-23)
+
+**What changed (src/expand.rs):**
+- `register_stdlib_macros_from_env` rewritten to parse `stdlib/macros.llt` and call `pre_scan_surface_document` on each document. No longer uses a hardcoded table of `Expr::LetDecl` params or hand-builds `Spanned<Expr>` objects.
+- `MacroMetadata.params` changed from `Spanned<Expr>` to `Arc<SurfaceNode>`.
+- `SyntaxClassDef.pattern` changed from `Rc<Spanned<Expr>>` to `Arc<SurfaceNode>`.
+- `register_macro` signature updated to accept `Arc<SurfaceNode>` params.
+- Added `register_surface_macro_decl` — native surface helper that evaluates transformer functions and registers `DefMacro`/`MacroDecl`/`SyntaxClass` declarations without bridging to `Expr`.
+- Added `extract_inject_default_surface` — extracts inject: default from `Arc<SurfaceNode>` params.
+- Added `validate_against_pattern_surface` — native `SurfaceExpression`-based syntax-class pattern matching, replacing the `validate_against_pattern` bridge.
+- `expand_macro_call_surface` updated to match `SurfaceExpression::LetDecl/Rest/Annotated/VarRef` instead of `Expr::*` for param validation.
+- `validate_syntax_class_surface` updated to call `validate_against_pattern_surface` instead of bridging through `surface_node_to_expr` + `validate_against_pattern`.
+- Pre-scan loop in `expand_surface_program` replaced with a single `pre_scan_surface_document` call.
+- `pre_scan_surface_document` and `pre_scan_surface_expr` updated to call `register_surface_macro_decl` directly.
+- Splice handler in `expand_surface_expr_inner` updated to call `register_surface_macro_decl` directly.
+- Deleted: `pre_scan_expr`, `pre_scan_expr_spanned`, `pre_scan_expr_boxed`, `expand_expr`, `expand_expr_inner`, `expand_macro_call`, `validate_syntax_class`, `validate_against_pattern`, `extract_inject_default`.
+- Removed standalone `use crate::ast::Expr;` import (now only used locally inside `register_surface_macro_decl`).
+- `ExpansionGuard` struct moved to be adjacent to `expand_macro_call_surface` (was in the deleted block).
+
+**Side fixes (src/ast_dict.rs):**
+- Replaced two broken test functions (`test_ast_to_dict_int`, `test_ast_to_dict_var`) that called the deleted `ast_to_dict_expr` with surface-native equivalents using `surface_node_to_dict`.
+- Added `#[allow(dead_code)]` to `dict_to_file` (zero callers after test cleanup).
+- Removed stale `use crate::test_util::sp;` import from the test module.
+
+- [x] Migrate `register_stdlib_macros_from_env` to call `pre_scan_surface_document` instead of converting to File and calling `pre_scan_expr` (`src/expand.rs`)
+- [x] Delete `pre_scan_expr`, `pre_scan_expr_spanned`, `pre_scan_expr_value`, `expand_expr`, `expand_expr_inner`, `expand_macro_call`, `validate_syntax_class`, `validate_against_pattern` dead-code functions (`src/expand.rs`)
+- [x] Remove standalone `use crate::ast::Expr;` from `src/expand.rs`
+
 ### rv2-e3c-infer-dict-surface: Migrate infer_dict to native SurfaceEntry ✅ (completed as part of 488e0c46)
 
 All 4 tasks completed as part of `rv2-delete-old-ast: remove Expr/File from 4 remaining production files` (commit 488e0c46):
