@@ -8,14 +8,16 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::ast::{
-    node_id, Annotation, Entry, Param, Pattern, Span, Spanned, SurfaceDeclaration, SurfaceDocument,
+    node_id, Annotation, Param, Pattern, Span, Spanned, SurfaceDeclaration, SurfaceDocument,
     SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceProgram,
     TypeAnnotationTable,
 };
-// Expr: used by production inference helpers (extract_narrowings, check_expr, typecheck_case_arm, etc.)
-// that still operate on the Expr representation via bridge conversion.
+// Expr: used by production inference helpers (check_expr, infer_fn, typecheck_case_arm,
+// register_type_aliases, extract_param_indices, extract_pattern_types, etc.) that still
+// operate on the Expr representation via bridge conversion.
 // TODO(rv2-delete-old-ast): remove once all inference helpers are rewritten to walk
-// SurfaceExpression natively.
+// SurfaceExpression natively. Remaining bridges: check_expr, infer_fn, typecheck_case_arm,
+// register_type_aliases, extract_param_indices, extract_pattern_types, expand_type_alias.
 use crate::ast::Expr;
 use crate::coverage;
 use crate::types::{
@@ -41,8 +43,7 @@ pub type TypeMap = HashMap<(usize, usize), Type>;
 /// Populated during type checking by extracting `doc:` properties from annotations.
 pub type DocMap = HashMap<String, String>;
 
-/// Type alias for match arm type data: (param_types, span, entries)
-type MatchArmData<'a> = (Vec<Type>, Span, &'a Vec<Spanned<Entry>>);
+// MatchArmData (old Expr-based) removed — replaced by SurfaceMatchArmData.
 
 /// Re-export SchemeMap from types for LSP consumers.
 pub use crate::types::SchemeMap;
@@ -385,87 +386,34 @@ fn typecheck_surface_document(
                     resolver,
                     resolver_injective,
                 } => {
-                    // Convert to Expr::ClassDecl and infer to register into state.class_env
-                    let methods_exprs: Vec<Spanned<crate::ast::Entry>> = methods
-                        .iter()
-                        .map(|m| {
-                            let key = m
-                                .node
-                                .key
-                                .as_ref()
-                                .map(crate::ast_convert::surface_node_to_expr);
-                            let value = crate::ast_convert::surface_node_to_expr(&m.node.value);
-                            Spanned::new(
-                                crate::ast::Entry {
-                                    key,
-                                    value: Rc::new(value),
-                                },
-                                m.span,
-                            )
-                        })
-                        .collect();
-                    let determines_exprs: Vec<Spanned<Expr>> = determines
-                        .iter()
-                        .map(crate::ast_convert::surface_node_to_expr)
-                        .collect();
-                    let resolver_expr = resolver
-                        .as_ref()
-                        .map(|r| Box::new(crate::ast_convert::surface_node_to_expr(r)));
-                    let class_expr = Spanned::new(
-                        Expr::ClassDecl {
-                            name: name.clone(),
-                            params: params.clone(),
-                            superclasses: superclasses.clone(),
-                            methods: methods_exprs,
-                            determines: determines_exprs,
-                            resolver: resolver_expr,
-                            resolver_injective: *resolver_injective,
-                        },
-                        decl_spanned.span,
-                    );
                     // Infer the class declaration to register it into state.class_env
-                    match infer_class_decl_from_expr(&class_expr, &env, state, &mut None) {
+                    match infer_class_decl_from_surface(
+                        name,
+                        params,
+                        superclasses,
+                        methods,
+                        determines,
+                        resolver,
+                        *resolver_injective,
+                        decl_spanned.span,
+                        &env,
+                        state,
+                        &mut None,
+                    ) {
                         Ok(_) => {}
                         Err(mut errs) => errors.append(&mut errs),
                     }
                 }
                 SurfaceDeclaration::InstanceDecl { class_name, arms } => {
-                    // Convert to Expr::InstanceDecl and infer to register into state
-                    let arms_exprs: Vec<(Spanned<Expr>, Vec<Spanned<crate::ast::Entry>>)> = arms
-                        .iter()
-                        .map(|(pattern, methods)| {
-                            let pattern_expr = crate::ast_convert::surface_node_to_expr(pattern);
-                            let methods_exprs: Vec<Spanned<crate::ast::Entry>> = methods
-                                .iter()
-                                .map(|m| {
-                                    let key = m
-                                        .node
-                                        .key
-                                        .as_ref()
-                                        .map(crate::ast_convert::surface_node_to_expr);
-                                    let value =
-                                        crate::ast_convert::surface_node_to_expr(&m.node.value);
-                                    Spanned::new(
-                                        crate::ast::Entry {
-                                            key,
-                                            value: Rc::new(value),
-                                        },
-                                        m.span,
-                                    )
-                                })
-                                .collect();
-                            (pattern_expr, methods_exprs)
-                        })
-                        .collect();
-                    let instance_expr = Spanned::new(
-                        Expr::InstanceDecl {
-                            class_name: class_name.clone(),
-                            arms: arms_exprs,
-                        },
-                        decl_spanned.span,
-                    );
                     // Infer the instance declaration to register it
-                    match infer_instance_decl_from_expr(&instance_expr, &env, state, &mut None) {
+                    match infer_instance_decl_from_surface(
+                        class_name,
+                        arms,
+                        decl_spanned.span,
+                        &env,
+                        state,
+                        &mut None,
+                    ) {
                         Ok(_) => {}
                         Err(mut errs) => errors.append(&mut errs),
                     }
@@ -979,17 +927,17 @@ enum Narrowing {
     HasKey { var: String, key: String },
 }
 
-/// Extract narrowing constraints from a condition expression.
+/// Extract narrowing constraints from a condition expression (SurfaceNode version).
 /// Returns an empty vec for unrecognized patterns.
-fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
-    match &cond.node {
-        Expr::Call {
+fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
+    match &cond.expr {
+        SurfaceExpression::Call {
             func,
             args,
             named_args,
             ..
         } if named_args.is_empty() => {
-            if let Expr::VarRef { name, .. } = &func.node {
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 match name.as_str() {
                     // Pattern: [= x literal] or [= literal x]
                     "=" if args.len() == 2 => {
@@ -1010,8 +958,10 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                     }
                     // Pattern: [has? x "key"]
                     "has?" if args.len() == 2 => {
-                        if let (Expr::VarRef { name: var_name, .. }, Expr::Str(key)) =
-                            (&args[0].node, &args[1].node)
+                        if let (
+                            SurfaceExpression::VarRef { name: var_name, .. },
+                            SurfaceExpression::Str(key),
+                        ) = (&args[0].expr, &args[1].expr)
                         {
                             return vec![Narrowing::HasKey {
                                 var: var_name.clone(),
@@ -1030,7 +980,7 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                     // Pattern: [int? x], [str? x], [dict? x], [bool? x], [float? x],
                     // [fn? x], [null? x], [seq? x], [num? x]
                     "int?" if args.len() == 1 => {
-                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
                                 ty: Type::Int,
@@ -1038,7 +988,7 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                         }
                     }
                     "str?" if args.len() == 1 => {
-                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
                                 ty: Type::Str,
@@ -1046,7 +996,7 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                         }
                     }
                     "dict?" if args.len() == 1 => {
-                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                             // dict? narrows to open record with fresh RowVar
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
@@ -1057,7 +1007,7 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                         }
                     }
                     "bool?" if args.len() == 1 => {
-                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
                                 ty: Type::Bool,
@@ -1065,7 +1015,7 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                         }
                     }
                     "float?" if args.len() == 1 => {
-                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
                                 ty: Type::Float,
@@ -1073,7 +1023,7 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                         }
                     }
                     "fn?" if args.len() == 1 => {
-                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                             // HKT: fn? narrows to Function{params:[], ret:Unknown, variadic:true},
                             // the "any function" type. Zero-param variadic now unifies with any
                             // concrete function signature (fn-narrowing-variadic sprint).
@@ -1089,7 +1039,7 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                         }
                     }
                     "null?" if args.len() == 1 => {
-                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                             // null? narrows to empty closed record
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
@@ -1100,7 +1050,7 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                         }
                     }
                     "seq?" if args.len() == 1 => {
-                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                             // HKT: seq? narrows to Seq(Unknown) — element type deferred until
                             // higher-kinded type parameterization (Seq: * → *)
                             return vec![Narrowing::TypeOf {
@@ -1110,7 +1060,7 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
                         }
                     }
                     "num?" if args.len() == 1 => {
-                        if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                             // num? narrows to Number (supertype of Int | Float)
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
@@ -1128,18 +1078,18 @@ fn extract_narrowings(cond: &Spanned<Expr>) -> Vec<Narrowing> {
 }
 
 /// Try to extract an equality-literal narrowing from `[= var literal]`.
-fn try_eq_literal(left: &Spanned<Expr>, right: &Spanned<Expr>) -> Option<Narrowing> {
-    if let Expr::VarRef { name, .. } = &left.node {
-        match &right.node {
-            Expr::Int(n) => Some(Narrowing::EqLiteral {
+fn try_eq_literal(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> Option<Narrowing> {
+    if let SurfaceExpression::VarRef { name, .. } = &left.expr {
+        match &right.expr {
+            SurfaceExpression::Int(n) => Some(Narrowing::EqLiteral {
                 var: name.clone(),
                 ty: Type::IntLiteral(*n),
             }),
-            Expr::Str(s) => Some(Narrowing::EqLiteral {
+            SurfaceExpression::Str(s) => Some(Narrowing::EqLiteral {
                 var: name.clone(),
                 ty: Type::StringLiteral(s.clone()),
             }),
-            Expr::Bool(_b) => Some(Narrowing::EqLiteral {
+            SurfaceExpression::Bool(_b) => Some(Narrowing::EqLiteral {
                 var: name.clone(),
                 ty: Type::Bool,
             }),
@@ -1151,24 +1101,24 @@ fn try_eq_literal(left: &Spanned<Expr>, right: &Spanned<Expr>) -> Option<Narrowi
 }
 
 /// Try to extract a type-of narrowing from `[= [type-of var] "TypeName"]`.
-fn try_type_of(left: &Spanned<Expr>, right: &Spanned<Expr>) -> Option<Narrowing> {
+fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> Option<Narrowing> {
     // Left side must be [type-of var]
-    if let Expr::Call {
+    if let SurfaceExpression::Call {
         func,
         args,
         named_args,
         ..
-    } = &left.node
+    } = &left.expr
     {
         if named_args.is_empty() && args.len() == 1 {
-            if let Expr::VarRef {
+            if let SurfaceExpression::VarRef {
                 name: func_name, ..
-            } = &func.node
+            } = &func.expr
             {
                 if func_name == "type-of" {
-                    if let Expr::VarRef { name: var_name, .. } = &args[0].node {
+                    if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                         // Right side must be a string literal type name
-                        if let Expr::Str(type_name) = &right.node {
+                        if let SurfaceExpression::Str(type_name) = &right.expr {
                             let ty = match type_name.as_str() {
                                 "Int" => Some(Type::Int),
                                 "Float" => Some(Type::Float),
@@ -1301,10 +1251,8 @@ fn infer_if(
     // Infer the condition type (must be Bool)
     let _cond_ty = infer_surface_expr(cond, env, state, type_map)?;
 
-    // Extract narrowings from the condition — extract_narrowings still takes Spanned<Expr>,
-    // so we convert the cond node for this purpose only (no inference performed here).
-    let cond_expr = crate::ast_convert::surface_node_to_expr(cond);
-    let narrowings = extract_narrowings(&cond_expr);
+    // Extract narrowings from the condition — walks SurfaceExpression natively.
+    let narrowings = extract_narrowings(cond);
 
     // Fork the environment for the true branch
     let env_true = apply_narrowings(env, &narrowings, state);
@@ -2246,22 +2194,21 @@ pub(crate) fn infer_surface_expr(
             annotation,
             expr: inner,
         } => {
-            // Bridge: convert to Expr to extract the resolved_type RefCell from Expr::TypeAssert.
-            // resolve_type_assert itself no longer calls infer_expr (check_expr uses infer_surface_expr).
-            let expr = crate::ast_convert::surface_node_to_expr(node);
-            if let Expr::TypeAssert { resolved_type, .. } = &expr.node {
-                resolve_type_assert(
-                    annotation,
-                    &Rc::new(crate::ast_convert::surface_node_to_expr(inner)),
-                    resolved_type,
-                    env,
-                    node.span,
-                    state,
-                    type_map,
-                )
-            } else {
-                unreachable!("surface_node_to_expr for TypeAssert did not produce Expr::TypeAssert")
-            }
+            // resolved_type is a local RefCell — Surface AST stores type information in
+            // TypeAnnotationTable (keyed by NodeId), not in the AST node itself.
+            // The RefCell is passed to resolve_type_assert for the write-once consistency check
+            // (catches double-typecheck invariant violations) but its written value is not
+            // propagated back to the AST; the returned Ok(type) is the authoritative result.
+            let resolved_type = std::cell::RefCell::new(None::<Type>);
+            resolve_type_assert(
+                annotation,
+                inner,
+                &resolved_type,
+                env,
+                node.span,
+                state,
+                type_map,
+            )
         }
 
         SurfaceExpression::Annotated { name, annotation } => {
@@ -2357,9 +2304,8 @@ pub(crate) fn infer_surface_expr(
                 // Type-check guard if present, and apply is: predicate narrowing.
                 let arm_env = if let Some(guard) = &arm.guard {
                     let _guard_ty = infer_surface_expr(guard, &arm_env, state, type_map)?;
-                    // extract_narrowings still takes &Spanned<Expr> — convert guard for this only.
-                    let guard_expr = crate::ast_convert::surface_node_to_expr(guard);
-                    let guard_narrowings = extract_narrowings(&guard_expr);
+                    // extract_narrowings walks SurfaceExpression natively — pass guard directly.
+                    let guard_narrowings = extract_narrowings(guard);
                     if guard_narrowings.is_empty() {
                         arm_env
                     } else {
@@ -2454,16 +2400,38 @@ pub(crate) fn infer_surface_expr(
         SurfaceExpression::Decl(decl_box) => {
             // Handle declaration forms embedded in expression context
             match **decl_box {
-                SurfaceDeclaration::ClassDecl { .. } => {
-                    // Bridge: convert to Expr::ClassDecl then call helper (no infer_expr).
-                    let expr = crate::ast_convert::surface_node_to_expr(node);
-                    infer_class_decl_from_expr(&expr, env, state, type_map)
-                }
-                SurfaceDeclaration::InstanceDecl { .. } => {
-                    // Bridge: convert to Expr::InstanceDecl then call helper (no infer_expr).
-                    let expr = crate::ast_convert::surface_node_to_expr(node);
-                    infer_instance_decl_from_expr(&expr, env, state, type_map)
-                }
+                SurfaceDeclaration::ClassDecl {
+                    ref name,
+                    ref params,
+                    ref superclasses,
+                    ref methods,
+                    ref determines,
+                    ref resolver,
+                    resolver_injective,
+                } => infer_class_decl_from_surface(
+                    name,
+                    params,
+                    superclasses,
+                    methods,
+                    determines,
+                    resolver,
+                    resolver_injective,
+                    node.span,
+                    env,
+                    state,
+                    type_map,
+                ),
+                SurfaceDeclaration::InstanceDecl {
+                    ref class_name,
+                    ref arms,
+                } => infer_instance_decl_from_surface(
+                    class_name,
+                    arms,
+                    node.span,
+                    env,
+                    state,
+                    type_map,
+                ),
                 SurfaceDeclaration::TypeAlias { .. } => {
                     // Bridge: convert body SurfaceNode to Spanned<Expr> for expand_type_alias.
                     // Extract body from decl_box directly to avoid borrow issues with **decl_box.
@@ -2506,17 +2474,7 @@ pub(crate) fn infer_surface_expr(
         }
 
         SurfaceExpression::CaseArm { pattern, body } => {
-            // Convert to Expr for case arm checking (Phase 4 will migrate)
-            let pattern_expr = crate::ast_convert::surface_node_to_expr(pattern);
-            let body_expr = Rc::new(crate::ast_convert::surface_node_to_expr(body));
-            typecheck_case_arm(
-                &pattern_expr,
-                &body_expr,
-                &Type::Unknown,
-                env,
-                state,
-                type_map,
-            )
+            typecheck_case_arm(pattern, body, &Type::Unknown, env, state, type_map)
         }
 
         SurfaceExpression::Placeholder => {
@@ -2580,47 +2538,39 @@ pub(crate) fn infer_surface_expr(
     result
 }
 
-/// Type-check a [class ...] declaration from a pre-converted Expr::ClassDecl node.
-/// Called from infer_surface_expr (via surface_node_to_expr bridge) and typecheck_surface_document.
-fn infer_class_decl_from_expr(
-    expr: &Spanned<Expr>,
+/// Type-check a [class ...] declaration from SurfaceDeclaration::ClassDecl fields.
+/// Called from infer_surface_expr (Decl arm) and typecheck_surface_document — no Expr bridge needed.
+fn infer_class_decl_from_surface(
+    name: &str,
+    params: &[String],
+    superclasses: &[(String, String)],
+    methods: &[Spanned<crate::ast::SurfaceEntry>],
+    determines: &[Arc<SurfaceNode>],
+    resolver: &Option<Arc<SurfaceNode>>,
+    resolver_injective: bool,
+    span: Span,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
-    type_map: &mut Option<&mut TypeMap>,
+    _type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let Expr::ClassDecl {
-        name,
-        params,
-        superclasses,
-        methods,
-        determines,
-        resolver,
-        resolver_injective,
-    } = &expr.node
-    else {
-        return Err(vec![TypeError::new(
-            "internal error: infer_class_decl_from_expr called with non-ClassDecl expr",
-            expr.span,
-        )]);
-    };
     use crate::types::{ClassDecl, Kind};
 
     if name.is_empty() {
         return Err(vec![TypeError::new(
             "class declaration must have a name declared with [class [ClassName ...] ...]",
-            expr.span,
+            span,
         )]);
     }
 
     for method in methods {
         let _method_name = match &method.node.key {
-            Some(key_expr) => match &key_expr.node {
-                Expr::Str(s) => s.clone(),
-                Expr::VarRef { name, .. } => name.clone(),
+            Some(key_node) => match &key_node.expr {
+                SurfaceExpression::Str(s) => s.clone(),
+                SurfaceExpression::VarRef { name: n, .. } => n.clone(),
                 _ => {
                     return Err(vec![TypeError::new(
                         "class method name must be a string or identifier",
-                        key_expr.span,
+                        key_node.span,
                     )]);
                 }
             },
@@ -2631,7 +2581,9 @@ fn infer_class_decl_from_expr(
                 )]);
             }
         };
-        let _method_type = resolve_type_expr(&method.node.value, env, state, &mut None, &mut None)
+        // Bridge: convert method value SurfaceNode → Spanned<Expr> for resolve_type_expr.
+        let value_expr = crate::ast_convert::surface_node_to_expr(&method.node.value);
+        let _method_type = resolve_type_expr(&value_expr, env, state, &mut None, &mut None)
             .map_err(|e| vec![e])?;
     }
 
@@ -2642,7 +2594,9 @@ fn infer_class_decl_from_expr(
         .unwrap_or_default();
 
     let mut fd_indices: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
-    for fd_expr in determines {
+    for fd_node in determines {
+        // Bridge: convert SurfaceNode → Spanned<Expr> for extract_param_indices.
+        let fd_expr = crate::ast_convert::surface_node_to_expr(fd_node);
         match &fd_expr.node {
             Expr::Dict(entries) if entries.len() == 2 => {
                 let determining = &entries[0].node.value;
@@ -2654,20 +2608,20 @@ fn infer_class_decl_from_expr(
             _ => {
                 return Err(vec![TypeError::new(
                     "functional dependency must be a 2-element list [[determining-vars] determined-var(s)]",
-                    fd_expr.span,
+                    fd_node.span,
                 )]);
             }
         }
     }
 
-    let resolver_name = if let Some(resolver_expr) = resolver {
-        match &resolver_expr.node {
-            Expr::VarRef { name, .. } => Some(name.clone()),
-            Expr::Str(s) => Some(s.clone()),
+    let resolver_name = if let Some(resolver_node) = resolver {
+        match &resolver_node.expr {
+            SurfaceExpression::VarRef { name: n, .. } => Some(n.clone()),
+            SurfaceExpression::Str(s) => Some(s.clone()),
             _ => {
                 return Err(vec![TypeError::new(
                     "resolver must be an identifier or string",
-                    resolver_expr.span,
+                    resolver_node.span,
                 )]);
             }
         }
@@ -2676,7 +2630,7 @@ fn infer_class_decl_from_expr(
     };
 
     let class_decl = ClassDecl {
-        name: name.clone(),
+        name: name.to_string(),
         params: params
             .iter()
             .map(|p| {
@@ -2690,7 +2644,7 @@ fn infer_class_decl_from_expr(
             .collect(),
         determines: fd_indices,
         resolver: resolver_name,
-        resolver_injective: *resolver_injective,
+        resolver_injective,
     };
 
     state.class_env.insert(class_decl.clone());
@@ -2700,26 +2654,24 @@ fn infer_class_decl_from_expr(
         }
     }
 
-    let _ = (env, type_map); // unused in this function
     Ok(Type::Record(Row {
         fields: HashMap::new(),
     }))
 }
 
-/// Type-check an [instance ...] declaration from a pre-converted Expr::InstanceDecl node.
-/// Called from infer_surface_expr (via surface_node_to_expr bridge) and typecheck_surface_document.
-fn infer_instance_decl_from_expr(
-    expr: &Spanned<Expr>,
+/// Type alias for match arm type data (Surface version): (param_types, span, entries).
+type SurfaceMatchArmData<'a> = (Vec<Type>, Span, &'a Vec<Spanned<crate::ast::SurfaceEntry>>);
+
+/// Type-check an [instance ...] declaration from SurfaceDeclaration::InstanceDecl fields.
+/// Called from infer_surface_expr (Decl arm) and typecheck_surface_document — no Expr bridge needed.
+fn infer_instance_decl_from_surface(
+    class_name: &str,
+    arms: &[(Arc<SurfaceNode>, Vec<Spanned<crate::ast::SurfaceEntry>>)],
+    span: Span,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let Expr::InstanceDecl { class_name, arms } = &expr.node else {
-        return Err(vec![TypeError::new(
-            "internal error: infer_instance_decl_from_expr called with non-InstanceDecl expr",
-            expr.span,
-        )]);
-    };
     use crate::types::InstanceDecl;
 
     if arms.is_empty() {
@@ -2732,7 +2684,7 @@ fn infer_instance_decl_from_expr(
         let class_decl = state.class_env.get(class_name).ok_or_else(|| {
             vec![TypeError::new(
                 format!("unknown class '{}'", class_name),
-                expr.span,
+                span,
             )]
         })?;
         (
@@ -2742,15 +2694,17 @@ fn infer_instance_decl_from_expr(
             class_decl
                 .params
                 .iter()
-                .map(|(name, _)| name.clone())
+                .map(|(n, _)| n.clone())
                 .collect::<Vec<_>>(),
         )
     };
 
-    let mut arm_data: Vec<MatchArmData> = Vec::new();
+    let mut arm_data: Vec<SurfaceMatchArmData> = Vec::new();
 
-    for (pattern_expr, methods) in arms {
-        let pattern_types = extract_pattern_types(pattern_expr, env, state)?;
+    for (pattern_node, methods) in arms {
+        // Bridge: convert SurfaceNode → Spanned<Expr> for extract_pattern_types.
+        let pattern_expr = crate::ast_convert::surface_node_to_expr(pattern_node);
+        let pattern_types = extract_pattern_types(&pattern_expr, env, state)?;
 
         if pattern_types.len() != param_count {
             return Err(vec![TypeError::new(
@@ -2760,7 +2714,7 @@ fn infer_instance_decl_from_expr(
                     class_name,
                     param_count
                 ),
-                pattern_expr.span,
+                pattern_node.span,
             )]);
         }
 
@@ -2770,12 +2724,12 @@ fn infer_instance_decl_from_expr(
                     "instance pattern for class '{}' contains Unknown types — all pattern positions must have concrete type annotations (use a@Type syntax)",
                     class_name
                 ),
-                pattern_expr.span,
+                pattern_node.span,
             )
             .with_code("T017")]);
         }
 
-        arm_data.push((pattern_types, pattern_expr.span, methods));
+        arm_data.push((pattern_types, pattern_node.span, methods));
     }
 
     for i in 0..arm_data.len() {
@@ -2801,7 +2755,7 @@ fn infer_instance_decl_from_expr(
 
     if has_fds {
         for (determining_indices, determined_indices) in &fd_list {
-            for (pattern_types, span, _) in &arm_data {
+            for (pattern_types, arm_span, _) in &arm_data {
                 for &det_idx in determined_indices {
                     if !determining_indices.contains(&det_idx) {
                         if let Type::TypeVar(det_name, _) = &pattern_types[det_idx] {
@@ -2819,7 +2773,7 @@ fn infer_instance_decl_from_expr(
                                         "coverage violation for class '{}': determined parameter '{}' (variable '{}') does not appear in any determining position",
                                         class_name, param_name, det_name
                                     ),
-                                    *span,
+                                    *arm_span,
                                 )
                                 .with_code("T016")]);
                             }
@@ -2871,7 +2825,7 @@ fn infer_instance_decl_from_expr(
         }
     }
 
-    for (pattern_types, _span, methods) in &arm_data {
+    for (pattern_types, _arm_span, methods) in &arm_data {
         let inst_type = if pattern_types.len() == 1 {
             pattern_types[0].clone()
         } else {
@@ -2889,13 +2843,13 @@ fn infer_instance_decl_from_expr(
         if !state.in_prelude_load {
             for method in *methods {
                 let method_name = match &method.node.key {
-                    Some(key_expr) => match &key_expr.node {
-                        Expr::Str(s) => s.clone(),
-                        Expr::VarRef { name, .. } => name.clone(),
+                    Some(key_node) => match &key_node.expr {
+                        SurfaceExpression::Str(s) => s.clone(),
+                        SurfaceExpression::VarRef { name: n, .. } => n.clone(),
                         _ => {
                             return Err(vec![TypeError::new(
                                 "instance method name must be a string or identifier",
-                                key_expr.span,
+                                key_node.span,
                             )]);
                         }
                     },
@@ -2907,9 +2861,8 @@ fn infer_instance_decl_from_expr(
                     }
                 };
 
-                // Convert Expr method value to SurfaceNode for infer_surface_expr.
-                let method_surf = crate::ast_convert::expr_to_surface_node(&method.node.value);
-                let method_impl_type = infer_surface_expr(&method_surf, env, state, type_map)?;
+                let method_impl_type =
+                    infer_surface_expr(&method.node.value, env, state, type_map)?;
                 method_types.insert(method_name, method_impl_type);
             }
         }
@@ -2929,14 +2882,14 @@ fn infer_instance_decl_from_expr(
         };
 
         let instance_decl = InstanceDecl {
-            class_name: class_name.clone(),
+            class_name: class_name.to_string(),
             instance_type: inst_type,
             det_positions,
             method_types,
         };
 
         if let Err(msg) = state.instance_env.insert(instance_decl) {
-            return Err(vec![TypeError::new(msg, expr.span)]);
+            return Err(vec![TypeError::new(msg, span)]);
         }
     }
 

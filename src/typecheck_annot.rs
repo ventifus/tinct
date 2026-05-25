@@ -113,7 +113,7 @@ pub(crate) fn expand_type_alias(
 
 pub(crate) fn resolve_type_assert(
     annotation: &Spanned<Annotation>,
-    inner: &Spanned<Expr>,
+    inner: &Arc<SurfaceNode>,
     resolved_type: &RefCell<Option<Type>>,
     env: &Rc<TypeEnv>,
     _span: Span,
@@ -139,8 +139,10 @@ pub(crate) fn resolve_type_assert(
 
     // resolved_type will be stored after substitution application below (write-once invariant).
 
-    // Use checking mode for TypeAssert inner expression (doc/06 §Bidirectional Typing)
-    let check_result = check_expr(inner, &expected, env, state, type_map);
+    // Use checking mode for TypeAssert inner expression (doc/06 §Bidirectional Typing).
+    // Bridge: check_expr still takes &Spanned<Expr>; convert inner SurfaceNode for this call.
+    let inner_expr = crate::ast_convert::surface_node_to_expr(inner);
+    let check_result = check_expr(&inner_expr, &expected, env, state, type_map);
 
     // If checking fails and there's a default, suppress the error (ASSERT-DEFAULT rule)
     if check_result.is_err() {
