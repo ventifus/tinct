@@ -82,7 +82,7 @@ str-at@[doc: "Character at position n (0-based; negative counts from end). Raise
 # Example: [str-length "hello"] => 5
 # Example: [str-length ""] => 0
 # Example: [str-length "cafe"] => 4  (counts codepoints, not bytes)
-str-length: str-length
+str-length: builtin-str-length
 
 # ============================================================================
 # Case Conversion

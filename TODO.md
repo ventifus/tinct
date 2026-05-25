@@ -1765,7 +1765,7 @@ The code is authoritative: `src/typecheck.rs:5501` confirms `None => Ok(Type::Un
 - [x] Identified as parser error from missing `[let]` in fn params (not a type checker or macro issue)
 - [x] Fixed by unified-bindings sprint adding `let` to all stdlib files including net.llt
 
-### versions-e070: Fix E070 circular dependency in just versions [Major]
+### versions-e070: Fix E070 circular dependency in just versions [FIXED]
 
 After fixing E040 (reduce depth) and E099 (unified-bindings), E070 "circular dependency detected" fires.
 
@@ -1774,10 +1774,22 @@ After fixing E040 (reduce depth) and E099 (unified-bindings), E070 "circular dep
 The thunk at versions.llt `85:13-85:23` (inside the `mark` function definition area) is being passed to `str-length` inside `pad-right` in strings.llt. And evaluating this thunk requires the outer `str(99-112)` expression to complete — creating a cycle.
 
 **Root cause analysis:**
-- The SequentialStep CEK continuation (from cek-match-sequential-rust-stack sprint) inserts dict bindings as LAZY thunks into child_env. These lazy thunks can create circular dependencies when the evaluator tries to force them while the outer sequential is still in-progress.
-- The async sequential approach (forcing dict bindings eagerly) avoids one form of the cycle but reveals another variant (involving the include-cache-success path).
+- **Confirmed via debug print:** thunk span={start: offset=3900, line=85, col=13} — the thunk IS in versions.llt at line 85, col 13-22. NOT in net.llt as initially thought.
+- The span `85:13-85:23` covers `ring [let a` (inside `fn@String [let a...`) in the `mark` function definition. This is a 10-char span that doesn't correspond to any obvious sub-expression in the fn declaration (fn expr spans col 7+; params list spans col 18+; annotation `String` spans cols 11-16).
+- The SequentialStep CEK continuation inserts dict bindings as LAZY thunks. With ForceAndBind (new Cont variant that forces dict bindings before inserting), the cycle shape stays the same — indicating the circular thunk at 85:13-23 is NOT caused by the lazy binding insertion.
 - The pre-existing bug was hidden by E040 (reduce depth limit) and only revealed after E040 was fixed.
-- Thunk at `85:13-85:23`: the debug offset=3905 places this in net.llt line 79 (the last `]` of the `fetch` fn expression, col 58). The renderer incorrectly shows versions.llt line 85 for context (same line number, different file). Confirmed: the E070's `thunk-85:13-23` is from a file where line 79 has 58 chars — matching net.llt's fetch line.
+- **Unknown**: what code creates a thunk at versions.llt offset 3900 (line 85, col 13-22)? The span doesn't correspond to any known LLT AST node at that location. Could be from the boundary guard mechanism, TypeAssert generation, or arena allocation with wrong span.
+
+**Root cause (identified via debug instrumentation):**
+- `str-length: str-length` at strings.llt line 85 is a SELF-REFERENTIAL binding in the letrec context. In a letrec dict, all entries are mutually recursive, so `str-length: str-length` means "str-length's value is the letrec's own str-length binding" — a direct cycle.
+- When `pad-right` calls `str-length` from its closure env (strings.llt's env), the FreeVar `str-length` resolves to this circular thunk.
+- **Fix:** Changed `str-length: str-length` to `str-length: builtin-str-length` — references the stable alias from the parent prelude env (not the self-referential letrec binding).
+- **Pattern:** Any stdlib file with a re-export like `name: name` (same key and value) creates a circular letrec binding. Should use `name: builtin-name` instead.
+
+- [x] Fixed strings.llt line 85: `str-length: str-length` → `str-length: builtin-str-length`
+- [x] Also added ForceAndBind continuation in SequentialStep to force dict bindings eagerly (prevents other lazy-binding circular deps)
+- [x] `just versions` now passes (exit 0) with full dependency table output
+- **Files:** `stdlib/strings.llt`, `src/eval_materialize.rs`
 
 **Fix needed:** The SequentialStep's lazy dict binding insertion must be replaced with eager forcing. This requires a new `Cont::ForceAndBind` continuation variant that:
 1. Receives a materialized dict entry value from the CEK machine
