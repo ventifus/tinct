@@ -2421,8 +2421,8 @@ pub(crate) async fn apply_cont(
                             Action::EvalCore {
                                 expr: Arc::new(crate::lower::lower(
                                     default_node,
-                                    &crate::ast::ResolutionTable::new(),
-                                    &crate::ast::TypeAnnotationTable::new(),
+                                    crate::ast::empty_resolution_table(),
+                                    crate::ast::empty_type_annotation_table(),
                                 )),
                                 env,
                                 ctx: Arc::clone(&ctx),

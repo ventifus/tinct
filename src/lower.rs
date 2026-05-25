@@ -13,8 +13,8 @@
 use std::sync::Arc;
 
 use crate::ast::{
-    node_id, Annotation, CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam,
-    ResolutionTable, Spanned, SurfaceExpression, SurfaceNode, TypeAnnotationTable,
+    node_id, CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, ResolutionTable, Spanned,
+    SurfaceExpression, SurfaceNode, TypeAnnotationTable,
 };
 
 /// Lower a single surface node to a CoreExpr.
@@ -383,42 +383,6 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
         },
         CoreExpr::Error(span) => SurfaceExpression::Error(*span),
         CoreExpr::Placeholder => SurfaceExpression::Placeholder,
-    }
-}
-
-/// Lower an entire SurfaceProgram's expressions in a document.
-///
-/// Utility for batch-lowering all expression items in a document.
-/// Declaration items (SurfaceItem::Decl) are skipped — they were processed by the expander.
-#[allow(dead_code)] // Used in Part E when batch lowering is activated
-pub fn lower_document_exprs<'a>(
-    nodes: impl Iterator<Item = &'a Arc<SurfaceNode>>,
-    res: &ResolutionTable,
-    types: &TypeAnnotationTable,
-) -> Vec<Spanned<CoreExpr>> {
-    nodes.map(|node| lower(node, res, types)).collect()
-}
-
-/// Lower a single annotation (recursing into PropertyDict entry values).
-///
-/// Annotation property dict values are SurfaceExpression nodes stored in the old Entry type.
-/// This function lowers them in place if needed for annotation-driven evaluation.
-/// In practice, annotations are resolved statically during typechecking and do not
-/// need runtime lowering — this function exists for completeness.
-#[allow(dead_code)] // Used if annotation runtime evaluation is needed in future sprints
-pub fn lower_annotation(
-    ann: &Annotation,
-    _res: &ResolutionTable,
-    _types: &TypeAnnotationTable,
-) -> Annotation {
-    match ann {
-        Annotation::Simple(_) | Annotation::Annotated(_, _) => ann.clone(),
-        Annotation::PropertyDict(_) => {
-            // PropertyDict entries contain old Expr nodes (pre-migration).
-            // During the full migration (when Annotation uses SurfaceNode), this
-            // function will recurse into entry values. For now, clone as-is.
-            ann.clone()
-        }
     }
 }
 

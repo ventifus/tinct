@@ -1087,18 +1087,15 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 ### eval-ast-missing-alias: eval-ast alias never registered [Critical]
 
-- [ ] Register `builtin-eval-ast` in `standard_builtins()` in `src/builtins.rs` — currently `stdlib/prelude.llt:2335` calls `[builtin-eval-ast ast]` but the alias is never registered; any call to `[eval-ast ...]` fails at runtime with undefined variable error. Either add a Rust implementation + register, or remove the `eval-ast` wrapper and update all callers. [Critical — stdlib-author]
+- [x] Delete dead `eval-ast` wrapper from prelude.llt + 2 corpus tests + update docs — feature superseded by `eval` builtin; `builtin-eval-ast` was already deleted from builtins.rs
 
-### duplicate-corpus-tests: Remove duplicate corpus tests [Critical]
+### duplicate-corpus-tests: Remove duplicate corpus tests [Critical] ✅ DONE
 
-- [ ] Delete `tests/corpus/eval/builtins/try_closure_varref.llt-eval` — exact duplicate of `try_captures_outer_var.llt-eval` which already exists and covers the same closure-capture path [Critical — test-crafter]
-- [ ] Delete `tests/corpus/eval/type_assertions/boundary_guard_type_mismatch.llt-eval` — duplicate of `tests/corpus/eval/errors/boundary_guard_type_mismatch.llt-eval`; error tests belong in `eval/errors/` [Critical — test-crafter]
-- [ ] Delete one of: `tests/corpus/eval/builtins/try_catches_error.llt-eval` OR `tests/corpus/eval/builtins/try_error.llt-eval` — both test `[try [fn [] [raise "..."]]]` → `Variant(Error, ...)` [Critical — test-crafter]
+- [x] Deleted 3 duplicate corpus tests: try_closure_varref, boundary_guard_type_mismatch (type_assertions/), try_error
 
-### typeassert-drain-error-path: Fix TypeAnnotationTable drain skipped on error path [Major]
+### typeassert-drain-error-path: Fix TypeAnnotationTable drain skipped on error path [Major] ✅ DONE
 
-- [ ] Add drain in error arm of `infer_surface_expr` non-dict path in `src/typecheck.rs:559-562` — when `infer_surface_expr` returns `Err`, `state.type_annotation_table` is NOT drained; TypeAssert entries from the failed expression accumulate and pollute the next successful expression's drain. Fix: add `for (nid, ty) in state.type_annotation_table.drain() { table.insert(nid, ty); }` after `errors.append(&mut errs)` at line 561 [Major — type-theorist, computer-scientist]
-- [ ] Add drain after Pass 0c class/instance pre-registration in `src/typecheck_dict.rs:400-418` — `infer_surface_expr` calls in the class/instance registration loop populate `state.type_annotation_table` but are never drained; entries attributed to wrong context. Fix: drain after lines 407 and 413 [Major — type-theorist]
+- [x] Added drain in error arm + ClassDecl/InstanceDecl Pass 0c in typecheck.rs
 
 ### pending-builtin-depth-caching: PendingBuiltin DepthExceeded permanently caches as Failed [Major]
 
@@ -1110,7 +1107,7 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 ### perf-empty-tables-arc: Add Arc-level empty table singletons [Major]
 
-- [ ] Fix missed singleton at `src/eval_materialize.rs:2424-2425` — one TypeAssert default-fallback site still calls `ResolutionTable::new()` / `TypeAnnotationTable::new()`; should use `empty_resolution_table()` / `empty_type_annotation_table()` [Major — performance-expert]
+- [x] Fix missed singleton at `src/eval_materialize.rs:2424-2425` — replaced with `empty_resolution_table()` / `empty_type_annotation_table()`
 - [ ] Add `empty_resolution_table_arc() -> Arc<ResolutionTable>` and `empty_type_annotation_table_arc() -> Arc<TypeAnnotationTable>` OnceLock singletons in `src/ast.rs` (~10 lines); replace `Arc::new(ResolutionTable::new())` at `src/eval_call.rs:290-291` — `Thunk::new_surface()` requires `Arc<ResolutionTable>` which the existing `&'static` singletons cannot provide; every function call with a default-value param allocates two fresh `Arc<HashMap>` [Major — performance-expert]
 
 ### doc-15-16-stale: Update doc/15-ast.md and doc/16-architecture.md stale type sketches [Major]
@@ -1121,7 +1118,7 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 ### group-by-duplicate-element: group-by duplicates first element in each bucket [Major]
 
-- [ ] Fix `stdlib/prelude.llt:1187` — `builder-get-or` default `[make-entry 0 x]` = `[0: x]` causes first element to appear twice; `[cons x [0: x]]` prepends x onto a dict already containing x. Fix: change default to `[]` (empty dict). Verify `tests/corpus/eval/stdlib/group_by_basic.llt-eval` expected output is correct after fix. [Major — stdlib-author]
+- [x] Fix group-by duplicate — changed `[make-entry 0 x]` default to `[]` in `stdlib/prelude.llt:1187`
 
 ### dict-to-surface-node-complete: Complete dict_to_surface_node_inner for all SurfaceExpression variants [Major]
 
@@ -1137,5 +1134,5 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 ### lower-dead-code: Delete unused lower.rs scaffolding functions [Minor]
 
-- [ ] Delete `lower_document_exprs` and `lower_annotation` from `src/lower.rs:393,409` — both marked `#[allow(dead_code)]` with speculative comments; Part E is complete, verify no callers exist then delete [Minor — integration-verifier]
+- [x] Deleted `lower_document_exprs` and `lower_annotation` from `src/lower.rs` — zero callers confirmed
 

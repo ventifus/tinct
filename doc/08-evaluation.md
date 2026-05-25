@@ -1503,7 +1503,7 @@ Wrapped as `Option<Box<FnAnnotation>>` — `None` for unannotated functions (zer
 
 `describe`, `sig-from-ast`, `annotation-to-str`, `annotation-of`, and `source-of` are pure tinct functions in `stdlib/prelude.llt` using only existing primitives. They use `find-first-or` (not `find-first`) for null-safe annotation entry lookup. `describe` on a function returns a dict with `doc:`, `return-ann:`, `params:`, and `sig:` fields; on a non-function value it returns `[type: type-of(val)]`.
 
-The round-trip paths are: in-memory (`[eval-ast [ast-of f]]`, works for pure/stdlib-only functions); file persistence (format via formatter, write to `DirCap`, re-include).
+The round-trip paths are: in-memory (`[eval [seq [ast-of f]]]`, works for pure/stdlib-only functions); file persistence (format via formatter, write to `DirCap`, re-include).
 
 **References:** Sheard, T. & Peyton Jones, S. (2002). "Template Haskell." *Haskell Workshop.* [runtime staging analogue]
 

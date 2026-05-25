@@ -1,4 +1,0 @@
-# Test eval-ast reconstructs and evaluates a quoted expression (available via prelude wrapper)
-[eval-ast [quote [+ 1 2]]]
-=== out
-Int(3)

@@ -711,7 +711,7 @@ Patterns include wildcards, variable bindings, literals, type tags, pins, and di
 
 ### Quasiquoting
 
-`quote`, `unquote`, and `unquote-splice` treat code as data. `[quote expr]` produces an AST dict; `[eval-ast dict]` evaluates one back into a value.
+`quote`, `unquote`, and `unquote-splice` treat code as data. `[quote expr]` produces an AST dict.
 
 ```tinct
 [ast: [quote [+ 1 2]]]    # → [type: "call"  fn: "+"  args: [1 2]]
@@ -721,11 +721,11 @@ ast.fn                     # → "+"
 [op: "+"]
 [quote [[unquote op] 1 2]] # → [type: "call"  fn: "+"  args: [1 2]]
 
-# Round-trip: quote then evaluate
-[eval-ast [quote [+ 1 2]]] # → 3
+# Round-trip: quote then evaluate using eval builtin
+[eval [seq [quote [+ 1 2]]]] # → 3
 
 # Build and run code programmatically
-[template: [fn [op a b] [eval-ast [quote [[unquote op] [unquote a] [unquote b]]]]]]
+[template: [fn [op a b] [eval [seq [quote [[unquote op] [unquote a] [unquote b]]]]]]]
 [template "+" 10 20]        # → 30
 ```
 

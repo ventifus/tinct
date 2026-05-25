@@ -1,8 +1,0 @@
-# Boundary guard runtime failure: Unknown-typed value crosses Int boundary
-# from-json returns Unknown type; the type checker records a boundary guard at
-# the call-arg position. At runtime the value is a String, so the guard fires
-# with a type assertion failure (E011). No type warning expected: Unknown is
-# consistent with Int (AGT), so the type checker passes the call site.
-[call [fn [let x@Int] $x] [from-json "\"hello\""]]
-=== error
-[E011] type assertion failed: expected Int, got String

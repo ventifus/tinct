@@ -396,7 +396,13 @@ fn typecheck_surface_document(
                         &mut None,
                     ) {
                         Ok(_) => {}
-                        Err(mut errs) => errors.append(&mut errs),
+                        Err(mut errs) => {
+                            errors.append(&mut errs);
+                            // Drain TypeAssert entries from failed expression to prevent leaking into next iteration
+                            for (nid, ty) in state.type_annotation_table.drain() {
+                                table.insert(nid, ty);
+                            }
+                        }
                     }
                 }
                 SurfaceDeclaration::InstanceDecl { class_name, arms } => {
@@ -410,7 +416,13 @@ fn typecheck_surface_document(
                         &mut None,
                     ) {
                         Ok(_) => {}
-                        Err(mut errs) => errors.append(&mut errs),
+                        Err(mut errs) => {
+                            errors.append(&mut errs);
+                            // Drain TypeAssert entries from failed expression to prevent leaking into next iteration
+                            for (nid, ty) in state.type_annotation_table.drain() {
+                                table.insert(nid, ty);
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -559,6 +571,10 @@ fn typecheck_surface_document(
                 Err(mut errs) => {
                     state.level = enclosing_level;
                     errors.append(&mut errs);
+                    // Drain TypeAssert entries from failed expression to prevent leaking into next iteration
+                    for (nid, ty) in state.type_annotation_table.drain() {
+                        table.insert(nid, ty);
+                    }
                 }
             }
         }

@@ -1,4 +1,0 @@
-# eval-ast: evaluate quoted AST expression
-[eval-ast [quote [+ 1 2]]]
-=== out
-Int(3)

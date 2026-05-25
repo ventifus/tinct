@@ -1184,7 +1184,7 @@ Uses builder-get-or for atomic get-or-insert (single mutex acquisition per eleme
             [builtin-reduce
                 [fn [let b x]
                     [let k [f x]]
-                    [builder-set b k [cons x [builder-get-or b k [make-entry 0 x]]]]]
+                    [builder-set b k [cons x [builder-get-or b k []]]]]
                 [make-builder]
                 xs]]]
     [map-entries [fn [let e] [reverse e.value]] raw]]
@@ -2325,14 +2325,6 @@ Note: Returns a new Dict with elements sorted, keys reindexed from 0. Uses natur
 # ============================================================================
 # Meta Primitives (shadowable wrappers for meta introspection)
 # ============================================================================
-
-eval-ast: [fn@[return: Unknown  doc: """
-Evaluate an AST expression.
-
-Example: [eval-ast [quote [+ 1 2]]] => 3
-
-Note: Takes a quoted AST and evaluates it in the current environment.
-"""] [let ast] [builtin-eval-ast ast]]
 
 gensym: [fn@[return: String  doc: """
 Generate a unique symbol name.

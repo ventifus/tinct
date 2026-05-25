@@ -153,7 +153,6 @@ Control over evaluation order and error handling.
 | `error` | 1 | `S → ⊥` | Never returns | Materializes arg as error message, raises catchable error |
 | `try` | 1 | `S → D` | Variant | Materializes function arg, invokes it with no args, catches errors; returns `[Ok result]` or `[Err message]` (ADT variants, destructured with `match`) |
 | `apply` | 2 | `S × S → Θ` | Any | Materialize function and dict, call function with dict as named args |
-| `eval-ast` | 1 | `S → V` | Any | Evaluate an AST dict (as produced by `[quote ...]`); converts via `dict_to_ast` and evaluates in the current environment |
 
 **Error cases:**
 
@@ -162,7 +161,6 @@ Control over evaluation order and error handling.
 - `error`: Always raises (by design)
 - `try`: Type mismatch if arg is not a function (zero-arity)
 - `apply`: Type mismatch if first arg is not a function or second is not a dict
-- `eval-ast`: Type mismatch if arg is not a Dict conforming to the AST schema; conversion error if the dict structure is invalid
 
 ## Type Introspection
 
@@ -194,7 +192,6 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 | `macro-injects` | 1 | `S → V` | String or Null | Given a macro name, return its `inject:` default binding name if declared, or `null` if not. Reflection primitive for anaphoric macros (e.g., `[macro-injects "aif"]` → `"it"`). |
 | `llt-repr` | 1 | `S → V` | String | Convert value to LLT source code representation (inverse of parsing; useful for code generation) |
 | `ast-of` | 1 | `T → V` | Dict (Unknown) | Return the AST dict without forcing the argument. Thunk-aware: inspects thunk state without materializing. Materialized → AST of the value (`Value::Function` → `[type: "fn" ...]`, `Value::Builtin` → `[type: "builtin" ...]`, other → `[type: type-of(val)]`); Unevaluated → AST of the expression via `ast_to_dict_expr` (doc annotations visible); Pending → `[type: "pending"]` descriptor. See `doc/feature/runtime-reflection.md`. |
-| `eval-ast` | 1 | `S → V` | Any | Evaluate an AST dict in the stdlib environment and return the resulting value. |
 | `str` | variadic | `S... → V` | String | Stringify and concatenate all arguments. Routes through registered `Showable` instance for user-defined types; built-in Rust dispatch for primitives. |
 
 **Error cases:**
@@ -202,7 +199,6 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 - `gensym`: None (accepts 0 or 1 args; non-String arg produces type error)
 - `llt-repr`: None (all values have a repr)
 - `ast-of`: None (all values return a dict)
-- `eval-ast`: Dict does not conform to AST schema; free variables not in stdlib
 - `macro-injects`: Arity mismatch (requires exactly 1 arg); non-String argument produces type error
 
 ## Variant Construction

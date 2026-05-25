@@ -7089,7 +7089,7 @@ mod tests {
         assert!(names.contains(&"each-kv"), "missing each-kv");
         // Total count: Wave 1 sprint added 4 access-pipeline builtins (builtin-get, each, each-key, each-kv).
         // Update this count when standard_builtins() changes.
-        // eval-ast moved to builtin-eval-ast (prelude wrapper only)
+        // eval-ast: DELETED (superseded by eval builtin)
         // gensym moved to builtin-gensym (prelude wrapper only)
         assert!(names.contains(&"str-length"), "missing str-length");
         assert!(names.contains(&"str-slice"), "missing str-slice");
