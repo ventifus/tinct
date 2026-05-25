@@ -1243,8 +1243,8 @@ pub(crate) fn builtin_variant(
                                 payload: Some(payload_id),
                             };
                             let surface_node =
-                                crate::ast_dict::dict_to_surface_node(&variant_val, &ctx).map_err(
-                                    |e| {
+                                crate::surface_convert::dict_to_surface_node(&variant_val, &ctx)
+                                    .map_err(|e| {
                                         Box::new(EvalError::user_error(
                                             format!(
                                         "variant '{}': failed to convert payload to AST node{}: {}",
@@ -1258,8 +1258,7 @@ pub(crate) fn builtin_variant(
                                     ),
                                             call_span,
                                         ))
-                                    },
-                                )?;
+                                    })?;
                             ok_val(Value::Expression(surface_node), call_span)
                         } else {
                             // Non-AST variant: store the payload as a ThunkId (lazy, won't be forced until accessed)

@@ -897,7 +897,7 @@ fn value_to_surface_node(
         ))),
         Value::Variant { .. } => {
             // Variant form of an AST node — convert via surface bridge
-            crate::ast_dict::dict_to_surface_node(value, ctx).map_err(|err| {
+            crate::surface_convert::dict_to_surface_node(value, ctx).map_err(|err| {
                 EvalError::internal(
                     format!("unquote result Variant is not a valid AST: {}", err),
                     span,
@@ -909,7 +909,7 @@ fn value_to_surface_node(
             // Check if this is an AST dict (has a "type" field)
             if dict.contains_key(&Key::String("type".into())) {
                 // It's an AST dict — convert via surface bridge
-                crate::ast_dict::dict_to_surface_node(value, ctx).map_err(|err| {
+                crate::surface_convert::dict_to_surface_node(value, ctx).map_err(|err| {
                     EvalError::internal(
                         format!("unquote result dict is not a valid AST: {}", err),
                         span,

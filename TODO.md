@@ -170,25 +170,31 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `just build` passes [commit 9370184]
 
 
-### rv2-delete-ast-dict: Delete remaining ast_dict.rs functions and the file itself
+### rv2-delete-ast-dict: Relocate remaining ast_dict.rs functions and delete the file
 
-**Deferred from rv2-macro-native-expression (2026-05-25).** Two functions remain:
-- `dict_to_surface_node` — still called by builtins_meta.rs (builtin_variant), expand.rs (fallback path), eval.rs (value_to_surface_node)
-- `surface_program_to_dict` — still called by formatter.rs (format_source_tinct_with_dir)
+**Deferred from rv2-macro-native-expression (2026-05-25).** `dict_to_surface_node` is a permanent function (needed by `builtin_variant` to construct AST nodes from user dicts). It cannot be eliminated, only relocated. `surface_program_to_dict` is only used by formatter.rs.
 
-- [ ] Migrate `builtin_variant` to construct SurfaceNode directly instead of calling dict_to_surface_node (`src/builtins_meta.rs`)
-- [ ] Remove `dict_to_surface_node` fallback path from `expand_macro_call` — Expression-only (`src/expand.rs`)
-- [ ] Migrate `value_to_surface_node` in eval.rs to not need dict_to_surface_node (`src/eval.rs`)
-- [ ] Delete `dict_to_surface_node` from `src/ast_dict.rs`
-- [ ] Migrate `format_source_tinct_with_dir` to pass AST to formatter without dict conversion (`src/formatter.rs`)
-- [ ] Delete `surface_program_to_dict` from `src/ast_dict.rs`
-- [ ] Delete `src/ast_dict.rs` entirely
+**Approach:** Move functions to their callers' modules, then delete ast_dict.rs. No logic changes — just file reorganization.
+
+- [x] Move `dict_to_surface_node`, `dict_to_surface_node_inner`, and helpers to `src/surface_convert.rs` — used by builtins_meta.rs, expand.rs, eval.rs
+- [x] Update `crate::ast_dict::dict_to_surface_node` imports to `crate::surface_convert::dict_to_surface_node` in builtins_meta.rs, expand.rs, eval.rs
+- [ ] Move `surface_program_to_dict`, `AstToDictOpts`, `CommentMaps`, and helpers from `src/ast_dict.rs` to `src/formatter.rs` or `src/surface_convert.rs`
+- [ ] Delete `src/ast_dict.rs` — zero remaining content after moves
 
 ### rv2-deep-materialize-delete: Delete `deep_materialize` after output and macro migration
 
-After `rv2-output-formatter-contract` and `rv2-macro-native-expression` complete, `deep_materialize` has only one caller: `src/repl.rs:271`. The REPL uses it to force the full output value for display. With the output formatter contract change, the REPL should also use `materialize_sync` on a formatter-produced String, matching the CLI.
+**Status update (2026-05-25):** `deep_materialize` still has multiple callers beyond repl.rs:
+- `src/builtins_meta.rs`: `builtin_deep_materialize` ($deep-materialize builtin), `builtin_to_json`, new AST variant error path
+- `src/expand.rs`: Dict/Variant fallback path in macro result handling
+- `src/lib.rs`: `eval_source_with_input`, `eval_source_with_config`; public export
+- Multiple tests in `src/builtins.rs` and `src/lib.rs`
 
-- [ ] After rv2-output-formatter-contract ✓ and rv2-macro-native-expression ✓: remove `deep_materialize` from repl.rs
+All callers must be migrated before deletion.
+
+- [ ] Remove `deep_materialize` from `eval_source_with_input` and `eval_source_with_config` in lib.rs — use `materialize_sync` instead
+- [ ] Remove `deep_materialize` from expand.rs fallback path — require macro results to be Expression
+- [ ] Remove `deep_materialize` from `builtin_to_json` — use `materialize` per-entry instead
+- [ ] Review `$deep-materialize` builtin — decide whether to keep as user-facing API or delete
 - [ ] Delete `pub fn deep_materialize` from `src/eval_materialize.rs` — zero callers remaining
 - [ ] Remove `deep_materialize` from `pub` exports in `src/lib.rs`
 - [ ] Update whatif runtime-v2.md Implementation Notes to record `deep_materialize` as deleted

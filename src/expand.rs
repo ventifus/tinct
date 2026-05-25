@@ -36,10 +36,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{Param, Span, Spanned, SurfaceEntry, SurfaceNamedArg, SurfaceNode};
-use crate::ast_dict::dict_to_surface_node;
 use crate::builtins;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{self, EvalContext};
+use crate::surface_convert::dict_to_surface_node;
 use crate::value::{Environment, Thunk, Value};
 
 /// Provenance information for a macro-generated AST node.

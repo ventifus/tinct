@@ -31,7 +31,6 @@ pub fn format_source_tinct_with_dir(
     script_path: &std::path::Path,
     base_dir: Option<cap_std::fs::Dir>,
 ) -> Result<String, String> {
-    use crate::ast_dict::{surface_program_to_dict, AstToDictOpts};
     use crate::desugar; // TODO(parts-e): remove when desugar.rs is deleted (blocked on evaluator CoreExpr migration)
     use crate::eval::{self, EvalContext};
     use crate::parser::parse;
@@ -58,7 +57,6 @@ pub fn format_source_tinct_with_dir(
     };
 
     // Parse the input source (no env/ctx needed yet).
-    use crate::ast_dict::CommentMaps; // TODO(parts-e): same as above
     let parse_output = parse(input).map_err(|e| format!("{e}"))?;
 
     // Load and expand the formatter script BEFORE creating env/ctx.
@@ -114,6 +112,7 @@ pub fn format_source_tinct_with_dir(
     );
 
     // Convert input AST to dict using the now-stable ctx.
+    use crate::ast_dict::{surface_program_to_dict, AstToDictOpts, CommentMaps};
     let opts = if compact {
         AstToDictOpts::default()
     } else {

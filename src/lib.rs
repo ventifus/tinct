@@ -39,6 +39,7 @@ pub mod formatter;
 pub mod lexer;
 pub mod parser;
 pub mod resolve;
+pub mod surface_convert;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod typecheck;
