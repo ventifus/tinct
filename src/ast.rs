@@ -55,6 +55,17 @@ impl Span {
         };
         Self::new(pos, pos)
     }
+
+    /// Returns true if this span is the synthetic origin span (all zeros / line 1, col 1).
+    ///
+    /// Used to guard against false-positive boundary guard matches: synthetic `CoreExpr`
+    /// nodes created by macro expansion or internal synthesis all share `Span::origin()`,
+    /// so keying `boundary_guards` by span would collide across all of them.
+    /// `maybe_wrap_guard` skips guarding for origin spans to prevent applying the wrong
+    /// type guard to an unrelated synthetic node.
+    pub fn is_origin(self) -> bool {
+        self == Self::origin()
+    }
 }
 
 /// AST node with source location

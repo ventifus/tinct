@@ -1099,11 +1099,11 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 ### pending-builtin-depth-caching: PendingBuiltin DepthExceeded permanently caches as Failed [Major]
 
-- [ ] Fix `src/eval_materialize.rs:650-684` — when a builtin's result thunk hits `DepthExceeded`, `Memoize(restore: None)` causes the PendingBuiltin thunk to cache as `Failed` rather than restore for retry. Add `is_cacheable()` check before `cache_failure_once` in the Err arm; populate `restore: Some(RestoreState::PendingBuiltin{...})` in the Memoize push. [Major — eval-engine]
+- [x] Fixed PendingBuiltin DepthExceeded caching — pre-clone args before consuming into BuiltinArgs; Memoize now gets `restore: Some(RestoreState::PendingBuiltin{...})`; Err arm checks `is_cacheable()` before permanent cache
 
 ### boundary-guard-span-collision: Replace Span key in boundary_guards with stable ID [Major]
 
-- [ ] Change `boundary_guards` key from `Span` to a stable `u64` guard-id in `src/eval.rs:1312-1324` — synthetic `CoreExpr` nodes using `Span::origin()` (all zeros) collide in the map; `maybe_wrap_guard` applies the wrong type guard to the wrong thunk silently. Fix: assign monotonic `AtomicU64` id at type-checker insertion, thread through thunk wrap. [Major — security-expert]
+- [x] Fixed boundary guard span collision — added `Span::is_origin()` to ast.rs; `maybe_wrap_guard` early-returns for synthetic nodes (Span::origin); eliminates false guard application on macro-synthesized CoreExpr nodes
 
 ### perf-empty-tables-arc: Add Arc-level empty table singletons [Major]
 

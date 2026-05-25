@@ -81,8 +81,6 @@ pub(crate) fn attach_materialization_context(
 /// Snapshot of a thunk's pre-materialization state, used to restore the thunk
 /// when a non-cacheable error occurs.
 pub(crate) enum RestoreState {
-    #[allow(dead_code)]
-    // Used in tests; runtime paths now skip RestoreState for PendingBuiltin (Task 4 optimization)
     PendingBuiltin {
         def: crate::value::BuiltinDef,
         args: Vec<Arc<Thunk>>,
@@ -214,8 +212,9 @@ pub(crate) struct MemoizeData {
     pub(crate) origin: Option<Arc<str>>,
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
-    // None for paths where restoration is not possible (e.g., default fallback).
-    // Some when the original thunk state can be restored on error.
+    // Some when the original thunk state can be restored on non-cacheable errors.
+    // None only for the GuardedValidate default-fallback path where the thunk has
+    // already transitioned to a new state and the prior state is no longer available.
     pub(crate) restore: Option<RestoreState>,
     pub(crate) ctx: Arc<EvalContext>,
 }
@@ -629,6 +628,14 @@ pub(crate) async fn force_step(
             };
         }
 
+        // Pre-clone args/named for state restoration on non-cacheable errors (e.g. DepthExceeded).
+        // Arc<Thunk> clones are cheap (atomic ref count only). The Vec and IndexMap container
+        // clones are the only allocation overhead. named is None in the common case (line 632),
+        // so the IndexMap clone is free for most builtins. This restores the thunk to PendingBuiltin
+        // when DepthExceeded occurs, allowing retry at higher continuation budget.
+        let args_for_restore = args.as_ref().expect("args set above").clone();
+        let named_for_restore = named.as_ref().expect("named set above").clone();
+
         // `named` is None for internally-created thunks (common case); only $apply
         // passes named args through. Take ownership to avoid cloning Vec/IndexMap.
         let builtin_args = crate::value::BuiltinArgs {
@@ -642,21 +649,24 @@ pub(crate) async fn force_step(
             Ok(result_thunk) => {
                 // Fast path: if the builtin already materialized its result, skip recursion
                 if let Some(value) = result_thunk.try_get_materialized() {
-                    // args/named are no longer needed; drop them implicitly.
                     // eval_stack_guard pops on drop (armed)
                     thunk.set_materialized(value.clone());
                     Action::Continue(Ok(value))
                 } else {
-                    // args/named were moved into BuiltinArgs (no clone), so we can't create RestoreState.
-                    // If result materialization fails with DepthExceeded, the thunk will transition to
-                    // Failed rather than being restored to PendingBuiltin. This trades retry-ability for
-                    // performance (avoiding Vec/IndexMap clone on every builtin call).
+                    // Restore to PendingBuiltin on non-cacheable errors (e.g. DepthExceeded)
+                    // so the thunk can be retried at a higher continuation budget.
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                         thunk: Arc::clone(thunk),
                         origin,
                         thunk_span,
                         mat_span,
-                        restore: None,
+                        restore: Some(RestoreState::PendingBuiltin {
+                            def,
+                            args: args_for_restore,
+                            named: named_for_restore,
+                            call_span,
+                            ctx: Arc::clone(&thunk_ctx),
+                        }),
                         ctx: Arc::clone(&thunk_ctx),
                     })));
                     // Memoize continuation inherits eval_stack pop responsibility
@@ -675,10 +685,19 @@ pub(crate) async fn force_step(
                     thunk_span,
                 );
                 // eval_stack_guard pops on drop (armed)
-                // args/named were moved into BuiltinArgs, so we always cache errors (even DepthExceeded).
-                // This means non-cacheable errors from builtins will transition to Failed rather than
-                // being restored to PendingBuiltin. This trades retry-ability for performance.
-                thunk.cache_failure_once(&decorated);
+                // Restore to PendingBuiltin for non-cacheable errors (e.g. DepthExceeded) so
+                // the thunk can be retried. Cache as Failed only for cacheable errors.
+                if decorated.kind.is_cacheable() {
+                    thunk.cache_failure_once(&decorated);
+                } else {
+                    thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
+                        def,
+                        args: args_for_restore,
+                        named: named_for_restore,
+                        call_span,
+                        ctx: thunk_ctx,
+                    });
+                }
                 Action::Continue(Err(decorated))
             }
         }
@@ -1260,14 +1279,12 @@ pub(crate) async fn apply_cont(
                     } else if let Some(restore_state) = restore {
                         restore_state.restore(&thunk);
                     }
-                    // restore is always Some when Memoize is pushed from the three
-                    // GuardedValidate default-fallback sites: each calls restore.take()
-                    // on a freshly-destructured GuardedValidateData whose restore field
-                    // starts as Some (set in force_step). restore is also Some for the
-                    // Unevaluated and PendingBuiltin Memoize paths. restore: None does
-                    // not currently arise from any push site; the else-if above is a
-                    // defensive guard for future Memoize push sites that may lack a
-                    // restore state (e.g., top-level eval with no deferred thunk).
+                    // restore is Some for all Memoize push sites except the GuardedValidate
+                    // default-fallback paths that call restore.take() and may yield None when
+                    // the restore state has been consumed. PendingBuiltin and PendingCall paths
+                    // always provide Some(restore). restore: None means a non-cacheable error
+                    // leaves the thunk in InProgress — valid only for the default-fallback case
+                    // where the thunk will be materialized via the default value path instead.
                     Action::Continue(Err(e))
                 }
             }
@@ -1926,7 +1943,10 @@ pub(crate) async fn apply_cont(
                     }
 
                     // All forced and strict args materialized — call the builtin.
-                    // Take ownership to avoid cloning Vec/IndexMap.
+                    // Pre-clone args/named for state restoration on non-cacheable errors.
+                    // Arc<Thunk> clones are cheap; named is None in the common case.
+                    let args_for_restore = args.as_ref().expect("args set above").clone();
+                    let named_for_restore = named.as_ref().expect("named set above").clone();
                     let builtin_args = crate::value::BuiltinArgs {
                         args: args.take().expect("args set above"),
                         named: named.take().expect("named set above"),
@@ -1936,18 +1956,23 @@ pub(crate) async fn apply_cont(
                     match (def.func)(builtin_args).await.map_err(&decorate) {
                         Ok(result_thunk) => {
                             if let Some(value) = result_thunk.try_get_materialized() {
-                                // args/named are no longer needed; drop them implicitly.
                                 // eval_stack_guard pops on drop (armed)
                                 thunk.set_materialized(value.clone());
                                 Action::Continue(Ok(value))
                             } else {
-                                // args/named were moved into BuiltinArgs (no clone), so we can't create RestoreState.
+                                // Restore to PendingBuiltin on non-cacheable errors (e.g. DepthExceeded).
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Arc::clone(&thunk),
                                     origin,
                                     thunk_span,
                                     mat_span,
-                                    restore: None,
+                                    restore: Some(RestoreState::PendingBuiltin {
+                                        def,
+                                        args: args_for_restore,
+                                        named: named_for_restore,
+                                        call_span,
+                                        ctx: Arc::clone(&thunk_ctx),
+                                    }),
                                     ctx: Arc::clone(&thunk_ctx),
                                 })));
                                 // Memoize continuation inherits eval_stack pop responsibility
@@ -1960,8 +1985,20 @@ pub(crate) async fn apply_cont(
                         }
                         Err(e) => {
                             // eval_stack_guard pops on drop (armed)
-                            // args/named were moved into BuiltinArgs, so we always cache errors (even DepthExceeded).
-                            thunk.cache_failure_once(&e);
+                            // Restore to PendingBuiltin for non-cacheable errors (e.g. DepthExceeded).
+                            if e.kind.is_cacheable() {
+                                thunk.cache_failure_once(&e);
+                            } else {
+                                thunk.restore_unevaluated(
+                                    crate::value::UnevaluatedState::Builtin {
+                                        def,
+                                        args: args_for_restore,
+                                        named: named_for_restore,
+                                        call_span,
+                                        ctx: thunk_ctx,
+                                    },
+                                );
+                            }
                             Action::Continue(Err(e))
                         }
                     }
