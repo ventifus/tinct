@@ -1,3 +1,0 @@
-[quote 42]
-=== out
-Variant(Literal, Dict({"kind": String("int"), "value": Int(42), "span": Dict({"start": Dict({"line": Int(1), "col": Int(8), "offset": Int(7)}), "end": Dict({"line": Int(1), "col": Int(10), "offset": Int(9)})})}))

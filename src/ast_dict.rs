@@ -1125,6 +1125,11 @@ pub fn dict_to_surface_node(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Arc<SurfaceNode>, AstError> {
+    // Short-circuit: Value::Expression is already a SurfaceNode, no dict deserialization needed.
+    // Post-runtime-v2, [quote expr] returns Value::Expression(SurfaceNode) directly.
+    if let Value::Expression(node) = val {
+        return Ok(Arc::clone(node));
+    }
     dict_to_surface_node_inner(val, ctx)
 }
 

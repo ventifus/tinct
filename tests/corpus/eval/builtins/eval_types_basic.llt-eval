@@ -1,4 +1,4 @@
 # eval-types: evaluate a simple quoted literal in the type stage environment
-[eval-types [0: [quote 42]]]
+[eval-types [seq [quote 42] []]]
 === out
 Int(42)

@@ -1185,7 +1185,7 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 - [x] Added `group_by_string_keys.llt-eval` corpus test — `[group-by [fn [x] x] ["a" "b" "a"]]` string-keyed bucket accumulation
 - [x] Added `test_literal_only_dict_fast_path` unit test in `src/eval_dict.rs` — verifies `[a: 1 b: 2]` evaluates via no-dict_env fast path
 
-### macro-runtime-v2-regression: Fix macro system broken by runtime-v2 merge [Critical]
+### macro-runtime-v2-regression: Fix macro system broken by runtime-v2 merge [Critical] ✅ DONE
 
 After the runtime-v2 merge, the macro system is broken in two ways:
 
@@ -1212,9 +1212,10 @@ Fix: update `macros.llt` to handle `Value::Expression` (use `type-of` or `surfac
 - `tests/corpus/eval/builtins/eval_with_env.llt-eval` — same `[0: ...]` issue. Update.
 - `tests/corpus/eval/builtins/eval_types_basic.llt-eval` — same `[0: ...]` issue. Update.
 
-- [ ] Fix `dict_to_surface_node` to short-circuit on `Value::Expression(node)` — return `Ok(Arc::clone(node))` before calling `dict_to_surface_node_inner` (`src/ast_dict.rs:dict_to_surface_node`)
-- [ ] Update `stdlib/macros.llt` to handle `Value::Expression` nodes from `[quote ...]` — `tag-of` path needs to handle the new expression type
-- [ ] Update stale corpus tests: `quote_literal.llt-eval`, `quote_type_of.llt-eval`, `eval_basic.llt-eval`, `eval_with_env.llt-eval`, `eval_types_basic.llt-eval`
-- [ ] Re-run `test_do_macro_*` unit tests — all should pass after fixes
+- [x] Fix `dict_to_surface_node` to short-circuit on `Value::Expression(node)` — return `Ok(Arc::clone(node))` before calling `dict_to_surface_node_inner` (`src/ast_dict.rs:dict_to_surface_node`). [macro-runtime-v2-regression]
+- [x] Fix root cause: `register_stdlib_macros_from_env` was not registering dict-entry macros (`do`, `tmpl`, `begin`, `syntax-fn`, `syntax-class`, `syntax-type`) — added `register_stdlib_macro_by_name` helper that looks up each transformer from `stdlib_env` and registers it with a synthetic `[let ...]` params node. (`src/expand.rs`) [macro-runtime-v2-regression]
+- [x] No macros.llt changes needed — `tag-of` already handles `Value::Variant` (what the newly-registered macros receive as args from `surface_node_to_dict`). [macro-runtime-v2-regression]
+- [x] Update stale corpus tests: deleted `quote_literal.llt-eval` (non-serializable), updated `quote_type_of.llt-eval` → `String("Expression")`, fixed `eval_basic.llt-eval`, `eval_with_env.llt-eval`, `eval_types_basic.llt-eval` to use `[seq [quote ...] []]` form. [macro-runtime-v2-regression]
+- [x] Re-run `test_do_macro_*` unit tests — all 8 pass after fixes. [macro-runtime-v2-regression]
 - [ ] Add macro-roundtrip corpus tests in `tests/corpus/eval/ast_dict/` that exercise `dict_to_surface_node_inner` via macros (currently blocked by this regression)
 

@@ -267,6 +267,8 @@ fn register_stdlib_macros_from_env(
     stdlib_env: &Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
 ) {
+    // Phase 1: pre-scan macros.llt for any [macro ...] / [defmacro ...] declarations.
+    // These are rare — most stdlib macros use the dict-entry form below.
     let macros_source = include_str!("../stdlib/macros.llt");
     let parsed = match crate::parser::parse(macros_source) {
         Ok(p) => p,
@@ -275,6 +277,77 @@ fn register_stdlib_macros_from_env(
     for doc_spanned in &parsed.program.documents {
         let _ = pre_scan_surface_document(&doc_spanned.node, env_macro, ctx, stdlib_env);
     }
+
+    // Phase 2: register stdlib macros defined as dict entries in macros.llt.
+    // These functions are already evaluated and stored in stdlib_env by load_stdlib_module.
+    // We register them here with their param patterns so expand_macro_call_surface can
+    // quote args and invoke them as macros (not regular function calls).
+    //
+    // Each entry is: (macro_name, params_spec)
+    // params_spec is a slice of (&str, bool) = (param_name, is_variadic).
+    let stdlib_macro_specs: &[(&str, &[(&str, bool)])] = &[
+        ("tmpl", &[("template", false), ("parts", true)]),
+        ("do", &[("first", false), ("rest", true)]),
+        ("begin", &[("exprs", true)]),
+        ("syntax-fn", &[("p-params", false), ("macro-body", false)]),
+        ("syntax-class", &[("tvars", false)]),
+        ("syntax-type", &[("p-params", false), ("p-body", false)]),
+    ];
+
+    for (macro_name, param_specs) in stdlib_macro_specs {
+        register_stdlib_macro_by_name(env_macro, stdlib_env, macro_name, param_specs);
+    }
+}
+
+/// Register a single stdlib macro by looking up its transformer function from `stdlib_env`.
+///
+/// The function must already be evaluated in `stdlib_env` (by `load_stdlib_module`).
+/// We construct a synthetic `[let ...]` params node for `expand_macro_call_surface` to use
+/// for syntax-class validation (no annotations here, so validation is a no-op).
+fn register_stdlib_macro_by_name(
+    env_macro: &mut MacroEnv,
+    stdlib_env: &Arc<RwLock<Environment>>,
+    macro_name: &str,
+    param_specs: &[(&str, bool)],
+) {
+    use crate::ast::SurfaceExpression;
+
+    // Look up the transformer function from stdlib_env.
+    let transformer = match stdlib_env.read().unwrap().get(macro_name) {
+        Some(thunk) => thunk,
+        None => return, // silently skip: transformer not yet loaded
+    };
+
+    // Construct a synthetic [let param1 ...param2 ...] LetDecl SurfaceNode.
+    // This is used by expand_macro_call_surface for syntax-class annotation validation;
+    // since stdlib macros have no annotations, validation is always a no-op.
+    let span = crate::ast::Span::origin();
+    let bindings: Vec<Arc<SurfaceNode>> = param_specs
+        .iter()
+        .map(|(name, variadic)| {
+            let expr = if *variadic {
+                SurfaceExpression::Rest(Some(name.to_string()))
+            } else {
+                SurfaceExpression::VarRef {
+                    name: name.to_string(),
+                    escaped: false,
+                }
+            };
+            Arc::new(SurfaceNode { expr, span })
+        })
+        .collect();
+    let params_node = Arc::new(SurfaceNode {
+        expr: SurfaceExpression::LetDecl { bindings },
+        span,
+    });
+
+    let _ = env_macro.register_macro(
+        macro_name.to_string(),
+        transformer,
+        params_node,
+        None, // no inject: default
+        span,
+    );
 }
 
 // Reentrance depth guard for expand_surface_program → create_stdlib_env calls.

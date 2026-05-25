@@ -1,4 +1,4 @@
 # eval: evaluate a single quoted literal expression, verify the result
-[eval [0: [quote 42]]]
+[eval [seq [quote 42] []]]
 === out
 Int(42)
