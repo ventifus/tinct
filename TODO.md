@@ -1079,3 +1079,63 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 - [ ] NEEDS_DESIGN: RestoreState hybrid pattern in `src/eval_materialize.rs:82-136` — PendingBuiltin/PendingCall variants marked `#[allow(dead_code)]` but still constructed; requires `/rnd` to decide: delete RestoreState variants OR restore full restoration pattern [Minor → design decision]
 
+---
+
+---
+
+## Codebase Health Audit Findings (2026-05-25) — Third Panel Review
+
+### eval-ast-missing-alias: eval-ast alias never registered [Critical]
+
+- [ ] Register `builtin-eval-ast` in `standard_builtins()` in `src/builtins.rs` — currently `stdlib/prelude.llt:2335` calls `[builtin-eval-ast ast]` but the alias is never registered; any call to `[eval-ast ...]` fails at runtime with undefined variable error. Either add a Rust implementation + register, or remove the `eval-ast` wrapper and update all callers. [Critical — stdlib-author]
+
+### duplicate-corpus-tests: Remove duplicate corpus tests [Critical]
+
+- [ ] Delete `tests/corpus/eval/builtins/try_closure_varref.llt-eval` — exact duplicate of `try_captures_outer_var.llt-eval` which already exists and covers the same closure-capture path [Critical — test-crafter]
+- [ ] Delete `tests/corpus/eval/type_assertions/boundary_guard_type_mismatch.llt-eval` — duplicate of `tests/corpus/eval/errors/boundary_guard_type_mismatch.llt-eval`; error tests belong in `eval/errors/` [Critical — test-crafter]
+- [ ] Delete one of: `tests/corpus/eval/builtins/try_catches_error.llt-eval` OR `tests/corpus/eval/builtins/try_error.llt-eval` — both test `[try [fn [] [raise "..."]]]` → `Variant(Error, ...)` [Critical — test-crafter]
+
+### typeassert-drain-error-path: Fix TypeAnnotationTable drain skipped on error path [Major]
+
+- [ ] Add drain in error arm of `infer_surface_expr` non-dict path in `src/typecheck.rs:559-562` — when `infer_surface_expr` returns `Err`, `state.type_annotation_table` is NOT drained; TypeAssert entries from the failed expression accumulate and pollute the next successful expression's drain. Fix: add `for (nid, ty) in state.type_annotation_table.drain() { table.insert(nid, ty); }` after `errors.append(&mut errs)` at line 561 [Major — type-theorist, computer-scientist]
+- [ ] Add drain after Pass 0c class/instance pre-registration in `src/typecheck_dict.rs:400-418` — `infer_surface_expr` calls in the class/instance registration loop populate `state.type_annotation_table` but are never drained; entries attributed to wrong context. Fix: drain after lines 407 and 413 [Major — type-theorist]
+
+### pending-builtin-depth-caching: PendingBuiltin DepthExceeded permanently caches as Failed [Major]
+
+- [ ] Fix `src/eval_materialize.rs:650-684` — when a builtin's result thunk hits `DepthExceeded`, `Memoize(restore: None)` causes the PendingBuiltin thunk to cache as `Failed` rather than restore for retry. Add `is_cacheable()` check before `cache_failure_once` in the Err arm; populate `restore: Some(RestoreState::PendingBuiltin{...})` in the Memoize push. [Major — eval-engine]
+
+### boundary-guard-span-collision: Replace Span key in boundary_guards with stable ID [Major]
+
+- [ ] Change `boundary_guards` key from `Span` to a stable `u64` guard-id in `src/eval.rs:1312-1324` — synthetic `CoreExpr` nodes using `Span::origin()` (all zeros) collide in the map; `maybe_wrap_guard` applies the wrong type guard to the wrong thunk silently. Fix: assign monotonic `AtomicU64` id at type-checker insertion, thread through thunk wrap. [Major — security-expert]
+
+### perf-empty-tables-arc: Add Arc-level empty table singletons [Major]
+
+- [ ] Fix missed singleton at `src/eval_materialize.rs:2424-2425` — one TypeAssert default-fallback site still calls `ResolutionTable::new()` / `TypeAnnotationTable::new()`; should use `empty_resolution_table()` / `empty_type_annotation_table()` [Major — performance-expert]
+- [ ] Add `empty_resolution_table_arc() -> Arc<ResolutionTable>` and `empty_type_annotation_table_arc() -> Arc<TypeAnnotationTable>` OnceLock singletons in `src/ast.rs` (~10 lines); replace `Arc::new(ResolutionTable::new())` at `src/eval_call.rs:290-291` — `Thunk::new_surface()` requires `Arc<ResolutionTable>` which the existing `&'static` singletons cannot provide; every function call with a default-value param allocates two fresh `Arc<HashMap>` [Major — performance-expert]
+
+### doc-15-16-stale: Update doc/15-ast.md and doc/16-architecture.md stale type sketches [Major]
+
+- [ ] Replace `enum Expr` block in `doc/15-ast.md:127-203` with actual `CoreExpr`/`CoreEntry`/`CoreNamedArg` definitions from `src/ast.rs:820-913`; fix `Annotation::PropertyDict` type at line 235 (`Entry` → `SurfaceEntry`); fix `Expr::` prefixes at lines 278-299 [Major — grammar-architect]
+- [ ] Update AST Dict Schema section in `doc/15-ast.md:475-504` — rename `ast_to_dict`→`surface_program_to_thunk_id`, rename `dict_to_ast`→`dict_to_surface_node`, update signatures; remove `Entry`/`File` from Conventions bullet at line 479 [Major — grammar-architect]
+- [ ] Update `Action`/`Cont` enum sketches in `doc/16-architecture.md:73-116` — replace `Rc<Spanned<Expr>>` with `Arc<Spanned<CoreExpr>>`, replace `Rc<RefCell<Environment>>` with `Arc<RwLock<Environment>>`, replace deleted `Eval` variant with current `EvalCoreExpr` variant [Major — grammar-architect]
+
+### group-by-duplicate-element: group-by duplicates first element in each bucket [Major]
+
+- [ ] Fix `stdlib/prelude.llt:1187` — `builder-get-or` default `[make-entry 0 x]` = `[0: x]` causes first element to appear twice; `[cons x [0: x]]` prepends x onto a dict already containing x. Fix: change default to `[]` (empty dict). Verify `tests/corpus/eval/stdlib/group_by_basic.llt-eval` expected output is correct after fix. [Major — stdlib-author]
+
+### dict-to-surface-node-complete: Complete dict_to_surface_node_inner for all SurfaceExpression variants [Major]
+
+- [ ] Implement missing match arms in `src/ast_dict.rs:dict_to_surface_node_inner` — currently only 7 of 20+ SurfaceExpression variants handled; Match, Sequential, TypeAssert, Annotated, Quote, Unquote, CaseArm, TypeApp, Error, PatternDecl, LetDecl, Rest, Placeholder all produce hard `AstError`; needed for complete quote/unquote roundtrip in macros. Phase 5 of rv2-rewrite-ast-dict (TODO.md line 147) overstated coverage. [Major — integration-verifier]
+
+### boundary-guard-test-precision: Strengthen boundary guard test assertion [Major]
+
+- [ ] Strengthen assertion at `src/eval.rs:8544-8547` in `test_boundary_guard_fires_on_type_mismatch` — current `msg.contains("Int") || msg.contains("type")` is too loose; fix to assert `msg.contains("[E011]")` and `msg.contains("expected Int")` to prevent silent error message regressions [Major — test-crafter]
+
+### doc-06-unannotated-params: Fix doc/06 claiming unannotated params get Unknown [Minor]
+
+- [ ] Update `doc/06-type-inference.md:176` — currently says "Unannotated non-variadic params get type Unknown" but 2026-05-13 change made them produce `state.fresh_type_var()` enabling proper HM inference. Update to reflect that unannotated params are polymorphic fresh TypeVars, not gradual Unknown. [Minor — type-theorist]
+
+### lower-dead-code: Delete unused lower.rs scaffolding functions [Minor]
+
+- [ ] Delete `lower_document_exprs` and `lower_annotation` from `src/lower.rs:393,409` — both marked `#[allow(dead_code)]` with speculative comments; Part E is complete, verify no callers exist then delete [Minor — integration-verifier]
+
