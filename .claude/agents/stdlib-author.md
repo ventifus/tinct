@@ -252,6 +252,48 @@ The prelude provides LLT-implemented functions (count grows with each sprint; co
 - `result.llt`: `and-then`, `map-ok`, `map-err`, `unwrap-or`, `unwrap`, `ok?`, `err?`, `collect-results`
 - `codecs/json.llt`: `to-json`, `from-json`, `json-expression`, `json-document`, `json-program`, `json-span`, `json-variant`
 
+## Builtin Privacy — Prelude-Only Rule
+
+**Raw Rust builtins and `builtin-*` stable aliases MUST only be called from `stdlib/prelude.llt`.** Non-prelude stdlib files (`strings.llt`, `async.llt`, `net.llt`, `path.llt`, `codecs/json.llt`, etc.) must use only:
+- Functions exported by the prelude (e.g., `str`, `if`, `=`, `<`, `+`, `-`, `map`, `filter`, `reduce`, `trim`, `emit`, etc.)
+- Other prelude-exported aliases
+
+If a non-prelude stdlib file calls a raw builtin (e.g., `[builtin-eq x y]` or `[trim s]` before `trim` is a prelude export), that is a **T002 violation** and a layering bug. The prelude is the boundary; it exports stable names for everything below it.
+
+**During review, actively flag any stdlib file outside prelude.llt that:**
+- Calls `builtin-*` aliases directly
+- Calls raw Rust builtins by their primary name (e.g., `emit`, `env`, `trim`) without going through a prelude wrapper
+- Would generate a T002 lint warning if run with `tinct lint --strict`
+
+The fix is always: add the wrapper to `prelude.llt` and have the stdlib file call the prelude-exported name.
+
+## TCO — Tail-Recursive Style is Required
+
+**TCO is implemented in the CEK machine.** Tail-recursive stdlib functions run without depth accumulation and are the correct, idiomatic way to write loops in LLT. Do not avoid recursion or add workarounds for depth.
+
+**During review, actively enforce tail-recursive style:**
+
+```tinct
+# CORRECT — tail call, runs forever without depth issues
+loop-impl: [fn [let n]
+    [if [= n 0] "done" [loop-impl [- n 1]]]]
+
+# CORRECT — tail call in each branch
+retry-impl: [fn [let n thunk]
+    [match [try thunk]
+        [Ok v]:    v
+        [Error _]: [retry-impl [- n 1] thunk]]]
+```
+
+**Flag as bugs:**
+1. **Stale depth-limit comments** — any comment claiming a tail-recursive function "hits the recursion limit at N iterations" or "use an explicit loop instead for large inputs". These were written before TCO and are now wrong. Remove them.
+2. **Unnecessary iterative rewrites** — if a stdlib function was rewritten from tail recursion to an explicit accumulator loop to avoid depth limits, revert it to the cleaner tail-recursive form.
+3. **Explicit `until`/`iterate`+`take` workarounds** added specifically to avoid recursive depth — if tail recursion would be cleaner, use it.
+
+**Known stale comments to remove** (tracked in `tco-implement` sprint): `loop-select-impl` in `stdlib/async.llt` has a comment "hits the LLT recursion limit at ~230 iterations; use explicit task-based loop" — this is wrong, remove it.
+
+There are known bugs in TCO for specific patterns (tracked in `tco-implement`). If you discover a tail-recursive function that actually does hit a depth error in tests, add a corpus test reproducing the bug and file it under `tco-implement` — do not work around it by changing the stdlib.
+
 ## Performance Awareness
 
 Accumulator-based stdlib functions are O(n²), but the mechanism differs by builtin:
@@ -337,8 +379,10 @@ _doc/*.md is aspirational — it describes intended behavior. When code diverges
 4. **Edge case handling**: empty dicts, single elements, nested structures, type variations
 5. **Missing functions**: gaps compared to mature stdlib ecosystems (Jsonnet std, jq builtins, Nix lib)
 6. **Builtin boundary**: functions in the wrong layer — actively look for Rust builtins that could be replaced by LLT implementations, and identify what language primitives are missing to enable migration
-7. **Test coverage**: every function has corpus tests with edge cases in `tests/corpus/eval/stdlib/`
-8. **Performance awareness**: O(n^2) accumulator patterns documented, alternatives proposed
+7. **Builtin privacy violations**: any non-prelude stdlib file that calls `builtin-*` aliases or raw Rust builtins directly — these must go through prelude-exported wrappers (see Builtin Privacy section above)
+8. **TCO enforcement**: stale depth-limit comments on tail-recursive functions, unnecessary iterative rewrites that should be tail recursion, or any workaround added to avoid recursion depth (see TCO section above)
+9. **Test coverage**: every function has corpus tests with edge cases in `tests/corpus/eval/stdlib/`
+10. **Performance awareness**: O(n^2) accumulator patterns documented, alternatives proposed
 9. **Refactoring opportunities**: duplicated patterns across prelude functions, helper abstractions that could reduce code
 
 ### Output Format

@@ -13,8 +13,8 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
-    create_stdlib_env, deep_materialize, format_with_json_llt, json_to_value, literate,
-    materialize_sync as materialize, parse, value_to_json, EvalContext, Span, Thunk, MAX_FILE_SIZE,
+    create_stdlib_env, json_to_value, literate, materialize_sync as materialize, parse,
+    value_to_json, EvalContext, Span, Thunk, MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -44,7 +44,8 @@ enum Commands {
     /// Evaluate an LLT file and output the result.
     #[clap(alias = "eval")]
     Run {
-        /// Deep-force all thunks before serializing (surfaces errors before partial output).
+        /// Force top-level evaluation before exit (for side-effect pipelines).
+        /// When combined with -o, the formatter handles deep materialization internally.
         #[arg(long)]
         eval: bool,
 
@@ -1154,6 +1155,17 @@ fn run_eval(
 
     // Prepend -i input formatter if specified
     if let Some(ref input_format) = input {
+        // Validate formatter name: only alphanumeric and hyphens allowed.
+        // This prevents path traversal via -i ../../secret or similar.
+        if !input_format
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-')
+        {
+            return Err(format!(
+                "--input: invalid formatter name {:?} (only alphanumeric and '-' allowed)",
+                input_format
+            ));
+        }
         let libdir_path = resolve_libdir_path(libdir_path.as_deref())
             .ok_or_else(|| "--input: stdlib directory not found (libdir)".to_string())?;
         let input_path = libdir_path
@@ -1167,7 +1179,10 @@ fn run_eval(
             ));
         }
         pipeline_stages.push(PipelineStage::File(
-            input_path.to_str().unwrap().to_string(),
+            input_path
+                .to_str()
+                .ok_or_else(|| "formatter path is not valid UTF-8".to_string())?
+                .to_string(),
         ));
     }
 
@@ -1179,6 +1194,17 @@ fn run_eval(
 
     // Append -o output formatter if specified
     if let Some(ref output_format) = output {
+        // Validate formatter name: only alphanumeric and hyphens allowed.
+        // This prevents path traversal via -o ../../secret or similar.
+        if !output_format
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-')
+        {
+            return Err(format!(
+                "--output: invalid formatter name {:?} (only alphanumeric and '-' allowed)",
+                output_format
+            ));
+        }
         let libdir_path = resolve_libdir_path(libdir_path.as_deref())
             .ok_or_else(|| "--output: stdlib directory not found (libdir)".to_string())?;
         let output_path = libdir_path
@@ -1192,7 +1218,10 @@ fn run_eval(
             ));
         }
         pipeline_stages.push(PipelineStage::File(
-            output_path.to_str().unwrap().to_string(),
+            output_path
+                .to_str()
+                .ok_or_else(|| "formatter path is not valid UTF-8".to_string())?
+                .to_string(),
         ));
     }
 
@@ -1373,15 +1402,14 @@ fn run_eval(
     // any reference to `%libdir` in the program will fail with "undefined variable".
     // Phase 1: resolve %libdir from the binary's location, --libdir-path override, or a well-known relative path.
     // If resolution fails, %libdir is not injected (stdlib is embedded at compile time anyway).
-    // The resolved path is also saved for the JSON output path (format_with_json_llt).
     let resolved_libdir_path: Option<std::path::PathBuf> = if !no_libdir && !no_fs {
         resolve_libdir_path(libdir_path.as_deref())
     } else {
         None
     };
     // libdir_rc_for_ctx: the same Dir is shared with the EvalContext so that
-    // `builtin_include` can inject `%libdir` into nested includes without calling
-    // open_ambient_dir again. None when --no-libdir or --no-fs is set.
+    // the self-hosted `include` (prelude.llt) can inject `%libdir` into nested
+    // includes without calling open_ambient_dir again. None when --no-libdir or --no-fs is set.
     let mut libdir_rc_for_ctx: Option<Arc<cap_std::fs::Dir>> = None;
     if !no_libdir && !no_fs {
         use tinct::Value;
@@ -1899,8 +1927,8 @@ fn run_eval(
                 require_integrity,
                 env_allowed.clone(),
             );
-            // Share the already-open libdir Dir with the evaluator so that builtin_include
-            // can inject %libdir into nested includes without re-acquiring ambient authority.
+            // Share the already-open libdir Dir with the evaluator so that the self-hosted
+            // `include` (prelude.llt) can inject %libdir into nested includes without re-acquiring ambient authority.
             if let Some(ref libdir_rc) = libdir_rc_for_ctx {
                 ctx.set_libdir_dir(Arc::clone(libdir_rc));
             }
@@ -1975,42 +2003,44 @@ fn run_eval(
     let thunk = thunk.ok_or_else(|| "internal error: no files processed".to_string())?;
     let eval_ctx = last_eval_ctx.ok_or_else(|| "internal error: no eval context".to_string())?;
 
-    // Materialize the final result
-    let val = materialize(&thunk, None, &eval_ctx).map_err(|e| {
-        let mut error_str = format!("{e}");
-        if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
-            error_str.push('\n');
-            error_str.push_str(&snippet);
-        }
-        error_str
-    })?;
-
-    // Deep-force all thunks when:
-    // - --eval flag was given (explicit deep materialization)
-    // - -o flag was given (output formatter stage may contain lazy emit calls inside a Dict
-    //   module; deep materialization forces all entries, triggering the emit side effects)
-    let _val = if force_eval || output.is_some() {
-        deep_materialize(&val, &eval_ctx, None).map_err(|e| {
+    // When -o flag is present, the pipeline's last expression is an output formatter
+    // that returns a String. Materialize it and write to stdout.
+    // When --eval is present without -o, force evaluation for side effects only.
+    if let Some(_output_format) = output {
+        // Output formatter was appended to pipeline — materialize and extract String
+        let val = materialize(&thunk, None, &eval_ctx).map_err(|e| {
             let mut error_str = format!("{e}");
             if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
                 error_str.push('\n');
                 error_str.push_str(&snippet);
             }
             error_str
-        })?
-    } else {
-        val
-    };
+        })?;
 
-    // Serialize and output
-    // When no -o flag is given, no JSON output is produced (emit-only mode).
-    // The -o flag appends an output formatter to the pipeline, so we never reach this point
-    // with output.is_some(). This block only runs when there was NO -o flag.
-    if output.is_none() {
-        // No -o flag was given.
-        // Emit-only mode: print nothing (the user should use emit or -o).
-        // This is the default behavior when no output format is specified.
+        match val {
+            tinct::Value::String { source, start, end } => {
+                print!("{}", &source[start..end]);
+            }
+            _ => {
+                return Err(format!(
+                    "output formatter returned {} instead of String — formatter is broken",
+                    val.type_name()
+                ));
+            }
+        }
+    } else if force_eval {
+        // --eval flag without -o: force evaluation for side effects (no output)
+        let _val = materialize(&thunk, None, &eval_ctx).map_err(|e| {
+            let mut error_str = format!("{e}");
+            if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
+                error_str.push('\n');
+                error_str.push_str(&snippet);
+            }
+            error_str
+        })?;
+        // Shallow materialization only — no deep forcing, no output
     }
+    // Else: neither -o nor --eval specified — lazy evaluation, no output
 
     // Cancel any pending alarm before returning success
     #[cfg(unix)]
@@ -2077,6 +2107,15 @@ fn run_fmt(
         for d in &fmt_diagnostics {
             eprintln!("{}", format_type_diagnostic(d, &source, file_path));
         }
+    }
+
+    // Validate formatter name: only alphanumeric and hyphens allowed.
+    // This prevents path traversal via -o ../../secret or similar.
+    if !output_name.chars().all(|c| c.is_alphanumeric() || c == '-') {
+        return Err(format!(
+            "fmt: invalid formatter name {:?} (only alphanumeric and '-' allowed)",
+            output_name
+        ));
     }
 
     // Resolve the formatter script from %libdir/cli/fmt/<name>.llt.
@@ -2406,8 +2445,10 @@ fn run_literate(config: &LiterateConfig) -> Result<(), String> {
 
 /// Evaluate a tangled tinct source string and print the result as JSON.
 ///
-/// Reuses the same pipeline as `run_eval` (parse → desugar → resolve →
-/// typecheck → eval → materialize → JSON).
+/// Always serializes output to JSON regardless of any `-o` formatter flag.
+/// The `-o` flag is respected only by `run_eval`; literate eval always uses
+/// the JSON serialization path (parse → desugar → resolve → typecheck →
+/// eval → materialize → JSON).
 /// The base directory is derived from the Markdown file's parent directory.
 ///
 /// Literate mode always runs with --no-cwd and --no-env (hard-coded).
@@ -2616,36 +2657,16 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     })?;
 
     // Always serialize to JSON (emit is purely additive)
-    // Use the same format_with_json_llt → fallback pattern as run_eval for consistent
-    // null semantics ([] → JSON null, not {}).
-    let json_llt_path = find_libdir_path().map(|p| p.join("cli").join("out").join("json.llt"));
-
-    let output = if let Some(ref json_llt_path) = json_llt_path {
-        match format_with_json_llt(
-            Arc::clone(&thunk),
-            &eval_ctx,
-            Arc::clone(&env),
-            json_llt_path,
-        ) {
-            Ok(Some(compact_json)) => {
-                let parsed: serde_json::Value =
-                    serde_json::from_str(&compact_json).map_err(|e| {
-                        format!("json.llt produced invalid JSON: {e}\noutput: {compact_json}")
-                    })?;
-                serde_json::to_string_pretty(&parsed)
-                    .map_err(|e| format!("JSON pretty-print error: {e}"))?
-            }
-            Ok(None) => {
-                let json = value_to_json(&val, &eval_ctx).map_err(|e| format!("{e}"))?;
-                serde_json::to_string_pretty(&json)
-                    .map_err(|e| format!("JSON serialization error: {e}"))?
-            }
-            Err(e) => return Err(e),
+    let json = value_to_json(&val, &eval_ctx).map_err(|e| {
+        let mut msg = format!("{e}");
+        if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
+            msg.push('\n');
+            msg.push_str(&snippet);
         }
-    } else {
-        let json = value_to_json(&val, &eval_ctx).map_err(|e| format!("{e}"))?;
-        serde_json::to_string_pretty(&json).map_err(|e| format!("JSON serialization error: {e}"))?
-    };
+        msg
+    })?;
+    let output = serde_json::to_string_pretty(&json)
+        .map_err(|e| format!("JSON serialization error: {e}"))?;
 
     println!("{output}");
 

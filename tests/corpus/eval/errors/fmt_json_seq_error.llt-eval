@@ -1,7 +1,0 @@
-# json formatter: Seq serialization produces error
-# Seqs must be collected to dict first
-[include %libdir "cli/out/json.llt"]
----
-[call %.json [seq 1 10]]
-=== error
-[E080] cannot serialize Seq to JSON — use | collect for JSON array output

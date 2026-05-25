@@ -1,5 +1,5 @@
 # Error 3: Multi-class constraint list has keyed entry
-[fn@[constraint: [a: [x: Comparable]] return: a] [val@a] $val]
+[fn@[constraint: [a: [x: Comparable]] return: a] [let val@a] $val]
 === out
 Function(val)
 === warn

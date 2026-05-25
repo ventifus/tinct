@@ -1246,7 +1246,9 @@ Event-source builtins (`signal-channel`, `timer-channel`, `watch-channel`) spawn
 
 ## Deep Materialization — Implementation
 
-The `$eval` builtin and CLI `--eval` flag use `deep_materialize` to recursively materialize all thunks in a value tree. This is distinct from selective materialization (which materializes only what's needed for computation) — deep materialization materializes *everything*, producing a fully-evaluated value tree suitable for serialization or comparison.
+The `$eval` builtin uses `deep_materialize` to recursively materialize all thunks in a value tree. This is distinct from selective materialization (which materializes only what's needed for computation) — deep materialization materializes *everything*, producing a fully-evaluated value tree suitable for serialization or comparison.
+
+The CLI `--eval` flag was changed in sprint rv2-output-formatter-contract to perform only shallow (WHNF) materialization. When combined with `-o <formatter>`, deep materialization is handled internally by the formatter (e.g., `$builtin-to-json`); without `-o`, only top-level forcing is performed. The `$eval` builtin itself continues to use `deep_materialize`.
 
 **Cache data structure:** `deep_materialize` uses a stack-local `HashMap<*const Thunk, Option<Arc<Thunk>>>` created at the `deep_materialize` entry point and passed through the recursion. The cache has a dual-purpose design (in `deep_materialize_impl`):
 
@@ -1379,6 +1381,7 @@ Per execution context:
 **Implementation:** The evaluator uses an iterative CEK machine (Control-Environment-Kontinuation) with an explicit bounded continuation stack (`MAX_CONTINUATION_STACK = 2048` in `src/eval_materialize.rs`). This replaced the old recursive evaluator which used `MAX_EVAL_DEPTH = 256` and relied on Rust's call stack.
 
 **Evaluation depth is bounded by:**
+
 - Parser depth limit: `MAX_PARSE_DEPTH = 256` (nested syntax depth)
 - Continuation stack limit: `MAX_CONTINUATION_STACK = 2048` (evaluation nesting depth)
 - Cycle detection: `InProgress` thunk state sentinel (catches circular references)

@@ -2,4 +2,4 @@
 # Converts % to its LLT representation string: Int(42), Dict({...}), etc.
 # Uses the llt-repr builtin which deep-materializes and formats the value.
 
-[emit [call $llt-repr %]]
+[call $llt-repr %]

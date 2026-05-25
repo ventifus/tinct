@@ -1,9 +1,6 @@
-# JSON Pretty Formatter — delegates to stdlib/codecs/json.llt (runtime-v2)
+# JSON Pretty Formatter (runtime-v2)
 #
-# Uses the same codecs/json.llt as the compact formatter.
-# Pretty-printing with indentation is a TODO for codecs/json.llt.
+# Pretty-printing with indentation is a future enhancement.
 # For now, produces compact JSON (same as json.llt).
 
-[include %libdir "codecs/json.llt"]
-
-[emit [to-json %]]
+[call $builtin-to-json %]

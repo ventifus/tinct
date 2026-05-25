@@ -724,7 +724,10 @@ fn test_mptc_membership_check_str_with_addable() {
     state.levels.insert("_t2".to_string(), 1);
 
     // Retrieve the Addable ClassDecl from state.class_env (registered by InferState::new())
-    let addable_class = state.class_env.get("Addable").expect("Addable must be registered");
+    let addable_class = state
+        .class_env
+        .get("Addable")
+        .expect("Addable must be registered");
     state.constraints.push(crate::types::Constraint::Class {
         class: std::sync::Arc::new(addable_class.clone()),
         vars: vec!["_t0".to_string(), "_t1".to_string(), "_t2".to_string()],
@@ -740,7 +743,8 @@ fn test_mptc_membership_check_str_with_addable() {
     );
     let err = result.unwrap_err();
     assert!(
-        err.message.contains("does not satisfy arithmetic constraint"),
+        err.message
+            .contains("does not satisfy arithmetic constraint"),
         "Expected 'does not satisfy arithmetic constraint' in error; got: {}",
         err.message
     );
@@ -762,7 +766,10 @@ fn test_mptc_membership_check_bool_with_addable() {
     state.levels.insert("_t1".to_string(), 1);
     state.levels.insert("_t2".to_string(), 1);
 
-    let addable_class = state.class_env.get("Addable").expect("Addable must be registered");
+    let addable_class = state
+        .class_env
+        .get("Addable")
+        .expect("Addable must be registered");
     state.constraints.push(crate::types::Constraint::Class {
         class: std::sync::Arc::new(addable_class.clone()),
         vars: vec!["_t0".to_string(), "_t1".to_string(), "_t2".to_string()],
@@ -788,7 +795,10 @@ fn test_mptc_membership_check_int_with_addable_passes() {
     state.levels.insert("_t1".to_string(), 1);
     state.levels.insert("_t2".to_string(), 1);
 
-    let addable_class = state.class_env.get("Addable").expect("Addable must be registered");
+    let addable_class = state
+        .class_env
+        .get("Addable")
+        .expect("Addable must be registered");
     state.constraints.push(crate::types::Constraint::Class {
         class: std::sync::Arc::new(addable_class.clone()),
         vars: vec!["_t0".to_string(), "_t1".to_string(), "_t2".to_string()],
@@ -803,7 +813,8 @@ fn test_mptc_membership_check_int_with_addable_passes() {
     // (no "does not satisfy arithmetic constraint" error — any error is from FD improvement).
     if let Err(ref err) = result {
         assert!(
-            !err.message.contains("does not satisfy arithmetic constraint"),
+            !err.message
+                .contains("does not satisfy arithmetic constraint"),
             "Int should not trigger T3 membership check; got: {}",
             err.message
         );
@@ -821,7 +832,10 @@ fn test_mptc_membership_check_unknown_passes() {
     state.levels.insert("_t1".to_string(), 1);
     state.levels.insert("_t2".to_string(), 1);
 
-    let addable_class = state.class_env.get("Addable").expect("Addable must be registered");
+    let addable_class = state
+        .class_env
+        .get("Addable")
+        .expect("Addable must be registered");
     state.constraints.push(crate::types::Constraint::Class {
         class: std::sync::Arc::new(addable_class.clone()),
         vars: vec!["_t0".to_string(), "_t1".to_string(), "_t2".to_string()],
@@ -833,7 +847,8 @@ fn test_mptc_membership_check_unknown_passes() {
     // Unknown must not trigger the T3 membership check (gradual typing escape hatch)
     if let Err(ref err) = result {
         assert!(
-            !err.message.contains("does not satisfy arithmetic constraint"),
+            !err.message
+                .contains("does not satisfy arithmetic constraint"),
             "Unknown should not trigger T3 membership check; got: {}",
             err.message
         );

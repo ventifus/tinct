@@ -79,3 +79,5 @@ toml-impl: [fn@String [let d@Dict parts@Dict]
     [toml-flat d parts.flat 0 ""]
     [toml-tables d parts.tables 0 ""]]]
 ]
+
+[toml %]

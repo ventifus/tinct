@@ -173,7 +173,7 @@ Append an output formatter from `stdlib/cli/out/<format>.llt` as the final pipel
 tinct run -i json -e '%.msg' -o raw <<< '{"msg":"hello"}'   # → hello
 ```
 
-**Convention:** Output formatters live in `stdlib/cli/out/`. Each formatter receives `%` and produces formatted output (typically via `$emit` or as the final value).
+**Convention:** Output formatters live in `stdlib/cli/out/`. Each formatter receives `%` and returns a String as its final value; that string is written to stdout by the CLI.
 
 **Included output formatters:**
 
@@ -185,9 +185,9 @@ tinct run -i json -e '%.msg' -o raw <<< '{"msg":"hello"}'   # → hello
 - `csv` — Convert list-of-dicts to CSV
 - `env` — Convert flat dict to KEY=VALUE format
 - `llt` — Display value in LLT debug format (uses `$llt-repr`)
-- `none` — Force the value (collect Seq if needed) and emit nothing; for side-effect-only pipelines
+- `none` — Return empty string; produces no stdout output regardless of input type
 
-**Seq handling:** Most serialization formatters (`json`, `yaml`, `toml`) do not support Seq values directly — you must use `| collect` to materialize a Seq to a dict before serialization. The `raw` formatter handles Seq by emitting each element on its own line. The `none` formatter handles Seq by calling `collect` (to drive side-effects) and then discarding the result.
+**Seq handling:** Most serialization formatters (`json`, `yaml`, `toml`) do not support Seq values directly — you must use `| collect` to materialize a Seq to a dict before serialization. The `raw` formatter handles Seq by emitting each element on its own line. The `none` formatter always returns `""` regardless of input type; it does not force or collect the value.
 
 ```bash
 # ERROR: cannot serialize Seq to JSON
@@ -199,8 +199,8 @@ tinct run -o json -e '[collect [range 0 3]]'  # → [0,1,2]
 # OK: use raw formatter for Seq
 tinct run -o raw -e '[range 0 3]'  # → 0\n1\n2\n
 
-# OK: use none formatter to drive side-effects without output
-tinct run -o none -e '[map [fn [n] [emit n]] [range 0 3]]'  # emits 0 1 2, no final output
+# OK: use none to suppress output (value is still evaluated, no stdout produced)
+tinct run -o none -e '[x: 1 y: 2]'  # forces the value but produces no stdout
 ```
 
 ### Symmetric Pipeline Model
@@ -222,19 +222,15 @@ tinct run -i json -o raw -e '%.response' < mcp.json
 
 ## Default Output Format (`tinct run`)
 
-When `tinct run` finishes and no `emit` call was made, the final value is serialized to stdout as JSON. This serialization is performed by `stdlib/cli/out/json.llt` — a pure-tinct JSON serializer that ships with the standard library.
-
-**Key properties:**
-
-- The formatter is user-visible and lives at `stdlib/cli/out/json.llt`. You can inspect it or use it directly in programs: `[include %libdir "cli/out/json.llt"]`.
-- If `stdlib/cli/out/json.llt` is not found (e.g. running the binary without the stdlib installed), the CLI falls back to a built-in Rust serializer. Note: the fallback serializes empty dicts as `{}` (JSON empty object) rather than `null`.
-- The output is indented (2-space pretty-printed) by default.
-
-**Using the formatters directly:**
+Without `-o`, `tinct run` produces no automatic output. The final value is evaluated but not serialized to stdout. To produce output, always specify `-o <formatter>` explicitly.
 
 ```bash
-tinct run config.llt                  # indented JSON via stdlib/cli/out/json.llt (2-space pretty-printed)
+tinct run config.llt              # no stdout output (value evaluated, not printed)
+tinct run -o json config.llt      # compact JSON to stdout
+tinct run -o json-pretty config.llt  # indented JSON to stdout
 ```
+
+**Using the formatters directly:**
 
 ```tinct
 # Load and call the JSON formatter explicitly in a pipeline

@@ -107,3 +107,5 @@ yaml@[doc: "Convert value to YAML 1.2 string"]: [fn@String [let val@Any]
       [str [yaml-dict val 0] "\n"]]
     [str [yaml-value val 0] "\n"]]]
 ]
+
+[yaml %]

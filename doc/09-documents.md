@@ -75,23 +75,21 @@ tinct run data.llt filter.llt
 
 **Interaction with `emit`:**
 
-When any file in the pipeline calls `emit`, the string is written directly to stdout. The final expression is still serialized to the output format (unless no `-o` flag is given). This makes `emit` purely additive — useful for logging, debugging, or producing side-channel text output alongside the main result:
+When any file in the pipeline calls `emit`, the string is written directly to stdout. `emit` is purely additive — it does not affect whether the CLI produces output or what format is used. CLI output is controlled entirely by the `-o <formatter>` flag. `emit` is useful for logging, debugging, or producing side-channel text output:
 
 ```tinct
-# to-yaml.llt (simplified example)
-[emit [str "users:\n" [join "\n" [map [fn [u] [str "  - " u.name]] %.users]]]]
+# log.llt (debugging example)
+[emit [str "processing " [str [length %.users]] " users\n"]]
 ```
 
 ```bash
-tinct run data.llt to-yaml.llt -o json
+tinct run data.llt log.llt -o json
 # Output to stdout:
-# users:
-#   - Alice
-#   - Bob
+# processing 2 users
 # {"users": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]}
 ```
 
-Without the `-o` flag, only emit output appears (no JSON serialization).
+Without the `-o` flag, `tinct run` produces no automatic output at the end (no JSON serialization). Any `emit` calls still write to stdout.
 
 **Pipeline semantics:**
 
@@ -99,7 +97,7 @@ Without the `-o` flag, only emit output appears (no JSON serialization).
 - The first file receives `%` from stdin JSON if piped, or empty dict `[]` otherwise
 - Files share the same include cache — if both files include the same library, it's evaluated only once
 - Each file has `%include-dir` in scope — the DirCap for the working directory; use `[include %include-dir "sibling.llt"]` to include sibling files
-- The final file's output is JSON-serialized if the `-o` flag was given (default: `-o json`)
+- The final file's output is passed to the `-o <formatter>` if given; without `-o`, no automatic serialization occurs
 
 ## Within a Document: Scope Chains
 

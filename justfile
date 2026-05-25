@@ -53,8 +53,9 @@ test-one TEST:
     {{container}} run {{run_flags}} {{rust_image}} cargo test {{TEST}}
 
 # Run only lib unit tests (no integration tests)
+# --test-threads=1 prevents OOM from parallel stdlib cache accumulation (same as `just test`)
 test-lib:
-    {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1
 
 # Run only corpus tests (NOTE: does not include LSP corpus tests — use `just test-lsp` for those)
 test-corpus:

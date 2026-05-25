@@ -8,4 +8,4 @@
 === out
 Dict({"f": Function(h)})
 === warn
-cannot unify Handle[
+cannot unify [__cap_flag_writable

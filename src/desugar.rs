@@ -292,7 +292,10 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
                 expr.clone()
             }
         }
-        SurfaceExpression::TypeAssert { annotation, expr: inner } => {
+        SurfaceExpression::TypeAssert {
+            annotation,
+            expr: inner,
+        } => {
             let new_inner = inject_adt_constructors_node(Arc::clone(inner));
             if Arc::ptr_eq(&new_inner, inner) {
                 expr.clone()

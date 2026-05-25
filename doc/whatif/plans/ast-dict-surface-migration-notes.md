@@ -219,6 +219,7 @@ The new functions return `Arc<SurfaceNode>` instead of `Spanned<Expr>`. They con
 **COMPLETED in Phase 5 (rv2-rewrite-ast-dict Phase 5).**
 
 The existing public bridge functions in the "Surface AST Bridge Functions" section:
+
 - `surface_node_to_dict` — Phase 2 native path (done in Phase 2)
 - `surface_program_to_dict` — Phase 4 native path (done in Phase 4)
 - `dict_to_surface_node` — **Phase 5a**: now uses `dict_to_surface_node_inner` natively for
@@ -227,6 +228,7 @@ The existing public bridge functions in the "Surface AST Bridge Functions" secti
 - `dict_to_surface_program` — still bridges through `dict_to_file` (acceptable — rare codepath)
 
 Old Expr-based functions made non-public (`#[doc(hidden)] fn`):
+
 - `ast_to_dict` — retained as fallback in `annotation_to_thunk_id` and tests
 - `ast_to_dict_expr` — retained in `annotation_to_thunk_id` and tests
 - `dict_to_ast` — retained as fallback in `dict_to_surface_node_inner` for uncommon variants
@@ -246,6 +248,7 @@ Retained as implementation detail within the module.
 
 The remaining Expr-based functions (`dict_to_ast`, `dict_to_file`, `expr_to_thunk_id`,
 `document_to_dict`, etc.) can be deleted in the `rv2-delete-old-ast` sprint once:
+
 1. `annotation_to_thunk_id` PropertyDict entries are rewritten to use Surface types
 2. `dict_to_surface_program` is rewritten natively (eliminating `dict_to_file`)
 3. The remaining 15 fallback variants in `dict_to_surface_node_inner` are implemented natively

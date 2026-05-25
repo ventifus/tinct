@@ -3889,7 +3889,10 @@ fn check_get(
 ) -> Result<Type, Vec<TypeError>> {
     if args.len() != 2 {
         return Err(vec![TypeError::new(
-            format!("arity mismatch: `get` requires exactly 2 arguments, got {}", args.len()),
+            format!(
+                "arity mismatch: `get` requires exactly 2 arguments, got {}",
+                args.len()
+            ),
             span,
         )]);
     }
@@ -14180,9 +14183,7 @@ mod tests {
         );
         match env.get("result").map(|s| &s.body) {
             Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
-            Some(other) => panic!(
-                "expected Str from [get 1 Seq[Str]] via check_get, got {other}"
-            ),
+            Some(other) => panic!("expected Str from [get 1 Seq[Str]] via check_get, got {other}"),
             None => panic!("field 'result' not found"),
         }
     }
@@ -14196,9 +14197,9 @@ mod tests {
         );
         match env.get("result").map(|s| &s.body) {
             Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
-            Some(other) => panic!(
-                "expected Str from [get \"host\" record] via check_get, got {other}"
-            ),
+            Some(other) => {
+                panic!("expected Str from [get \"host\" record] via check_get, got {other}")
+            }
             None => panic!("field 'result' not found"),
         }
     }
@@ -14213,9 +14214,7 @@ mod tests {
         );
         match env.get("result").map(|s| &s.body) {
             Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
-            Some(other) => panic!(
-                "expected Str from [get 0 Seq[Str]] via check_get, got {other}"
-            ),
+            Some(other) => panic!("expected Str from [get 0 Seq[Str]] via check_get, got {other}"),
             None => panic!("field 'result' not found"),
         }
     }

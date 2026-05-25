@@ -1,6 +1,0 @@
-# json formatter: Function serialization produces error
-[include %libdir "cli/out/json.llt"]
----
-[call %.json [fn [let x] x]]
-=== error
-[E080] cannot serialize Function to JSON

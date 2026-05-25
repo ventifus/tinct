@@ -11,9 +11,9 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Type::Variant for Transport Constants](type-variant.md) | **Superseded.** Use nominal variants: `[union Transport [Tcp] [Udp] [Quic] [Unix]]`. See `transport-typing` sprint in TODO.md. |
+| [Type::Variant for Transport Constants](completed/type-variant.md) | **Superseded.** Use nominal variants: `[union Transport [Tcp] [Udp] [Quic] [Unix]]`. See `transport-typing` sprint in TODO.md. |
 | [Precise HKT Types for map/filter/reduce/each](hkt-map-filter-types.md) | **Superseded.** Implementation detail only; see `hkt-map-filter-types` sprint in TODO.md. |
-| [Unify Type-Checker and Runtime Type Judgments](typecheck-runtime-unification.md) | Eliminate divergence between static and runtime type checking via: single builtin registration source, variant-indexed overloading, unified `value_matches_type = is_subtype(ground(v), T)`, and universal `TypeAnnotationTable` population |
+| [Unify Type-Checker and Runtime Type Judgments](typecheck-runtime-unification.md) | **Accepted 2026-05-25.** Eliminate divergence between static and runtime type checking: `is_consistent_subtype(ground_type_of(v), T)` unified runtime check, four-source `Unknown` separation, `failed_bindings → Type::Error`, `RuntimeTypeCheck` deletion, `builtin_typed!` co-location |
 | [Schema-Directed from-json](schema-directed-from-json.md) | `[from-json @[host: Str port: Int] input]` — typed JSON parse returning specific Record type; boundary guard at parse site; schema doubles as documentation |
 | [Guardedness](guardedness.md) | Static detection of non-productive circular data dependencies; separates legitimate corecursion (`[cons 1 ones]`) from diverging definitions (`[x: [+ x 1]]`); assigns `Never` via BAS to rejected bindings; enables infinite lazy structures as a first-class language feature |
 | [Boolean-Algebraic Subtyping](completed/boolean-algebraic-subtyping.md) | **Accepted 2026-05-09.** Replace Rémy row variables with BAS; Boolean lattice of union/intersection/negation types; S-RcdTop + S-ClsBot; principal type inference without backtracking |
@@ -21,17 +21,17 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | **Accepted 2026-05-09.** `Record` vs `Map[K: V]` type split with bracket application form `@[Map [K: V]]`; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality |
 | [Higher-Kinded Types, Monadic `[do]`, and Precise Field Access](completed/hkt-monads.md) | **Accepted 2026-05-11.** `Kind::Operator` (`* → *`); `Type::App`/`Type::Operator`; Functor/Applicative/Monad/Foldable/Traversable/Mappable/Appendable hierarchy; Maybe ADT; `[do]` inference; `sequence`/`traverse`/`forM`/`when`/`liftM2`; `Kind::Label`; `HasField` constraint with `[HAS-FIELD-UNION]`/`[HAS-FIELD-INTER]`/`[HAS-FIELD-TOP]` BAS rules; label-polymorphic `get`/`get-in` |
 | [Inference Completeness](completed/inference-completeness.md) | **Accepted 2026-05-14.** SCC-based binding group analysis (Tarjan) within DICT-GEN; independent generalization of non-mutually-recursive entries; polymorphic access through visible nested dicts; variadic params as `Seq(T)`; typeclass-based heterogeneous variadics (FormatResult pattern) |
-| [CHR-Unified Type Constraints](chr-unification.md) | **Accepted 2026-05-16.** `normalize()` unified type simplification; `TypeStageApp` lazy FD elaboration; deferred equality for non-injective resolvers; user-declared `[class ...]` and `[instance ...]`; scope-resident ClassEnv; arithmetic classes in prelude; automatic boundary guards |
+| [CHR-Unified Type Constraints](completed/chr-unification.md) | **Accepted 2026-05-16.** `normalize()` unified type simplification; `TypeStageApp` lazy FD elaboration; deferred equality for non-injective resolvers; user-declared `[class ...]` and `[instance ...]`; scope-resident ClassEnv; arithmetic classes in prelude; automatic boundary guards |
 | [Advanced Typeclass Extensions](completed/advanced-typeclasses.md) | **Accepted 2026-05-14.** 3-parameter `Add a b c \| (a,b)→c` MPTC for precise mixed-mode arithmetic; row-level constraint propagation over BAS intersections (`Equatable {name: Str, age: Int}` distributes automatically); ClassEnv runtime dispatch enabling user-defined types to participate in `=`, `<`, `str` |
 | [Parameterized Type Annotations](completed/parameterized-dict.md) | **Accepted 2026-05-09.** Bracket application form `@[Seq T]`, `@[Map [K: V]]`, `@Map` bare; type alias composition (`T2: [type [Map T1]]`); Record/Map split; see `doc/feature/parameterized-types.md` |
-| [Type Annotations v2](type-annotations-v2.md) | **Accepted 2026-05-14.** Bracket application `@[Type Arg]` replaces chained `@`; `or`/`each` type-stage combinators for union/intersection; `bind:`/`return:`/`constraint:`/`kinds:` annotation keys; TypeVar scoping via `bind:`; `@Record@[...]` and all chained-@ forms retired |
+| [Type Annotations v2](completed/type-annotations-v2.md) | **Accepted 2026-05-14.** Bracket application `@[Type Arg]` replaces chained `@`; `or`/`each` type-stage combinators for union/intersection; `bind:`/`return:`/`constraint:`/`kinds:` annotation keys; TypeVar scoping via `bind:`; `@Record@[...]` and all chained-@ forms retired |
 
 ## Reflection and Metaprogramming
 
 | Proposal | Summary |
 |----------|---------|
 | [Runtime Reflection — Annotations as Value Metadata](completed/runtime-reflection.md) | **Accepted 2026-05-14.** `Value::Function` carries full annotation metadata (`doc:`, `return:`, params) at runtime via `FnAnnotation`; `ast-of` Rust primitive returns the AST dict for any value; `describe`/`sig-from-ast`/`annotation-of`/`source-of` in prelude; enables REPL `:describe`, LSP doc hover, docgen, and metaprogramming |
-| [Decomposing `include` into `load`, `expand`, and `eval`](include-decomposition.md) | **Accepted 2026-05-18.** Eight Rust primitives (`load`, `expand`, `eval`, `eval-types`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put`); `include`, `eval-file`, `eval-document-pipeline`, `cli-pipeline` self-hosted in prelude; content-addressed cache keyed by `(dev, ino) + source`; `%include-dir` injected for sub-includes; `builtin_include` deleted |
+| [Decomposing `include` into `load`, `expand`, and `eval`](completed/include-decomposition.md) | **Accepted 2026-05-18.** Eight Rust primitives (`load`, `expand`, `eval`, `eval-types`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put`); `include`, `eval-file`, `eval-document-pipeline`, `cli-pipeline` self-hosted in prelude; content-addressed cache keyed by `(dev, ino) + source`; `%include-dir` injected for sub-includes; `builtin_include` deleted |
 | [Runtime v2 — AST Redesign, Native Value Types, Async Parallel Evaluation](runtime-v2.md) | **Accepted 2026-05-20.** Supersedes `ast-value-types.md` and `async-eval.md`. Three-part coherent rewrite: (1) `SurfaceExpression`/`CoreExpr` split, `NodeId` side tables, `SurfaceDeclaration` separation; (2) `Value::Program`/`Document`/`Expression` with typed match dispatch, `Expression` nominal type in prelude; (3) `async fn` eval, `Rc`→`Arc`, `OnceLock` thunk, parallel dict eval, `task`/`await`/`channel`/`select-once`, context/cancellation, `finally`. Networking depends on this; see `lib-net-v3.md` |
 | [Network Serve and Connect Layers](lib-net-v3.md) | **Draft 2026-05-19.** Compositional serve/connect layer model on top of runtime-v2 async foundation; `make-serve-layer`/`make-multiplex-serve` factories; TLS/WireGuard/Noise/H2/H3/WebSocket serve and connect layers; HTTP/2 and HTTP/3 request clients; transport-agnostic application protocol pattern (DNS worked example); ICMP Ping Tunnel worked example; `stdlib/http1.llt`, `http3.llt`, `serve.llt`, `http.llt`, `dns.llt`; removes `hyper`/`reqwest`, adds `h3` crate |
 
@@ -115,7 +115,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | [Supplemental Stdlib Modules](completed/lib-supplemental.md) | **Accepted 2026-05-07.** Strings, math, bitwise, Bytes, TOML-lite, FsCap, handle caps, StringView, path utils |
 | [Date-Time Support](completed/lib-datetime.md) | **Accepted 2026-05-07.** Timestamp, Duration, ClockCap, Timezone via system zoneinfo/DirCap |
 | [Pure-Tinct Regex Engine](completed/lib-regex.md) | **Accepted 2026-05-07.** Thompson NFA in pure-tinct; Pattern nominal variant; full API |
-| [Linear Accumulators](linear-accumulators.md) | **Accepted 2026-05-22.** `build-dict` O(n) keyed-dict construction; `Value::Builder` O(1) transient accumulation; stdlib rewrite eliminating O(n²) `append`/`merge` loops; dist-eval wire serialization fix |
+| [Linear Accumulators](completed/linear-accumulators.md) | **Accepted 2026-05-22.** `build-dict` O(n) keyed-dict construction; `Value::Builder` O(1) transient accumulation; stdlib rewrite eliminating O(n²) `append`/`merge` loops; dist-eval wire serialization fix |
 
 ---
 
@@ -130,10 +130,7 @@ Accepted proposals with sprints in TODO.md. Not yet fully implemented.
 | Proposal | Summary | Accepted |
 |----------|---------|----------|
 | [Runtime v2 — AST Redesign, Native Value Types, Async Parallel Evaluation](runtime-v2.md) | `SurfaceExpression`/`CoreExpr` split; `NodeId` side tables; `ResolutionTable`/`TypeAnnotationTable`; `Value::Program`/`Document`/`Expression`; `async fn` eval; `Rc`→`Arc`; `OnceCell` thunk; parallel dict eval; `task`/`await`/`channel`/`select-once`; context/cancellation | 2026-05-20 |
-| [CHR-Unified Type Constraints](chr-unification.md) | `Type::TypeStageApp`; `normalize()` unified simplification pass; FD elaboration into equality goals; deferred equality for non-injective resolvers; `[class ...]` two-bracket form; `[instance ...]` match-arm syntax; scope-resident ClassEnv; arithmetic class migration to prelude; boundary guard elaboration | 2026-05-16 |
 | [Unified Binding Declarations](unified-bindings.md) | `[let ...]` universal binding form; `[case ...]` match arms; `...` placeholder; constructor payload registry; `Expr::LetDecl`/`CaseArm`/`Placeholder` | 2026-05-17 |
-| [Linear Accumulators](linear-accumulators.md) | `build-dict` Rust primitive (O(n) keyed-dict construction); `Value::Builder` transient (O(1) amortized stateful accumulation); stdlib rewrite eliminating all O(n²) `append`/`merge` accumulator loops | 2026-05-22 |
-| [Type Annotations v2](type-annotations-v2.md) | Single-bracket `@[type: T ...]` form; `or`/`each` type-stage combinators; `bind:`/`return:`/`constraint:`/`kinds:` keys; TypeVar scoping; double-`@` chained form retired in favour of bracket application `@[Type Arg]` | 2026-05-14 |
 
 ### Completed
 
@@ -182,7 +179,11 @@ These proposals are fully implemented. Source documents are archived in [doc/wha
 | [Inference Completeness](completed/inference-completeness.md) | SCC-based DICT-GEN; variadic `Seq(T)` typed params; nested dict polymorphism via `TypeScheme.inner_schemes`; typeclass-based heterogeneous variadics | 2026-05-14 — `inference-completeness-variadic`, `inference-completeness-nested-dict` |
 | [Advanced Typeclass Extensions](completed/advanced-typeclasses.md) | MPTC `Add a b c \| (a,b)→c` for mixed-mode arithmetic; `[CONSTRAIN-FIELD/INTER/UNION/TOP/UNKNOWN/NEVER]` propagation; ClassEnv runtime dispatch for user-defined `=`, `<`, `str` | 2026-05-14 — `typeclass-constraint-propagation`, `typeclass-mptc-fundeps`, `typeclass-runtime-dispatch` |
 | [Runtime Reflection — Annotations as Value Metadata](completed/runtime-reflection.md) | `FnAnnotation` on `Value::Function`; `ast-of` Rust primitive; `describe`/`sig-from-ast`/`annotation-of`/`source-of` in prelude; LSP hover + docgen | 2026-05-14 — `runtime-reflection-core`, `runtime-reflection-include` |
+| [Decomposing `include` into `load`, `expand`, and `eval`](completed/include-decomposition.md) | Eight Rust primitives (`load`, `expand`, `eval`, `eval-types`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put`); `include`/`eval-file`/`eval-document-pipeline`/`cli-pipeline` self-hosted in prelude; content-addressed cache; `builtin_include` deleted; `reduce-cont-step` O(N) stack fix | 2026-05-19 — `include-decomp-primitives`, `include-decomp-eval-primitives`, `include-decomp-prelude`, `include-decomp-redelete`, `include-decomp-eval-types-fix`, `reduce-cont-step` |
 | [Higher-Kinded Types, Monadic `[do]`, and Precise Field Access](completed/hkt-monads.md) | `Kind::Operator` (`* → *`); `Type::App`/`Type::Operator`; Functor/Applicative/Monad/Foldable/Traversable/Mappable/Appendable hierarchy; Maybe ADT; `[do]` inference; `sequence`/`traverse`/`forM`/`when`/`liftM2`; `Kind::Label`; `HasField` constraint with `[HAS-FIELD-UNION]`/`[HAS-FIELD-INTER]`/`[HAS-FIELD-TOP]` BAS rules; label-polymorphic `get`/`get-in` | 2026-05-11 |
+| [Linear Accumulators](completed/linear-accumulators.md) | `build-dict` O(n) keyed-dict construction; `Value::Builder` transient O(1) amortized accumulation; stdlib rewrite eliminating all O(n²) `append`/`merge` loops; `EvalError::builder_already_finished` one-shot invariant; `group-by` via Builder | 2026-05-22 — `linear-accumulators-seq`, `linear-accumulators-build-dict`, `linear-accumulators-transient`, `linear-accumulators-fixes` |
+| [CHR-Unified Type Constraints](completed/chr-unification.md) | `Type::TypeStageApp`; `NormCtxt` + `normalize()` unified simplification pass; FD elaboration into equality goals; deferred equality for non-injective resolvers; `[class ...]` two-bracket form with `determines:`/`resolver:`/`injective:`; `[instance ...]` match-arm syntax; scope-resident ClassEnv; arithmetic class migration to prelude; `process_deferred_equalities`; boundary guard elaboration | 2026-05-16 — `chr-module-split`, `chr-normalization`, `chr-class-instance`, `chr-prelude`, `chr-gaps`, `chr-instances-gaps`, `type-inference-cleanup`, `chr-corpus-fixes` |
+| [Type Annotations v2](completed/type-annotations-v2.md) | `--- stage: type` sections; `%rust "type-core"` curated env; `type_to_dict`/`dict_to_type` (in type_normalize.rs); `bind:`/`kinds:`/`constraint:`/`return:`/`doc:` annotation keys; TypeVar scoping via `bind:`; `or`/`each`/`all`/`without` type-stage combinators; `is:` soft guard in match arms; `Annotation::Annotated` variant; positional union `@[T1 T2]` retired | 2026-05-14 — `constraint-annotations`, `fn-type-params`, `ctor-app`, `type-stage-infra`, `type-ann-v2-resolver`, `type-ann-v2-match`, `type-ann-v2-constraints` |
 
 ### Adopt Now
 
@@ -242,6 +243,7 @@ io ✓ Complete ─── lib-tls ✓ ─── lib-net-v2 ✓ (connect-v2, http
 
 ### Standard library
 lib-supplemental ✓ ─── lib-regex ✓
+linear-accumulators ✓
 
 ### Formal verification
 eval-semantics-verification (Ph 1) ─── eval-semantics-verification (Ph 2+)
@@ -252,7 +254,7 @@ union-types ✓ ─── boolean-algebraic-subtyping ✓ ─── record-map-s
                                                └─── guardedness (Never propagation; requires runtime-v2)
 
 ### Type annotation chain
-type-annotations-v2 (accepted, in progress) ─── unified-bindings (accepted, in progress)
+type-annotations-v2 (completed) ─── unified-bindings (accepted, in progress)
 
 ### Concurrency and stdlib chain (async-eval absorbed stdlib-architecture)
 async-eval (async fn + Arc + OnceLock + multi-thread + task/channel/context/par/serve-layers)

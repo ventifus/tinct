@@ -771,150 +771,117 @@ Instances: `Str`, `[Seq b]`, `Record`.
 
 ## Standard Formatters
 
-Tinct ships a set of ready-made formatters in `stdlib/out/`. They are not bundled with the prelude — each must be loaded explicitly with `include`. The public API of each formatter is a single function that accepts a value and returns a string.
+Tinct ships a set of ready-made formatters in `stdlib/cli/out/`. They are not bundled with the prelude — each must be loaded explicitly with `include`. Formatters fall into two structural categories:
+
+- **Function-dict formatters** (`csv`, `env`, `yaml`, `toml`) — export a named function (same name as the formatter, e.g. `yaml`) in a dict. After `include`, call as `fmt.yaml value`.
+- **Bare-expression formatters** (`json`, `json-pretty`, `llt`, `raw`, `none`) — evaluate immediately to a result when included; they cannot be called as a named function from the dict returned by `include`.
 
 ### Loading pattern
 
-```tinct
-[include libdir "out/yaml.llt"]
----
-[emit [yaml %]]
-=== error
-type errors:
-  undefined variable: yaml at 3:8-3:12
+Formatters are invoked via the `-o` CLI flag:
 
+```bash
+tinct run -o yaml mydata.llt       # YAML output via stdlib/cli/out/yaml.llt
+tinct run -o json mydata.llt       # compact JSON output
+tinct run -o json-pretty mydata.llt  # indented JSON output
 ```
 
-`libdir` is the built-in reference to the directory that contains `stdlib/`. The `emit` builtin writes the string to stdout and exits. `%` is the pipeline variable holding the document value.
+To call a formatter function directly from tinct code, load it with `include` and call its function:
+
+```tinct
+[
+  fmt: [include %libdir "cli/out/yaml.llt"]
+  result: [fmt.yaml my-value]
+]
+```
+
+`%libdir` is the built-in reference to the directory that contains `stdlib/`. Function-dict formatters (`csv`, `env`, `yaml`, `toml`) export a named function (same name as the formatter) that accepts a value and returns a String. Bare-expression formatters (`json`, `json-pretty`, `llt`, `raw`, `none`) evaluate immediately when included and are not callable as named functions from the include result.
 
 ### Available formatters
 
 | File | Function | Input | Output |
 |------|----------|-------|--------|
-| `fmt/yaml.llt` | `yaml` | any value | YAML 1.2 string |
-| `fmt/json.llt` | `json` | any value | compact JSON string |
-| `fmt/json-pretty.llt` | `json-pretty` | any value | indented JSON string |
-| `fmt/toml.llt` | `toml` | flat or nested dict | TOML string |
-| `fmt/env.llt` | `env` | flat string-keyed dict | `KEY=VALUE` lines (`.env` format) |
-| `fmt/csv.llt` | `csv` | list of dicts (same keys) | CSV string with header row |
+| `cli/out/json.llt` | `json` | any value | compact JSON string |
+| `cli/out/json-pretty.llt` | `json-pretty` | any value | compact JSON string (indentation planned) |
+| `cli/out/yaml.llt` | `yaml` | any value | YAML 1.2 string |
+| `cli/out/toml.llt` | `toml` | flat or nested dict | TOML string |
+| `cli/out/env.llt` | `env` | flat string-keyed dict | `KEY=VALUE` lines (`.env` format) |
+| `cli/out/csv.llt` | `csv` | list of dicts (same keys) | CSV string with header row |
+| `cli/out/llt.llt` | `llt` | any value | LLT debug representation |
+| `cli/out/raw.llt` | `raw` | String or Seq | raw string (Seq joined with newlines) |
+| `cli/out/none.llt` | `none` | any value | `""` (empty — no output) |
 
-### `fmt/yaml.llt` — YAML serializer
+### `cli/out/yaml.llt` — YAML serializer
 
 Converts any tinct value to a YAML 1.2 string. Dicts with integer keys are emitted as YAML sequences; string-keyed dicts become YAML mappings. Nested dicts recurse. Scalar values render as their YAML equivalents (`null`, `true`/`false`, bare numbers, quoted strings). Strings that collide with YAML keywords (`true`, `false`, `null`, `yes`, `~`, empty string) are double-quoted automatically.
 
-```tinct
-[include libdir "out/yaml.llt"]
----
-[yaml [name: "Alice" age: 30 tags: ["admin" "editor"]]]
+```bash
+tinct run -o yaml -e '[name: "Alice" age: 30 tags: ["admin" "editor"]]'
 # =>
 # name: Alice
 # age: 30
 # tags:
 # - admin
 # - editor
-=== error
-type errors:
-  undefined variable: yaml at 3:2-3:6
-
 ```
 
-### `fmt/json.llt` — compact JSON
+### `cli/out/json.llt` — compact JSON
 
-Converts any tinct value to compact (single-line) JSON. This is the formatter used by `tinct eval` as the default output when no `emit` call is made. Dicts with sequential integer keys `0..n-1` become JSON arrays; all other dicts become JSON objects with string-coerced keys. Empty dicts serialize as `null`.
+Converts any tinct value to compact (single-line) JSON. Dicts with sequential integer keys `0..n-1` become JSON arrays; all other dicts become JSON objects with string-coerced keys. Empty dicts serialize as `null`.
 
-```tinct
-[include libdir "out/json.llt"]
----
-[json [name: "Alice" age: 30]]
+```bash
+tinct run -o json -e '[name: "Alice" age: 30]'
 # => {"name":"Alice","age":30}
-=== error
-type errors:
-  undefined variable: json at 3:2-3:6
-
 ```
 
-### `fmt/json-pretty.llt` — indented JSON
+### `cli/out/json-pretty.llt` — indented JSON (planned)
 
-Converts any tinct value to indented JSON. Dicts with integer keys become JSON arrays; string-keyed dicts become JSON objects. Indentation uses 2-space steps.
+Currently produces compact JSON identical to `cli/out/json.llt`. Indented output with 2-space steps is planned for a future sprint.
 
-```tinct
-[include libdir "out/json-pretty.llt"]
----
-[json-pretty [x: 1 y: [2 3]]]
-# =>
-# {
-#   "x": 1,
-#   "y": [
-#     2,
-#     3
-#   ]
-# }
-=== error
-type errors:
-  undefined variable: json-pretty at 3:2-3:13
-
+```bash
+tinct run -o json-pretty -e '[x: 1 y: [2 3]]'
+# => {"x":1,"y":[2,3]}
 ```
 
-### `fmt/toml.llt` — TOML
+### `cli/out/toml.llt` — TOML
 
 Converts a tinct dict to TOML format. Flat scalar keys are emitted as top-level `key = value` pairs. Nested dict values become `[section]` tables. Integer-keyed dicts (lists) are emitted as inline TOML arrays. Nested dict values containing further nesting are emitted as inline `{}` (TOML does not support arbitrarily deep `[[array of tables]]` from this formatter).
 
-```tinct
-[include libdir "out/toml.llt"]
----
-[toml [host: "localhost" port: 5432 db: [name: "prod" pool: 10]]]
+```bash
+tinct run -o toml -e '[host: "localhost" port: 5432]'
 # =>
 # host = "localhost"
 # port = 5432
-#
-# [db]
-# name = "prod"
-# pool = 10
-=== error
-type errors:
-  undefined variable: toml at 3:2-3:6
-
 ```
 
-### `fmt/env.llt` — KEY=VALUE
+### `cli/out/env.llt` — KEY=VALUE
 
 Converts a flat string-keyed dict to `.env`-style `KEY=VALUE` lines. Each entry becomes one line. Values are coerced to strings with `str`. Nested dicts are not supported — pass a flat dict.
 
-```tinct
-[include libdir "out/env.llt"]
----
-[env [DATABASE_URL: "postgres://localhost/mydb" PORT: 3000]]
+```bash
+tinct run -o env -e '[DATABASE_URL: "postgres://localhost/mydb" PORT: 3000]'
 # =>
 # DATABASE_URL=postgres://localhost/mydb
 # PORT=3000
-=== error
-type errors:
-  cannot unify String with [DATABASE_URL: "postgres://localhost/mydb" PORT: 3000] at 3:6-3:60
-
 ```
 
-### `fmt/csv.llt` — CSV from list of dicts
+### `cli/out/csv.llt` — CSV from list of dicts
 
 Converts a list of dicts (all sharing the same keys) to CSV format. The header row is derived from the keys of the first row. Each dict in the list becomes a data row; missing keys default to the empty string. All fields are double-quoted; literal `"` characters are escaped as `""` (RFC 4180).
 
-```tinct
-[include libdir "out/csv.llt"]
----
-[csv [
-  [name: "Alice" score: 95]
-  [name: "Bob" score: 87]
-]]
+```bash
+tinct run -o csv -e '[[name: "Alice" score: 95] [name: "Bob" score: 87]]'
 # =>
 # "name","score"
 # "Alice","95"
 # "Bob","87"
-=== error
-type errors:
-  undefined variable: csv at 3:2-3:5
-
 ```
 
-**Note:** All formatters are implemented entirely in LLT (no Rust native code). They use recursion and will hit `MAX_EVAL_DEPTH` (~256) on very deeply nested inputs. For production use with large datasets, prefer streaming or chunked approaches.
+**Note:** Formatters fall into three categories by implementation:
+
+- **LLT-recursive formatters** (`csv`, `env`, `yaml`, `toml`) — implemented entirely in LLT using recursive accumulator patterns. Subject to `MAX_EVAL_DEPTH` (~256) on very deeply nested inputs. For production use with large datasets, prefer streaming or chunked approaches.
+- **Rust-native-backed formatters** (`json`, `json-pretty`, `llt`) — delegate to Rust builtins (`$builtin-to-json`, `$llt-repr`). Not subject to the LLT recursion depth limit.
+- **Trivial formatters** (`raw`, `none`) — simple conditional or literal expressions; no recursion and no Rust serialization. `raw` passes through String or joins Seq elements with newlines; `none` always returns `""`.
 
 **Known limitation:** The `format-instance` helper in `compact.llt` and `pretty.llt` emits a placeholder `<N arm(s)>` for instance values instead of rendering their structure. This is a temporary stub pending full instance serialization support.
 

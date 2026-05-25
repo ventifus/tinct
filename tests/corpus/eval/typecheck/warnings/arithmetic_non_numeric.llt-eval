@@ -1,6 +1,6 @@
 # Arithmetic with non-numeric argument: type checker rejects String operand
 # The function is never called so eval succeeds; type checker catches the mismatch.
-[f: [fn [x@String] [+ x 1]]]
+[f: [fn [let x@String] [+ x 1]]]
 === out
 Dict({"f": Function(x)})
 === warn

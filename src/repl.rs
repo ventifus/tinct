@@ -21,9 +21,7 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::builtins::{create_stdlib_env_with_arena, MAX_FILE_SIZE};
-use crate::eval::{
-    deep_materialize, eval_surface_file_with_input, materialize_sync as materialize,
-};
+use crate::eval::{eval_surface_file_with_input, materialize_sync as materialize};
 use crate::parser::parse;
 use crate::typecheck::{DocMap, TypeMap};
 use crate::types::TypeEnv;
@@ -268,15 +266,7 @@ impl ReplSession {
             }
             error_str
         })?;
-        let forced = deep_materialize(&val, &self.ctx, None).map_err(|e| {
-            let mut error_str = format!("{e}");
-            if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
-                error_str.push('\n');
-                error_str.push_str(&snippet);
-            }
-            error_str
-        })?;
-        let display = value_to_display_string(&forced, &self.ctx).map_err(|e| {
+        let display = value_to_display_string(&val, &self.ctx).map_err(|e| {
             let mut error_str = format!("{e}");
             if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
                 error_str.push('\n');
@@ -960,7 +950,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Create a dict with a circular dependency: x references y, y references x.
-        // deep_materialize will detect the cycle when forcing all values.
+        // value_to_display_string will detect the cycle when forcing nested values.
         let msg = session.eval_input("[x: y  y: x]").unwrap_err();
         assert!(
             msg.contains("circular"),
@@ -1126,9 +1116,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Turn 1: define a function.
-        session
-            .eval_input("[add: [fn [let a b] [+ a b]]]")
-            .unwrap();
+        session.eval_input("[add: [fn [let a b] [+ a b]]]").unwrap();
 
         // Turn 2: call the function — type checker must know about `add`.
         let result = session.eval_input("[add 3 4]").unwrap();

@@ -1311,7 +1311,11 @@ pub(crate) fn eval_surface_fn(
 ///
 /// If `span` matches a guard in `ctx.boundary_guards`, wraps `thunk` in a `Guarded`
 /// thunk that will check the type when forced. Otherwise returns `thunk` unchanged.
-pub(crate) fn maybe_wrap_guard(thunk: Arc<Thunk>, span: Span, ctx: &Arc<EvalContext>) -> Arc<Thunk> {
+pub(crate) fn maybe_wrap_guard(
+    thunk: Arc<Thunk>,
+    span: Span,
+    ctx: &Arc<EvalContext>,
+) -> Arc<Thunk> {
     // Skip guard lookup for synthetic origin spans. All synthetic CoreExpr nodes produced
     // by macro expansion or internal code synthesis share Span::origin() (offset 0, line 1,
     // col 1). If a boundary guard is keyed by Span::origin(), it would match every synthetic

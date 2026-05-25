@@ -1,9 +1,0 @@
-# json: null handling (empty dict)
-[include %libdir "cli/out/json.llt"]
----
-[call %.json [
-  value: []
-  items: [[]]
-]]
-=== out
-String("{\"value\":null,\"items\":[null]}")

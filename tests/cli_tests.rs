@@ -187,10 +187,11 @@ fn eval_format_json_explicit() {
 }
 
 #[test]
-fn eval_format_json_short_flag() {
-    let (path, _dir) = write_temp_llt("eval_format_json_short", "[x: 1]");
+fn eval_format_json_long_flag() {
+    // --output is the long form of -o; test it produces the same JSON output.
+    let (path, _dir) = write_temp_llt("eval_format_json_long", "[x: 1]");
     let output = Command::new(tinct_bin())
-        .args(["run", "-o", "json", path.to_str().unwrap()])
+        .args(["run", "--output", "json", path.to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
 
@@ -198,6 +199,48 @@ fn eval_format_json_short_flag() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert_eq!(json, serde_json::json!({"x": 1}));
+}
+
+#[test]
+fn eval_invalid_format_path_traversal() {
+    // -o with a path-traversal string must be rejected before any filesystem access.
+    let (path, _dir) = write_temp_llt("eval_invalid_format", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "../secret", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for path-traversal format name"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid formatter name"),
+        "expected error message mentioning invalid formatter name, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn eval_invalid_input_path_traversal() {
+    // -i with a path-traversal string must be rejected before any filesystem access.
+    let (path, _dir) = write_temp_llt("eval_invalid_input_format", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["run", "-i", "../secret", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for path-traversal input format name"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid formatter name"),
+        "expected error message mentioning invalid formatter name, got: {}",
+        stderr
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -270,15 +313,14 @@ fn eval_format_llt_float() {
 }
 
 // ---------------------------------------------------------------------------
-// --eval flag (deep materialization)
+// --eval flag (shallow materialization)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn eval_flag_deep_materialize() {
-    // Without --eval, lazy thunks may not be forced. With --eval, all
-    // thunks are deep-materialized before output. Both should produce
-    // the same JSON for this simple case, but --eval exercises the
-    // deep_materialize code path in main.rs.
+    // With --eval and -o json, the -o branch is taken; --eval is a no-op in this path.
+    // Deep materialization is handled internally by $builtin-to-json, not by main.rs.
+    // This test verifies that --eval + -o json together produce correct JSON output.
     let (path, _dir) = write_temp_llt("eval_flag_deep", "[a: [b: [c: 42]]]");
     let output = Command::new(tinct_bin())
         .args(["run", "--eval", "-o", "json", path.to_str().unwrap()])
@@ -1645,6 +1687,47 @@ fn eval_proxy_json_serialization_error() {
     assert!(
         stderr.contains("cannot serialize Proxy to JSON") || stderr.contains("E099"),
         "expected error message about Proxy JSON serialization, got: {stderr}"
+    );
+}
+
+#[test]
+fn json_serialization_error_function() {
+    // Functions cannot be serialized to JSON via $builtin-to-json (-o json).
+    let (path, _dir) = write_temp_llt("json_ser_function", "[fn [let x] x]");
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "json", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit code when serializing Function to JSON"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot serialize Function to JSON") || stderr.contains("E080"),
+        "expected error about Function JSON serialization, got: {stderr}"
+    );
+}
+
+#[test]
+fn json_serialization_error_seq() {
+    // Seqs cannot be serialized to JSON via $builtin-to-json (-o json).
+    // Use `| collect` to convert a Seq to a JSON array.
+    let (path, _dir) = write_temp_llt("json_ser_seq", "[seq 1 10]");
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "json", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit code when serializing Seq to JSON"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot serialize Seq to JSON") || stderr.contains("E080"),
+        "expected error about Seq JSON serialization, got: {stderr}"
     );
 }
 
@@ -3303,11 +3386,10 @@ fn seq_without_output_program_does_not_drain() {
 }
 
 // ---------------------------------------------------------------------------
-// default-emit sprint: default CLI output via stdlib/out/json.llt
+// default CLI output via stdlib/cli/out/json.llt
 //
-// These tests verify that `tinct eval` on a file whose top-level expression
-// was never passed to `emit` produces correct JSON output via the json.llt
-// path (format_with_json_llt → compact JSON → serde_json::to_string_pretty).
+// These tests verify that `tinct run -o json` produces correct JSON output.
+// The formatter path is: -o json → json.llt → $builtin-to-json → print!
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -3544,19 +3626,6 @@ fn input_flag_unknown_format() {
 
 #[test]
 fn output_flag_raw() {
-    // Skip if stdlib/cli/out/raw.llt doesn't exist (created by another agent)
-    let _libdir = match std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent()?.parent()?.parent().map(|r| r.join("stdlib")))
-        .filter(|p| p.is_dir())
-    {
-        Some(path) if path.join("cli").join("out").join("raw.llt").exists() => path,
-        _ => {
-            eprintln!("Skipping output_flag_raw: stdlib/cli/out/raw.llt not found");
-            return;
-        }
-    };
-
     // `tinct eval -i json -e '%.msg' -o raw <<< '{"msg":"hello"}'` → hello (no quotes)
     use std::io::Write;
     let mut child = Command::new(tinct_bin())
@@ -3603,6 +3672,350 @@ fn output_flag_unknown_format() {
 }
 
 // ---------------------------------------------------------------------------
+// rv2-output-formatter-contract: output formatters return String directly
+// ---------------------------------------------------------------------------
+
+#[test]
+fn output_flag_csv() {
+    // -o csv: list-of-dicts → CSV header + data rows.
+    // The CSV formatter quotes all fields and uses CRLF-free newlines.
+    // Input: {0: {name: "Alice", age: 30}, 1: {name: "Bob", age: 25}}
+    // Expected: "name","age"\n"Alice","30"\n"Bob","25"\n
+    let source = r#"[0: [name: "Alice"  age: 30]  1: [name: "Bob"  age: 25]]"#;
+    let (path, _dir) = write_temp_llt("output_flag_csv", source);
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "csv", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Must have a non-empty CSV body
+    assert!(
+        !stdout.trim().is_empty(),
+        "expected non-empty CSV output, got empty stdout"
+    );
+    // First line is the header row
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(
+        lines.len() >= 3,
+        "expected at least 3 lines (header + 2 data rows), got: {stdout}"
+    );
+    let header = lines[0];
+    assert!(
+        header.contains("name") && header.contains("age"),
+        "expected header to contain field names 'name' and 'age', got: {header}"
+    );
+    // Data rows contain the actual values
+    let data_body = &stdout[header.len()..];
+    assert!(
+        data_body.contains("Alice") && data_body.contains("Bob"),
+        "expected data rows to contain 'Alice' and 'Bob', got: {data_body}"
+    );
+    assert!(
+        data_body.contains("30") && data_body.contains("25"),
+        "expected data rows to contain '30' and '25', got: {data_body}"
+    );
+}
+
+#[test]
+fn output_flag_csv_exact() {
+    // Exact assertion for the CSV formatter output format:
+    // - All fields are double-quoted
+    // - Header row uses dict key names
+    // - Data rows preserve insertion order
+    let source = r#"[0: [name: "Alice"  age: 30]  1: [name: "Bob"  age: 25]]"#;
+    let (path, _dir) = write_temp_llt("output_flag_csv_exact", source);
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "csv", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // CSV formatter: csv-quote wraps every field in double-quotes
+    // csv-header: "name","age"\n
+    // csv-row row0: "Alice","30"\n
+    // csv-row row1: "Bob","25"\n
+    assert_eq!(
+        stdout, "\"name\",\"age\"\n\"Alice\",\"30\"\n\"Bob\",\"25\"\n",
+        "CSV output did not match expected format"
+    );
+}
+
+#[test]
+fn output_flag_env() {
+    // -o env: flat dict → KEY=value\n format.
+    // The env formatter emits one line per key with no quoting.
+    let source = r#"[FOO: "bar"  BAZ: "qux"]"#;
+    let (path, _dir) = write_temp_llt("output_flag_env", source);
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "env", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout, "FOO=bar\nBAZ=qux\n",
+        "env output did not match expected KEY=value format"
+    );
+}
+
+#[test]
+fn output_flag_env_int_value() {
+    // The env formatter uses `str` to convert values, so integers become decimal strings.
+    let source = r#"[PORT: 8080  TIMEOUT: 30]"#;
+    let (path, _dir) = write_temp_llt("output_flag_env_int", source);
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "env", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("PORT=8080") && stdout.contains("TIMEOUT=30"),
+        "expected PORT=8080 and TIMEOUT=30 in env output, got: {stdout}"
+    );
+}
+
+#[test]
+fn output_flag_yaml() {
+    // -o yaml: dict → YAML mapping format.
+    // Simple flat dict: keys become YAML keys, scalars become YAML scalars.
+    let source = r#"[host: "localhost"  port: 8080]"#;
+    let (path, _dir) = write_temp_llt("output_flag_yaml", source);
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "yaml", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // yaml-dict wraps in leading newline: "\nhost: localhost\nport: 8080\n"
+    assert!(
+        stdout.contains("host: localhost"),
+        "expected 'host: localhost' in YAML output, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("port: 8080"),
+        "expected 'port: 8080' in YAML output, got: {stdout}"
+    );
+    // Output ends with a newline (yaml public API always appends "\n")
+    assert!(
+        stdout.ends_with('\n'),
+        "expected YAML output to end with newline, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn output_flag_yaml_exact() {
+    // Exact assertion for the YAML formatter output.
+    // yaml-dict returns "\n" + entries, then the public api appends "\n".
+    // For [host: "localhost"  port: 8080]:
+    //   yaml-dict-entries produces "host: localhost\nport: 8080"
+    //   yaml-dict produces "\nhost: localhost\nport: 8080"
+    //   yaml (public) produces "\nhost: localhost\nport: 8080\n"
+    let source = r#"[host: "localhost"  port: 8080]"#;
+    let (path, _dir) = write_temp_llt("output_flag_yaml_exact", source);
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "yaml", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout, "\nhost: localhost\nport: 8080\n",
+        "YAML output did not match expected format"
+    );
+}
+
+#[test]
+fn output_flag_toml() {
+    // -o toml: dict → TOML key = value format.
+    // Flat keys are emitted as "key = value" lines; nested dicts become [table] sections.
+    let source = r#"[host: "localhost"  port: 8080]"#;
+    let (path, _dir) = write_temp_llt("output_flag_toml", source);
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "toml", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // toml-quote wraps strings in double-quotes; ints are bare
+    assert!(
+        stdout.contains("host = \"localhost\""),
+        "expected 'host = \"localhost\"' in TOML output, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("port = 8080"),
+        "expected 'port = 8080' in TOML output, got: {stdout}"
+    );
+}
+
+#[test]
+fn output_flag_toml_exact() {
+    // Exact assertion for the TOML formatter output.
+    // For [host: "localhost"  port: 8080]:
+    //   toml-flat produces 'host = "localhost"\nport = 8080\n'
+    //   toml-tables produces "" (no nested dicts)
+    let source = r#"[host: "localhost"  port: 8080]"#;
+    let (path, _dir) = write_temp_llt("output_flag_toml_exact", source);
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "toml", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout, "host = \"localhost\"\nport = 8080\n",
+        "TOML output did not match expected format"
+    );
+}
+
+#[test]
+fn output_flag_none_empty_stdout() {
+    // -o none: the none formatter returns an empty string, so stdout is empty.
+    // This is the canonical "side-effect-only" output mode.
+    let (path, _dir) = write_temp_llt("output_flag_none_empty", "[x: 1  y: 2]");
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "none", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout, "",
+        "expected empty stdout with -o none, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn output_flag_none_scalar() {
+    // -o none with a scalar input: stdout is still empty regardless of input type.
+    let (path, _dir) = write_temp_llt("output_flag_none_scalar", "42");
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "none", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout, "",
+        "expected empty stdout with -o none on scalar input, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn output_flag_csv_empty_input() {
+    // -o csv with an empty dict: csv formatter returns "" for empty input.
+    let (path, _dir) = write_temp_llt("output_flag_csv_empty", "[]");
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "csv", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout, "",
+        "expected empty stdout from csv formatter on empty input, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn output_flag_env_empty_input() {
+    // -o env with an empty dict: env formatter returns "" for empty input.
+    let (path, _dir) = write_temp_llt("output_flag_env_empty", "[]");
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "env", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout, "",
+        "expected empty stdout from env formatter on empty input, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn eval_format_json_pretty() {
+    // -o json-pretty exercises the json-pretty pipeline formatter.
+    // The formatter currently produces compact JSON (same as -o json); verify valid JSON output.
+    let (path, _dir) = write_temp_llt("eval_format_json_pretty", "[x: 1 y: \"hello\"]");
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "json-pretty", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // json-pretty currently produces compact JSON; verify it is valid JSON with correct values
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected valid JSON from -o json-pretty");
+    assert_eq!(json, serde_json::json!({"x": 1, "y": "hello"}));
+}
+
+// ---------------------------------------------------------------------------
 // Combined -i/-o/-e tests
 // ---------------------------------------------------------------------------
 
@@ -3615,8 +4028,8 @@ fn input_output_expr_pipeline() {
         .filter(|p| p.is_dir())
     {
         Some(path)
-            if path.join("in").join("json.llt").exists()
-                && path.join("out").join("raw.llt").exists() =>
+            if path.join("cli").join("in").join("json.llt").exists()
+                && path.join("cli").join("out").join("raw.llt").exists() =>
         {
             path
         }
@@ -4310,5 +4723,30 @@ fn lint_no_eval() {
         stdout.trim(),
         "",
         "expected no stdout from lint (emit not executed)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// tinct fmt — path traversal guard
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fmt_invalid_output_path_traversal() {
+    // `tinct fmt -o` with a path-traversal string must be rejected before any filesystem access.
+    let (path, _dir) = write_temp_llt("fmt_invalid_output_traversal", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["fmt", "-o", "../secret", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for path-traversal format name in tinct fmt"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid formatter name"),
+        "expected error message mentioning invalid formatter name, got: {}",
+        stderr
     );
 }

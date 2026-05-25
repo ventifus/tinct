@@ -3,7 +3,7 @@
 **State:** Accepted — 2026-05-17
 **Replaces:**
 
-- [`parse-stage-macros.md`](parse-stage-macros.md) — supersedes the parse-stage argument delivery approach
+- [`parse-stage-macros.md`](completed/parse-stage-macros.md) — supersedes the parse-stage argument delivery approach
 - [`completed/macro-rewrite.md`](completed/macro-rewrite.md) — supersedes the defmacro-as-desugaring approach
 
 What would it take to make tinct's macro system powerful enough that user-programmers — not language designers — can implement any syntactic extension, including softening the strong positions the core language takes?

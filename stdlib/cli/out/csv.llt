@@ -40,3 +40,5 @@ csv-impl: [fn@String [let rows@Dict ks@Dict]
     [csv-header ks 0 ""]
     [csv-rows rows ks 0 ""]]]
 ]
+
+[csv %]

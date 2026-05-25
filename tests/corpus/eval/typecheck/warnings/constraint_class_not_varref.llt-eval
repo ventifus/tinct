@@ -1,5 +1,5 @@
 # Error 4: Class list entry is not a VarRef (numeric literal)
-[fn@[constraint: [a: [42]] return: a] [val@a] $val]
+[fn@[constraint: [a: [42]] return: a] [let val@a] $val]
 === out
 Function(val)
 === warn

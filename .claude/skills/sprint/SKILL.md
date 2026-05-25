@@ -59,16 +59,23 @@ Dispatch work to specialist agents via the `Agent` tool, briefing them with thei
    - Sprints where tasks are slightly vague but the goal is clear from context or the spec chapter
    - Any sprint with a `**Spec chapters:**` reference pointing to a real, substantive doc section — that section is the design, and it's done
 4. **Validate sprint scope**: is this sprint appropriately sized? Target is ~25 non-nit, non-doc implementation tasks. If > 30 such tasks exist, split by updating TODO.md with two new sprints (keeping phase-dependency ordering) and proceeding with the first one.
-5. **Decompose hard tasks**: For each task in the sprint, assess whether it's actionable as-is or needs breakdown. A task is TOO LARGE if it touches more than ~3 files or requires coordinated changes across multiple subsystems (parser + evaluator + builtins). A task is BLOCKED if it depends on work not yet done. For each oversized or vague task:
+5. **Workaround audit**: scan every task in this sprint for workarounds and special cases. A workaround is any task that papers over a root cause rather than fixing it — e.g., "add a special case for X", "skip Y when Z", "use a fallback when ...", "if this fails, try ...", "handle the edge case where ...". For each workaround found:
+   - **Identify the root cause**: what underlying bug or missing feature makes the workaround necessary?
+   - **Split into two tasks** in TODO.md (update the sprint before proceeding):
+     1. "Investigate root cause of [X]" — understand exactly why the workaround exists
+     2. "Fix root cause of [X]: [description of real fix]" — the actual fix that eliminates the need for the workaround
+   - **Remove the workaround task** — it is now subsumed by the root-cause fix. Never implement a workaround if the root cause can be fixed instead.
+   - If the root cause is genuinely out of scope (requires a separate sprint, blocked on another team, etc.), document it as `KNOWN ISSUE` in `.tmp/sprint-{slug}.md` and add a tracking item to TODO.md — but still do not implement the workaround.
+6. **Decompose hard tasks**: For each task in the sprint, assess whether it's actionable as-is or needs breakdown. A task is TOO LARGE if it touches more than ~3 files or requires coordinated changes across multiple subsystems (parser + evaluator + builtins). A task is BLOCKED if it depends on work not yet done. For each oversized or vague task:
    - **Survey the code**: read the relevant source files to understand the actual scope. Count how many call sites, match arms, or construction sites need changing.
    - **Break into concrete sub-tasks**: replace the vague task with specific, file-scoped sub-tasks that each produce a compilable intermediate state. Each sub-task should name the exact file(s) and the specific change pattern.
    - **Identify the critical path**: determine which sub-tasks must be done in order vs. which can be parallelized.
    - **Update TODO.md** with the decomposed tasks before proceeding to implementation.
    - **Never attempt a task you haven't surveyed** — if a task says "change X across the codebase," first grep to count how many sites exist, then plan accordingly.
-6. **Check dependencies**: are all prerequisites for this sprint actually complete? Are inter-sprint dependencies accurate? If a task is labeled "BLOCKED" or "DEFERRED," verify whether the blocker has been resolved. Update the label if the blocker was cleared in a previous sprint.
-7. **Scan for scope gaps**: does the TODO.md sprint capture all work needed? Look for missing tasks implied by doc/*.md that aren't tracked
-8. Break the sprint's tasks into work items
-9. Identify which agents are needed for each task and which files they'll touch
+7. **Check dependencies**: are all prerequisites for this sprint actually complete? Are inter-sprint dependencies accurate? If a task is labeled "BLOCKED" or "DEFERRED," verify whether the blocker has been resolved. Update the label if the blocker was cleared in a previous sprint.
+8. **Scan for scope gaps**: does the TODO.md sprint capture all work needed? Look for missing tasks implied by doc/*.md that aren't tracked
+9. Break the sprint's tasks into work items
+10. Identify which agents are needed for each task and which files they'll touch
 11. **Pre-sprint test plan**: dispatch a `test-crafter` agent to produce a test plan *before* implementation begins. Brief it with: the sprint slug, the sprint's task list, and the relevant doc/*.md spec chapters. It should return a compact test plan: acceptance criteria per task, edge cases to cover, non-functional checks (exit codes, idempotency, etc.), and stale test risk. **The agent returns this plan to you — do not ask it to write files.** You will include it in the sprint file you create in step 12. This plan is then referenced by implementation agents so they write correct tests alongside their code changes.
 12. **Create `.tmp/sprint-{slug}.md`** including the test plan from step 9: (substituting the actual sprint slug, e.g. `.tmp/sprint-seq-core.md`). Multiple sprint teams may run in parallel — never read or modify another sprint's `.tmp/sprint-*.md` file. Create the file fresh:
 
@@ -165,6 +172,7 @@ Dispatch all matched agents in parallel using `subagent_type` for each. Brief ea
 - Instruction to read `.tmp/sprint-review-{slug}.md` for the generalist review findings
 - Instruction to run `git diff HEAD` to see the full sprint diff
 - Instruction to assess the sprint as a whole: correctness, integration, cross-cutting concerns
+- **Flag any special-case handling, backwards-compatibility shims, and workaround/fallback paths** introduced or left in place by this sprint — these are code smells for forgotten workarounds that should be excised, not accumulated
 - Instruction to use their **Sprint Panel Review** output format (defined in each agent's definition — includes APPROVE/REQUEST_CHANGES verdict)
 
 Do NOT read agent definitions, diffs, or sprint-review output into your own context. Agents read what they need.

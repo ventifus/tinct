@@ -641,7 +641,10 @@ pub(crate) async fn force_step(
         // continuation (BuiltinForceArg, Memoize) that inherits pop responsibility.
         let eval_stack_guard = EvalStackGuard::push(
             &thunk_ctx.state,
-            (origin.clone().unwrap_or_else(|| Arc::from("thunk")), thunk_span),
+            (
+                origin.clone().unwrap_or_else(|| Arc::from("thunk")),
+                thunk_span,
+            ),
         );
 
         // Wrap args/named in Option so each exclusive match arm can move them
@@ -802,7 +805,10 @@ pub(crate) async fn force_step(
         // PendingCallDispatch continuation inherits eval_stack pop responsibility.
         let eval_stack_guard = EvalStackGuard::push(
             &thunk_ctx.state,
-            (origin.clone().unwrap_or_else(|| Arc::from("thunk")), thunk_span),
+            (
+                origin.clone().unwrap_or_else(|| Arc::from("thunk")),
+                thunk_span,
+            ),
         );
 
         stack.push(Cont::PendingCallDispatch(Box::new(
@@ -1889,7 +1895,9 @@ pub(crate) async fn apply_cont(
                                         let guard_eval_stack = EvalStackGuard::push(
                                             &guard_ctx.state,
                                             (
-                                                origin.clone().unwrap_or_else(|| Arc::from("thunk")),
+                                                origin
+                                                    .clone()
+                                                    .unwrap_or_else(|| Arc::from("thunk")),
                                                 thunk_span,
                                             ),
                                         );
@@ -1946,7 +1954,10 @@ pub(crate) async fn apply_cont(
                                 };
                                 let guard_eval_stack = EvalStackGuard::push(
                                     &guard_ctx.state,
-                                    (origin.clone().unwrap_or_else(|| Arc::from("thunk")), thunk_span),
+                                    (
+                                        origin.clone().unwrap_or_else(|| Arc::from("thunk")),
+                                        thunk_span,
+                                    ),
                                 );
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Arc::clone(&thunk),
@@ -2029,7 +2040,10 @@ pub(crate) async fn apply_cont(
                                 };
                                 let guard_eval_stack = EvalStackGuard::push(
                                     &guard_ctx.state,
-                                    (origin.clone().unwrap_or_else(|| Arc::from("thunk")), thunk_span),
+                                    (
+                                        origin.clone().unwrap_or_else(|| Arc::from("thunk")),
+                                        thunk_span,
+                                    ),
                                 );
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Arc::clone(&thunk),
@@ -2682,9 +2696,9 @@ pub(crate) async fn apply_cont(
                             }
                         } else if value_matches_type(&value, &expected) {
                             // Type matches — check if there's an is: predicate to evaluate
-                            let is_predicate = annotation.node.get_property(IS_ANNOTATION_KEY).cloned();
-                            if let Some(predicate_node) = is_predicate
-                            {
+                            let is_predicate =
+                                annotation.node.get_property(IS_ANNOTATION_KEY).cloned();
+                            if let Some(predicate_node) = is_predicate {
                                 // Push a PredicateCheck continuation to handle the predicate result
                                 stack.push(Cont::PredicateCheck(Box::new(PredicateCheckData {
                                     value: value.clone(),
@@ -2875,7 +2889,9 @@ pub(crate) async fn apply_cont(
                                         if core_expr_is_static_key(&k.node) {
                                             match &k.node {
                                                 CoreExpr::Str(s) => Some(s.clone()),
-                                                CoreExpr::Annotated { name, .. } => Some(name.clone()),
+                                                CoreExpr::Annotated { name, .. } => {
+                                                    Some(name.clone())
+                                                }
                                                 _ => None,
                                             }
                                         } else {
@@ -3235,10 +3251,8 @@ pub(crate) async fn apply_cont(
                             let value_thunk =
                                 Arc::new(Thunk::new_materialized(value.clone(), thunk_span));
                             // Create a thunk for the predicate
-                            let pred_thunk = Arc::new(Thunk::new_materialized(
-                                predicate_value,
-                                expr_span,
-                            ));
+                            let pred_thunk =
+                                Arc::new(Thunk::new_materialized(predicate_value, expr_span));
                             // Create a PendingCall thunk
                             let call_thunk = Arc::new(Thunk::new_pending_call(
                                 pred_thunk,

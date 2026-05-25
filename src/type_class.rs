@@ -671,14 +671,10 @@ mod tests {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
-        let seq_a_inst = make_appendable_instance(Type::Seq(Box::new(Type::TypeVar(
-            "a".to_string(),
-            0,
-        ))));
-        let seq_b_inst = make_appendable_instance(Type::Seq(Box::new(Type::TypeVar(
-            "b".to_string(),
-            0,
-        ))));
+        let seq_a_inst =
+            make_appendable_instance(Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0))));
+        let seq_b_inst =
+            make_appendable_instance(Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0))));
 
         env.insert(seq_a_inst).unwrap();
 

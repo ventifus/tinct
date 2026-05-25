@@ -248,8 +248,9 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
     let provenance = expand_result.provenance;
 
-    let attach_provenance =
-        |e: Box<error::EvalError>| -> String { format!("{}", attach_macro_provenance(e, &provenance)) };
+    let attach_provenance = |e: Box<error::EvalError>| -> String {
+        format!("{}", attach_macro_provenance(e, &provenance))
+    };
     // Type errors are advisory; evaluation proceeds regardless.
     // The TypeAnnotationTable is populated by typecheck_surface_program_with_env.
     let (
@@ -394,8 +395,9 @@ pub fn eval_source_with_cap_net(
     let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
     let provenance = expand_result.provenance;
 
-    let attach_provenance =
-        |e: Box<error::EvalError>| -> String { format!("{}", attach_macro_provenance(e, &provenance)) };
+    let attach_provenance = |e: Box<error::EvalError>| -> String {
+        format!("{}", attach_macro_provenance(e, &provenance))
+    };
     // The TypeAnnotationTable is populated by typecheck_surface_program_with_env.
     let (
         _type_errors,
@@ -842,6 +844,11 @@ impl ValueVisitor for JsonVisitor {
         serde_json::Value::Null
     }
     fn visit_dict(&self, entries: Vec<(value::Key, serde_json::Value)>) -> serde_json::Value {
+        // LLT null compatibility: [] (empty dict) serializes as JSON null,
+        // matching builtin_to_json and the old format_with_json_llt behavior.
+        if entries.is_empty() {
+            return serde_json::Value::Null;
+        }
         // Detect array-like dict: all keys are sequential ints 0..n
         let is_array = !entries.is_empty()
             && entries
@@ -1051,14 +1058,12 @@ impl ValueVisitor for DisplayVisitor {
     }
 }
 
-/// Convert a materialized [`Value`](value::Value) to a [`serde_json::Value`].
+/// Convert a [`Value`](value::Value) to a [`serde_json::Value`].
 ///
-/// **Caller must ensure all values are fully materialized via [`deep_materialize`] before calling.**
-/// Unmaterialized thunks will produce incorrect output.
-///
-/// Dict values are materialized on demand via [`eval::materialize`]. If all keys
-/// are sequential integers starting from 0 the dict is serialized as a JSON array;
-/// otherwise it becomes a JSON object (integer keys are stringified).
+/// Dict entry thunks are materialized on demand internally via [`eval::materialize`]; the caller
+/// need only pass a shallowly-materialized top-level value. If all keys are sequential integers
+/// starting from 0 the dict is serialized as a JSON array; otherwise it becomes a JSON object
+/// (integer keys are stringified).
 ///
 /// Unlike [`value_to_display_string`], this rejects NaN/Infinity floats (not valid JSON).
 ///
@@ -1084,13 +1089,12 @@ pub fn value_to_json(
 
 /// Convert a Value into a displayable string (LLT format, not JSON).
 ///
-/// **Caller must ensure all values are fully materialized via [`deep_materialize`] before calling.**
-/// Unmaterialized thunks will produce incorrect output.
+/// Dict entry thunks are materialized on demand internally via [`eval::materialize`]; the caller
+/// need only pass a shallowly-materialized top-level value. Does not perform recursive
+/// deep-forcing — each thunk is materialized exactly once as it is visited.
 ///
 /// Unlike `Value::Debug`, this renders dict values showing the complete
-/// structure, not just keys. The value should already be deep-materialized
-/// via [`eval::deep_materialize`]; this function still calls `materialize`
-/// on each thunk for safety but does not perform recursive deep-forcing.
+/// structure, not just keys.
 ///
 /// Unlike [`value_to_json`], this accepts NaN/Infinity floats (renders as `Float(NaN)`, `Float(inf)`).
 ///
@@ -1102,155 +1106,6 @@ pub fn value_to_display_string(
 ) -> Result<String, Box<error::EvalError>> {
     let depth = 0;
     visit_value(val, ctx, depth, &DisplayVisitor)
-}
-
-/// Format a tinct value as a compact JSON string using `stdlib/cli/out/json.llt`.
-///
-/// Reads and evaluates the json.llt file at `json_llt_path`, then calls its
-/// `json` function with `result_thunk` as the argument in the same evaluation
-/// context as the main program. This ensures all `ThunkId` references in the
-/// result value are resolved from the correct arena.
-///
-/// # Returns
-///
-/// - `Ok(Some(json_string))` — json.llt produced a string.
-/// - `Ok(None)` — `json_llt_path` does not exist; the caller should fall back
-///   to [`value_to_json`].
-/// - `Err(message)` — parse or evaluation error from json.llt.
-///
-/// # Laziness note
-///
-/// json.llt contains `[emit [json %]]` as a lazy auto-indexed dict entry. This
-/// entry is **never forced** by this function — only the `json` key (a function)
-/// is accessed, so no `emit` side-effect fires.
-pub fn format_with_json_llt(
-    result_thunk: Arc<value::Thunk>,
-    eval_ctx: &Arc<eval::EvalContext>,
-    env: Arc<std::sync::RwLock<value::Environment>>,
-    json_llt_path: &std::path::Path,
-) -> Result<Option<String>, String> {
-    use eval_call::{invoke_function, CallContext};
-    use value::Key;
-
-    // Bail early if json.llt does not exist — caller will fall back.
-    if !json_llt_path.is_file() {
-        return Ok(None);
-    }
-
-    // Read json.llt source.
-    // Use Ok(None) on any read failure (e.g. Landlock blocks access when --allow-path is set).
-    // The caller falls back to value_to_json() in that case.
-    // AMBIENT-OK: stdlib bootstrap — reading json.llt from fixed stdlib path.
-    #[allow(clippy::disallowed_methods)]
-    let json_llt_source = match std::fs::read_to_string(json_llt_path) {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
-
-    // Parse json.llt (it's a single dict expression — one document).
-    let ast = parse(&json_llt_source).map_err(|e| format!("json.llt: parse error: {e}"))?;
-    let mut program = ast.program.clone();
-    desugar::desugar_surface_program(&mut program);
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-    let (_type_errors, type_annotation_table) =
-        typecheck::typecheck_surface_program_annotation_table(&program);
-    let type_annotation_table = std::sync::Arc::new(type_annotation_table);
-
-    // Evaluate json.llt in the SAME eval_ctx as the main program so all ThunkIds
-    // from the result_thunk are resolvable when the json functions access dict entries.
-    // The initial `%` = result_thunk; json.llt's `[emit [json %]]` is a lazy dict
-    // entry (auto-index 0) that is never forced here.
-    let module_thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file_with_input(
-        &program,
-        Arc::clone(&env),
-        eval_ctx,
-        &resolution_table,
-        &type_annotation_table,
-        Some(Arc::clone(&result_thunk)),
-    ))
-    .map_err(|e| format!("json.llt: eval error: {e}"))?;
-
-    // Materialize the json module dict (forces the outer dict, not its entries).
-    let module_val =
-        crate::async_rt::block_on_anywhere(eval::materialize(&module_thunk, None, eval_ctx))
-            .map_err(|e| format!("json.llt: materialize module error: {e}"))?;
-
-    // Look up the `json` key from the module dict.
-    let json_key = Key::String("json".into());
-    let json_fn_thunk = match &module_val {
-        value::Value::Dict(map) => {
-            let thunk_id = map
-                .get(&json_key)
-                .ok_or_else(|| "json.llt: missing 'json' function in module dict".to_string())?;
-            eval_ctx.get_thunk(*thunk_id)
-        }
-        other => {
-            return Err(format!(
-                "json.llt: expected Dict from module, got {}",
-                other.type_name()
-            ))
-        }
-    };
-
-    // Materialize the `json` function thunk.
-    let json_fn_val =
-        crate::async_rt::block_on_anywhere(eval::materialize(&json_fn_thunk, None, eval_ctx))
-            .map_err(|e| format!("json.llt: materialize json function error: {e}"))?;
-
-    // Call `json(result_thunk)` via invoke_function.
-    let call_span = ast::Span::origin();
-    // Bind the positional argument in an explicit local so the slice reference is valid
-    // for the entire `call_ctx` lifetime (required by CallContext<'a>).
-    let positional_args = [Arc::clone(&result_thunk)];
-    let result_call_thunk = match &json_fn_val {
-        value::Value::Function {
-            params,
-            body,
-            env: closure_env,
-            ..
-        } => {
-            let call_ctx = CallContext {
-                params,
-                body,
-                closure_env,
-                positional: &positional_args,
-                named: None,
-                default_env: closure_env,
-                call_span,
-                origin: None,
-                ctx: eval_ctx,
-            };
-            crate::async_rt::block_on_anywhere(invoke_function(&call_ctx))
-                .map_err(|e| format!("json.llt: call error: {e}"))?
-        }
-        other => {
-            return Err(format!(
-                "json.llt: 'json' key is {}, expected Function",
-                other.type_name()
-            ))
-        }
-    };
-
-    // Materialize the result — should be a String.
-    let result_val =
-        crate::async_rt::block_on_anywhere(eval::materialize(&result_call_thunk, None, eval_ctx))
-            .map_err(|e| format!("json.llt: serialize error: {e}"))?;
-
-    match result_val {
-        value::Value::String {
-            ref source,
-            start,
-            end,
-        } => {
-            let s = source[start..end].to_string();
-            Ok(Some(s))
-        }
-        other => Err(format!(
-            "json.llt: expected String result, got {}",
-            other.type_name()
-        )),
-    }
 }
 
 #[allow(clippy::items_after_test_module)]
@@ -1375,10 +1230,12 @@ mod tests {
     }
 
     #[test]
-    fn test_json_dict_empty() {
+    fn test_json_dict_empty_is_null() {
+        // Empty dict [] is LLT's null value; value_to_json serializes it as JSON null
+        // to match builtin-to-json and the LLT null compatibility convention.
         let dict = Value::Dict(IndexMap::new());
         let result = value_to_json(&dict, &test_ctx()).unwrap();
-        assert_eq!(result, serde_json::json!({}));
+        assert_eq!(result, serde_json::Value::Null);
     }
 
     #[test]

@@ -310,24 +310,9 @@ pub enum CoreExpr {
 
 Lowering is a pure function of `(SurfaceNode, ResolutionTable, TypeAnnotationTable)`; it commutes with evaluation order. Lowering cost is only paid for expressions that are actually evaluated — dead code is never lowered. **Semantic equivalence invariant:** for all well-typed programs, `eval(lower(s)) = eval_surface(s)` where `eval_surface` is the direct evaluator on `SurfaceExpression`. The Pipe→Call rewrite is trivially equivalence-preserving (syntactic sugar); VarRef→Var via de Bruijn coordinates is equivalence-preserving by construction; TypeAssert→RuntimeTypeCheck for macro-synthesized nodes changes the error-reporting point (dynamic instead of static) but preserves evaluation of the inner expression.
 
-**`$_` implicit lambda desugaring** — `src/desugar.rs` currently has three responsibilities: Pipe → Call (handled above in the lowering pass); `$_` implicit lambda desugaring; and recursive annotation desugaring (`desugar_annotation`, `desugar_param_annotation`) (when `[+ $_ 1]` becomes `[fn [_] [+ _ 1]]`). The `$_` desugaring cannot be expressed as a normal tinct macro because it is ambient — it fires at any expression position without explicit invocation, unlike form-level macros such as the let-softening macros in `stdlib/syntax.llt`. It is implemented as a **surface-to-surface tinct pass** in `stdlib/desugar.llt`, running in the pipeline between `expand` and resolution:
+**`$_` implicit lambda desugaring** — `src/desugar.rs` currently has three responsibilities: Pipe → Call (handled above in the lowering pass); `$_` implicit lambda desugaring; and recursive annotation desugaring (`desugar_annotation`, `desugar_param_annotation`) (when `[+ $_ 1]` becomes `[fn [_] [+ _ 1]]`). The `$_` desugaring cannot be expressed as a tinct macro because it is **ambient** — it fires at any expression position without explicit invocation, unlike form-level macros such as the let-softening macros in `stdlib/syntax.llt`. The tinct macro system is form-level: a macro is triggered by explicit name at the call position. `$_` is not a macro call — it is a syntactic marker that rewrites any enclosing expression. There is no way to express this as a tinct macro without replacing the macro system with a full source-to-source transformation framework.
 
-```tinct
-# stdlib/desugar.llt — $_ implicit lambda desugaring
-# Walks the SurfaceExpression tree. If an expression contains $_ (VarRef{name:"_",escaped:true})
-# in non-parameter position, wraps it in [fn [_] ...] and replaces $_ with _.
-# Does not recurse inside Quote nodes. Runs after expand, before resolution.
-#
-# Nesting rule: [outer $_ [inner $_]] — the OUTER containing expression is wrapped,
-# making [fn [_] [outer _ [fn [_] [inner _]]]]. Each $_ wraps its immediately
-# containing non-lambda expression, working inside-out. Compare: Scala wraps each _
-# to the nearest enclosing expression; Haskell sections only apply in operator positions.
-# Users should write [fn [x] [outer x [fn [y] [inner y]]]] for explicit multi-arg lambdas.
-desugar-program: [fn [p@Program]
-  [Program documents: [map desugar-document p.documents]]]
-```
-
-The full implementation walks all Expression variants via match dispatch, analogous to `json-expression` in `stdlib/codecs/json.llt`.
+`$_` desugaring therefore **stays in Rust**. `src/desugar.rs` is retained as the live implementation of `desugar_surface_program` and `desugar_surface_node` (the Surface API). It is not deleted.
 
 **Phase-ordering invariant:** Both `ResolutionTable` and `TypeAnnotationTable` must be fully populated before any thunk is forced. This is enforced by phase ordering: `expand` → resolution → typecheck → evaluation. Macro expansion and `include` must not synthesize new `SurfaceNode` expressions after typechecking. The tables are immutable once produced; the lowering pass reads but never writes them.
 
@@ -1200,10 +1185,7 @@ A cleanup pass at the end of the sprint must verify every item below is gone. No
 - `document_to_dict` — gone alongside `ast_to_dict`
 - String-keyed `type:` Dict schema — superseded; no backwards compat
 
-**`src/desugar.rs`** — deleted; its two responsibilities split:
-
-- `Pipe` → `Call`: moves into the lowering pass in `src/lower.rs`
-- `$_` implicit lambda desugaring: moves to `stdlib/desugar.llt` as a tinct surface-to-surface pass; registered in the pipeline between `expand` and resolution
+**`src/desugar.rs`** — **retained**. `Pipe` → `Call` moves into the lowering pass in `src/lower.rs`. `$_` implicit lambda desugaring stays in Rust (see §`$_` implicit lambda desugaring above — cannot be expressed as a tinct macro). The file is renamed and trimmed: old Expr-based functions deleted, Surface API (`desugar_surface_program`, `desugar_surface_node`) is the permanent live implementation.
 
 **`src/eval_pipeline.rs`** — entire file deleted
 

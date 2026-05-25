@@ -26,6 +26,7 @@ Brief each agent with:
 - Review scope: full codebase (or focus area if specified by the user)
 - Review order: doc/*.md first, then codebase
 - Permission for bold recommendations: refactoring, API changes welcome. Pre-1.0.
+- **Flag any special-case handling, backwards-compatibility shims, and workaround/fallback paths** — these are code smells for forgotten workarounds. The goal is to excise them, not preserve them. Report each as a finding so it gets tracked and removed.
 - Instruction to use the **Codebase Review Protocol** output format (NOT the Sprint Panel Review format — no APPROVE/REQUEST_CHANGES verdict needed here)
 
 Do NOT read agent definitions into your own context. Do NOT create intermediate files.

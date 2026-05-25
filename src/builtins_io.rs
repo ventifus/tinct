@@ -500,11 +500,9 @@ pub(crate) fn builtin_slurp(
             let mut contents = String::new();
             let mut borrowed = handle.borrow_mut();
             let mut limited_reader = (&mut *borrowed).take(MAX_FILE_SIZE + 1);
-            limited_reader
-                .read_to_string(&mut contents)
-                .map_err(|e| {
-                    EvalError::user_error(format!("slurp: read failed: {}", e), call_span)
-                })?;
+            limited_reader.read_to_string(&mut contents).map_err(|e| {
+                EvalError::user_error(format!("slurp: read failed: {}", e), call_span)
+            })?;
 
             if contents.len() > MAX_FILE_SIZE as usize {
                 return Err(EvalError::resource_limit_exceeded(
@@ -2958,7 +2956,13 @@ pub(crate) fn builtin_symlink(
 
         // Extract DirCap and check permissions
         let (dir, perms) = extract_dir_cap(&dir_val, "symlink", args[0].span)?;
-        check_perm(perms, "Symlinkable", perms.symlinkable, "symlink", call_span)?;
+        check_perm(
+            perms,
+            "Symlinkable",
+            perms.symlinkable,
+            "symlink",
+            call_span,
+        )?;
 
         let target = require_string("symlink", target_val, args[1].span)?;
         let link_path = require_string("symlink", link_path_val, args[2].span)?;

@@ -1,6 +1,0 @@
-# json-pretty: format array
-[include %libdir "cli/out/json-pretty.llt"]
----
-[call %.json-pretty [1 2 3]]
-=== out
-String("[\n  1,\n  2,\n  3\n]")

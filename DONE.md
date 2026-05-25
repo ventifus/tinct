@@ -454,6 +454,16 @@ Also fixed (pre-existing bugs discovered during sprint):
 - [x] Verify `expand` builtin performs real macro expansion — **DONE (commit 114ca2a)**: dict_to_file → expand_macros → ast_to_dict
 - [x] After deletions: `just build` passes — **DONE (commit 114ca2a)**
 
+### reduce-cont-step: Continuation-based reduce — unlimited-depth inputs, no stack cliffs
+
+**Whatif:** `include-decomposition`
+
+- [x] Decide reduce accumulator strategy — **`Cont::ReduceStep` continuation approach.** Add `Cont::ReduceDictStep` and `Cont::ReduceSeqStep` variants so all reduce processing stays within a single `run()` invocation. Eliminates O(N) nested `run()` Rust calls from the Dict lazy-PendingCall-chain path and the Seq eager-materialize-per-step path. TCO (iterative-eval-a/b) handles tail-recursive user functions but does not prevent nested `run()` calls from builtins that call `materialize()` on args — reduce's accumulator chain is exactly this pattern. Root cause confirmed 2026-05-08 (SIGSEGV at 5000 elements); lazy accumulator is not a safe alternative because each `+` / arithmetic step calls `materialize(acc)` from inside `run()`, re-entering `run()` at O(N) Rust stack depth even with iterative materialize. See `/rnd` session 2026-05-21.
+- [x] Rewrite `builtin_reduce` to use PendingBuiltin chain (heap iteration, not Rust stack) — added `builtin_reduce_dict_step` and `builtin_reduce_seq_step` helpers that create lazy PendingBuiltin chains, following existing `concat_seq_step` pattern. Chose PendingBuiltin chains over Cont variants because builtins cannot push continuations directly. (`src/builtins_seq_reduce.rs`)
+- [x] Register `reduce-dict-step` and `reduce-seq-step` in `standard_builtins()` — builtin count 263→265 (`src/builtins.rs`)
+- [x] Corpus tests: reduce over 5000-element Seq and 1000-entry Dict (`tests/corpus/eval/builtins/reduce_large_seq.llt-eval`, `reduce_large_dict.llt-eval`)
+- [x] `just build` passes; `just test-lib` passes — 1889/0 ✓
+
 ## Evaluation
 
 ## CHR (Constraint Handling Rules)
@@ -1073,6 +1083,8 @@ Already lazy — no work needed. Kept for completeness.
 ## Tooling
 
 ### unified-bindings-remove-old-syntax: Remove pre-unified-bindings param syntax from fn, type, and class
+
+**Whatif:** `unified-bindings`
 
 `unified-bindings-migrate` (completed earlier) checked off "Remove old param-list parsing paths" prematurely. Old-form detection was removed here.
 
@@ -6618,6 +6630,8 @@ For findings where the feature doc or code is the source of truth and the main d
 
 ### chr-class-instance: AST redesign and parser/typecheck support for [class] and [instance]
 
+**Whatif:** `chr-unification`
+
 Redesigns `Expr::ClassDecl` and `Expr::InstanceDecl` for the two-bracket class body and match-arm instance syntax. New `[pattern [...]]` form reuses existing annotated-identifier machinery.
 
 - [x] Extend `Expr::ClassDecl` in `src/ast.rs`: add `determines`, `resolver` fields; update all exhaustive match sites (`src/ast.rs` + ~8 files)
@@ -6638,6 +6652,8 @@ Redesigns `Expr::ClassDecl` and `Expr::InstanceDecl` for the two-bracket class b
 
 ### unified-bindings-ast: Lexer, AST, and parser for [let ...], [case ...], and ... placeholder
 
+**Whatif:** `unified-bindings`
+
 Add `Token::Let`, `Token::Case`, `Expr::LetDecl`, `Expr::CaseArm`, `Expr::Placeholder` and parser support. Both old and new binding syntax accepted during this phase (old syntax deprecated but functional to avoid breaking everything at once). **Spec chapters:** `doc/02-syntax.md §6, §9`, `doc/whatif/unified-bindings.md §src/lexer.rs, §src/ast.rs, §src/parser.rs`.
 
 - [x] Add `Token::Let` and `Token::Case` keywords to `src/lexer.rs`; reserved keyword denylist (`src/lexer.rs`)
@@ -6650,6 +6666,7 @@ Add `Token::Let`, `Token::Case`, `Expr::LetDecl`, `Expr::CaseArm`, `Expr::Placeh
 
 ### unified-bindings-typecheck: Type checker and evaluator for binding declarations, case arms, and placeholders
 
+**Whatif:** `unified-bindings`
 **Depends on:** `unified-bindings-ast`
 
 - [x] LetDecl binding extraction: fn params already handled by parser; extract_pattern_types updated to accept both PatternDecl and LetDecl (`src/typecheck.rs`)
@@ -6661,6 +6678,7 @@ Add `Token::Let`, `Token::Case`, `Expr::LetDecl`, `Expr::CaseArm`, `Expr::Placeh
 
 ### unified-bindings-migrate: Migrate all existing code to [let ...] and [case ...] syntax
 
+**Whatif:** `unified-bindings`
 **Depends on:** `unified-bindings-typecheck`
 
 - [x] Migrate ~242 fn declarations in `stdlib/prelude.llt` to `[fn [let params] body]` (`stdlib/prelude.llt`)
@@ -7991,6 +8009,8 @@ See `doc/whatif/macros-v2.md §What Would Change`. **Spec chapters:** `doc/whati
 
 ### chr-prelude: Migrate arithmetic classes to prelude.llt and implement boundary guard elaboration
 
+**Whatif:** `chr-unification`
+
 Moves the hardcoded arithmetic instance table out of Rust and into tinct itself, completing the CHR cycle with post-inference boundary guard elaboration. See `doc/feature/chr-unification.md §Boundary Guards` and `doc/06-type-inference.md §Constraint Handling Rules`.
 
 **Spec chapters:** `doc/feature/chr-unification.md §Boundary Guards`, `doc/06-type-inference.md §CHR`
@@ -8027,6 +8047,8 @@ Three type system correctness gaps found in the 2026-05-18 audit with no existin
 - [x] Tests: `raise` corpus test verifies Never union absorption; monomorphic recursion test verifies no type error on unannotated recursive function; tuple annotation test verifies closed record output
 
 ### unknown-elimination: Replace remaining `Type::Unknown` builtin signatures with precise types
+
+**Whatif:** `chr-unification`
 
 Replaces builtin `Unknown` return/param types with precise `TypeScheme` signatures where the type is statically knowable, as catalogued in `doc/11a-builtins.md`. See `doc/06-type-inference.md §Type Schemes`.
 
@@ -8224,6 +8246,8 @@ When a recursive type alias self-references during expansion (e.g. `Tree a` insi
 - [x] Verify existing recursive alias tests still pass (no stack overflow) (`tests/`)
 
 ### chr-gaps: Three critical CHR implementation gaps found in full audit
+
+**Whatif:** `chr-unification`
 
 Full audit (2026-05-17) found gaps preventing user-defined FD classes from working end-to-end.
 **Implementation order: Gap 2 → Gap 1 → Gap 3 → Gap 4** (Gap 2 is a one-liner that unblocks 1 and 3).
@@ -9385,6 +9409,8 @@ Also completes the one remaining blocked item from `sprint-2b-shim-removal` (pan
 
 ### unified-bindings-parser-enforcement: Enforce [let ...] required in fn/class/type params
 
+**Whatif:** `unified-bindings`
+
 - [x] Parser rejects `[fn [x y] body]` (non-`let` non-empty params) — `[fn [let x y] body]` required; `[fn [] body]` still allowed as zero-arg shorthand (`src/parser.rs`)
 - [x] Updated ~30 test inputs in src/ to use `[let ...]` form
 - [x] Updated stdlib/syntax.llt comment to clarify macro purpose
@@ -9926,3 +9952,55 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] Fix `doc/15-ast.md:206` Pipe handling — updated from desugar.rs (deleted) to lower.rs [Major]
 - [x] Fix `doc/15-ast.md` parse2() references — already clean, no stale references found [Major]
 - [x] Update `doc/15-ast.md` ClassDecl/InstanceDecl/PatternDecl rows — verified correct, all fields match [Minor]
+
+### rv2-output-formatter-contract: Output formatters return String; eliminate emit side-effect model
+
+**Context:** Output formatters in `stdlib/cli/out/*.llt` previously produced output via `[emit ...]` side effects inside lazy Dict entries. `main.rs` called `deep_materialize` to force all entries, triggering the emits. This made `deep_materialize` load-bearing in the output path and prevented its removal. Additionally, csv.llt/env.llt/yaml.llt/toml.llt were broken as `-o` formatters — they defined functions but had no top-level invocation.
+
+**New contract:** Each output formatter is a tinct program whose final value is a `String` (the formatted output). `main.rs` evaluates the formatter pipeline stage, materializes the result, and writes the String to stdout.
+
+#### Task 1: stdlib/cli/out/json.llt — simplify to return String directly
+- [x] Replace emit-based dict with `[call $builtin-to-json %]` (`stdlib/cli/out/json.llt`)
+
+#### Task 2: stdlib/cli/out/json-pretty.llt — remove emit wrapper
+- [x] Changed to `[call $builtin-to-json %]` (to-json not in prelude; uses builtin directly)
+
+#### Task 3: stdlib/cli/out/llt.llt — remove emit wrapper
+- [x] Change `[emit [call $llt-repr %]]` to `[call $llt-repr %]` (`stdlib/cli/out/llt.llt`)
+
+#### Task 4: stdlib/cli/out/raw.llt — return String instead of emit
+- [x] Replace emit-based implementation with conditional String/Seq handler (`stdlib/cli/out/raw.llt`)
+
+#### Task 5: stdlib/cli/out/csv.llt — add top-level invocation (fixes broken formatter)
+- [x] Add `[csv %]` as the final expression after the module dict (`stdlib/cli/out/csv.llt`)
+
+#### Task 6: stdlib/cli/out/env.llt — add top-level invocation (fixes broken formatter)
+- [x] Add `[env %]` as the final expression after the module dict (`stdlib/cli/out/env.llt`)
+
+#### Task 7: stdlib/cli/out/yaml.llt — add top-level invocation (fixes broken formatter)
+- [x] Add `[yaml %]` as the final expression after the module dict (`stdlib/cli/out/yaml.llt`)
+
+#### Task 8: stdlib/cli/out/toml.llt — add top-level invocation (fixes broken formatter)
+- [x] Add `[toml %]` as the final expression after the module dict (`stdlib/cli/out/toml.llt`)
+
+#### Task 9: stdlib/cli/out/none.llt — return empty string
+- [x] Replace current implementation with `""` (empty string return) (`stdlib/cli/out/none.llt`)
+
+#### Task 10: src/main.rs — write formatter output, remove deep_materialize from output path
+- [x] Remove `deep_materialize` from output path; use `materialize_sync` → extract String → `print!`
+- [x] Path traversal guards added for `-o`, `-i`, and `tinct fmt -o` formatter names
+
+#### Task 11: src/lib.rs — fix value_to_json null semantics bug, then delete it
+- [x] Fix `value_to_json`: empty dict `[]` now serializes as JSON `null` (not `{}`)
+- [x] Delete `format_with_json_llt` from `src/lib.rs`
+- [ ] Delete `value_to_json` from `src/lib.rs` — deferred: still used by `run_literate_eval`; tracked as future sprint
+
+#### Task 12: src/repl.rs — remove deep_materialize from REPL output path
+- [x] Replace `deep_materialize` in REPL with `materialize_sync` + `value_to_display_string`
+
+#### Task 13: Corpus tests for previously-broken formatters
+- [x] Add 12 CLI tests for `-o csv`, `-o env`, `-o yaml`, `-o toml`, `-o none` formatters
+- [x] Path traversal guard tests added for `-o`, `-i`, `fmt -o`
+
+#### Backlog: json-pretty indentation gap (deferred)
+- [ ] Add indented pretty-print support to `-o json-pretty` (currently produces compact JSON identical to `-o json`)

@@ -174,10 +174,13 @@ pub(crate) fn builtin_reduce_dict_step(
                         Some(Arc::from("reduce")),
                         Arc::clone(&ctx),
                     ));
-                    let new_acc_val = materialize(&call_thunk, None, &ctx).await.map_err(|mut e| {
-                        e.push_frame("in reduce".to_string(), call_span);
-                        e
-                    })?;
+                    let new_acc_val =
+                        materialize(&call_thunk, None, &ctx)
+                            .await
+                            .map_err(|mut e| {
+                                e.push_frame("in reduce".to_string(), call_span);
+                                e
+                            })?;
                     acc_thunk = Arc::new(Thunk::new_materialized(new_acc_val, call_span));
                 }
                 Ok(acc_thunk)
@@ -211,7 +214,7 @@ pub(crate) fn builtin_reduce_seq_step(
 
         let f_thunk = Arc::clone(&args[0]);
         let mut acc_thunk = Arc::clone(&args[1]);
-        let mut seq_val = materialize(&args[2], None, &ctx).await?;
+        let mut seq_val = materialize(&args[2], None, &ctx).await?; // H2: structural check — must know if head/tail or empty
 
         // Loop over all elements — no recursive thunk chain.
         loop {
@@ -234,10 +237,13 @@ pub(crate) fn builtin_reduce_seq_step(
                         Some(Arc::from("reduce")),
                         Arc::clone(&ctx),
                     ));
-                    let new_acc_val = materialize(&call_thunk, None, &ctx).await.map_err(|mut e| {
-                        e.push_frame("in reduce".to_string(), call_span);
-                        e
-                    })?;
+                    let new_acc_val =
+                        materialize(&call_thunk, None, &ctx)
+                            .await
+                            .map_err(|mut e| {
+                                e.push_frame("in reduce".to_string(), call_span);
+                                e
+                            })?;
                     acc_thunk = Arc::new(Thunk::new_materialized(new_acc_val, call_span));
 
                     // Advance to the tail

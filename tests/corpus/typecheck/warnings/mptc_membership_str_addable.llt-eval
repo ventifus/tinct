@@ -11,6 +11,6 @@
 [add-fn: $+
  bad-call: [fn [] [add-fn "hello" 1]]]
 === out
-Dict({"add-fn": Builtin(+), "bad-call": Function()})
+Dict({"add-fn": Function(a, b), "bad-call": Function()})
 === warn
-type Str does not satisfy arithmetic constraint Addable — expected Number, Int, or Float
+cannot unify Number with
