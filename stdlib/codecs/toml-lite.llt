@@ -104,14 +104,14 @@ parse-lines-impl: [fn@Dict [lines i@Int len@Int acc@Dict current-path]
 parse-line-dispatch: [fn@Dict [lines i@Int len@Int acc@Dict current-path line@String]
     [builtin-if [starts-with? line "[["]
         # Array table: [[name]]
-        [parse-lines-impl lines [builtin-addi 1] len
+        [parse-lines-impl lines [builtin-add i 1] len
             [toml-append-array-table-impl acc [parse-array-table-header line]]
             [parse-array-table-header line]]
         [builtin-if [starts-with? line "["]
             # Section: [name]
-            [parse-lines-impl lines [builtin-addi 1] len acc [parse-section-header-impl line]]
+            [parse-lines-impl lines [builtin-add i 1] len acc [parse-section-header-impl line]]
             # Key-value pair
-            [parse-lines-impl lines [builtin-addi 1] len
+            [parse-lines-impl lines [builtin-add i 1] len
                 [toml-set-at-path-impl-entry acc current-path [parse-key-value-impl line]]
                 current-path]]]]
 
@@ -144,7 +144,7 @@ toml-set-at-path-rec: [fn@Dict [root@Dict path kv@Dict depth@Int]
                 [get-or root [get depth path] []]
                 path
                 kv
-                [builtin-adddepth 1]]]]]]
+                [builtin-add depth 1]]]]]]
 
 # Final path segment: check if target is an array, merge into last element.
 # Type: (Dict -> String -> Dict -> Dict)
@@ -181,7 +181,7 @@ toml-append-array-rec: [fn@Dict [root@Dict path depth@Int]
             [toml-append-array-rec
                 [get-or root [get depth path] []]
                 path
-                [builtin-adddepth 1]]]]]]
+                [builtin-add depth 1]]]]]]
 
 # Append a new dict to an array table at the given path — internal impl.
 # Type: (Dict -> Dict String -> Dict)

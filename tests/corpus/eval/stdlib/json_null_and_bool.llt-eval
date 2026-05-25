@@ -1,0 +1,8 @@
+# codecs/json: to-json handles null ([]) and bool values
+[include %libdir "codecs/json.llt"]
+
+---
+
+[to-json [null: [] yes: true no: false]]
+=== out
+String("{\"null\":null,\"yes\":true,\"no\":false}")

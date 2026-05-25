@@ -164,8 +164,8 @@ json-program: [fn [p@Program]
 
 to-json-primitive: [fn [v]
   [cond
-    [[builtin-eqv []]     "null"]
-    [[bool? v]    [builtin-ifv "true" "false"]]
+    [[builtin-eq v []]     "null"]
+    [[bool? v]    [builtin-if v "true" "false"]]
     [[int?  v]    [builtin-str v]]
     [[float? v]   [builtin-str v]]
     [[builtin-str?   v]   [json-string v]]
@@ -253,7 +253,7 @@ json-unescape: [fn [c@String]
 
 json-parse-string-body: [fn [s@String acc@String]
   [builtin-if [builtin-eq [str-length s] 0]
-    [builtin-raise "JSON: unterminated builtin-string"]
+    [builtin-raise "JSON: unterminated string"]
     [c: [str-at 0 s]]
     [cond
       [[builtin-eq c "\""]
@@ -290,7 +290,7 @@ json-parse-array: [fn [s@String]
 
 json-parse-object-pairs: [fn [s@String acc@Dict]
   [builtin-if [not[builtin-eq [str-at 0 s] "\""]]
-    [builtin-raise "JSON: expected builtin-string key in object"]
+    [builtin-raise "JSON: expected string key in object"]
     [k:    [json-parse-string s]]
     [s:    [json-skip-ws k.rest]]
     [builtin-if [not[builtin-eq [str-at 0 s] ":"]]
@@ -331,7 +331,7 @@ json-parse-value: [fn [s@String]
 # ---- Public API ----
 [
 
-to-json@[doc: "Serialize any tinct value to a compact JSON builtin-string.
+to-json@[doc: "Serialize any tinct value to a compact JSON string.
 Expression, Document, and Program values use the Variant encoding {\"Tag\": {fields}}.
 Primitive types serialize directly. Not every tinct type is serializable to JSON —
 Fn, Handle, Task, Channel etc. produce null."]:
@@ -343,12 +343,12 @@ Fn, Handle, Task, Channel etc. produce null."]:
       _:              [to-json-primitive v]]]
 
 # from-json: Pure-tinct JSON parser implementation.
-# Takes a JSON builtin-string and returns a tinct value (Dict, Seq, String, Int, Float, Bool, or []).
-# The parser uses str-at/str-length from builtin-strings.llt and builtin-str-slice from prelude.
-from-json@[doc: "Parse a JSON builtin-string into a tinct value.
+# Takes a JSON string and returns a tinct value (Dict, Seq, String, Int, Float, Bool, or []).
+# The parser uses str-at/str-length from strings.llt and builtin-str-slice from prelude.
+from-json@[doc: "Parse a JSON string into a tinct value.
 
 Parameters:
-  s@String — JSON builtin-string to parse
+  s@String — JSON string to parse
 
 Returns:
   Any — Parsed value (Dict, Seq, String, Int, Float, Bool, or [] for null)

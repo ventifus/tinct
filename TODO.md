@@ -1300,11 +1300,11 @@ JSON serialization of any non-Expression value hits `to-json-primitive` and cras
 
 Also: error message strings in json.llt contain `"builtin-string"` text (artifact of over-broad find-replace).
 
-- [ ] Fix 5 `[builtin-addi 1]` → `[builtin-add i 1]` in toml-lite.llt
-- [ ] Fix 2 `[builtin-adddepth 1]` → `[builtin-add depth 1]` in toml-lite.llt
-- [ ] Fix `[builtin-eqv []]` and `[builtin-ifv "true" "false"]` in json.llt
-- [ ] Fix `"builtin-string"` → `"string"` in json.llt error messages and doc strings
-- [ ] Add corpus tests: `toml_lite_basic.llt-eval` (section + array-table + kv), `json_null_and_bool.llt-eval`
+- [x] Fix 5 `[builtin-addi 1]` → `[builtin-add i 1]` in toml-lite.llt (lines 107, 112, 114)
+- [x] Fix 2 `[builtin-adddepth 1]` → `[builtin-add depth 1]` in toml-lite.llt (lines 147, 184)
+- [x] Fix `[builtin-eqv []]` → `[builtin-eq v []]` and `[builtin-ifv "true" "false"]` → `[builtin-if v "true" "false"]` in json.llt
+- [x] Fix `"builtin-string"` → `"string"` in json.llt error messages and doc strings (4 occurrences)
+- [x] Add `json_null_and_bool.llt-eval` corpus test; `toml_lite_basic.llt-eval` already existed
 - **Files:** `stdlib/codecs/toml-lite.llt`, `stdlib/codecs/json.llt`
 
 ### security-wrong-cap-flags: symlink and set-permissions check the wrong capability flag [Critical]
