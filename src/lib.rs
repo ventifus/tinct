@@ -101,7 +101,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 /// AST node types produced by the parser.
-pub use ast::{Annotation, Document, Entry, Expr, File, NamedArg, Param, Position, Span, Spanned};
+// Document, Entry, Expr, File, NamedArg deleted (sprint rv2-delete-old-ast 2026-05-24).
+pub use ast::{Annotation, Param, Position, Span, Spanned};
 /// Surface AST types for the runtime-v2 pipeline.
 pub use ast::{
     ResolutionTable, SurfaceEntry, SurfaceExpression, SurfaceNode, SurfaceProgram,
