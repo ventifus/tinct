@@ -35,12 +35,18 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use crate::ast::{Entry, MatchArm, NamedArg, Param, Span, Spanned};
-// Expr: the macro expander operates on old-style Expr AST via the bridge (expand_expr, pre_scan_expr,
-// etc.). TODO(rv2-delete-old-ast): remove once E3e expander cutover to SurfaceExpression is done.
+use crate::ast::{
+    Entry, MatchArm, NamedArg, Param, Span, Spanned, SurfaceEntry, SurfaceNamedArg, SurfaceNode,
+};
+// Expr is still used by the old expand_expr/expand_macro_call/pre_scan_expr paths (kept for
+// register_stdlib_macros_from_env and validate_syntax_class which need Expr matching).
+// The expand_surface_program hot path no longer bridges to Expr — it uses expand_surface_expr
+// which calls expand_macro_call_surface (native SurfaceNode args, no per-node bridge).
+// TODO(rv2-delete-old-ast): delete expand_expr/pre_scan_expr/validate_syntax_class/expand_macro_call
+// once register_stdlib_macros_from_env is ported to SurfaceExpression (post-E3).
 use crate::ast::Expr;
 use crate::ast_convert::{expr_to_surface_node, surface_node_to_expr};
-use crate::ast_dict::{dict_to_surface_node, surface_node_to_dict, AstToDictOpts}; // TODO(parts-e): remove when macro expander is rewritten on SurfaceExpression (blocked on E3e expander cutover)
+use crate::ast_dict::{dict_to_surface_node, surface_node_to_dict, AstToDictOpts};
 use crate::builtins;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{self, EvalContext};
@@ -504,12 +510,12 @@ pub fn expand_surface_program(
                     }
                 }
                 SurfaceItem::Expr(node) => {
-                    // Always expand via expand_expr so that nested macro calls inside
-                    // dicts, conditionals, and other compound expressions are also expanded.
-                    // expand_expr recurses into all sub-expressions and applies registered macros.
-                    let expr = surface_node_to_expr(&node);
-                    let expanded_expr = expand_expr(expr, &mut env_macro, &ctx, &stdlib_env)?;
-                    let expanded_node = expr_to_surface_node(&expanded_expr);
+                    // Expand via the native surface path — no Expr bridge needed for the
+                    // top-level expansion loop. expand_surface_expr recurses into all
+                    // sub-expressions natively and only bridges at macro call boundaries
+                    // (where the transformer evaluation requires Expr for validate_syntax_class).
+                    let expanded_node =
+                        expand_surface_expr(&node, &mut env_macro, &ctx, &stdlib_env)?;
                     expanded_items.push(SurfaceItem::Expr(expanded_node));
                 }
             }
@@ -523,6 +529,793 @@ pub fn expand_surface_program(
         provenance: env_macro.provenance,
         macro_injects_map,
     })
+}
+
+/// Depth-guarded wrapper for `expand_surface_expr_inner`.
+///
+/// Prevents stack overflow on pathological inputs (deeply nested ASTs).
+/// Mirrors the depth guard in `expand_expr`.
+fn expand_surface_expr(
+    node: &Arc<SurfaceNode>,
+    env: &mut MacroEnv,
+    ctx: &Arc<EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
+) -> EvalResult<Arc<SurfaceNode>> {
+    let ee_depth = EXPAND_EXPR_DEPTH.get();
+    if ee_depth > 10_000 {
+        return Err(EvalError::resource_limit_exceeded(
+            format!("macro expansion: AST recursion depth {ee_depth} exceeds limit (10000)"),
+            node.span,
+        )
+        .into());
+    }
+    EXPAND_EXPR_DEPTH.set(ee_depth + 1);
+    let result = expand_surface_expr_inner(node, env, ctx, stdlib_env);
+    EXPAND_EXPR_DEPTH.set(ee_depth);
+    result
+}
+
+/// Expand macros in a SurfaceNode (no Expr bridge in the main path).
+///
+/// For `Call` nodes whose func is a registered macro, delegates to
+/// `expand_macro_call_surface` which takes `Arc<SurfaceNode>` args directly.
+/// For all other nodes, recurses into children natively and rebuilds the node.
+///
+/// Declaration nodes (`SurfaceExpression::Decl`) pass through unchanged —
+/// they were processed during pre-scan.
+fn expand_surface_expr_inner(
+    node: &Arc<SurfaceNode>,
+    env: &mut MacroEnv,
+    ctx: &Arc<EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
+) -> EvalResult<Arc<SurfaceNode>> {
+    use crate::ast::SurfaceExpression;
+
+    let span = node.span;
+    match &node.expr {
+        // Declaration nodes pass through (registered during pre-scan; not emitted post-expansion)
+        SurfaceExpression::Decl(_) => Ok(Arc::clone(node)),
+
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            implied,
+        } => {
+            // Check if this is a macro call
+            let macro_name = if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                if env.is_macro(name) {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some(macro_name) = macro_name {
+                // Macro call — expand via native surface path
+                let expanded = expand_macro_call_surface(
+                    &macro_name,
+                    args,
+                    named_args,
+                    span,
+                    None, // expression position — no dict key
+                    env,
+                    ctx,
+                    stdlib_env,
+                )?;
+                // Splice in expression position is an expansion-time error
+                if let SurfaceExpression::Decl(decl) = &expanded.expr {
+                    if matches!(decl.as_ref(), crate::ast::SurfaceDeclaration::Splice(_)) {
+                        return Err(EvalError::macro_error(
+                            format!(
+                                "macro '{}' returned splice, which is not valid in expression position",
+                                macro_name
+                            ),
+                            span,
+                        )
+                        .into());
+                    }
+                }
+                Ok(expanded)
+            } else {
+                // Not a macro call — recurse into children
+                let expanded_func = expand_surface_expr(func, env, ctx, stdlib_env)?;
+                let expanded_args = args
+                    .iter()
+                    .map(|arg| expand_surface_expr(arg, env, ctx, stdlib_env))
+                    .collect::<EvalResult<Vec<_>>>()?;
+                let expanded_named_args = named_args
+                    .iter()
+                    .map(|na| {
+                        let expanded_value =
+                            expand_surface_expr(&na.node.value, env, ctx, stdlib_env)?;
+                        Ok(Spanned::new(
+                            SurfaceNamedArg {
+                                name: na.node.name.clone(),
+                                value: expanded_value,
+                            },
+                            na.span,
+                        ))
+                    })
+                    .collect::<EvalResult<Vec<_>>>()?;
+                Ok(Arc::new(SurfaceNode {
+                    expr: SurfaceExpression::Call {
+                        func: expanded_func,
+                        args: expanded_args,
+                        named_args: expanded_named_args,
+                        implied: *implied,
+                    },
+                    span,
+                }))
+            }
+        }
+
+        SurfaceExpression::DotAccess { expr, field } => {
+            let expanded = expand_surface_expr(expr, env, ctx, stdlib_env)?;
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::DotAccess {
+                    expr: expanded,
+                    field: field.clone(),
+                },
+                span,
+            }))
+        }
+
+        SurfaceExpression::Pipe { lhs, rhs } => {
+            let expanded_lhs = expand_surface_expr(lhs, env, ctx, stdlib_env)?;
+            let expanded_rhs = expand_surface_expr(rhs, env, ctx, stdlib_env)?;
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::Pipe {
+                    lhs: expanded_lhs,
+                    rhs: expanded_rhs,
+                },
+                span,
+            }))
+        }
+
+        SurfaceExpression::Sequential(exprs) => {
+            let expanded = exprs
+                .iter()
+                .map(|e| expand_surface_expr(e, env, ctx, stdlib_env))
+                .collect::<EvalResult<Vec<_>>>()?;
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::Sequential(expanded),
+                span,
+            }))
+        }
+
+        SurfaceExpression::Dict(entries) => {
+            let mut expanded_entries = Vec::new();
+            for entry in entries {
+                // Extract dict key string for inject: threading
+                let dict_key_str: Option<String> =
+                    entry.node.key.as_ref().and_then(|k| match &k.expr {
+                        SurfaceExpression::Str(s) => Some(s.clone()),
+                        SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                        _ => None,
+                    });
+
+                // Check if the value is a macro call (for inject: key threading)
+                let expanded_value = {
+                    let value_node = &entry.node.value;
+                    if let SurfaceExpression::Call {
+                        func,
+                        args,
+                        named_args,
+                        ..
+                    } = &value_node.expr
+                    {
+                        if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                            if env.is_macro(name) {
+                                let macro_name = name.clone();
+                                expand_macro_call_surface(
+                                    &macro_name,
+                                    args,
+                                    named_args,
+                                    value_node.span,
+                                    dict_key_str.as_deref(),
+                                    env,
+                                    ctx,
+                                    stdlib_env,
+                                )?
+                            } else {
+                                expand_surface_expr(value_node, env, ctx, stdlib_env)?
+                            }
+                        } else {
+                            expand_surface_expr(value_node, env, ctx, stdlib_env)?
+                        }
+                    } else {
+                        expand_surface_expr(value_node, env, ctx, stdlib_env)?
+                    }
+                };
+
+                // Filter out declaration nodes (they've been registered; do not emit)
+                if let SurfaceExpression::Decl(decl) = &expanded_value.expr {
+                    match decl.as_ref() {
+                        crate::ast::SurfaceDeclaration::DefMacro { .. }
+                        | crate::ast::SurfaceDeclaration::MacroDecl { .. }
+                        | crate::ast::SurfaceDeclaration::SyntaxClass { .. } => continue,
+                        _ => {}
+                    }
+                }
+
+                // Splice in dict context: inject each form as a separate unkeyed entry
+                if let SurfaceExpression::Decl(decl) = &expanded_value.expr {
+                    if let crate::ast::SurfaceDeclaration::Splice(forms) = decl.as_ref() {
+                        for form in forms {
+                            if let SurfaceExpression::Decl(inner_decl) = &form.expr {
+                                match inner_decl.as_ref() {
+                                    crate::ast::SurfaceDeclaration::MacroDecl { .. }
+                                    | crate::ast::SurfaceDeclaration::SyntaxClass { .. }
+                                    | crate::ast::SurfaceDeclaration::DefMacro { .. } => {
+                                        // Register via bridge for pre_scan
+                                        let expr_form = surface_node_to_expr(form);
+                                        pre_scan_expr_spanned(&expr_form, env, ctx, stdlib_env)?;
+                                    }
+                                    _ => {
+                                        let re_expanded =
+                                            expand_surface_expr(form, env, ctx, stdlib_env)?;
+                                        if let SurfaceExpression::Decl(inner) = &re_expanded.expr {
+                                            match inner.as_ref() {
+                                                crate::ast::SurfaceDeclaration::DefMacro {
+                                                    ..
+                                                }
+                                                | crate::ast::SurfaceDeclaration::MacroDecl {
+                                                    ..
+                                                }
+                                                | crate::ast::SurfaceDeclaration::SyntaxClass {
+                                                    ..
+                                                } => {}
+                                                _ => {
+                                                    expanded_entries.push(Spanned::new(
+                                                        SurfaceEntry {
+                                                            key: None,
+                                                            value: re_expanded,
+                                                        },
+                                                        entry.span,
+                                                    ));
+                                                }
+                                            }
+                                        } else {
+                                            expanded_entries.push(Spanned::new(
+                                                SurfaceEntry {
+                                                    key: None,
+                                                    value: re_expanded,
+                                                },
+                                                entry.span,
+                                            ));
+                                        }
+                                    }
+                                }
+                            } else {
+                                let re_expanded = expand_surface_expr(form, env, ctx, stdlib_env)?;
+                                expanded_entries.push(Spanned::new(
+                                    SurfaceEntry {
+                                        key: None,
+                                        value: re_expanded,
+                                    },
+                                    entry.span,
+                                ));
+                            }
+                        }
+                        continue;
+                    }
+                }
+
+                let expanded_key = if let Some(key) = &entry.node.key {
+                    Some(expand_surface_expr(key, env, ctx, stdlib_env)?)
+                } else {
+                    None
+                };
+                expanded_entries.push(Spanned::new(
+                    SurfaceEntry {
+                        key: expanded_key,
+                        value: expanded_value,
+                    },
+                    entry.span,
+                ));
+            }
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::Dict(expanded_entries),
+                span,
+            }))
+        }
+
+        SurfaceExpression::Fn {
+            return_ann,
+            params,
+            body,
+            desugared,
+        } => {
+            let expanded_body = expand_surface_expr(body, env, ctx, stdlib_env)?;
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::Fn {
+                    return_ann: return_ann.clone(),
+                    params: params.clone(),
+                    body: expanded_body,
+                    desugared: *desugared,
+                },
+                span,
+            }))
+        }
+
+        SurfaceExpression::TypeAssert { annotation, expr } => {
+            let expanded = expand_surface_expr(expr, env, ctx, stdlib_env)?;
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::TypeAssert {
+                    annotation: annotation.clone(),
+                    expr: expanded,
+                },
+                span,
+            }))
+        }
+
+        SurfaceExpression::Match { scrutinee, arms } => {
+            let expanded_scrutinee = expand_surface_expr(scrutinee, env, ctx, stdlib_env)?;
+            let expanded_arms = arms
+                .iter()
+                .map(|arm| {
+                    let expanded_guard = arm
+                        .guard
+                        .as_ref()
+                        .map(|g| expand_surface_expr(g, env, ctx, stdlib_env))
+                        .transpose()?;
+                    let expanded_body = expand_surface_expr(&arm.body, env, ctx, stdlib_env)?;
+                    Ok(crate::ast::SurfaceMatchArm {
+                        pattern: arm.pattern.clone(),
+                        guard: expanded_guard,
+                        body: expanded_body,
+                    })
+                })
+                .collect::<EvalResult<Vec<_>>>()?;
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::Match {
+                    scrutinee: expanded_scrutinee,
+                    arms: expanded_arms,
+                },
+                span,
+            }))
+        }
+
+        SurfaceExpression::Quote(inner) => {
+            let expanded = expand_surface_expr(inner, env, ctx, stdlib_env)?;
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::Quote(expanded),
+                span,
+            }))
+        }
+
+        SurfaceExpression::Unquote(inner) => {
+            let expanded = expand_surface_expr(inner, env, ctx, stdlib_env)?;
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::Unquote(expanded),
+                span,
+            }))
+        }
+
+        SurfaceExpression::UnquoteSplice(inner) => {
+            let expanded = expand_surface_expr(inner, env, ctx, stdlib_env)?;
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::UnquoteSplice(expanded),
+                span,
+            }))
+        }
+
+        SurfaceExpression::PatternDecl { bindings } => {
+            let expanded = bindings
+                .iter()
+                .map(|b| expand_surface_expr(b, env, ctx, stdlib_env))
+                .collect::<EvalResult<Vec<_>>>()?;
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::PatternDecl { bindings: expanded },
+                span,
+            }))
+        }
+
+        SurfaceExpression::LetDecl { bindings } => {
+            let expanded = bindings
+                .iter()
+                .map(|b| expand_surface_expr(b, env, ctx, stdlib_env))
+                .collect::<EvalResult<Vec<_>>>()?;
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::LetDecl { bindings: expanded },
+                span,
+            }))
+        }
+
+        SurfaceExpression::CaseArm { pattern, body } => {
+            let expanded_pattern = expand_surface_expr(pattern, env, ctx, stdlib_env)?;
+            let expanded_body = expand_surface_expr(body, env, ctx, stdlib_env)?;
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::CaseArm {
+                    pattern: expanded_pattern,
+                    body: expanded_body,
+                },
+                span,
+            }))
+        }
+
+        SurfaceExpression::TypeApp { func, arg } => {
+            let expanded_func = expand_surface_expr(func, env, ctx, stdlib_env)?;
+            let expanded_arg = expand_surface_expr(arg, env, ctx, stdlib_env)?;
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::TypeApp {
+                    func: expanded_func,
+                    arg: expanded_arg,
+                },
+                span,
+            }))
+        }
+
+        // Leaf nodes — clone the Arc (shared immutable data)
+        SurfaceExpression::Int(_)
+        | SurfaceExpression::Float(_)
+        | SurfaceExpression::Bool(_)
+        | SurfaceExpression::Str(_)
+        | SurfaceExpression::VarRef { .. }
+        | SurfaceExpression::Annotated { .. }
+        | SurfaceExpression::Rest(_)
+        | SurfaceExpression::Placeholder
+        | SurfaceExpression::Error(_) => Ok(Arc::clone(node)),
+    }
+}
+
+/// Validate an argument (as a SurfaceNode) against a syntax-class annotation.
+///
+/// Surface-native version of `validate_syntax_class`. Called from
+/// `expand_macro_call_surface` to avoid converting SurfaceNode → Expr for validation.
+fn validate_syntax_class_surface(
+    arg: &Arc<SurfaceNode>,
+    annotation: &crate::ast::Annotation,
+    param_name: &str,
+    macro_name: &str,
+    call_span: Span,
+    env: &MacroEnv,
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<()> {
+    use crate::ast::{Annotation, SurfaceExpression};
+
+    const SINGLE_VARIANT_NAMES: &[&str] = &[
+        "VarRef",
+        "Literal",
+        "Call",
+        "Dict",
+        "LetDecl",
+        "Fn",
+        "Seq",
+        "Annotated",
+        "Quote",
+        "Unquote",
+        "UnquoteSplice",
+    ];
+
+    match annotation {
+        Annotation::Simple(name) => {
+            let expected_variant = name.as_str();
+
+            // Named syntax class
+            if let Some(syntax_class) = env.syntax_classes.get(expected_variant) {
+                // Bridge to existing validate_against_pattern which uses Rc<Spanned<Expr>>
+                let arg_expr = Rc::new(surface_node_to_expr(arg));
+                return validate_against_pattern(
+                    &arg_expr,
+                    &syntax_class.pattern,
+                    &syntax_class.message,
+                    param_name,
+                    macro_name,
+                    call_span,
+                    ctx,
+                );
+            }
+
+            if !SINGLE_VARIANT_NAMES.contains(&expected_variant) {
+                return Ok(());
+            }
+
+            let got_variant = match &arg.expr {
+                SurfaceExpression::VarRef { .. } => "VarRef",
+                SurfaceExpression::Int(_)
+                | SurfaceExpression::Float(_)
+                | SurfaceExpression::Bool(_)
+                | SurfaceExpression::Str(_) => "Literal",
+                SurfaceExpression::Call { .. } => "Call",
+                SurfaceExpression::Dict(_) => "Dict",
+                SurfaceExpression::LetDecl { .. } => "LetDecl",
+                SurfaceExpression::Fn { .. } => "Fn",
+                SurfaceExpression::Sequential(_) => "Seq",
+                SurfaceExpression::Annotated { .. } => "Annotated",
+                SurfaceExpression::Quote(_) => "Quote",
+                SurfaceExpression::Unquote(_) => "Unquote",
+                SurfaceExpression::UnquoteSplice(_) => "UnquoteSplice",
+                _ => "other",
+            };
+
+            if expected_variant != got_variant {
+                return Err(EvalError::macro_error(
+                    format!(
+                        "macro '{}': argument '{}' expected {}, got {}",
+                        macro_name, param_name, expected_variant, got_variant
+                    ),
+                    call_span,
+                )
+                .into());
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Expand a macro call with SurfaceNode arguments.
+///
+/// Native-surface version of `expand_macro_call`. Args are `Arc<SurfaceNode>` — no
+/// `expr_to_surface_node` conversion needed before quoting. The result is returned
+/// as `Arc<SurfaceNode>` — no `surface_node_to_expr` → `expr_to_surface_node` round-trip.
+///
+/// Re-expansion at the end calls `expand_surface_expr` (not `expand_expr`).
+#[allow(clippy::too_many_arguments)]
+fn expand_macro_call_surface(
+    macro_name: &str,
+    args: &[Arc<SurfaceNode>],
+    named_args: &[Spanned<SurfaceNamedArg>],
+    call_span: Span,
+    dict_key: Option<&str>,
+    env: &mut MacroEnv,
+    ctx: &Arc<EvalContext>,
+    stdlib_env: &Arc<RwLock<Environment>>,
+) -> EvalResult<Arc<SurfaceNode>> {
+    // MH3: error on named args to macros
+    if !named_args.is_empty() {
+        return Err(EvalError::user_error(
+            "macros do not accept named arguments".to_string(),
+            call_span,
+        )
+        .into());
+    }
+
+    let call_site_id = if call_span == Span::origin() {
+        CallSiteId::Synthetic(next_synthetic_id())
+    } else {
+        CallSiteId::Source {
+            file_id: 0,
+            offset: call_span.start.offset,
+        }
+    };
+
+    let macro_metadata = env
+        .get_macro(macro_name)
+        .expect("macro name verified before call");
+    let transformer = macro_metadata.transformer.clone();
+    let params_pattern = macro_metadata.params.clone();
+    let inject_default = macro_metadata.inject_default.clone();
+
+    env.enter_expansion(call_site_id, call_span)?;
+    let guard = ExpansionGuard {
+        expander: env,
+        call_site_id,
+    };
+
+    let opts = AstToDictOpts::default();
+
+    // Validate annotated params (surface-native variant detection)
+    let bindings: Vec<&Spanned<Expr>> = match &params_pattern.node {
+        Expr::LetDecl { bindings } => bindings.iter().collect(),
+        _ => vec![],
+    };
+
+    let mut arg_idx = 0usize;
+    for binding in &bindings {
+        match &binding.node {
+            Expr::Rest(_) => break,
+            Expr::Annotated {
+                name: param_name,
+                annotation,
+            } => {
+                if arg_idx < args.len() {
+                    validate_syntax_class_surface(
+                        &args[arg_idx],
+                        &annotation.node,
+                        param_name,
+                        macro_name,
+                        call_span,
+                        guard.expander,
+                        ctx,
+                    )?;
+                }
+                arg_idx += 1;
+            }
+            Expr::VarRef { .. } => {
+                arg_idx += 1;
+            }
+            _ => {
+                arg_idx += 1;
+            }
+        }
+    }
+
+    // Quote each SurfaceNode argument directly (no expr_to_surface_node needed)
+    let mut positional_thunks: Vec<Arc<Thunk>> = Vec::with_capacity(args.len());
+    for arg in args {
+        let dict_thunk = surface_node_to_dict(arg, &opts, ctx)?;
+        let arg_val = eval::materialize_sync(&dict_thunk, Some(&call_span), ctx).map_err(|e| {
+            EvalError::user_error(
+                format!(
+                    "macro '{}': failed to quote argument for expansion: {}",
+                    macro_name, e.kind
+                ),
+                call_span,
+            )
+        })?;
+        let deep_arg_val =
+            eval::deep_materialize(&arg_val, ctx, Some(&call_span)).map_err(|mut e| {
+                e.push_frame(
+                    format!("deep-materializing argument for macro '{}'", macro_name),
+                    call_span,
+                );
+                e
+            })?;
+        positional_thunks.push(Arc::new(Thunk::new_materialized(deep_arg_val, call_span)));
+    }
+
+    // Thread inject: binding
+    if inject_default.is_some() {
+        let binding_name = dict_key
+            .map(|k| k.to_string())
+            .or_else(|| inject_default.clone())
+            .unwrap_or_default();
+        let binding_node = Arc::new(SurfaceNode {
+            expr: crate::ast::SurfaceExpression::VarRef {
+                name: binding_name.clone(),
+                escaped: false,
+            },
+            span: call_span,
+        });
+        let binding_thunk = surface_node_to_dict(&binding_node, &opts, ctx)?;
+        let binding_val =
+            eval::materialize_sync(&binding_thunk, Some(&call_span), ctx).map_err(|e| {
+                EvalError::user_error(
+                    format!(
+                        "macro '{}': failed to quote binding name '{}': {}",
+                        macro_name, binding_name, e.kind
+                    ),
+                    call_span,
+                )
+            })?;
+        let deep_binding_val = eval::deep_materialize(&binding_val, ctx, Some(&call_span))
+            .map_err(|mut e| {
+                e.push_frame(
+                    format!("deep-materializing binding arg for macro '{}'", macro_name),
+                    call_span,
+                );
+                e
+            })?;
+        positional_thunks.push(Arc::new(Thunk::new_materialized(
+            deep_binding_val,
+            call_span,
+        )));
+    }
+
+    // Materialize the transformer
+    let transformer_val =
+        eval::materialize_sync(&transformer, Some(&call_span), ctx).map_err(|e| {
+            EvalError::user_error(
+                format!(
+                    "macro '{}' transformer failed to evaluate: {}",
+                    macro_name, e.kind
+                ),
+                call_span,
+            )
+        })?;
+
+    let result_thunk = match &transformer_val {
+        Value::Function {
+            params,
+            body,
+            env: closure_env,
+            ..
+        } => {
+            use crate::eval_call::{invoke_function_sync as invoke_function, CallContext};
+            let call_ctx = CallContext {
+                params: params.as_slice(),
+                body,
+                positional: &positional_thunks,
+                named: None,
+                closure_env,
+                default_env: closure_env,
+                ctx,
+                call_span,
+                origin: Some(Arc::from(format!("macro:{}", macro_name).as_str())),
+            };
+            invoke_function(&call_ctx).map_err(|e| {
+                EvalError::user_error(
+                    format!("macro '{}' transformer call failed: {}", macro_name, e.kind),
+                    call_span,
+                )
+            })?
+        }
+        other => {
+            return Err(EvalError::user_error(
+                format!(
+                    "macro '{}' transformer must be a function, got {}",
+                    macro_name,
+                    other.type_name()
+                ),
+                call_span,
+            )
+            .into());
+        }
+    };
+
+    let result_val = eval::materialize_sync(&result_thunk, Some(&call_span), ctx).map_err(|e| {
+        let mut err = EvalError::user_error(
+            format!(
+                "macro '{}' expansion result failed to evaluate: {}",
+                macro_name, e.kind
+            ),
+            call_span,
+        );
+        for frame in &e.stack {
+            err.push_frame(frame.label.clone(), frame.span);
+        }
+        err.push_frame(format!("in expansion of `{}`", macro_name), call_span);
+        err
+    })?;
+
+    let deep_result = eval::deep_materialize(&result_val, ctx, None).map_err(|mut e| {
+        e.push_frame(format!("in expansion of `{}`", macro_name), call_span);
+        e
+    })?;
+
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        all_thunks_materialized(&deep_result, ctx),
+        "macro expansion boundary violated: output contains lazy thunks"
+    );
+
+    // Convert result dict back to SurfaceNode (no bridge round-trip)
+    let mut expanded_node = dict_to_surface_node(&deep_result, ctx).map_err(|e| {
+        EvalError::user_error(
+            format!(
+                "macro '{}' returned invalid AST{}: {}",
+                macro_name,
+                if e.field_path.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (at field {})", e.field_path.join("."))
+                },
+                e.message
+            ),
+            call_span,
+        )
+    })?;
+
+    if expanded_node.span == Span::origin() {
+        expanded_node = Arc::new(SurfaceNode {
+            expr: expanded_node.expr.clone(),
+            span: call_span,
+        });
+    }
+
+    // Record provenance
+    guard.expander.provenance.insert(
+        SpanKey::from(call_span),
+        MacroProvenance {
+            macro_name: macro_name.to_string(),
+            call_site_span: call_span,
+        },
+    );
+
+    // Handle splice — return as Decl(Splice(...)) for caller to handle
+    // (SurfaceDeclaration::Splice is the surface equivalent of Expr::Splice)
+    // No special check needed — the node will be returned and the caller handles it.
+
+    // Drop the guard before re-expanding
+    drop(guard);
+
+    // Re-expand the result (fixpoint) — using native surface path
+    expand_surface_expr(&expanded_node, env, ctx, stdlib_env)
 }
 
 /// Pre-scan a SurfaceDocument to collect MacroDecl, DefMacro, and SyntaxClass declarations.
@@ -1289,6 +2082,8 @@ fn extract_inject_default(params: &Spanned<Expr>) -> Option<String> {
 }
 
 /// Expand macros in an expression (fixpoint loop).
+/// TODO(rv2-delete-old-ast): delete when expand_surface_expr fully replaces this path.
+#[allow(dead_code)]
 fn expand_expr(
     expr: Spanned<Expr>,
     env: &mut MacroEnv,
@@ -1309,6 +2104,8 @@ fn expand_expr(
     result
 }
 
+/// TODO(rv2-delete-old-ast): delete when expand_surface_expr fully replaces this path.
+#[allow(dead_code)]
 fn expand_expr_inner(
     expr: Spanned<Expr>,
     env: &mut MacroEnv,
@@ -1801,6 +2598,8 @@ impl Drop for ExpansionGuard<'_> {
 /// The macro expansion boundary is a data boundary. Both the input AST dict and the output
 /// AST dict are fully materialized before crossing. No arena-relative ThunkId handles may
 /// flow from the stdlib arena into the expansion arena or vice versa.
+/// TODO(rv2-delete-old-ast): delete when expand_surface_expr fully replaces this path.
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)] // macro expansion requires all context parameters
 fn expand_macro_call(
     macro_name: &str,
@@ -2097,6 +2896,8 @@ fn expand_macro_call(
 ///
 /// Supports both built-in variant names (e.g., @VarRef, @Literal) and named syntax
 /// classes registered via `[syntax-class ...]` declarations.
+/// TODO(rv2-delete-old-ast): delete when validate_syntax_class_surface fully replaces this.
+#[allow(dead_code)]
 fn validate_syntax_class(
     arg: &Rc<Spanned<Expr>>,
     annotation: &crate::ast::Annotation,

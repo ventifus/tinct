@@ -2,12 +2,10 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use super::{infer_expr, resolve_annotation, resolve_type_expr, TypeMap};
-use crate::ast::{Entry, Span, Spanned, SurfaceEntry, SurfaceExpression};
-// Expr: used by infer_dict and collect_dependencies which operate on old-style Entry/Expr AST.
-// TODO(rv2-delete-old-ast): remove once infer_dict is rewritten to walk SurfaceEntry natively.
-use crate::ast::Expr;
+use crate::ast::{Span, Spanned, SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::types::{
     generalize_with_doc, unify, InferState, Row, Substitution, Type, TypeAlias, TypeEnv, TypeError,
     TypeScheme,
@@ -71,7 +69,7 @@ pub(crate) struct Scc {
 /// of Tarjan's algorithm would overflow on dicts with O(n) dependency chains;
 /// the iterative version uses an explicit work stack instead of the call stack.
 pub(crate) fn compute_sccs(
-    entries: &[Spanned<Entry>],
+    entries: &[Spanned<SurfaceEntry>],
     key_entries: &[(Option<String>, bool)],
 ) -> Vec<Scc> {
     let n = entries.len();
@@ -188,19 +186,25 @@ pub(crate) fn compute_sccs(
 /// Uses an iterative worklist to avoid stack overflow on deeply nested
 /// Sequential/Pipe chains (which are unbounded by the parser's MAX_PARSE_DEPTH).
 /// This mirrors the iterative Tarjan's algorithm above.
-fn collect_dependencies(expr: &Spanned<Expr>, name_to_idx: &HashMap<String, usize>) -> Vec<usize> {
+fn collect_dependencies(
+    node: &Arc<SurfaceNode>,
+    name_to_idx: &HashMap<String, usize>,
+) -> Vec<usize> {
     let mut deps: Vec<usize> = Vec::new();
-    let mut worklist: Vec<&Spanned<Expr>> = vec![expr];
+    let mut worklist: Vec<&Arc<SurfaceNode>> = vec![node];
 
     while let Some(current) = worklist.pop() {
-        match &current.node {
-            Expr::VarRef { name, .. } => {
+        match &current.expr {
+            SurfaceExpression::VarRef { name, .. } => {
                 if let Some(&idx) = name_to_idx.get(name) {
                     deps.push(idx);
                 }
             }
-            Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
-            Expr::Dict(entries) => {
+            SurfaceExpression::Int(_)
+            | SurfaceExpression::Float(_)
+            | SurfaceExpression::Str(_)
+            | SurfaceExpression::Bool(_) => {}
+            SurfaceExpression::Dict(entries) => {
                 for entry in entries {
                     if let Some(ref key) = entry.node.key {
                         worklist.push(key);
@@ -208,10 +212,10 @@ fn collect_dependencies(expr: &Spanned<Expr>, name_to_idx: &HashMap<String, usiz
                     worklist.push(&entry.node.value);
                 }
             }
-            Expr::Fn { body, .. } => {
+            SurfaceExpression::Fn { body, .. } => {
                 worklist.push(body);
             }
-            Expr::Call {
+            SurfaceExpression::Call {
                 func,
                 args,
                 named_args,
@@ -225,7 +229,7 @@ fn collect_dependencies(expr: &Spanned<Expr>, name_to_idx: &HashMap<String, usiz
                     worklist.push(&named_arg.node.value);
                 }
             }
-            Expr::Match { scrutinee, arms } => {
+            SurfaceExpression::Match { scrutinee, arms } => {
                 worklist.push(scrutinee);
                 for arm in arms {
                     worklist.push(&arm.body);
@@ -234,47 +238,50 @@ fn collect_dependencies(expr: &Spanned<Expr>, name_to_idx: &HashMap<String, usiz
                     }
                 }
             }
-            Expr::DotAccess { expr, .. } => {
+            SurfaceExpression::DotAccess { expr, .. } => {
                 worklist.push(expr);
             }
-            Expr::Pipe { lhs, rhs } => {
+            SurfaceExpression::Pipe { lhs, rhs } => {
                 worklist.push(lhs);
                 worklist.push(rhs);
             }
-            Expr::Sequential(exprs) => {
+            SurfaceExpression::Sequential(exprs) => {
                 for e in exprs {
                     worklist.push(e);
                 }
             }
-            Expr::Annotated { .. } => {
+            SurfaceExpression::Annotated { .. } => {
                 // Annotated is a name with annotation, not an expr containing expr
                 // No dependencies to collect
             }
-            Expr::TypeAssert { expr, .. } => {
+            SurfaceExpression::TypeAssert { expr, .. } => {
                 worklist.push(expr);
             }
-            Expr::Rest(_) => {}
-            Expr::Quote(e) | Expr::Unquote(e) | Expr::UnquoteSplice(e) => {
+            SurfaceExpression::Rest(_) => {}
+            SurfaceExpression::Quote(e)
+            | SurfaceExpression::Unquote(e)
+            | SurfaceExpression::UnquoteSplice(e) => {
                 worklist.push(e);
             }
-            Expr::DefMacro { body, .. } => {
-                worklist.push(body);
-            }
-            Expr::TypeAlias { .. } => {}
-            Expr::ClassDecl { .. }
-            | Expr::InstanceDecl { .. }
-            | Expr::PatternDecl { .. }
-            | Expr::LetDecl { .. }
-            | Expr::CaseArm { .. } => {}
-            Expr::TypeApp { func, arg } => {
+            SurfaceExpression::TypeApp { func, arg } => {
                 worklist.push(func);
                 worklist.push(arg);
             }
-            Expr::MacroDecl { .. } | Expr::Splice(_) | Expr::SyntaxClass { .. } => {
-                // Macro declarations, splices, and syntax classes have no dependencies
-                // in the dict scope (they're removed by expansion before typechecking)
+            SurfaceExpression::Decl(_) => {
+                // Type aliases, class/instance/macro declarations have no sibling variable
+                // dependencies in the dict scope — they are fully processed in Pass 0c/Pass 2.
             }
-            Expr::Placeholder | Expr::Error(_) => {}
+            SurfaceExpression::PatternDecl { bindings }
+            | SurfaceExpression::LetDecl { bindings } => {
+                for b in bindings {
+                    worklist.push(b);
+                }
+            }
+            SurfaceExpression::CaseArm { pattern, body } => {
+                worklist.push(pattern);
+                worklist.push(body);
+            }
+            SurfaceExpression::Placeholder | SurfaceExpression::Error(_) => {}
         }
     }
 
@@ -282,7 +289,7 @@ fn collect_dependencies(expr: &Spanned<Expr>, name_to_idx: &HashMap<String, usiz
 }
 
 pub(crate) fn infer_dict(
-    entries: &[Spanned<Entry>],
+    entries: &[Spanned<SurfaceEntry>],
     env: &Rc<TypeEnv>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
@@ -299,7 +306,10 @@ pub(crate) fn infer_dict(
     // Pass 0: Key resolution
     for entry in entries {
         let key_name = entry_key_name(&entry.node, &mut auto_index, env, state, type_map);
-        let is_alias = matches!(&entry.node.value.node, Expr::TypeAlias { .. });
+        let is_alias = matches!(
+            &entry.node.value.expr,
+            SurfaceExpression::Decl(d) if matches!(d.as_ref(), SurfaceDeclaration::TypeAlias { .. })
+        );
         key_entries.push((key_name, is_alias));
     }
 
@@ -309,44 +319,48 @@ pub(crate) fn infer_dict(
     // Pass 2: Register type aliases (before SCC processing)
     for ((key_name, is_alias), entry) in key_entries.iter().zip(entries.iter()) {
         if *is_alias {
-            if let Expr::TypeAlias { params, body } = &entry.node.value.node {
-                let mut alias_ann_map: HashMap<String, String> = HashMap::new();
-                for p in params {
-                    let fresh = format!("_t{}", state.name_counter);
-                    state.name_counter = state.name_counter.saturating_add(1);
-                    state.levels.insert(fresh.clone(), state.level);
-                    alias_ann_map.insert(p.clone(), fresh.clone());
-                }
-                if let Ok(alias_ty) = resolve_type_expr(
-                    body,
-                    &Rc::new(dict_env.clone()),
-                    state,
-                    &mut Some(&mut alias_ann_map),
-                    &mut None,
-                ) {
-                    // Register the named alias (keyed entries only)
-                    if let Some(name) = key_name {
-                        let remapped_params: Vec<String> = params
-                            .iter()
-                            .map(|p| alias_ann_map.get(p).cloned().unwrap())
-                            .collect();
-                        dict_env.insert_type_alias(
-                            name.clone(),
-                            TypeAlias {
-                                params: remapped_params,
-                                body: alias_ty.clone(),
-                            },
-                        );
+            if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+                if let SurfaceDeclaration::TypeAlias { params, body } = decl.as_ref() {
+                    // Convert the body SurfaceNode to Spanned<Expr> for resolve_type_expr
+                    let body_expr = crate::ast_convert::surface_node_to_expr(body);
+                    let mut alias_ann_map: HashMap<String, String> = HashMap::new();
+                    for p in params {
+                        let fresh = format!("_t{}", state.name_counter);
+                        state.name_counter = state.name_counter.saturating_add(1);
+                        state.levels.insert(fresh.clone(), state.level);
+                        alias_ann_map.insert(p.clone(), fresh.clone());
                     }
+                    if let Ok(alias_ty) = resolve_type_expr(
+                        &body_expr,
+                        &Rc::new(dict_env.clone()),
+                        state,
+                        &mut Some(&mut alias_ann_map),
+                        &mut None,
+                    ) {
+                        // Register the named alias (keyed entries only)
+                        if let Some(name) = key_name {
+                            let remapped_params: Vec<String> = params
+                                .iter()
+                                .map(|p| alias_ann_map.get(p).cloned().unwrap())
+                                .collect();
+                            dict_env.insert_type_alias(
+                                name.clone(),
+                                TypeAlias {
+                                    params: remapped_params,
+                                    body: alias_ty.clone(),
+                                },
+                            );
+                        }
 
-                    // ADT constructor scoping: inject each NominalVariant constructor from the
-                    // alias body as a callable function type in dict_env.
-                    // This handles both keyed aliases (`Result: [type [Ok a] [Err b]]`) and
-                    // positional aliases (`[type Shape [Circle r: Int] [Square s: Int]]`).
-                    //
-                    // Constructor type: for fields {k1: T1, k2: T2, ...} → Fn@Ret [k1: T1 k2: T2 ...]
-                    // where Ret = NominalVariant{tag, fields}.
-                    inject_adt_constructor_schemes(&alias_ty, &mut dict_env);
+                        // ADT constructor scoping: inject each NominalVariant constructor from the
+                        // alias body as a callable function type in dict_env.
+                        // This handles both keyed aliases (`Result: [type [Ok a] [Err b]]`) and
+                        // positional aliases (`[type Shape [Circle r: Int] [Square s: Int]]`).
+                        //
+                        // Constructor type: for fields {k1: T1, k2: T2, ...} → Fn@Ret [k1: T1 k2: T2 ...]
+                        // where Ret = NominalVariant{tag, fields}.
+                        inject_adt_constructor_schemes(&alias_ty, &mut dict_env);
+                    }
                 }
             }
         }
@@ -377,29 +391,33 @@ pub(crate) fn infer_dict(
     // declarations are globally visible within their scope.)
     let dict_env_rc = Rc::new(dict_env.clone());
     for (idx, entry) in entries.iter().enumerate() {
-        match &entry.node.value.node {
-            Expr::ClassDecl { .. } | Expr::InstanceDecl { .. } => {
-                // Infer the class/instance declaration, which registers it in state.class_env
-                // or state.instance_env. The result type is always an empty record.
-                match infer_expr(&entry.node.value, &dict_env_rc, state, type_map) {
-                    Ok(ty) => {
-                        // Store the type in field_types for this entry
-                        let (ref key_name, _) = key_entries[idx];
-                        if let Some(name) = key_name {
-                            field_types.insert(name.clone(), ty);
-                        }
+        let is_class_or_instance = matches!(
+            &entry.node.value.expr,
+            SurfaceExpression::Decl(d)
+                if matches!(
+                    d.as_ref(),
+                    SurfaceDeclaration::ClassDecl { .. } | SurfaceDeclaration::InstanceDecl { .. }
+                )
+        );
+        if is_class_or_instance {
+            // Convert to Expr for infer_expr (which registers class/instance into state)
+            let value_expr = crate::ast_convert::surface_node_to_expr(&entry.node.value);
+            match infer_expr(&value_expr, &dict_env_rc, state, type_map) {
+                Ok(ty) => {
+                    let (ref key_name, _) = key_entries[idx];
+                    if let Some(name) = key_name {
+                        field_types.insert(name.clone(), ty);
                     }
-                    Err(mut errs) => {
-                        errors.append(&mut errs);
-                        let (ref key_name, _) = key_entries[idx];
-                        if let Some(name) = key_name {
-                            field_types.insert(name.clone(), Type::Unknown);
-                            state.failed_bindings.insert(name.clone(), entry.span);
-                        }
+                }
+                Err(mut errs) => {
+                    errors.append(&mut errs);
+                    let (ref key_name, _) = key_entries[idx];
+                    if let Some(name) = key_name {
+                        field_types.insert(name.clone(), Type::Unknown);
+                        state.failed_bindings.insert(name.clone(), entry.span);
                     }
                 }
             }
-            _ => {}
         }
     }
 
@@ -449,11 +467,18 @@ pub(crate) fn infer_dict(
 
             // Skip type aliases (already processed in Pass 2), Rest markers,
             // and class/instance declarations (already processed in Pass 0c)
-            if is_alias
-                || matches!(&entry.node.value.node, Expr::Rest(_))
-                || matches!(&entry.node.value.node, Expr::ClassDecl { .. })
-                || matches!(&entry.node.value.node, Expr::InstanceDecl { .. })
-            {
+            let skip = is_alias
+                || matches!(&entry.node.value.expr, SurfaceExpression::Rest(_))
+                || matches!(
+                    &entry.node.value.expr,
+                    SurfaceExpression::Decl(d)
+                        if matches!(
+                            d.as_ref(),
+                            SurfaceDeclaration::ClassDecl { .. }
+                                | SurfaceDeclaration::InstanceDecl { .. }
+                        )
+                );
+            if skip {
                 continue;
             }
 
@@ -462,7 +487,7 @@ pub(crate) fn infer_dict(
                 // Only set it for functions WITHOUT return annotations — functions with
                 // annotations can recurse safely because the return type is pinned.
                 let should_check_recursion =
-                    if let Expr::Fn { return_ann, .. } = &entry.node.value.node {
+                    if let SurfaceExpression::Fn { return_ann, .. } = &entry.node.value.expr {
                         return_ann.is_none()
                     } else {
                         false
@@ -485,30 +510,33 @@ pub(crate) fn infer_dict(
                 //
                 // We resolve the annotation in a fresh mapping scope — the same approach used
                 // by `resolve_type_assert` — to avoid leaking TypeVars into the outer scope.
-                let type_assert_ty: Option<Type> =
-                    if let Expr::TypeAssert { annotation, .. } = &entry.node.value.node {
-                        let mut ann_mapping: Option<std::collections::HashMap<String, String>> =
-                            Some(std::collections::HashMap::new());
-                        let mut ann_mapping_opt = ann_mapping.as_mut();
-                        let mut row_ann_mapping_opt: Option<
-                            &mut std::collections::HashMap<String, String>,
-                        > = None;
-                        resolve_annotation(
-                            &annotation.node,
-                            &dict_env_rc,
-                            annotation.span,
-                            state,
-                            &mut ann_mapping_opt,
-                            &mut row_ann_mapping_opt,
-                        )
-                        .ok()
-                    } else {
-                        None
-                    };
+                let type_assert_ty: Option<Type> = if let SurfaceExpression::TypeAssert {
+                    annotation,
+                    ..
+                } = &entry.node.value.expr
+                {
+                    let mut ann_mapping: Option<std::collections::HashMap<String, String>> =
+                        Some(std::collections::HashMap::new());
+                    let mut ann_mapping_opt = ann_mapping.as_mut();
+                    let mut row_ann_mapping_opt: Option<
+                        &mut std::collections::HashMap<String, String>,
+                    > = None;
+                    resolve_annotation(
+                        &annotation.node,
+                        &dict_env_rc,
+                        annotation.span,
+                        state,
+                        &mut ann_mapping_opt,
+                        &mut row_ann_mapping_opt,
+                    )
+                    .ok()
+                } else {
+                    None
+                };
 
                 // Special case: if the value is a Dict, call infer_dict directly to capture schemes
                 let (value_ty, nested_schemes_opt) =
-                    if let Expr::Dict(nested_entries) = &entry.node.value.node {
+                    if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
                         let (ty, schemes, mut nested_errs) = infer_dict(
                             nested_entries,
                             &dict_env_rc,
@@ -519,10 +547,10 @@ pub(crate) fn infer_dict(
                         errors.append(&mut nested_errs);
                         (Ok(ty), Some(schemes))
                     } else {
-                        (
-                            infer_expr(&entry.node.value, &dict_env_rc, state, type_map),
-                            None,
-                        )
+                        // Convert SurfaceNode to Expr for infer_expr
+                        let value_expr =
+                            crate::ast_convert::surface_node_to_expr(&entry.node.value);
+                        (infer_expr(&value_expr, &dict_env_rc, state, type_map), None)
                     };
 
                 // Constraints generated during this entry's inference are now in state.constraints.
@@ -665,9 +693,9 @@ pub(crate) fn infer_dict(
             if let Some(name) = key_name {
                 if let Some(ty) = field_types.get(name) {
                     // Extract doc string from key annotation (e.g., name@[doc: "..."])
-                    let key_doc = if let Some(ref key_expr) = entry.node.key {
-                        match &key_expr.node {
-                            Expr::Annotated { annotation, .. } => {
+                    let key_doc = if let Some(ref key_node) = entry.node.key {
+                        match &key_node.expr {
+                            SurfaceExpression::Annotated { annotation, .. } => {
                                 annotation.node.get_property("doc").and_then(|doc_node| {
                                     if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
                                         Some(doc_string.clone())
@@ -683,16 +711,18 @@ pub(crate) fn infer_dict(
                     };
 
                     // Extract doc string from value annotation (e.g., [fn@[doc: "..."] ...])
-                    let value_doc = match &entry.node.value.node {
-                        Expr::Fn { return_ann, .. } => return_ann.as_ref().and_then(|ann| {
-                            ann.node.get_property("doc").and_then(|doc_node| {
-                                if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
-                                    Some(doc_string.clone())
-                                } else {
-                                    None
-                                }
+                    let value_doc = match &entry.node.value.expr {
+                        SurfaceExpression::Fn { return_ann, .. } => {
+                            return_ann.as_ref().and_then(|ann| {
+                                ann.node.get_property("doc").and_then(|doc_node| {
+                                    if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
+                                        Some(doc_string.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
                             })
-                        }),
+                        }
                         _ => None,
                     };
 
@@ -779,59 +809,27 @@ pub(crate) fn infer_dict(
     (record_type, schemes, errors)
 }
 
-/// Surface entry point for dict type inference.
-///
-/// Converts each [`SurfaceEntry`] to a [`Spanned<Entry>`] via
-/// [`crate::ast_convert::surface_node_to_expr`] and delegates to [`infer_dict`].
-/// This is a thin wrapper — all inference logic lives in `infer_dict`.
-///
-/// Callers that have a `SurfaceExpression::Dict` should use this instead of
-/// converting the entire dict to `Expr::Dict` before calling `infer_dict`.
-#[allow(dead_code)]
-pub(crate) fn infer_surface_dict(
-    entries: &[Spanned<SurfaceEntry>],
-    env: &Rc<TypeEnv>,
-    state: &mut InferState,
-    type_map: &mut Option<&mut TypeMap>,
-    span: Span,
-) -> (Type, HashMap<String, TypeScheme>, Vec<TypeError>) {
-    // Convert each SurfaceEntry to the Expr-based Entry expected by infer_dict.
-    let expr_entries: Vec<Spanned<Entry>> = entries
-        .iter()
-        .map(|spanned_entry| {
-            let key = spanned_entry
-                .node
-                .key
-                .as_ref()
-                .map(crate::ast_convert::surface_node_to_expr);
-            let value = Rc::new(crate::ast_convert::surface_node_to_expr(
-                &spanned_entry.node.value,
-            ));
-            Spanned::new(Entry { key, value }, spanned_entry.span)
-        })
-        .collect();
-
-    infer_dict(&expr_entries, env, state, type_map, span)
-}
-
 pub(crate) fn entry_key_name(
-    entry: &Entry,
+    entry: &SurfaceEntry,
     auto_index: &mut i64,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Option<String> {
     match &entry.key {
-        Some(key_expr) => match &key_expr.node {
-            Expr::Str(s) => Some(s.clone()),
-            Expr::Int(n) => Some(n.to_string()),
+        Some(key_node) => match &key_node.expr {
+            SurfaceExpression::Str(s) => Some(s.clone()),
+            SurfaceExpression::Int(n) => Some(n.to_string()),
             // Annotated key: name@[doc: "..."] — extract name directly
-            Expr::Annotated { name, .. } => Some(name.clone()),
-            _ => match infer_expr(key_expr, env, state, type_map) {
-                Ok(Type::StringLiteral(s)) => Some(s),
-                Ok(Type::IntLiteral(n)) => Some(n.to_string()),
-                _ => None,
-            },
+            SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
+            _ => {
+                let key_expr = crate::ast_convert::surface_node_to_expr(key_node);
+                match infer_expr(&key_expr, env, state, type_map) {
+                    Ok(Type::StringLiteral(s)) => Some(s),
+                    Ok(Type::IntLiteral(n)) => Some(n.to_string()),
+                    _ => None,
+                }
+            }
         },
         None => {
             let name = auto_index.to_string();
@@ -844,28 +842,33 @@ pub(crate) fn entry_key_name(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Entry, Expr};
     use crate::test_util::sp;
-    use std::rc::Rc;
 
-    /// Helper: build a `Spanned<Entry>` whose value is a `VarRef` to `ref_name`.
-    /// Used to encode a dependency edge: this entry's value references `ref_name`.
-    fn entry_ref(ref_name: &str) -> Spanned<Entry> {
-        sp(Entry {
-            key: None,
-            value: Rc::new(sp(Expr::VarRef {
-                name: ref_name.to_string(),
-                escaped: false,
-                resolved: std::cell::RefCell::new(None),
-            })),
+    /// Helper: build a zero-origin [`SurfaceNode`] from a [`SurfaceExpression`].
+    fn sn(expr: SurfaceExpression) -> Arc<SurfaceNode> {
+        Arc::new(SurfaceNode {
+            expr,
+            span: Span::origin(),
         })
     }
 
-    /// Helper: build a `Spanned<Entry>` whose value is an integer literal (no deps).
-    fn entry_lit() -> Spanned<Entry> {
-        sp(Entry {
+    /// Helper: build a `Spanned<SurfaceEntry>` whose value is a `VarRef` to `ref_name`.
+    /// Used to encode a dependency edge: this entry's value references `ref_name`.
+    fn entry_ref(ref_name: &str) -> Spanned<SurfaceEntry> {
+        sp(SurfaceEntry {
             key: None,
-            value: Rc::new(sp(Expr::Int(0))),
+            value: sn(SurfaceExpression::VarRef {
+                name: ref_name.to_string(),
+                escaped: false,
+            }),
+        })
+    }
+
+    /// Helper: build a `Spanned<SurfaceEntry>` whose value is an integer literal (no deps).
+    fn entry_lit() -> Spanned<SurfaceEntry> {
+        sp(SurfaceEntry {
+            key: None,
+            value: sn(SurfaceExpression::Int(0)),
         })
     }
 
@@ -894,7 +897,7 @@ mod tests {
     /// Empty entries: no SCCs produced.
     #[test]
     fn test_scc_empty_entries() {
-        let entries: Vec<Spanned<Entry>> = vec![];
+        let entries: Vec<Spanned<SurfaceEntry>> = vec![];
         let key_entries: Vec<(Option<String>, bool)> = vec![];
         let sccs = compute_sccs(&entries, &key_entries);
         assert!(sccs.is_empty(), "expected no SCCs for empty input");
@@ -907,13 +910,12 @@ mod tests {
         // entries[0] = A (references B at index 1)
         // entries[1] = B (no deps)
         let b_entry = entry_lit();
-        let a_entry = sp(Entry {
+        let a_entry = sp(SurfaceEntry {
             key: None,
-            value: Rc::new(sp(Expr::VarRef {
+            value: sn(SurfaceExpression::VarRef {
                 name: "b".to_string(),
                 escaped: false,
-                resolved: std::cell::RefCell::new(None),
-            })),
+            }),
         });
         let entries = vec![a_entry, b_entry];
         let key_entries = key_entries_for(&["a", "b"]);
@@ -937,21 +939,19 @@ mod tests {
     fn test_scc_two_node_cycle() {
         // entries[0] = A (references B at index 1)
         // entries[1] = B (references A at index 0)
-        let a_entry = sp(Entry {
+        let a_entry = sp(SurfaceEntry {
             key: None,
-            value: Rc::new(sp(Expr::VarRef {
+            value: sn(SurfaceExpression::VarRef {
                 name: "b".to_string(),
                 escaped: false,
-                resolved: std::cell::RefCell::new(None),
-            })),
+            }),
         });
-        let b_entry = sp(Entry {
+        let b_entry = sp(SurfaceEntry {
             key: None,
-            value: Rc::new(sp(Expr::VarRef {
+            value: sn(SurfaceExpression::VarRef {
                 name: "a".to_string(),
                 escaped: false,
-                resolved: std::cell::RefCell::new(None),
-            })),
+            }),
         });
         let entries = vec![a_entry, b_entry];
         let key_entries = key_entries_for(&["a", "b"]);
@@ -968,26 +968,24 @@ mod tests {
     #[test]
     fn test_scc_diamond_dag() {
         // indices: A=0, B=1, C=2, D=3
-        let a_entry = sp(Entry {
+        let a_entry = sp(SurfaceEntry {
             key: None,
-            value: Rc::new(sp(Expr::Dict(vec![
-                sp(Entry {
+            value: sn(SurfaceExpression::Dict(vec![
+                sp(SurfaceEntry {
                     key: None,
-                    value: Rc::new(sp(Expr::VarRef {
+                    value: sn(SurfaceExpression::VarRef {
                         name: "b".to_string(),
                         escaped: false,
-                        resolved: std::cell::RefCell::new(None),
-                    })),
+                    }),
                 }),
-                sp(Entry {
+                sp(SurfaceEntry {
                     key: None,
-                    value: Rc::new(sp(Expr::VarRef {
+                    value: sn(SurfaceExpression::VarRef {
                         name: "c".to_string(),
                         escaped: false,
-                        resolved: std::cell::RefCell::new(None),
-                    })),
+                    }),
                 }),
-            ]))),
+            ])),
         });
         let b_entry = entry_ref("d");
         let c_entry = entry_ref("d");

@@ -55,7 +55,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `expand_document()` walks `SurfaceDocument.items`; `SurfaceDeclaration::Splice` flattened — **Bridge**: `expand_surface_program()` converts via bridge, expansion runs on old `Expr` path; full cutover after Rc→Arc (`src/expand.rs`)
 - [x] Macro round-trip bridge: `surface_node_to_expr()` + `expr_to_surface_node()` in `ast_convert.rs` (`src/expand.rs`)
 - [x] `surface_node_from_value()` in `src/surface_fields.rs` — macro output reconstruction; fast path for `Value::Expression`, slow path via `dict_to_ast` bridge (`src/surface_fields.rs`)
-- [ ] **Remaining**: full expander cutover to SurfaceExpression (delete bridge, update `expand_macros` internals) — **BLOCKED on typecheck bridge** (macro expansion still operates on old `Expr` AST; expand.rs:39 imports `Document, Entry, Expr, MatchArm, NamedArg, Param` from ast; `desugar_file` is already deleted, `CoreExpr` eval is live — the remaining blocker is `typecheck.rs` internal bridge via `surface_program_to_file`)
+- [ ] **Remaining**: full expander cutover to SurfaceExpression (delete bridge, update `expand_macros` internals) — **UNBLOCKED** (typecheck bridge `surface_program_to_file` deleted 2026-05-23 in typecheck-surface-migration sprint!). expand.rs still uses `Expr` internally (~147 usages in 8 functions: expand_expr_inner, expand_macro_call, pre_scan_expr, validate_syntax_class, validate_against_pattern, extract_inject_default, register_stdlib_macros_from_env, bridge code). Sprint: `rv2-e3-expander-cutover`.
 
 **Part D remaining** (`src/surface_fields.rs`):
 - [x] Sequence fields in `surface_node_get_field()` — already handled in existing implementation (`src/surface_fields.rs`)

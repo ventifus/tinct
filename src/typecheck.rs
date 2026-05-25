@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use crate::ast::{
     node_id, Annotation, Entry, NamedArg, Param, Pattern, Span, Spanned, SurfaceDeclaration,
-    SurfaceDocument, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
+    SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
     TypeAnnotationTable,
 };
 // Expr: used by production inference helpers (infer_expr, extract_narrowings, typecheck_document,
@@ -907,31 +907,32 @@ fn typecheck_surface_document(
     for (i, surface_node) in expr_items.iter().enumerate() {
         let is_last = i == expr_items.len() - 1;
 
-        // Convert SurfaceNode back to Expr for type inference
-        let expr = crate::ast_convert::surface_node_to_expr(surface_node);
-
-        if let Expr::Dict(entries) = &expr.node {
+        if let SurfaceExpression::Dict(entries) = &surface_node.expr {
             // Dict expression: use infer_dict to get per-entry schemes for cross-document scoping.
             // This mirrors typecheck_document which calls infer_dict directly for dict exprs.
             // infer_dict always returns Ok with best-effort schemes; errors are in the third element.
             let (dict_ty, schemes, mut dict_errs) =
-                infer_dict(entries, &env, state, type_map, expr.span);
+                infer_dict(entries, &env, state, type_map, surface_node.span);
             errors.append(&mut dict_errs);
             table.insert(node_id(surface_node), dict_ty.clone());
             if is_last {
                 result_type = dict_ty;
                 last_dict_schemes = Some(schemes);
-                last_expr = Some(expr);
+                // Convert to Expr for register_type_aliases (which still uses Expr)
+                last_expr = Some(crate::ast_convert::surface_node_to_expr(surface_node));
             } else {
                 let mut new_env = TypeEnv::with_parent(&env);
                 for (name, scheme) in &schemes {
                     new_env.insert_scheme(name.clone(), scheme.clone());
                 }
+                let expr = crate::ast_convert::surface_node_to_expr(surface_node);
                 let mut alias_errs = register_type_aliases(&expr, &mut new_env, &env, state);
                 errors.append(&mut alias_errs);
                 env = Rc::new(new_env);
             }
         } else {
+            // Convert SurfaceNode back to Expr for type inference
+            let expr = crate::ast_convert::surface_node_to_expr(surface_node);
             // Non-dict expression: infer at incremented level so type variables can be
             // properly generalized when threading Record fields as schemes into the env.
             // Mirrors typecheck_document lines 1041-1112.
@@ -1496,8 +1497,21 @@ fn typecheck_document(
 
         // Special handling for Dict expressions at document level to preserve schemes
         if let Expr::Dict(entries) = &expr.node {
+            // Convert Entry-based entries to SurfaceEntry for infer_dict
+            let surface_entries: Vec<Spanned<SurfaceEntry>> = entries
+                .iter()
+                .map(|e| {
+                    let key = e
+                        .node
+                        .key
+                        .as_ref()
+                        .map(crate::ast_convert::expr_to_surface_node);
+                    let value = crate::ast_convert::expr_to_surface_node(&e.node.value);
+                    Spanned::new(SurfaceEntry { key, value }, e.span)
+                })
+                .collect();
             let (ty, schemes, mut dict_errs) =
-                infer_dict(entries, &env, state, type_map, expr.span);
+                infer_dict(&surface_entries, &env, state, type_map, expr.span);
             errors.append(&mut dict_errs);
             if is_last {
                 result_type = ty;
@@ -2733,7 +2747,21 @@ fn infer_expr(
         }
 
         Expr::Dict(entries) => {
-            let (ty, _schemes, errs) = infer_dict(entries, env, state, type_map, expr.span);
+            // Convert Entry-based entries to SurfaceEntry for infer_dict
+            let surface_entries: Vec<Spanned<SurfaceEntry>> = entries
+                .iter()
+                .map(|e| {
+                    let key = e
+                        .node
+                        .key
+                        .as_ref()
+                        .map(crate::ast_convert::expr_to_surface_node);
+                    let value = crate::ast_convert::expr_to_surface_node(&e.node.value);
+                    Spanned::new(SurfaceEntry { key, value }, e.span)
+                })
+                .collect();
+            let (ty, _schemes, errs) =
+                infer_dict(&surface_entries, env, state, type_map, expr.span);
             if errs.is_empty() {
                 Ok(ty)
             } else {
