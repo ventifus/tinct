@@ -55,7 +55,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `expand_document()` walks `SurfaceDocument.items`; `SurfaceDeclaration::Splice` flattened — **Bridge**: `expand_surface_program()` converts via bridge, expansion runs on old `Expr` path; full cutover after Rc→Arc (`src/expand.rs`)
 - [x] Macro round-trip bridge: `surface_node_to_expr()` + `expr_to_surface_node()` in `ast_convert.rs` (`src/expand.rs`)
 - [x] `surface_node_from_value()` in `src/surface_fields.rs` — macro output reconstruction; fast path for `Value::Expression`, slow path via `dict_to_ast` bridge (`src/surface_fields.rs`)
-- [ ] **Remaining**: full expander cutover to SurfaceExpression (delete bridge, update `expand_macros` internals) — **UNBLOCKED** (typecheck bridge `surface_program_to_file` deleted 2026-05-23 in typecheck-surface-migration sprint!). expand.rs still uses `Expr` internally (~147 usages in 8 functions: expand_expr_inner, expand_macro_call, pre_scan_expr, validate_syntax_class, validate_against_pattern, extract_inject_default, register_stdlib_macros_from_env, bridge code). Sprint: `rv2-e3-expander-cutover`.
+- [x] **rv2-e3-expander-cutover DONE (commit f199515)**: `expand_surface_program` now walks `SurfaceExpression` natively via `expand_surface_expr`. Old Expr functions marked `#[allow(dead_code)]`. Remaining Expr dependency: `pre_scan_expr`/`register_stdlib_macros_from_env` (prelude macro scanner, blocked on separate stdlib-scan migration sprint `rv2-e3b-stdlib-macro-scanner`).
 
 **Part D remaining** (`src/surface_fields.rs`):
 - [x] Sequence fields in `surface_node_get_field()` — already handled in existing implementation (`src/surface_fields.rs`)
@@ -178,6 +178,27 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `just build` passes [commit 98148cc]
 
 ### rv2-migrate-annotation: Migrate `Annotation::PropertyDict` from `Vec<Spanned<Entry>>` to `Vec<Spanned<SurfaceEntry>>` ✅ DONE (2026-05-23, Phases 1-5)
+
+### rv2-e3b-stdlib-macro-scanner: Migrate register_stdlib_macros_from_env + pre_scan_expr to SurfaceExpression
+
+**Blocks:** `expand.rs` standalone `use crate::ast::Expr;` removal → rv2-delete-old-ast
+
+`register_stdlib_macros_from_env` and its helper `pre_scan_expr` scan stdlib files for macro declarations using old Expr AST. They need to be migrated to use `pre_scan_surface_document` (already added) instead.
+
+- [ ] Migrate `register_stdlib_macros_from_env` to call `pre_scan_surface_document` instead of converting to File and calling `pre_scan_expr` (`src/expand.rs`)
+- [ ] Delete `pre_scan_expr`, `pre_scan_expr_spanned`, `pre_scan_expr_value`, `expand_expr`, `expand_expr_inner`, `expand_macro_call`, `validate_syntax_class`, `validate_against_pattern` dead-code functions (`src/expand.rs`)
+- [ ] Remove standalone `use crate::ast::Expr;` from `src/expand.rs`
+
+### rv2-e3c-infer-dict-surface: Migrate infer_dict to native SurfaceEntry
+
+**Blocks:** `typecheck_dict.rs` standalone `use crate::ast::Expr;` removal → rv2-delete-old-ast
+
+`infer_dict` currently takes `&[Spanned<Entry>]` (old Entry type). Now that `Annotation::PropertyDict` uses `SurfaceEntry`, the dict inference needs to be updated.
+
+- [ ] Change `infer_dict` signature from `&[Spanned<Entry>]` to `&[Spanned<SurfaceEntry>]` in `src/typecheck_dict.rs`
+- [ ] Update all match arms from `Expr::*` to `SurfaceExpression::*` patterns in `infer_dict`
+- [ ] Remove standalone `use crate::ast::Expr;` from `src/typecheck_dict.rs`
+- [ ] Update all call sites of `infer_dict` to pass `SurfaceEntry` slices
 
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files
 
