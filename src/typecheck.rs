@@ -2038,6 +2038,27 @@ pub(crate) fn infer_surface_expr(
                 {
                     return check_div(args, env, node.span, state, type_map);
                 }
+
+                // Special case: `get` / `builtin-get` — precise return type via Indexable FD.
+                //
+                // Root cause: even with the authoritative Indexable scheme restored in the user
+                // TypeEnv (imports.rs), the Indexable FD fails to fire at call sites because of
+                // a bug in how SCC-based constraint generalization interacts with the
+                // `is_discharged` check in `generalize_with_doc` (type_env.rs). Specifically,
+                // in multi-SCC dicts, the early-iteration TypeVars (_t30/_t31) are not found in
+                // `subst_snapshot` at generalization time, so `is_discharged` returns false and
+                // the Indexable constraint is dropped as ambiguous (T013). The FD never fires.
+                //
+                // This special case bypasses the broken FD path and synthesizes the return type
+                // eagerly from the collection's static type. It should be removed once the SCC
+                // constraint generalization is fixed to correctly track discharged vars across
+                // iterations. Track: indexable-fd-scc-fix in TODO.md.
+                if (name == "get" || name == "builtin-get")
+                    && named_args.is_empty()
+                    && args.len() == 2
+                {
+                    return check_get(args, env, node.span, state, type_map);
+                }
             }
 
             // Special case: do-infer sentinel — inferred [do] form monad resolution.
@@ -3853,6 +3874,61 @@ fn check_tls_layer(
 ///
 /// Division is handled separately by `check_div` because IEEE arithmetic always produces
 /// `Float` regardless of operand types.
+/// Type check `get` / `builtin-get` — precise return type via Indexable FD.
+///
+/// The Indexable FD fails to fire at user call sites due to a bug in SCC-based constraint
+/// generalization (`is_discharged` doesn't find early-iteration TypeVars in the subst
+/// snapshot). This function synthesizes the return type directly from the collection's
+/// static type, bypassing the broken FD path. Track: indexable-fd-scc-fix in TODO.md.
+fn check_get(
+    args: &[Arc<SurfaceNode>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    if args.len() != 2 {
+        return Err(vec![TypeError::new(
+            format!("arity mismatch: `get` requires exactly 2 arguments, got {}", args.len()),
+            span,
+        )]);
+    }
+    let key_ty = infer_surface_expr(&args[0], env, state, type_map)?;
+    let key_ty = state.subst.apply(&key_ty);
+    let coll_ty = infer_surface_expr(&args[1], env, state, type_map)?;
+    let coll_ty = state.subst.apply(&coll_ty);
+    let result = match &coll_ty {
+        Type::Seq(elem_ty) => *elem_ty.clone(),
+        Type::Map(_, val_ty) => *val_ty.clone(),
+        Type::Record(row) => match &key_ty {
+            Type::StringLiteral(field_name) => {
+                row.fields.get(field_name).cloned().unwrap_or(Type::Unknown)
+            }
+            Type::Str => Type::Unknown,
+            _ => Type::Unknown,
+        },
+        Type::Union(members) => match &key_ty {
+            Type::StringLiteral(field_name) => {
+                let field_types: Vec<Type> = members
+                    .iter()
+                    .map(|member| match member {
+                        Type::Record(row) => {
+                            row.fields.get(field_name).cloned().unwrap_or(Type::Unknown)
+                        }
+                        _ => Type::Unknown,
+                    })
+                    .collect();
+                Type::normalize_union(field_types)
+            }
+            _ => Type::Unknown,
+        },
+        Type::Unknown | Type::Top | Type::Error => Type::Unknown,
+        Type::TypeVar(_, _) => Type::Unknown,
+        _ => Type::Unknown,
+    };
+    Ok(result)
+}
+
 fn check_arithmetic(
     args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
@@ -13886,7 +13962,7 @@ mod tests {
     fn test_check_get_map_returns_value_type() {
         // [builtin-get key map] where map : Map[String Int] should return Int.
         // Seed TypeEnv directly with m : Map[String Int] since there is no Map literal syntax in LLT.
-        // KNOWN ISSUE: Map FD via lookup_mptc not yet resolved — result stays Unknown.
+        // Resolved by check_get special case: Map(K, V) → V without needing Indexable FD lookup.
         let mut base_env = TypeEnv::with_builtins();
         base_env.insert(
             "m".to_string(),
@@ -13925,8 +14001,8 @@ mod tests {
     #[test]
     fn test_check_get_optional_map_returns_value_or_null() {
         // [get? key map] where map : Map[String Int] should return Int|Null.
-        // KNOWN ISSUE: Map FD via lookup_mptc not yet resolved — result stays Union(Unknown|Null).
-        // Seed TypeEnv directly with m : Map[String Int].
+        // Note: get? uses the Indexable scheme directly (not check_get), so Map FD behavior
+        // depends on lookup_mptc. Seed TypeEnv directly with m : Map[String Int].
         let mut base_env = TypeEnv::with_builtins();
         base_env.insert(
             "m".to_string(),
@@ -14086,6 +14162,72 @@ mod tests {
              [result: [builtin-get idx coll]]",
         );
         // No type error; result has some type (Unknown or more precise).
+        let _ = env.get("result");
+    }
+
+    // ========== check_get special-case dispatch tests (prelude `get` name) ==========
+    // These tests verify that `get` (the prelude wrapper) produces precise return types
+    // via the check_get special case, even though the prelude scheme has lost the
+    // Indexable constraint due to the [fn@[return: a] ...] annotation.
+
+    #[test]
+    fn test_check_get_prelude_seq_integer_key_returns_element_type() {
+        // Regression: [get 1 [split "\n" s]] should return Str, not Unknown.
+        // This is the exact pattern from samples/versions.llt line 63.
+        let env = doc_env_with_builtins(
+            "[parts: [split \"\\n\" \"a\\nb\\nc\"]]\n\
+             [result: [get 1 parts]]",
+        );
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
+            Some(other) => panic!(
+                "expected Str from [get 1 Seq[Str]] via check_get, got {other}"
+            ),
+            None => panic!("field 'result' not found"),
+        }
+    }
+
+    #[test]
+    fn test_check_get_prelude_record_string_literal_key_returns_field_type() {
+        // [get "host" cfg] where cfg : [host: Str] should return Str via check_get.
+        let env = doc_env_with_builtins(
+            "[cfg: [host: \"localhost\"]]\n\
+             [result: [get \"host\" cfg]]",
+        );
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
+            Some(other) => panic!(
+                "expected Str from [get \"host\" record] via check_get, got {other}"
+            ),
+            None => panic!("field 'result' not found"),
+        }
+    }
+
+    #[test]
+    fn test_check_get_prelude_integer_literal_key_into_seq_str() {
+        // [get 0 parts] where parts : Seq[Str] should return Str.
+        // Literal integer key (IntLiteral(0)) into Seq(Str).
+        let env = doc_env_with_builtins(
+            "[parts: [split \" \" \"hello world\"]]\n\
+             [result: [get 0 parts]]",
+        );
+        match env.get("result").map(|s| &s.body) {
+            Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
+            Some(other) => panic!(
+                "expected Str from [get 0 Seq[Str]] via check_get, got {other}"
+            ),
+            None => panic!("field 'result' not found"),
+        }
+    }
+
+    #[test]
+    fn test_check_get_prelude_unknown_collection_falls_back_to_unknown() {
+        // [get "key" d] where d is Unknown should not error and return Unknown.
+        let env = doc_env_with_builtins(
+            "[d: [if true [] []]]\n\
+             [result: [get \"key\" d]]",
+        );
+        // No type error is the main assertion; result type may be Unknown or more precise.
         let _ = env.get("result");
     }
 

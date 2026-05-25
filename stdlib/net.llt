@@ -58,7 +58,7 @@
   #   http  — uses raw TCP connect + HTTP/1.0 request string
   #             returns parsed response dict (throws on network error)
   #   other — throws "unsupported scheme"
-  http-get: [fn@Dict [cap@NetCap url@Url]
+  http-get: [fn [cap@NetCap url@Url]
     [builtin-if [builtin-eq url.scheme "https"]
       [http-request
         [http2-session cap [uri-origin url] []]
@@ -69,13 +69,13 @@
       [builtin-if [builtin-eq url.scheme "http"]
         [parse-http-response
           [bytes-str [slurp [write-handle
-            [connect cap url.host url.port]
+            [connect cap Tcp url.host url.port]
             [str-bytes [build-http-request "GET" url.path url.host]]]]]]
         [builtin-raise [builtin-str "http-get: unsupported scheme: " url.scheme]]]]]
 
   # Parse URL string and call http-get.
-  # Returns: {ok: response-dict} or {err: message}
-  fetch: [fn@Dict [cap@NetCap url-string@String]
+  # Returns Ok(response-dict) on success or Err(message) on failure (via builtin-try).
+  fetch: [fn [cap@NetCap url-string@String]
     [builtin-try [fn [] [http-get cap [url url-string]]]]]
 
   # Parse query string into a Dict of key-value pairs.

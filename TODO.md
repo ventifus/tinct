@@ -169,6 +169,108 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `lsp/analysis.rs` hover/diagnostics work — prelude search uses SurfaceProgram directly [commit 9370184]
 - [x] `just build` passes [commit 9370184]
 
+### rv2-output-formatter-contract: Output formatters return String; eliminate emit side-effect model
+
+**Context:** Output formatters in `stdlib/cli/out/*.llt` currently produce output via `[emit ...]` side effects inside lazy Dict entries. `main.rs` calls `deep_materialize` to force all entries, triggering the emits. This makes `deep_materialize` load-bearing in the output path and prevents its removal. Additionally, csv.llt/env.llt/yaml.llt/toml.llt are **currently broken** as `-o` formatters — they define functions but have no top-level invocation, so they produce no output.
+
+**New contract:** Each output formatter is a tinct program whose final value is a `String` (the formatted output). `main.rs` evaluates the formatter pipeline stage, materializes the result, and writes the String to stdout. No `deep_materialize` needed.
+
+**Background on orphaned Rust code:**
+- `format_with_json_llt` (lib.rs) — a Rust workaround for a null-semantics bug in `value_to_json` where empty dict `[]` serialized as `{}` instead of `null`. Only called from `run_literate_eval`. With json.llt returning a String, literate eval can call `$builtin-to-json` directly and `format_with_json_llt` can be deleted.
+- `value_to_json` (lib.rs) — a parallel Rust JSON serializer returning `serde_json::Value` (not String), predating `$builtin-to-json`. Used only in `run_literate_eval` as fallback when json.llt unavailable. Should be deleted; callers should use `$builtin-to-json` (the Rust builtin underlying json.llt). The "no stdlib available" edge case should produce an error, not silently use a different serializer.
+- `deep_materialize` — NOT deleted by this sprint; still required by `expand.rs` (macro expansion: lines 1184, 1218, 1298). Only removed from the output pipeline path.
+
+#### Task 1: stdlib/cli/out/json.llt — simplify to return String directly
+- [ ] Replace `[json: [fn [let v] [call $builtin-to-json v]] [emit [call $builtin-to-json %]]]` with `[call $builtin-to-json %]` (`stdlib/cli/out/json.llt`)
+
+#### Task 2: stdlib/cli/out/json-pretty.llt — remove emit wrapper
+- [ ] Change `[emit [to-json %]]` to `[to-json %]` (`stdlib/cli/out/json-pretty.llt`)
+
+#### Task 3: stdlib/cli/out/llt.llt — remove emit wrapper
+- [ ] Change `[emit [call $llt-repr %]]` to `[call $llt-repr %]` (`stdlib/cli/out/llt.llt`)
+
+#### Task 4: stdlib/cli/out/raw.llt — return String instead of emit
+- [ ] Replace emit-based implementation with: `[if [str? %] % [if [seq? %] [join "\n" %] [error "raw formatter: expected String or Seq"]]]` (`stdlib/cli/out/raw.llt`)
+
+#### Task 5: stdlib/cli/out/csv.llt — add top-level invocation (fixes broken formatter)
+- [ ] Add `[csv %]` as the final expression after the module dict (`stdlib/cli/out/csv.llt`)
+
+#### Task 6: stdlib/cli/out/env.llt — add top-level invocation (fixes broken formatter)
+- [ ] Add `[env %]` as the final expression after the module dict (`stdlib/cli/out/env.llt`)
+
+#### Task 7: stdlib/cli/out/yaml.llt — add top-level invocation (fixes broken formatter)
+- [ ] Add `[yaml %]` as the final expression after the module dict (`stdlib/cli/out/yaml.llt`)
+
+#### Task 8: stdlib/cli/out/toml.llt — add top-level invocation (fixes broken formatter)
+- [ ] Add `[toml %]` as the final expression after the module dict (`stdlib/cli/out/toml.llt`)
+
+#### Task 9: stdlib/cli/out/none.llt — return empty string
+- [ ] Replace current implementation with `""` (empty string return) (`stdlib/cli/out/none.llt`)
+
+#### Task 10: src/main.rs — write formatter output, remove deep_materialize from output path
+- [ ] Remove `deep_materialize` from the `force_eval || output.is_some()` branch in `run_eval` (`src/main.rs:1992`)
+- [ ] After pipeline evaluation when `output.is_some()`: `materialize_sync` the result, expect `Value::String`, write to stdout with `print!` (`src/main.rs`)
+- [ ] Reassess `--eval` / `force_eval` flag: its only remaining effect is forcing when no `-o` flag; consider whether it still serves a purpose or can be removed (`src/main.rs`)
+- [ ] Remove `deep_materialize` and `format_with_json_llt` from `tinct::` import block (`src/main.rs:16`)
+
+#### Task 11: src/lib.rs — fix value_to_json null semantics bug, then delete it
+- [ ] Fix `value_to_json`: empty dict `[]` must serialize as JSON `null`, not `{}` (`src/lib.rs`)
+- [ ] Update `run_literate_eval` to use `$builtin-to-json` (via a tinct eval call or the underlying Rust builtin) instead of `format_with_json_llt` + `value_to_json` fallback (`src/main.rs:2617-2648`)
+- [ ] Delete `format_with_json_llt` from `src/lib.rs` — no remaining callers after Task 11 (`src/lib.rs`)
+- [ ] Delete `value_to_json` from `src/lib.rs` — replaced by `$builtin-to-json` everywhere (`src/lib.rs`)
+- [ ] Remove `format_with_json_llt` and `value_to_json` from `pub` exports in `src/lib.rs`
+
+#### Task 12: src/repl.rs — remove deep_materialize from REPL output path
+- [ ] Replace `deep_materialize(&val, ...)` in REPL eval loop with `materialize_sync` on top-level result (`src/repl.rs:271`)
+- [ ] Update REPL display to format result via `$builtin-to-json` or `value_to_display_string` (not `deep_materialize`) (`src/repl.rs`)
+- [ ] Remove `deep_materialize` from `use crate::eval::` import in repl.rs (`src/repl.rs:25`)
+
+#### Task 13: Corpus tests for previously-broken formatters
+- [ ] Add corpus test: `tinct run -o csv` with list-of-dicts input → correct CSV output (`tests/corpus/`)
+- [ ] Add corpus test: `tinct run -o env` with flat dict input → correct KEY=VALUE output (`tests/corpus/`)
+- [ ] Add corpus test: `tinct run -o yaml` with dict input → correct YAML output (`tests/corpus/`)
+- [ ] Add corpus test: `tinct run -o toml` with dict input → correct TOML output (`tests/corpus/`)
+- [ ] Add corpus test: `tinct run -o none` → no stdout output (`tests/corpus/`)
+- [ ] Verify existing `-o json`, `-o llt`, `-o raw` tests still pass
+
+### rv2-macro-native-expression: Migrate macro call convention to Value::Expression
+
+**No new design needed** — answer implied by runtime-v2 + macros-v2 combined. macros-v2 defined the macro API using Dict-encoded AST; runtime-v2 specified `Value::Expression` as the native AST type.
+
+**The key insight:** Change `builtin-variant` for known AST type names (`VarRef`, `Literal`, `Call`, `Fn`, `Dict`, etc.) to return `Value::Expression(Arc<SurfaceNode>)` instead of `Value::Variant`. macros.llt code like `[builtin-variant "VarRef" [name: var-name]]` stays **unchanged** — only what the builtin produces changes. No structural macro redesign needed. `dict_to_surface_node` already passes through `Value::Expression` (macro-runtime-v2-regression fix). The `tag-of` dual-dispatch in macros.llt already handles Expression input.
+
+**After this sprint:**
+- `builtin-variant` for AST type names → `Value::Expression` (not `Value::Variant`)
+- `surface_node_to_dict`, `dict_to_surface_node` → deleted from `src/ast_dict.rs`
+- `src/ast_dict.rs` → deleted entirely
+- `deep_materialize` calls in expand.rs (lines 1184, 1218, 1298) → eliminated
+- `tag-of` dual-dispatch shims in macros.llt → removed (Expression only)
+- `all_thunks_materialized` debug assert in expand.rs:1304 → removed
+
+- [ ] Change `builtin-variant` to return `Value::Expression(SurfaceNode)` for known AST variant names — VarRef, Literal, Call, Fn, Dict, Sequential, DotAccess, TypeAssert, Match, Quote, Unquote, UnquoteSplice, Annotated, Rest, etc. (`src/builtins_meta.rs`)
+- [ ] Change `expand_macro_call` to pass args as `Value::Expression` thunks directly (remove `surface_node_to_dict`) (`src/expand.rs:1173`)
+- [ ] Change `expand_macro_call` to accept `Value::Expression` output directly (remove `dict_to_surface_node`) (`src/expand.rs:1310`)
+- [ ] Remove the three `deep_materialize` calls in expand.rs (`src/expand.rs:1184,1218,1298`)
+- [ ] Remove `tag-of` dual-dispatch shims from `macros.llt` — Expression-only input. Specific sites:
+  - `do-is-inferred-form` (macros.llt:260-266): remove `"VarRef"` arm, keep only `"Var"` (Expression tag for VarRef nodes)
+  - `do-binding-name` (macros.llt:273-277): remove `"Literal"` arm (old Variant schema key), keep only `"name"` field access
+  - `do-is-binding` (macros.llt:252-254): verify `"Dict"` tag still correct for Expression; remove backwards-compat comment
+  - (`stdlib/macros.llt`)
+- [ ] Delete `surface_node_to_dict`, `dict_to_surface_node` from `src/ast_dict.rs`
+- [ ] Delete `src/ast_dict.rs` entirely — no remaining functions
+- [ ] Remove `deep_materialize` import from `src/expand.rs`
+- [ ] Remove `all_thunks_materialized` debug assert in expand.rs:1304
+- [ ] Add corpus tests: macro receiving Expression arg, macro producing Expression, tmpl interpolation still correct
+
+### rv2-deep-materialize-delete: Delete `deep_materialize` after output and macro migration
+
+After `rv2-output-formatter-contract` and `rv2-macro-native-expression` complete, `deep_materialize` has only one caller: `src/repl.rs:271`. The REPL uses it to force the full output value for display. With the output formatter contract change, the REPL should also use `materialize_sync` on a formatter-produced String, matching the CLI.
+
+- [ ] After rv2-output-formatter-contract ✓ and rv2-macro-native-expression ✓: remove `deep_materialize` from repl.rs
+- [ ] Delete `pub fn deep_materialize` from `src/eval_materialize.rs` — zero callers remaining
+- [ ] Remove `deep_materialize` from `pub` exports in `src/lib.rs`
+- [ ] Update whatif runtime-v2.md Implementation Notes to record `deep_materialize` as deleted
+
 ### rv2-migrate-typecheck-api: Delete old `typecheck_file_*` wrappers
 
 **Depends on:** rv2-migrate-ast-dict (formatter migration removes last `typecheck_file` call sites)
@@ -385,6 +487,83 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 - [x] `just build` passes; `just test-lib` passes — 1889/0 ✓
 
 ---
+
+## Codebase Audit Findings (2026-05-25)
+
+Hardcoded behavior, stubs, and dead code found during systematic audit. Root causes documented inline.
+
+### async-shutdown-primitives: Implement exit, graceful-exit, cancel-root, drain
+
+`stdlib/async.llt` has `exit` and `graceful-exit` unconditionally raising errors: `"exit: cancel-root/drain/exit-now not yet implemented (runtime-v2 Sprint 3)"`. The `finally` function also has a documented limitation: cleanup runs in the caller's context, not a non-cancellable context, so it can be interrupted by cancellation.
+
+Root cause: `cancel-root`, `drain`, and `exit-now` builtins were deferred from runtime-v2 Sprint 3 async implementation.
+
+- [ ] Implement `cancel-root` builtin — signal all tasks to stop via root CancellationToken (`src/builtins_async.rs`)
+- [ ] Implement `drain` builtin — await all in-flight tasks before returning (`src/builtins_async.rs`)
+- [ ] Implement `exit-now` builtin — `process::exit` immediately (`src/builtins_async.rs`)
+- [ ] Unwrap `exit` and `graceful-exit` in `stdlib/async.llt` to call the new builtins
+- [ ] Fix `finally` to run cleanup in a non-cancellable sub-context (requires `with-context` + non-cancellable token) (`stdlib/async.llt`)
+
+### tco-implement: Fix TCO bugs in the CEK machine
+
+TCO has landed in the CEK machine (iterative-eval sprints) but has known bugs. Tail-recursive stdlib functions are the correct, idiomatic pattern and must work without depth limits. No workarounds in stdlib — fix the bugs here.
+
+Known stale comment to clean up: `loop-select-impl` in `stdlib/async.llt` has "hits the LLT recursion limit at ~230 iterations; use explicit task-based loop" — written before TCO. Remove it.
+
+Known tail-recursive functions that must work for unlimited iterations: `loop-select-impl` (async.llt), `retry-impl` (async.llt), `parse-header-fields-impl` (net.llt).
+
+- [ ] Investigate and fix TCO bugs in `force_step`/`apply_cont` — tail calls (where a function body's final expression is a call) must reuse the existing Memoize continuation rather than pushing a new one (`src/eval_materialize.rs`)
+- [ ] Remove stale comment from `loop-select-impl`: delete "hits the LLT recursion limit at ~230 iterations; use explicit task-based loop" (`stdlib/async.llt`)
+- [ ] Add corpus test: tail-recursive function with 10,000+ iterations completes without error (`tests/corpus/eval/tco.llt-eval`)
+- [ ] Add corpus test: `loop-select` survives 10,000+ iterations (`tests/corpus/eval/loop_select_depth.llt-eval`)
+- [ ] Add corpus test: `retry` survives 10,000 retries (`tests/corpus/eval/retry_depth.llt-eval`)
+- [ ] Add corpus test: `parse-header-fields-impl` handles 10,000+ headers (`tests/corpus/eval/net_many_headers.llt-eval`)
+
+### websocket-extended-payload: WebSocket >65535 byte frames not supported
+
+`stdlib/protocols/websocket.llt` raises an error for payloads over 65535 bytes: `"build-ws-frame: payload > 65535 bytes not supported"`. The extended-64 (8-byte length) encoding is missing.
+
+Root cause: Initial implementation deferred 64-bit length encoding.
+
+- [ ] Implement extended-64 payload encoding in `build-ws-frame` for payloads > 65535 bytes (`stdlib/protocols/websocket.llt`)
+- [ ] Add corpus test for large payload frame encoding
+
+### str-substr: Length-based string slice deferred
+
+`strings.llt` comment: `"length-based form is ever needed, it will be named str-substr (deferred)"`. Only position-based `str-slice(string, start, end)` exists.
+
+- [ ] Add `str-substr` to `stdlib/strings.llt`: `[fn@String [s@String start@Int len@Int] [str-slice s start [+ start len]]]`
+- [ ] Add corpus test
+
+### numeric-to-bytes: to-bytes is a stub returning string
+
+`stdlib/numeric.llt` comment: `"stub returns the string form"`. `to-bytes` does `[str v]` instead of binary encoding.
+
+Root cause: Binary encoding requires `str-bytes` or a proper binary serialization format; design not yet specified.
+
+- [ ] Decide what `to-bytes` should produce: UTF-8 bytes of string representation, or a binary integer encoding? Add to `/rnd` if non-obvious.
+- [ ] Track: if this is waiting for a binary/bytes type, reference that sprint here.
+
+### dead-code-cleanup-typecheck: Delete unused bridge functions
+
+Two dead-code items discovered in production Rust:
+1. `resolve_surface_annotation` (`src/typecheck_annot.rs:3329`) — `#[allow(dead_code)]`, delegates to `resolve_type_expr`, never called after bridge cleanup
+2. `RestoreState::AstNodeField` variant (`src/eval_materialize.rs:118-127`) — `#[allow(dead_code)]`, "retained for structural completeness"; async/recursive AstNodeField evaluation never materialised
+
+- [ ] Delete `resolve_surface_annotation` from `src/typecheck_annot.rs` — zero callers (`src/typecheck_annot.rs:3329`)
+- [ ] Delete `RestoreState::AstNodeField` variant from `src/eval_materialize.rs` — zero callers, the path is unreachable (`src/eval_materialize.rs:118-127`)
+- [ ] Remove corresponding `#[allow(dead_code)]` attributes
+
+### arena-phase3: Wire FlatEnv slot-based variable lookup
+
+`src/arena.rs` has 6 `#[allow(dead_code)]` items marked "arena-phase3 scaffolding": `alloc_root`, `alloc_letrec_group`, `fill_letrec_slot`, `FlatEnv.slots`, `FlatEnv.overflow`, `FlatEnv.parent`, `FlatEnv.display`. These are the scaffolding for O(1) de Bruijn slot lookup via display vectors, replacing the current environment chain traversal.
+
+Root cause: Arena phase-3 (slot-based lookup wiring into evaluator) not yet started.
+
+- [ ] Wire `alloc_root` / `fill_letrec_slot` in `eval_dict_core` — replace env chain insertion with slot assignment (`src/eval_dict.rs`, `src/arena.rs`)
+- [ ] Wire display-vector lookup in `eval_core_expr` `Var` arm — `ctx.env_arena.lookup_slot(env_id, level, slot)` replaces `env.get(name)` chain walk (`src/eval.rs`)
+- [ ] Wire `FlatEnv.overflow` for computed keys (non-string dict keys not assignable to slots) (`src/arena.rs`)
+- [ ] Delete `#[allow(dead_code)]` attributes once wired
 
 ## Known Bugs + Nits
 
@@ -626,13 +805,6 @@ This makes `just versions` (which uses `http-request` + `http2-session`) non-fun
 - [x] Fix: the reqwest client inside `http2-session` should use the outer tokio runtime (via `Handle::current()`) rather than creating a new Runtime. Or: use `Arc<reqwest::Client>` shared across calls so it's never dropped per-call. Or: move the drop to a spawned blocking task. (`src/builtins_io.rs`, `http2-session` implementation) [Critical]
 
 
-
-### rnd-typecheck-runtime-unification: Accept typecheck-runtime-unification whatif
-
-`doc/whatif/typecheck-runtime-unification.md` (State: Proposal) documents the root cause of TA1/TA2/BT5 type name mismatch bugs — two separate type judgment systems that can disagree. Needs design review via `/rnd` before implementation.
-
-- [ ] Run `/rnd typecheck-runtime-unification` to formalize design decisions and create implementation sprint
-
 ### typecheck-handle-annotation-bug: `@[Handle Readable]` TypeAssert triggers T000 internal error
 
 Discovered via `samples/versions.llt` rewrite (2026-05-23). Writing `[@[Handle Readable] expr]` causes the type checker to panic with `[T000]: resolved_type written twice — elaboration invariant violated`. The TypeAssert elaboration is writing to the same AST node's resolved_type slot twice. Workaround: remove the annotation; the Handle type mismatch (T003) is then reported as a non-fatal warning instead.
@@ -792,6 +964,57 @@ Follow-up from builtin-privacy Phase 3. Three issues discovered when making `sam
 - [x] Update `standard_builtins_contains_all` test count (+3: builtin-trim, builtin-emit, builtin-env) — already 301 ✓
 
 ---
+
+## JSON in Tinct — Remove serde_json from Rust
+
+Goal: all JSON handling in tinct stdlib; `serde_json` removed from `Cargo.toml`.
+
+**Sprint order:** json-no-stdin → json-delete-to-json → json-describe-tinct → rv2-output-formatter-contract (already tracked) → json-native-from-json → json-remove-serde-dep
+
+### json-no-stdin: No stdin input without -i flag
+
+If `-i` is not specified on the command line, there is no stdin input — period. No auto-detection of piped stdin, no implicit JSON parsing. Currently `read_stdin_json` reads stdin automatically when it's a non-terminal (piped), which is the source of all Rust JSON parsing in the input path.
+
+- [ ] Delete `read_stdin_json()` from `src/main.rs` entirely (`src/main.rs`)
+- [ ] Delete `json_to_value()` from `src/main.rs` — used only by `read_stdin_json` (`src/main.rs`)
+- [ ] Remove all implicit stdin detection and JSON parsing at startup (`src/main.rs`)
+- [ ] Require `-i json` (or `-i` with any formatter) for stdin input — document this as the intended behavior
+- [ ] Remove `serde_json` from `src/main.rs` stdin path
+- [ ] Update CLI help text to reflect that `-i` is required for stdin input (`src/main.rs`)
+
+### json-delete-to-json: Delete builtin_to_json and value_to_json; json.llt uses codecs/json.llt
+
+`$builtin-to-json` (builtins_meta.rs) and `value_to_json` (lib.rs) are Rust JSON serializers. `stdlib/codecs/json.llt` has a complete tinct `to-json`. The `cli/out/json.llt` formatter should call the tinct version, not the Rust primitive.
+
+- [ ] Change `stdlib/cli/out/json.llt` to include codecs/json.llt and call `[to-json %]` instead of `[call $builtin-to-json %]` (`stdlib/cli/out/json.llt`)
+- [ ] Delete `builtin_to_json` function from `src/builtins_meta.rs`
+- [ ] Remove `"to-json"` and `"builtin-to-json"` registrations from `standard_builtins()` in `src/builtins.rs`
+- [ ] Delete `value_to_json` from `src/lib.rs` — zero callers after formatter change (`src/lib.rs`)
+- [ ] Remove `value_to_json` from `pub` exports in `src/lib.rs`
+
+### json-describe-tinct: Replace describe command serde_json with tinct to-json
+
+`run_describe` in `main.rs` builds JSON output with `serde_json::json!()` macros and `serde_json::to_string_pretty`.
+
+- [ ] Replace `serde_json::json!()` construction in `run_describe` with tinct dict literals evaluated via `to-json` (`src/main.rs`)
+- [ ] Remove all `serde_json` usage from `run_describe` and any helper functions it calls (`src/main.rs`)
+
+### json-native-from-json: Delete builtin_from_json; from-json is pure tinct
+
+`stdlib/codecs/json.llt` already contains a complete recursive-descent JSON parser implementing `from-json`. The Rust `builtin_from_json` (builtins_meta.rs) is redundant.
+
+- [ ] Delete `builtin_from_json` function from `src/builtins_meta.rs`
+- [ ] Delete `json_to_value` helper from `src/builtins_meta.rs` — used only by `builtin_from_json`
+- [ ] Remove `"from-json"` and `"builtin-from-json"` registrations from `standard_builtins()` in `src/builtins.rs`
+- [ ] Verify `stdlib/codecs/json.llt` `from-json` is the sole implementation and handles all edge cases: null→[], arrays→dict, objects→dict, non-finite floats rejected
+- [ ] Add/verify corpus tests for `from-json` edge cases: null, empty array, empty object, nested structures, invalid JSON error (`tests/corpus/`)
+
+### json-remove-serde-dep: Remove serde_json from Cargo.toml
+
+Final cleanup after all JSON code moves to tinct.
+
+- [ ] Verify zero remaining `serde_json` references in `src/` (`src/`)
+- [ ] Remove `serde_json = "1.0"` from `Cargo.toml`
 
 ## Research / Design Items
 
@@ -1532,4 +1755,174 @@ The code is authoritative: `src/typecheck.rs:5501` confirms `None => Ok(Type::Un
 
 - [x] Added `type_env: Rc<TypeEnv>` to ReplSession; single typecheck_surface_program_with_env call uses accumulated env; advanced only on success path. 3 unit tests.
 - **File:** `src/repl.rs`
+
+### indexable-fd-scc-fix: Fix Indexable FD firing in SCC-based dict inference [Major]
+
+Root cause (identified 2026-05-24): the `improve_functional_dependency_inner` machinery for the Indexable class IS correct, and the constraint IS correctly placed in the scheme for the prelude's `get` wrapper. However, at user call sites inside large SCC-based letrec groups (like versions.llt's second document dict), the constraint is generated across multiple SCC iterations. When `generalize_with_doc` runs for the outer binding, early-iteration TypeVars (e.g., `_t30`, `_t31`) are in `entry_constraints[entry_name]` but `is_discharged("_t30")` returns false because those vars are not in `state.subst` at generalization time (only the LOCAL dict `subst`, not `state.subst`, has them via the SCC-merge path). The constraint is dropped as ambiguous (T013) and the return type stays as an unresolved TypeVar.
+
+Current workaround: `check_get` special case in typecheck.rs + authoritative scheme restoration in imports.rs (both must stay until this is fixed). The arithmetic operators (`+`/`-`/`*`/`/`) also use special cases (`check_arithmetic`) for the same reason — fixing this would enable removing all of them.
+
+Investigation notes:
+- SCC merge (typecheck_dict.rs:625-665) copies `state.subst` → local `subst` but NOT vice versa during the loop
+- `check_call_with_scheme` merges its local subst → `state.subst` (4916-4922), so `_t30 → Int` IS in `state.subst` after `get` call
+- `generalize_with_doc` uses `state.subst` for `subst_snapshot` → `is_discharged("_t30")` SHOULD be true
+- Yet T013 fires 14× suggesting 7 SCC iterations × 2 vars, and `is_discharged` returns false
+- Possible cause: `state.subst` is reset or the pre-iteration snapshot is used instead of the accumulated one
+
+- [ ] Fix the SCC constraint generalization: ensure `is_discharged` returns true for TypeVars whose concrete bindings are in `state.subst` at generalization time
+- [ ] Remove `check_get` special case from typecheck.rs after fix
+- [ ] Remove `check_arithmetic` special cases (`+`/`-`/`*`/`/`) from typecheck.rs after fix
+- **Files:** `src/typecheck_dict.rs` (SCC loop), `src/type_env.rs` (generalize_with_doc), `src/typecheck.rs` (special cases)
+
+---
+
+---
+
+## Stdlib Conformance Audit Findings
+
+Full audit of all stdlib `.llt` files conducted 2026-05-24. Four categories: unified bindings, builtin privacy, stubs/bugs, and encapsulation. Files audited: prelude.llt, strings.llt, async.llt, net.llt, path.llt, numeric.llt, math.llt, datetime.llt, encoding.llt, regex.llt, io.llt, macros.llt, desugar.llt, syntax.llt, ast.llt, codecs/json.llt, codecs/toml-lite.llt, protocols/dns.llt, protocols/websocket.llt, protocols/socks5.llt, protocols/grpc.llt, cli/out/*.llt, cli/in/*.llt, cli/fmt/*.llt.
+
+**`prelude.llt` is compliant** — already uses `[let ...]` throughout; it is the only file allowed to call `builtin-*` aliases. All other files are reviewed below.
+
+---
+
+### stdlib-conformance-unified-bindings: Migrate all stdlib files to `[fn [let ...] body]` syntax
+
+Per unified-bindings.md (accepted 2026-05-17), `[fn [params] body]` without `[let ...]` is a parse error. Parser currently accepts both forms (tracked as `unified-bindings-parser-enforcement`). All new and existing stdlib code must be migrated now so that enforcement can be enabled cleanly.
+
+**`stdlib/strings.llt`** — 3 public functions missing `[let ...]`:
+- [ ] `pad-left` (line 113): `[fn@String [s@String width@Int pad-char@String]` → `[fn@String [let s@String width@Int pad-char@String]` (`stdlib/strings.llt:113`)
+- [ ] `pad-right` (line 124): same pattern (`stdlib/strings.llt:124`)
+- [ ] `str-reverse` (line 138): `[fn@String [s@String]` → `[fn@String [let s@String]` (`stdlib/strings.llt:138`)
+
+**`stdlib/datetime.llt`** — all 3 public functions missing `[let ...]`:
+- [ ] `days-between` (line 9): `[fn@Int [a@Timestamp b@Timestamp]` → add `let` (`stdlib/datetime.llt:9`)
+- [ ] `timestamp-in-range?` (line 10): `[fn@Bool [t@Timestamp start@Timestamp end@Timestamp]` → add `let` (`stdlib/datetime.llt:10`)
+- [ ] `format-date` (line 11): `[fn@String [t@Timestamp]` → add `let` (`stdlib/datetime.llt:11`)
+
+**`stdlib/io.llt`** — 1 function missing `[let ...]`:
+- [ ] `write-lines` (line 60): inner reduce lambda `[fn [h line]` → `[fn [let h line]` (`stdlib/io.llt:60`)
+
+**`stdlib/math.llt`** — all 4 functions missing `[let ...]`:
+- [ ] `hypot` (line 41): `[fn@Float [a@Number b@Number]` → add `let` (`stdlib/math.llt:41`)
+- [ ] `deg->rad` (line 48): `[fn@Float [d@Number]` → add `let` (`stdlib/math.llt:48`)
+- [ ] `rad->deg` (line 55): `[fn@Float [r@Number]` → add `let` (`stdlib/math.llt:55`)
+- [ ] `log-base` (line 62): `[fn@Float [base@Number x@Number]` → add `let` (`stdlib/math.llt:62`)
+
+**`stdlib/net.llt`** — all 9 functions (2 private, 7 public) missing `[let ...]`:
+- [ ] `parse-header-fields-impl` (line 19): add `let` (`stdlib/net.llt:19`)
+- [ ] `parse-header-body` (line 32): add `let` (`stdlib/net.llt:32`)
+- [ ] `build-http-request` (line 43): add `let` (`stdlib/net.llt:43`)
+- [ ] `parse-http-response` (line 48): add `let` (`stdlib/net.llt:48`)
+- [ ] `http-get` (line 61): add `let` (`stdlib/net.llt:61`)
+- [ ] `uri-params` (line 83): add `let` to outer fn and inner lambda (`stdlib/net.llt:83`)
+- [ ] `spki-pin` (line 95): add `let` (`stdlib/net.llt:95`)
+- [ ] `uri-origin` (line 100): add `let` (`stdlib/net.llt:100`)
+- [ ] `uri->string` (line 106): add `let` (`stdlib/net.llt:106`)
+
+**`stdlib/encoding.llt`** — ALL ~26 functions missing `[let ...]` (entire file is a single flat dict):
+- [ ] Add `let` to all function parameter lists in the entire file (`stdlib/encoding.llt`)
+- Affected: `hex-encode`, `hex-encode-impl`, `hex-encode-step`, `int-to-hex`, `hex-digit`, `hex-decode`, `hex-decode-impl`, `hex-decode-step`, `hex-digit-to-int`, `hex-digit-to-int-impl`, `base64-encode`, `base64-encode-impl`, `base64-encode-group`, `base64-encode-3bytes`, `base64-encode-2bytes`, `base64-encode-1byte`, `base64-char`, `base64-decode`, `base64-decode-impl`, `base64-decode-group`, `base64-decode-4chars`, `base64-char-to-int`, `base64-char-to-int-search`, `mask-apply`, `mask-apply-impl`, `mask-apply-step`
+
+**`stdlib/regex.llt`** — ALL ~17 functions missing `[let ...]` in both dicts:
+- [ ] Add `let` to all function parameter lists in the entire file (`stdlib/regex.llt`)
+- Affected: `re-ensure-pattern`, `re-match-impl`, `re-match-try`, `re-match-check`, `re-find-impl`, `re-find-try`, `re-find-check`, `re-findall-impl`, `re-findall-try`, `re-findall-check`, `re-compile`, `re-match`, `re-find`, `re-findall`, `re-replace`, `re-split`, `re-escape-replacement`
+
+**`stdlib/path.llt`** — 3 private helper functions missing `[let ...]`:
+- [ ] `dirname-impl` (line 20): `[fn@String [parts@Dict]` → add `let` (`stdlib/path.llt:20`)
+- [ ] `dirname-drop-last` (line 29): `[fn@Dict [parts@Dict ks i@Int acc@Dict]` → add `let` (`stdlib/path.llt:29`)
+- [ ] `extension-impl` (line 37): `[fn@String [parts@Dict]` → add `let` (`stdlib/path.llt:37`)
+
+**`stdlib/codecs/toml-lite.llt`** — ~14 private helper functions missing `[let ...]`:
+- [ ] Add `let` to: `parse-section-name` (45), `parse-kv-build` (64), `toml-set-at-path-impl-entry` (130), `toml-set-at-path-rec` (139), `toml-set-at-path-final` (151), `toml-set-at-path-final-check` (154), `toml-merge-into-last-impl` (161), `is-array?` (166), `is-array?-check-keys` (169), `toml-append-array-rec` (176), `toml-append-array-table-impl` (188), `toml-set-at-path` (242), `toml-merge-into-last` (247), `toml-append-array-table` (253) (`stdlib/codecs/toml-lite.llt`)
+
+**`stdlib/cli/out/csv.llt`** — ALL functions missing `[let ...]`:
+- [ ] Add `let` to: `csv-quote` (8), `csv-header` (12), `csv-row` (19), `csv-rows` (26), `csv` (33), `csv-impl` (38) (`stdlib/cli/out/csv.llt`)
+
+**`stdlib/cli/out/env.llt`** — ALL functions missing `[let ...]`:
+- [ ] Add `let` to: `env-entry` (6), `env-entries` (10), `env` (17) (`stdlib/cli/out/env.llt`)
+
+**`stdlib/cli/out/yaml.llt`** — ALL functions missing `[let ...]`:
+- [ ] Add `let` to all ~15 function definitions in the file (`stdlib/cli/out/yaml.llt`)
+- Affected: `yaml-needs-quote?`, `yaml-quote`, `yaml-list?`, `yaml-value`, `yaml-object`, `yaml-list`, `yaml-list-items`, `yaml-list-item`, `yaml-list-value`, `yaml-dict-inline`, `yaml-dict`, `yaml-dict-entries`, `yaml-dict-entry`, `yaml-dict-value`, `yaml`
+
+**`stdlib/cli/out/toml.llt`** — ALL functions missing `[let ...]`:
+- [ ] Add `let` to all ~11 function definitions in the file (`stdlib/cli/out/toml.llt`)
+- Affected: `toml-quote`, `toml-list?`, `toml-scalar`, `toml-array`, `toml-array-items`, `toml-partition`, `toml-flat`, `toml-tables`, `toml-value`, `toml`, `toml-impl`
+
+**`stdlib/protocols/dns.llt`** — ALL private functions + public fn bodies missing `[let ...]`:
+- [ ] Add `let` to all function parameter lists in the private dict: `dns-quot` (48), `dns-quot-impl` (53), `dns-mod` (60), `dns-encode-u16-be` (68), `dns-encode-label` (77), `dns-encode-labels-impl` (83), `dns-encode-name` (91), `dns-encode-labels-step` (94), `dns-build-header` (109), `dns-build-question` (123); also the inline `[fn@String ...]` bodies of `encode-dns-name` (165) and `build-dns-query` (185) (`stdlib/protocols/dns.llt`)
+
+**`stdlib/protocols/websocket.llt`** — ALL functions missing `[let ...]`:
+- [ ] Add `let` to all ~22 function parameter lists in the file (`stdlib/protocols/websocket.llt`)
+- Affected: `ws-quot`, `ws-quot-impl`, `ws-mod`, `ws-pow2`, `ws-pow2-impl`, `ws-xor-bit`, `ws-xor`, `ws-xor-impl`, `ws-mask-payload-impl`, `ws-build-base-header`, `ws-build-ext16`, `ws-build-frame-dispatch`, `ws-build-frame-short`, `ws-build-frame-medium`, `ws-build-frame-result`, `ws-payload-len7`, `ws-parse-ext16`, `ws-parse-ext64-impl`, `ws-parse-header-result`, `ws-parse-header-extended`, `ws-parse-header-bytes`, `ws-parse-header-bytes-step`; also the inline fn bodies in `build-ws-frame` (239), `parse-ws-frame-header` (259), `build-ws-handshake` (276)
+
+**`stdlib/protocols/socks5.llt`** — ALL functions missing `[let ...]`:
+- [ ] Add `let` to all ~20 function parameter lists in the private dict plus inline fn bodies in public dict (`stdlib/protocols/socks5.llt`)
+
+**`stdlib/protocols/grpc.llt`** — ALL functions missing `[let ...]`:
+- [ ] Add `let` to all 5 private helper function parameter lists plus inline fn bodies in `build-grpc-frame` (119) and `parse-grpc-frame-header` (140) (`stdlib/protocols/grpc.llt`)
+
+---
+
+### stdlib-conformance-builtin-privacy: Migrate non-prelude files off raw `builtin-*` calls
+
+Per the builtin-privacy design, only `prelude.llt` is allowed to use `builtin-*` stable aliases or raw Rust primitive names. Non-prelude files must call prelude-exported wrappers instead. Note: `macros.llt` and `ast.llt` are **exempt** — they use `builtin-variant` which is a meta builtin for AST construction with no prelude wrapper (intentional, documented in stdlib/macros.llt header). `cli/out/json.llt` is tracked separately under `json-delete-to-json`.
+
+**`stdlib/net.llt`** — uses 13+ distinct `builtin-*` names throughout both dicts:
+- [ ] Replace `builtin-if` → `if`, `builtin-eq` → `=`, `builtin-length` → `length`, `builtin-split` → `split`, `builtin-merge` → `merge`, `builtin-get` → `get`, `builtin-to-int` → `to-int`, `builtin-reduce` → `reduce`, `builtin-str` → `str`, `builtin-null?` → `null?`, `builtin-raise` → `raise`, `builtin-try` → `try`, `builtin-rest` → `rest` throughout `stdlib/net.llt`
+
+**`stdlib/encoding.llt`** — uses `builtin-if`, `builtin-lt`, `builtin-add`, `builtin-sub`, `builtin-mul` in every impl/step function:
+- [ ] Replace all `builtin-if`, `builtin-lt`, `builtin-add`, `builtin-sub`, `builtin-mul` calls with `if`, `<`, `+`, `-`, `*` prelude wrappers throughout `stdlib/encoding.llt`
+- Note: `str-slice` calls without prefix likely resolve to the prelude wrapper already — verify no bare `builtin-str-slice` calls exist in the file
+
+**`stdlib/async.llt`** — uses `builtin-if`, `builtin-raise`, `builtin-sub` in private helpers and public stubs:
+- [ ] `retry-impl` (line 38): `builtin-if [> n 0]` → `if [> n 0]`; `builtin-sub n 1` → `[- n 1]`; `builtin-raise` → `raise` (`stdlib/async.llt:38-41`)
+- [ ] `loop-select-impl` (line 45-50): `builtin-if [cancelled? ctx]` → `if [cancelled? ctx]` (`stdlib/async.llt:46`)
+- [ ] `exit` (line 152) and `graceful-exit` (line 167): `builtin-raise` → `raise` (`stdlib/async.llt:152,167`)
+- [ ] `finally` (line 250): `builtin-raise e` → `raise e` (`stdlib/async.llt:250`)
+
+**`stdlib/codecs/json.llt`** — uses `builtin-str`, `builtin-if`, `builtin-eq`, `builtin-lt`, `builtin-add`, `builtin-raise`, `builtin-str-slice`, `builtin-str?`, `builtin-null?` throughout parser helpers:
+- [ ] Replace all `builtin-*` calls with prelude-exported wrappers throughout `stdlib/codecs/json.llt`. Key replacements: `builtin-str` → `str`, `builtin-if` → `if`, `builtin-eq` → `=`, `builtin-lt` → `<`, `builtin-add` → `+`, `builtin-raise` → `raise`, `builtin-str-slice` → `str-slice`, `builtin-str?` → `str?`, `builtin-null?` → `null?`
+
+**`stdlib/protocols/dns.llt`** — uses `builtin-if`, `builtin-eq`, `builtin-lt`, `builtin-add`, `builtin-sub`, `builtin-mul` in arithmetic helpers:
+- [ ] Replace all `builtin-*` arithmetic/control calls with prelude wrappers (`if`, `=`, `<`, `+`, `-`, `*`) throughout `stdlib/protocols/dns.llt`
+
+**`stdlib/protocols/websocket.llt`** — uses `builtin-if`, `builtin-eq`, `builtin-lt`, `builtin-add`, `builtin-sub`, `builtin-mul` throughout:
+- [ ] Replace all `builtin-*` calls with prelude wrappers throughout `stdlib/protocols/websocket.llt`
+
+**`stdlib/protocols/socks5.llt`** — uses `builtin-if`, `builtin-eq`, `builtin-lt`, `builtin-add`, `builtin-sub`, `builtin-mul` throughout:
+- [ ] Replace all `builtin-*` calls with prelude wrappers throughout `stdlib/protocols/socks5.llt`
+
+**`stdlib/protocols/grpc.llt`** — uses `builtin-if`, `builtin-eq`, `builtin-lt`, `builtin-add`, `builtin-sub`, `builtin-mul` throughout:
+- [ ] Replace all `builtin-*` calls with prelude wrappers throughout `stdlib/protocols/grpc.llt`
+
+---
+
+### stdlib-conformance-bugs: Fix correctness bugs found during audit
+
+**Bug — `stdlib/codecs/json.llt:227` — `>=i` identifier typo crashes number scanning:**
+- [ ] `[builtin-if [or [>=i [str-length s]] [not [json-num-char? [str-at i s]]]]` — `>=i` concatenates `>=` and `i` into a single unknown identifier. Should be `[>= i [str-length s]]`. This crashes `json-scan-num` on any numeric token, making `from-json` unable to parse any JSON number. (`stdlib/codecs/json.llt:227`)
+
+**Stale comment — `stdlib/async.llt:178-181` — "hits ~230 iteration depth limit" is likely wrong post-CEK:**
+- [ ] `loop-select`'s doc comment says "Tail-recursive; hits ~230 iteration depth limit. For long-running servers, use an explicit `[task [loop ...]]` pattern instead." Verify whether this limit still applies now that the CEK machine (cek-match-sequential-rust-stack sprint) handles iterative evaluation. If the CEK machine correctly handles tail calls into `loop-select-impl`, remove the warning; if it still recurses on the Rust stack, the warning stands. (`stdlib/async.llt:178-181`)
+
+---
+
+### stdlib-conformance-encapsulation: Fix encapsulation pattern violations
+
+**`stdlib/encoding.llt`** — all functions (public and private) in a single flat dict, violating two-dict encapsulation:
+- [ ] Split `stdlib/encoding.llt` into two-dict document pattern. Move all private helpers (`hex-encode-impl`, `hex-encode-step`, `int-to-hex`, `hex-digit`, `hex-decode-impl`, `hex-decode-step`, `hex-digit-to-int`, `hex-digit-to-int-impl`, `base64-encode-impl`, `base64-encode-group`, `base64-encode-3bytes`, `base64-encode-2bytes`, `base64-encode-1byte`, `base64-char`, `base64-char-to-int`, `base64-char-to-int-search`, `mask-apply-impl`, `mask-apply-step`) into a private first dict. Keep only `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode`, `mask-apply` in the public second dict. `base64-alphabet` may stay in the private dict since it is an internal constant. (`stdlib/encoding.llt`)
+
+**`stdlib/cli/out/csv.llt`** — internal helpers `csv-quote`, `csv-header`, `csv-row`, `csv-rows`, `csv-impl` exported from the single dict:
+- [ ] Split into two-dict document pattern. Private dict: `csv-quote`, `csv-header`, `csv-row`, `csv-rows`, `csv-impl`. Public dict: `csv` only. (`stdlib/cli/out/csv.llt`)
+
+**`stdlib/cli/out/env.llt`** — internal helpers `env-entry`, `env-entries` exported from the single dict:
+- [ ] Split into two-dict document pattern. Private dict: `env-entry`, `env-entries`. Public dict: `env` only. (`stdlib/cli/out/env.llt`)
+
+**`stdlib/cli/out/yaml.llt`** — all internal helpers exported from the single dict:
+- [ ] Split into two-dict document pattern. Private dict: all `yaml-*` helpers. Public dict: `yaml` only. (`stdlib/cli/out/yaml.llt`)
+
+**`stdlib/cli/out/toml.llt`** — all internal helpers exported from the single dict:
+- [ ] Split into two-dict document pattern. Private dict: `toml-quote`, `toml-list?`, `toml-scalar`, `toml-array`, `toml-array-items`, `toml-partition`, `toml-flat`, `toml-tables`, `toml-value`, `toml-impl`. Public dict: `toml` only. (`stdlib/cli/out/toml.llt`)
 

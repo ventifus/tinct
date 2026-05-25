@@ -365,6 +365,13 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // A degraded scheme is one that either has no type_vars OR has type_vars but no constraints
     // (the constraints were lost when the prelude dict had type errors and the scheme was
     // inferred without constraint propagation).
+    // Same fix for `get` / `get?` — the prelude wrappers `get: [fn@[return: a] [let key@k
+    // dict@d] [builtin-get key dict]]` lose the `Indexable c k v` functional dependency
+    // constraint during SCC generalization. The SCC inference accumulates constraints across
+    // multiple iterations and the discharged-variable detection in generalize_with_doc
+    // inconsistently marks the FD constraint vars, causing it to be dropped as ambiguous.
+    // Restoring the authoritative builtin scheme ensures `get 1 (Seq[String])` resolves
+    // the return type to `String` via the Indexable FD machinery.
     for name in &["=", "<"] {
         let is_degraded = env
             .get_own(name)
@@ -374,6 +381,21 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
             if let Some(builtin_scheme) = builtins_env.get(name) {
                 env.insert_scheme((*name).to_string(), builtin_scheme.clone());
             }
+        }
+    }
+
+    // `get` / `get?` / `builtin-get`: always restore the authoritative Indexable-constrained
+    // scheme. The prelude wrappers carry the Indexable constraint in their generalized scheme,
+    // but the Indexable FD fails to fire at call sites due to SCC-interaction issues in the
+    // constraint generalization machinery (the constraint is present but the discharged-variable
+    // detection inconsistently marks vars, causing `improve_functional_dependency_inner` to see
+    // a partially-ground constraint that fails the `all_det_ground` check).
+    // The authoritative builtin scheme `Indexable c k v => k → c → v` passes through
+    // `instantiate_scheme` correctly and the FD fires reliably. This mirrors the existing
+    // `=`/`<` fallback for Equatable/Comparable constraints.
+    for name in &["get", "get?", "builtin-get"] {
+        if let Some(builtin_scheme) = builtins_env.get(name) {
+            env.insert_scheme((*name).to_string(), builtin_scheme.clone());
         }
     }
 

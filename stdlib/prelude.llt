@@ -809,7 +809,7 @@ Get value by key with error if missing.
 Example: [get "b" [a: 1  b: 2]] => 2
 
 Note: Signature is Key → Dict → Any (curried for pipeline composition).
-"""] [let key@Label dict@d] [builtin-get key dict]]
+"""] [let key@k dict@d] [builtin-get key dict]]
 
 has?: [fn@[return: Bool  doc: """
 Check if dict has key.
@@ -828,7 +828,7 @@ Example: [get-or [x: 1] "x" 99] => 1
 Example: [get-or [x: 1] "y" 99] => 99
 
 Note: Returns default value when key is missing.
-"""] [let dict@Dict key@Label default@a]
+"""] [let dict@Dict key default@a]
     [builtin-if [has? dict key] [get key dict] default]]
 
 get-in: [fn@[return: Unknown  doc: """
