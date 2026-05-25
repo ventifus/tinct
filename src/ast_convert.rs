@@ -526,6 +526,19 @@ pub fn surface_node_to_core_expr(node: &Arc<SurfaceNode>) -> Spanned<crate::ast:
     expr_to_core_expr(&surface_node_to_expr(node))
 }
 
+/// Convert a `Spanned<CoreExpr>` to an `Arc<SurfaceNode>`.
+///
+/// This bridge is used by the quote evaluator (eval_core_expr, CoreExpr::Quote arm) to
+/// convert a lowered CoreExpr back to a SurfaceNode so that `eval_quote_walk` — which
+/// operates entirely on SurfaceNodes — can process it. Preserves surface variable names
+/// over de Bruijn indices so that `[quote x]` shows "x" in the quoted AST.
+///
+/// TODO(rv2-delete-old-ast): Once the evaluator has a native SurfaceNode-based quote
+/// path that does not go through CoreExpr at all, this bridge can be deleted.
+pub fn core_expr_to_surface_node(core: &Spanned<crate::ast::CoreExpr>) -> Arc<SurfaceNode> {
+    expr_to_surface_node(&core_expr_to_expr(core))
+}
+
 fn expr_inner_to_core_expr(expr: &Expr, span: crate::ast::Span) -> crate::ast::CoreExpr {
     use crate::ast::{CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam};
 

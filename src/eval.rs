@@ -27,8 +27,7 @@ use indexmap::IndexMap;
 
 use crate::arena::{EnvArena, ThunkArena, ThunkId};
 use crate::ast::{
-    Annotation, CoreExpr, Entry, Expr, LiteralPattern, MatchArm, NamedArg, Param, Pattern, Span,
-    Spanned, SurfaceExpression,
+    Annotation, CoreExpr, Expr, LiteralPattern, Param, Pattern, Span, Spanned, SurfaceExpression,
 };
 use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
@@ -947,81 +946,73 @@ pub(crate) fn is_constructor_name(name: &str) -> bool {
     name.chars().next().is_some_and(|c| c.is_uppercase())
 }
 
-/// Evaluate a [quote ...] expression, walking the quoted AST and evaluating
-/// any [unquote ...] or [unquote-splice ...] subexpressions.
-async fn eval_quote(
-    quoted_expr: &Spanned<Expr>,
-    env: Arc<RwLock<Environment>>,
-    ctx: &Arc<EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
-    eval_quote_walk(&quoted_expr.node, quoted_expr.span, env, ctx).await
-}
-
-/// Recursively walk a quoted expression, handling Unquote and UnquoteSplice.
+/// Recursively walk a quoted SurfaceNode, handling Unquote and UnquoteSplice.
 ///
 /// Returns `Value::Expression(Arc<SurfaceNode>)` — the runtime-v2 representation.
 /// macros.llt has been updated to handle both Expression (new) and Variant (old) inputs
 /// via dual dispatch (tag-of works on both), so this migration is safe.
+///
+/// This function operates entirely on SurfaceNode (no Expr round-trip).
 async fn eval_quote_walk(
-    expr: &Expr,
-    span: Span,
+    node: Arc<crate::ast::SurfaceNode>,
     env: Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
+    let span = node.span;
     // Preprocess to handle nested unquotes (rewrites unquote subexpressions)
-    let processed_expr = eval_quote_preprocess(expr, span, &env, ctx).await?;
+    let processed_node = eval_quote_preprocess(node, &env, ctx).await?;
 
     // runtime-v2 Part G: return Value::Expression (was: ast_to_dict_expr returning Variant Dict)
     // macros.llt is dual-dispatch ready (tag-of handles both Expression and Variant).
-    let surface_node = crate::ast_convert::expr_to_surface_node(&processed_expr);
     Ok(Arc::new(Thunk::new_materialized(
-        Value::Expression(surface_node),
+        Value::Expression(processed_node),
         span,
     )))
 }
 
-/// Convert a runtime Value back to an Expr AST node for unquoting.
+/// Convert a runtime Value back to an Arc<SurfaceNode> for unquoting.
 ///
-/// If the value is a Dict with a `type` field, treat it as an AST dict and use `dict_to_surface_node`.
-/// Otherwise, convert the value to its literal Expr representation.
-fn value_to_expr(value: &Value, span: Span, ctx: &Arc<EvalContext>) -> EvalResult<Spanned<Expr>> {
+/// If the value is a Dict/Variant with a `type` field, treat it as an AST dict and use
+/// `dict_to_surface_node`. Otherwise, convert the value to its literal SurfaceNode.
+///
+/// This is the SurfaceNode-native replacement for the old `value_to_expr`. No Expr round-trip.
+fn value_to_surface_node(
+    value: &Value,
+    span: Span,
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<Arc<crate::ast::SurfaceNode>> {
+    use crate::ast::{SurfaceExpression, SurfaceNode};
+    let make_node = |expr: SurfaceExpression| Arc::new(SurfaceNode { expr, span });
     match value {
-        Value::Int(n) => Ok(Spanned::new(Expr::Int(*n), span)),
-        Value::Float(f) => Ok(Spanned::new(Expr::Float(*f), span)),
-        Value::Bool(b) => Ok(Spanned::new(Expr::Bool(*b), span)),
-        Value::String { source, start, end } => Ok(Spanned::new(
-            Expr::Str(source[*start..*end].to_string()),
-            span,
-        )),
+        Value::Int(n) => Ok(make_node(SurfaceExpression::Int(*n))),
+        Value::Float(f) => Ok(make_node(SurfaceExpression::Float(*f))),
+        Value::Bool(b) => Ok(make_node(SurfaceExpression::Bool(*b))),
+        Value::String { source, start, end } => Ok(make_node(SurfaceExpression::Str(
+            source[*start..*end].to_string(),
+        ))),
         Value::Variant { .. } => {
             // Variant form of an AST node — convert via surface bridge
-            crate::ast_dict::dict_to_surface_node(value, ctx)
-                .map(|node| crate::ast_convert::surface_node_to_expr(&node))
-                .map_err(|err| {
-                    EvalError::internal(
-                        format!("unquote result Variant is not a valid AST: {}", err),
-                        span,
-                    )
-                    .into()
-                })
+            crate::ast_dict::dict_to_surface_node(value, ctx).map_err(|err| {
+                EvalError::internal(
+                    format!("unquote result Variant is not a valid AST: {}", err),
+                    span,
+                )
+                .into()
+            })
         }
         Value::Dict(dict) => {
             // Check if this is an AST dict (has a "type" field)
             if dict.contains_key(&Key::String("type".into())) {
                 // It's an AST dict — convert via surface bridge
-                crate::ast_dict::dict_to_surface_node(value, ctx)
-                    .map(|node| crate::ast_convert::surface_node_to_expr(&node))
-                    .map_err(|err| {
-                        EvalError::internal(
-                            format!("unquote result dict is not a valid AST: {}", err),
-                            span,
-                        )
-                        .into()
-                    })
+                crate::ast_dict::dict_to_surface_node(value, ctx).map_err(|err| {
+                    EvalError::internal(
+                        format!("unquote result dict is not a valid AST: {}", err),
+                        span,
+                    )
+                    .into()
+                })
             } else {
-                // It's a regular dict — convert to Expr::Dict
-                // This is trickier because dict values are thunk IDs
-                // For now, error on non-AST dicts in unquote
+                // It's a regular dict — dict values are thunk IDs, conversion not yet supported
                 Err(EvalError::internal(
                     "unquote of non-AST dict is not yet supported".to_string(),
                     span,
@@ -1030,8 +1021,8 @@ fn value_to_expr(value: &Value, span: Span, ctx: &Arc<EvalContext>) -> EvalResul
             }
         }
         Value::Expression(node) => {
-            // Value::Expression from ast-of builtin — convert back to Expr
-            Ok(crate::ast_convert::surface_node_to_expr(node))
+            // Value::Expression — already a SurfaceNode, use it directly (no round-trip needed)
+            Ok(Arc::clone(node))
         }
         _ => Err(
             EvalError::internal(format!("unquote of {:?} is not supported", value), span).into(),
@@ -1086,33 +1077,39 @@ async fn collect_seq_elements(
     Ok(elements)
 }
 
-/// Recursively preprocess a quoted expression tree to handle nested unquotes.
+/// Recursively preprocess a quoted SurfaceNode tree to handle nested unquotes.
 ///
 /// This walks the entire AST and:
-/// - Evaluates `Unquote` nodes, converting the result back to AST
-/// - Recurses into all child expressions
-/// - Leaves non-unquote nodes unchanged
+/// - Evaluates `Unquote` nodes, converting the result back to a SurfaceNode
+/// - Handles `UnquoteSplice` in call argument positions
+/// - Recurses into all child SurfaceNodes
+/// - Leaves non-unquote nodes unchanged (Arc::clone, no allocation)
+///
+/// Operates entirely on SurfaceNode — no Expr round-trip.
 fn eval_quote_preprocess<'a>(
-    expr: &'a Expr,
-    span: Span,
+    node: Arc<crate::ast::SurfaceNode>,
     env: &'a Arc<RwLock<Environment>>,
     ctx: &'a Arc<EvalContext>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Spanned<Expr>>> + 'a>> {
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = EvalResult<Arc<crate::ast::SurfaceNode>>> + 'a>,
+> {
+    use crate::ast::{SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceMatchArm, SurfaceNamedArg, SurfaceNode};
     Box::pin(async move {
-        match expr {
-            Expr::Unquote(inner) => {
-                // Evaluate the unquoted expression
-                let thunk = eval_recursive(Rc::new((**inner).clone()), env.clone(), ctx).await?;
-                let value = materialize(&thunk, Some(&inner.span), ctx).await?;
+        let span = node.span;
+        let make_node = |expr: SurfaceExpression| Arc::new(SurfaceNode { expr, span });
 
-                // Convert the value back to AST
-                value_to_expr(&value, inner.span, ctx)
+        match &node.expr {
+            SurfaceExpression::Unquote(inner) => {
+                // Evaluate the unquoted expression and convert back to SurfaceNode
+                let core = crate::ast_convert::surface_node_to_core_expr(inner);
+                let thunk = eval_core_expr(&core, env, ctx).await?;
+                let value = materialize(&thunk, Some(&inner.span), ctx).await?;
+                value_to_surface_node(&value, inner.span, ctx)
             }
-            Expr::UnquoteSplice(_) => {
+
+            SurfaceExpression::UnquoteSplice(_) => {
                 // UnquoteSplice at non-list position is an error.
-                // Note: Call args handle UnquoteSplice in their own loop.
-                // This arm catches UnquoteSplice appearing at top level or in other invalid positions
-                // (e.g., as a dict key, as a function body, etc.)
+                // Call args handle UnquoteSplice in their own loop below.
                 Err(EvalError::unimplemented(
                     "unquote-splice must be in a list position (inside call args); dict entry splicing is not yet implemented"
                         .to_string(),
@@ -1122,259 +1119,225 @@ fn eval_quote_preprocess<'a>(
             }
 
             // Recursively process composite expressions
-            Expr::Dict(entries) => {
+            SurfaceExpression::Dict(entries) => {
                 let mut processed_entries = Vec::with_capacity(entries.len());
                 for entry in entries {
-                    let processed_value = eval_quote_preprocess(
-                        &entry.node.value.node,
-                        entry.node.value.span,
-                        env,
-                        ctx,
-                    )
-                    .await?;
-                    let processed_key = if let Some(ref key_expr) = entry.node.key {
-                        Some(eval_quote_preprocess(&key_expr.node, key_expr.span, env, ctx).await?)
+                    let processed_value =
+                        eval_quote_preprocess(Arc::clone(&entry.node.value), env, ctx).await?;
+                    let processed_key = if let Some(ref key_node) = entry.node.key {
+                        Some(eval_quote_preprocess(Arc::clone(key_node), env, ctx).await?)
                     } else {
                         None
                     };
                     processed_entries.push(Spanned::new(
-                        Entry {
+                        SurfaceEntry {
                             key: processed_key,
-                            value: Rc::new(processed_value),
+                            value: processed_value,
                         },
                         entry.span,
                     ));
                 }
-                Ok(Spanned::new(Expr::Dict(processed_entries), span))
+                Ok(make_node(SurfaceExpression::Dict(processed_entries)))
             }
 
-            Expr::Call {
+            SurfaceExpression::Call {
                 func,
                 args,
                 named_args,
                 implied,
             } => {
-                let processed_func = eval_quote_preprocess(&func.node, func.span, env, ctx).await?;
-                let mut processed_args = Vec::new();
+                let processed_func =
+                    eval_quote_preprocess(Arc::clone(func), env, ctx).await?;
+                let mut processed_args: Vec<Arc<SurfaceNode>> = Vec::new();
                 for arg in args {
                     // Handle unquote-splicing in call argument position
-                    if let Expr::UnquoteSplice(inner) = &arg.node {
+                    if let SurfaceExpression::UnquoteSplice(inner) = &arg.expr {
                         // Evaluate the unquote-splice expression
-                        let thunk =
-                            eval_recursive(Rc::new((**inner).clone()), env.clone(), ctx).await?;
+                        let core = crate::ast_convert::surface_node_to_core_expr(inner);
+                        let thunk = eval_core_expr(&core, env, ctx).await?;
                         let value = materialize(&thunk, Some(&inner.span), ctx).await?;
 
-                        // Extract elements from the sequence
+                        // Extract elements from the sequence and convert each to SurfaceNode
                         let elements = collect_seq_elements(&value, inner.span, ctx).await?;
-
-                        // Convert each element to AST and add to processed_args
                         for elem_value in elements {
-                            let elem_expr = value_to_expr(&elem_value, inner.span, ctx)?;
-                            processed_args.push(Rc::new(elem_expr));
+                            let elem_node =
+                                value_to_surface_node(&elem_value, inner.span, ctx)?;
+                            processed_args.push(elem_node);
                         }
                     } else {
                         // Regular argument - recursively process
-                        processed_args.push(Rc::new(
-                            eval_quote_preprocess(&arg.node, arg.span, env, ctx).await?,
-                        ));
+                        processed_args
+                            .push(eval_quote_preprocess(Arc::clone(arg), env, ctx).await?);
                     }
                 }
-                let mut processed_named_args = Vec::with_capacity(named_args.len());
+                let mut processed_named_args: Vec<Spanned<SurfaceNamedArg>> =
+                    Vec::with_capacity(named_args.len());
                 for na in named_args {
                     let processed_value =
-                        eval_quote_preprocess(&na.node.value.node, na.node.value.span, env, ctx)
-                            .await?;
+                        eval_quote_preprocess(Arc::clone(&na.node.value), env, ctx).await?;
                     processed_named_args.push(Spanned::new(
-                        NamedArg {
+                        SurfaceNamedArg {
                             name: na.node.name.clone(),
-                            value: Rc::new(processed_value),
+                            value: processed_value,
                         },
                         na.span,
                     ));
                 }
-                Ok(Spanned::new(
-                    Expr::Call {
-                        func: Box::new(processed_func),
-                        args: processed_args,
-                        named_args: processed_named_args,
-                        implied: *implied,
-                    },
-                    span,
-                ))
+                Ok(make_node(SurfaceExpression::Call {
+                    func: processed_func,
+                    args: processed_args,
+                    named_args: processed_named_args,
+                    implied: *implied,
+                }))
             }
 
-            Expr::Fn {
+            SurfaceExpression::Fn {
                 return_ann,
                 params,
                 body,
                 desugared,
             } => {
-                let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx).await?;
-                Ok(Spanned::new(
-                    Expr::Fn {
-                        return_ann: return_ann.clone(),
-                        params: params.clone(),
-                        body: Rc::new(processed_body),
-                        desugared: *desugared,
-                    },
-                    span,
-                ))
+                let processed_body =
+                    eval_quote_preprocess(Arc::clone(body), env, ctx).await?;
+                Ok(make_node(SurfaceExpression::Fn {
+                    return_ann: return_ann.clone(),
+                    params: params.clone(),
+                    body: processed_body,
+                    desugared: *desugared,
+                }))
             }
 
-            Expr::DotAccess {
-                expr: target,
-                field,
-            } => {
+            SurfaceExpression::DotAccess { expr: target, field } => {
                 let processed_target =
-                    eval_quote_preprocess(&target.node, target.span, env, ctx).await?;
-                Ok(Spanned::new(
-                    Expr::DotAccess {
-                        expr: Box::new(processed_target),
-                        field: field.clone(),
-                    },
-                    span,
-                ))
+                    eval_quote_preprocess(Arc::clone(target), env, ctx).await?;
+                Ok(make_node(SurfaceExpression::DotAccess {
+                    expr: processed_target,
+                    field: field.clone(),
+                }))
             }
 
-            Expr::Pipe { lhs, rhs } => {
-                let processed_lhs = eval_quote_preprocess(&lhs.node, lhs.span, env, ctx).await?;
-                let processed_rhs = eval_quote_preprocess(&rhs.node, rhs.span, env, ctx).await?;
-                Ok(Spanned::new(
-                    Expr::Pipe {
-                        lhs: Box::new(processed_lhs),
-                        rhs: Box::new(processed_rhs),
-                    },
-                    span,
-                ))
+            SurfaceExpression::Pipe { lhs, rhs } => {
+                let processed_lhs =
+                    eval_quote_preprocess(Arc::clone(lhs), env, ctx).await?;
+                let processed_rhs =
+                    eval_quote_preprocess(Arc::clone(rhs), env, ctx).await?;
+                Ok(make_node(SurfaceExpression::Pipe {
+                    lhs: processed_lhs,
+                    rhs: processed_rhs,
+                }))
             }
 
-            Expr::Sequential(exprs) => {
+            SurfaceExpression::Sequential(exprs) => {
                 let mut processed_exprs = Vec::with_capacity(exprs.len());
                 for e in exprs {
-                    processed_exprs.push(Rc::new(
-                        eval_quote_preprocess(&e.node, e.span, env, ctx).await?,
-                    ));
+                    processed_exprs
+                        .push(eval_quote_preprocess(Arc::clone(e), env, ctx).await?);
                 }
-                Ok(Spanned::new(Expr::Sequential(processed_exprs), span))
+                Ok(make_node(SurfaceExpression::Sequential(processed_exprs)))
             }
 
-            Expr::TypeAlias { params, body } => {
-                let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx).await?;
-                Ok(Spanned::new(
-                    Expr::TypeAlias {
-                        params: params.clone(),
-                        body: Box::new(processed_body),
-                    },
-                    span,
-                ))
-            }
-
-            Expr::TypeAssert {
-                annotation,
-                expr: inner,
-                resolved_type,
-            } => {
+            SurfaceExpression::TypeAssert { annotation, expr: inner } => {
                 let processed_expr =
-                    eval_quote_preprocess(&inner.node, inner.span, env, ctx).await?;
-                Ok(Spanned::new(
-                    Expr::TypeAssert {
-                        annotation: annotation.clone(),
-                        expr: Box::new(processed_expr),
-                        resolved_type: resolved_type.clone(),
-                    },
-                    span,
-                ))
+                    eval_quote_preprocess(Arc::clone(inner), env, ctx).await?;
+                Ok(make_node(SurfaceExpression::TypeAssert {
+                    annotation: annotation.clone(),
+                    expr: processed_expr,
+                }))
             }
 
-            Expr::Quote(inner) => {
+            SurfaceExpression::Quote(inner) => {
+                // Nested quote: recurse so inner unquotes are still processed.
                 let processed_inner =
-                    eval_quote_preprocess(&inner.node, inner.span, env, ctx).await?;
-                Ok(Spanned::new(Expr::Quote(Box::new(processed_inner)), span))
+                    eval_quote_preprocess(Arc::clone(inner), env, ctx).await?;
+                Ok(make_node(SurfaceExpression::Quote(processed_inner)))
             }
 
-            Expr::Match { scrutinee, arms } => {
+            SurfaceExpression::Match { scrutinee, arms } => {
                 let processed_scrutinee =
-                    eval_quote_preprocess(&scrutinee.node, scrutinee.span, env, ctx).await?;
+                    eval_quote_preprocess(Arc::clone(scrutinee), env, ctx).await?;
                 let mut processed_arms = Vec::with_capacity(arms.len());
                 for arm in arms {
                     let processed_body =
-                        eval_quote_preprocess(&arm.body.node, arm.body.span, env, ctx).await?;
+                        eval_quote_preprocess(Arc::clone(&arm.body), env, ctx).await?;
                     let processed_guard = if let Some(ref guard) = arm.guard {
-                        Some(Box::new(
-                            eval_quote_preprocess(&guard.node, guard.span, env, ctx).await?,
-                        ))
+                        Some(eval_quote_preprocess(Arc::clone(guard), env, ctx).await?)
                     } else {
                         None
                     };
-                    processed_arms.push(MatchArm {
+                    processed_arms.push(SurfaceMatchArm {
                         pattern: arm.pattern.clone(),
                         guard: processed_guard,
-                        body: Box::new(processed_body),
+                        body: processed_body,
                     });
                 }
-                Ok(Spanned::new(
-                    Expr::Match {
-                        scrutinee: Box::new(processed_scrutinee),
-                        arms: processed_arms,
-                    },
-                    span,
-                ))
+                Ok(make_node(SurfaceExpression::Match {
+                    scrutinee: processed_scrutinee,
+                    arms: processed_arms,
+                }))
             }
 
-            Expr::DefMacro { name, params, body } => {
-                let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx).await?;
-                Ok(Spanned::new(
-                    Expr::DefMacro {
-                        name: name.clone(),
-                        params: params.clone(),
-                        body: Rc::new(processed_body),
-                    },
-                    span,
-                ))
+            SurfaceExpression::Decl(decl) => {
+                // Declaration forms inside a quote body — walk their child bodies
+                // to find any nested unquotes. Declarations are rare in quoted code,
+                // but users can write e.g. [quote [type Foo = Bar]] and expect
+                // unquotes inside the alias body to be evaluated.
+                let processed_decl = match decl.as_ref() {
+                    SurfaceDeclaration::TypeAlias { params, body } => {
+                        let processed_body =
+                            eval_quote_preprocess(Arc::clone(body), env, ctx).await?;
+                        SurfaceDeclaration::TypeAlias {
+                            params: params.clone(),
+                            body: processed_body,
+                        }
+                    }
+                    SurfaceDeclaration::DefMacro { name, params, body } => {
+                        let processed_params =
+                            eval_quote_preprocess(Arc::clone(params), env, ctx).await?;
+                        let processed_body =
+                            eval_quote_preprocess(Arc::clone(body), env, ctx).await?;
+                        SurfaceDeclaration::DefMacro {
+                            name: name.clone(),
+                            params: processed_params,
+                            body: processed_body,
+                        }
+                    }
+                    SurfaceDeclaration::MacroDecl { name, params, body } => {
+                        let processed_params =
+                            eval_quote_preprocess(Arc::clone(params), env, ctx).await?;
+                        let processed_body =
+                            eval_quote_preprocess(Arc::clone(body), env, ctx).await?;
+                        SurfaceDeclaration::MacroDecl {
+                            name: name.clone(),
+                            params: processed_params,
+                            body: processed_body,
+                        }
+                    }
+                    SurfaceDeclaration::SyntaxClass { name, pattern, message } => {
+                        let processed_pattern =
+                            eval_quote_preprocess(Arc::clone(pattern), env, ctx).await?;
+                        SurfaceDeclaration::SyntaxClass {
+                            name: name.clone(),
+                            pattern: processed_pattern,
+                            message: message.clone(),
+                        }
+                    }
+                    SurfaceDeclaration::Splice(forms) => {
+                        let mut processed_forms = Vec::with_capacity(forms.len());
+                        for form in forms {
+                            processed_forms.push(
+                                eval_quote_preprocess(Arc::clone(form), env, ctx).await?,
+                            );
+                        }
+                        SurfaceDeclaration::Splice(processed_forms)
+                    }
+                    // ClassDecl, InstanceDecl — complex; treat as leaves (no unquote recursion)
+                    other => other.clone(),
+                };
+                Ok(make_node(SurfaceExpression::Decl(Box::new(processed_decl))))
             }
 
-            Expr::MacroDecl { name, params, body } => {
-                let processed_params =
-                    eval_quote_preprocess(&params.node, params.span, env, ctx).await?;
-                let processed_body = eval_quote_preprocess(&body.node, body.span, env, ctx).await?;
-                Ok(Spanned::new(
-                    Expr::MacroDecl {
-                        name: name.clone(),
-                        params: Box::new(processed_params),
-                        body: Box::new(processed_body),
-                    },
-                    span,
-                ))
-            }
-
-            Expr::Splice(forms) => {
-                let mut processed_forms = Vec::with_capacity(forms.len());
-                for form in forms {
-                    processed_forms
-                        .push(eval_quote_preprocess(&form.node, form.span, env, ctx).await?);
-                }
-                Ok(Spanned::new(Expr::Splice(processed_forms), span))
-            }
-
-            Expr::SyntaxClass {
-                name,
-                pattern,
-                message,
-            } => {
-                let processed_pattern =
-                    eval_quote_preprocess(&pattern.node, pattern.span, env, ctx).await?;
-                Ok(Spanned::new(
-                    Expr::SyntaxClass {
-                        name: name.clone(),
-                        pattern: Box::new(processed_pattern),
-                        message: message.clone(),
-                    },
-                    span,
-                ))
-            }
-
-            // All other expressions don't have child expressions, just clone them
-            _ => Ok(Spanned::new(expr.clone(), span)),
+            // All other expressions have no child SurfaceNodes — return unchanged
+            _ => Ok(node),
         }
     }) // end Box::pin(async move {
 }
@@ -1782,17 +1745,17 @@ fn eval_core_expr<'a>(
                 Err(EvalError::match_exhaustion(scrutinee_value.type_name(), expr.span).into())
             }
 
-            // Quote: convert to Expr and use eval_quote.
+            // Quote: convert CoreExpr→SurfaceNode and walk with eval_quote_walk.
             //
-            // DESIGN DECISION: This round-trip (CoreExpr→Expr) is intentional.
+            // DESIGN DECISION: This round-trip (CoreExpr→SurfaceNode) is intentional.
             // Quote captures *surface syntax* for metaprogramming, not the desugared
             // CoreExpr form with de Bruijn indices. Users expect [quote x] to show
-            // the variable name "x", not FreeVar(0). eval_quote walks the Expr AST
-            // to handle unquotes and produces Value::Expression(SurfaceNode), which
-            // represents the code as written, not as compiled.
+            // the variable name "x", not FreeVar(0). eval_quote_walk processes the
+            // SurfaceNode tree to handle unquotes and produces Value::Expression(SurfaceNode),
+            // which represents the code as written, not as compiled.
             CoreExpr::Quote(inner) => {
-                let old_inner = Box::new(crate::ast_convert::core_expr_to_expr(inner));
-                eval_quote(&old_inner, env.clone(), ctx).await
+                let surface_node = crate::ast_convert::core_expr_to_surface_node(inner);
+                eval_quote_walk(surface_node, env.clone(), ctx).await
             }
 
             // Unquote: error (only valid inside quote)
