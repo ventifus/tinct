@@ -63,7 +63,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 **Part E — Evaluator cutover + delete old types:**
 ✅ **Rc→Arc migration DONE (commit b0aa803)** — Arc<Thunk>, Arc<RwLock<Environment>>, Arc<EvalContext>, Mutex<ThunkState> throughout. E1-E3 are now UNBLOCKED.
-- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File` — **BLOCKED**: all production runtime code is Expr-free. Remaining: test code + `parse_expression` (integration test API) still reference Expr. **Depends on: rv2-migrate-evaluator-bridges (parse_expression migration)**
+- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File` — **BLOCKED**: production runtime code is fully Expr-free; `ast_convert.rs` is `#[cfg(test)]`. Remaining: ~150 test constructions in eval.rs/typecheck.rs/parser.rs test modules directly build Expr nodes and call ast_convert functions. Requires sprint: **rv2-delete-test-bridges** (rewrite eval_for_test, check_expr stub, parse_expr test helpers to use SurfaceNode directly)
 - [x] **MAJOR MILESTONE**: UnevaluatedState::Expr DELETED (commit 18711a0) — evaluator fully CoreExpr-based
 - [x] Migrate eval_call.rs, eval_dict.rs, eval_materialize.rs to CoreExpr — deleted old eval_dict/eval_call functions; ~30 new_unevaluated call sites converted; force_step handles CoreExpr::DotAccess/TypeAssert/RuntimeTypeCheck inline; eval_step deleted; Action::EvalCore added
 - [x] Delete `src/eval_deep.rs` — moved deep_materialize to eval_materialize.rs; file deleted ✓ (commit 92ff2fc)
@@ -255,6 +255,20 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - `tests/corpus/eval/typecheck/warnings/doc_not_string`, `help_suggestion_*`, `unknown_fn_annotation_key` — same category
 - `tests/corpus/eval/type_errors/fn_annotation_mixed_keys_error`, `string_not_handle` — pre-existing type error format mismatches
 - `tests/corpus/typecheck/warnings/fn_annotation_mixed_keys`, `handle_capability_mismatch` — tracked: handle_capability_mismatch blocked on parser support for `Handle[Type]` annotation syntax
+
+### rv2-delete-test-bridges: Migrate test helpers from Expr to SurfaceNode (final cleanup)
+
+**Blocks:** Delete `Expr`/`File`/`Document` from `src/ast.rs` and delete `src/ast_convert.rs` entirely
+
+**Production code is fully clean** — `ast_convert.rs` is `#[cfg(test)]`, no production function uses Expr/File/Document. Remaining: ~150 test constructions in `#[cfg(test)]` modules that directly build Expr nodes.
+
+- [ ] Rewrite `eval_for_test` in `src/eval.rs` test module to take `Arc<SurfaceNode>` + update ~30 callers that construct `Expr::Int/Dict/Call` etc. — use `parse_surface_expression` or direct SurfaceNode construction (`src/eval.rs` `#[cfg(test)]`)
+- [ ] Rewrite `check_expr` stub in `src/typecheck.rs` test module (now a bridge via `expr_to_surface_node`) + `resolve_monad_from_expr_test` stub — replace with direct SurfaceNode construction (`src/typecheck.rs` `#[cfg(test)]`)
+- [ ] Rewrite `parse_expr` test helper in `src/parser.rs` test module (calls `surface_node_to_expr`) — use `parse_surface_expression` directly (`src/parser.rs` `#[cfg(test)]`)
+- [ ] Fix span-extraction test in `src/typecheck.rs:11354` that uses `surface_program_to_file` — traverse SurfaceProgram spans directly
+- [ ] Fix span-extraction test in `src/parser.rs:7515` that uses `surface_program_to_file` — traverse SurfaceProgram spans directly
+- [ ] Delete `ast_convert.rs` — once above callers migrated, no #[cfg(test)] callers remain
+- [ ] Delete `Expr`, `Document`, `File`, `Entry`, `NamedArg`, `MatchArm` from `src/ast.rs`
 
 ---
 

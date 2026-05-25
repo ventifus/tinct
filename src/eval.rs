@@ -27,7 +27,7 @@ use indexmap::IndexMap;
 
 use crate::arena::{EnvArena, ThunkArena, ThunkId};
 use crate::ast::{
-    Annotation, CoreExpr, Expr, LiteralPattern, Param, Pattern, Span, Spanned, SurfaceExpression,
+    Annotation, CoreExpr, LiteralPattern, Param, Pattern, Span, Spanned, SurfaceExpression,
 };
 use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
@@ -201,48 +201,8 @@ pub struct RuntimeClassDecl {
     pub num_determining: usize,
 }
 
-/// Extract type names from an instance pattern for MPTC dispatch.
-/// For `[instance Addable [x@Int y@Float z@Int] ...]` with num_determining=2,
-/// returns only `vec!["Int", "Float"]` (the determining-position tags).
-///
-/// The `num_determining` parameter is the number of determining-position type
-/// parameters for this class (from `RuntimeClassDecl::num_determining`). Only
-/// the first `num_determining` annotated bindings are included in the key so
-/// that `instance_registry` keys match the keys built by `try_dispatch_method`.
-/// Falls back to empty vec if pattern is malformed (will cause dispatch to fail).
-///
-/// Handles both `PatternDecl` (from `[pattern ...]` syntax) and `LetDecl` (from
-/// `[let ...]` syntax). The prelude uses `[let a@Int b@Int c]` for arithmetic
-/// instances, where the third bare binding (the determined param) is skipped by
-/// `filter_map` and only the first `num_determining` annotated positions are kept.
-// TODO(chr-instances-gaps): wire up instance registration so this function is called
-// when [instance ...] declarations are processed at runtime.
-#[allow(dead_code)]
-fn extract_instance_type_tags(pattern_expr: &Spanned<Expr>, num_determining: usize) -> Vec<String> {
-    let extract_tags = |bindings: &[Spanned<Expr>]| {
-        bindings
-            .iter()
-            .filter_map(|binding| match &binding.node {
-                Expr::Annotated { annotation, .. } => match &annotation.node {
-                    Annotation::Simple(type_name) => Some(type_name.clone()),
-                    Annotation::Annotated(outer, _inner) => {
-                        // For nested annotations like Seq@Int, use the outer constructor
-                        Some(outer.clone())
-                    }
-                    Annotation::PropertyDict(_) => None, // Skip property dict annotations
-                },
-                _ => None, // Skip bare VarRef bindings (no type info, e.g. the determined param)
-            })
-            .take(num_determining)
-            .collect()
-    };
-    match &pattern_expr.node {
-        Expr::PatternDecl { bindings } => extract_tags(bindings),
-        // LetDecl is the form used by prelude arithmetic instances: [let a@Int b@Int c]
-        Expr::LetDecl { bindings } => extract_tags(bindings),
-        _ => Vec::new(), // Malformed pattern — dispatch will miss
-    }
-}
+// TODO(chr-instances-gaps): implement extract_instance_type_tags using Arc<SurfaceNode>
+// when instance registration is wired up for runtime MPTC dispatch.
 
 /// Evaluation infrastructure context: separates session config from variable bindings.
 ///
