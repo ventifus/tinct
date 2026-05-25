@@ -1023,3 +1023,61 @@ Two findings from prior reviews — both verified **FIXED** (2026-05-23):
 
 - [x] Dispatch type-theorist + computer-scientist to (a) verify whether both issues are still present in current code, (b) if present, produce minimal fix recommendations → findings go to TODO.md
 
+---
+
+---
+
+## Codebase Health Audit Findings (2026-05-25) — Post-rv2 Full Panel Review
+
+All 9 specialist agents reviewed the codebase after the runtime-v2 migration completed. Findings below.
+
+### doc-rv2-update: Update stale documentation after runtime-v2 migration [Critical]
+
+Multiple doc files still reference the old Expr/File/Document pipeline or carry stale counts:
+
+- [ ] Update `doc/16-architecture.md:12` — change "File > Document > Expr" to "SurfaceProgram > SurfaceDocument > SurfaceNode > SurfaceExpression" [Critical — integration-verifier]
+- [ ] Update `doc/16-architecture.md:43-54` — add lower.rs pass between Desugar and Evaluator; update pipeline to "Source → Parser(SurfaceProgram) → Desugar → Resolver → TypeCheck → Eval(lower→CoreExpr) → Output"; remove MAX_EVAL_DEPTH row from Security table (line 527) [Critical — integration-verifier, security-expert]
+- [ ] Update `doc/11-stdlib.md:301,357` — correct builtin count from 284 to **333** (actual count from `standard_builtins()`); update stable alias count on line 313; add summary table: Rust builtins (333) + Prelude LLT (117) + Total (450) [Critical — stdlib-author]
+- [ ] Update `doc/02-syntax.md`, `doc/15-ast.md` — remove stale File/Document/Expr references; update parser description from "PEG/pest" to "hand-written iterative descent" if still present [Minor — grammar-architect]
+- [ ] Add §Iterative Evaluator to `doc/08-evaluation.md` after line 350 — document MAX_CONTINUATION_STACK (2048), rationale vs old MAX_EVAL_DEPTH (256) [Minor — eval-engine]
+
+### typeassert-elaboration-fix: TypeAnnotationTable not populated for nested TypeAssert nodes [Critical]
+
+- [ ] Fix `infer_surface_expr` TypeAssert handler in `src/typecheck.rs:2184-2203` — insert resolved type into `TypeAnnotationTable` keyed by `node_id(node)`; currently every nested `[@Type expr]` becomes `CoreExpr::RuntimeTypeCheck` because `lower.rs:158` always gets `None` from `types.get(&id)`. Thread `&mut TypeAnnotationTable` through `infer_surface_expr` or populate the table that's already threaded through infer_dict. [Critical — computer-scientist]
+
+### quote-roundtrip-fidelity: core_expr_to_surface_expr drops Dict/CaseArm/TypeApp in quote [Major]
+
+- [ ] Implement missing structural conversions in `src/lower.rs:core_expr_to_surface_expr` — `CoreExpr::Dict` currently maps to `Placeholder` (destroying dict structure); `[quote [a: 1 b: 2]]` produces `Value::Expression(Placeholder)`. Add Dict, CaseArm, TypeApp, Error conversions (all direct recursive maps with same field shapes). [Major — computer-scientist]
+
+### boundary-guard-impl: Implement boundary guard application in eval_core_expr [Major]
+
+- [ ] Implement `ctx.boundary_guards` lookup in `src/eval.rs:eval_core_expr` or `src/eval_materialize.rs:force_step` — wrap returned thunk with `Guarded` state when span matches a registered guard; un-ignore 3 tests at `src/eval.rs:~8465-8492`. See sprint `test-boundary-guard-eval-core` for full scope. [Major — integration-verifier]
+
+### resolve-test-coverage: Restore 13 resolve.rs tests deleted during test migration [Major]
+
+- [ ] Add 13 unit tests for `resolve_surface_program()` in `src/resolve.rs` test module — coverage: VarRef resolution (found/not-found), Dict static keys, Fn params, Sequential scope injection, multi-document isolation, all match arms. These were deleted by the E3-expand-resolve-imports sprint without replacement. [Major — test-crafter]
+
+### try-closure-test: Add missing tests for builtin_try VarRef fix [Major]
+
+- [ ] Add corpus test `tests/corpus/eval/builtins/try_closure_varref.llt-eval` — `[x: 42  result: [try [fn [] $x]]]` should evaluate to `Variant(Ok, Int(42))`; proves the `call_env = with_parent(closure_env)` De Bruijn fix at `src/builtins_meta.rs:166-177` [Major — test-crafter]
+- [ ] Add corpus test `tests/corpus/eval/errors/try_depth_exceeded.llt-eval` — prove `try` does NOT catch `DepthExceeded` (re-propagation at `src/builtins_meta.rs:219-227`) [Minor — test-crafter]
+
+### perf-empty-tables: Cache empty ResolutionTable/TypeAnnotationTable in static singletons [Major]
+
+- [ ] Add `empty_resolution_table() -> &'static Arc<ResolutionTable>` and `empty_type_annotation_table() -> &'static Arc<TypeAnnotationTable>` using `OnceLock` in `src/ast.rs` (~20 lines total) [Major — performance-expert]
+- [ ] Replace all 11 `ResolutionTable::new()` / `TypeAnnotationTable::new()` call sites in `src/eval_materialize.rs` (5 sites), `src/eval.rs` (3 sites), `src/eval_call.rs` (1 site) with static singleton references — each allocation is 96 bytes per thunk force [Major — performance-expert]
+
+### comment-cleanup: Delete stale bridge/migration comments [Major]
+
+- [ ] Delete stale bridge comment block from `src/eval_call.rs:47-50` — claims "function position still converted via core_expr_to_expr" but line 63 already calls `eval_core_expr_pub` directly [Major — eval-engine]
+- [ ] Delete orphaned `ast_convert`/`surface_program_to_file`/`expr_to_core_expr` references from comments in `src/eval_pipeline.rs:84-85`, `src/lib.rs:193,250-251,410-411,560,608` [Major — integration-verifier]
+- [ ] Rephrase or delete stale `TODO(parts-e):` comments (6 occurrences in `src/eval_dict.rs:154`, `src/eval_call.rs:50`, `src/eval_materialize.rs:110,263,344`) — Parts E is complete [Minor — eval-engine]
+
+### adt-constructor-types: Precise types for ADT constructors [Minor]
+
+- [ ] Track ADT constructors typed as `Type::Unknown` in `src/typecheck_dict.rs:54` — currently gradual escape hatch; goal is `Function { params: [(k, T), ...], ret: NominalVariant{tag, fields} }` for field-bearing constructors. Requires resolving payload vs. field-record semantics. [Minor — type-theorist]
+
+### restorestate-design: Resolve RestoreState hybrid pattern inconsistency [Minor]
+
+- [ ] Decide: either delete `RestoreState` entirely (always cache errors for all states), OR restore full restoration pattern for PendingBuiltin/PendingCall — current hybrid with dead code at `src/eval_materialize.rs:82-136` is confusing. `#[allow(dead_code)]` at line 83 indicates the issue. [Minor — eval-engine]
+
