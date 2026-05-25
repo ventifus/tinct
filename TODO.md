@@ -1465,16 +1465,15 @@ Errors routed through the `cap_net` path silently miss macro expansion attributi
 
 The code is authoritative: `src/typecheck.rs:5501` confirms `None => Ok(Type::Unknown)`. Line 176 describes aspirational behavior. Also: `TODO.md:1133` incorrectly marks `doc-06-unannotated-params` as DONE with `"unannotated params now documented as fresh TypeVar"` — but the code says Unknown.
 
-- [ ] Reconcile: update line 176 to accurately say Unknown (with a note that fresh TypeVar is the future goal)
-- [ ] Reopen TODO.md:1133 (the check-mark is wrong — the doc still says TypeVar at line 176, not Unknown)
-- **File:** `doc/06-type-inference.md:176,672`
+- [x] Reconciled: line 176 updated to say Unknown (with note that fresh TypeVar is the future goal); now consistent with line 672 and code (typecheck.rs:5576)
+- **File:** `doc/06-type-inference.md:176`
 
 ### resolve-instance-name-reuse: resolve_instance discards freshening state on success path [Major]
 
 **computer-scientist M3.** `src/type_class.rs:470-474`: `instantiate_at_level` at line 463 increments `state.name_counter` to produce fresh `_tN` names. The restore at line 470 resets `name_counter` to its pre-probe value. Subsequent `instantiate_at_level` calls reuse the same `_tN` names, violating Robinson (1965) monotonic name generation. In practice unlikely to cause a bug (returned method types are for display/constraint checking, not further unification with main substitution), but violates the freshness invariant.
 
-- [ ] After state restore at line 474, ensure `state.name_counter` is at least the peak value reached during the probe: `state.name_counter = state.name_counter.max(peak_counter);`
-- **File:** `src/type_class.rs:459-474`
+- [x] After state restore, preserve peak `name_counter` via `state.name_counter = saved_name_counter.max(peak_counter)` — applied to both successful and failed probe branches in `resolve_instance`
+- **File:** `src/type_class.rs:459-493`
 
 ### slurp-text-heap-exhaustion: slurp Text path performs post-read size limit check [Minor]
 

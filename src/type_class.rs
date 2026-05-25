@@ -467,11 +467,13 @@ impl InstanceEnv {
 
                 // F1 FIX: Restore state after successful probe — we return the instance but don't
                 // commit the probe's state mutations (they were exploratory).
+                // BUT: preserve peak name_counter to prevent _tN name reuse across candidates.
+                let peak_counter = state.name_counter;
                 state.levels = saved_levels;
                 state.constraints = saved_constraints;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
-                state.name_counter = saved_name_counter;
+                state.name_counter = saved_name_counter.max(peak_counter);
 
                 return Some(InstanceDecl {
                     class_name: inst.class_name.clone(),
@@ -481,11 +483,13 @@ impl InstanceEnv {
                 });
             } else {
                 // F1 FIX: Restore state after failed probe (discard leaked mutations).
+                // BUT: preserve peak name_counter to prevent _tN name reuse across candidates.
+                let peak_counter = state.name_counter;
                 state.levels = saved_levels;
                 state.constraints = saved_constraints;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
-                state.name_counter = saved_name_counter;
+                state.name_counter = saved_name_counter.max(peak_counter);
             }
         }
 
