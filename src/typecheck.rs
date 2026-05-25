@@ -13,11 +13,12 @@ use crate::ast::{
     TypeAnnotationTable,
 };
 // Expr: used by production inference helpers (check_expr, infer_fn, register_type_aliases,
-// extract_param_indices, extract_pattern_types, extract_binding_types, resolve_monad_from_expr,
-// etc.) that still operate on the Expr representation via bridge conversion.
+// resolve_monad_from_expr, etc.) that still operate on the Expr representation via bridge
+// conversion.
 // TODO(rv2-delete-old-ast): remove once all inference helpers are rewritten to walk
 // SurfaceExpression natively. Migrated: extract_narrowings, typecheck_case_arm, TypeAssert
-// bridge, infer_class_decl_from_surface, infer_instance_decl_from_surface.
+// bridge, infer_class_decl_from_surface, infer_instance_decl_from_surface,
+// extract_param_indices, extract_pattern_types, extract_binding_types.
 use crate::ast::Expr;
 use crate::coverage;
 use crate::types::{
@@ -1437,18 +1438,18 @@ fn collect_pattern_bindings(pat: &Pattern, scrutinee_ty: &Type, out: &mut Vec<(S
 
 /// Extract type parameters from an instance pattern declaration.
 ///
-/// The PatternDecl stores the inner bracket `[a@Int b@Float]` as a single `Expr::Dict`
+/// The PatternDecl stores the inner bracket `[a@Int b@Float]` as a single `SurfaceExpression::Dict`
 /// binding (auto-indexed entries). This function recursively extracts types from either:
-/// - `Expr::Dict(entries)` — inner binding bracket; extracts each auto-indexed entry
-/// - `Expr::Annotated { annotation, .. }` — `a@Type` form; resolves the annotation
-/// - `Expr::VarRef { .. }` — bare identifier; treated as `Type::Unknown`
+/// - `SurfaceExpression::Dict(entries)` — inner binding bracket; extracts each auto-indexed entry
+/// - `SurfaceExpression::Annotated { annotation, .. }` — `a@Type` form; resolves the annotation
+/// - `SurfaceExpression::VarRef { .. }` — bare identifier; treated as `Type::Unknown`
 fn extract_pattern_types(
-    pattern_expr: &Spanned<Expr>,
+    pattern_node: &Arc<SurfaceNode>,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
 ) -> Result<Vec<Type>, Vec<TypeError>> {
-    match &pattern_expr.node {
-        Expr::PatternDecl { bindings } | Expr::LetDecl { bindings } => {
+    match &pattern_node.expr {
+        SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
             let mut types = Vec::new();
             for binding in bindings {
                 extract_binding_types(binding, env, state, &mut types)?;
@@ -1457,35 +1458,35 @@ fn extract_pattern_types(
         }
         _ => Err(vec![TypeError::new(
             "instance arm pattern must be a [pattern [...]] or [let ...] declaration",
-            pattern_expr.span,
+            pattern_node.span,
         )]),
     }
 }
 
 /// Recursively extract type(s) from a single pattern binding expression.
 ///
-/// - `Expr::Dict(entries)` — inner binding bracket `[a@Int b@Float]` (old syntax); expands entries
-/// - `Expr::LetDecl { bindings }` — inner binding bracket `[let a@Int b@Float]` (new syntax); expands bindings
-/// - `Expr::Call { func, args, .. }` — implied call `[Type]` or `[Type arg1 arg2]`; infers the call type
-/// - `Expr::Annotated { annotation, .. }` — `a@Type` form
-/// - `Expr::VarRef { .. }` — bare identifier → `Type::Unknown`
-/// - `Expr::Placeholder` — wildcard `_` → `Type::Unknown`
+/// - `SurfaceExpression::Dict(entries)` — inner binding bracket `[a@Int b@Float]` (old syntax); expands entries
+/// - `SurfaceExpression::LetDecl { bindings }` — inner binding bracket `[let a@Int b@Float]` (new syntax); expands bindings
+/// - `SurfaceExpression::Call { func, args, .. }` — implied call `[Type]` or `[Type arg1 arg2]`; infers the call type
+/// - `SurfaceExpression::Annotated { annotation, .. }` — `a@Type` form
+/// - `SurfaceExpression::VarRef { .. }` — bare identifier → `Type::Unknown`
+/// - `SurfaceExpression::Placeholder` — wildcard `_` → `Type::Unknown`
 fn extract_binding_types(
-    binding: &Spanned<Expr>,
+    binding: &Arc<SurfaceNode>,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
     types: &mut Vec<Type>,
 ) -> Result<(), Vec<TypeError>> {
-    match &binding.node {
+    match &binding.expr {
         // Inner binding bracket [a@Int b@Float] parsed as auto-indexed Dict (old syntax)
-        Expr::Dict(entries) => {
+        SurfaceExpression::Dict(entries) => {
             for entry in entries {
                 // Each entry should be auto-indexed (no key) with Annotated/VarRef value
                 extract_binding_types(&entry.node.value, env, state, types)?;
             }
         }
         // Inner binding bracket [let a@Int b@Float] (new unified-bindings syntax)
-        Expr::LetDecl { bindings } => {
+        SurfaceExpression::LetDecl { bindings } => {
             for sub_binding in bindings {
                 extract_binding_types(sub_binding, env, state, types)?;
             }
@@ -1493,13 +1494,13 @@ fn extract_binding_types(
         // Implied call [Int] or [Result String] — treat as a type name reference.
         // [Int] is parsed as Call { func: VarRef("Int"), args: [], implied: true }.
         // Try to resolve the func as a type annotation; fall back to Unknown on failure.
-        Expr::Call {
+        SurfaceExpression::Call {
             func,
             args,
             implied: true,
             ..
         } if args.is_empty() => {
-            if let Expr::VarRef { name, .. } = &func.node {
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 let ann = crate::ast::Annotation::Simple(name.clone());
                 match resolve_annotation(&ann, env, func.span, state, &mut None, &mut None) {
                     Ok(ty) => types.push(ty),
@@ -1511,11 +1512,11 @@ fn extract_binding_types(
         }
         // Multi-arg implied call [Result String] or other complex type expressions:
         // treat as Unknown (full parametric type resolution is future work).
-        Expr::Call { .. } => {
+        SurfaceExpression::Call { .. } => {
             types.push(Type::Unknown);
         }
         // a@Type form
-        Expr::Annotated { annotation, .. } => {
+        SurfaceExpression::Annotated { annotation, .. } => {
             let ty = resolve_annotation(
                 &annotation.node,
                 env,
@@ -1529,7 +1530,7 @@ fn extract_binding_types(
         }
         // Bare identifier in pattern position: try to resolve as a type name.
         // Handles `Int` in [pattern [Int]] where the inner dict entry is VarRef("Int").
-        Expr::VarRef { name, .. } => {
+        SurfaceExpression::VarRef { name, .. } => {
             let ann = crate::ast::Annotation::Simple(name.clone());
             match resolve_annotation(&ann, env, binding.span, state, &mut None, &mut None) {
                 Ok(ty) => types.push(ty),
@@ -1537,7 +1538,7 @@ fn extract_binding_types(
             }
         }
         // Gradual: wildcard placeholder
-        Expr::Placeholder => {
+        SurfaceExpression::Placeholder => {
             types.push(Type::Unknown);
         }
         _ => {
@@ -1664,15 +1665,15 @@ fn types_can_unify(
 /// Call `[a b]` (which the parser produces when `a` is in head position).
 /// Returns Vec<usize> of indices into the class params list.
 fn extract_param_indices(
-    expr: &Spanned<Expr>,
+    node: &Arc<SurfaceNode>,
     params: &[String],
     span: Span,
 ) -> Result<Vec<usize>, Vec<TypeError>> {
     let mut indices = Vec::new();
 
-    match &expr.node {
+    match &node.expr {
         // Single param: a@Type or just "a"
-        Expr::VarRef { name, .. } | Expr::Str(name) => {
+        SurfaceExpression::VarRef { name, .. } | SurfaceExpression::Str(name) => {
             if let Some(idx) = params.iter().position(|p| p == name) {
                 indices.push(idx);
             } else {
@@ -1684,11 +1685,11 @@ fn extract_param_indices(
         }
         // Multiple params as auto-indexed Dict: produced when bracket contains
         // a literal/annotated head (e.g. `[a@Int b]` → Dict with auto-indexed entries)
-        Expr::Dict(entries) => {
+        SurfaceExpression::Dict(entries) => {
             for entry in entries {
-                let param_name = match &entry.node.value.node {
-                    Expr::VarRef { name, .. } => name,
-                    Expr::Str(s) => s,
+                let param_name = match &entry.node.value.expr {
+                    SurfaceExpression::VarRef { name, .. } => name,
+                    SurfaceExpression::Str(s) => s,
                     _ => {
                         return Err(vec![TypeError::new(
                             "functional dependency param must be an identifier or string",
@@ -1712,16 +1713,16 @@ fn extract_param_indices(
         }
         // Multiple params as implied Call: produced when bracket has identifier in head
         // position, e.g. `[a b]` → Call { func: VarRef("a"), args: [VarRef("b")] }
-        Expr::Call {
+        SurfaceExpression::Call {
             func,
             args,
             implied: true,
             ..
         } => {
             // Extract the function (head param)
-            let head_name = match &func.node {
-                Expr::VarRef { name, .. } => name,
-                Expr::Str(s) => s,
+            let head_name = match &func.expr {
+                SurfaceExpression::VarRef { name, .. } => name,
+                SurfaceExpression::Str(s) => s,
                 _ => {
                     return Err(vec![TypeError::new(
                         "functional dependency param must be an identifier or string",
@@ -1742,9 +1743,9 @@ fn extract_param_indices(
             }
             // Extract the remaining args
             for arg in args {
-                let arg_name = match &arg.node {
-                    Expr::VarRef { name, .. } => name,
-                    Expr::Str(s) => s,
+                let arg_name = match &arg.expr {
+                    SurfaceExpression::VarRef { name, .. } => name,
+                    SurfaceExpression::Str(s) => s,
                     _ => {
                         return Err(vec![TypeError::new(
                             "functional dependency param must be an identifier or string",
@@ -2595,14 +2596,13 @@ fn infer_class_decl_from_surface(
 
     let mut fd_indices: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
     for fd_node in determines {
-        // Bridge: convert SurfaceNode → Spanned<Expr> for extract_param_indices.
-        let fd_expr = crate::ast_convert::surface_node_to_expr(fd_node);
-        match &fd_expr.node {
-            Expr::Dict(entries) if entries.len() == 2 => {
+        match &fd_node.expr {
+            SurfaceExpression::Dict(entries) if entries.len() == 2 => {
                 let determining = &entries[0].node.value;
-                let determining_indices = extract_param_indices(determining, params, fd_expr.span)?;
+                let determining_indices =
+                    extract_param_indices(determining, params, fd_node.span)?;
                 let determined = &entries[1].node.value;
-                let determined_indices = extract_param_indices(determined, params, fd_expr.span)?;
+                let determined_indices = extract_param_indices(determined, params, fd_node.span)?;
                 fd_indices.push((determining_indices, determined_indices));
             }
             _ => {
@@ -2702,9 +2702,7 @@ fn infer_instance_decl_from_surface(
     let mut arm_data: Vec<SurfaceMatchArmData> = Vec::new();
 
     for (pattern_node, methods) in arms {
-        // Bridge: convert SurfaceNode → Spanned<Expr> for extract_pattern_types.
-        let pattern_expr = crate::ast_convert::surface_node_to_expr(pattern_node);
-        let pattern_types = extract_pattern_types(&pattern_expr, env, state)?;
+        let pattern_types = extract_pattern_types(pattern_node, env, state)?;
 
         if pattern_types.len() != param_count {
             return Err(vec![TypeError::new(
