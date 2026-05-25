@@ -37,7 +37,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Phase 1: Frame stack types — StackFrame uses Arc<SurfaceNode>, push_value takes Arc<SurfaceNode>
 - [x] Phase 2: Expression construction sites — 130 SurfaceExpression:: usages in parser.rs
 - [x] Phase 3: Output type — ParseOutput.program: SurfaceProgram; all expand_surface_program() callers
-- [ ] Delete `src/ast_convert.rs` — **BLOCKED**: rv2-infer-surface ✅ done. Remaining callers: typecheck.ts×3 (resolve_type_expr bridge), typecheck_annot.ts×3 (resolve_type_expr bridge), typecheck_dict.ts×1 (resolve_type_expr bridge), expand.rs×2 (macro body Expr::Fn), eval.rs (quote/unquote: expr_to_core_expr, expr_to_surface_node), eval_materialize.rs×2 (TypeAssert CoreExpr). **Depends on: rv2-resolve-type-expr + rv2-migrate-evaluator-bridges**
+- [x] Delete `src/ast_convert.rs` production callers — ALL production runtime code is ast_convert-free. Only test code + `parse_expression` (integration test API) remain. **Depends on: rv2-migrate-evaluator-bridges (parse_expression migration)**
 - [x] `just build` passes ✓; `just test-lib` passes 1889/0 ✓; corpus tests have pre-existing CHR failures
 
 ### Parts B + E — Parser, resolver, typechecker, expander migration + Evaluator cutover (ATOMIC) — remaining items BLOCKED
@@ -63,7 +63,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 **Part E — Evaluator cutover + delete old types:**
 ✅ **Rc→Arc migration DONE (commit b0aa803)** — Arc<Thunk>, Arc<RwLock<Environment>>, Arc<EvalContext>, Mutex<ThunkState> throughout. E1-E3 are now UNBLOCKED.
-- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File` — **BLOCKED**: rv2-infer-surface ✅ done (infer_expr deleted, typecheck.rs has no production Expr import). Remaining: eval.rs still uses Expr for quote/unquote (expr_to_core_expr/core_expr_to_expr), expand.rs uses Expr::Fn for macro body evaluation. **Depends on: rv2-resolve-type-expr + rv2-migrate-evaluator-bridges**
+- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File` — **BLOCKED**: all production runtime code is Expr-free. Remaining: test code + `parse_expression` (integration test API) still reference Expr. **Depends on: rv2-migrate-evaluator-bridges (parse_expression migration)**
 - [x] **MAJOR MILESTONE**: UnevaluatedState::Expr DELETED (commit 18711a0) — evaluator fully CoreExpr-based
 - [x] Migrate eval_call.rs, eval_dict.rs, eval_materialize.rs to CoreExpr — deleted old eval_dict/eval_call functions; ~30 new_unevaluated call sites converted; force_step handles CoreExpr::DotAccess/TypeAssert/RuntimeTypeCheck inline; eval_step deleted; Action::EvalCore added
 - [x] Delete `src/eval_deep.rs` — moved deep_materialize to eval_materialize.rs; file deleted ✓ (commit 92ff2fc)
@@ -245,8 +245,8 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Migrate typecheck.rs tests from `typecheck_file_with_types` to `typecheck_surface_program` — 28 tests migrated; test helpers (`infer`, `doc_env`, `file_env_impl`) now use `typecheck_surface_document` directly; `typecheck_file_with_types*` (4 wrappers), `typecheck_document` (367 lines), `reset_elaboration`, `reset_expr`, `extract_doc_strings` all deleted (2026-05-24)
 - [x] Delete `src/ast_dict.rs` old Expr-based functions (`ast_to_dict`, `ast_to_dict_expr`, `dict_to_ast`, `dict_to_file`, `dict_to_surface_program`, `expr_to_thunk_id`, `entry_to_thunk_id`, `named_arg_to_thunk_id`, `param_to_thunk_id`) — DONE
 - [x] Clean up `#[cfg(test)]` imports — `Document` import removed from typecheck.rs; `File` only remains for 3 legitimate ast_convert self-tests
-- [ ] Delete `src/ast_convert.rs` entirely — **BLOCKED**: 6 production callers of `surface_node_to_expr` (expand.rs ×2, typecheck_dict.rs ×4, typecheck.rs ×7) + `expr_to_surface_node` (typecheck.rs ×4, eval.rs ×6, parser.rs ×5) + `expr_to_core_expr`/`core_expr_to_expr` (eval.rs ×2). These exist because `infer_expr` still takes `Rc<Spanned<Expr>>` — needs full type checker rewrite to SurfaceNode
-- [ ] Delete `Expr`, `Document`, `File` from `src/ast.rs` — **BLOCKED**: `infer_expr` (typecheck.rs production) walks Expr; 14 `check_*` functions take `&[Rc<Spanned<Expr>>]` args; `Document` and `File` eliminated from typecheck.rs (only 3 ast_convert self-tests remain). Requires new sprint: `rv2-infer-surface` to rewrite `infer_expr` to walk SurfaceNode natively
+- [x] Delete `src/ast_convert.rs` production callers — rv2-infer-surface ✅, rv2-resolve-type-expr ✅, rv2-migrate-evaluator-bridges ✅. All production runtime code is ast_convert-free. Only `parse_expression` (integration test API used by corpus_tests.rs) keeps ast_convert.rs pub.
+- [ ] Delete `Expr`, `Document`, `File` from `src/ast.rs` — **BLOCKED**: test code + `parse_expression` still reference Expr. Once `parse_expression` is migrated (corpus_tests.rs) and ast_convert.rs deleted, these types can be removed.
 - [x] `src/desugar.rs` — confirmed NOT deletable: `desugar_surface_program`/`desugar_surface_node` are the live API
 - [x] `just build` passes; `just test` passes (pre-existing test failures NOT caused by this sprint)
 
