@@ -5671,7 +5671,8 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     };
     let body_string = String::from_utf8_lossy(&body_bytes).into_owned();
 
-    // Build {ok: {status: Int, headers: Dict, body: String}}
+    // Build {status: Int, headers: Dict, body: String} — callers use builtin-try for Ok/Err wrapping.
+    // The old {ok: {status, headers, body}} wrapper is not needed since fetch uses builtin-try.
     let mut inner = IndexMap::new();
     inner.insert(
         crate::value::Key::String("status".into()),
@@ -5685,12 +5686,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
         crate::value::Key::String("body".into()),
         ctx.alloc_thunk(ok_val(string_val(&body_string), span)?),
     );
-    let mut result = IndexMap::new();
-    result.insert(
-        crate::value::Key::String("ok".into()),
-        ctx.alloc_thunk(ok_val(Value::Dict(inner), span)?),
-    );
-    ok_val(Value::Dict(result), span)
+    ok_val(Value::Dict(inner), span)
 }
 
 /// Issue an HTTP/3 request on an existing `h3::client::SendRequest` session.
@@ -5830,27 +5826,18 @@ fn http_request_h3(
         ctx.alloc_thunk(ok_val(string_val(&body_string), span)?),
     );
 
-    // Wrap as {ok: inner}
-    let mut result = IndexMap::new();
-    result.insert(
-        crate::value::Key::String("ok".into()),
-        ctx.alloc_thunk(ok_val(Value::Dict(inner), span)?),
-    );
-    ok_val(Value::Dict(result), span)
+    // Return {status: Int, headers: Dict, body: String} — callers use builtin-try for wrapping.
+    ok_val(Value::Dict(inner), span)
 }
 
-/// Build an `{err: String}` result dict for http-request soft failures.
+/// Raise a user-visible error for http-request failures.
+/// `builtin-try` will catch this and wrap it as Variant(Err, msg).
 fn http_request_err_val(
     msg: String,
     span: crate::ast::Span,
-    ctx: &crate::eval::EvalContext,
+    _ctx: &crate::eval::EvalContext,
 ) -> EvalResult<Arc<Thunk>> {
-    let mut result = IndexMap::new();
-    result.insert(
-        crate::value::Key::String("err".into()),
-        ctx.alloc_thunk(ok_val(string_val(&msg), span)?),
-    );
-    ok_val(Value::Dict(result), span)
+    Err(EvalError::user_error(msg, span).into())
 }
 
 /// `icmp-ping`: Send an ICMP echo request to a host.

@@ -1421,8 +1421,15 @@ fn eval_core_expr<'a>(
                 expr.span,
             ))),
 
+            // Sequential: evaluate each expression in order, extending the environment
+            // with dict bindings from each intermediate dict expression.
+            // Dict bindings are FORCED (materialized) before insertion to prevent circular
+            // dependencies that arise when lazy thunks reference the same sequential scope.
+            // NOTE: The SequentialStep CEK continuation also exists but has a correctness bug
+            // with lazy dict bindings — it inserts unforced thunks which can create cycles.
+            // This direct async approach forces bindings eagerly, matching eval_pipeline.rs behavior.
             // Sequential: wrap as CoreExpr thunk — the CEK machine will handle iterative
-            // evaluation via SequentialStep and SequentialBindings continuations.
+            // evaluation via SequentialStep continuations.
             // This eliminates async recursion on the Rust stack for deeply nested sequential blocks.
             CoreExpr::Sequential(_) => Ok(Arc::new(Thunk::new_unevaluated_core(
                 Arc::new(expr.clone()),

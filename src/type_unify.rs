@@ -386,15 +386,49 @@ fn check_constraints_on_var(
                 vars,
                 fundeps,
             } => {
-                // Multi-parameter type class constraint with functional dependencies
-                // KNOWN ISSUE (T3): MPTC check_constraints_on_var does FD improvement only,
-                // no class membership check. If _t0 is constrained by Add _t0 _t1 _t2 and
-                // _t0 is bound to Str, no error fires at binding time — it defers until FD
-                // improvement (which requires all determining positions ground simultaneously).
-                // Invalid MPTC usage not caught early. Fixing requires MPTC instance membership
-                // checks analogous to single-param satisfies_constraint, but with partial-param
-                // matching (e.g., can we find Add Str β γ for any β, γ?). Deferred to chr-mptc-membership sprint.
+                // Multi-parameter type class constraint with functional dependencies.
                 //
+                // T3 FIX: Partial membership check for arithmetic MPTC classes.
+                //
+                // When a TypeVar constrained by an arithmetic class (Addable/Subtractable/
+                // Multipliable/Divisible) is bound to a definitely-concrete, non-arithmetic
+                // type (e.g., String, Bool, Handle, Record, Seq), we can immediately reject
+                // the binding rather than waiting for FD improvement (which requires ALL
+                // determining positions to be ground simultaneously).
+                //
+                // The check is conservative:
+                // - Unknown passes (gradual typing escape hatch — may be numeric at runtime)
+                // - TypeVar passes (may unify to a numeric type later)
+                // - Top, Error, Never pass (lattice extremes / sentinels)
+                // - IntLiteral/Number/Int/Float pass (numeric)
+                //
+                // Only concrete, provably non-arithmetic types are rejected at binding time.
+                // This fires for the first determining-position bound; full FD improvement
+                // fires when ALL determining positions are ground.
+                if is_definitely_non_arithmetic(concrete_ty)
+                    && matches!(
+                        class.as_str(),
+                        "Addable" | "Subtractable" | "Multipliable" | "Divisible"
+                    )
+                {
+                    // Check if var_name is in a determining position of any FD.
+                    // Only emit the error if the bound var participates in a determining position.
+                    let is_in_determining_position = fundeps.iter().any(|(det_positions, _)| {
+                        vars.iter()
+                            .enumerate()
+                            .any(|(i, v)| v == var_name && det_positions.contains(&i))
+                    });
+                    if is_in_determining_position {
+                        return Err(TypeError::new(
+                            format!(
+                                "type {} does not satisfy arithmetic constraint {} — expected Number, Int, or Float",
+                                concrete_ty, class
+                            ),
+                            span,
+                        ));
+                    }
+                }
+
                 // Check if this variable binding triggers FD improvement
                 improve_functional_dependency(
                     &class,
@@ -710,6 +744,40 @@ fn improve_functional_dependency_inner(
     }
 
     Ok(())
+}
+
+/// Returns true if a type is provably non-arithmetic — i.e., it cannot possibly be a
+/// numeric type at runtime and therefore cannot satisfy any arithmetic type class instance
+/// (Addable, Subtractable, Multipliable, Divisible).
+///
+/// Conservative: the following types are NOT flagged (they pass the check):
+/// - `Unknown`: gradual typing escape hatch — may be numeric at runtime.
+/// - `TypeVar`: unconstrained polymorphic variable — may unify to a numeric type.
+/// - `Top`: ⊤ is the lattice ceiling; not a concrete value, leave to runtime.
+/// - `Error`: cascade sentinel — the sub-expression already failed; don't double-report.
+/// - `Never`: ⊥ is uninhabited; constraint is vacuously satisfied.
+/// - `Number`, `Int`, `Float`, `IntLiteral`: these ARE arithmetic types.
+///
+/// Everything else (Str, StringLiteral, Bool, Record, Seq, Handle, etc.) is provably
+/// non-arithmetic and returns `true`.
+///
+/// Mirrors `is_definitely_non_numeric` from `typecheck.rs` but lives here so it can
+/// be called from `check_constraints_on_var` during unification (type_unify.rs is a
+/// submodule of types.rs and cannot import from typecheck.rs).
+fn is_definitely_non_arithmetic(ty: &Type) -> bool {
+    match ty {
+        // Arithmetic types — pass
+        Type::Number | Type::Int | Type::Float | Type::IntLiteral(_) => false,
+        // Escape hatches — pass (cannot statically rule out numeric)
+        Type::Unknown | Type::Top | Type::Error | Type::Never => false,
+        Type::TypeVar(_, _) => false,
+        // Union/Intersection: conservatively return true (treat as non-arithmetic).
+        // A Union(Int, Str) IS potentially arithmetic (the Int branch), but we cannot
+        // prove it is PURELY arithmetic. This mirrors is_definitely_non_numeric in
+        // typecheck.rs. False positives on Union/Intersection types in arithmetic
+        // positions are accepted as conservative (fail-safe) behavior.
+        _ => true,
+    }
 }
 
 /// Instance lookup for multi-parameter type classes with functional dependencies.

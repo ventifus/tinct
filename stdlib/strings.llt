@@ -110,7 +110,7 @@ lower@[doc: "Convert a string to lowercase"]: [fn@String [let s@String]
 # Example: [pad-left "hi" 5 " "] => "   hi"
 # Example: [pad-left "hello" 3 " "] => "hello"
 # Example: [pad-left "x" 4 "0"] => "000x"
-pad-left@[doc: "Left-pad a string to a target width with a padding character"]: [fn@String [s@String width@Int pad-char@String]
+pad-left@[doc: "Left-pad a string to a target width with a padding character"]: [fn@String [let s width pad-char]
     [if [< [str-length s] width]
         [str [str-repeat pad-char [- width [str-length s]]] s]
         s]]
@@ -121,7 +121,7 @@ pad-left@[doc: "Left-pad a string to a target width with a padding character"]: 
 # Example: [pad-right "hi" 5 " "] => "hi   "
 # Example: [pad-right "hello" 3 " "] => "hello"
 # Example: [pad-right "x" 4 "0"] => "x000"
-pad-right@[doc: "Right-pad a string to a target width with a padding character"]: [fn@String [s@String width@Int pad-char@String]
+pad-right@[doc: "Right-pad a string to a target width with a padding character"]: [fn@String [let s width pad-char]
     [if [< [str-length s] width]
         [str s [str-repeat pad-char [- width [str-length s]]]]
         s]]
@@ -135,7 +135,7 @@ pad-right@[doc: "Right-pad a string to a target width with a padding character"]
 # Example: [str-reverse "hello"] => "olleh"
 # Example: [str-reverse ""] => ""
 # Example: [str-reverse "a"] => "a"
-str-reverse@[doc: "Reverse a string by characters"]: [fn@String [s@String]
+str-reverse@[doc: "Reverse a string by characters"]: [fn@String [let s@String]
     [str-reverse-impl s 0 [str-length s] ""]]
 
 # ============================================================================

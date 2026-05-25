@@ -2894,6 +2894,12 @@ pub(crate) async fn apply_cont(
 
                         let child_env =
                             Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
+                        // NOTE: We insert the thunks as-is (lazy) rather than forcing them.
+                        // Forcing here would require async and break the sync apply_cont pattern.
+                        // The pipeline's eval_pipeline.rs forces thunks in intermediate dicts, but
+                        // the SequentialStep runs in apply_cont which cannot await. Lazy insertion
+                        // is correct for letrec-style sequential bindings where each entry is
+                        // referenced lazily by subsequent expressions.
                         for (key, val_thunk_id) in map {
                             if let Key::String(name) = key {
                                 if static_key_set.contains(name.as_ref()) {

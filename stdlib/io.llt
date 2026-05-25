@@ -5,69 +5,69 @@
 # Read an entire file as a string.
 # cap: DirCap, path: String
 # Returns: [Ok content] or [Error message]
-read-file@[doc: "Read an entire file as a string"]: [fn@Dict [cap@DirCap path@String]
-  [try [fn [] [slurp [open cap path Readable]]]]]
+read-file@[doc: "Read an entire file as a string"]: [fn@Dict [let cap@DirCap path@String]
+  [try [fn [let] [slurp [open cap path Readable]]]]]
 
 # Read a file as a lazy sequence of lines.
 # cap: DirCap, path: String
 # Returns: [Ok seq] or [Error message]
-read-lines@[doc: "Read a file as a lazy sequence of lines"]: [fn@Dict [cap@DirCap path@String]
-  [try [fn [] [lines [open cap path Readable]]]]]
+read-lines@[doc: "Read a file as a lazy sequence of lines"]: [fn@Dict [let cap@DirCap path@String]
+  [try [fn [let] [lines [open cap path Readable]]]]]
 
 # Print a string followed by a newline to stdout.
-println@[doc: "Print a string followed by a newline to stdout"]: [fn@Null [s@String]
+println@[doc: "Print a string followed by a newline to stdout"]: [fn@Null [let s@String]
   [emit [str s "\n"]]]
 
 # Print any value as a string followed by a newline to stdout.
-println-val@[doc: "Print any value as a string followed by a newline to stdout"]: [fn@Null [v@Any]
+println-val@[doc: "Print any value as a string followed by a newline to stdout"]: [fn@Null [let v@Any]
   [emit [str v "\n"]]]
 
 # Write a string to a file (creates or truncates).
 # cap: DirCap, path: String, content: String
-write-file@[doc: "Write a string to a file (creates or truncates)"]: [fn@Null [cap@DirCap path@String content@String]
+write-file@[doc: "Write a string to a file (creates or truncates)"]: [fn@Null [let cap@DirCap path@String content@String]
   [write cap path content]]
 
 # Atomically write a string to a file (write-to-temp + rename).
 # cap: DirCap, path: String, content: String
-write-file-atomic@[doc: "Atomically write a string to a file (write-to-temp + rename)"]: [fn@Null [cap@DirCap path@String content@String]
+write-file-atomic@[doc: "Atomically write a string to a file (write-to-temp + rename)"]: [fn@Null [let cap@DirCap path@String content@String]
   [write-atomic cap path content]]
 
 # Write a line to a WriteHandle, appending a newline and flushing.
 # handle: WriteHandle, line: String
-write-line@[doc: "Write a line to a WriteHandle, appending a newline and flushing"]: [fn@Null [handle@WriteHandle line@String]
+write-line@[doc: "Write a line to a WriteHandle, appending a newline and flushing"]: [fn@Null [let handle@WriteHandle line@String]
   [flush [write-handle handle [str line "\n"]]]]
 
 # Append content to a file (creates if doesn't exist).
 # cap: DirCap, path: String, content: String
-append-file@[doc: "Append content to a file (creates if doesn't exist)"]: [fn@Null [cap@DirCap path@String content@String]
+append-file@[doc: "Append content to a file (creates if doesn't exist)"]: [fn@Null [let cap@DirCap path@String content@String]
   [write-handle [open cap path Writable Appendable] content]]
 
 # Open a file for writing (creates or truncates, returns handle).
 # cap: DirCap, path: String
 # Returns: WriteHandle
-open-write@[doc: "Open a file for writing (creates or truncates, returns handle)"]: [fn@WriteHandle [cap@DirCap path@String]
+open-write@[doc: "Open a file for writing (creates or truncates, returns handle)"]: [fn@WriteHandle [let cap@DirCap path@String]
   [open cap path Writable]]
 
 # Open a file for appending (creates if doesn't exist, returns handle).
 # cap: DirCap, path: String
 # Returns: WriteHandle
-open-append@[doc: "Open a file for appending (creates if doesn't exist, returns handle)"]: [fn@WriteHandle [cap@DirCap path@String]
+open-append@[doc: "Open a file for appending (creates if doesn't exist, returns handle)"]: [fn@WriteHandle [let cap@DirCap path@String]
   [open cap path Writable Appendable]]
 
 # Write a sequence of lines to a WriteHandle.
 # handle: WriteHandle, lines: Seq
-write-lines@[doc: "Write a sequence of lines to a WriteHandle"]: [fn@WriteHandle [handle@WriteHandle lines@Seq]
-  [reduce [fn [h line] [write-line h line]] handle lines]]
+write-lines@[doc: "Write a sequence of lines to a WriteHandle"]: [fn@WriteHandle [let handle@WriteHandle lines@Seq]
+  [reduce [fn [let h line] [write-line h line]] handle lines]]
 
 # Check if a capability is present on a Handle or WriteHandle.
 # h: Handle or WriteHandle, cap: String capability name
 # Returns: Bool — true if cap-data returns non-null, false otherwise
-has-cap?@[doc: "Check if a capability is present on a Handle or WriteHandle"]: [fn@Bool [h@[Handle WriteHandle] cap@String]
+has-cap?@[doc: "Check if a capability is present on a Handle or WriteHandle"]: [fn@Bool [let h@[Handle WriteHandle] cap@String]
   [not [null? [cap-data h cap]]]]
 
 # Copy a file from src to dst.
 # cap: DirCap, src: String source path, dst: String destination path
 # Reads the source file and writes it to the destination (create/truncate).
-copy@[doc: "Copy a file from src to dst"]: [fn@Null [cap@DirCap src@String dst@String]
+copy@[doc: "Copy a file from src to dst"]: [fn@Null [let cap@DirCap src@String dst@String]
   [close [write-handle [raw-create cap dst] [slurp [open cap src Readable Text]]]]]
 ]

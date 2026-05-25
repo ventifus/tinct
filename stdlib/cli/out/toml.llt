@@ -3,17 +3,17 @@
 
 [
 # Internal: quote and escape a string for TOML
-toml-quote: [fn@String [s@String]
+toml-quote: [fn@String [let s@String]
   [str "\"" s "\""]]
 
 # Internal: check if dict is list-shaped (integer keys only)
-toml-list?: [fn@Bool [d@Dict]
+toml-list?: [fn@Bool [let d@Dict]
   [if [empty? d]
     false
-    [all? [fn [k] [int? k]] [keys d]]]]
+    [all? [fn [let k] [int? k]] [keys d]]]]
 
 # Internal: format a scalar value
-toml-scalar: [fn@String [val@Any]
+toml-scalar: [fn@String [let val@Any]
   [cond [
     [[null? val] "null"]
     [[bool? val] [if val "true" "false"]]
@@ -25,12 +25,12 @@ toml-scalar: [fn@String [val@Any]
   ]]]
 
 # Internal: format inline array
-toml-array: [fn@String [d@Dict]
+toml-array: [fn@String [let d@Dict]
   [if [empty? d]
     "[]"
     [str "[" [toml-array-items d 0] "]"]]]
 
-toml-array-items: [fn@String [d@Dict i@Int]
+toml-array-items: [fn@String [let d@Dict i@Int]
   [if [>= i [length d]]
     ""
     [str
@@ -39,7 +39,7 @@ toml-array-items: [fn@String [d@Dict i@Int]
       [toml-array-items d [+ i 1]]]]]
 
 # Internal: separate flat keys from table keys
-toml-partition: [fn@Dict [d@Dict ks@Dict i@Int flat-keys@Dict table-keys@Dict]
+toml-partition: [fn@Dict [let d@Dict ks@Dict i@Int flat-keys@Dict table-keys@Dict]
   [if [>= i [length ks]]
     [flat: flat-keys  tables: table-keys]
     [if [dict? [get [get i ks] d]]
@@ -47,21 +47,21 @@ toml-partition: [fn@Dict [d@Dict ks@Dict i@Int flat-keys@Dict table-keys@Dict]
       [toml-partition d ks [+ i 1] [append flat-keys [get i ks]] table-keys]]]]
 
 # Internal: format flat key-value pairs
-toml-flat: [fn@String [d@Dict ks@Dict i@Int acc@String]
+toml-flat: [fn@String [let d@Dict ks@Dict i@Int acc@String]
   [if [>= i [length ks]]
     acc
     [toml-flat d ks [+ i 1]
       [str acc [get i ks] " = " [toml-value [get [get i ks] d]] "\n"]]]]
 
 # Internal: format tables (nested dicts)
-toml-tables: [fn@String [d@Dict ks@Dict i@Int acc@String]
+toml-tables: [fn@String [let d@Dict ks@Dict i@Int acc@String]
   [if [>= i [length ks]]
     acc
     [toml-tables d ks [+ i 1]
       [str acc "\n[" [get i ks] "]\n" [toml [get [get i ks] d]]]]]]
 
 # Internal: format a value (scalar or inline array)
-toml-value: [fn@String [val@Any]
+toml-value: [fn@String [let val@Any]
   [if [dict? val]
     [if [toml-list? val]
       [toml-array val]
@@ -69,12 +69,12 @@ toml-value: [fn@String [val@Any]
     [toml-scalar val]]]
 
 # Public API: format dict to TOML
-toml@[doc: "Convert dict to TOML format (flat keys + tables)"]: [fn@String [d@Dict]
+toml@[doc: "Convert dict to TOML format (flat keys + tables)"]: [fn@String [let d@Dict]
   [if [empty? d]
     ""
     [toml-impl d [toml-partition d [keys d] 0 [] []]]]]
 
-toml-impl: [fn@String [d@Dict parts@Dict]
+toml-impl: [fn@String [let d@Dict parts@Dict]
   [str
     [toml-flat d parts.flat 0 ""]
     [toml-tables d parts.tables 0 ""]]]

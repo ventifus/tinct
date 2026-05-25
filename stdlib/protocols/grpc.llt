@@ -38,19 +38,19 @@
 # Integer arithmetic helpers (self-contained copies of quot, mod)
 # --------------------------------------------------------------------------
 
-grpc-quot: [fn@Int [a@Int b@Int]
+grpc-quot: [fn@Int [let a@Int b@Int]
     [builtin-if [builtin-eq b 0]
         [error "grpc-quot: division by zero"]
         [grpc-quot-impl a b]]]
 
-grpc-quot-impl: [fn@Int [a@Int b@Int]
+grpc-quot-impl: [fn@Int [let a@Int b@Int]
     [builtin-if [builtin-lt a 0]
         [error "grpc-quot: negative dividend not supported"]
         [builtin-if [builtin-lt a b]
             0
             [builtin-add 1 [grpc-quot-impl [builtin-sub a b] b]]]]]
 
-grpc-mod: [fn@Int [a@Int b@Int]
+grpc-mod: [fn@Int [let a@Int b@Int]
     [builtin-sub a [builtin-mul [grpc-quot a b] b]]]
 
 # --------------------------------------------------------------------------
@@ -59,7 +59,7 @@ grpc-mod: [fn@Int [a@Int b@Int]
 
 # Encode a 32-bit unsigned integer as 4 big-endian bytes.
 # n must be in range 0..4294967295 (unchecked for performance).
-grpc-encode-u32-be: [fn@String [n@Int]
+grpc-encode-u32-be: [fn@String [let n@Int]
     [str
         [chr [grpc-quot  n 16777216]]
         [chr [grpc-mod   [grpc-quot n 65536]   256]]
@@ -68,7 +68,7 @@ grpc-encode-u32-be: [fn@String [n@Int]
 
 # Decode a 4-byte big-endian string slice back to an integer.
 # Reads exactly 4 bytes starting at `offset` in `bytes`.
-grpc-decode-u32-be: [fn@Int [bytes@String offset@Int]
+grpc-decode-u32-be: [fn@Int [let bytes@String offset@Int]
     [builtin-add
         [builtin-mul
             [builtin-add
@@ -116,7 +116,7 @@ GRPC-HEADER-LEN: 5
 #
 # Type: (String -> Bool -> String)
 build-grpc-frame@[doc: "Build a gRPC Length-Prefixed Message frame"]:
-    [fn@String [data@String compressed@Bool]
+    [fn@String [let data@String compressed@Bool]
         [str
             [chr [builtin-if compressed 1 0]]
             [grpc-encode-u32-be [length data]]
@@ -137,7 +137,7 @@ build-grpc-frame@[doc: "Build a gRPC Length-Prefixed Message frame"]:
 #
 # Type: (String -> Dict)
 parse-grpc-frame-header@[doc: "Parse gRPC Length-Prefixed Message header"]:
-    [fn@Dict [bytes@String]
+    [fn@Dict [let bytes@String]
         [builtin-if [builtin-lt [length bytes] GRPC-HEADER-LEN]
             [set [] "err" [str
                 "parse-grpc-frame-header: need at least 5 bytes, got "

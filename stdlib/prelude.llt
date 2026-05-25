@@ -2616,7 +2616,7 @@ integrity-hash: optional blake3 hex digest for integrity verification (--require
   [program: [if [null? integrity-hash]
     [load source name: path]
     [load source name: path hash: integrity-hash]]]
-  [match [try [fn [] [eval-file [expand program] [] cap]]]
+  [match [try [fn [let] [eval-file [expand program] [] cap]]]
     [Ok result]: [include-cache-success hash result]
     [Error e]:   [include-cache-failure hash e]]]
 

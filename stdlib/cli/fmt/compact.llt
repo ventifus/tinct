@@ -323,4 +323,4 @@ format-doc-header: [fn@[return: String  doc: """Format document section header (
 
 ]
 
-[try [fn [] [format-file %]]]
+[try [fn [let] [format-file %]]]

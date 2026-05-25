@@ -19,7 +19,7 @@
 
 # ---- Serializer helpers ----
 
-json-escape: [fn [s@String]
+json-escape: [fn [let s@String]
   [str-replace "\\" "\\\\"
   [str-replace "\"" "\\\""
   [str-replace "\n" "\\n"
@@ -27,63 +27,63 @@ json-escape: [fn [s@String]
   [str-replace "\t" "\\t"
     s]]]]]]
 
-json-string: [fn [s@String]
+json-string: [fn [let s@String]
   [builtin-str "\"" [json-escape s] "\""]]
 
-json-variant: [fn [tag@String fields]
+json-variant: [fn [let tag@String fields]
   [builtin-str "{" [json-string tag] ":" [to-json fields] "}"]]
 
-json-span: [fn [s@Span]
+json-span: [fn [let s@Span]
   [builtin-str "{\"file\":"        [json-string s.file]
        ",\"start-line\":"  [builtin-str s.start-line]
        ",\"start-col\":"   [builtin-str s.start-col]
        ",\"end-line\":"    [builtin-str s.end-line]
        ",\"end-col\":"     [builtin-str s.end-col] "}"]]
 
-to-json-dict: [fn [d@Dict]
+to-json-dict: [fn [let d@Dict]
   [builtin-str "{"
     [join ","
-      [map [fn [pair] [builtin-str [json-string pair[0]] ":" [to-json pair[1]]]]
+      [map [fn [let pair] [builtin-str [json-string pair[0]] ":" [to-json pair[1]]]]
            [entries d]]]
     "}"]]
 
-to-json-seq: [fn [s]
+to-json-seq: [fn [let s]
   [builtin-str "[" [join "," [map to-json [collect s]]] "]"]]
 
-json-annotation: [fn [a@Annotation] [to-json a]]
+json-annotation: [fn [let a@Annotation] [to-json a]]
 
-json-dotkey: [fn [k@DotKey]
+json-dotkey: [fn [let k@DotKey]
   [match k
     [Ident s]: [json-variant "Ident" [v: s]]
     [Index i]: [json-variant "Index" [v: i]]]]
 
-json-parameter: [fn [p@Parameter]
+json-parameter: [fn [let p@Parameter]
   [to-json-dict
     [name:       p.name
      annotation: [json-annotation p.annotation]
      variadic:   p.variadic
      span:       [json-span p.span]]]]
 
-json-named-arg: [fn [a@NamedArg]
+json-named-arg: [fn [let a@NamedArg]
   [to-json-dict
     [name:  a.name
      value: [json-expression a.value]
      span:  [json-span a.span]]]]
 
-json-entry: [fn [e@Entry]
+json-entry: [fn [let e@Entry]
   [to-json-dict
     [key:   [to-json e.key]
      value: [json-expression e.value]
      span:  [json-span e.span]]]]
 
-json-match-arm: [fn [a@MatchArm]
+json-match-arm: [fn [let a@MatchArm]
   [to-json-dict
     [pattern: [json-expression a.pattern]
      guard:   [json-expression a.guard]
      body:    [json-expression a.body]
      span:    [json-span a.span]]]]
 
-json-expression: [fn [expr@Expression]
+json-expression: [fn [let expr@Expression]
   [match expr
     [IntLiteral   value: v  span: s]: [json-variant "IntLiteral"   [value: v  span: [json-span s]]]
     [FloatLiteral value: v  span: s]: [json-variant "FloatLiteral" [value: v  span: [json-span s]]]
@@ -133,7 +133,7 @@ json-expression: [fn [expr@Expression]
     # they appear in Document.declarations, not expressions. See json-declaration.
     ]]
 
-json-declaration: [fn [d@Declaration]
+json-declaration: [fn [let d@Declaration]
   [match d
     [TypeAlias params: ps  body: b]:
       [json-variant "TypeAlias" [params: [to-json ps]  body: [json-expression b]]]
@@ -152,17 +152,17 @@ json-declaration: [fn [d@Declaration]
     [SyntaxClass name: n  pattern: p  message: m]:
       [json-variant "SyntaxClass" [name: n  pattern: [json-expression p]  message: m]]]]
 
-json-document: [fn [d@Document]
+json-document: [fn [let d@Document]
   [to-json-dict
     [stage:        [match d.stage Runtime: "Runtime" Type: "Type"]
      name:         [match d.name [Named n]: n  Unnamed: []]
      expressions:  [to-json-seq [map json-expression  d.expressions]]
      declarations: [to-json-seq [map json-declaration d.declarations]]]]]
 
-json-program: [fn [p@Program]
+json-program: [fn [let p@Program]
   [to-json-dict [documents: [to-json-seq [map json-document p.documents]]]]]
 
-to-json-primitive: [fn [v]
+to-json-primitive: [fn [let v]
   [cond
     [[builtin-eq v []]     "null"]
     [[bool? v]    [builtin-if v "true" "false"]]
@@ -181,54 +181,54 @@ to-json-primitive: [fn [v]
 # Uses str-at/str-length from strings.llt and builtin-str-slice from prelude.
 # Each json-parse-* function takes remaining input and returns [value: v  rest: r].
 
-json-ws?: [fn [c@String]
+json-ws?: [fn [let c@String]
   [or [builtin-eq c " "] [or [builtin-eq c "\t"] [or [builtin-eq c "\n"] [builtin-eq c "\r"]]]]]
 
-json-skip-ws: [fn [s@String]
+json-skip-ws: [fn [let s@String]
   [builtin-if [or [builtin-eq [str-length s] 0] [not [json-ws? [str-at 0 s]]]]
     s
     [json-skip-ws [builtin-str-slice s 1 [str-length s]]]]]
 
-json-parsed: [fn [value rest@String]
+json-parsed: [fn [let value rest@String]
   [value: value  rest: rest]]
 
-json-rest: [fn [s@String n@Int]
+json-rest: [fn [let s@String n@Int]
   [builtin-str-slice s n [str-length s]]]
 
-json-starts-with: [fn [prefix@String s@String]
+json-starts-with: [fn [let prefix@String s@String]
   [builtin-if [builtin-lt [str-length s] [str-length prefix]]
     false
     [builtin-eq [builtin-str-slice s 0 [str-length prefix]] prefix]]]
 
-json-parse-null: [fn [s@String]
+json-parse-null: [fn [let s@String]
   [builtin-if [json-starts-with "null" s]
     [json-parsed [] [json-rest s 4]]
     [builtin-raise "JSON: expected 'null'"]]]
 
-json-parse-true: [fn [s@String]
+json-parse-true: [fn [let s@String]
   [builtin-if [json-starts-with "true" s]
     [json-parsed true [json-rest s 4]]
     [builtin-raise "JSON: expected 'true'"]]]
 
-json-parse-false: [fn [s@String]
+json-parse-false: [fn [let s@String]
   [builtin-if [json-starts-with "false" s]
     [json-parsed false [json-rest s 5]]
     [builtin-raise "JSON: expected 'false'"]]]
 
-json-digit?: [fn [c@String]
+json-digit?: [fn [let c@String]
   [and [>= c "0"] [<= c "9"]]]
 
-json-num-char?: [fn [c@String]
+json-num-char?: [fn [let c@String]
   [or [json-digit? c]
       [or [builtin-eq c "."] [or [builtin-eq c "e"] [or [builtin-eq c "E"]
       [or [builtin-eq c "-"] [builtin-eq c "+"]]]]]]]
 
-json-scan-num: [fn [s@String i@Int]
+json-scan-num: [fn [let s@String i@Int]
   [builtin-if [or [>=i [str-length s]] [not [json-num-char? [str-at i s]]]]
     i
     [json-scan-num s [builtin-add i 1]]]]
 
-json-parse-number: [fn [s@String]
+json-parse-number: [fn [let s@String]
   [len:     [json-scan-num s 0]]
   [num-str: [builtin-str-slice s 0 len]]
   [rest:    [json-rest s len]]
@@ -239,7 +239,7 @@ json-parse-number: [fn [s@String]
     [builtin-if float? [to-float num-str] [to-int num-str]]
     rest]]
 
-json-unescape: [fn [c@String]
+json-unescape: [fn [let c@String]
   [cond
     [[builtin-eq c "\""] "\""]
     [[builtin-eq c "\\"] "\\"]
@@ -251,7 +251,7 @@ json-unescape: [fn [c@String]
     [[builtin-eq c "f"]  [chr 12]]
     [true [builtin-raise[builtin-str "JSON: unknown escape \\" c]]]]]
 
-json-parse-string-body: [fn [s@String acc@String]
+json-parse-string-body: [fn [let s@String acc@String]
   [builtin-if [builtin-eq [str-length s] 0]
     [builtin-raise "JSON: unterminated string"]
     [c: [str-at 0 s]]
@@ -267,11 +267,11 @@ json-parse-string-body: [fn [s@String acc@String]
       [true
        [json-parse-string-body [json-rest s 1] [builtin-str acc c]]]]]]
 
-json-parse-string: [fn [s@String]
+json-parse-string: [fn [let s@String]
   # s starts with "
   [json-parse-string-body [json-rest s 1] ""]]
 
-json-parse-array-items: [fn [s@String i@Int acc@Dict]
+json-parse-array-items: [fn [let s@String i@Int acc@Dict]
   [item:  [json-parse-value s]]
   [acc:   [merge acc [[i]: item.value]]]
   [s:     [json-skip-ws item.rest]]
@@ -281,14 +281,14 @@ json-parse-array-items: [fn [s@String i@Int acc@Dict]
     [[builtin-eq c ","] [json-parse-array-items [json-skip-ws [json-rest s 1]] [builtin-add i 1] acc]]
     [true [builtin-raise "JSON: expected ',' or ']' in array"]]]]
 
-json-parse-array: [fn [s@String]
+json-parse-array: [fn [let s@String]
   # s starts with [
   [s: [json-skip-ws [json-rest s 1]]]
   [builtin-if [builtin-eq [str-at 0 s] "]"]
     [json-parsed [] [json-rest s 1]]
     [json-parse-array-items s 0 []]]]
 
-json-parse-object-pairs: [fn [s@String acc@Dict]
+json-parse-object-pairs: [fn [let s@String acc@Dict]
   [builtin-if [not[builtin-eq [str-at 0 s] "\""]]
     [builtin-raise "JSON: expected string key in object"]
     [k:    [json-parse-string s]]
@@ -304,14 +304,14 @@ json-parse-object-pairs: [fn [s@String acc@Dict]
         [[builtin-eq c ","] [json-parse-object-pairs [json-skip-ws [json-rest s 1]] acc]]
         [true [builtin-raise "JSON: expected ',' or '}' in object"]]]]]]
 
-json-parse-object: [fn [s@String]
+json-parse-object: [fn [let s@String]
   # s starts with {
   [s: [json-skip-ws [json-rest s 1]]]
   [builtin-if [builtin-eq [str-at 0 s] "}"]
     [json-parsed [] [json-rest s 1]]
     [json-parse-object-pairs s []]]]
 
-json-parse-value: [fn [s@String]
+json-parse-value: [fn [let s@String]
   [s: [json-skip-ws s]]
   [builtin-if [builtin-eq [str-length s] 0]
     [builtin-raise "JSON: unexpected end of input"]
@@ -335,7 +335,7 @@ to-json@[doc: "Serialize any tinct value to a compact JSON string.
 Expression, Document, and Program values use the Variant encoding {\"Tag\": {fields}}.
 Primitive types serialize directly. Not every tinct type is serializable to JSON —
 Fn, Handle, Task, Channel etc. produce null."]:
-  [fn [v]
+  [fn [let v]
     [match v
       [Program  _]:   [json-program v]
       [Document _]:   [json-document v]
@@ -354,7 +354,7 @@ Returns:
   Any — Parsed value (Dict, Seq, String, Int, Float, Bool, or [] for null)
 
 Raises error on invalid JSON syntax."]:
-  [fn [s@String]
+  [fn [let s@String]
     [json-parse-value [json-skip-ws s]].value]
 
 ]

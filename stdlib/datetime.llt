@@ -6,9 +6,9 @@ pad-left: [include %libdir "strings.llt"].pad-left
 ]
 
 # Public API dict
-[days-between@[doc: "Calculate days between two timestamps"]: [fn@Int [a@Timestamp b@Timestamp] [duration->seconds [timestamp-diff b a]]]
- timestamp-in-range?@[doc: "Check if a timestamp is within a range"]: [fn@Bool [t@Timestamp start@Timestamp end@Timestamp] [and [timestamp<? start t] [timestamp<? t end]]]
- format-date@[doc: "Format a timestamp as YYYY-MM-DD HH:MM:SS"]: [fn@String [t@Timestamp]
+[days-between@[doc: "Calculate days between two timestamps"]: [fn@Int [let a@Timestamp b@Timestamp] [duration->seconds [timestamp-diff b a]]]
+ timestamp-in-range?@[doc: "Check if a timestamp is within a range"]: [fn@Bool [let t@Timestamp start@Timestamp end@Timestamp] [and [timestamp<? start t] [timestamp<? t end]]]
+ format-date@[doc: "Format a timestamp as YYYY-MM-DD HH:MM:SS"]: [fn@String [let t@Timestamp]
    [str [timestamp-year t]
         "-"
         [pad-left [str [timestamp-month t]] 2 "0"]

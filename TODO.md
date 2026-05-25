@@ -1756,25 +1756,38 @@ The code is authoritative: `src/typecheck.rs:5501` confirms `None => Ok(Type::Un
 - [x] Added `type_env: Rc<TypeEnv>` to ReplSession; single typecheck_surface_program_with_env call uses accumulated env; advanced only on success path. 3 unit tests.
 - **File:** `src/repl.rs`
 
-### versions-e099: Fix E099 error node at net.llt:79:58 in just versions [Major]
+### versions-e099: Fix E099 error node at net.llt:79:58 in just versions [FIXED]
 
-When running `just versions`, E099 "syntax error at 79:58 (cannot evaluate error node)" fires during execution of `crate-latest`. The error node is at net.llt line 79, col 58 — the LAST CHARACTER (5th closing bracket `]`) of the `fetch` function expression:
-- Line 78: `  fetch: [fn [cap@NetCap url-string@String]`  
-- Line 79: `    [builtin-try [fn [] [http-get cap [url url-string]]]]]`  ← col 58 = this last `]`
+**Root cause (identified with debug print):** The parser enforces unified-bindings invariant `[fn [let params] body]`. Net.llt used old syntax `[fn [params] body]` without `let`, causing parser error recovery at the closing bracket of each fn expression. The error node at `79:58` was the closing bracket of `fetch: [fn [cap@NetCap url-string@String] [builtin-try [fn [] ...]]]` where `[fn []]` (zero-param, no `let`) produced a parse error.
 
-Investigation:
-- Net.llt brackets are correctly balanced (verified: 7 opens, 7 closes)
-- The TypeChecker does NOT create `SurfaceExpression::Error` nodes — only parser does
-- `builtin-try` would CATCH a runtime error from `connect` (the 3-arg bug was fixed)
-- The error node must come from the PARSER or MACRO EXPANDER for net.llt
-- No obvious parse errors in net.llt; no macro calls that could fail
-- The `chr-overlap-insert` check is guarded by `!in_prelude_load` so doesn't affect net.llt
-- The `check_arithmetic` validation doesn't fire for net.llt's integer arithmetic
-- Requires debug instrumentation: add debug print to `eval.rs:1605` before firing E099 to print the actual source position, then trace back to what AST node it is
+**Fix:** stdlib-conformance-unified-bindings sprint added `let` to all stdlib fn param lists (22 files, ~196 fn definitions).
 
-- [ ] Add debug print to `src/eval.rs:1605` to identify the actual source of the error node
-- [ ] Fix whatever is creating the `SurfaceExpression::Error` at net.llt:79:58
-- **Files:** `src/eval.rs` (debug), then whatever file creates the error node
+- [x] Identified as parser error from missing `[let]` in fn params (not a type checker or macro issue)
+- [x] Fixed by unified-bindings sprint adding `let` to all stdlib files including net.llt
+
+### versions-e070: Fix E070 circular dependency in just versions [Major]
+
+After fixing E040 (reduce depth) and E099 (unified-bindings), E070 "circular dependency detected" fires.
+
+**Cycle:** `[str ...] (99:7-112:8) → [if ...] (125:5-127:11) → ... → [str-length ...] → [back to thunk] (defined at 85:13-85:23) (called at 125:12-125:26)`
+
+The thunk at versions.llt `85:13-85:23` (inside the `mark` function definition area) is being passed to `str-length` inside `pad-right` in strings.llt. And evaluating this thunk requires the outer `str(99-112)` expression to complete — creating a cycle.
+
+**Root cause analysis:**
+- The SequentialStep CEK continuation (from cek-match-sequential-rust-stack sprint) inserts dict bindings as LAZY thunks into child_env. These lazy thunks can create circular dependencies when the evaluator tries to force them while the outer sequential is still in-progress.
+- The async sequential approach (forcing dict bindings eagerly) avoids one form of the cycle but reveals another variant (involving the include-cache-success path).
+- The pre-existing bug was hidden by E040 (reduce depth limit) and only revealed after E040 was fixed.
+- Thunk at `85:13-85:23`: the debug offset=3905 places this in net.llt line 79 (the last `]` of the `fetch` fn expression, col 58). The renderer incorrectly shows versions.llt line 85 for context (same line number, different file). Confirmed: the E070's `thunk-85:13-23` is from a file where line 79 has 58 chars — matching net.llt's fetch line.
+
+**Fix needed:** The SequentialStep's lazy dict binding insertion must be replaced with eager forcing. This requires a new `Cont::ForceAndBind` continuation variant that:
+1. Receives a materialized dict entry value from the CEK machine
+2. Inserts it (forced) into child_env
+3. Evaluates the next sequential expression
+Alternatively: use `materialize_sync` in force_step's inline Sequential handler (requires making force_step async, which is a larger refactor).
+
+- [ ] Design and implement `Cont::ForceAndBind` for eager sequential dict binding
+- [ ] Test with `just versions` to confirm E070 is fixed
+- **Files:** `src/eval_materialize.rs` (SequentialStep handler + new ForceAndBind Cont), `samples/versions.llt` (verification)
 
 ### indexable-fd-scc-fix: Fix Indexable FD firing in SCC-based dict inference [Major]
 

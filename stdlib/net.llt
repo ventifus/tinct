@@ -16,7 +16,7 @@
 [
   # Recursively parse header lines into accumulator dict.
   # Each line "Name: value" — skips malformed lines.
-  parse-header-fields-impl: [fn@Dict [lines@Dict i@Int n@Int acc@Dict]
+  parse-header-fields-impl: [fn@Dict [let lines@Dict i@Int n@Int acc@Dict]
     [builtin-if [builtin-eq i n]
       acc
       [builtin-if [builtin-eq [builtin-length [builtin-split ": " [builtin-get i lines]]] 1]
@@ -29,7 +29,7 @@
 
   # Helper to parse header+body section when separator exists.
   # Input: sections dict with 0 (headers) and 1 (body).
-  parse-header-body: [fn@Dict [sections@Dict]
+  parse-header-body: [fn@Dict [let sections@Dict]
     [hdr-lines: [builtin-split "\r\n" [builtin-get 0 sections]]
     [set [set [set []
       "status"  [builtin-to-int [builtin-get 1 [builtin-split " " [builtin-get 0 hdr-lines]]]]]
@@ -40,12 +40,12 @@
 # Public API
 [
   # Build a minimal HTTP/1.0 GET request string.
-  build-http-request: [fn@String [method@String path@String host@String]
+  build-http-request: [fn@String [let method@String path@String host@String]
     [builtin-str method " " path " HTTP/1.0\r\nHost: " host "\r\nUser-Agent: tinct/0.1\r\nConnection: close\r\n\r\n"]]
 
   # Parse raw HTTP response string into {status headers body}.
   # Returns status 0 and body=response if no header/body separator found.
-  parse-http-response: [fn@Dict [response@String]
+  parse-http-response: [fn@Dict [let response@String]
     [sections: [builtin-split "\r\n\r\n" response]
     [builtin-if [builtin-eq [builtin-length sections] 1]
       [set [set [set [] "status" 0] "headers" []] "body" response]
@@ -58,7 +58,7 @@
   #   http  — uses raw TCP connect + HTTP/1.0 request string
   #             returns parsed response dict (throws on network error)
   #   other — throws "unsupported scheme"
-  http-get: [fn [cap@NetCap url@Url]
+  http-get: [fn [let cap@NetCap url@Url]
     [builtin-if [builtin-eq url.scheme "https"]
       [http-request
         [http2-session cap [uri-origin url] []]
@@ -75,12 +75,12 @@
 
   # Parse URL string and call http-get.
   # Returns Ok(response-dict) on success or Err(message) on failure (via builtin-try).
-  fetch: [fn [cap@NetCap url-string@String]
-    [builtin-try [fn [] [http-get cap [url url-string]]]]]
+  fetch: [fn [let cap@NetCap url-string@String]
+    [builtin-try [fn [let] [http-get cap [url url-string]]]]]
 
   # Parse query string into a Dict of key-value pairs.
   # Returns empty dict if query is null.
-  uri-params: [fn@Dict [u@Url]
+  uri-params: [fn@Dict [let u@Url]
     [builtin-if [builtin-null? u.query]
       []
       [pairs: [builtin-split u.query "&"]
@@ -92,18 +92,18 @@
   # Create an SPKI pin dict for certificate pinning.
   # algorithm: HashAlgorithm variant (e.g. [Sha256]), fingerprint: Bytes
   # Returns: {algorithm: variant, fingerprint: bytes}
-  spki-pin: [fn@Dict [algorithm fingerprint]
+  spki-pin: [fn@Dict [let algorithm fingerprint]
     [set [set [] "algorithm" algorithm] "fingerprint" fingerprint]]
 
   # Return "scheme://host:port" (origin).
   # Port is omitted if null.
-  uri-origin: [fn@String [u@Url]
+  uri-origin: [fn@String [let u@Url]
     [builtin-if [builtin-null? u.port]
       [builtin-str u.scheme "://" u.host]
       [builtin-str u.scheme "://" u.host ":" u.port]]]
 
   # Reconstruct full URI string from components.
-  uri->string: [fn@String [u@Url]
+  uri->string: [fn@String [let u@Url]
     [builtin-str u.scheme "://"
       [builtin-if [builtin-null? u.host] "" u.host]
       [builtin-if [builtin-null? u.port] "" [builtin-str ":" u.port]]

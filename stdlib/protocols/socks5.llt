@@ -70,19 +70,19 @@
 # Integer arithmetic helpers (self-contained copies of quot, mod)
 # --------------------------------------------------------------------------
 
-s5-quot: [fn@Int [a@Int b@Int]
+s5-quot: [fn@Int [let a@Int b@Int]
     [builtin-if [builtin-eq b 0]
         [error "s5-quot: division by zero"]
         [s5-quot-impl a b]]]
 
-s5-quot-impl: [fn@Int [a@Int b@Int]
+s5-quot-impl: [fn@Int [let a@Int b@Int]
     [builtin-if [builtin-lt a 0]
         [error "s5-quot: negative dividend not supported"]
         [builtin-if [builtin-lt a b]
             0
             [builtin-add 1 [s5-quot-impl [builtin-sub a b] b]]]]]
 
-s5-mod: [fn@Int [a@Int b@Int]
+s5-mod: [fn@Int [let a@Int b@Int]
     [builtin-sub a [builtin-mul [s5-quot a b] b]]]
 
 # --------------------------------------------------------------------------
@@ -90,15 +90,15 @@ s5-mod: [fn@Int [a@Int b@Int]
 # --------------------------------------------------------------------------
 
 # Encode a string as a SOCKS5 domain address field: chr(len) + domain bytes.
-s5-encode-domain: [fn@String [host@String]
+s5-encode-domain: [fn@String [let host@String]
     [str [chr [length host]] host]]
 
 # Encode a 16-bit port as 2 big-endian bytes.
-s5-encode-port: [fn@String [port@Int]
+s5-encode-port: [fn@String [let port@Int]
     [str [chr [s5-quot port 256]] [chr [s5-mod port 256]]]]
 
 # Decode a 16-bit big-endian port from two byte values.
-s5-decode-port: [fn@Int [hi@Int lo@Int]
+s5-decode-port: [fn@Int [let hi@Int lo@Int]
     [builtin-add [builtin-mul hi 256] lo]]
 
 # --------------------------------------------------------------------------
@@ -108,7 +108,7 @@ s5-decode-port: [fn@Int [hi@Int lo@Int]
 # Build a methods-bytes string from a Dict of method codes.
 # The dict values are the integer method codes; keys are iterated via [keys].
 # Example: {0: 0, 1: 2} -> chr(0) + chr(2)
-s5-build-methods-impl: [fn@String [methods@Dict ks@Dict i@Int n@Int acc@String]
+s5-build-methods-impl: [fn@String [let methods@Dict ks@Dict i@Int n@Int acc@String]
     [builtin-if [builtin-lt i n]
         [s5-build-methods-impl methods ks [builtin-add i 1] n
             [str acc [chr [get [get i ks] methods]]]]
@@ -118,7 +118,7 @@ s5-build-methods-impl: [fn@String [methods@Dict ks@Dict i@Int n@Int acc@String]
 # REP code to string
 # --------------------------------------------------------------------------
 
-s5-rep-message: [fn@String [rep@Int]
+s5-rep-message: [fn@String [let rep@Int]
     [builtin-if [builtin-eq rep 0] "succeeded"
     [builtin-if [builtin-eq rep 1] "general SOCKS server failure"
     [builtin-if [builtin-eq rep 2] "connection not allowed by ruleset"
@@ -135,7 +135,7 @@ s5-rep-message: [fn@String [rep@Int]
 # --------------------------------------------------------------------------
 
 # Dispatch on ATYP to the appropriate address parser.
-s5-parse-bound-addr: [fn@Dict [bytes@String offset@Int atyp@Int]
+s5-parse-bound-addr: [fn@Dict [let bytes@String offset@Int atyp@Int]
     [builtin-if [builtin-eq atyp 1]
         [s5-parse-ipv4 bytes offset]
         [builtin-if [builtin-eq atyp 3]
@@ -146,7 +146,7 @@ s5-parse-bound-addr: [fn@Dict [bytes@String offset@Int atyp@Int]
 
 # Parse IPv4: 4 address bytes + 2 port bytes at offset.
 # Returns {addr: "a.b.c.d", port: N, addr-end: offset+6}.
-s5-parse-ipv4: [fn@Dict [bytes@String offset@Int]
+s5-parse-ipv4: [fn@Dict [let bytes@String offset@Int]
     [s5-parse-ipv4-step bytes offset
         [char-code [str-slice bytes offset             [builtin-add offset 1]]]
         [char-code [str-slice bytes [builtin-add offset 1] [builtin-add offset 2]]]
@@ -155,7 +155,7 @@ s5-parse-ipv4: [fn@Dict [bytes@String offset@Int]
         [char-code [str-slice bytes [builtin-add offset 4] [builtin-add offset 5]]]
         [char-code [str-slice bytes [builtin-add offset 5] [builtin-add offset 6]]]]]
 
-s5-parse-ipv4-step: [fn@Dict [bytes@String offset@Int b0@Int b1@Int b2@Int b3@Int port-hi@Int port-lo@Int]
+s5-parse-ipv4-step: [fn@Dict [let bytes@String offset@Int b0@Int b1@Int b2@Int b3@Int port-hi@Int port-lo@Int]
     [set [set [set []
         "addr"     [str b0 "." b1 "." b2 "." b3]]
         "port"     [s5-decode-port port-hi port-lo]]
@@ -163,16 +163,16 @@ s5-parse-ipv4-step: [fn@Dict [bytes@String offset@Int b0@Int b1@Int b2@Int b3@In
 
 # Parse domain: 1-byte length prefix + domain bytes + 2-byte port.
 # Returns {addr: <domain-string>, port: N, addr-end: ...}.
-s5-parse-domain: [fn@Dict [bytes@String offset@Int]
+s5-parse-domain: [fn@Dict [let bytes@String offset@Int]
     [s5-parse-domain-step bytes offset
         [char-code [str-slice bytes offset [builtin-add offset 1]]]]]
 
-s5-parse-domain-step: [fn@Dict [bytes@String offset@Int dom-len@Int]
+s5-parse-domain-step: [fn@Dict [let bytes@String offset@Int dom-len@Int]
     [s5-parse-domain-finish bytes offset dom-len
         [builtin-add offset 1]
         [builtin-add offset [builtin-add 1 dom-len]]]]
 
-s5-parse-domain-finish: [fn@Dict [bytes@String offset@Int dom-len@Int dom-start@Int dom-end@Int]
+s5-parse-domain-finish: [fn@Dict [let bytes@String offset@Int dom-len@Int dom-start@Int dom-end@Int]
     [set [set [set []
         "addr"     [str-slice bytes dom-start dom-end]]
         "port"     [s5-decode-port
@@ -183,10 +183,10 @@ s5-parse-domain-finish: [fn@Dict [bytes@String offset@Int dom-len@Int dom-start@
 # Parse IPv6: 16 address bytes + 2 port bytes at offset.
 # Returns the raw 16-byte slice as addr (hex formatting needs encoding.llt).
 # Returns {addr: <raw-bytes-string>, port: N, addr-end: offset+18}.
-s5-parse-ipv6: [fn@Dict [bytes@String offset@Int]
+s5-parse-ipv6: [fn@Dict [let bytes@String offset@Int]
     [s5-parse-ipv6-step bytes offset [builtin-add offset 16]]]
 
-s5-parse-ipv6-step: [fn@Dict [bytes@String offset@Int port-offset@Int]
+s5-parse-ipv6-step: [fn@Dict [let bytes@String offset@Int port-offset@Int]
     [set [set [set []
         "addr"     [str-slice bytes offset port-offset]]
         "port"     [s5-decode-port
@@ -199,16 +199,16 @@ s5-parse-ipv6-step: [fn@Dict [bytes@String offset@Int port-offset@Int]
 # --------------------------------------------------------------------------
 
 # Parse the 4 fixed-position response bytes and build the result dict.
-s5-parse-response-fields: [fn@Dict [bytes@String ver@Int rep@Int atyp@Int]
+s5-parse-response-fields: [fn@Dict [let bytes@String ver@Int rep@Int atyp@Int]
     [builtin-if [builtin-eq rep 0]
         [s5-parse-response-success bytes ver rep atyp]
         [s5-parse-response-failure ver rep atyp]]]
 
-s5-parse-response-success: [fn@Dict [bytes@String ver@Int rep@Int atyp@Int]
+s5-parse-response-success: [fn@Dict [let bytes@String ver@Int rep@Int atyp@Int]
     [s5-parse-response-success-step ver rep atyp
         [s5-parse-bound-addr bytes 4 atyp]]]
 
-s5-parse-response-success-step: [fn@Dict [ver@Int rep@Int atyp@Int bound@Dict]
+s5-parse-response-success-step: [fn@Dict [let ver@Int rep@Int atyp@Int bound@Dict]
     [set [set [set [set [set [set [set []
         "version"  ver]
         "rep"      rep]
@@ -218,7 +218,7 @@ s5-parse-response-success-step: [fn@Dict [ver@Int rep@Int atyp@Int bound@Dict]
         "port"     [get "port" bound]]
         "success?" true]]
 
-s5-parse-response-failure: [fn@Dict [ver@Int rep@Int atyp@Int]
+s5-parse-response-failure: [fn@Dict [let ver@Int rep@Int atyp@Int]
     [set [set [set [set [set [set [set []
         "version"  ver]
         "rep"      rep]
@@ -257,7 +257,7 @@ ADDR-IPV6:               4
 #
 # Type: (Dict -> String)
 build-socks5-greeting@[doc: "Build SOCKS5 initial client greeting (RFC 1928 §3)"]:
-    [fn@String [methods@Dict]
+    [fn@String [let methods@Dict]
         [builtin-if [builtin-eq [length methods] 0]
             [error "build-socks5-greeting: methods dict must not be empty"]
             [str
@@ -278,7 +278,7 @@ build-socks5-greeting@[doc: "Build SOCKS5 initial client greeting (RFC 1928 §3)
 #
 # Type: (String -> Int -> String)
 build-socks5-connect@[doc: "Build SOCKS5 CONNECT request for host:port (RFC 1928 §4)"]:
-    [fn@String [host@String port@Int]
+    [fn@String [let host@String port@Int]
         [builtin-if [builtin-lt 255 [length host]]
             [error "build-socks5-connect: hostname too long (max 255 bytes)"]
             [builtin-if [builtin-eq [length host] 0]
@@ -307,7 +307,7 @@ build-socks5-connect@[doc: "Build SOCKS5 CONNECT request for host:port (RFC 1928
 #
 # Type: (String -> Dict)
 parse-socks5-response@[doc: "Parse SOCKS5 server response (RFC 1928 §6)"]:
-    [fn@Dict [bytes@String]
+    [fn@Dict [let bytes@String]
         [builtin-if [builtin-lt [length bytes] 4]
             [error "parse-socks5-response: response too short (need at least 4 bytes)"]
             [s5-parse-response-fields bytes

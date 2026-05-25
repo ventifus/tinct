@@ -45,19 +45,19 @@
 # Integer arithmetic helpers (self-contained copies of quot, mod)
 # --------------------------------------------------------------------------
 
-dns-quot: [fn@Int [a@Int b@Int]
+dns-quot: [fn@Int [let a@Int b@Int]
     [builtin-if [builtin-eq b 0]
         [error "dns-quot: division by zero"]
         [dns-quot-impl a b]]]
 
-dns-quot-impl: [fn@Int [a@Int b@Int]
+dns-quot-impl: [fn@Int [let a@Int b@Int]
     [builtin-if [builtin-lt a 0]
         [error "dns-quot: negative dividend not supported"]
         [builtin-if [builtin-lt a b]
             0
             [builtin-add 1 [dns-quot-impl [builtin-sub a b] b]]]]]
 
-dns-mod: [fn@Int [a@Int b@Int]
+dns-mod: [fn@Int [let a@Int b@Int]
     [builtin-sub a [builtin-mul [dns-quot a b] b]]]
 
 # --------------------------------------------------------------------------
@@ -65,7 +65,7 @@ dns-mod: [fn@Int [a@Int b@Int]
 # --------------------------------------------------------------------------
 
 # Encode a 16-bit unsigned integer as 2 big-endian bytes.
-dns-encode-u16-be: [fn@String [n@Int]
+dns-encode-u16-be: [fn@String [let n@Int]
     [str [chr [dns-quot n 256]] [chr [dns-mod n 256]]]]
 
 # --------------------------------------------------------------------------
@@ -74,13 +74,13 @@ dns-encode-u16-be: [fn@String [n@Int]
 
 # Encode a single label (no dots) as chr(len) + label-bytes.
 # Called for each dot-separated component of a domain name.
-dns-encode-label: [fn@String [label@String]
+dns-encode-label: [fn@String [let label@String]
     [str [chr [length label]] label]]
 
 # Encode all labels in a Dict (produced by [split domain "."]) as a
 # sequence of length-prefixed label strings, terminated by \x00.
 # labels is a Dict with integer keys 0, 1, ... n-1.
-dns-encode-labels-impl: [fn@String [labels@Dict ks@Dict i@Int n@Int acc@String]
+dns-encode-labels-impl: [fn@String [let labels@Dict ks@Dict i@Int n@Int acc@String]
     [builtin-if [builtin-lt i n]
         [dns-encode-labels-impl labels ks [builtin-add i 1] n
             [str acc [dns-encode-label [get [get i ks] labels]]]]
@@ -88,10 +88,10 @@ dns-encode-labels-impl: [fn@String [labels@Dict ks@Dict i@Int n@Int acc@String]
 
 # Encode a full domain name in DNS wire format.
 # "example.com" -> chr(7) + "example" + chr(3) + "com" + chr(0)
-dns-encode-name: [fn@String [domain@String]
+dns-encode-name: [fn@String [let domain@String]
     [dns-encode-labels-step [split "." domain]]]
 
-dns-encode-labels-step: [fn@String [labels@Dict]
+dns-encode-labels-step: [fn@String [let labels@Dict]
     [dns-encode-labels-impl labels [keys labels] 0 [length labels] ""]]
 
 # --------------------------------------------------------------------------
@@ -106,7 +106,7 @@ dns-encode-labels-step: [fn@String [labels@Dict]
 # ancount  — answer count (0 in a query)
 # nscount  — authority count (0 in a query)
 # arcount  — additional count (0 in a query)
-dns-build-header: [fn@String [id@Int flags@Int qdcount@Int ancount@Int nscount@Int arcount@Int]
+dns-build-header: [fn@String [let id@Int flags@Int qdcount@Int ancount@Int nscount@Int arcount@Int]
     [str
         [dns-encode-u16-be id]
         [dns-encode-u16-be flags]
@@ -120,7 +120,7 @@ dns-build-header: [fn@String [id@Int flags@Int qdcount@Int ancount@Int nscount@I
 # --------------------------------------------------------------------------
 
 # Build the question section: QNAME + QTYPE(2) + QCLASS(2).
-dns-build-question: [fn@String [domain@String qtype@Int]
+dns-build-question: [fn@String [let domain@String qtype@Int]
     [str
         [dns-encode-name domain]
         [dns-encode-u16-be qtype]
@@ -162,7 +162,7 @@ DNS-CLASS-IN: 1
 #
 # Type: (String -> String)
 encode-dns-name@[doc: "Encode domain name in DNS label format (RFC 1035 §3.1)"]:
-    [fn@String [domain@String]
+    [fn@String [let domain@String]
         [builtin-if [builtin-eq [length domain] 0]
             [chr 0]
             [dns-encode-name domain]]]
@@ -182,7 +182,7 @@ encode-dns-name@[doc: "Encode domain name in DNS label format (RFC 1035 §3.1)"]
 #
 # Type: (Int -> String -> Int -> String)
 build-dns-query@[doc: "Build a DNS query message (RFC 1035 §4)"]:
-    [fn@String [id@Int domain@String qtype@Int]
+    [fn@String [let id@Int domain@String qtype@Int]
         [str
             [dns-build-header id DNS-FLAGS-QUERY 1 0 0 0]
             [dns-build-question domain qtype]]]

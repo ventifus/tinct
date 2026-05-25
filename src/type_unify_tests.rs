@@ -702,6 +702,144 @@ fn test_types_are_not_disjoint_function_vs_function() {
     );
 }
 
+// ============================================================================
+// chr-mptc-membership sprint tests (T3 fix)
+// ============================================================================
+
+/// T3 FIX: Binding a TypeVar constrained by Addable to Str fires a constraint-violation
+/// error at binding time — not deferred until FD improvement.
+///
+/// Setup: seed a TypeVar "_t0" with an Addable constraint (vars: ["_t0", "_t1", "_t2"],
+/// FD (0,1)→2). Then unify(TypeVar("_t0"), Str). Before T3 fix this would silently
+/// succeed (no membership check). After fix it returns a TypeError.
+#[test]
+fn test_mptc_membership_check_str_with_addable() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // Register levels for all three TypeVars in the Addable constraint
+    state.levels.insert("_t0".to_string(), 1);
+    state.levels.insert("_t1".to_string(), 1);
+    state.levels.insert("_t2".to_string(), 1);
+
+    // Retrieve the Addable ClassDecl from state.class_env (registered by InferState::new())
+    let addable_class = state.class_env.get("Addable").expect("Addable must be registered");
+    state.constraints.push(crate::types::Constraint::Class {
+        class: std::sync::Arc::new(addable_class.clone()),
+        vars: vec!["_t0".to_string(), "_t1".to_string(), "_t2".to_string()],
+    });
+
+    // Bind _t0 to Str — this should fire the T3 membership check
+    let t0 = Type::TypeVar("_t0".to_string(), 1);
+    let result = unify(&t0, &Type::Str, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_err(),
+        "Binding Addable-constrained TypeVar to Str should fail at binding time (T3 fix); got Ok"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.message.contains("does not satisfy arithmetic constraint"),
+        "Expected 'does not satisfy arithmetic constraint' in error; got: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("Addable"),
+        "Error message should name the violated class; got: {}",
+        err.message
+    );
+}
+
+/// T3 FIX: Binding a TypeVar constrained by Addable to Bool also fires at binding time.
+#[test]
+fn test_mptc_membership_check_bool_with_addable() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    state.levels.insert("_t0".to_string(), 1);
+    state.levels.insert("_t1".to_string(), 1);
+    state.levels.insert("_t2".to_string(), 1);
+
+    let addable_class = state.class_env.get("Addable").expect("Addable must be registered");
+    state.constraints.push(crate::types::Constraint::Class {
+        class: std::sync::Arc::new(addable_class.clone()),
+        vars: vec!["_t0".to_string(), "_t1".to_string(), "_t2".to_string()],
+    });
+
+    let t0 = Type::TypeVar("_t0".to_string(), 1);
+    let result = unify(&t0, &Type::Bool, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_err(),
+        "Binding Addable-constrained TypeVar to Bool should fail (T3 fix)"
+    );
+}
+
+/// T3 FIX: Binding a TypeVar constrained by Addable to Int still succeeds (Int is arithmetic).
+#[test]
+fn test_mptc_membership_check_int_with_addable_passes() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    state.levels.insert("_t0".to_string(), 1);
+    state.levels.insert("_t1".to_string(), 1);
+    state.levels.insert("_t2".to_string(), 1);
+
+    let addable_class = state.class_env.get("Addable").expect("Addable must be registered");
+    state.constraints.push(crate::types::Constraint::Class {
+        class: std::sync::Arc::new(addable_class.clone()),
+        vars: vec!["_t0".to_string(), "_t1".to_string(), "_t2".to_string()],
+    });
+
+    let t0 = Type::TypeVar("_t0".to_string(), 1);
+    // Binding to Int should succeed — Int is arithmetic
+    let result = unify(&t0, &Type::Int, &mut subst, &mut state, span);
+
+    // Note: this may fail due to FD improvement needing _t1 and _t2 to be ground.
+    // That is expected behavior. The point is that the T3 membership check DOES NOT fire
+    // (no "does not satisfy arithmetic constraint" error — any error is from FD improvement).
+    if let Err(ref err) = result {
+        assert!(
+            !err.message.contains("does not satisfy arithmetic constraint"),
+            "Int should not trigger T3 membership check; got: {}",
+            err.message
+        );
+    }
+}
+
+/// T3 FIX: Binding a TypeVar constrained by Addable to Unknown passes (gradual escape hatch).
+#[test]
+fn test_mptc_membership_check_unknown_passes() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    state.levels.insert("_t0".to_string(), 1);
+    state.levels.insert("_t1".to_string(), 1);
+    state.levels.insert("_t2".to_string(), 1);
+
+    let addable_class = state.class_env.get("Addable").expect("Addable must be registered");
+    state.constraints.push(crate::types::Constraint::Class {
+        class: std::sync::Arc::new(addable_class.clone()),
+        vars: vec!["_t0".to_string(), "_t1".to_string(), "_t2".to_string()],
+    });
+
+    let t0 = Type::TypeVar("_t0".to_string(), 1);
+    let result = unify(&t0, &Type::Unknown, &mut subst, &mut state, span);
+
+    // Unknown must not trigger the T3 membership check (gradual typing escape hatch)
+    if let Err(ref err) = result {
+        assert!(
+            !err.message.contains("does not satisfy arithmetic constraint"),
+            "Unknown should not trigger T3 membership check; got: {}",
+            err.message
+        );
+    }
+}
+
 /// Handle capability PartialEq limitation: structural equality fails when capability rows
 /// contain TypeVars with different names, even if they are unifiable.
 /// Known-safe: unify() drives type checking, PartialEq only affects HashMap lookups
