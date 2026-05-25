@@ -924,7 +924,7 @@ Root cause: the include/typecheck pipeline uses the same TypeEnv for included st
 
 - [x] Fix include type-checking context for `%libdir` → use stdlib env, not user env
 - [x] Verify `[include %libdir "net.llt"]` from user code works without E099 after fix
-- [ ] `just versions` passes after fix — requires network verification
+- [x] `just versions` passes after fix — VERIFIED 2026-05-25: exit 0, full dependency table output
 
 **Also:**
 - [x] Migrate net.llt to use `builtin-*` stable aliases (defense in depth — makes net.llt work even if included in user context before the above fix)
@@ -960,7 +960,7 @@ Follow-up from builtin-privacy Phase 3. Three issues discovered when making `sam
 **Also update `just lint-file` test for all samples:**
 - [x] `just lint-file samples/versions.llt` — T010 span bug fixed: `scan_type_quality` now uses real line/column from SurfaceProgram span walk instead of synthetic 0:0
 - [x] `just lint-file samples/basic.llt` — verified: T002/T003 clean; T010 is pre-existing span bug (not a regression)
-- [ ] `just versions` — currently fails E099 (blocked on `include-libdir-stdlib-typecheck` above) — requires network verification
+- [x] `just versions` — VERIFIED 2026-05-25: all errors fixed (E099→unified-bindings, T003→check_get, E040→reduce-loop, E070→str-length self-ref); exit 0
 - [x] Update `standard_builtins_contains_all` test count (+3: builtin-trim, builtin-emit, builtin-env) — already 301 ✓
 
 ---
@@ -1797,8 +1797,8 @@ The thunk at versions.llt `85:13-85:23` (inside the `mark` function definition a
 3. Evaluates the next sequential expression
 Alternatively: use `materialize_sync` in force_step's inline Sequential handler (requires making force_step async, which is a larger refactor).
 
-- [ ] Design and implement `Cont::ForceAndBind` for eager sequential dict binding
-- [ ] Test with `just versions` to confirm E070 is fixed
+- [x] Design and implement `Cont::ForceAndBind` for eager sequential dict binding (commit 3e31884)
+- [x] Test with `just versions` to confirm E070 is fixed — VERIFIED exit 0
 - **Files:** `src/eval_materialize.rs` (SequentialStep handler + new ForceAndBind Cont), `samples/versions.llt` (verification)
 
 ### indexable-fd-scc-fix: Fix Indexable FD firing in SCC-based dict inference [Major]
