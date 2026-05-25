@@ -1185,6 +1185,65 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 - [x] Added `group_by_string_keys.llt-eval` corpus test — `[group-by [fn [x] x] ["a" "b" "a"]]` string-keyed bucket accumulation
 - [x] Added `test_literal_only_dict_fast_path` unit test in `src/eval_dict.rs` — verifies `[a: 1 b: 2]` evaluates via no-dict_env fast path
 
+## Codebase Health Audit Findings (2026-05-25) — Eval-Engine Post-rv2 Review
+
+### cek-match-sequential-rust-stack: CoreExpr::Match and Sequential recurse on Rust stack, not CEK heap [Critical]
+
+`eval_core_expr` (src/eval.rs:1424-1530, 1626-1703) handles `Sequential` and `Match` via direct async recursion — calling `eval_core_expr()` and `materialize()` internally without pushing CEK continuations. Every nested match arm or sequential expression adds a Rust async frame, not a `Cont` on the heap-allocated continuation stack. `check_stack_depth` cannot guard these paths because they bypass `force_step` entirely. Deeply nested `Match` expressions (e.g., 100-level pattern matching chains or 500-expression sequential blocks) can exhaust Rust's async call stack despite the CEK machine's intent to bound recursion.
+
+- [ ] Add `Cont::SequentialStep { remaining: Vec<Arc<Spanned<CoreExpr>>>, env, ctx }` to handle `CoreExpr::Sequential` iteratively in `apply_cont`
+- [ ] Add `Cont::MatchDispatch { arms, scrutinee_thunk, scrutinee_value, env, ctx }` to handle `CoreExpr::Match` iteratively in `apply_cont`
+- [ ] Update `force_step` / `eval_core_expr` to push these continuations instead of recursing
+- **Files:** `src/eval_materialize.rs` (new Cont variants, apply_cont arms), `src/eval.rs` (Sequential and Match arms in eval_core_expr)
+
+### typeassert-is-predicate: `is:` predicate in TypeAssert silently ignored [Critical]
+
+`Cont::TypeAssertCheck` handler (`src/eval_materialize.rs:2480-2518`): when `resolved_type` is `Some` and `value_matches_type` returns true, returns `Action::Continue(Ok(value))` immediately without checking the `is:` predicate. A failing corpus test already exists (`tests/corpus/eval/errors/typeassert_is_predicate_fails.llt-eval`). The 80-line comment block at lines 2481-2517 documents the gap and what is needed. Contract predicates have zero runtime effect — `[@[type: Int  is: [between 0 255]] 300]` silently passes.
+
+- [ ] After `value_matches_type` returns true, check `annotation.node.get_property("is")` — if present, evaluate as predicate
+- [ ] If predicate is a Function/Builtin, invoke with value and check truthiness (same logic as Match guard at eval.rs:1661-1694)
+- [ ] If truthy: return value. If falsy: check `default:`, else fail with `type_assert_failed("_ (is: predicate failed)", ...)`
+- [ ] Add `Cont::PredicateCheck { value, annotation, expr_span, thunk_span, env, ctx }` to avoid async recursion
+- **Files:** `src/eval_materialize.rs` (TypeAssertCheck handler + new Cont variant)
+
+### boundary-guard-dot-access: Boundary guards not applied to dot-accessed field values [Major]
+
+`Cont::DotAccessForce` handler (`src/eval_materialize.rs:2135-2165`): retrieves a field's `ThunkId` from a `Value::Dict` and returns `Action::Materialize { thunk, mat_span }` directly. The field thunk is NOT passed through `maybe_wrap_guard()`. In contrast, every result from `eval_core_expr` goes through `maybe_wrap_guard` at line 1778. Type checker boundary guards keyed by field-access expression spans (set via `set_boundary_guards()`) are silently missed for dot-accessed values.
+
+- [ ] After retrieving `thunk` from `ctx.get_thunk(*thunk_id)` in the `Some(thunk_id)` arm (~line 2146), call `maybe_wrap_guard(thunk, access_span, &ctx)` before returning `Action::Materialize`
+- [ ] Same for the `Value::Expression` dot-access branch (~line 2234)
+- **File:** `src/eval_materialize.rs` (~lines 2141-2152, 2234)
+
+### doc-08-match-sequential-cek-caveat: doc/08 "no depth limit" claim incomplete [Minor]
+
+`doc/08-evaluation.md` line 545: "No recursive depth limit in core evaluator. The iterative CEK machine uses a heap-allocated continuation stack, eliminating the `MAX_EVAL_DEPTH` bound." This is partially wrong: `CoreExpr::Sequential` and `CoreExpr::Match` still recurse on the Rust async call stack (see `cek-match-sequential-rust-stack` above). The claim holds for all other CoreExpr variants.
+
+- [ ] Add a caveat to doc/08 line 545: note that Sequential and Match pending full CEK coverage retain implicit Rust-stack depth sensitivity
+- **File:** `doc/08-evaluation.md` (~line 545)
+
+### doc-08-placeholder-panic-wrong: doc/08 says Placeholder panics; actually returns CircularDependency [Minor]
+
+`doc/08-evaluation.md` line 294: "materializing a `Placeholder` thunk panics." The actual behavior (value.rs:1628-1633, force_step:~line 498-515): Placeholder is indistinguishable from InProgress (`unevaluated=None, result not set`), so force_step returns `CircularDependency` error — no panic. The error is then cached via `cache_failure_once`.
+
+- [ ] Update doc/08 line 294: change "panics" to "returns a CircularDependency error (treated as InProgress by the runtime — see `is_in_progress()` in value.rs)"
+- **File:** `doc/08-evaluation.md` (~line 294)
+
+### lower-rtc-drops-default-undocumented: core_expr_to_surface_expr drops `default:` from RuntimeTypeCheck [Nit]
+
+`src/lower.rs` lines 322-328: `CoreExpr::RuntimeTypeCheck` maps to `SurfaceExpression::TypeAssert` (annotation-only), silently dropping the `default` field. This means `[quote ...]` on a RuntimeTypeCheck expression loses the default. Low-impact (macro-synthesized nodes only) but undocumented.
+
+- [ ] Add a comment at lower.rs:322 noting the default field drop and the rationale (SurfaceExpression::TypeAssert has no `default:` field)
+- **File:** `src/lower.rs` (~line 322)
+
+### eval-dict-slot-idx-nit: slot_idx increments wastefully for literal-only dicts [Nit]
+
+`src/eval_dict.rs` lines 199-207: `slot_idx` increments for every static key even when `env_id` is `None` (literal-only dict fast path). The `fill_letrec_slot` call is correctly guarded by `if let Some(id) = env_id`, so the increment is harmless but wastes cycles for large literal dicts.
+
+- [ ] Guard slot_idx increment with `if env_id.is_some()` or restructure as `if let Some(id) = env_id { fill_letrec_slot(id, slot_idx, thunk_id); slot_idx += 1; }`
+- **File:** `src/eval_dict.rs` (~line 199)
+
+---
+
 ### macro-runtime-v2-regression: Fix macro system broken by runtime-v2 merge [Critical] ✅ DONE
 
 After the runtime-v2 merge, the macro system is broken in two ways:
@@ -1218,4 +1277,252 @@ Fix: update `macros.llt` to handle `Value::Expression` (use `type-of` or `surfac
 - [x] Update stale corpus tests: deleted `quote_literal.llt-eval` (non-serializable), updated `quote_type_of.llt-eval` → `String("Expression")`, fixed `eval_basic.llt-eval`, `eval_with_env.llt-eval`, `eval_types_basic.llt-eval` to use `[seq [quote ...] []]` form. [macro-runtime-v2-regression]
 - [x] Re-run `test_do_macro_*` unit tests — all 8 pass after fixes. [macro-runtime-v2-regression]
 - [x] Add macro-roundtrip corpus tests in `tests/corpus/eval/ast_dict/` that exercise `dict_to_surface_node_inner` via macros (currently blocked by this regression)
+
+---
+
+---
+
+## Codebase Health Audit Findings (2026-05-24) — Sixth Full Panel Review
+
+### stdlib-codec-phantom-builtins: Phantom builtin names crash toml-lite and json codecs [Critical]
+
+**stdlib-author C1+C2.** Two stdlib codecs have typo'd builtin names that cause runtime crashes on any real use:
+
+**toml-lite.llt** (`stdlib/codecs/toml-lite.llt:107,112,114,147,184`):
+- `[builtin-addi 1]` → should be `[builtin-add i 1]` (5 occurrences)
+- `[builtin-adddepth 1]` → should be `[builtin-add depth 1]` (2 occurrences)
+Any call to `parse-toml-lite` processing a key-value or `[[array-table]]` section crashes.
+
+**json.llt** (`stdlib/codecs/json.llt:167,168`):
+- `[builtin-eqv []]` → should be `[builtin-null? v]` or `[builtin-eq v []]`
+- `[builtin-ifv "true" "false"]` → should be `[builtin-if v "true" "false"]`
+JSON serialization of any non-Expression value hits `to-json-primitive` and crashes.
+
+Also: error message strings in json.llt contain `"builtin-string"` text (artifact of over-broad find-replace).
+
+- [ ] Fix 5 `[builtin-addi 1]` → `[builtin-add i 1]` in toml-lite.llt
+- [ ] Fix 2 `[builtin-adddepth 1]` → `[builtin-add depth 1]` in toml-lite.llt
+- [ ] Fix `[builtin-eqv []]` and `[builtin-ifv "true" "false"]` in json.llt
+- [ ] Fix `"builtin-string"` → `"string"` in json.llt error messages and doc strings
+- [ ] Add corpus tests: `toml_lite_basic.llt-eval` (section + array-table + kv), `json_null_and_bool.llt-eval`
+- **Files:** `stdlib/codecs/toml-lite.llt`, `stdlib/codecs/json.llt`
+
+### security-wrong-cap-flags: symlink and set-permissions check the wrong capability flag [Critical]
+
+**security-expert M1+M2.** Two builtins enforce the wrong DirPerm flag — a capability permission bypass:
+
+- `symlink` (`src/builtins_io.rs:2960`): checks `perms.writable` instead of `perms.symlinkable`. A `Writable`-only cap grants symlink creation, which was explicitly prohibited by design (TODO.md:862).
+- `set-permissions` (`src/builtins_io.rs:3053-3058`): checks `perms.writable` instead of `perms.posix_permissions`. A `Writable`-only cap grants chmod including setuid/setgid bit setting — a privilege escalation vector.
+
+Both `Symlinkable` and `PosixPermissions` DirPerms flags exist and are correctly handled in `narrow`; only the consuming builtins were wired to the wrong flag.
+
+- [ ] Fix `symlink`: `check_perm(perms, "Symlinkable", perms.symlinkable, "symlink", call_span)?;`
+- [ ] Fix `set-permissions`: `check_perm(perms, "PosixPermissions", perms.posix_permissions, "set-permissions", call_span)?;`
+- [ ] Add corpus tests verifying Writable-only cap is denied for both builtins
+- **Files:** `src/builtins_io.rs:2960,3053-3058`
+
+### doc-08-rv2-stale-evaluator: doc/08 Iterative Evaluator section stale after runtime-v2 [Critical]
+
+**computer-scientist C1 + grammar-architect M4-M6.** `doc/08-evaluation.md` §Iterative Evaluator (lines 1377-1470) describes a machine that no longer exists:
+- Line 1399: `Action::Eval { expr: Rc<Spanned<Expr>>, ... }` — deleted; replaced by `Action::EvalCore { expr: Arc<Spanned<CoreExpr>>, ... }`
+- Line 1432: `eval_step(expr, env, ...)` — deleted; current is `eval_core_expr_pub()`
+- Line 1467: "~18-20 Cont variants" — actual count is 6 (`Memoize`, `PendingCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `DotAccessForce`, `TypeAssertCheck`)
+- Line 1007: Sequential routing references deleted `eval_recursive`
+- Line 1461: "`deep_materialize` in `eval_deep.rs`" — `eval_deep.rs` deleted; moved to `eval_materialize.rs`
+- Line 1419: compile-time assertion cited at "line 252" — actual `src/eval_materialize.rs:349`
+
+- [ ] Rewrite lines 1377-1470: Action enum listing (EvalCore, Continue, Materialize), Cont enum (6 variants), run() loop referencing eval_core_expr_pub()
+- [ ] Fix line 1007 Sequential routing note (no eval_recursive)
+- [ ] Fix line 1461 deep_materialize location
+- [ ] Fix line 1419 assertion line number
+- **File:** `doc/08-evaluation.md`
+
+### doc-16-rv2-stale-refs: doc/16-architecture.md still has stale post-rv2 references [Major]
+
+**grammar-architect M1-M7.** Multiple stale references in `doc/16-architecture.md`:
+- Line 65: "one remaining recursive path: `eval_recursive`" — deleted in rv2; also references `eval_deep.rs` (deleted) and `Action::Eval` (deleted)
+- Line 58: Elaboration write-once describes old `RefCell` in `Expr::TypeAssert`; current design uses `TypeAnnotationTable` side-table with no RefCell
+- Line 59: `include_cache` should be `string_include_cache` (content-addressed key)
+- Line 283: REPL limitation references deleted `parse_expression()` — should be `parse_surface_expression()`
+- Line 241-247: EvalConfig sketch missing 3 fields: `type_stage_env`, `macro_injects_map`, `source_file`
+- Line 566: "Thunk boxing cost: `Rc<RefCell<ThunkState>>`" — now `Arc<Mutex<Option<UnevaluatedState>>>`
+- Line 571-572: bottlenecks mention "Rc clone frequency" and "until AST nodes become Rc" — both stale post-rv2
+
+- [ ] Fix lines 58, 59, 65 stale implementation note block
+- [ ] Fix line 283 parse_expression reference
+- [ ] Fix lines 241-247 EvalConfig sketch (add missing fields or add "(abbreviated)" note)
+- [ ] Fix lines 566, 571-572 performance notes
+- **File:** `doc/16-architecture.md`
+
+### doc-11-builtin-count-wrong: Builtin counts wrong in both doc/11 files [Major]
+
+**stdlib-author M1+M2.** Two doc files cite conflicting and wrong builtin counts:
+- `doc/11a-builtins.md:3,1063` says "284 Rust-native builtins" — actual is 301 (per `standard_builtins_count` test assertion)
+- `doc/11-stdlib.md:302,308,358,360` says "333 builtins" — actual is 301; total arithmetic also wrong ("333 + ~117 = ~450" should be "301 + ~117 = ~418")
+- `doc/11-stdlib.md:314` says "37 stable `builtin-*` aliases" — stale (many more added since)
+
+- [ ] Update `doc/11a-builtins.md:3,1063` → 301
+- [ ] Update `doc/11-stdlib.md:302,308,358,360` → 301; fix total arithmetic
+- [ ] Update "37 stable `builtin-*` aliases" to accurate count or durable phrasing
+- **Files:** `doc/11a-builtins.md`, `doc/11-stdlib.md`
+
+### doc-11-merge-lazy-claim: doc/11-stdlib.md claims merge is lazy O(1) Overlay [Major]
+
+**stdlib-author M3.** `doc/11-stdlib.md:133` dict operations table entry for `merge` reads: "Lazy — returns `Value::Overlay(left, right)` in O(1)." This is entirely wrong — `builtin_merge` clones both operands into a new `IndexMap`. `Value::Overlay` does not exist in the codebase (was a proposed future optimization that never landed).
+
+- [ ] Update merge row in `doc/11-stdlib.md:133` to: "Materializing — builds new IndexMap from both dicts (O(n)); values remain as lazy thunks"
+- **File:** `doc/11-stdlib.md`
+
+### check-arithmetic-no-validation: check_arithmetic accepts non-numeric operands silently [Major]
+
+**type-theorist M2.** `check_arithmetic` (`src/typecheck.rs:3839-3882`) infers argument types but never validates they are numeric. `[+ "hello" 1]` silently returns `Type::Number` with no warning. The Addable FD path in `improve_functional_dependency` (which would catch this) is bypassed by the special-case dispatch. Same gap in `check_div` (`src/typecheck.rs:3884-3918`).
+
+- [ ] After inferring each arg type, check `satisfies_constraint(&arg_ty, "Numeric")` — emit TypeError on failure for concrete non-numeric types; Unknown passes (gradual)
+- [ ] Add corpus test: `[+ "hello" 1]` → type error
+- **Files:** `src/typecheck.rs:3839-3882,3884-3918`
+
+### fn-annotation-callability: @Fn bare annotation resolves to Type::Unknown [Major]
+
+**type-theorist M3.** The `"Fn"` arm in `resolve_type_name` (`src/typecheck_annot.rs:1777-1788`) returns `Type::Unknown` to avoid false positives for ~50 prelude functions. Consequence: `[@Fn 42]` passes both static checking (via Unknown compatibility) and runtime checking (no TypeAssert fires). The correct encoding is `Type::Function { params: vec![], ret: Box::new(Type::Top), variadic: true }` — subsumes any callable under width subtyping.
+
+- [ ] NEEDS_DESIGN: decide encoding for "any callable" type and audit ~50 prelude functions with `@Fn` annotations for false positives under the precise encoding. Sprint: `fn-annotation-callability`.
+- **Files:** `src/typecheck_annot.rs:1777-1788`, `stdlib/prelude.llt`
+
+### builder-test-coverage: builder-get-or, builder-snapshot, builder-delete untested [Major]
+
+**test-crafter C1+C2.** Three registered builder builtins have zero corpus tests:
+- `builder-get-or` — atomically gets or inserts; most complex builder op; used by `group-by`
+- `builder-snapshot` — clone without freezing; proves builder remains live after snapshot
+- `builder-delete` — remove a key before finish
+
+Any regression in these ops is invisible to the test suite.
+
+- [ ] Add `tests/corpus/eval/builtins/builder_get_or_insert.llt-eval` (key absent → inserts default)
+- [ ] Add `tests/corpus/eval/builtins/builder_get_or_existing.llt-eval` (key present → existing wins)
+- [ ] Add `tests/corpus/eval/builtins/builder_snapshot.llt-eval` (snapshot then mutate → snapshot unchanged)
+- [ ] Add `tests/corpus/eval/builtins/builder_delete.llt-eval` (set key, delete it, finish → key absent)
+- **Files:** `tests/corpus/eval/builtins/`
+
+### chr-dispatch-corpus: CHR constraint resolution has no end-to-end dispatch proof [Major]
+
+**test-crafter M4.** All CHR corpus tests verify that programs typecheck and eval correctly, but none prove that the resolver selected the **correct instance implementation** for a given type. If the resolver always returned the first registered instance, all existing tests would still pass.
+
+- [ ] Add `tests/corpus/eval/typecheck/constraint_resolution_dispatch.llt-eval` — two instances exist and produce distinguishably different output; verifies correct instance is selected per type
+- **Files:** `tests/corpus/eval/typecheck/`
+
+### perf-strkey-hash-alloc: StrKey::hash allocates Rc<str> on every dot-access lookup [Major]
+
+**performance-expert M1.** `src/value.rs:147`: `std::mem::discriminant(&Key::String(Rc::from(""))).hash(state)` allocates a fresh `Rc<str>` on every `IndexMap::get(&StrKey(...))` — i.e., every dot-access and string key lookup. Dot-access is among the three most common operations in any LLT program.
+
+Fix: replace with `(1u8).hash(state); self.0.hash(state);` — produces identical bit-stream without allocation. Add `const _: () = assert!(std::mem::variant_count::<Key>() >= 2);` to enforce Key::String remains discriminant 1.
+
+- [ ] Fix `src/value.rs:147`: replace discriminant() call with hardcoded `(1u8).hash(state)`
+- [ ] Add compile-time discriminant assertion
+- **File:** `src/value.rs:147`
+
+### perf-eval-stack-mutex: eval_stack acquires Mutex twice + String alloc per builtin dispatch [Major]
+
+**performance-expert M2.** Every builtin dispatch on the hot path: acquires `Arc<Mutex<EvalState>>` → pushes `(String, Span)` (allocating a fresh `String` from `origin.as_deref().unwrap_or("thunk").to_string()`) → releases Mutex → re-acquires on `EvalStackGuard::drop`. Two Mutex round-trips and one heap allocation per builtin dispatch, on a runtime that is always single-threaded.
+
+Fixes: (a) change `eval_stack: Vec<(String, Span)>` to `Vec<(Arc<str>, Span)>` — eliminate String allocation since `origin` is already `Option<Arc<str>>`; (b) consider replacing `Arc<Mutex<EvalState>>` with thread-local `RefCell<EvalState>` to eliminate lock overhead.
+
+- [ ] Change eval_stack label type to `Arc<str>` in `EvalState` and all 4 push sites in eval_materialize.rs
+- [ ] Sprint: `perf-eval-stack` (thread-local RefCell replacement is a larger change, scope separately)
+- **Files:** `src/eval_materialize.rs:546-549,709-710,1756,1839`, `src/eval.rs` (EvalState def)
+
+### perf-eval-dict-batch-lock: eval_dict_core acquires lock N times in fill loop [Major]
+
+**performance-expert M3.** `src/eval_dict.rs:199-207`: `ctx.env_arena.lock().unwrap().fill_letrec_slot(...)` is called inside the `for entry in entries` loop, one Mutex round-trip per entry. For an N-entry dict, that's N separate lock/unlock cycles where one would suffice.
+
+- [ ] Hoist `let mut arena_guard = ctx.env_arena.lock().unwrap();` before the loop; call `arena_guard.fill_letrec_slot(...)` inside
+- **File:** `src/eval_dict.rs:199-207`
+
+### attach-provenance-divergence: Two attach_provenance closures with diverging behavior [Major]
+
+**integration-verifier M1.** `src/lib.rs` has two `attach_provenance` closure implementations:
+- `eval_source_with_config` (line 217-247): checks 4 span sources (definition, materialization, all stack frames, secondary span)
+- `eval_source_with_cap_net` (line 392-405): only checks 2 (definition, materialization)
+
+Errors routed through the `cap_net` path silently miss macro expansion attribution when provenance is only in a stack frame or secondary span.
+
+- [ ] Extract `fn attach_macro_provenance(err: Box<EvalError>, provenance: &ProvenanceMap) -> Box<EvalError>` in `src/lib.rs`
+- [ ] Replace both closures with calls to the shared function
+- **File:** `src/lib.rs:217-247,392-405`
+
+### error-missing-cap-e-code: Capability-required error uses E099 (Internal) [Major]
+
+**integration-verifier M3.** `src/eval_pipeline.rs:166`: when a required capability annotation (`%api@NetCap`) is missing, the error is raised via `EvalError::internal(message, span)` (E099). This is a user-actionable error ("add `--cap-net` to your invocation") that should have a dedicated stable E-code.
+
+- [ ] Add `ErrorKind::CapabilityRequired { cap_name: String }` with E003 (currently free)
+- [ ] Add constructor `EvalError::capability_required(name, annotation, span)`
+- [ ] Update `eval_pipeline.rs:166` to use the new constructor
+- **Files:** `src/error.rs`, `src/eval_pipeline.rs:166`
+
+### doc-06-param-type-contradiction: doc/06 contradicts itself about unannotated param types [Major]
+
+**computer-scientist M2.** `doc/06-type-inference.md` contains two contradictory statements:
+- Line 176: "Unannotated non-variadic params get a fresh TypeVar at the current level, enabling HM inference for `[fn [x] x]`"
+- Line 672: "Unannotated function parameters still receive type `Unknown`. `[fn [x] x]` remains `Fn(Unknown → Unknown)`"
+
+The code is authoritative: `src/typecheck.rs:5501` confirms `None => Ok(Type::Unknown)`. Line 176 describes aspirational behavior. Also: `TODO.md:1133` incorrectly marks `doc-06-unannotated-params` as DONE with `"unannotated params now documented as fresh TypeVar"` — but the code says Unknown.
+
+- [ ] Reconcile: update line 176 to accurately say Unknown (with a note that fresh TypeVar is the future goal)
+- [ ] Reopen TODO.md:1133 (the check-mark is wrong — the doc still says TypeVar at line 176, not Unknown)
+- **File:** `doc/06-type-inference.md:176,672`
+
+### resolve-instance-name-reuse: resolve_instance discards freshening state on success path [Major]
+
+**computer-scientist M3.** `src/type_class.rs:470-474`: `instantiate_at_level` at line 463 increments `state.name_counter` to produce fresh `_tN` names. The restore at line 470 resets `name_counter` to its pre-probe value. Subsequent `instantiate_at_level` calls reuse the same `_tN` names, violating Robinson (1965) monotonic name generation. In practice unlikely to cause a bug (returned method types are for display/constraint checking, not further unification with main substitution), but violates the freshness invariant.
+
+- [ ] After state restore at line 474, ensure `state.name_counter` is at least the peak value reached during the probe: `state.name_counter = state.name_counter.max(peak_counter);`
+- **File:** `src/type_class.rs:459-474`
+
+### slurp-text-heap-exhaustion: slurp Text path performs post-read size limit check [Minor]
+
+**security-expert Minor.** `src/builtins_io.rs:499-514`: the Text path calls `read_to_string` into an unbounded `String` then checks length. A 2 GB pipe exhausts heap before rejection fires. The Binary path at lines 467-487 correctly uses 8 KB chunks with mid-read limit.
+
+- [ ] Wrap reader with `Read::take(MAX_FILE_SIZE as u64 + 1)` before calling `read_to_string`
+- **File:** `src/builtins_io.rs:499-514`
+
+### fuzz-parse-expression-broken: Fuzz target calls deleted parse_expression() [Minor]
+
+**grammar-architect Minor 9.** `fuzz/fuzz_targets/parse.rs:14`: `let _ = tinct::parse_expression(s);` — `parse_expression` is not exported from `src/lib.rs` anymore (deleted in rv2-migrate-evaluator-bridges sprint). This fuzz target will not compile.
+
+- [ ] Change `tinct::parse_expression(s)` to `tinct::parse_surface_expression(s)` in `fuzz/fuzz_targets/parse.rs:14`
+- **File:** `fuzz/fuzz_targets/parse.rs:14`
+
+### chr-mptc-membership: MPTC constraint binding doesn't check class membership [Minor]
+
+**type-theorist Minor 1.** `src/type_unify.rs:389-396` (KNOWN ISSUE T3): when a TypeVar constrained by Addable/Subtractable/Multipliable/Divisible is bound to a non-arithmetic type (e.g., Str), no error fires at binding time. The MPTC arm calls `improve_functional_dependency` without checking membership. Error only surfaces if both determining positions are simultaneously ground.
+
+- [ ] Sprint: `chr-mptc-membership` — add partial membership check (can we find `Add Str β γ` for any β, γ?) at TypeVar binding time
+- **Files:** `src/type_unify.rs:389-396`
+
+### chr-new-by-name-audit: Constraint::new_by_name creates empty determines vec [Minor]
+
+**type-theorist Minor 2.** `src/type_class.rs:49-52` (KNOWN ISSUE T6): `Constraint::new_by_name` creates a minimal `ClassDecl` with empty `determines` vec. Any constraint on an FD-bearing class created via `new_by_name` silently skips FD improvement.
+
+- [ ] Sprint: `chr-new-by-name-audit` — audit all `new_by_name` call sites and verify none create constraints on Addable/Subtractable/Multipliable/Divisible classes
+- **Files:** `src/type_class.rs:49-52`
+
+### chr-overlap-insert: InstanceEnv doesn't detect structurally overlapping instances [Minor]
+
+**type-theorist Minor 3.** `src/type_class.rs:255-258` (KNOWN ISSUE F4): string-key dedup prevents exact duplicates but `[Seq a]` and `[Seq Int]` have different keys yet overlap structurally.
+
+- [ ] Sprint: `chr-overlap-insert` — add structural overlap detection at insert time using probe unification (save/restore state)
+- **Files:** `src/type_class.rs:255-258`
+
+### inject-adt-constructors-compound: inject_adt_constructors_expr skips compound forms [Minor]
+
+**computer-scientist Minor 5.** `src/desugar.rs:259-261`: wildcard `_ => expr.clone()` catches Match, TypeAssert, Quote, TypeApp etc. without recursion. A type alias declared inside a match arm body will not have ADT constructors injected.
+
+- [ ] Add recursion for Match (scrutinee + arm bodies) and TypeAssert (inner expression) in `inject_adt_constructors_expr`
+- **File:** `src/desugar.rs:259-261`
+
+### repl-type-env-accumulation: REPL type-checks each line with fresh prelude env [Minor]
+
+**type-theorist Minor 5.** `src/repl.rs:224-225`: the REPL builds a fresh prelude env for each type-check call. Bindings defined in earlier REPL lines produce false "undefined variable" type warnings in later lines.
+
+- [ ] Thread accumulated `TypeEnv` across REPL turns alongside the value `Environment`
+- **File:** `src/repl.rs`
 
