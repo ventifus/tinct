@@ -201,11 +201,9 @@ pub(crate) async fn eval_dict_core(
             return Err(Box::new(EvalError::duplicate_key(&key_str, entry.span)));
         }
 
-        if is_static_key {
-            if env_id.is_some() {
-                letrec_slots.push((slot_idx, thunk_id));
-                slot_idx += 1;
-            }
+        if is_static_key && env_id.is_some() {
+            letrec_slots.push((slot_idx, thunk_id));
+            slot_idx += 1;
         }
     }
 
