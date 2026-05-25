@@ -112,7 +112,7 @@ pub fn format_source_tinct_with_dir(
     );
 
     // Convert input AST to dict using the now-stable ctx.
-    use crate::ast_dict::{surface_program_to_dict, AstToDictOpts, CommentMaps};
+    use crate::surface_convert::{surface_program_to_dict, AstToDictOpts, CommentMaps};
     let opts = if compact {
         AstToDictOpts::default()
     } else {

@@ -10018,3 +10018,10 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] Add corpus tests: builtin_variant_returns_expression, tmpl_still_works, macro_returns_wrong_type
 - [ ] Delete `dict_to_surface_node` — DEFERRED: still used by builtins_meta.rs, expand.rs fallback, eval.rs
 - [ ] Delete `src/ast_dict.rs` entirely — DEFERRED: surface_program_to_dict used by formatter.rs
+
+### rv2-delete-ast-dict: Relocate remaining ast_dict.rs functions and delete the file
+
+- [x] Move `dict_to_surface_node`, `dict_to_surface_node_inner`, and helpers to `src/surface_convert.rs`
+- [x] Update all `crate::ast_dict::dict_to_surface_node` imports to `crate::surface_convert::dict_to_surface_node`
+- [x] Move `surface_program_to_dict`, `AstToDictOpts`, `CommentMaps`, and all helpers to `src/surface_convert.rs`
+- [x] Delete `src/ast_dict.rs` — all content moved to surface_convert.rs; module removed from lib.rs

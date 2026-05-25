@@ -170,16 +170,6 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `just build` passes [commit 9370184]
 
 
-### rv2-delete-ast-dict: Relocate remaining ast_dict.rs functions and delete the file
-
-**Deferred from rv2-macro-native-expression (2026-05-25).** `dict_to_surface_node` is a permanent function (needed by `builtin_variant` to construct AST nodes from user dicts). It cannot be eliminated, only relocated. `surface_program_to_dict` is only used by formatter.rs.
-
-**Approach:** Move functions to their callers' modules, then delete ast_dict.rs. No logic changes — just file reorganization.
-
-- [x] Move `dict_to_surface_node`, `dict_to_surface_node_inner`, and helpers to `src/surface_convert.rs` — used by builtins_meta.rs, expand.rs, eval.rs
-- [x] Update `crate::ast_dict::dict_to_surface_node` imports to `crate::surface_convert::dict_to_surface_node` in builtins_meta.rs, expand.rs, eval.rs
-- [ ] Move `surface_program_to_dict`, `AstToDictOpts`, `CommentMaps`, and helpers from `src/ast_dict.rs` to `src/formatter.rs` or `src/surface_convert.rs`
-- [ ] Delete `src/ast_dict.rs` — zero remaining content after moves
 
 ### rv2-deep-materialize-delete: Delete `deep_materialize` after output and macro migration
 

@@ -27,7 +27,6 @@
 pub(crate) mod arena;
 // Shared async runtime for QUIC/HTTP3 builtins (block_on helper).
 pub mod ast;
-pub mod ast_dict;
 pub mod async_rt;
 pub(crate) mod coverage;
 pub(crate) mod error;
