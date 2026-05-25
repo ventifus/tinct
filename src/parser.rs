@@ -2737,11 +2737,8 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             })
                         } else {
                             // Convert the pending pattern expression to a Pattern.
-                            // Bridge from Arc<SurfaceNode> to Spanned<Expr> for the
-                            // pattern-conversion function (which still uses old Expr types).
                             let surface_node = pending_pattern_expr.take().unwrap();
-                            let expr = crate::ast_convert::surface_node_to_expr(&surface_node);
-                            match expr_to_pattern_with_guard(expr) {
+                            match surface_node_to_pattern_with_guard(surface_node) {
                                 Ok((pattern, guard)) => {
                                     *pending_pattern = Some((pattern, guard));
                                     None // Next expression will be the body
@@ -4704,18 +4701,19 @@ fn extract_guard(annotation: &Spanned<Annotation>) -> Option<Arc<SurfaceNode>> {
     }
 }
 
-fn expr_to_pattern(expr: Spanned<Expr>) -> Result<Spanned<Pattern>, ParseError> {
-    expr_to_pattern_with_guard(expr).map(|(pat, _)| pat)
+fn surface_node_to_pattern(node: Arc<SurfaceNode>) -> Result<Spanned<Pattern>, ParseError> {
+    surface_node_to_pattern_with_guard(node).map(|(pat, _)| pat)
 }
 
-/// Convert expression to pattern, extracting guard if present
-fn expr_to_pattern_with_guard(expr: Spanned<Expr>) -> Result<PatternWithGuard, ParseError> {
-    let span = expr.span;
-    let (pattern, guard) = match expr.node {
+/// Convert a SurfaceNode to a pattern, extracting guard if present.
+/// This is the primary path — `expr_to_pattern_with_guard` is a legacy bridge.
+fn surface_node_to_pattern_with_guard(node: Arc<SurfaceNode>) -> Result<PatternWithGuard, ParseError> {
+    let span = node.span;
+    let (pattern, guard) = match &node.expr {
         // Handle Pipe as or-pattern separator
-        Expr::Pipe { lhs, rhs } => {
-            let (left_pat, left_guard) = expr_to_pattern_with_guard((*lhs).clone())?;
-            let (right_pat, right_guard) = expr_to_pattern_with_guard((*rhs).clone())?;
+        SurfaceExpression::Pipe { lhs, rhs } => {
+            let (left_pat, left_guard) = surface_node_to_pattern_with_guard(Arc::clone(lhs))?;
+            let (right_pat, right_guard) = surface_node_to_pattern_with_guard(Arc::clone(rhs))?;
 
             // Or-patterns can't have guards on individual branches
             if left_guard.is_some() || right_guard.is_some() {
@@ -4763,9 +4761,9 @@ fn expr_to_pattern_with_guard(expr: Spanned<Expr>) -> Result<PatternWithGuard, P
             (Pattern::Or(vec![left_pat, right_pat]), None)
         }
         // Handle annotated patterns (e.g., n@Int, n@[is: pred])
-        Expr::Annotated { name, annotation } => {
+        SurfaceExpression::Annotated { name, annotation } => {
             // Extract guard from `is:` annotation
-            let guard = extract_guard(&annotation);
+            let guard = extract_guard(annotation);
 
             // Determine the base pattern
             let base_pattern = if name == "_" {
@@ -4786,18 +4784,22 @@ fn expr_to_pattern_with_guard(expr: Spanned<Expr>) -> Result<PatternWithGuard, P
 
             (base_pattern, guard)
         }
-        Expr::VarRef { name, .. } if name == "_" => (Pattern::Wildcard, None),
-        Expr::VarRef { name, escaped, .. } if escaped => {
+        SurfaceExpression::VarRef { name, .. } if name == "_" => (Pattern::Wildcard, None),
+        SurfaceExpression::VarRef { name, escaped, .. } if *escaped => {
             // Escaped ref: $name in pattern context → pin pattern
-            (Pattern::Pin(name), None)
+            (Pattern::Pin(name.clone()), None)
         }
-        Expr::VarRef { name, .. } if name.chars().next().is_some_and(|c| c.is_lowercase()) => {
-            (Pattern::Variable(name), None)
+        SurfaceExpression::VarRef { name, .. }
+            if name.chars().next().is_some_and(|c| c.is_lowercase()) =>
+        {
+            (Pattern::Variable(name.clone()), None)
         }
-        Expr::VarRef { name, .. } if name.chars().next().is_some_and(|c| c.is_uppercase()) => {
-            (Pattern::TypeTag(name), None)
+        SurfaceExpression::VarRef { name, .. }
+            if name.chars().next().is_some_and(|c| c.is_uppercase()) =>
+        {
+            (Pattern::TypeTag(name.clone()), None)
         }
-        Expr::VarRef { name, .. } => {
+        SurfaceExpression::VarRef { name, .. } => {
             // Other cases (e.g., names starting with special chars like %)
             return Err(ParseError {
                 message: format!(
@@ -4807,11 +4809,11 @@ fn expr_to_pattern_with_guard(expr: Spanned<Expr>) -> Result<PatternWithGuard, P
                 span: Some(span),
             });
         }
-        Expr::Int(n) => (Pattern::Literal(LiteralPattern::Int(n)), None),
-        Expr::Float(f) => (Pattern::Literal(LiteralPattern::Float(f)), None),
-        Expr::Bool(b) => (Pattern::Literal(LiteralPattern::Bool(b)), None),
-        Expr::Str(s) => (Pattern::Literal(LiteralPattern::Str(s)), None),
-        Expr::Dict(entries) => {
+        SurfaceExpression::Int(n) => (Pattern::Literal(LiteralPattern::Int(*n)), None),
+        SurfaceExpression::Float(f) => (Pattern::Literal(LiteralPattern::Float(*f)), None),
+        SurfaceExpression::Bool(b) => (Pattern::Literal(LiteralPattern::Bool(*b)), None),
+        SurfaceExpression::Str(s) => (Pattern::Literal(LiteralPattern::Str(s.clone())), None),
+        SurfaceExpression::Dict(entries) => {
             // Dict pattern: [key1: pat1  key2: pat2] or [key: pat ...]
             // Note: [seq h t] always parses as an implied Call (never a Dict), so seq patterns
             // are handled exclusively in the Call branch below via ("seq", 2) arm.
@@ -4825,16 +4827,16 @@ fn expr_to_pattern_with_guard(expr: Spanned<Expr>) -> Result<PatternWithGuard, P
             let mut has_rest = true; // Default to open matching (extra keys allowed)
 
             for entry in entries {
-                if let Expr::Rest(ref _rest_expr) = entry.node.value.node {
+                if let SurfaceExpression::Rest(_) = &entry.node.value.expr {
                     // This is a `...` rest marker (explicit open matching)
                     has_rest = true;
                     continue;
                 }
 
-                let key_str = if let Some(ref k) = entry.node.key {
-                    match &k.node {
-                        Expr::VarRef { ref name, .. } => name.clone(),
-                        Expr::Str(s) => s.clone(),
+                let key_str = if let Some(k) = &entry.node.key {
+                    match &k.expr {
+                        SurfaceExpression::VarRef { name, .. } => name.clone(),
+                        SurfaceExpression::Str(s) => s.clone(),
                         _ => {
                             return Err(ParseError {
                                 message: "dict pattern key must be an identifier or string"
@@ -4850,7 +4852,7 @@ fn expr_to_pattern_with_guard(expr: Spanned<Expr>) -> Result<PatternWithGuard, P
                     });
                 };
 
-                let value_pattern = expr_to_pattern((*entry.node.value).clone())?;
+                let value_pattern = surface_node_to_pattern(Arc::clone(&entry.node.value))?;
                 fields.push((key_str, value_pattern));
             }
 
@@ -4862,19 +4864,19 @@ fn expr_to_pattern_with_guard(expr: Spanned<Expr>) -> Result<PatternWithGuard, P
                 None,
             )
         }
-        Expr::Call {
+        SurfaceExpression::Call {
             func,
             args,
             named_args,
             ..
         } if named_args.is_empty() => {
             // Check if this is a special pattern form: [seq h t] or [Constructor payload]
-            if let Expr::VarRef { ref name, .. } = func.node {
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 match (name.as_str(), args.len()) {
                     ("seq", 2) => {
                         // [seq h t] — seq pattern
-                        let head_pat = expr_to_pattern((*args[0]).clone())?;
-                        let tail_pat = expr_to_pattern((*args[1]).clone())?;
+                        let head_pat = surface_node_to_pattern(Arc::clone(&args[0]))?;
+                        let tail_pat = surface_node_to_pattern(Arc::clone(&args[1]))?;
                         (
                             Pattern::Seq {
                                 head: Box::new(head_pat),
@@ -4885,7 +4887,7 @@ fn expr_to_pattern_with_guard(expr: Spanned<Expr>) -> Result<PatternWithGuard, P
                     }
                     (_, 1) if name.chars().next().is_some_and(|c| c.is_uppercase()) => {
                         // [Constructor payload] — nominal variant payload pattern
-                        let payload_pat = expr_to_pattern((*args[0]).clone())?;
+                        let payload_pat = surface_node_to_pattern(Arc::clone(&args[0]))?;
                         (
                             Pattern::Constructor {
                                 tag: name.clone(),
