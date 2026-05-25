@@ -144,6 +144,10 @@ pub struct InferState {
     /// names across separate type alias declarations (W042). A tag name appearing in two
     /// different `[type ...]` declarations produces a W042 diagnostic on the second occurrence.
     pub registered_nominal_tags: HashMap<String, Span>,
+    /// TypeAnnotationTable for nested TypeAssert nodes: keyed by NodeId of the TypeAssert Arc<SurfaceNode>.
+    /// Populated by infer_surface_expr's TypeAssert handler. Extracted by typecheck_surface_document
+    /// to merge into the document-level annotation table.
+    pub type_annotation_table: crate::ast::TypeAnnotationTable,
 }
 
 impl InferState {
@@ -370,6 +374,7 @@ impl InferState {
             do_infer_resolutions: HashMap::new(),
             type_var_source_names: HashMap::new(),
             registered_nominal_tags: HashMap::new(),
+            type_annotation_table: crate::ast::TypeAnnotationTable::new(),
         }
     }
 

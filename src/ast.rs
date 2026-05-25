@@ -759,7 +759,7 @@ impl Default for ResolutionTable {
 
 /// Type annotation side table — populated by the typechecker, keyed by NodeId.
 /// Replaces TypeAssert.resolved_type: RefCell<Option<Type>> in the old design.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeAnnotationTable(pub HashMap<NodeId, Type>);
 
 impl TypeAnnotationTable {
@@ -773,6 +773,10 @@ impl TypeAnnotationTable {
 
     pub fn insert(&mut self, id: NodeId, ty: Type) {
         self.0.insert(id, ty);
+    }
+
+    pub fn drain(&mut self) -> std::collections::hash_map::Drain<'_, NodeId, Type> {
+        self.0.drain()
     }
 }
 

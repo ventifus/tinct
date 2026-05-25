@@ -1042,7 +1042,7 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 ### typeassert-elaboration-fix: TypeAnnotationTable not populated for nested TypeAssert nodes [Critical]
 
-- [ ] Fix `infer_surface_expr` TypeAssert handler in `src/typecheck.rs:2184-2203` — insert resolved type into `TypeAnnotationTable` keyed by `node_id(node)`; currently every nested `[@Type expr]` becomes `CoreExpr::RuntimeTypeCheck` because `lower.rs:158` always gets `None` from `types.get(&id)`. Thread `&mut TypeAnnotationTable` through `infer_surface_expr` or populate the table that's already threaded through infer_dict. [Critical — computer-scientist]
+- [x] Fix `infer_surface_expr` TypeAssert handler — added `type_annotation_table` field to `InferState`; TypeAssert handler now inserts resolved type via `state.type_annotation_table.insert(node_id(node), ty.clone())`; `typecheck_surface_document` drains accumulated entries into document-level table after each top-level expression
 
 ### quote-roundtrip-fidelity: core_expr_to_surface_expr drops Dict/CaseArm/TypeApp in quote [Major]
 

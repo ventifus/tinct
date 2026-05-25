@@ -497,6 +497,10 @@ fn typecheck_surface_document(
                 infer_dict(entries, &env, state, type_map, surface_node.span);
             errors.append(&mut dict_errs);
             table.insert(node_id(surface_node), dict_ty.clone());
+            // Merge nested TypeAssert entries from infer_dict into the document-level table
+            for (nid, ty) in state.type_annotation_table.drain() {
+                table.insert(nid, ty);
+            }
             if is_last {
                 result_type = dict_ty;
                 last_dict_schemes = Some(schemes);
@@ -521,6 +525,10 @@ fn typecheck_surface_document(
                 Ok(ty) => {
                     state.level = enclosing_level;
                     table.insert(node_id(surface_node), ty.clone());
+                    // Merge nested TypeAssert entries from infer_surface_expr into the document-level table
+                    for (nid, ty) in state.type_annotation_table.drain() {
+                        table.insert(nid, ty);
+                    }
                     if is_last {
                         result_type = ty.clone();
                         last_node = Some(Arc::clone(surface_node));
@@ -2191,7 +2199,7 @@ pub(crate) fn infer_surface_expr(
             // (catches double-typecheck invariant violations) but its written value is not
             // propagated back to the AST; the returned Ok(type) is the authoritative result.
             let resolved_type = std::cell::RefCell::new(None::<Type>);
-            resolve_type_assert(
+            let result = resolve_type_assert(
                 annotation,
                 inner,
                 &resolved_type,
@@ -2199,7 +2207,14 @@ pub(crate) fn infer_surface_expr(
                 node.span,
                 state,
                 type_map,
-            )
+            );
+            // Populate TypeAnnotationTable so lower.rs can produce CoreExpr::TypeAssert
+            // with the statically-resolved type, instead of falling back to RuntimeTypeCheck.
+            if let Ok(ref ty) = result {
+                let id = crate::ast::node_id(node);
+                state.type_annotation_table.insert(id, ty.clone());
+            }
+            result
         }
 
         SurfaceExpression::Annotated { name, annotation } => {
