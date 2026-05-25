@@ -111,6 +111,11 @@ pub(crate) async fn eval_dict_core(
         None
     };
     let mut slot_idx: u32 = 0;
+    // Collect (slot_idx, thunk_id) pairs for static-key entries so we can
+    // batch-acquire the arena lock once after the loop instead of once per entry.
+    // The lock cannot be held across the .await in eval_key_core, so we must
+    // collect first and write after.
+    let mut letrec_slots: Vec<(u32, ThunkId)> = Vec::new();
 
     for entry in entries {
         // Determine if this entry has a static key (CoreExpr::Str or CoreExpr::Annotated).
@@ -197,12 +202,21 @@ pub(crate) async fn eval_dict_core(
         }
 
         if is_static_key {
-            if let Some(id) = env_id {
-                ctx.env_arena
-                    .lock()
-                    .unwrap()
-                    .fill_letrec_slot(id, slot_idx, thunk_id);
+            if env_id.is_some() {
+                letrec_slots.push((slot_idx, thunk_id));
                 slot_idx += 1;
+            }
+        }
+    }
+
+    // Batch-fill letrec slots: acquire the arena lock once for all static-key entries
+    // instead of once per entry. This avoids repeated mutex lock/unlock overhead for
+    // dicts with many string-keyed fields.
+    if let Some(id) = env_id {
+        if !letrec_slots.is_empty() {
+            let mut arena_guard = ctx.env_arena.lock().unwrap();
+            for (idx, thunk_id) in letrec_slots {
+                arena_guard.fill_letrec_slot(id, idx, thunk_id);
             }
         }
     }

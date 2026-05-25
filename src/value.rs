@@ -119,10 +119,18 @@ impl PartialOrd for Key {
 
 impl Hash for Key {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(self).hash(state);
+        // Use explicit u8 discriminants (Int=0u8, String=1u8) instead of
+        // std::mem::discriminant so that StrKey::hash can use the same
+        // literal without allocating a temporary Rc<str>.
         match self {
-            Key::Int(n) => n.hash(state),
-            Key::String(s) => s.hash(state),
+            Key::Int(n) => {
+                0u8.hash(state);
+                n.hash(state);
+            }
+            Key::String(s) => {
+                1u8.hash(state);
+                s.hash(state);
+            }
         }
     }
 }
@@ -143,12 +151,16 @@ pub(crate) struct StrKey<'a>(pub &'a str);
 
 impl Hash for StrKey<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Hash the String discriminant from Key enum
-        std::mem::discriminant(&Key::String(Rc::from(""))).hash(state);
+        // Key::String is discriminant 1 (Int=0, String=1).
+        // Using 1u8 directly avoids the Rc::from("") allocation that the
+        // std::mem::discriminant approach required on every hash call.
+        1u8.hash(state);
         // Then hash the string content
         self.0.hash(state);
     }
 }
+
+// If Key gains new variants, update the StrKey::hash discriminant literal (currently 1u8 for Key::String).
 
 impl Equivalent<Key> for StrKey<'_> {
     fn equivalent(&self, key: &Key) -> bool {

@@ -3861,6 +3861,32 @@ fn check_arithmetic(
     let arg1_ty = infer_surface_expr(&args[1], env, state, type_map)?;
     let arg1_ty = state.subst.apply(&arg1_ty);
 
+    // Validate that arguments are not concretely non-numeric types.
+    // TypeVar and Unknown are allowed (gradual / polymorphic — may resolve to numeric at runtime).
+    // Str, Bool, Record, Seq, etc. are definitely wrong.
+    let mut type_errors: Vec<TypeError> = Vec::new();
+    if is_definitely_non_numeric(&arg0_ty) {
+        type_errors.push(TypeError::new(
+            format!(
+                "arithmetic operand has non-numeric type {}: expected Number, Int, or Float",
+                arg0_ty
+            ),
+            args[0].span,
+        ));
+    }
+    if is_definitely_non_numeric(&arg1_ty) {
+        type_errors.push(TypeError::new(
+            format!(
+                "arithmetic operand has non-numeric type {}: expected Number, Int, or Float",
+                arg1_ty
+            ),
+            args[1].span,
+        ));
+    }
+    if !type_errors.is_empty() {
+        return Err(type_errors);
+    }
+
     // Numeric literal types promote: IntLiteral ≡ Int, StringLiteral is not numeric
     let arg0_num = normalize_numeric(&arg0_ty);
     let arg1_num = normalize_numeric(&arg1_ty);
@@ -3909,9 +3935,34 @@ fn check_div(
         )]);
     }
 
-    // Infer args to propagate constraints (we don't use the types for refinement)
-    infer_surface_expr(&args[0], env, state, type_map)?;
-    infer_surface_expr(&args[1], env, state, type_map)?;
+    // Infer args and validate they are not concretely non-numeric.
+    let arg0_ty = infer_surface_expr(&args[0], env, state, type_map)?;
+    let arg0_ty = state.subst.apply(&arg0_ty);
+    let arg1_ty = infer_surface_expr(&args[1], env, state, type_map)?;
+    let arg1_ty = state.subst.apply(&arg1_ty);
+
+    let mut type_errors: Vec<TypeError> = Vec::new();
+    if is_definitely_non_numeric(&arg0_ty) {
+        type_errors.push(TypeError::new(
+            format!(
+                "arithmetic operand has non-numeric type {}: expected Number, Int, or Float",
+                arg0_ty
+            ),
+            args[0].span,
+        ));
+    }
+    if is_definitely_non_numeric(&arg1_ty) {
+        type_errors.push(TypeError::new(
+            format!(
+                "arithmetic operand has non-numeric type {}: expected Number, Int, or Float",
+                arg1_ty
+            ),
+            args[1].span,
+        ));
+    }
+    if !type_errors.is_empty() {
+        return Err(type_errors);
+    }
 
     // Division always produces Float
     Ok(Type::Float)
@@ -3938,6 +3989,30 @@ fn normalize_numeric(ty: &Type) -> NumericKind {
         Type::Float => NumericKind::Float,
         Type::Number => NumericKind::Number,
         _ => NumericKind::Other,
+    }
+}
+
+/// Return `true` if `ty` is a concrete type that cannot be numeric.
+///
+/// Used by `check_arithmetic` and `check_div` to emit type errors for calls like
+/// `[+ "hello" 1]` where the argument type is statically known to be non-numeric.
+///
+/// Passes through `Unknown`, `TypeVar`, `Top`, and `Error` silently:
+/// - `Unknown`: gradual typing escape hatch — may resolve at runtime.
+/// - `TypeVar`: unconstrained polymorphic variable — may unify to a numeric type.
+/// - `Top`: ⊤ is the lattice ceiling, not a concrete value — leave to runtime.
+/// - `Error`: cascade sentinel — the sub-expression already failed; don't double-report.
+///
+/// Also passes through `Number`, `Int`, `Float`, `IntLiteral`, because those ARE numeric.
+fn is_definitely_non_numeric(ty: &Type) -> bool {
+    match ty {
+        // Numeric types — pass
+        Type::Number | Type::Int | Type::Float | Type::IntLiteral(_) => false,
+        // Escape hatches — pass (cannot statically rule out numeric)
+        Type::Unknown | Type::Top | Type::Error => false,
+        Type::TypeVar(_, _) => false,
+        // Everything else is concretely non-numeric
+        _ => true,
     }
 }
 

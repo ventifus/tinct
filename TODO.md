@@ -1377,9 +1377,9 @@ Both `Symlinkable` and `PosixPermissions` DirPerms flags exist and are correctly
 
 **type-theorist M2.** `check_arithmetic` (`src/typecheck.rs:3839-3882`) infers argument types but never validates they are numeric. `[+ "hello" 1]` silently returns `Type::Number` with no warning. The Addable FD path in `improve_functional_dependency` (which would catch this) is bypassed by the special-case dispatch. Same gap in `check_div` (`src/typecheck.rs:3884-3918`).
 
-- [ ] After inferring each arg type, check `satisfies_constraint(&arg_ty, "Numeric")` — emit TypeError on failure for concrete non-numeric types; Unknown passes (gradual)
-- [ ] Add corpus test: `[+ "hello" 1]` → type error
-- **Files:** `src/typecheck.rs:3839-3882,3884-3918`
+- [x] Added `is_definitely_non_numeric` helper; check_arithmetic and check_div now emit TypeError when arg is concrete non-numeric (String/Bool/etc.); Unknown/TypeVar pass (gradual)
+- [x] Add corpus test `arithmetic_non_numeric.llt-eval`
+- **Files:** `src/typecheck.rs`, `tests/corpus/eval/typecheck/warnings/`
 
 ### fn-annotation-callability: @Fn bare annotation resolves to Type::Unknown [Major]
 
@@ -1416,9 +1416,8 @@ Any regression in these ops is invisible to the test suite.
 
 Fix: replace with `(1u8).hash(state); self.0.hash(state);` — produces identical bit-stream without allocation. Add `const _: () = assert!(std::mem::variant_count::<Key>() >= 2);` to enforce Key::String remains discriminant 1.
 
-- [ ] Fix `src/value.rs:147`: replace discriminant() call with hardcoded `(1u8).hash(state)`
-- [ ] Add compile-time discriminant assertion
-- **File:** `src/value.rs:147`
+- [x] Fixed `src/value.rs:147`: StrKey::hash now uses `1u8.hash(state)` (no Rc allocation); Key::Hash also uses explicit u8 discriminants; comment documents the invariant (variant_count is unstable in 1.95, so no static assert)
+- **File:** `src/value.rs`
 
 ### perf-eval-stack-mutex: eval_stack acquires Mutex twice + String alloc per builtin dispatch [Major]
 
@@ -1434,8 +1433,8 @@ Fixes: (a) change `eval_stack: Vec<(String, Span)>` to `Vec<(Arc<str>, Span)>` �
 
 **performance-expert M3.** `src/eval_dict.rs:199-207`: `ctx.env_arena.lock().unwrap().fill_letrec_slot(...)` is called inside the `for entry in entries` loop, one Mutex round-trip per entry. For an N-entry dict, that's N separate lock/unlock cycles where one would suffice.
 
-- [ ] Hoist `let mut arena_guard = ctx.env_arena.lock().unwrap();` before the loop; call `arena_guard.fill_letrec_slot(...)` inside
-- **File:** `src/eval_dict.rs:199-207`
+- [x] Collect (slot_idx, thunk_id) pairs during the loop, then acquire lock once at end to batch fill_letrec_slot calls (avoids lock across async boundary)
+- **File:** `src/eval_dict.rs`
 
 ### attach-provenance-divergence: Two attach_provenance closures with diverging behavior [Major]
 
