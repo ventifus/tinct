@@ -1,7 +1,7 @@
 //! Parser, evaluator, type system, and builtins for the tinct language.
 //!
 //! [`parse`] takes an input string and returns a fully-spanned `File` AST (one or more documents).
-//! [`parse_expression`] is a convenience wrapper that parses a single expression.
+//! [`parse_expression`] is a convenience wrapper that parses a single expression (deprecated, no library callers).
 //! [`eval_source`] parses and evaluates LLT source with the standard library environment.
 //!
 //! Additional public API:

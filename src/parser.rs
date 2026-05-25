@@ -145,16 +145,39 @@ fn emit_tmpl_call(
                 // inside ${...} will point to the start of the interpolated string.
                 let expr_index = expr_args.len();
                 raw.push_str(&format!("${{{}}}", expr_index));
-                match parse_expression(source) {
-                    Ok(inner_expr) => {
-                        // Re-span the inner expression to the outer interpolated string span
-                        // so that evaluation errors point to a reasonable location.
-                        // Bridge from Spanned<Expr> (old AST) to Arc<SurfaceNode>.
-                        let surface_node = crate::ast_convert::expr_to_surface_node(&inner_expr);
-                        expr_args.push(Arc::new(SurfaceNode {
-                            expr: surface_node.expr.clone(),
-                            span,
-                        }));
+                match parse(source) {
+                    Ok(output) => {
+                        // Extract the first expression from the parsed SurfaceProgram directly,
+                        // bypassing the old Expr bridge. Span reporting inside ${...} is
+                        // approximate — inner spans are relative to `source`, so we re-span
+                        // to the outer interpolated string span.
+                        let surface_node = match output
+                            .program
+                            .documents
+                            .first()
+                            .and_then(|d| d.node.items.first())
+                        {
+                            Some(SurfaceItem::Expr(node)) => Arc::new(SurfaceNode {
+                                expr: node.expr.clone(),
+                                span,
+                            }),
+                            Some(SurfaceItem::Decl(_)) => {
+                                return Err(ParseError {
+                                    message: format!(
+                                        "string interpolation must contain an expression, not a declaration: `{}`",
+                                        source
+                                    ),
+                                    span: Some(span),
+                                });
+                            }
+                            None => {
+                                return Err(ParseError {
+                                    message: format!("empty string interpolation: `{}`", source),
+                                    span: Some(span),
+                                });
+                            }
+                        };
+                        expr_args.push(surface_node);
                     }
                     Err(inner_error) => {
                         // Return an error including the inner error message to preserve
@@ -5786,6 +5809,9 @@ fn push_value(
 ///
 /// NOTE: This function returns the old Expr AST via the ast_convert bridge.
 /// New code should use `parse()` and work with SurfaceProgram directly.
+/// This function has no production callers in the library — all library code
+/// now uses `parse()` directly. It is kept as a public API for integration
+/// tests (corpus_tests.rs) that compare Expr AST Display output.
 pub fn parse_expression(input: &str) -> Result<Spanned<Expr>, ParseError> {
     let output = parse(input)?;
     let surface = &output.program;

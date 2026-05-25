@@ -1843,8 +1843,8 @@ mod tests {
         assert_eq!(formatted.trim(), "[map _.age users]");
 
         // Parse original and re-parsed AST should be equal
-        let ast_original = crate::parse_expression(input).unwrap();
-        let ast_reparsed = crate::parse_expression(formatted.trim()).unwrap();
+        let ast_original = crate::parser::parse_expression(input).unwrap();
+        let ast_reparsed = crate::parser::parse_expression(formatted.trim()).unwrap();
         assert_eq!(
             ast_original.node, ast_reparsed.node,
             "AST after format-reparse should equal original AST"
@@ -1858,8 +1858,8 @@ mod tests {
         let formatted = format_source(input).unwrap();
         assert_eq!(formatted.trim(), "[filter _.active users]");
 
-        let ast_original = crate::parse_expression(input).unwrap();
-        let ast_reparsed = crate::parse_expression(formatted.trim()).unwrap();
+        let ast_original = crate::parser::parse_expression(input).unwrap();
+        let ast_reparsed = crate::parser::parse_expression(formatted.trim()).unwrap();
         assert_eq!(ast_original.node, ast_reparsed.node);
     }
 
@@ -1870,8 +1870,8 @@ mod tests {
         let formatted = format_source(input).unwrap();
         assert_eq!(formatted.trim(), "[+ _ 1]");
 
-        let ast_original = crate::parse_expression(input).unwrap();
-        let ast_reparsed = crate::parse_expression(formatted.trim()).unwrap();
+        let ast_original = crate::parser::parse_expression(input).unwrap();
+        let ast_reparsed = crate::parser::parse_expression(formatted.trim()).unwrap();
         assert_eq!(ast_original.node, ast_reparsed.node);
     }
 
@@ -1882,8 +1882,8 @@ mod tests {
         let formatted = format_source(input).unwrap();
         assert_eq!(formatted.trim(), "_.name.first");
 
-        let ast_original = crate::parse_expression(input).unwrap();
-        let ast_reparsed = crate::parse_expression(formatted.trim()).unwrap();
+        let ast_original = crate::parser::parse_expression(input).unwrap();
+        let ast_reparsed = crate::parser::parse_expression(formatted.trim()).unwrap();
         assert_eq!(ast_original.node, ast_reparsed.node);
     }
 

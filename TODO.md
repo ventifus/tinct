@@ -210,7 +210,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 **Remaining (macro system bridges):**
 - [ ] Migrate `eval.rs` quote/unquote handling (lines 918, 976, 999-1034): `expr_to_core_expr`/`core_expr_to_expr`/`expr_to_surface_node` — macro AST roundtrip bridges
 - [ ] Migrate `expand.rs` macro body evaluation (lines 1401, 1474): replace `surface_node_to_expr` + `Expr::Fn` with direct SurfaceNode evaluation
-- [ ] Retire `parse_expression` (parser.rs line 5789): move to `#[cfg(test)]`; update production caller at parser.rs:148 to use `parse()` directly
+- [x] Retire `parse_expression` production caller (parser.rs:148): replaced `parse_expression(source)` + `expr_to_surface_node` bridge with `parse(source)` + direct `SurfaceItem::Expr` extraction — no Expr bridge needed. NOTE: `parse_expression` itself stays `pub` (not `#[cfg(test)]`) because corpus_tests.rs (integration test in separate crate) uses it to produce Expr Display strings for `=== out` corpus expectations; marking it `#[cfg(test)]` would break that crate.
 - [ ] Delete `surface_program_to_file`/`file_to_surface_program` from ast_convert.rs (test-only callers)
 - [ ] After all callers removed: delete `ast_convert.rs` entirely
 
