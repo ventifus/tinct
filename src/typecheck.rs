@@ -12,12 +12,12 @@ use crate::ast::{
     SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceProgram,
     TypeAnnotationTable,
 };
-// Expr: used by production inference helpers (check_expr, infer_fn, typecheck_case_arm,
-// register_type_aliases, extract_param_indices, extract_pattern_types, etc.) that still
-// operate on the Expr representation via bridge conversion.
+// Expr: used by production inference helpers (check_expr, infer_fn, register_type_aliases,
+// extract_param_indices, extract_pattern_types, extract_binding_types, resolve_monad_from_expr,
+// etc.) that still operate on the Expr representation via bridge conversion.
 // TODO(rv2-delete-old-ast): remove once all inference helpers are rewritten to walk
-// SurfaceExpression natively. Remaining bridges: check_expr, infer_fn, typecheck_case_arm,
-// register_type_aliases, extract_param_indices, extract_pattern_types, expand_type_alias.
+// SurfaceExpression natively. Migrated: extract_narrowings, typecheck_case_arm, TypeAssert
+// bridge, infer_class_decl_from_surface, infer_instance_decl_from_surface.
 use crate::ast::Expr;
 use crate::coverage;
 use crate::types::{
@@ -489,7 +489,7 @@ fn typecheck_surface_document(
     // last_record_type: captures (type, enclosing_level) for the last non-dict Record result,
     // so its fields can be generalized and threaded into result_env (cross-document scoping).
     let mut last_record_type: Option<(Type, u32)> = None;
-    let mut last_expr: Option<Spanned<Expr>> = None;
+    let mut last_node: Option<Arc<SurfaceNode>> = None;
 
     for (i, surface_node) in expr_items.iter().enumerate() {
         let is_last = i == expr_items.len() - 1;
@@ -505,15 +505,13 @@ fn typecheck_surface_document(
             if is_last {
                 result_type = dict_ty;
                 last_dict_schemes = Some(schemes);
-                // Convert to Expr for register_type_aliases (which still uses Expr)
-                last_expr = Some(crate::ast_convert::surface_node_to_expr(surface_node));
+                last_node = Some(Arc::clone(surface_node));
             } else {
                 let mut new_env = TypeEnv::with_parent(&env);
                 for (name, scheme) in &schemes {
                     new_env.insert_scheme(name.clone(), scheme.clone());
                 }
-                let expr = crate::ast_convert::surface_node_to_expr(surface_node);
-                let mut alias_errs = register_type_aliases(&expr, &mut new_env, &env, state);
+                let mut alias_errs = register_type_aliases(surface_node, &mut new_env, &env, state);
                 errors.append(&mut alias_errs);
                 env = Rc::new(new_env);
             }
@@ -524,15 +522,13 @@ fn typecheck_surface_document(
             let enclosing_level = state.level;
             state.level += 1;
 
-            // TODO(rv2-delete-old-ast): expr still needed for register_type_aliases and error spans
-            let expr = crate::ast_convert::surface_node_to_expr(surface_node);
             match infer_surface_expr(surface_node, &env, state, type_map) {
                 Ok(ty) => {
                     state.level = enclosing_level;
                     table.insert(node_id(surface_node), ty.clone());
                     if is_last {
                         result_type = ty.clone();
-                        last_expr = Some(expr);
+                        last_node = Some(Arc::clone(surface_node));
                         // Track last non-dict Record for cross-document field threading.
                         if matches!(&ty, Type::Record(_)) {
                             last_record_type = Some((ty, enclosing_level));
@@ -548,12 +544,12 @@ fn typecheck_surface_document(
                                     new_env.insert_scheme(name.clone(), scheme);
                                 }
                                 let mut alias_errs =
-                                    register_type_aliases(&expr, &mut new_env, &env, state);
+                                    register_type_aliases(surface_node, &mut new_env, &env, state);
                                 errors.append(&mut alias_errs);
                                 env = Rc::new(new_env);
                             }
                             Type::Unknown => {} // Gradual: dict type inference failed, skip type alias registration
-                            _ => errors.push(TypeError::not_a_record(&ty, expr.span)),
+                            _ => errors.push(TypeError::not_a_record(&ty, surface_node.span)),
                         }
                     }
                 }
@@ -618,8 +614,8 @@ fn typecheck_surface_document(
             result_env.insert_scheme(name, scheme);
         }
     }
-    if let Some(ref expr) = last_expr {
-        let _ = register_type_aliases(expr, &mut result_env, &env, state);
+    if let Some(ref node) = last_node {
+        let _ = register_type_aliases(node, &mut result_env, &env, state);
     }
     result_env.insert("%".to_string(), result_type.clone());
 
@@ -798,46 +794,50 @@ fn collect_nominal_tags(ty: &Type) -> Vec<String> {
 }
 
 fn register_type_aliases(
-    expr: &Spanned<Expr>,
+    node: &Arc<SurfaceNode>,
     target_env: &mut TypeEnv,
     _resolve_env: &TypeEnv,
     state: &mut InferState,
 ) -> Vec<TypeError> {
     let mut errors = Vec::new();
-    if let Expr::Dict(entries) = &expr.node {
+    if let SurfaceExpression::Dict(entries) = &node.expr {
         // Two-pass registration to support recursive type aliases:
         // Pass 1: Pre-register all aliases with placeholder bodies (Unknown)
         // Pass 2: Resolve actual bodies (now recursive references can be looked up)
 
         // Pass 1: Collect alias names and pre-register placeholders
-        // Each entry carries (alias_name, params, body_expr, declaration_span).
-        let mut alias_entries: Vec<(String, Vec<String>, Spanned<Expr>, Span)> = Vec::new();
+        // Each entry carries (alias_name, params, body_node, declaration_span).
+        let mut alias_entries: Vec<(String, Vec<String>, Arc<SurfaceNode>, Span)> = Vec::new();
         for entry in entries {
             if let Some(ref key) = entry.node.key {
-                if let Expr::Str(name) = &key.node {
-                    if let Expr::TypeAlias { params, body } = &entry.node.value.node {
-                        alias_entries.push((
-                            name.clone(),
-                            params.clone(),
-                            *body.clone(),
-                            entry.node.value.span,
-                        ));
-                        // Pre-register with placeholder body
-                        // Gradual: Pre-register with placeholder during forward-reference resolution
-                        target_env.insert_type_alias(
-                            name.clone(),
-                            TypeAlias {
-                                params: params.clone(),
-                                body: Type::Unknown,
-                            },
-                        );
+                if let SurfaceExpression::Str(name) = &key.expr {
+                    if let SurfaceExpression::Decl(decl_box) = &entry.node.value.expr {
+                        if let SurfaceDeclaration::TypeAlias { params, body } = decl_box.as_ref() {
+                            alias_entries.push((
+                                name.clone(),
+                                params.clone(),
+                                Arc::clone(body),
+                                entry.node.value.span,
+                            ));
+                            // Pre-register with placeholder body
+                            // Gradual: Pre-register with placeholder during forward-reference resolution
+                            target_env.insert_type_alias(
+                                name.clone(),
+                                TypeAlias {
+                                    params: params.clone(),
+                                    body: Type::Unknown,
+                                },
+                            );
+                        }
                     }
                 }
             }
         }
 
         // Pass 2: Resolve actual bodies
-        for (name, params, body, decl_span) in alias_entries {
+        for (name, params, body_node, decl_span) in alias_entries {
+            // Bridge: resolve_type_expr still takes &Spanned<Expr>; convert body SurfaceNode.
+            let body = crate::ast_convert::surface_node_to_expr(&body_node);
             // Use a fresh per-alias mapping so annotation names within one type
             // alias expression (e.g., `a` in `[Fn@a [a]]`) consistently map to
             // the same fresh TypeVar. Without a mapping, every occurrence of `@a`
@@ -5290,28 +5290,28 @@ fn check_call(
 /// - Intersection with scrutinee type: if annotation present, use annotation; else use scrutinee
 /// - Structural test patterns (name: Constructor) are recognized but not fully implemented yet
 fn typecheck_case_arm(
-    pattern: &Spanned<Expr>,
-    body: &Spanned<Expr>,
+    pattern: &Arc<SurfaceNode>,
+    body: &Arc<SurfaceNode>,
     scrutinee_ty: &Type,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    match &pattern.node {
-        Expr::LetDecl { bindings } => {
+    match &pattern.expr {
+        SurfaceExpression::LetDecl { bindings } => {
             // Process each binding element against the scrutinee type.
             // For now, simplified: extract binding names and types, extend env, infer body.
             let mut arm_env = TypeEnv::with_parent(env);
 
             for binding in bindings {
-                match &binding.node {
+                match &binding.expr {
                     // Wildcard: _ (check first to avoid binding "_" as a variable)
-                    Expr::VarRef { name, .. } if name == "_" => {
+                    SurfaceExpression::VarRef { name, .. } if name == "_" => {
                         // Wildcard - no binding introduced
                     }
 
                     // Plain binding: name
-                    Expr::VarRef { name, .. } => {
+                    SurfaceExpression::VarRef { name, .. } => {
                         // Bind name to scrutinee type
                         arm_env.insert(name.clone(), scrutinee_ty.clone());
                     }
@@ -5321,7 +5321,7 @@ fn typecheck_case_arm(
                     // [let n@T] binds n with type scrutinee_ty ∩ T.
                     // Unknown is the identity in intersection (AGT lifting), so when scrutinee_ty
                     // is Unknown, the intersection reduces to ann_ty (via normalize_intersection).
-                    Expr::Annotated { name, annotation } => {
+                    SurfaceExpression::Annotated { name, annotation } => {
                         let ann_ty = resolve_annotation(
                             &annotation.node,
                             env,
@@ -5342,16 +5342,16 @@ fn typecheck_case_arm(
                     // Nested LetDecl for multi-payload destructuring: [a b] in [let [a b]: Constructor]
                     // For now, bind each named element to Unknown (structural test form is future work;
                     // the parser does not yet support colon inside [let ...] to express the constructor).
-                    Expr::LetDecl {
+                    SurfaceExpression::LetDecl {
                         bindings: nested_bindings,
                     } => {
                         for nested in nested_bindings {
-                            match &nested.node {
-                                Expr::VarRef { name, .. } if name != "_" => {
+                            match &nested.expr {
+                                SurfaceExpression::VarRef { name, .. } if name != "_" => {
                                     // Gradual: unannotated constructor field binding
                                     arm_env.insert(name.clone(), Type::Unknown);
                                 }
-                                Expr::Annotated { name, annotation } => {
+                                SurfaceExpression::Annotated { name, annotation } => {
                                     let ann_ty = resolve_annotation(
                                         &annotation.node,
                                         env,
@@ -5380,17 +5380,15 @@ fn typecheck_case_arm(
                 }
             }
 
-            // Type-check body with extended environment
+            // Type-check body with extended environment (body is already Arc<SurfaceNode>)
             let arm_env = Rc::new(arm_env);
-            let body_surf = crate::ast_convert::expr_to_surface_node(body);
-            infer_surface_expr(&body_surf, &arm_env, state, type_map)
+            infer_surface_expr(body, &arm_env, state, type_map)
         }
 
         _ => {
-            // Exact-value match: infer pattern expression type, then infer body
-            // The pattern expression should be scalar/nullary
-            let pattern_surf = crate::ast_convert::expr_to_surface_node(pattern);
-            let pattern_ty = infer_surface_expr(&pattern_surf, env, state, type_map)?;
+            // Exact-value match: infer pattern expression type, then infer body.
+            // Both pattern and body are already Arc<SurfaceNode> — no conversion needed.
+            let pattern_ty = infer_surface_expr(pattern, env, state, type_map)?;
 
             // Check that pattern is scalar or nullary (design doc requirement)
             // For now, just issue a warning if it's not - don't block
@@ -5410,8 +5408,7 @@ fn typecheck_case_arm(
             }
 
             // Body is checked in the enclosing environment (no new bindings from exact-value match)
-            let body_surf = crate::ast_convert::expr_to_surface_node(body);
-            infer_surface_expr(&body_surf, env, state, type_map)
+            infer_surface_expr(body, env, state, type_map)
         }
     }
 }
