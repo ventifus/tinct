@@ -8,11 +8,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::ast::{
-    node_id, Annotation, Entry, Param, Pattern, Span, Spanned, SurfaceDeclaration,
-    SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode,
-    SurfaceProgram, TypeAnnotationTable,
+    node_id, Annotation, Entry, Param, Pattern, Span, Spanned, SurfaceDeclaration, SurfaceDocument,
+    SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceProgram,
+    TypeAnnotationTable,
 };
-// Expr: used by production inference helpers (infer_expr, extract_narrowings, etc.).
+// Expr: used by production inference helpers (extract_narrowings, check_expr, typecheck_case_arm, etc.)
+// that still operate on the Expr representation via bridge conversion.
 // TODO(rv2-delete-old-ast): remove once all inference helpers are rewritten to walk
 // SurfaceExpression natively.
 use crate::ast::Expr;
@@ -58,9 +59,8 @@ pub use crate::types::SchemeMap;
 /// # Algorithm
 ///
 /// 1. For each SurfaceDocument, walk items (expressions + declarations)
-/// 2. Convert SurfaceNode back to Expr via `ast_convert::surface_node_to_expr()`
-/// 3. Run existing type inference machinery (`infer_expr`, `typecheck_document` logic)
-/// 4. Capture inferred types in TypeAnnotationTable keyed by NodeId
+/// 2. Run type inference via `infer_surface_expr` (native SurfaceNode walk)
+/// 3. Capture inferred types in TypeAnnotationTable keyed by NodeId
 ///
 /// The type environment is threaded across documents:
 /// % bindings, %name bindings, dict-scoped let-generalization.
@@ -423,8 +423,8 @@ fn typecheck_surface_document(
                         },
                         decl_spanned.span,
                     );
-                    // Infer the class expression to register it into state.class_env
-                    match infer_expr(&class_expr, &env, state, &mut None) {
+                    // Infer the class declaration to register it into state.class_env
+                    match infer_class_decl_from_expr(&class_expr, &env, state, &mut None) {
                         Ok(_) => {}
                         Err(mut errs) => errors.append(&mut errs),
                     }
@@ -464,8 +464,8 @@ fn typecheck_surface_document(
                         },
                         decl_spanned.span,
                     );
-                    // Infer the instance expression to register it
-                    match infer_expr(&instance_expr, &env, state, &mut None) {
+                    // Infer the instance declaration to register it
+                    match infer_instance_decl_from_expr(&instance_expr, &env, state, &mut None) {
                         Ok(_) => {}
                         Err(mut errs) => errors.append(&mut errs),
                     }
@@ -698,9 +698,8 @@ fn typecheck_surface_document(
 /// discarded here — this entry point is intended for callers that only need
 /// type-error diagnostics, not pipeline-type threading.
 ///
-/// ## Tasks 2 & 3 compliance
-/// - Walks `SurfaceItem::Expr` via `surface_node_to_expr` + `infer_expr` (inherited from delegate)
-/// - Walks `SurfaceItem::Decl` for `TypeAlias`, `ClassDecl`, `InstanceDecl` (inherited from delegate)
+/// - Walks `SurfaceItem::Expr` via `infer_surface_expr` (native SurfaceNode walk)
+/// - Walks `SurfaceItem::Decl` for `TypeAlias`, `ClassDecl`, `InstanceDecl`
 ///   Pass 0c pre-scan via `SurfaceExpression::Decl` is already handled by `typecheck_surface_document`.
 #[allow(dead_code)]
 pub(crate) fn typecheck_surface_document_native(
@@ -1292,18 +1291,20 @@ fn apply_negation_narrowings(
 
 /// Type-check an `if` expression with path-sensitive narrowing.
 fn infer_if(
-    cond: &Spanned<Expr>,
-    then_expr: &Spanned<Expr>,
-    else_expr: &Spanned<Expr>,
+    cond: &Arc<SurfaceNode>,
+    then_expr: &Arc<SurfaceNode>,
+    else_expr: &Arc<SurfaceNode>,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     // Infer the condition type (must be Bool)
-    let _cond_ty = infer_expr(cond, env, state, type_map)?;
+    let _cond_ty = infer_surface_expr(cond, env, state, type_map)?;
 
-    // Extract narrowings from the condition
-    let narrowings = extract_narrowings(cond);
+    // Extract narrowings from the condition — extract_narrowings still takes Spanned<Expr>,
+    // so we convert the cond node for this purpose only (no inference performed here).
+    let cond_expr = crate::ast_convert::surface_node_to_expr(cond);
+    let narrowings = extract_narrowings(&cond_expr);
 
     // Fork the environment for the true branch
     let env_true = apply_narrowings(env, &narrowings, state);
@@ -1316,8 +1317,8 @@ fn infer_if(
     let env_false = apply_negation_narrowings(env, &narrowings, state);
 
     // Infer the then and else branches in their respective environments
-    let then_ty = infer_expr(then_expr, &env_true, state, type_map)?;
-    let else_ty = infer_expr(else_expr, &env_false, state, type_map)?;
+    let then_ty = infer_surface_expr(then_expr, &env_true, state, type_map)?;
+    let else_ty = infer_surface_expr(else_expr, &env_false, state, type_map)?;
 
     // Form the union of both branch types and simplify (RDNF step 1b).
     // normalize_union deduplicates — if both branches return Int, the result is Int not Union([Int, Int]).
@@ -1966,11 +1967,7 @@ pub(crate) fn infer_surface_expr(
             // Special case: `if` is a type-level special form with path-sensitive narrowing
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 if name == "if" && args.len() == 3 && named_args.is_empty() {
-                    // infer_if still takes &Spanned<Expr> — convert per-call
-                    let arg0 = crate::ast_convert::surface_node_to_expr(&args[0]);
-                    let arg1 = crate::ast_convert::surface_node_to_expr(&args[1]);
-                    let arg2 = crate::ast_convert::surface_node_to_expr(&args[2]);
-                    return infer_if(&arg0, &arg1, &arg2, env, state, type_map);
+                    return infer_if(&args[0], &args[1], &args[2], env, state, type_map);
                 }
 
                 // Special case: `get-in` is a type-level special form that unfolds into
@@ -2074,14 +2071,7 @@ pub(crate) fn infer_surface_expr(
                 if let SurfaceExpression::VarRef { name, .. } = &da_target.expr {
                     if name.starts_with(":do-infer:") && named_args.is_empty() {
                         return check_do_infer(
-                            da_field,
-                            name,
-                            args,
-                            named_args,
-                            env,
-                            node.span,
-                            state,
-                            type_map,
+                            da_field, name, args, named_args, env, node.span, state, type_map,
                         );
                     }
                 }
@@ -2167,14 +2157,7 @@ pub(crate) fn infer_surface_expr(
                         }
                         // Polymorphic scheme: optimize by instantiating once in check_call_with_scheme
                         check_call_with_scheme(
-                            scheme,
-                            func.span,
-                            args,
-                            named_args,
-                            env,
-                            node.span,
-                            state,
-                            type_map,
+                            scheme, func.span, args, named_args, env, node.span, state, type_map,
                         )
                     }
                     Some(_) => {
@@ -2225,17 +2208,46 @@ pub(crate) fn infer_surface_expr(
             }
         }
 
-        SurfaceExpression::Fn { .. } => {
-            // Convert to Expr for infer_fn (Phase 4 will migrate infer_fn)
-            let expr = crate::ast_convert::surface_node_to_expr(node);
-            infer_expr(&expr, env, state, type_map)
+        SurfaceExpression::Fn {
+            return_ann,
+            params,
+            body,
+            ..
+        } => {
+            // Convert SurfaceParam → Param (identical fields) and body SurfaceNode → Spanned<Expr>.
+            // infer_fn still takes &[Spanned<Param>] and &Spanned<Expr> — the conversion is cheap.
+            use crate::ast::Param;
+            let params_converted: Vec<Spanned<Param>> = params
+                .iter()
+                .map(|p| {
+                    Spanned::new(
+                        Param {
+                            name: p.node.name.clone(),
+                            annotation: p.node.annotation.clone(),
+                            variadic: p.node.variadic,
+                        },
+                        p.span,
+                    )
+                })
+                .collect();
+            let body_expr = crate::ast_convert::surface_node_to_expr(body);
+            infer_fn(
+                return_ann,
+                &params_converted,
+                &body_expr,
+                env,
+                node.span,
+                state,
+                type_map,
+            )
         }
 
         SurfaceExpression::TypeAssert {
             annotation,
             expr: inner,
         } => {
-            // Convert to Expr for resolve_type_assert (Phase 4 will migrate)
+            // Bridge: convert to Expr to extract the resolved_type RefCell from Expr::TypeAssert.
+            // resolve_type_assert itself no longer calls infer_expr (check_expr uses infer_surface_expr).
             let expr = crate::ast_convert::surface_node_to_expr(node);
             if let Expr::TypeAssert { resolved_type, .. } = &expr.node {
                 resolve_type_assert(
@@ -2303,29 +2315,164 @@ pub(crate) fn infer_surface_expr(
             Ok(expected_list_ty)
         }
 
-        SurfaceExpression::Match { .. } => {
-            // Convert to Expr for match inference (Phase 4 will migrate)
-            let expr = crate::ast_convert::surface_node_to_expr(node);
-            infer_expr(&expr, env, state, type_map)
+        SurfaceExpression::Match { scrutinee, arms } => {
+            // Infer scrutinee type — needed for exhaustiveness checking.
+            let scrutinee_ty = infer_surface_expr(scrutinee, env, state, type_map)?;
+            let scrutinee_ty = state.subst.apply(&scrutinee_ty);
+
+            // I-Case3 (BAS match narrowing): maintain a "remaining scrutinee" type that
+            // accumulates negations as Constructor/TypeTag arms are processed.
+            let mut remaining_scrutinee = scrutinee_ty.clone();
+            let mut arm_result_types: Vec<Type> = Vec::new();
+
+            for arm in arms {
+                // Compute the arm-local scrutinee type from I-Case3.
+                let arm_scrutinee_ty = match &arm.pattern.node {
+                    Pattern::Constructor { tag, .. } | Pattern::TypeTag(tag) => {
+                        let tag_ty = Type::NominalVariant {
+                            tag: tag.clone(),
+                            fields: crate::type_def::Row {
+                                fields: std::collections::HashMap::new(),
+                            },
+                        };
+                        let members = vec![remaining_scrutinee.clone(), tag_ty];
+                        Type::normalize_intersection(members)
+                    }
+                    Pattern::Wildcard | Pattern::Variable(_) => remaining_scrutinee.clone(),
+                    _ => scrutinee_ty.clone(),
+                };
+
+                let mut pat_bindings: Vec<(String, Type)> = Vec::new();
+                collect_pattern_bindings(&arm.pattern.node, &arm_scrutinee_ty, &mut pat_bindings);
+                let arm_env = if pat_bindings.is_empty() {
+                    env.clone()
+                } else {
+                    let mut child = TypeEnv::with_parent(env);
+                    for (name, ty) in pat_bindings {
+                        child.insert(name, ty);
+                    }
+                    Rc::new(child)
+                };
+
+                // Type-check guard if present, and apply is: predicate narrowing.
+                let arm_env = if let Some(guard) = &arm.guard {
+                    let _guard_ty = infer_surface_expr(guard, &arm_env, state, type_map)?;
+                    // extract_narrowings still takes &Spanned<Expr> — convert guard for this only.
+                    let guard_expr = crate::ast_convert::surface_node_to_expr(guard);
+                    let guard_narrowings = extract_narrowings(&guard_expr);
+                    if guard_narrowings.is_empty() {
+                        arm_env
+                    } else {
+                        apply_narrowings(&arm_env, &guard_narrowings, state)
+                    }
+                } else {
+                    arm_env
+                };
+                let arm_ty = infer_surface_expr(&arm.body, &arm_env, state, type_map)?;
+                arm_result_types.push(arm_ty);
+
+                // Update remaining_scrutinee for subsequent arms (I-Case3 negation accumulation).
+                if arm.guard.is_none() {
+                    match &arm.pattern.node {
+                        Pattern::Constructor { tag, .. } | Pattern::TypeTag(tag) => {
+                            let neg_tag = Type::Negation(Box::new(Type::NominalVariant {
+                                tag: tag.clone(),
+                                fields: crate::type_def::Row {
+                                    fields: std::collections::HashMap::new(),
+                                },
+                            }));
+                            remaining_scrutinee = Type::normalize_intersection(vec![
+                                remaining_scrutinee.clone(),
+                                neg_tag,
+                            ]);
+                        }
+                        Pattern::Wildcard | Pattern::Variable(_) => {
+                            remaining_scrutinee = Type::Never;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Exhaustiveness checking (Maranget 2007).
+            let sig = match &scrutinee_ty {
+                Type::Union(members) => coverage::ConstructorSignature::from_union(members),
+                Type::NominalVariant { tag, fields } => Some(
+                    coverage::ConstructorSignature::from_nominal_variant(tag, fields),
+                ),
+                Type::Bool => Some(coverage::ConstructorSignature {
+                    constructors: vec![
+                        (coverage::ConstructorTag::LiteralBool(true), 0),
+                        (coverage::ConstructorTag::LiteralBool(false), 0),
+                    ],
+                }),
+                _ => None,
+            };
+
+            if let Some(sig) = sig {
+                let coverage_patterns: Vec<coverage::CoveragePattern> = arms
+                    .iter()
+                    .map(|arm| coverage::ast_pattern_to_coverage(&arm.pattern.node))
+                    .collect();
+                let has_guards: Vec<bool> = arms.iter().map(|arm| arm.guard.is_some()).collect();
+                let result = coverage::check_coverage(&coverage_patterns, &sig, &has_guards);
+                let mut match_errors: Vec<TypeError> = Vec::new();
+
+                if !result.exhaustive {
+                    let witnesses = coverage::format_witnesses(&result.uncovered);
+                    match_errors.push(TypeError::new(
+                        format!("non-exhaustive match: missing coverage for {}", witnesses),
+                        node.span,
+                    ));
+                }
+                for &idx in &result.redundant {
+                    match_errors.push(TypeError::new(
+                        "unreachable match arm: this pattern is already covered by prior arms",
+                        arms[idx].pattern.span,
+                    ));
+                }
+                for &idx in &result.inaccessible {
+                    match_errors.push(TypeError::new(
+                        "inaccessible match arm: reachable only via diverging (bottom) values",
+                        arms[idx].pattern.span,
+                    ));
+                }
+                if !match_errors.is_empty() {
+                    return Err(match_errors);
+                }
+            }
+
+            let match_ty = if arm_result_types.is_empty() {
+                Type::Unknown
+            } else {
+                let raw_union = Type::normalize_union(arm_result_types);
+                Type::simplify_type(raw_union)
+            };
+            Ok(match_ty)
         }
 
         SurfaceExpression::Decl(decl_box) => {
             // Handle declaration forms embedded in expression context
             match **decl_box {
                 SurfaceDeclaration::ClassDecl { .. } => {
-                    // Convert to Expr for class decl handling (Phase 4 will migrate)
+                    // Bridge: convert to Expr::ClassDecl then call helper (no infer_expr).
                     let expr = crate::ast_convert::surface_node_to_expr(node);
-                    infer_expr(&expr, env, state, type_map)
+                    infer_class_decl_from_expr(&expr, env, state, type_map)
                 }
                 SurfaceDeclaration::InstanceDecl { .. } => {
-                    // Convert to Expr for instance decl handling (Phase 4 will migrate)
+                    // Bridge: convert to Expr::InstanceDecl then call helper (no infer_expr).
                     let expr = crate::ast_convert::surface_node_to_expr(node);
-                    infer_expr(&expr, env, state, type_map)
+                    infer_instance_decl_from_expr(&expr, env, state, type_map)
                 }
                 SurfaceDeclaration::TypeAlias { .. } => {
-                    // Convert to Expr for type alias expansion (Phase 4 will migrate)
-                    let expr = crate::ast_convert::surface_node_to_expr(node);
-                    infer_expr(&expr, env, state, type_map)
+                    // Bridge: convert body SurfaceNode to Spanned<Expr> for expand_type_alias.
+                    // Extract body from decl_box directly to avoid borrow issues with **decl_box.
+                    if let SurfaceDeclaration::TypeAlias { ref body, .. } = **decl_box {
+                        let body_expr = crate::ast_convert::surface_node_to_expr(body);
+                        expand_type_alias(&body_expr, env, state).map_err(|e| vec![e])
+                    } else {
+                        unreachable!()
+                    }
                 }
                 SurfaceDeclaration::DefMacro { .. } => {
                     Err(vec![TypeError::new(
@@ -2433,1368 +2580,373 @@ pub(crate) fn infer_surface_expr(
     result
 }
 
-fn infer_expr(
+/// Type-check a [class ...] declaration from a pre-converted Expr::ClassDecl node.
+/// Called from infer_surface_expr (via surface_node_to_expr bridge) and typecheck_surface_document.
+fn infer_class_decl_from_expr(
     expr: &Spanned<Expr>,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let result = match &expr.node {
-        Expr::Int(n) => Ok(Type::IntLiteral(*n)),
-        Expr::Float(_) => Ok(Type::Float),
-        Expr::Bool(_) => Ok(Type::Bool),
-        Expr::Str(s) => Ok(Type::StringLiteral(s.clone())),
+    let Expr::ClassDecl {
+        name,
+        params,
+        superclasses,
+        methods,
+        determines,
+        resolver,
+        resolver_injective,
+    } = &expr.node
+    else {
+        return Err(vec![TypeError::new(
+            "internal error: infer_class_decl_from_expr called with non-ClassDecl expr",
+            expr.span,
+        )]);
+    };
+    use crate::types::{ClassDecl, Kind};
 
-        Expr::VarRef { name, .. } => {
-            if let Some(scheme) = env.get(name) {
-                // Record scheme in scheme_map for LSP hover (constraints + type vars).
-                // Only store when scheme collection is enabled and the scheme is polymorphic
-                // (has constraints or quantified type vars — monomorphic schemes show the
-                // same info via type_map and don't need the extra constraint display).
-                if !scheme.constraints.is_empty() || !scheme.type_vars.is_empty() {
-                    if let Some(ref mut smap) = state.scheme_map {
-                        let key = (expr.span.start.offset, expr.span.end.offset);
-                        smap.insert(key, scheme.clone());
-                    }
-                }
-                Ok(instantiate_scheme(scheme, state.level, state))
-            } else {
-                let mut err = TypeError::undefined_variable(name, expr.span);
-                if let Some(&cause_span) = state.failed_bindings.get(name.as_str()) {
-                    err.notes.push(format!(
-                        "  = note: `{name}` could not be defined because its definition at {}:{} failed type checking",
-                        cause_span.start.line, cause_span.start.column
-                    ));
-                } else if !state.in_prelude_load
-                    && crate::builtins::builtin_primary_names().contains(name.as_str())
-                {
-                    // T002: raw Rust builtin referenced directly in user code.
-                    // The name is known to the runtime but was not exported by prelude.
-                    err.notes.push(format!(
-                        "  = note: `{name}` is a Rust builtin that is not exported by the prelude\n  = help: use the prelude-exported wrapper instead, or load a stdlib module via [include %libdir \"<module>.llt\"]"
-                    ));
-                    state.diagnostics.push(crate::error::TypeDiagnostic {
-                        message: format!(
-                            "raw builtin `{name}` is not available in user code — use the prelude-exported version or include the relevant stdlib module"
-                        ),
-                        span: expr.span,
-                        code: "T002",
-                        level: crate::error::DiagnosticLevel::Warn,
-                    });
-                }
-                Err(vec![err])
-            }
-        }
+    if name.is_empty() {
+        return Err(vec![TypeError::new(
+            "class declaration must have a name declared with [class [ClassName ...] ...]",
+            expr.span,
+        )]);
+    }
 
-        Expr::Dict(entries) => {
-            // Convert Entry-based entries to SurfaceEntry for infer_dict
-            let surface_entries: Vec<Spanned<SurfaceEntry>> = entries
-                .iter()
-                .map(|e| {
-                    let key = e
-                        .node
-                        .key
-                        .as_ref()
-                        .map(crate::ast_convert::expr_to_surface_node);
-                    let value = crate::ast_convert::expr_to_surface_node(&e.node.value);
-                    Spanned::new(SurfaceEntry { key, value }, e.span)
-                })
-                .collect();
-            let (ty, _schemes, errs) =
-                infer_dict(&surface_entries, env, state, type_map, expr.span);
-            if errs.is_empty() {
-                Ok(ty)
-            } else {
-                Err(errs)
-            }
-        }
-
-        Expr::DotAccess {
-            expr: target,
-            field,
-        } => {
-            let surface_target = crate::ast_convert::expr_to_surface_node(target);
-            check_dot_access(&surface_target, field, env, expr.span, state, type_map)
-        }
-
-        Expr::Pipe { .. } => {
-            unreachable!("Pipe should be desugared before type checking")
-        }
-
-        Expr::Sequential(exprs) => {
-            // Multi-expression sequential evaluation (let-binding semantics).
-            // Each expression's result dict extends the type environment for the next.
-            // The last expression's type is the overall result type.
-            if exprs.is_empty() {
-                return Ok(Type::Record(Row {
-                    fields: HashMap::new(),
-                }));
-            }
-
-            let mut current_env = Rc::clone(env);
-
-            for (i, seq_expr) in exprs.iter().enumerate() {
-                let is_last = i == exprs.len() - 1;
-
-                if is_last {
-                    // Last expression: return its type
-                    return infer_expr(seq_expr, &current_env, state, type_map);
-                }
-
-                // Intermediate expression: infer and extract record bindings
-                let expr_ty = infer_expr(seq_expr, &current_env, state, type_map)?;
-
-                // Extract record fields to extend the type environment
-                if let Type::Record(row) = expr_ty {
-                    // Create child environment with bindings from intermediate expression
-                    let mut child_env = TypeEnv::with_parent(&current_env);
-
-                    // Add field types to environment
-                    for (field_name, field_ty) in &row.fields {
-                        child_env.insert(field_name.clone(), field_ty.clone());
-                    }
-
-                    current_env = Rc::new(child_env);
-                } else {
-                    // Intermediate expression must be a record (dict)
+    for method in methods {
+        let _method_name = match &method.node.key {
+            Some(key_expr) => match &key_expr.node {
+                Expr::Str(s) => s.clone(),
+                Expr::VarRef { name, .. } => name.clone(),
+                _ => {
                     return Err(vec![TypeError::new(
-                        format!(
-                            "sequential expression requires intermediate expressions to be dicts, got {}",
-                            expr_ty
-                        ),
-                        seq_expr.span,
+                        "class method name must be a string or identifier",
+                        key_expr.span,
                     )]);
                 }
-            }
-
-            unreachable!(
-                "infer Sequential: loop did not return — exprs was non-empty but is_last never triggered"
-            )
-        }
-
-        Expr::Call {
-            func,
-            args,
-            named_args,
-            implied: _,
-        } => {
-            // Convert Expr args/func to SurfaceNode for check_* functions (which now take SurfaceNode).
-            // infer_expr still walks Expr; check_* functions have been migrated to SurfaceNode.
-            let surface_args: Vec<Arc<SurfaceNode>> = args
-                .iter()
-                .map(|a| crate::ast_convert::expr_to_surface_node(a))
-                .collect();
-            let surface_named_args: Vec<Spanned<SurfaceNamedArg>> = named_args
-                .iter()
-                .map(|na| {
-                    let value = crate::ast_convert::expr_to_surface_node(&na.node.value);
-                    Spanned::new(
-                        SurfaceNamedArg {
-                            name: na.node.name.clone(),
-                            value,
-                        },
-                        na.span,
-                    )
-                })
-                .collect();
-            let surface_func = crate::ast_convert::expr_to_surface_node(func);
-
-            // Special case: `if` is a type-level special form with path-sensitive narrowing
-            if let Expr::VarRef { name, .. } = &func.node {
-                if name == "if" && args.len() == 3 && named_args.is_empty() {
-                    return infer_if(&args[0], &args[1], &args[2], env, state, type_map);
-                }
-
-                // Special case: `get-in` is a type-level special form that unfolds into
-                // repeated `get` calls for nested dict access.
-                if name == "get-in" && named_args.is_empty() {
-                    return check_get_in(
-                        &surface_args,
-                        &surface_named_args,
-                        env,
-                        expr.span,
-                        state,
-                        type_map,
-                    );
-                }
-
-                // Special case: `open` synthesizes a precise Handle(cap_row) return type when
-                // capability flag arguments are statically known VarRefs (e.g., Readable, Writable).
-                //
-                // The static TypeEnv signature for `open` uses Handle(Unknown) as a fallback.
-                // This special case inspects the flag argument ASTs to extract known flag names
-                // and builds a precise cap row: Handle[__cap_flag_readable __cap_flag_writable ...].
-                //
-                // This is syntactic (AST-level) rather than semantic (type-level) because the prelude
-                // defines Readable/Writable as `[variant "Name"]` which types as Unknown — semantic
-                // inspection of argument types would always see Unknown and produce no precision.
-                if name == "open" && named_args.is_empty() && args.len() >= 2 {
-                    return check_open(&surface_args, env, expr.span, state, type_map);
-                }
-
-                // Special case: `slurp` synthesizes a precise return type based on handle capabilities.
-                //
-                // The static TypeEnv signature for `slurp` is Handle[Readable] → String | Bytes.
-                // This special case inspects the handle's cap row to determine the precise return type:
-                // - Binary handle → Bytes
-                // - Text handle (no Binary flag) → String
-                // - Handle(Unknown) → String | Bytes (gradual fallback)
-                if name == "slurp" && named_args.is_empty() && args.len() == 1 {
-                    return check_slurp(&surface_args, env, expr.span, state, type_map);
-                }
-
-                // Special case: `connect` synthesizes a precise return type based on transport variant.
-                //
-                // The static TypeEnv signature is Union(Handle[readable+writable], DatagramHandle).
-                // This special case inspects the transport argument to determine the precise return type:
-                // - Tcp/UnixStream → Handle[Readable, Writable]
-                // - Udp/UnixDatagram → DatagramHandle
-                // - Unknown transport → Union fallback
-                if name == "connect" && named_args.is_empty() && args.len() == 4 {
-                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_connect(&surface_args, env, expr.span, state, type_map);
-                }
-
-                // Special case: `builtin-first` synthesizes a precise return type based on collection type.
-                //
-                // The static TypeEnv signature is Top → Unknown.
-                // This special case inspects the collection type to determine the precise return type:
-                // - Seq(T) → T
-                // - String → String
-                // - Bytes → Int
-                // - Unknown/other → Unknown fallback
-                if name == "builtin-first" && named_args.is_empty() && args.len() == 1 {
-                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_first(&surface_args, env, expr.span, state, type_map);
-                }
-
-                // Special case: `builtin-last` synthesizes a precise return type based on collection type.
-                //
-                // The static TypeEnv signature is Top → Unknown.
-                // This special case inspects the collection type to determine the precise return type:
-                // - Seq(T) → T
-                // - String → String
-                // - Bytes → Int
-                // - Unknown/other → Unknown fallback
-                if name == "builtin-last" && named_args.is_empty() && args.len() == 1 {
-                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_last(&surface_args, env, expr.span, state, type_map);
-                }
-
-                // Special case: `map` synthesizes a precise return type for Seq input with callback.
-                //
-                // The static TypeEnv signature is Top → Unknown → Unknown.
-                // This special case inspects the collection and callback types:
-                // - Seq(A) with callback A → B → Seq(B)
-                // - Dict input or other → Unknown fallback
-                if name == "map" && named_args.is_empty() && args.len() == 2 {
-                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_map(&surface_args, env, expr.span, state, type_map);
-                }
-
-                // Special case: `builtin-map` is an alias for `map` — dispatch to check_map.
-                if name == "builtin-map" && named_args.is_empty() && args.len() == 2 {
-                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_map(&surface_args, env, expr.span, state, type_map);
-                }
-
-                // Special case: `builtin-concat` synthesizes a precise return type for Seq + Seq.
-                //
-                // The static TypeEnv signature is Appendable a => Appendable b => a → b → Unknown.
-                // This special case inspects both arguments:
-                // - Seq(T) + Seq(T) → Seq(T)
-                // - Dict merge or other → Unknown fallback
-                if name == "builtin-concat" && named_args.is_empty() && args.len() == 2 {
-                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_concat(&surface_args, env, expr.span, state, type_map);
-                }
-
-                // Special case: `tls-layer` preserves input handle's capability row.
-                //
-                // The static TypeEnv signature is Handle(Unknown) → ... → Handle(Unknown).
-                // This special case preserves the input handle's capabilities:
-                // - Handle[α] → ... → Handle[α]
-                // - Unknown → Handle(Unknown) fallback
-                if name == "tls-layer" && named_args.is_empty() && args.len() == 3 {
-                    let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_tls_layer(&surface_args, env, expr.span, state, type_map);
-                }
-
-                // Special case: `+` / `builtin-add` refines return type when both args are known.
-                //
-                // The prelude wrapper `[fn@Number [let a@Number b@Number] [builtin-add a b]]`
-                // gives `+` a TypeScheme of `Fn Number [Number Number]`, so CALL-MONO always
-                // returns `Number`. This special case inspects actual arg types:
-                // - Int + Int → Int
-                // - Float (or Int + Float) → Float
-                // - Number + Number → Number (unchanged)
-                // - Unknown/TypeVar → Number (gradual fallback)
-                if (name == "+" || name == "builtin-add")
-                    && named_args.is_empty()
-                    && args.len() == 2
-                {
-                    // Do NOT call infer_expr(func, ...) here — instantiating the Addable-constrained
-                    // scheme for `+` would add fresh TypeVars and an Addable constraint to
-                    // state.constraints. Those TypeVars are never unified (check_arithmetic returns
-                    // the result type directly), leaving unresolved Addable constraints that trigger
-                    // spurious T013 "ambiguous constraint" warnings during generalization of sibling
-                    // bindings. check_open uses the same pattern (no infer_expr on func).
-                    return check_arithmetic(&surface_args, env, expr.span, state, type_map);
-                }
-
-                // Special case: `-` / `builtin-sub` — same refinement as `+`.
-                if (name == "-" || name == "builtin-sub")
-                    && named_args.is_empty()
-                    && args.len() == 2
-                {
-                    return check_arithmetic(&surface_args, env, expr.span, state, type_map);
-                }
-
-                // Special case: `*` / `builtin-mul` — same refinement as `+`.
-                if (name == "*" || name == "builtin-mul")
-                    && named_args.is_empty()
-                    && args.len() == 2
-                {
-                    return check_arithmetic(&surface_args, env, expr.span, state, type_map);
-                }
-
-                // Special case: `/` / `builtin-div` — always returns Float in IEEE arithmetic.
-                // Int / Int = Float (unlike + / - / * which preserve Int).
-                if (name == "/" || name == "builtin-div")
-                    && named_args.is_empty()
-                    && args.len() == 2
-                {
-                    return check_div(&surface_args, env, expr.span, state, type_map);
-                }
-            }
-
-            // Special case: do-infer sentinel — inferred [do] form monad resolution.
-            // The `do` macro emits `[`:do-infer:N`.bind e [fn [x] ...]]` when no explicit monad
-            // is provided (N is a gensym counter). The type checker detects this DotAccess pattern
-            // and resolves the monad from the enclosing function's expected return type (Rule 1) or
-            // the first binding's inferred type (Rule 2). The resolved monad name is stored in
-            // state.do_infer_resolutions keyed by the sentinel VarRef name for eval wiring.
-            if let Expr::DotAccess {
-                expr: da_target,
-                field: da_field,
-            } = &func.node
-            {
-                if let Expr::VarRef { name, .. } = &da_target.node {
-                    if name.starts_with(":do-infer:") && named_args.is_empty() {
-                        return check_do_infer(
-                            da_field,
-                            name,
-                            &surface_args,
-                            &surface_named_args,
-                            env,
-                            expr.span,
-                            state,
-                            type_map,
-                        );
-                    }
-                }
-            }
-
-            // Special case: if func is a VarRef to a polymorphic scheme, pass the scheme
-            // directly to avoid double instantiation (VAR-POLY followed by CALL-POLY).
-            // For monomorphic schemes, use the normal path which handles TypeVar during letrec.
-            if let Expr::VarRef { name, .. } = &func.node {
-                // Monomorphic recursion check: allow recursive calls when the function's type
-                // is already resolved (monomorphic recursion), reject only polymorphic recursion.
-                //
-                // When we enter the recursive call detection path:
-                // - If the function's TypeVar has been resolved to a concrete Function type
-                //   (via prior unification from other code paths, e.g., the base-case `if` branch),
-                //   we can allow the call and return the resolved return type. This is correct:
-                //   all uses of the recursive call unify to the same concrete type (monomorphic).
-                // - If the TypeVar is still unresolved (or resolves to something non-Function),
-                //   we allow the call speculatively: infer args for constraint side-effects and
-                //   return a fresh TypeVar. The outer `infer_fn` and `unify` calls will enforce
-                //   consistency — if different arms return incompatible types, the outer `if`
-                //   expression or `infer_fn` body unification will catch it.
-                // - Polymorphic recursion (where the recursive call instantiates the function at a
-                //   different type) is handled implicitly: since the function only has one TypeVar
-                //   binding (not a polymorphic scheme), all uses must unify to the same type.
-                //
-                // LIMITATION: This check only fires for direct VarRef calls (not field access like
-                // $obj.f) and only when state.current_function is set (dict entries, not closure
-                // captures). Indirect recursion via field access or closure captures bypasses the
-                // check. This is intentional — detecting recursion through arbitrary expressions is
-                // much harder and rare in practice.
-                if state.current_function.as_ref() == Some(name) {
-                    // Look up the function's current type from the environment.
-                    // In Pass 1, this was bound to a fresh TypeVar. By the time a recursive call
-                    // is encountered, state.subst may have resolved it to a Function type (if prior
-                    // expression inference in the body unified it).
-                    let fn_resolved_ty = env
-                        .get(name)
-                        .map(|scheme| state.subst.apply(&scheme.body))
-                        .unwrap_or_else(|| state.fresh_type_var());
-
-                    match &fn_resolved_ty {
-                        Type::Function {
-                            params,
-                            ret,
-                            variadic,
-                        } => {
-                            // Monomorphic recursion: the function's type is already known.
-                            // Infer arguments and unify with parameter types.
-                            let variadic = *variadic;
-                            let params = params.clone();
-                            let ret = ret.clone();
-
-                            let total_supplied = args.len() + named_args.len();
-                            let min_required = if variadic && !params.is_empty() {
-                                params.len() - 1
-                            } else {
-                                params.len()
-                            };
-                            if total_supplied < min_required
-                                || (!variadic && total_supplied != params.len())
-                            {
-                                return Err(vec![TypeError::new(
-                                    format!(
-                                        "arity mismatch: expected {}{} argument(s), got {}",
-                                        if variadic { "at least " } else { "" },
-                                        min_required,
-                                        total_supplied,
-                                    ),
-                                    expr.span,
-                                )]);
-                            }
-
-                            for (arg, (_param_name, param_ty)) in args.iter().zip(params.iter()) {
-                                let arg_ty = infer_expr(arg, env, state, type_map)?;
-                                let mut subst = std::mem::take(&mut state.subst);
-                                let unify_result =
-                                    unify(&arg_ty, param_ty, &mut subst, state, arg.span);
-                                state.subst = subst;
-                                if let Err(uerr) = unify_result {
-                                    return Err(vec![uerr]);
-                                }
-                            }
-                            for na in named_args {
-                                let _ = infer_expr(&na.node.value, env, state, type_map)?;
-                            }
-                            return Ok(state.subst.apply(&ret));
-                        }
-                        _ => {
-                            // TypeVar or other non-Function type: allow speculatively.
-                            // Infer args for constraint side-effects, return a fresh TypeVar.
-                            // The outer unification will enforce consistency once the function
-                            // body is fully inferred.
-                            for arg in args {
-                                let _ = infer_expr(arg, env, state, type_map)?;
-                            }
-                            for na in named_args {
-                                let _ = infer_expr(&na.node.value, env, state, type_map)?;
-                            }
-                            return Ok(state.fresh_type_var());
-                        }
-                    }
-                }
-
-                match env.get(name) {
-                    Some(scheme) if !scheme.type_vars.is_empty() => {
-                        // Record scheme for LSP hover (shows constraints on the call-head VarRef).
-                        if !scheme.constraints.is_empty() || !scheme.type_vars.is_empty() {
-                            if let Some(ref mut smap) = state.scheme_map {
-                                let key = (func.span.start.offset, func.span.end.offset);
-                                smap.insert(key, scheme.clone());
-                            }
-                        }
-                        // Polymorphic scheme: optimize by instantiating once in check_call_with_scheme
-                        check_call_with_scheme(
-                            scheme,
-                            func.span,
-                            &surface_args,
-                            &surface_named_args,
-                            env,
-                            expr.span,
-                            state,
-                            type_map,
-                        )
-                    }
-                    Some(_) => {
-                        // TypeVar: handles letrec forward-references where Pass 1 assigns TypeVar
-                        // placeholders not yet generalized. The monomorphic path (check_call) reaches
-                        // the TypeVar arm which infers args for side effects and returns Any, deferring
-                        // type resolution until all letrec bindings have been inferred.
-                        check_call(
-                            &surface_func,
-                            &surface_args,
-                            &surface_named_args,
-                            env,
-                            expr.span,
-                            state,
-                            type_map,
-                        )
-                    }
-                    None => {
-                        // Special handling for $proxy builtin: produces Type::Proxy
-                        if name == "proxy" {
-                            // Infer arguments for type map population
-                            for arg in args {
-                                let _ = infer_expr(arg, env, state, type_map)?;
-                            }
-                            for na in named_args {
-                                let _ = infer_expr(&na.node.value, env, state, type_map)?;
-                            }
-                            Ok(Type::Proxy)
-                        } else {
-                            let mut err = TypeError::undefined_variable(name, func.span);
-                            if let Some(&cause_span) = state.failed_bindings.get(name.as_str()) {
-                                err.notes.push(format!(
-                                    "  = note: `{name}` could not be defined because its definition at {}:{} failed type checking",
-                                    cause_span.start.line, cause_span.start.column
-                                ));
-                            } else if !state.in_prelude_load
-                                && crate::builtins::builtin_primary_names().contains(name.as_str())
-                            {
-                                // T002: raw Rust builtin referenced directly in user code.
-                                // The name is known to the runtime but was not exported by prelude.
-                                err.notes.push(format!(
-                                    "  = note: `{name}` is a Rust builtin that is not exported by the prelude\n  = help: use the prelude-exported wrapper instead, or load a stdlib module via [include %libdir \"<module>.llt\"]"
-                                ));
-                                state.diagnostics.push(crate::error::TypeDiagnostic {
-                                    message: format!(
-                                        "raw builtin `{name}` is not available in user code — use the prelude-exported version or include the relevant stdlib module"
-                                    ),
-                                    span: func.span,
-                                    code: "T002",
-                                    level: crate::error::DiagnosticLevel::Warn,
-                                });
-                            }
-                            Err(vec![err])
-                        }
-                    }
-                }
-            } else {
-                check_call(
-                    &surface_func,
-                    &surface_args,
-                    &surface_named_args,
-                    env,
-                    expr.span,
-                    state,
-                    type_map,
-                )
-            }
-        }
-
-        Expr::Fn {
-            return_ann,
-            params,
-            body,
-            ..
-        } => {
-            // Note: Fn does not need semantic validation of params at type-check time.
-            // The parser's param extraction is permissive and handles [fn [let x y] body]
-            // as well as [fn [x y] body]. Empty params is valid for zero-parameter functions.
-            // Macro-generated Fn nodes will have params extracted by the parser after expansion.
-            infer_fn(return_ann, params, body, env, expr.span, state, type_map)
-        }
-
-        Expr::TypeAlias { body, .. } => {
-            // Note: TypeAlias does not need semantic validation of params at type-check time.
-            // The parser's param extraction is permissive and handles [type [let a b] T]
-            // as well as [type [a b] T]. Empty params is valid for non-parametric type aliases.
-            // Macro-generated TypeAlias nodes will have params extracted by the parser after expansion.
-            expand_type_alias(body, env, state).map_err(|e| vec![e])
-        }
-
-        Expr::TypeAssert {
-            annotation,
-            expr: inner,
-            resolved_type,
-        } => resolve_type_assert(
-            annotation,
-            inner,
-            resolved_type,
-            env,
-            expr.span,
-            state,
-            type_map,
-        ),
-
-        Expr::Annotated { name, annotation } => {
-            // Create per-annotation-scope mappings for type and row variables.
-            let mut ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
-            let mut row_ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
-            let mut ann_mapping_opt = ann_mapping.as_mut();
-            let mut row_ann_mapping_opt = row_ann_mapping.as_mut();
-            resolve_annotated(
-                name,
-                annotation,
-                env,
-                expr.span,
-                state,
-                &mut ann_mapping_opt,
-                &mut row_ann_mapping_opt,
-            )
-            .map_err(|e| vec![e])
-        }
-
-        Expr::Quote(_inner) => {
-            // [quote expr] produces a dict representing the AST.
-            // Type: empty record (BAS: width subtyping allows any fields).
-            Ok(Type::Record(Row {
-                fields: HashMap::new(),
-            }))
-        }
-
-        Expr::Unquote(inner) => {
-            // [unquote expr] evaluates expr and returns its type.
-            // It must be inside a [quote ...], but the parser enforces that.
-            // The result should be a Dict (AST node).
-            infer_expr(inner, env, state, type_map)
-        }
-
-        Expr::UnquoteSplice(inner) => {
-            // [unquote-splice expr] expects expr to be a list (Dict with integer keys).
-            // Type: empty record (BAS: width subtyping allows any fields).
-            let inner_ty = infer_expr(inner, env, state, type_map)?;
-
-            // The inner expression should be a Dict (list).
-            let expected_list_ty = Type::Record(Row {
-                fields: HashMap::new(),
-            });
-
-            let mut subst = std::mem::take(&mut state.subst);
-            let result = unify(&inner_ty, &expected_list_ty, &mut subst, state, inner.span);
-            state.subst = subst;
-            result.map_err(|_e| {
-                vec![TypeError::new(
-                    format!("unquote-splice expects a list (Dict), got {}", inner_ty),
-                    inner.span,
-                )]
-            })?;
-
-            // UnquoteSplice itself doesn't have a standalone type — it's only valid
-            // in list positions where it splices elements. Return Dict for now.
-            Ok(expected_list_ty)
-        }
-
-        Expr::Match { scrutinee, arms } => {
-            // Infer scrutinee type — needed for exhaustiveness checking.
-            let scrutinee_ty = infer_expr(scrutinee, env, state, type_map)?;
-            let scrutinee_ty = state.subst.apply(&scrutinee_ty);
-
-            // Infer each arm's guard (if present) and body type.
-            // Extend the TypeEnv with pattern-bound variables and their inferred types
-            // so that references inside the arm body are in scope and carry precise types
-            // derived from the scrutinee type and pattern shape (match-arm-scope sprint).
-            //
-            // I-Case3 (BAS match narrowing): maintain a "remaining scrutinee" type that
-            // accumulates negations as Constructor/TypeTag arms are processed.
-            // For arm matching #C: arm body sees scrutinee ∩ #C (or the tag literal type).
-            // For subsequent arms: remaining_scrutinee ∩ ~#C (the tag is ruled out).
-            //
-            // This gives false-branch narrowing semantics inside match:
-            //   [match x  Int [...]  Str [...]]
-            //   → arm 1: x : scrutinee ∩ Int
-            //   → arm 2: x : scrutinee ∩ ~Int ∩ Str  (if scrutinee : Int | Str, simplifies to Str)
-            let mut remaining_scrutinee = scrutinee_ty.clone();
-            let mut arm_result_types: Vec<Type> = Vec::new();
-
-            for arm in arms {
-                // Compute the arm-local scrutinee type from I-Case3:
-                // For Constructor/TypeTag patterns, intersect remaining with the tag's type.
-                let arm_scrutinee_ty = match &arm.pattern.node {
-                    Pattern::Constructor { tag, .. } | Pattern::TypeTag(tag) => {
-                        // The arm matches when scrutinee has this constructor tag.
-                        // Intersect remaining_scrutinee with a NominalVariant type for the tag.
-                        // NominalVariant { tag, fields: empty } represents the constructor type
-                        // without payload constraints (matching any payload).
-                        let tag_ty = Type::NominalVariant {
-                            tag: tag.clone(),
-                            fields: crate::type_def::Row {
-                                fields: std::collections::HashMap::new(),
-                            },
-                        };
-                        let members = vec![remaining_scrutinee.clone(), tag_ty];
-                        Type::normalize_intersection(members)
-                    }
-                    Pattern::Wildcard | Pattern::Variable(_) => {
-                        // Catch-all: arm sees the full remaining scrutinee
-                        remaining_scrutinee.clone()
-                    }
-                    _ => scrutinee_ty.clone(),
-                };
-
-                let mut pat_bindings: Vec<(String, Type)> = Vec::new();
-                collect_pattern_bindings(&arm.pattern.node, &arm_scrutinee_ty, &mut pat_bindings);
-                let arm_env = if pat_bindings.is_empty() {
-                    env.clone()
-                } else {
-                    let mut child = TypeEnv::with_parent(env);
-                    for (name, ty) in pat_bindings {
-                        child.insert(name, ty);
-                    }
-                    Rc::new(child)
-                };
-                // Type-check guard if present, and apply is: predicate narrowing.
-                // Guards synthesized from `x@[is: pred]` have the form `[pred x]`.
-                // For recognized type predicates (int?, str?, etc.), narrow the variable
-                // type in the arm body environment using the same extract_narrowings logic
-                // as $if narrowing (BAS narrowing, reused for is: guards).
-                let arm_env = if let Some(guard) = &arm.guard {
-                    let _guard_ty = infer_expr(guard, &arm_env, state, type_map)?;
-                    // Extract narrowings from the guard expression (same logic as $if).
-                    let guard_narrowings = extract_narrowings(guard);
-                    if guard_narrowings.is_empty() {
-                        arm_env
-                    } else {
-                        apply_narrowings(&arm_env, &guard_narrowings, state)
-                    }
-                } else {
-                    arm_env
-                };
-                let arm_ty = infer_expr(&arm.body, &arm_env, state, type_map)?;
-                arm_result_types.push(arm_ty);
-
-                // Update remaining_scrutinee for subsequent arms (I-Case3 negation accumulation).
-                // For Constructor/TypeTag arms without a guard: remaining ∩ ~tag.
-                // Guarded arms are opaque (the guard may succeed or fail — we can't narrow).
-                if arm.guard.is_none() {
-                    match &arm.pattern.node {
-                        Pattern::Constructor { tag, .. } | Pattern::TypeTag(tag) => {
-                            let neg_tag = Type::Negation(Box::new(Type::NominalVariant {
-                                tag: tag.clone(),
-                                fields: crate::type_def::Row {
-                                    fields: std::collections::HashMap::new(),
-                                },
-                            }));
-                            remaining_scrutinee = Type::normalize_intersection(vec![
-                                remaining_scrutinee.clone(),
-                                neg_tag,
-                            ]);
-                        }
-                        Pattern::Wildcard | Pattern::Variable(_) => {
-                            // Catch-all: remaining is Never (no more arms can match)
-                            remaining_scrutinee = Type::Never;
-                        }
-                        _ => {
-                            // Literal, Dict, Seq patterns — no structural narrowing for now
-                        }
-                    }
-                }
-            }
-
-            // Exhaustiveness checking: when scrutinee type is a union or a bare NominalVariant,
-            // run the Maranget (2007) usefulness algorithm over the pattern matrix.
-            //
-            // Coverage is checked when the scrutinee's type is either:
-            // - Type::Union (multiple constructors)
-            // - Type::NominalVariant (single constructor, not wrapped in Union)
-            // - Type::Bool (two constructors: true, false)
-            // Without one of these types, the match is dynamically correct but
-            // statically unverified (consistent with Karachalias et al. 2015).
-            //
-            // TODO(coverage-closed-record): Coverage checking not yet implemented for
-            // closed Record scrutinees. Extending requires teaching coverage.rs to
-            // recognize field patterns and build Record constructor signatures from
-            // the record's field types. Tracked as T3 in review-exhaustiveness findings.
-            let sig = match &scrutinee_ty {
-                Type::Union(members) => coverage::ConstructorSignature::from_union(members),
-                Type::NominalVariant { tag, fields } => Some(
-                    coverage::ConstructorSignature::from_nominal_variant(tag, fields),
-                ),
-                Type::Bool => Some(coverage::ConstructorSignature {
-                    constructors: vec![
-                        (coverage::ConstructorTag::LiteralBool(true), 0),
-                        (coverage::ConstructorTag::LiteralBool(false), 0),
-                    ],
-                }),
-                _ => None,
-            };
-
-            if let Some(sig) = sig {
-                // Convert AST patterns to coverage patterns
-                let coverage_patterns: Vec<coverage::CoveragePattern> = arms
-                    .iter()
-                    .map(|arm| coverage::ast_pattern_to_coverage(&arm.pattern.node))
-                    .collect();
-
-                // Build guard flags: arms with guards are opaque to coverage
-                let has_guards: Vec<bool> = arms.iter().map(|arm| arm.guard.is_some()).collect();
-
-                let result = coverage::check_coverage(&coverage_patterns, &sig, &has_guards);
-
-                // Collect type errors (non-fatal: report all, don't short-circuit)
-                let mut match_errors: Vec<TypeError> = Vec::new();
-
-                if !result.exhaustive {
-                    let witnesses = coverage::format_witnesses(&result.uncovered);
-                    match_errors.push(TypeError::new(
-                        format!("non-exhaustive match: missing coverage for {}", witnesses),
-                        expr.span,
-                    ));
-                }
-
-                for &idx in &result.redundant {
-                    match_errors.push(TypeError::new(
-                        "unreachable match arm: this pattern is already covered by prior arms",
-                        arms[idx].pattern.span,
-                    ));
-                }
-
-                for &idx in &result.inaccessible {
-                    match_errors.push(TypeError::new(
-                        "inaccessible match arm: reachable only via diverging (bottom) values",
-                        arms[idx].pattern.span,
-                    ));
-                }
-
-                if !match_errors.is_empty() {
-                    return Err(match_errors);
-                }
-            }
-
-            // Union all arm result types and simplify (RDNF step 1a).
-            // Gradual: if arms is empty (malformed match), fall back to Unknown
-            // Deduplication and simplification collapse Union([Int, Int]) → Int, etc.
-            let match_ty = if arm_result_types.is_empty() {
-                Type::Unknown
-            } else {
-                let raw_union = Type::normalize_union(arm_result_types);
-                Type::simplify_type(raw_union)
-            };
-            Ok(match_ty)
-        }
-
-        Expr::DefMacro { .. } => {
-            // DefMacro should be removed by the expansion pass before typechecking.
-            // If we see it here, it's an internal error.
-            Err(vec![TypeError::new(
-                "defmacro should be removed by expansion pass before typechecking (internal error)",
-                expr.span,
-            )])
-        }
-
-        Expr::MacroDecl { .. } => Err(vec![TypeError::new(
-            "MacroDecl should be removed by expansion pass before typechecking (internal error)",
-            expr.span,
-        )]),
-
-        Expr::Splice(..) => Err(vec![TypeError::new(
-            "Splice should be removed by expansion pass before typechecking (internal error)",
-            expr.span,
-        )]),
-
-        Expr::SyntaxClass { .. } => Err(vec![TypeError::new(
-            "SyntaxClass should be removed by expansion pass before typechecking (internal error)",
-            expr.span,
-        )]),
-
-        Expr::ClassDecl {
-            name,
-            params,
-            superclasses,
-            methods,
-            determines,
-            resolver,
-            resolver_injective,
-        } => {
-            use crate::types::{ClassDecl, Kind};
-
-            // Validate that class declaration has a valid name.
-            // Parser accepts any first expression; validation happens here.
-            if name.is_empty() {
+            },
+            None => {
                 return Err(vec![TypeError::new(
-                    "class declaration must have a name declared with [class [ClassName ...] ...]",
-                    expr.span,
+                    "class method must have a name",
+                    method.span,
                 )]);
             }
+        };
+        let _method_type = resolve_type_expr(&method.node.value, env, state, &mut None, &mut None)
+            .map_err(|e| vec![e])?;
+    }
 
-            // Validate method signatures (name and type expression syntax).
-            // The resolved types are not stored — ClassDecl::methods was removed
-            // since no read sites exist. Re-add the field when method type checking is implemented.
-            for method in methods {
-                // Extract method name from key (must be a string literal or identifier)
-                let _method_name = match &method.node.key {
+    let existing_param_kinds: std::collections::HashMap<String, Kind> = state
+        .class_env
+        .get(name)
+        .map(|existing| existing.params.iter().cloned().collect())
+        .unwrap_or_default();
+
+    let mut fd_indices: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
+    for fd_expr in determines {
+        match &fd_expr.node {
+            Expr::Dict(entries) if entries.len() == 2 => {
+                let determining = &entries[0].node.value;
+                let determining_indices = extract_param_indices(determining, params, fd_expr.span)?;
+                let determined = &entries[1].node.value;
+                let determined_indices = extract_param_indices(determined, params, fd_expr.span)?;
+                fd_indices.push((determining_indices, determined_indices));
+            }
+            _ => {
+                return Err(vec![TypeError::new(
+                    "functional dependency must be a 2-element list [[determining-vars] determined-var(s)]",
+                    fd_expr.span,
+                )]);
+            }
+        }
+    }
+
+    let resolver_name = if let Some(resolver_expr) = resolver {
+        match &resolver_expr.node {
+            Expr::VarRef { name, .. } => Some(name.clone()),
+            Expr::Str(s) => Some(s.clone()),
+            _ => {
+                return Err(vec![TypeError::new(
+                    "resolver must be an identifier or string",
+                    resolver_expr.span,
+                )]);
+            }
+        }
+    } else {
+        None
+    };
+
+    let class_decl = ClassDecl {
+        name: name.clone(),
+        params: params
+            .iter()
+            .map(|p| {
+                let kind = existing_param_kinds.get(p).cloned().unwrap_or(Kind::Type);
+                (p.clone(), kind)
+            })
+            .collect(),
+        superclasses: superclasses
+            .iter()
+            .map(|(class_name, param)| (class_name.clone(), vec![param.clone()]))
+            .collect(),
+        determines: fd_indices,
+        resolver: resolver_name,
+        resolver_injective: *resolver_injective,
+    };
+
+    state.class_env.insert(class_decl.clone());
+    for (param_name, kind) in &class_decl.params {
+        if *kind == Kind::Operator {
+            state.kind_env.insert(param_name.clone(), Kind::Operator);
+        }
+    }
+
+    let _ = (env, type_map); // unused in this function
+    Ok(Type::Record(Row {
+        fields: HashMap::new(),
+    }))
+}
+
+/// Type-check an [instance ...] declaration from a pre-converted Expr::InstanceDecl node.
+/// Called from infer_surface_expr (via surface_node_to_expr bridge) and typecheck_surface_document.
+fn infer_instance_decl_from_expr(
+    expr: &Spanned<Expr>,
+    env: &Rc<TypeEnv>,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    let Expr::InstanceDecl { class_name, arms } = &expr.node else {
+        return Err(vec![TypeError::new(
+            "internal error: infer_instance_decl_from_expr called with non-InstanceDecl expr",
+            expr.span,
+        )]);
+    };
+    use crate::types::InstanceDecl;
+
+    if arms.is_empty() {
+        return Ok(Type::Record(Row {
+            fields: HashMap::new(),
+        }));
+    }
+
+    let (param_count, has_fds, fd_list, param_names) = {
+        let class_decl = state.class_env.get(class_name).ok_or_else(|| {
+            vec![TypeError::new(
+                format!("unknown class '{}'", class_name),
+                expr.span,
+            )]
+        })?;
+        (
+            class_decl.params.len(),
+            !class_decl.determines.is_empty(),
+            class_decl.determines.clone(),
+            class_decl
+                .params
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    let mut arm_data: Vec<MatchArmData> = Vec::new();
+
+    for (pattern_expr, methods) in arms {
+        let pattern_types = extract_pattern_types(pattern_expr, env, state)?;
+
+        if pattern_types.len() != param_count {
+            return Err(vec![TypeError::new(
+                format!(
+                    "instance pattern has {} type parameters but class '{}' expects {}",
+                    pattern_types.len(),
+                    class_name,
+                    param_count
+                ),
+                pattern_expr.span,
+            )]);
+        }
+
+        if pattern_types.iter().any(|ty| matches!(ty, Type::Unknown)) {
+            return Err(vec![TypeError::new(
+                format!(
+                    "instance pattern for class '{}' contains Unknown types — all pattern positions must have concrete type annotations (use a@Type syntax)",
+                    class_name
+                ),
+                pattern_expr.span,
+            )
+            .with_code("T017")]);
+        }
+
+        arm_data.push((pattern_types, pattern_expr.span, methods));
+    }
+
+    for i in 0..arm_data.len() {
+        for j in (i + 1)..arm_data.len() {
+            let (types_i, span_i, _) = &arm_data[i];
+            let (types_j, span_j, _) = &arm_data[j];
+
+            if patterns_overlap(types_i, types_j, state)? {
+                let error = TypeError::new(
+                    format!(
+                        "overlapping instance patterns for class '{}': arm at line {} and arm at line {} could both match the same types",
+                        class_name,
+                        span_i.start.line,
+                        span_j.start.line
+                    ),
+                    *span_j,
+                )
+                .with_code("T014");
+                return Err(vec![error]);
+            }
+        }
+    }
+
+    if has_fds {
+        for (determining_indices, determined_indices) in &fd_list {
+            for (pattern_types, span, _) in &arm_data {
+                for &det_idx in determined_indices {
+                    if !determining_indices.contains(&det_idx) {
+                        if let Type::TypeVar(det_name, _) = &pattern_types[det_idx] {
+                            let same_var_in_determining =
+                                determining_indices.iter().any(|&det_pos| {
+                                    matches!(&pattern_types[det_pos], Type::TypeVar(n, _) if n == det_name)
+                                });
+                            if !same_var_in_determining {
+                                let param_name = param_names
+                                    .get(det_idx)
+                                    .map(|s| s.as_str())
+                                    .unwrap_or("<unknown>");
+                                return Err(vec![TypeError::new(
+                                    format!(
+                                        "coverage violation for class '{}': determined parameter '{}' (variable '{}') does not appear in any determining position",
+                                        class_name, param_name, det_name
+                                    ),
+                                    *span,
+                                )
+                                .with_code("T016")]);
+                            }
+                        }
+                    }
+                }
+            }
+
+            for i in 0..arm_data.len() {
+                for j in (i + 1)..arm_data.len() {
+                    let (types_i, span_i, _) = &arm_data[i];
+                    let (types_j, span_j, _) = &arm_data[j];
+
+                    let determining_i: Vec<Type> = determining_indices
+                        .iter()
+                        .map(|&idx| types_i[idx].clone())
+                        .collect();
+                    let determining_j: Vec<Type> = determining_indices
+                        .iter()
+                        .map(|&idx| types_j[idx].clone())
+                        .collect();
+
+                    if types_can_unify(&determining_i, &determining_j, state)? {
+                        let determined_i: Vec<Type> = determined_indices
+                            .iter()
+                            .map(|&idx| types_i[idx].clone())
+                            .collect();
+                        let determined_j: Vec<Type> = determined_indices
+                            .iter()
+                            .map(|&idx| types_j[idx].clone())
+                            .collect();
+
+                        if !types_can_unify(&determined_i, &determined_j, state)? {
+                            let error = TypeError::new(
+                                format!(
+                                    "consistency violation for class '{}': arm at line {} and arm at line {} have overlapping determining positions but incompatible determined types",
+                                    class_name,
+                                    span_i.start.line,
+                                    span_j.start.line
+                                ),
+                                *span_j,
+                            )
+                            .with_code("T015");
+                            return Err(vec![error]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (pattern_types, _span, methods) in &arm_data {
+        let inst_type = if pattern_types.len() == 1 {
+            pattern_types[0].clone()
+        } else {
+            Type::Record(Row {
+                fields: pattern_types
+                    .iter()
+                    .enumerate()
+                    .map(|(i, ty)| (i.to_string(), ty.clone()))
+                    .collect(),
+            })
+        };
+
+        let mut method_types = HashMap::new();
+
+        if !state.in_prelude_load {
+            for method in *methods {
+                let method_name = match &method.node.key {
                     Some(key_expr) => match &key_expr.node {
                         Expr::Str(s) => s.clone(),
                         Expr::VarRef { name, .. } => name.clone(),
                         _ => {
                             return Err(vec![TypeError::new(
-                                "class method name must be a string or identifier",
+                                "instance method name must be a string or identifier",
                                 key_expr.span,
                             )]);
                         }
                     },
                     None => {
                         return Err(vec![TypeError::new(
-                            "class method must have a name",
+                            "instance method must have a name",
                             method.span,
                         )]);
                     }
                 };
 
-                // Resolve method signature type from value expression — validates syntax.
-                let _method_type =
-                    resolve_type_expr(&method.node.value, env, state, &mut None, &mut None)
-                        .map_err(|e| vec![e])?;
+                // Convert Expr method value to SurfaceNode for infer_surface_expr.
+                let method_surf = crate::ast_convert::expr_to_surface_node(&method.node.value);
+                let method_impl_type = infer_surface_expr(&method_surf, env, state, type_map)?;
+                method_types.insert(method_name, method_impl_type);
             }
-
-            // Build class declaration. Inherit param kinds from any existing pre-registration
-            // (e.g. Mappable is pre-registered with Kind::Operator in InferState::new()).
-            // This preserves the higher-kinded kind even when the parser cannot yet extract
-            // @Operator annotations from class param syntax (hkt-kind-inference).
-            let existing_param_kinds: std::collections::HashMap<String, Kind> = state
-                .class_env
-                .get(name)
-                .map(|existing| existing.params.iter().cloned().collect())
-                .unwrap_or_default();
-
-            // Process functional dependencies from `determines:` field (Task 6.1 & 6.2)
-            let mut fd_indices: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
-            for fd_expr in determines {
-                // Each FD should be a list: [[determining-vars] determined-var(s)]
-                match &fd_expr.node {
-                    Expr::Dict(entries) if entries.len() == 2 => {
-                        // Extract [determining-vars]
-                        let determining = &entries[0].node.value;
-                        let determining_indices =
-                            extract_param_indices(determining, params, fd_expr.span)?;
-
-                        // Extract determined-var(s)
-                        let determined = &entries[1].node.value;
-                        let determined_indices =
-                            extract_param_indices(determined, params, fd_expr.span)?;
-
-                        fd_indices.push((determining_indices, determined_indices));
-                    }
-                    _ => {
-                        return Err(vec![TypeError::new(
-                            "functional dependency must be a 2-element list [[determining-vars] determined-var(s)]",
-                            fd_expr.span,
-                        )]);
-                    }
-                }
-            }
-
-            // Extract resolver name if present (Task 6.3)
-            let resolver_name = if let Some(resolver_expr) = resolver {
-                match &resolver_expr.node {
-                    Expr::VarRef { name, .. } => Some(name.clone()),
-                    Expr::Str(s) => Some(s.clone()),
-                    _ => {
-                        return Err(vec![TypeError::new(
-                            "resolver must be an identifier or string",
-                            resolver_expr.span,
-                        )]);
-                    }
-                }
-            } else {
-                None
-            };
-
-            // Build ClassDecl with populated FD and resolver fields (Task 6.4)
-            let class_decl = ClassDecl {
-                name: name.clone(),
-                params: params
-                    .iter()
-                    .map(|p| {
-                        let kind = existing_param_kinds.get(p).cloned().unwrap_or(Kind::Type);
-                        (p.clone(), kind)
-                    })
-                    .collect(),
-                // Convert superclasses from (String, String) to (String, Vec<String>)
-                // AST has single-param format, but ClassDecl supports MPTC
-                superclasses: superclasses
-                    .iter()
-                    .map(|(class_name, param)| (class_name.clone(), vec![param.clone()]))
-                    .collect(),
-                determines: fd_indices,
-                resolver: resolver_name,
-                resolver_injective: *resolver_injective,
-            };
-
-            // Register in ClassEnv (replaces any prior registration, preserving inherited kinds)
-            state.class_env.insert(class_decl.clone());
-
-            // Populate kind_env for Operator-kinded params (hkt-kind-inference Task 1)
-            for (param_name, kind) in &class_decl.params {
-                if *kind == Kind::Operator {
-                    state.kind_env.insert(param_name.clone(), Kind::Operator);
-                }
-            }
-
-            // ClassDecl expressions evaluate to empty record (see eval.rs)
-            Ok(Type::Record(Row {
-                fields: HashMap::new(),
-            }))
         }
 
-        Expr::InstanceDecl { class_name, arms } => {
-            use crate::types::InstanceDecl;
-
-            if arms.is_empty() {
-                // No arms — return empty record
-                return Ok(Type::Record(Row {
-                    fields: HashMap::new(),
-                }));
-            }
-
-            // Look up the class declaration to get param count and FDs
-            // Clone the necessary data to avoid holding an immutable borrow on state.class_env
-            // while we mutably borrow state in the pattern extraction and unification helpers.
-            let (param_count, has_fds, fd_list, param_names) = {
-                let class_decl = state.class_env.get(class_name).ok_or_else(|| {
-                    vec![TypeError::new(
-                        format!("unknown class '{}'", class_name),
-                        expr.span,
-                    )]
-                })?;
-                (
-                    class_decl.params.len(),
-                    !class_decl.determines.is_empty(),
-                    class_decl.determines.clone(),
-                    class_decl
-                        .params
-                        .iter()
-                        .map(|(name, _)| name.clone())
-                        .collect::<Vec<_>>(),
-                )
-            };
-
-            // Process each arm: extract pattern types, check arity, collect for soundness checks
-            let mut arm_data: Vec<MatchArmData> = Vec::new();
-
-            for (pattern_expr, methods) in arms {
-                // Extract types from pattern (Task 7.1)
-                let pattern_types = extract_pattern_types(pattern_expr, env, state)?;
-
-                // Validate arity (Task 7.1)
-                if pattern_types.len() != param_count {
-                    return Err(vec![TypeError::new(
-                        format!(
-                            "instance pattern has {} type parameters but class '{}' expects {}",
-                            pattern_types.len(),
-                            class_name,
-                            param_count
-                        ),
-                        pattern_expr.span,
-                    )]);
-                }
-
-                // CHR wiring diagnostic: check for Unknown types in patterns which prevent overlap checking.
-                // Unknown types make patterns_overlap always return false (see line 2172), causing
-                // disjointness checks to pass incorrectly. This can happen when pattern bindings lack
-                // type annotations (e.g., bare identifiers) or when annotation resolution fails.
-                if pattern_types.iter().any(|ty| matches!(ty, Type::Unknown)) {
-                    return Err(vec![TypeError::new(
-                        format!(
-                            "instance pattern for class '{}' contains Unknown types — all pattern positions must have concrete type annotations (use a@Type syntax)",
-                            class_name
-                        ),
-                        pattern_expr.span,
-                    )
-                    .with_code("T017")]);
-                }
-
-                arm_data.push((pattern_types, pattern_expr.span, methods));
-            }
-
-            // Pairwise disjointness check (Task 7.2)
-            // KNOWN ISSUE (F11): This check is intra-declaration only — it does not detect
-            // overlapping instances across different [instance ...] declarations or across
-            // module boundaries. A user could declare `[instance Foo [Seq a] ...]` in one
-            // file and `[instance Foo [Seq Int] ...]` in another; both would be registered
-            // in InstanceEnv without error, causing nondeterministic resolution (HashMap
-            // iteration order). Full overlap checking requires cross-module instance tracking
-            // and pairwise unification probes at module merge time. Deferred to chr-cross-module-overlap sprint.
-            for i in 0..arm_data.len() {
-                for j in (i + 1)..arm_data.len() {
-                    let (types_i, span_i, _) = &arm_data[i];
-                    let (types_j, span_j, _) = &arm_data[j];
-
-                    if patterns_overlap(types_i, types_j, state)? {
-                        let error = TypeError::new(
-                            format!(
-                                "overlapping instance patterns for class '{}': arm at line {} and arm at line {} could both match the same types",
-                                class_name,
-                                span_i.start.line,
-                                span_j.start.line
-                            ),
-                            *span_j,
-                        )
-                        .with_code("T014");
-                        return Err(vec![error]);
+        let det_positions: Vec<usize> = {
+            let mut seen = std::collections::HashSet::new();
+            let mut positions = Vec::new();
+            for (det_indices, _) in &fd_list {
+                for &idx in det_indices {
+                    if seen.insert(idx) {
+                        positions.push(idx);
                     }
                 }
             }
+            positions.sort_unstable();
+            positions
+        };
 
-            // Coverage and consistency checks for FD classes (Tasks 7.3 & 7.4)
-            // CHR wiring: has_fds is derived from ClassDecl.determines at line 3139. If this is false
-            // but the class declaration included determines: [[[a b] c]], then either:
-            // (a) the determines field failed to parse (check parser FD extraction)
-            // (b) the ClassDecl was re-registered with an empty determines list
-            // (c) the wrong class was looked up (class_name mismatch)
-            if has_fds {
-                for (determining_indices, determined_indices) in &fd_list {
-                    // Coverage check (Task 7.3): all determined vars must appear in determining vars
-                    for (pattern_types, span, _) in &arm_data {
-                        for &det_idx in determined_indices {
-                            if !determining_indices.contains(&det_idx) {
-                                // Check if this determined param appears in the pattern
-                                if let Type::TypeVar(det_name, _) = &pattern_types[det_idx] {
-                                    // Jones (2000) coverage condition: the *same* TypeVar that
-                                    // appears in the determined position must also appear at one
-                                    // or more determining positions.  Checking for any TypeVar
-                                    // in the determining positions is insufficient — a different
-                                    // TypeVar there does not establish a coverage relation.
-                                    let same_var_in_determining =
-                                        determining_indices.iter().any(|&det_pos| {
-                                            matches!(&pattern_types[det_pos], Type::TypeVar(n, _) if n == det_name)
-                                        });
+        let instance_decl = InstanceDecl {
+            class_name: class_name.clone(),
+            instance_type: inst_type,
+            det_positions,
+            method_types,
+        };
 
-                                    if !same_var_in_determining {
-                                        let param_name = param_names
-                                            .get(det_idx)
-                                            .map(|s| s.as_str())
-                                            .unwrap_or("<unknown>");
-                                        return Err(vec![TypeError::new(
-                                            format!(
-                                                "coverage violation for class '{}': determined parameter '{}' (variable '{}') does not appear in any determining position",
-                                                class_name, param_name, det_name
-                                            ),
-                                            *span,
-                                        )
-                                        .with_code("T016")]);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Consistency check (Task 7.4): if determining positions can unify,
-                    // determined types must also unify (Jones 2000 condition).
-                    // Uses unification probes to detect parametric overlap that structural
-                    // equality misses (e.g., [a b Int] and [Int Int c] both match [Int Int Int]).
-                    for i in 0..arm_data.len() {
-                        for j in (i + 1)..arm_data.len() {
-                            let (types_i, span_i, _) = &arm_data[i];
-                            let (types_j, span_j, _) = &arm_data[j];
-
-                            let determining_i: Vec<Type> = determining_indices
-                                .iter()
-                                .map(|&idx| types_i[idx].clone())
-                                .collect();
-                            let determining_j: Vec<Type> = determining_indices
-                                .iter()
-                                .map(|&idx| types_j[idx].clone())
-                                .collect();
-
-                            // Check consistency when determining positions can unify (overlap).
-                            if types_can_unify(&determining_i, &determining_j, state)? {
-                                let determined_i: Vec<Type> = determined_indices
-                                    .iter()
-                                    .map(|&idx| types_i[idx].clone())
-                                    .collect();
-                                let determined_j: Vec<Type> = determined_indices
-                                    .iter()
-                                    .map(|&idx| types_j[idx].clone())
-                                    .collect();
-
-                                if !types_can_unify(&determined_i, &determined_j, state)? {
-                                    let error = TypeError::new(
-                                        format!(
-                                            "consistency violation for class '{}': arm at line {} and arm at line {} have overlapping determining positions but incompatible determined types",
-                                            class_name,
-                                            span_i.start.line,
-                                            span_j.start.line
-                                        ),
-                                        *span_j,
-                                    )
-                                    .with_code("T015");
-                                    return Err(vec![error]);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Register arms in InstanceEnv (Task 7.5)
-            for (pattern_types, _span, methods) in &arm_data {
-                // Build instance type from pattern types
-                // For single-param classes, use the first type directly
-                // For multi-param classes, use a tuple-like representation (Type::Record for now)
-                let inst_type = if pattern_types.len() == 1 {
-                    pattern_types[0].clone()
-                } else {
-                    // Multi-param: encode as record with numbered fields for now
-                    // TODO: Proper tuple type or Type::Tuple variant
-                    Type::Record(Row {
-                        fields: pattern_types
-                            .iter()
-                            .enumerate()
-                            .map(|(i, ty)| (i.to_string(), ty.clone()))
-                            .collect(),
-                    })
-                };
-
-                // Infer types for all method implementations (Task 7.6)
-                let mut method_types = HashMap::new();
-
-                // Skip method body inference during prelude loading (optimization).
-                // The method types are stored in InstanceDecl.method_types and consumed
-                // by resolve_instance (not called during prelude loading itself).
-                // Skipping avoids O(N²) state clones in patterns_overlap when prelude
-                // instances reach a certain count.
-                if !state.in_prelude_load {
-                    for method in *methods {
-                        // Extract method name from key
-                        let method_name = match &method.node.key {
-                            Some(key_expr) => match &key_expr.node {
-                                Expr::Str(s) => s.clone(),
-                                Expr::VarRef { name, .. } => name.clone(),
-                                _ => {
-                                    return Err(vec![TypeError::new(
-                                        "instance method name must be a string or identifier",
-                                        key_expr.span,
-                                    )]);
-                                }
-                            },
-                            None => {
-                                return Err(vec![TypeError::new(
-                                    "instance method must have a name",
-                                    method.span,
-                                )]);
-                            }
-                        };
-
-                        // Infer the type of the method implementation
-                        let method_impl_type =
-                            infer_expr(&method.node.value, env, state, type_map)?;
-
-                        method_types.insert(method_name, method_impl_type);
-                    }
-                }
-
-                // Build determining positions from the class's functional dependency list.
-                // For single-parameter classes (no FDs), det_positions is empty.
-                // For MPTC classes, collect the union of all LHS (determining) indices.
-                let det_positions: Vec<usize> = {
-                    let mut seen = std::collections::HashSet::new();
-                    let mut positions = Vec::new();
-                    for (det_indices, _) in &fd_list {
-                        for &idx in det_indices {
-                            if seen.insert(idx) {
-                                positions.push(idx);
-                            }
-                        }
-                    }
-                    positions.sort_unstable();
-                    positions
-                };
-
-                // Build instance declaration
-                let instance_decl = InstanceDecl {
-                    class_name: class_name.clone(),
-                    instance_type: inst_type,
-                    det_positions,
-                    method_types,
-                };
-
-                // Register in InstanceEnv
-                if let Err(msg) = state.instance_env.insert(instance_decl) {
-                    return Err(vec![TypeError::new(msg, expr.span)]);
-                }
-            }
-
-            // InstanceDecl expressions evaluate to empty record (see eval.rs)
-            Ok(Type::Record(Row {
-                fields: HashMap::new(),
-            }))
-        }
-
-        Expr::PatternDecl { .. } => {
-            // PatternDecl should never appear in value positions (only in instance arms)
-            Err(vec![TypeError::new(
-                "pattern declaration is only valid in instance match arms",
-                expr.span,
-            )])
-        }
-
-        Expr::LetDecl { bindings } => {
-            // LetDecl in value position is always an error (only valid in binding contexts).
-            // Provide a more specific message for multi-element bindings since the likely
-            // intent is a pattern match arm, not a value expression.
-            let msg = if bindings.len() > 1 {
-                "multi-element [let ...] pattern not yet supported — use single binding".to_string()
-            } else {
-                "binding declaration [let ...] is not valid in expression position".to_string()
-            };
-            Err(vec![TypeError::new(msg, expr.span)])
-        }
-
-        Expr::CaseArm { pattern, body } => {
-            // Gradual: CaseArm checked standalone (no match context) — scrutinee type unknown
-            typecheck_case_arm(pattern, body, &Type::Unknown, env, state, type_map)
-        }
-
-        Expr::Placeholder => {
-            // Gradual: placeholder (`...`) is the explicit gradual typing escape hatch.
-            // Satisfies any constraint, defers type checking to runtime (raises UnimplementedError when forced).
-            Ok(Type::Unknown)
-        }
-
-        Expr::Rest(_) => Err(vec![TypeError::new(
-            "rest marker (...) is only valid inside type expressions",
-            expr.span,
-        )]),
-
-        Expr::TypeApp { .. } => {
-            // TypeApp is type-level only — look up the resolved App type from type_map.
-            // When resolve_type_expr processes a TypeApp annotation, it resolves to Type::App
-            // and stores it in type_map. If not found (e.g., TypeApp outside annotation context),
-            // gracefully return Unknown.
-            if let Some(ref map) = type_map {
-                let key = (expr.span.start.offset, expr.span.end.offset);
-                if let Some(resolved_ty) = map.get(&key) {
-                    return Ok(resolved_ty.clone());
-                }
-            }
-            // Gradual: TypeApp outside annotation context
-            Ok(Type::Unknown)
-        }
-
-        Expr::Error(span) => Err(vec![TypeError::new(
-            format!(
-                "syntax error at {}:{} (cannot typecheck error node)",
-                span.start.line, span.start.column
-            ),
-            expr.span,
-        )]),
-    };
-
-    // Record the inferred type in the type map (if collecting).
-    // On error, record Type::Error as a sentinel so that LSP hover shows <error>
-    // rather than no type at all, and parent expressions can see Error via the type_map
-    // rather than inferring from a missing entry.
-    // Simplify compound types (RDNF step 1d) before storing so LSP hover shows the
-    // reduced form (e.g., Union([Int, Int]) → Int, Intersection([Never, T]) → Never).
-    if let Some(ref mut map) = type_map {
-        let key = (expr.span.start.offset, expr.span.end.offset);
-        match &result {
-            Ok(ty) => {
-                let simplified = Type::simplify_type(ty.clone());
-                map.insert(key, simplified);
-            }
-            Err(_) => {
-                map.insert(key, Type::Error);
-            }
+        if let Err(msg) = state.instance_env.insert(instance_decl) {
+            return Err(vec![TypeError::new(msg, expr.span)]);
         }
     }
 
-    result
+    Ok(Type::Record(Row {
+        fields: HashMap::new(),
+    }))
 }
 
 /// Check that an expression has a compatible type with the expected type.
-/// Uses bidirectional type checking: synthesize the expression's type via `infer_expr`,
+/// Uses bidirectional type checking: synthesize the expression's type via `infer_surface_expr`,
 /// then check subsumption via `is_subtype(actual, expected)`.
 ///
 /// Per doc/06-type-inference.md §Bidirectional Typing, this is the [SUB] rule:
@@ -4066,8 +3218,9 @@ fn check_expr(
         }
     }
 
-    // Default: synthesize then check
-    let actual = infer_expr(expr, env, state, type_map)?;
+    // Default: synthesize then check (convert Expr to SurfaceNode for infer_surface_expr)
+    let surface_node = crate::ast_convert::expr_to_surface_node(expr);
+    let actual = infer_surface_expr(&surface_node, env, state, type_map)?;
     // Apply state.subst to both types before comparison — access-chain constraints
     // may have bound TypeVars in state.subst. Without substitution, the comparison
     // uses stale TypeVars.
@@ -4239,17 +3392,15 @@ fn check_open(
         // same prelude-defined variant constructor. The `escaped` field is `true` for `$name`,
         // `false` for bare `name`; both are semantically equivalent in value position.
         let flag_name = match &flag_arg.expr {
-            SurfaceExpression::VarRef { name, .. } => {
-                KNOWN_FLAGS.iter().find_map(
-                    |(flag, canonical)| {
-                        if name == flag {
-                            Some(*canonical)
-                        } else {
-                            None
-                        }
-                    },
-                )
-            }
+            SurfaceExpression::VarRef { name, .. } => KNOWN_FLAGS.iter().find_map(
+                |(flag, canonical)| {
+                    if name == flag {
+                        Some(*canonical)
+                    } else {
+                        None
+                    }
+                },
+            ),
             _ => None,
         };
 
@@ -5751,7 +4902,9 @@ fn check_call(
                             // so no explicit state.subst.apply() is needed here — check_expr applies
                             // state.subst to its expected type internally, which is a no-op on ground types.
                             let arg_expr = crate::ast_convert::surface_node_to_expr(arg);
-                            if let Err(mut errs) = check_expr(&arg_expr, param_ty, env, state, type_map) {
+                            if let Err(mut errs) =
+                                check_expr(&arg_expr, param_ty, env, state, type_map)
+                            {
                                 errors.append(&mut errs);
                             }
                         }
@@ -6276,13 +5429,15 @@ fn typecheck_case_arm(
 
             // Type-check body with extended environment
             let arm_env = Rc::new(arm_env);
-            infer_expr(body, &arm_env, state, type_map)
+            let body_surf = crate::ast_convert::expr_to_surface_node(body);
+            infer_surface_expr(&body_surf, &arm_env, state, type_map)
         }
 
         _ => {
             // Exact-value match: infer pattern expression type, then infer body
             // The pattern expression should be scalar/nullary
-            let pattern_ty = infer_expr(pattern, env, state, type_map)?;
+            let pattern_surf = crate::ast_convert::expr_to_surface_node(pattern);
+            let pattern_ty = infer_surface_expr(&pattern_surf, env, state, type_map)?;
 
             // Check that pattern is scalar or nullary (design doc requirement)
             // For now, just issue a warning if it's not - don't block
@@ -6302,7 +5457,8 @@ fn typecheck_case_arm(
             }
 
             // Body is checked in the enclosing environment (no new bindings from exact-value match)
-            infer_expr(body, env, state, type_map)
+            let body_surf = crate::ast_convert::expr_to_surface_node(body);
+            infer_surface_expr(&body_surf, env, state, type_map)
         }
     }
 }
@@ -6460,7 +5616,8 @@ fn infer_fn(
             // is_subtype(IntLiteral(42), TypeVar("_t5")) = false would reject valid code.
             // Unification mode binds the TypeVars via constraint solving.
             let result = if actual_ann.has_inference_vars() {
-                let body_ty = infer_expr(body, &fn_env, state, type_map)?;
+                let body_surf = crate::ast_convert::expr_to_surface_node(body);
+                let body_ty = infer_surface_expr(&body_surf, &fn_env, state, type_map)?;
                 // Borrow-split: mem::take + restore avoids simultaneous &mut state.subst and &mut state
                 let mut subst = std::mem::take(&mut state.subst);
                 let result = unify(&body_ty, &actual_ann, &mut subst, state, body.span);
@@ -6481,7 +5638,10 @@ fn infer_fn(
             state.expected_return = prev_expected_return;
             result
         }
-        None => infer_expr(body, &fn_env, state, type_map)?,
+        None => {
+            let body_surf = crate::ast_convert::expr_to_surface_node(body);
+            infer_surface_expr(&body_surf, &fn_env, state, type_map)?
+        }
     };
 
     // Check if any parameter is variadic

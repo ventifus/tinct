@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use super::{check_expr, contains_unknown_or_top, infer_expr, TypeMap};
+use super::{check_expr, contains_unknown_or_top, infer_surface_expr, TypeMap};
 use crate::ast::{
     Annotation, Entry, Expr, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode,
 };
@@ -152,9 +152,7 @@ pub(crate) fn resolve_type_assert(
 
     // Validate the default value type — hard error if the default cannot satisfy the asserted type.
     if let Some(default_node) = annotation.node.get_property("default") {
-        let default_expr_bridged = crate::ast_convert::surface_node_to_expr(default_node);
-        let default_expr = &default_expr_bridged;
-        match infer_expr(default_expr, env, state, type_map) {
+        match infer_surface_expr(default_node, env, state, type_map) {
             Ok(default_ty) => {
                 // Apply state.subst to both types before comparison — access-chain constraints
                 // may have bound TypeVars in state.subst (e.g., $data.name generates row-variable
@@ -175,7 +173,7 @@ pub(crate) fn resolve_type_assert(
                             "default value type mismatch: default has type {default_ty}, \
                              but assertion expects {expected_resolved}"
                         ),
-                        default_expr.span,
+                        default_node.span,
                     )]);
                 }
             }
