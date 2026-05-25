@@ -321,8 +321,6 @@ pub(crate) fn infer_dict(
         if *is_alias {
             if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
                 if let SurfaceDeclaration::TypeAlias { params, body } = decl.as_ref() {
-                    // Convert the body SurfaceNode to Spanned<Expr> for resolve_type_expr
-                    let body_expr = crate::ast_convert::surface_node_to_expr(body);
                     let mut alias_ann_map: HashMap<String, String> = HashMap::new();
                     for p in params {
                         let fresh = format!("_t{}", state.name_counter);
@@ -331,7 +329,7 @@ pub(crate) fn infer_dict(
                         alias_ann_map.insert(p.clone(), fresh.clone());
                     }
                     if let Ok(alias_ty) = resolve_type_expr(
-                        &body_expr,
+                        body,
                         &Rc::new(dict_env.clone()),
                         state,
                         &mut Some(&mut alias_ann_map),

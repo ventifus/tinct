@@ -831,8 +831,6 @@ fn register_type_aliases(
 
         // Pass 2: Resolve actual bodies
         for (name, params, body_node, decl_span) in alias_entries {
-            // Bridge: resolve_type_expr still takes &Spanned<Expr>; convert body SurfaceNode.
-            let body = crate::ast_convert::surface_node_to_expr(&body_node);
             // Use a fresh per-alias mapping so annotation names within one type
             // alias expression (e.g., `a` in `[Fn@a [a]]`) consistently map to
             // the same fresh TypeVar. Without a mapping, every occurrence of `@a`
@@ -855,7 +853,7 @@ fn register_type_aliases(
             recursion_guard.insert(name.clone());
 
             match resolve_type_expr_with_guard(
-                &body,
+                &body_node,
                 target_env, // Now resolve in target_env so recursive refs are visible
                 state,
                 &mut Some(&mut alias_ann_map),
@@ -2426,11 +2424,9 @@ pub(crate) fn infer_surface_expr(
                     type_map,
                 ),
                 SurfaceDeclaration::TypeAlias { .. } => {
-                    // Bridge: convert body SurfaceNode to Spanned<Expr> for expand_type_alias.
                     // Extract body from decl_box directly to avoid borrow issues with **decl_box.
                     if let SurfaceDeclaration::TypeAlias { ref body, .. } = **decl_box {
-                        let body_expr = crate::ast_convert::surface_node_to_expr(body);
-                        expand_type_alias(&body_expr, env, state).map_err(|e| vec![e])
+                        expand_type_alias(body, env, state).map_err(|e| vec![e])
                     } else {
                         unreachable!()
                     }
@@ -2574,9 +2570,7 @@ fn infer_class_decl_from_surface(
                 )]);
             }
         };
-        // Bridge: convert method value SurfaceNode → Spanned<Expr> for resolve_type_expr.
-        let value_expr = crate::ast_convert::surface_node_to_expr(&method.node.value);
-        let _method_type = resolve_type_expr(&value_expr, env, state, &mut None, &mut None)
+        let _method_type = resolve_type_expr(&method.node.value, env, state, &mut None, &mut None)
             .map_err(|e| vec![e])?;
     }
 
@@ -2591,8 +2585,7 @@ fn infer_class_decl_from_surface(
         match &fd_node.expr {
             SurfaceExpression::Dict(entries) if entries.len() == 2 => {
                 let determining = &entries[0].node.value;
-                let determining_indices =
-                    extract_param_indices(determining, params, fd_node.span)?;
+                let determining_indices = extract_param_indices(determining, params, fd_node.span)?;
                 let determined = &entries[1].node.value;
                 let determined_indices = extract_param_indices(determined, params, fd_node.span)?;
                 fd_indices.push((determining_indices, determined_indices));
@@ -5496,11 +5489,10 @@ fn infer_fn(
                             matches!(&k.expr, SurfaceExpression::Str(s) if matches!(s.as_str(), "return" | "constraint" | "doc" | "bind" | "kinds"))
                         })
                     });
-                    let entries = surface_entries_to_entries(surface_entries);
                     if has_fn_key {
                         // Function metadata dict: extract return type from return: key.
                         let (ret, _doc) = resolve_fn_metadata(
-                            &entries,
+                            surface_entries,
                             env,
                             ann.span,
                             state,
@@ -5569,9 +5561,7 @@ fn infer_fn(
             state.expected_return = prev_expected_return;
             result
         }
-        None => {
-            infer_surface_expr(body, &fn_env, state, type_map)?
-        }
+        None => infer_surface_expr(body, &fn_env, state, type_map)?,
     };
 
     // Check if any parameter is variadic

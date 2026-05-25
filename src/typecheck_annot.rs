@@ -6,9 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::{check_surface_expr, contains_unknown_or_top, infer_surface_expr, TypeMap};
-use crate::ast::{
-    Annotation, Entry, Expr, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode,
-};
+use crate::ast::{Annotation, Entry, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::types::{Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
 
 /// Find the closest match to `target` in `candidates` using Levenshtein distance.
@@ -67,13 +65,12 @@ fn levenshtein_distance(s1: &str, s2: &str) -> usize {
     matrix[len1][len2]
 }
 
-/// Convert a slice of Surface dict entries into the old `Entry`-based representation
-/// used by the Expr-level type annotation resolvers (`resolve_type_dict`,
-/// `resolve_fn_metadata`, etc.).
+/// Convert a slice of Surface dict entries into the old `Entry`-based representation.
 ///
-/// This is the standard bridge: `SurfaceEntry { key: Option<Arc<SurfaceNode>>, value:
-/// Arc<SurfaceNode> }` → `Entry { key: Option<Spanned<Expr>>, value: Rc<Spanned<Expr>> }`.
-/// It mirrors what `ast_convert::surface_expr_to_expr` does for `SurfaceExpression::Dict`.
+/// This bridge is no longer needed by the main type-resolution path (all functions now
+/// take `&[Spanned<SurfaceEntry>]` directly). Kept for any remaining callers in tests
+/// or other code that still operates on the Expr-based representation.
+#[allow(dead_code)]
 pub(crate) fn surface_entries_to_entries(
     surface_entries: &[Spanned<SurfaceEntry>],
 ) -> Vec<Spanned<Entry>> {
@@ -96,7 +93,7 @@ pub(crate) fn surface_entries_to_entries(
 }
 
 pub(crate) fn expand_type_alias(
-    inner: &Spanned<Expr>,
+    inner: &Arc<SurfaceNode>,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
 ) -> Result<Type, TypeError> {
@@ -342,7 +339,7 @@ pub(crate) fn resolve_annotated(
 /// Returns (return_type, doc_string).
 #[allow(dead_code)]
 pub(crate) fn resolve_fn_metadata(
-    entries: &[Spanned<Entry>],
+    entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
@@ -366,19 +363,19 @@ pub(crate) fn resolve_fn_metadata(
     // Step 0: Process bind: entries (must come first so TypeVars exist for return:/constraint:/kinds:)
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
-            if let Expr::Str(key_name) = &key_expr.node {
+            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
                 if key_name == "bind" {
                     // bind: [a b c] — positional list of TypeVar names.
                     //
                     // The LLT parser represents `[a b c]` (three bare names) as
-                    // Expr::Call (call `a` with args `b`, `c`), and `[a]` (one bare
-                    // name) as Expr::Call (zero-arg call to `a`). We accept Call-form
-                    // bind lists by treating the function name and each positional arg
-                    // as a TypeVar name to bind. The Dict form is also accepted for
-                    // compatibility, though the parser does not produce it for bare-name
+                    // SurfaceExpression::Call (call `a` with args `b`, `c`), and `[a]`
+                    // (one bare name) as SurfaceExpression::Call (zero-arg call to `a`).
+                    // We accept Call-form bind lists by treating the function name and each
+                    // positional arg as a TypeVar name to bind. The Dict form is also accepted
+                    // for compatibility, though the parser does not produce it for bare-name
                     // lists.
-                    match &entry.node.value.node {
-                        Expr::Dict(bind_entries) => {
+                    match &entry.node.value.expr {
+                        SurfaceExpression::Dict(bind_entries) => {
                             for bind_entry in bind_entries {
                                 if bind_entry.node.key.is_some() {
                                     return Err(TypeError::new(
@@ -386,8 +383,8 @@ pub(crate) fn resolve_fn_metadata(
                                         bind_entry.span,
                                     ));
                                 }
-                                match &bind_entry.node.value.node {
-                                    Expr::VarRef { name, .. } => {
+                                match &bind_entry.node.value.expr {
+                                    SurfaceExpression::VarRef { name, .. } => {
                                         // Check lowercase convention for TypeVar names
                                         if !name.starts_with(|c: char| c.is_lowercase()) {
                                             return Err(TypeError::new(
@@ -424,10 +421,11 @@ pub(crate) fn resolve_fn_metadata(
                                 }
                             }
                         }
-                        // Call form: `[a b c]` is parsed as Call(VarRef("a"), [VarRef("b"), VarRef("c")]).
+                        // Call form: `[a b c]` is parsed as
+                        // Call(VarRef("a"), [VarRef("b"), VarRef("c")]).
                         // `[a]` (single-element) is Call(VarRef("a"), []) — a zero-arg call.
                         // Treat func + each positional arg as the ordered list of TypeVar names.
-                        Expr::Call {
+                        SurfaceExpression::Call {
                             func,
                             args,
                             named_args,
@@ -440,32 +438,33 @@ pub(crate) fn resolve_fn_metadata(
                                 ));
                             }
                             // Collect all names: func first, then each positional arg
-                            let all_names: Vec<(&str, Span)> = {
-                                let mut v: Vec<(&str, Span)> = Vec::new();
-                                match &func.node {
-                                    Expr::VarRef { name, .. } => v.push((name.as_str(), func.span)),
-                                    _ => {
-                                        return Err(TypeError::new(
-                                            "bind: entries must be bare names (TypeVar names)",
-                                            func.span,
-                                        ))
-                                    }
-                                }
-                                for arg in args.iter() {
-                                    match &arg.node {
-                                        Expr::VarRef { name, .. } => {
-                                            v.push((name.as_str(), arg.span))
+                            let all_names: Vec<(&str, Span)> =
+                                {
+                                    let mut v: Vec<(&str, Span)> = Vec::new();
+                                    match &func.expr {
+                                        SurfaceExpression::VarRef { name, .. } => {
+                                            v.push((name.as_str(), func.span))
                                         }
                                         _ => {
                                             return Err(TypeError::new(
                                                 "bind: entries must be bare names (TypeVar names)",
-                                                arg.span,
+                                                func.span,
                                             ))
                                         }
                                     }
-                                }
-                                v
-                            };
+                                    for arg in args.iter() {
+                                        match &arg.expr {
+                                            SurfaceExpression::VarRef { name, .. } => {
+                                                v.push((name.as_str(), arg.span))
+                                            }
+                                            _ => return Err(TypeError::new(
+                                                "bind: entries must be bare names (TypeVar names)",
+                                                arg.span,
+                                            )),
+                                        }
+                                    }
+                                    v
+                                };
                             for (name, name_span) in all_names {
                                 if !name.starts_with(|c: char| c.is_lowercase()) {
                                     return Err(TypeError::new(
@@ -508,16 +507,16 @@ pub(crate) fn resolve_fn_metadata(
     // Step 0b: Process kinds: entries (after bind:, so we can validate names exist)
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
-            if let Expr::Str(key_name) = &key_expr.node {
+            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
                 if key_name == "kinds" {
                     // kinds: [f: Operator key: Label] — dict mapping TypeVar names to kinds
-                    match &entry.node.value.node {
-                        Expr::Dict(kinds_entries) => {
+                    match &entry.node.value.expr {
+                        SurfaceExpression::Dict(kinds_entries) => {
                             for kind_entry in kinds_entries {
                                 let typevar_name =
                                     match &kind_entry.node.key {
-                                        Some(k) => match &k.node {
-                                            Expr::Str(s) => s.clone(),
+                                        Some(k) => match &k.expr {
+                                            SurfaceExpression::Str(s) => s.clone(),
                                             _ => return Err(TypeError::new(
                                                 "kinds: keys must be bare words (TypeVar names)",
                                                 kind_entry.span,
@@ -553,8 +552,8 @@ pub(crate) fn resolve_fn_metadata(
                                 };
 
                                 // Parse the kind name
-                                match &kind_entry.node.value.node {
-                                    Expr::VarRef {
+                                match &kind_entry.node.value.expr {
+                                    SurfaceExpression::VarRef {
                                         name: kind_name, ..
                                     } => {
                                         let kind = match kind_name.as_str() {
@@ -596,11 +595,11 @@ pub(crate) fn resolve_fn_metadata(
     // Step 1a: Process constraint: keyed entries (single-param class constraints)
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
-            if let Expr::Str(key_name) = &key_expr.node {
+            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
                 if key_name == "constraint" {
                     // constraint: [a: Comparable] or [a: [each Comparable Showable]]
-                    match &entry.node.value.node {
-                        Expr::Dict(constraint_entries) => {
+                    match &entry.node.value.expr {
+                        SurfaceExpression::Dict(constraint_entries) => {
                             for c_entry in constraint_entries {
                                 // Skip positional entries (MPTC) — handled in Step 1b
                                 if c_entry.node.key.is_none() {
@@ -609,9 +608,9 @@ pub(crate) fn resolve_fn_metadata(
 
                                 let typevar_name =
                                     match &c_entry.node.key {
-                                        Some(k) => match &k.node {
-                                            Expr::Str(s) => s.clone(),
-                                            Expr::VarRef { name, .. } => name.clone(),
+                                        Some(k) => match &k.expr {
+                                            SurfaceExpression::Str(s) => s.clone(),
+                                            SurfaceExpression::VarRef { name, .. } => name.clone(),
                                             _ => return Err(TypeError::new(
                                                 "constraint key must be a bare word (TypeVar name)",
                                                 c_entry.span,
@@ -643,11 +642,12 @@ pub(crate) fn resolve_fn_metadata(
                                 };
 
                                 // Parse the class name(s) — can be a single name, [each ...], or [...]
-                                // The LLT parser represents `[each Comparable Showable]` as
-                                // Expr::Call { func: VarRef("each"), args: [VarRef("Comparable"), VarRef("Showable")] }.
+                                // The parser represents `[each Comparable Showable]` as
+                                // SurfaceExpression::Call { func: VarRef("each"),
+                                // args: [VarRef("Comparable"), VarRef("Showable")] }.
                                 // We accept both Dict form (legacy) and Call form (natural parse).
-                                match &c_entry.node.value.node {
-                                    Expr::VarRef { name, .. } => {
+                                match &c_entry.node.value.expr {
+                                    SurfaceExpression::VarRef { name, .. } => {
                                         // Single class: [a: Comparable]
                                         if !VALID_CLASSES.contains(&name.as_str())
                                             && state.class_env.get(name).is_none()
@@ -659,16 +659,16 @@ pub(crate) fn resolve_fn_metadata(
                                         }
                                         state.add_constraint(name.clone(), type_var.clone());
                                     }
-                                    Expr::Dict(class_list) => {
+                                    SurfaceExpression::Dict(class_list) => {
                                         // Require [each ...] keyword form
                                         let class_entries = if !class_list.is_empty()
                                             && class_list[0].node.key.is_none()
                                         {
-                                            if let Expr::VarRef { name, .. } =
-                                                &class_list[0].node.value.node
+                                            if let SurfaceExpression::VarRef { name, .. } =
+                                                &class_list[0].node.value.expr
                                             {
                                                 if name == "each" {
-                                                    // [a: [each Comparable Showable]] — skip the 'each' keyword
+                                                    // [a: [each Comparable Showable]] — skip 'each'
                                                     &class_list[1..]
                                                 } else {
                                                     // [a: [Comparable Showable]] — no 'each', error
@@ -698,8 +698,8 @@ pub(crate) fn resolve_fn_metadata(
                                                     class_entry.span,
                                                 ));
                                             }
-                                            match &class_entry.node.value.node {
-                                                Expr::VarRef { name, .. } => {
+                                            match &class_entry.node.value.expr {
+                                                SurfaceExpression::VarRef { name, .. } => {
                                                     if !VALID_CLASSES.contains(&name.as_str())
                                                         && state.class_env.get(name).is_none()
                                                     {
@@ -730,7 +730,7 @@ pub(crate) fn resolve_fn_metadata(
                                     // The parser produces Call for bracket forms with bare names.
                                     // If func is "each" (the multi-class keyword), args are the classes.
                                     // If func is a class name with no args, treat as single class.
-                                    Expr::Call {
+                                    SurfaceExpression::Call {
                                         func,
                                         args,
                                         named_args,
@@ -744,15 +744,15 @@ pub(crate) fn resolve_fn_metadata(
                                         }
                                         // Determine class names to add
                                         let class_names: Vec<(&str, Span)> =
-                                            match &func.node {
-                                                Expr::VarRef { name, .. }
+                                            match &func.expr {
+                                                SurfaceExpression::VarRef { name, .. }
                                                     if name == "each" =>
                                                 {
                                                     // [each Cls1 Cls2 ...]: args are the class names
                                                     let mut names: Vec<(&str, Span)> = Vec::new();
                                                     for arg in args.iter() {
-                                                        match &arg.node {
-                                                            Expr::VarRef { name, .. } => {
+                                                        match &arg.expr {
+                                                            SurfaceExpression::VarRef { name, .. } => {
                                                                 names.push((name.as_str(), arg.span))
                                                             }
                                                             _ => {
@@ -765,7 +765,9 @@ pub(crate) fn resolve_fn_metadata(
                                                     }
                                                     names
                                                 }
-                                                Expr::VarRef { name, .. } if args.is_empty() => {
+                                                SurfaceExpression::VarRef { name, .. }
+                                                    if args.is_empty() =>
+                                                {
                                                     // [ClassName]: zero-arg call, treat func as single class
                                                     vec![(name.as_str(), func.span)]
                                                 }
@@ -813,10 +815,10 @@ pub(crate) fn resolve_fn_metadata(
     // Step 1b: Process constraint: MPTC positional entries (multi-param class constraints)
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
-            if let Expr::Str(key_name) = &key_expr.node {
+            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
                 if key_name == "constraint" {
-                    match &entry.node.value.node {
-                        Expr::Dict(constraint_entries) => {
+                    match &entry.node.value.expr {
+                        SurfaceExpression::Dict(constraint_entries) => {
                             let mut i = 0;
                             while i < constraint_entries.len() {
                                 let c_entry = &constraint_entries[i];
@@ -828,8 +830,8 @@ pub(crate) fn resolve_fn_metadata(
                                 }
 
                                 // MPTC: [$Add a b c] — first positional entry is escaped class name
-                                match &c_entry.node.value.node {
-                                    Expr::VarRef { escaped, name, .. } if *escaped => {
+                                match &c_entry.node.value.expr {
+                                    SurfaceExpression::VarRef { escaped, name, .. } if *escaped => {
                                         // Escaped reference like $Add — this is the class name
                                         let class_name = name;
 
@@ -854,8 +856,8 @@ pub(crate) fn resolve_fn_metadata(
                                                 // Hit a keyed entry — stop collecting
                                                 break;
                                             }
-                                            match &subsequent.node.value.node {
-                                                Expr::VarRef {
+                                            match &subsequent.node.value.expr {
+                                                SurfaceExpression::VarRef {
                                                     name: var_name,
                                                     escaped: false,
                                                     ..
@@ -882,8 +884,10 @@ pub(crate) fn resolve_fn_metadata(
                                                         ));
                                                     }
                                                 }
-                                                Expr::VarRef { escaped: true, .. } => {
-                                                    // Another escaped ref — this is the start of the next MPTC
+                                                SurfaceExpression::VarRef {
+                                                    escaped: true, ..
+                                                } => {
+                                                    // Another escaped ref — start of the next MPTC
                                                     break;
                                                 }
                                                 _ => {
@@ -907,7 +911,8 @@ pub(crate) fn resolve_fn_metadata(
                                     }
                                     _ => {
                                         // Non-escaped positional entry that's not part of an MPTC
-                                        // This is probably an error - bare positional TypeVar names without a class
+                                        // This is probably an error — bare positional TypeVar names
+                                        // without a class
                                         return Err(TypeError::new(
                                             "positional constraint entries must start with escaped class name (e.g., $Add)",
                                             c_entry.node.value.span,
@@ -928,7 +933,7 @@ pub(crate) fn resolve_fn_metadata(
     // Step 2: Process return: entry
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
-            if let Expr::Str(key_name) = &key_expr.node {
+            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
                 if key_name == "return" {
                     let ret = resolve_type_expr(
                         &entry.node.value,
@@ -946,18 +951,19 @@ pub(crate) fn resolve_fn_metadata(
     // Step 3: Process doc: entry
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
-            if let Expr::Str(key_name) = &key_expr.node {
+            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
                 if key_name == "doc" {
                     // Accept both plain strings and unindent(...) calls (from triple-quoted strings).
                     // Triple-quoted strings `"""..."""` are desugared by the parser to
                     // `Call { func: VarRef("unindent"), args: [Str(s)] }`.
-                    let extracted = match &entry.node.value.node {
-                        Expr::Str(s) => Some(s.clone()),
-                        Expr::Call { func, args, .. } => {
-                            if matches!(&func.node, Expr::VarRef { name, .. } if name == "unindent")
+                    let extracted = match &entry.node.value.expr {
+                        SurfaceExpression::Str(s) => Some(s.clone()),
+                        SurfaceExpression::Call { func, args, .. } => {
+                            if matches!(&func.expr,
+                                SurfaceExpression::VarRef { name, .. } if name == "unindent")
                             {
                                 args.iter().find_map(|arg| {
-                                    if let Expr::Str(s) = &arg.node {
+                                    if let SurfaceExpression::Str(s) = &arg.expr {
                                         Some(s.clone())
                                     } else {
                                         None
@@ -987,7 +993,7 @@ pub(crate) fn resolve_fn_metadata(
     const VALID_KEYS: &[&str] = &["return", "constraint", "doc", "bind", "kinds"];
     for entry in entries {
         if let Some(key_expr) = &entry.node.key {
-            if let Expr::Str(key_name) = &key_expr.node {
+            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
                 if !VALID_KEYS.contains(&key_name.as_str()) {
                     return Err(TypeError::new(
                         format!(
@@ -1024,21 +1030,29 @@ fn resolve_fn_type(
 ) -> Result<Type, TypeError> {
     match ann {
         Annotation::PropertyDict(surface_entries) => {
-            let entries = surface_entries_to_entries(surface_entries);
             // Dispatch: if any entry has a named key matching function metadata keys
             // (return:, constraint:, doc:, bind:, kinds:), treat as fn metadata dict.
             // If all entries are positional, delegate to resolve_type_dict (handles
             // [Fn@Return [Params]] and union-style type expressions).
-            let has_fn_key = entries.iter().any(|e| {
+            let has_fn_key = surface_entries.iter().any(|e| {
                 if let Some(ref key) = e.node.key {
-                    matches!(&key.node, Expr::Str(s) if matches!(s.as_str(), "return" | "constraint" | "doc" | "bind" | "kinds"))
+                    matches!(&key.expr,
+                        SurfaceExpression::Str(s)
+                            if matches!(s.as_str(),
+                                "return" | "constraint" | "doc" | "bind" | "kinds"))
                 } else {
                     false
                 }
             });
             if has_fn_key {
-                let (ret, _doc) =
-                    resolve_fn_metadata(&entries, env, span, state, ann_mapping, row_ann_mapping)?;
+                let (ret, _doc) = resolve_fn_metadata(
+                    surface_entries,
+                    env,
+                    span,
+                    state,
+                    ann_mapping,
+                    row_ann_mapping,
+                )?;
                 let ty = Type::Function {
                     params: vec![],
                     ret: Box::new(ret),
@@ -1050,7 +1064,14 @@ fn resolve_fn_type(
                 // All-positional or record-field style — delegate to resolve_type_dict.
                 // Handles [Fn@Return [Params]] (detected by try_resolve_fn_type_expr),
                 // record types, and type constructors.
-                resolve_type_dict(&entries, env, span, state, ann_mapping, row_ann_mapping)
+                resolve_type_dict(
+                    surface_entries,
+                    env,
+                    span,
+                    state,
+                    ann_mapping,
+                    row_ann_mapping,
+                )
             }
         }
         _ => {
@@ -1089,8 +1110,14 @@ fn resolve_annotation_as_type(
             // a record type [field: Type ...], a function type [Fn@Return [Params]],
             // or a type constructor application [Seq Int], [or A B], etc.
             // Delegate to resolve_type_dict which handles all these forms.
-            let entries = surface_entries_to_entries(surface_entries);
-            resolve_type_dict(&entries, env, span, state, ann_mapping, row_ann_mapping)
+            resolve_type_dict(
+                surface_entries,
+                env,
+                span,
+                state,
+                ann_mapping,
+                row_ann_mapping,
+            )
         }
         Annotation::Annotated(name, inner) => {
             // For fn annotations, forward to full resolver
@@ -1150,16 +1177,14 @@ pub(crate) fn resolve_annotation(
                             // present, resolve them and build Map(K, V). If only "value" (or
                             // any single positional entry), treat as Map(Unknown, V).
                             // Fall back to resolving as a positional type list for other forms.
-                            let entries = surface_entries_to_entries(surface_entries);
-                            let key_entry = entries.iter().find(|e| {
-                                e.node
-                                    .key
-                                    .as_ref()
-                                    .is_some_and(|k| matches!(&k.node, Expr::Str(s) if s == "key"))
-                            });
-                            let value_entry = entries.iter().find(|e| {
+                            let key_entry = surface_entries.iter().find(|e| {
                                 e.node.key.as_ref().is_some_and(
-                                    |k| matches!(&k.node, Expr::Str(s) if s == "value"),
+                                    |k| matches!(&k.expr, SurfaceExpression::Str(s) if s == "key"),
+                                )
+                            });
+                            let value_entry = surface_entries.iter().find(|e| {
+                                e.node.key.as_ref().is_some_and(
+                                    |k| matches!(&k.expr, SurfaceExpression::Str(s) if s == "value"),
                                 )
                             });
                             if let Some(v_entry) = value_entry {
@@ -1186,7 +1211,7 @@ pub(crate) fn resolve_annotation(
                                 // No "value:" key — delegate to resolve_type_dict which handles
                                 // positional forms like [Map K V] (though nested inside @Map@).
                                 resolve_type_dict(
-                                    &entries,
+                                    surface_entries,
                                     env,
                                     span,
                                     state,
@@ -1216,9 +1241,8 @@ pub(crate) fn resolve_annotation(
                             // @Record@[field: Type ...] → structural record type.
                             // Delegate to resolve_type_dict which handles record fields,
                             // row variables (...r), and type constructor applications.
-                            let entries = surface_entries_to_entries(surface_entries);
                             resolve_type_dict(
-                                &entries,
+                                surface_entries,
                                 env,
                                 span,
                                 state,
@@ -1240,9 +1264,8 @@ pub(crate) fn resolve_annotation(
                             // @Tuple@[T0 T1 T2] → closed record {0: T0, 1: T1, 2: T2}.
                             // All entries must be positional (auto-indexed); each resolves
                             // as an element type in declaration order.
-                            let entries = surface_entries_to_entries(surface_entries);
                             let mut fields = HashMap::new();
-                            for (idx, entry) in entries.iter().enumerate() {
+                            for (idx, entry) in surface_entries.iter().enumerate() {
                                 let elem_ty = resolve_type_expr(
                                     &entry.node.value,
                                     env,
@@ -1343,8 +1366,7 @@ pub(crate) fn resolve_annotation(
 
             if let Some(type_node) = type_value_node {
                 // @[type: T ...] shorthand — resolve the type: value as a type expression.
-                let expr = crate::ast_convert::surface_node_to_expr(type_node);
-                resolve_type_expr(&expr, env, state, ann_mapping, row_ann_mapping)
+                resolve_type_expr(type_node, env, state, ann_mapping, row_ann_mapping)
             } else if let Some(label_value_node) = surface_entries.iter().find_map(|se| {
                 // @[label: name] — named Label-kinded TypeVar annotation.
                 // Only fires when there is exactly one entry and its key is "label".
@@ -1416,9 +1438,8 @@ pub(crate) fn resolve_annotation(
                 }
             } else {
                 // No "type:" key (or has non-metadata keys) — treat as structural type or metadata.
-                let entries = surface_entries_to_entries(surface_entries);
                 resolve_property_dict_as_record(
-                    &entries,
+                    surface_entries,
                     env,
                     span,
                     state,
@@ -1432,7 +1453,7 @@ pub(crate) fn resolve_annotation(
 
 #[allow(dead_code)]
 fn resolve_property_dict_as_record(
-    entries: &[Spanned<Entry>],
+    entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
@@ -1461,12 +1482,12 @@ fn resolve_property_dict_as_record(
 /// auto-indexed non-function entries, they are annotation metadata rather than
 /// type definitions, and type resolution errors should be swallowed.
 #[allow(dead_code)]
-fn entries_look_like_type_dict(entries: &[Spanned<Entry>]) -> bool {
+fn entries_look_like_type_dict(entries: &[Spanned<SurfaceEntry>]) -> bool {
     // Detect `[Fn@Return [Params]]` function type pattern: first entry is
     // auto-indexed with an Annotated node whose name is "Fn".
     if let Some(first) = entries.first() {
         if first.node.key.is_none() {
-            if let Expr::Annotated { name, .. } = &first.node.value.node {
+            if let SurfaceExpression::Annotated { name, .. } = &first.node.value.expr {
                 if name == "Fn" {
                     return true;
                 }
@@ -1477,7 +1498,7 @@ fn entries_look_like_type_dict(entries: &[Spanned<Entry>]) -> bool {
     // Record type pattern: every entry has a string key and a type-shaped value.
     entries.iter().all(|entry| {
         // Rest entries (`...` / `...name`) are valid in type dicts
-        if matches!(&entry.node.value.node, Expr::Rest(_)) {
+        if matches!(&entry.node.value.expr, SurfaceExpression::Rest(_)) {
             return true;
         }
         // Every entry must have a string key
@@ -1485,11 +1506,14 @@ fn entries_look_like_type_dict(entries: &[Spanned<Entry>]) -> bool {
             .node
             .key
             .as_ref()
-            .is_some_and(|k| matches!(&k.node, Expr::Str(_)));
+            .is_some_and(|k| matches!(&k.expr, SurfaceExpression::Str(_)));
         // Value must be a form that could be a type expression
         let value_is_type_shaped = matches!(
-            &entry.node.value.node,
-            Expr::Str(_) | Expr::VarRef { .. } | Expr::Dict(_) | Expr::Annotated { .. }
+            &entry.node.value.expr,
+            SurfaceExpression::Str(_)
+                | SurfaceExpression::VarRef { .. }
+                | SurfaceExpression::Dict(_)
+                | SurfaceExpression::Annotated { .. }
         );
         has_str_key && value_is_type_shaped
     })
@@ -2058,7 +2082,7 @@ fn expand_alias_body_guarded(
 /// This is the internal version used during alias registration.
 #[allow(clippy::too_many_arguments)] // Internal helper for recursive type resolution
 pub(crate) fn resolve_type_expr_with_guard(
-    expr: &Spanned<Expr>,
+    node: &Arc<SurfaceNode>,
     env: &TypeEnv,
     state: &mut InferState,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
@@ -2074,16 +2098,16 @@ pub(crate) fn resolve_type_expr_with_guard(
                 "recursive type alias '{}' exceeds maximum unfolding depth ({})",
                 current_alias, MAX_ALIAS_DEPTH
             ),
-            expr.span,
+            node.span,
         ));
     }
 
-    match &expr.node {
-        Expr::Str(s) => Ok(Type::StringLiteral(s.clone())),
-        Expr::VarRef { name, .. } => resolve_type_name_with_guard(
+    match &node.expr {
+        SurfaceExpression::Str(s) => Ok(Type::StringLiteral(s.clone())),
+        SurfaceExpression::VarRef { name, .. } => resolve_type_name_with_guard(
             name,
             env,
-            expr.span,
+            node.span,
             state,
             ann_mapping,
             row_ann_mapping,
@@ -2091,10 +2115,10 @@ pub(crate) fn resolve_type_expr_with_guard(
             current_alias,
             depth,
         ),
-        Expr::Dict(entries) => resolve_type_dict_with_guard(
+        SurfaceExpression::Dict(entries) => resolve_type_dict_with_guard(
             entries,
             env,
-            expr.span,
+            node.span,
             state,
             ann_mapping,
             row_ann_mapping,
@@ -2107,7 +2131,7 @@ pub(crate) fn resolve_type_expr_with_guard(
             // Most expr types (literals, Annotated, Call) don't recursively reference type aliases,
             // so the guard isn't needed. If we encounter cases where nested aliases cause issues,
             // we can expand this match to handle them explicitly.
-            resolve_type_expr(expr, env, state, ann_mapping, row_ann_mapping)
+            resolve_type_expr(node, env, state, ann_mapping, row_ann_mapping)
         }
     }
 }
@@ -2115,7 +2139,7 @@ pub(crate) fn resolve_type_expr_with_guard(
 /// Resolve a dict in type position with recursion guard.
 #[allow(clippy::too_many_arguments)] // Internal helper for recursive type resolution
 fn resolve_type_dict_with_guard(
-    entries: &[Spanned<Entry>],
+    entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
@@ -2131,7 +2155,7 @@ fn resolve_type_dict_with_guard(
     let all_positional = entries.iter().all(|e| e.node.key.is_none());
 
     if all_positional && !entries.is_empty() {
-        if let Expr::VarRef { name: kw, .. } = &entries[0].node.value.node {
+        if let SurfaceExpression::VarRef { name: kw, .. } = &entries[0].node.value.expr {
             if kw == "or" {
                 // [or T1 T2 ...] → Union([T1, T2, ...])
                 if entries.len() < 2 {
@@ -2216,13 +2240,13 @@ fn resolve_type_dict_with_guard(
         // resolution through resolve_type_expr_with_guard.
         let mut fields: HashMap<String, Type> = HashMap::new();
         for entry in entries {
-            if let Expr::Rest(_) = &entry.node.value.node {
+            if let SurfaceExpression::Rest(_) = &entry.node.value.expr {
                 // `...` rest notation: accepted for openness annotation, produces no field.
                 continue;
             }
             let key = match &entry.node.key {
-                Some(k) => match &k.node {
-                    Expr::Str(s) => s.clone(),
+                Some(k) => match &k.expr {
+                    SurfaceExpression::Str(s) => s.clone(),
                     _ => {
                         return Err(TypeError::new(
                             "type record keys must be bare words",
@@ -2301,17 +2325,17 @@ fn resolve_type_dict_with_guard(
 }
 
 pub(crate) fn resolve_type_expr(
-    expr: &Spanned<Expr>,
+    node: &Arc<SurfaceNode>,
     env: &TypeEnv,
     state: &mut InferState,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
-    match &expr.node {
+    match &node.expr {
         // String literals in type position → Type::StringLiteral (tag-only enum variants).
         // VarRef still goes to resolve_type_name for type alias lookup.
-        Expr::Str(s) => Ok(Type::StringLiteral(s.clone())),
-        Expr::VarRef { name, .. } => {
+        SurfaceExpression::Str(s) => Ok(Type::StringLiteral(s.clone())),
+        SurfaceExpression::VarRef { name, .. } => {
             // Primitive type names must be resolved as type names, not nominal variant
             // constructors.  Int, Float, String, Bool, Number etc. all start with an uppercase
             // letter and therefore match `is_constructor_name`, but they are NOT variants —
@@ -2326,7 +2350,7 @@ pub(crate) fn resolve_type_expr(
             //      `[type [Option a] [Some a] None]`.
             //   3. For lowercase names, propagate the `resolve_type_name` error directly.
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
-            match resolve_type_name(name, env, expr.span, state, ann_mapping, &row_ref) {
+            match resolve_type_name(name, env, node.span, state, ann_mapping, &row_ref) {
                 Ok(ty) => Ok(ty),
                 Err(e) if crate::eval::is_constructor_name(name) => {
                     // Unknown uppercase name: treat as a zero-payload nominal variant constructor.
@@ -2343,10 +2367,10 @@ pub(crate) fn resolve_type_expr(
                 Err(e) => Err(e),
             }
         }
-        Expr::Dict(entries) => {
-            resolve_type_dict(entries, env, expr.span, state, ann_mapping, row_ann_mapping)
+        SurfaceExpression::Dict(entries) => {
+            resolve_type_dict(entries, env, node.span, state, ann_mapping, row_ann_mapping)
         }
-        Expr::Annotated { name, annotation } => {
+        SurfaceExpression::Annotated { name, annotation } => {
             if name == "Fn" {
                 resolve_fn_type(
                     &annotation.node,
@@ -2360,30 +2384,31 @@ pub(crate) fn resolve_type_expr(
                 resolve_annotation(
                     &annotation.node,
                     env,
-                    expr.span,
+                    node.span,
                     state,
                     ann_mapping,
                     row_ann_mapping,
                 )
             }
         }
-        // This arm handles `Expr::Call { implied: true }`, which arises when a bare
-        // identifier (no `@` annotation) appears in head position inside a type expression,
+        // This arm handles `SurfaceExpression::Call { implied: true }`, which arises when a
+        // bare identifier (no `@` annotation) appears in head position inside a type expression,
         // e.g. `[Fn [Int Int]]` (missing the required `@` before the return type).
         //
-        // NOTE: The inner `if let Expr::Annotated` guard is currently unreachable.
-        // `Fn@RetType` in head position is routed to `Expr::Dict` by the parser's Priority 2b
-        // rule (Identifier + ImmediateAt → Dict), so the func of any `implied: true` Call is
-        // always `Expr::VarRef`, never `Expr::Annotated`. The guard never fires; all implied
-        // calls in type context fall through to the `Err(...)` at the end of this arm.
-        Expr::Call {
+        // NOTE: The inner `if let SurfaceExpression::Annotated` guard is currently unreachable.
+        // `Fn@RetType` in head position is routed to `SurfaceExpression::Dict` by the parser's
+        // Priority 2b rule (Identifier + ImmediateAt → Dict), so the func of any
+        // `implied: true` Call is always `SurfaceExpression::VarRef`, never
+        // `SurfaceExpression::Annotated`. The guard never fires; all implied calls in type
+        // context fall through to the `Err(...)` at the end of this arm.
+        SurfaceExpression::Call {
             implied: true,
             func,
             args,
             named_args,
             ..
         } => {
-            if let Expr::Annotated { name, annotation } = &func.node {
+            if let SurfaceExpression::Annotated { name, annotation } = &func.expr {
                 if name == "Fn" {
                     // Fn@RetType [Params] in new syntax: resolve return type from annotation,
                     // then resolve each arg as a parameter type. For zero params, args is empty.
@@ -2398,14 +2423,16 @@ pub(crate) fn resolve_type_expr(
                     // args[0] should be the parameter list (a Dict or another implied Call)
                     let mut params = Vec::new();
                     if let Some(param_list) = args.first() {
-                        match &param_list.node {
-                            Expr::Dict(param_entries) => {
+                        match &param_list.expr {
+                            SurfaceExpression::Dict(param_entries) => {
                                 for entry in param_entries {
                                     // Extract parameter name from key if present
                                     let param_name = if let Some(ref key) = entry.node.key {
-                                        match &key.node {
-                                            Expr::VarRef { name, .. } => Some(name.clone()),
-                                            Expr::Str(s) => Some(s.clone()),
+                                        match &key.expr {
+                                            SurfaceExpression::VarRef { name, .. } => {
+                                                Some(name.clone())
+                                            }
+                                            SurfaceExpression::Str(s) => Some(s.clone()),
                                             _ => None,
                                         }
                                     } else {
@@ -2421,7 +2448,7 @@ pub(crate) fn resolve_type_expr(
                                     params.push((param_name, param_ty));
                                 }
                             }
-                            Expr::Call {
+                            SurfaceExpression::Call {
                                 implied: true,
                                 func: inner_func,
                                 args: inner_args,
@@ -2466,7 +2493,7 @@ pub(crate) fn resolve_type_expr(
                                 "function type [Fn@Return [Params]] requires exactly 2 entries, got {}",
                                 1 + args.len()
                             ),
-                            expr.span,
+                            node.span,
                         ));
                     }
                     return Ok(Type::Function {
@@ -2479,19 +2506,19 @@ pub(crate) fn resolve_type_expr(
 
             // Type-stage keywords in implied-call position: [or T1 T2], [all T1 T2], [without T].
             //
-            // These parse as Expr::Call { func: VarRef(kw), args: [...], implied: true }
+            // These parse as SurfaceExpression::Call { func: VarRef(kw), args: [...], implied: true }
             // because the parser sees a bare identifier in head position followed by arguments.
             //
             // [or T1 T2 ...]  → Type::normalize_union([T1, T2, ...])
             // [all T1 T2 ...] → Type::normalize_intersection([T1, T2, ...])
             // [without T]     → Type::Negation(T)
-            if let Expr::VarRef { name: kw, .. } = &func.node {
+            if let SurfaceExpression::VarRef { name: kw, .. } = &func.expr {
                 if kw == "or" {
                     // args contains the type arguments; func ("or") is the head, not a type.
                     if args.is_empty() {
                         return Err(TypeError::new(
                             "[or ...] requires at least one type argument",
-                            expr.span,
+                            node.span,
                         ));
                     }
                     let mut members = Vec::new();
@@ -2505,7 +2532,7 @@ pub(crate) fn resolve_type_expr(
                     if args.is_empty() {
                         return Err(TypeError::new(
                             "[all ...] requires at least one type argument",
-                            expr.span,
+                            node.span,
                         ));
                     }
                     let mut members = Vec::new();
@@ -2518,7 +2545,7 @@ pub(crate) fn resolve_type_expr(
                     if args.len() != 1 {
                         return Err(TypeError::new(
                             "[without A] requires exactly one type argument",
-                            expr.span,
+                            node.span,
                         ));
                     }
                     let inner =
@@ -2529,7 +2556,7 @@ pub(crate) fn resolve_type_expr(
 
             // Built-in type constructor application in implied-call position.
             // Check BEFORE parameterized alias lookup so built-in constructors have priority.
-            if let Expr::VarRef { name, .. } = &func.node {
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 match name.as_str() {
                     "Tuple" => {
                         // [Tuple T0 T1 T2 ...] → closed record {0: T0, 1: T1, 2: T2, ...}
@@ -2554,7 +2581,7 @@ pub(crate) fn resolve_type_expr(
                             )?;
                             return Ok(Type::Seq(Box::new(elem_ty)));
                         } else {
-                            return Err(TypeError::new("Seq requires 1 type argument", expr.span));
+                            return Err(TypeError::new("Seq requires 1 type argument", node.span));
                         }
                     }
                     "Map" => {
@@ -2587,7 +2614,7 @@ pub(crate) fn resolve_type_expr(
                         } else {
                             return Err(TypeError::new(
                                 "Map requires 1 or 2 type arguments",
-                                expr.span,
+                                node.span,
                             ));
                         }
                     }
@@ -2596,7 +2623,7 @@ pub(crate) fn resolve_type_expr(
             }
 
             // Check if this is a parameterized type alias application: [AliasName Arg1 Arg2]
-            if let Expr::VarRef { name, .. } = &func.node {
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 if let Some(alias) = env.get_type_alias(name) {
                     // Resolve all type arguments
                     let mut type_args = Vec::new();
@@ -2619,7 +2646,7 @@ pub(crate) fn resolve_type_expr(
                                 alias.params.len(),
                                 type_args.len()
                             ),
-                            expr.span,
+                            node.span,
                         ));
                     }
 
@@ -2631,7 +2658,7 @@ pub(crate) fn resolve_type_expr(
             // Nominal constructor: [ConstructorName field1: T1 field2: T2 ...]
             // Check if func is an uppercase VarRef (nominal constructor name).
             // Builtin type names (Int, Float, etc.) must NOT be treated as NominalVariant.
-            if let Expr::VarRef { name, .. } = &func.node {
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 if crate::eval::is_constructor_name(name) && !is_builtin_type_name(name) {
                     // This is a nominal variant constructor with named fields.
                     // args is empty, named_args contains the field types.
@@ -2677,26 +2704,26 @@ pub(crate) fn resolve_type_expr(
                                 "nominal constructor {} requires either 0 args, 1 arg, or named args",
                                 name
                             ),
-                            expr.span,
+                            node.span,
                         ));
                     }
                 }
             }
 
             Err(TypeError::new(
-                format!("invalid type expression in annotation: {}", expr.node),
-                expr.span,
+                format!("invalid type expression in annotation: {:?}", node.expr),
+                node.span,
             ))
         }
         _ => Err(TypeError::new(
-            format!("invalid type expression in annotation: {}", expr.node),
-            expr.span,
+            format!("invalid type expression in annotation: {:?}", node.expr),
+            node.span,
         )),
     }
 }
 
 pub(crate) fn resolve_type_dict(
-    entries: &[Spanned<Entry>],
+    entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
@@ -2714,7 +2741,7 @@ pub(crate) fn resolve_type_dict(
     if !entries.is_empty() {
         if let Some(first) = entries.first() {
             if first.node.key.is_none() {
-                if let Expr::VarRef { name, .. } = &first.node.value.node {
+                if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
                     match name.as_str() {
                         "Seq" => {
                             if entries.len() == 2 {
@@ -2798,7 +2825,7 @@ pub(crate) fn resolve_type_dict(
     if entries.len() >= 2 {
         if let Some(first) = entries.first() {
             if first.node.key.is_none() {
-                if let Expr::VarRef { name, .. } = &first.node.value.node {
+                if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
                     if let Some(alias) = env.get_type_alias(name) {
                         if !alias.params.is_empty() {
                             let mut type_args = Vec::new();
@@ -2853,7 +2880,7 @@ pub(crate) fn resolve_type_dict(
     // [without A]     → Type::Negation(A)
     let all_positional = entries.iter().all(|e| e.node.key.is_none());
     if all_positional && !entries.is_empty() {
-        if let Expr::VarRef { name: kw, .. } = &entries[0].node.value.node {
+        if let SurfaceExpression::VarRef { name: kw, .. } = &entries[0].node.value.expr {
             if kw == "or" {
                 // [or T1 T2 ...] → Union([T1, T2, ...])
                 if entries.len() < 2 {
@@ -2918,7 +2945,7 @@ pub(crate) fn resolve_type_dict(
     // Must check BEFORE union type path so `[m Int]` where m is Operator-kinded becomes
     // `Type::App(Operator("m"), Int)`, not `Union(Operator("m"), Int)`.
     if all_positional && entries.len() == 2 {
-        if let Expr::VarRef { name: f_name, .. } = &entries[0].node.value.node {
+        if let SurfaceExpression::VarRef { name: f_name, .. } = &entries[0].node.value.expr {
             // Check if f is Operator-kinded in kind_env
             if let Some(Kind::Operator) = state.kind_env.get(f_name) {
                 let f_type = Type::Operator(f_name.clone());
@@ -2959,7 +2986,7 @@ pub(crate) fn resolve_type_dict(
         if let Some(first) = entries.first() {
             // Check if first entry is positional (auto-indexed)
             if first.node.key.is_none() {
-                if let Expr::VarRef { name: tag, .. } = &first.node.value.node {
+                if let SurfaceExpression::VarRef { name: tag, .. } = &first.node.value.expr {
                     // Check if tag is uppercase (constructor name).
                     // BUT: builtin type names (Int, Float, String, Bool, Number, etc.) also
                     // start with uppercase and must NOT be treated as NominalVariant.
@@ -3016,8 +3043,8 @@ pub(crate) fn resolve_type_dict(
                             for field_entry in &entries[1..] {
                                 match &field_entry.node.key {
                                     Some(k) => {
-                                        let field_name = match &k.node {
-                                            Expr::Str(s) => s.clone(),
+                                        let field_name = match &k.expr {
+                                            SurfaceExpression::Str(s) => s.clone(),
                                             _ => return Err(TypeError::new(
                                                 "nominal variant field names must be bare words",
                                                 k.span,
@@ -3056,12 +3083,12 @@ pub(crate) fn resolve_type_dict(
     // Single positional entry that is NOT a VarRef: delegate to resolve_type_expr.
     // This handles complex type expressions like [all [x: Int ...] [y: String ...]], [or A B],
     // and [Seq Int] when they appear as the sole positional entry in a type dict.
-    // resolve_type_expr handles Expr::Call (implied calls) and Expr::Dict forms which are
-    // not handled by the VarRef-specific paths above.
+    // resolve_type_expr handles SurfaceExpression::Call (implied calls) and
+    // SurfaceExpression::Dict forms which are not handled by the VarRef-specific paths above.
     if all_positional && entries.len() == 1 {
         if let Some(first) = entries.first() {
             if first.node.key.is_none() {
-                if !matches!(&first.node.value.node, Expr::VarRef { .. }) {
+                if !matches!(&first.node.value.expr, SurfaceExpression::VarRef { .. }) {
                     return resolve_type_expr(
                         &first.node.value,
                         env,
@@ -3100,7 +3127,7 @@ pub(crate) fn resolve_type_dict(
         let has_only_metadata_non_positional = entries.iter().all(|e| {
             e.node.key.is_none()
                 || e.node.key.as_ref().map_or(false, |k| {
-                    if let Expr::Str(s) = &k.node {
+                    if let SurfaceExpression::Str(s) = &k.expr {
                         METADATA_KEYS.contains(&s.as_str())
                     } else {
                         false
@@ -3126,15 +3153,15 @@ pub(crate) fn resolve_type_dict(
     let mut fields: HashMap<String, Type> = HashMap::new();
     let mut has_rest = false; // tracks if `...` is present (BAS: openness via width subtyping)
     for entry in entries {
-        if let Expr::Rest(_name) = &entry.node.value.node {
+        if let SurfaceExpression::Rest(_name) = &entry.node.value.expr {
             // BAS: `...` annotations express user intent for openness; under BAS width
             // subtyping all records are closed — is_subtype handles extra fields.
             has_rest = true;
             continue;
         }
         let key = match &entry.node.key {
-            Some(k) => match &k.node {
-                Expr::Str(s) => s.clone(),
+            Some(k) => match &k.expr {
+                SurfaceExpression::Str(s) => s.clone(),
                 _ => {
                     return Err(TypeError::new(
                         "type record keys must be bare words",
@@ -3227,7 +3254,7 @@ pub(crate) fn resolve_type_dict(
 /// where the first is `Annotated { name: "Fn", ... }` and the second is a Dict
 /// containing the parameter type list.
 fn try_resolve_fn_type_expr(
-    entries: &[Spanned<Entry>],
+    entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
@@ -3239,8 +3266,10 @@ fn try_resolve_fn_type_expr(
         _ => return Ok(None),
     };
 
-    let (ann_node, ann_span) = match &first.node.value.node {
-        Expr::Annotated { name, annotation } if name == "Fn" => (&annotation.node, annotation.span),
+    let (ann_node, ann_span) = match &first.node.value.expr {
+        SurfaceExpression::Annotated { name, annotation } if name == "Fn" => {
+            (&annotation.node, annotation.span)
+        }
         _ => return Ok(None),
     };
 
@@ -3266,19 +3295,19 @@ fn try_resolve_fn_type_expr(
         resolve_annotation_as_type(ann_node, env, ann_span, state, ann_mapping, row_ann_mapping)?;
 
     // The parameter list can be:
-    // - Expr::Dict(entries) — old/standard syntax: `[$a $b]` or `[$Number]` (unnamed params)
-    //   or new syntax: `[x: String  y: Bool]` (named params)
-    // - Expr::Call { implied: true, func, args } — new syntax: bare identifiers like `[a b]`
+    // - SurfaceExpression::Dict(entries) — standard syntax: `[$a $b]` or `[$Number]`
+    //   (unnamed params) or new syntax: `[x: String  y: Bool]` (named params)
+    // - SurfaceExpression::Call { implied: true, func, args } — bare identifiers like `[a b]`
     //   parse as implied calls. Extract func + args as the parameter type expressions.
     let mut params = Vec::new();
-    match &second.node.value.node {
-        Expr::Dict(param_entries) => {
+    match &second.node.value.expr {
+        SurfaceExpression::Dict(param_entries) => {
             for entry in param_entries.iter() {
                 // Extract parameter name from key if present
                 let param_name = if let Some(ref key) = entry.node.key {
-                    match &key.node {
-                        Expr::VarRef { name, .. } => Some(name.clone()),
-                        Expr::Str(s) => Some(s.clone()),
+                    match &key.expr {
+                        SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                        SurfaceExpression::Str(s) => Some(s.clone()),
                         _ => None,
                     }
                 } else {
@@ -3289,7 +3318,7 @@ fn try_resolve_fn_type_expr(
                 params.push((param_name, param_ty));
             }
         }
-        Expr::Call {
+        SurfaceExpression::Call {
             implied: true,
             func,
             args,
@@ -3319,13 +3348,10 @@ fn try_resolve_fn_type_expr(
     }))
 }
 
-/// Surface entry point for type annotation resolution.
+/// Resolve a Surface-native type expression node.
 ///
-/// Converts the [`SurfaceNode`] to a [`Spanned<Expr>`] via
-/// [`crate::ast_convert::surface_node_to_expr`] and delegates to
-/// [`resolve_type_expr`]. This is a thin wrapper for callers that hold a
-/// Surface-native type expression (e.g., inside a `SurfaceExpression::TypeAssert`
-/// or a dict-entry annotation) and do not want to pre-convert to `Expr`.
+/// Delegates directly to [`resolve_type_expr`] — no bridge conversion needed since
+/// `resolve_type_expr` now takes `&Arc<SurfaceNode>` natively.
 ///
 /// `ann_mapping` and `row_ann_mapping` work identically to `resolve_type_expr`.
 #[allow(dead_code)]
@@ -3336,6 +3362,5 @@ pub(crate) fn resolve_surface_annotation(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
-    let expr = crate::ast_convert::surface_node_to_expr(node);
-    resolve_type_expr(&expr, env, state, ann_mapping, row_ann_mapping)
+    resolve_type_expr(node, env, state, ann_mapping, row_ann_mapping)
 }
