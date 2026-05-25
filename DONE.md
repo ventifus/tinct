@@ -4,6 +4,14 @@ Completed milestones and sprints, moved from TODO.md.
 
 ## runtime-v2 Migration
 
+### rv2-e3c-infer-dict-surface: Migrate infer_dict to native SurfaceEntry ✅ (completed as part of 488e0c46)
+
+All 4 tasks completed as part of `rv2-delete-old-ast: remove Expr/File from 4 remaining production files` (commit 488e0c46):
+- [x] `infer_dict` signature changed from `&[Spanned<Entry>]` to `&[Spanned<SurfaceEntry>]`
+- [x] All match arms updated from `Expr::*` to `SurfaceExpression::*` patterns
+- [x] Standalone `use crate::ast::Expr;` removed from `src/typecheck_dict.rs`
+- [x] All call sites updated to pass `SurfaceEntry` slices (typecheck.rs callers convert Entry→SurfaceEntry where needed)
+
 ### rv2-migrate-annotation Phases 3-5: Complete annotation migration, delete surface_program_to_file from parser (2026-05-23)
 
 **Commits:** b39ea8d (Phase 2), then this sprint's commit for Phases 3-5.

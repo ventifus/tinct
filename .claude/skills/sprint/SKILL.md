@@ -200,8 +200,12 @@ If ANY agent issued `REQUEST_CHANGES` (i.e., any fix-now findings exist):
 
 1. Update TODO.md: check off completed items with `[x]`
 2. Move the completed sprint's checklist from TODO.md to the end of DONE.md. Preserve the original heading level and format — append it as-is after the last section in DONE.md. If the sprint was the last remaining subsection under its parent `##` heading, move the parent heading too. Keep only incomplete work in TODO.md.
-3. Log sprint summary to mempalace-tinct
-4. Report completion with the sprint slug and description: `"Sprint complete: [slug] — [description]. All changes are uncommitted."`
+3. **TODO.md hygiene** — before logging, audit what came up during the sprint and ensure nothing is lost:
+   - **Pre-existing bugs**: did you encounter any tinct bugs that existed before this sprint? Add a fix task to TODO.md.
+   - **Workarounds**: did you work around an issue rather than fixing the root cause? Add a task to TODO.md to fix the root cause.
+   - **Deferred work**: did you skip anything, defer a task, or decide something should be addressed later? Add a tracking task to TODO.md — deferred work that isn't tracked is lost work.
+4. Log sprint summary to mempalace-tinct
+5. Report completion with the sprint slug and description: `"Sprint complete: [slug] — [description]. All changes are uncommitted."`
 
 This skill never commits. When called from `/cycle`, Phase 3 creates the single commit. When run standalone, tell the user: "Sprint complete. All changes are uncommitted — review and commit when ready."
 

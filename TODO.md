@@ -189,16 +189,6 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [ ] Delete `pre_scan_expr`, `pre_scan_expr_spanned`, `pre_scan_expr_value`, `expand_expr`, `expand_expr_inner`, `expand_macro_call`, `validate_syntax_class`, `validate_against_pattern` dead-code functions (`src/expand.rs`)
 - [ ] Remove standalone `use crate::ast::Expr;` from `src/expand.rs`
 
-### rv2-e3c-infer-dict-surface: Migrate infer_dict to native SurfaceEntry
-
-**Blocks:** `typecheck_dict.rs` standalone `use crate::ast::Expr;` removal → rv2-delete-old-ast
-
-`infer_dict` currently takes `&[Spanned<Entry>]` (old Entry type). Now that `Annotation::PropertyDict` uses `SurfaceEntry`, the dict inference needs to be updated.
-
-- [ ] Change `infer_dict` signature from `&[Spanned<Entry>]` to `&[Spanned<SurfaceEntry>]` in `src/typecheck_dict.rs`
-- [ ] Update all match arms from `Expr::*` to `SurfaceExpression::*` patterns in `infer_dict`
-- [ ] Remove standalone `use crate::ast::Expr;` from `src/typecheck_dict.rs`
-- [ ] Update all call sites of `infer_dict` to pass `SurfaceEntry` slices
 
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files
 
