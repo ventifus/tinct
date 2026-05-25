@@ -8914,13 +8914,11 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn test_selective_materialization_unused_branch() {
         // Verify that accessing only one dict entry doesn't materialize unused entries
-        use crate::parser::parse_expression;
-
         let input = r#"[used: 1  unused: [call $error "should not materialize"]]"#;
-        let parsed = parse_expression(input).expect("parse failed");
+        let surface = crate::parser::parse_surface_expression(input).expect("parse failed");
+        let parsed = crate::ast_convert::surface_node_to_expr(&surface);
         let env = empty_env();
         let ctx = test_ctx();
         let thunk = eval_for_test(Rc::new(parsed.clone()), Arc::clone(&env), &ctx).unwrap();

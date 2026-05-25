@@ -3418,11 +3418,9 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
                     for entry in entries {
                         if let Some(ref key_node) = entry.node.key {
                             if let tinct::SurfaceExpression::Str(ref key_name) = key_node.expr {
-                                let value_expr =
-                                    tinct::ast_convert::surface_node_to_expr(&entry.node.value);
                                 fields.insert(
                                     key_name.clone(),
-                                    describe_annotation_value(&value_expr.node),
+                                    describe_annotation_value(&entry.node.value.expr),
                                 );
                             }
                         }
@@ -3573,13 +3571,13 @@ fn extract_doc_strings_from_doc(
 }
 
 /// Turn an annotation value expression into a JSON description.
-fn describe_annotation_value(expr: &tinct::Expr) -> serde_json::Value {
+fn describe_annotation_value(expr: &tinct::SurfaceExpression) -> serde_json::Value {
     match expr {
-        tinct::Expr::Str(s) => serde_json::json!(s),
-        tinct::Expr::Int(n) => serde_json::json!(n),
-        tinct::Expr::Float(f) => serde_json::json!(f),
-        tinct::Expr::Bool(b) => serde_json::json!(b),
-        tinct::Expr::VarRef { name, .. } => serde_json::json!(name),
+        tinct::SurfaceExpression::Str(s) => serde_json::json!(s),
+        tinct::SurfaceExpression::Int(n) => serde_json::json!(n),
+        tinct::SurfaceExpression::Float(f) => serde_json::json!(f),
+        tinct::SurfaceExpression::Bool(b) => serde_json::json!(b),
+        tinct::SurfaceExpression::VarRef { name, .. } => serde_json::json!(name),
         _ => serde_json::json!("(complex)"),
     }
 }

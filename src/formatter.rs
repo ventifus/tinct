@@ -1836,7 +1836,6 @@ mod tests {
     /// The formatter must preserve `_` verbatim. After formatting and re-parsing
     /// the AST should be structurally identical to parsing the original source.
     #[test]
-    #[allow(deprecated)] // parse_expression still used here; switch to parse_surface_expression when formatter tests are migrated
     fn test_underscore_roundtrip_call_dot_access() {
         let input = "[map _.age users]";
         let formatted = format_source(input).unwrap();
@@ -1844,51 +1843,48 @@ mod tests {
         assert_eq!(formatted.trim(), "[map _.age users]");
 
         // Parse original and re-parsed AST should be equal
-        let ast_original = crate::parser::parse_expression(input).unwrap();
-        let ast_reparsed = crate::parser::parse_expression(formatted.trim()).unwrap();
+        let ast_original = crate::parser::parse_surface_expression(input).unwrap();
+        let ast_reparsed = crate::parser::parse_surface_expression(formatted.trim()).unwrap();
         assert_eq!(
-            ast_original.node, ast_reparsed.node,
+            ast_original.expr, ast_reparsed.expr,
             "AST after format-reparse should equal original AST"
         );
     }
 
     /// Format `[filter _.active users]` and verify round-trip.
     #[test]
-    #[allow(deprecated)]
     fn test_underscore_roundtrip_call_field_filter() {
         let input = "[filter _.active users]";
         let formatted = format_source(input).unwrap();
         assert_eq!(formatted.trim(), "[filter _.active users]");
 
-        let ast_original = crate::parser::parse_expression(input).unwrap();
-        let ast_reparsed = crate::parser::parse_expression(formatted.trim()).unwrap();
-        assert_eq!(ast_original.node, ast_reparsed.node);
+        let ast_original = crate::parser::parse_surface_expression(input).unwrap();
+        let ast_reparsed = crate::parser::parse_surface_expression(formatted.trim()).unwrap();
+        assert_eq!(ast_original.expr, ast_reparsed.expr);
     }
 
     /// Format `[+ _ 1]` (bare _ in arg position) and verify round-trip.
     #[test]
-    #[allow(deprecated)]
     fn test_underscore_roundtrip_bare_arg() {
         let input = "[+ _ 1]";
         let formatted = format_source(input).unwrap();
         assert_eq!(formatted.trim(), "[+ _ 1]");
 
-        let ast_original = crate::parser::parse_expression(input).unwrap();
-        let ast_reparsed = crate::parser::parse_expression(formatted.trim()).unwrap();
-        assert_eq!(ast_original.node, ast_reparsed.node);
+        let ast_original = crate::parser::parse_surface_expression(input).unwrap();
+        let ast_reparsed = crate::parser::parse_surface_expression(formatted.trim()).unwrap();
+        assert_eq!(ast_original.expr, ast_reparsed.expr);
     }
 
     /// Format `_.name.first` (chained dot access on _) and verify round-trip.
     #[test]
-    #[allow(deprecated)]
     fn test_underscore_roundtrip_chained_dot_access() {
         let input = "_.name.first";
         let formatted = format_source(input).unwrap();
         assert_eq!(formatted.trim(), "_.name.first");
 
-        let ast_original = crate::parser::parse_expression(input).unwrap();
-        let ast_reparsed = crate::parser::parse_expression(formatted.trim()).unwrap();
-        assert_eq!(ast_original.node, ast_reparsed.node);
+        let ast_original = crate::parser::parse_surface_expression(input).unwrap();
+        let ast_reparsed = crate::parser::parse_surface_expression(formatted.trim()).unwrap();
+        assert_eq!(ast_original.expr, ast_reparsed.expr);
     }
 
     /// Formatter idempotency with _ — format twice produces same output.

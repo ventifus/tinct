@@ -5793,67 +5793,14 @@ fn push_value(
     }
 }
 
-/// Parse tinct source text and return the AST with comment metadata.
-///
-/// This is the main entry point for Phase 2c-1 (complete feature set). The parser handles:
-/// - Basic literals: `Int`, `Float`, `BoolLit`, `QuotedString`, `Identifier`, `EscapedRef`
-/// - Dicts: `[]`, `[42]`, `[a: 1 b: 2]`, keyed and auto-indexed entries
-/// - Call forms: `[call $f arg1 arg2 name: val]`
-/// - Fn forms: `[fn [let x y@Int ...rest] body]`, `[fn@Type [let params...] body]` with full param parsing
-/// - Type-alias: `[type expr]`
-/// - Type-assert: `[@Annotation expr]`
-/// - Dot access chains: `$a.b.c`, `$a.0` (identifier and integer keys)
-///
-/// Parse a single tinct expression.
-///
-/// This is a convenience wrapper that parses the input and returns the first expression
-/// from the first document. If the input is empty or has no expressions, returns an error.
-///
-/// Primarily used for testing and corpus validation where single-expression inputs are common.
-///
-/// NOTE: This function returns the old Expr AST via the ast_convert bridge.
-/// New code should use `parse()` and work with SurfaceProgram directly.
-/// This function has no production callers in the library — all library code
-/// now uses `parse()` directly. It is kept as a public API for integration
-/// tests (corpus_tests.rs) that compare Expr AST Display output.
-#[deprecated(
-    note = "Use parse_surface_expression instead; parse_expression uses ast_convert bridge"
-)]
-pub fn parse_expression(input: &str) -> Result<Spanned<Expr>, ParseError> {
-    let output = parse(input)?;
-    let surface = &output.program;
-
-    if surface.documents.is_empty() {
-        return Err(ParseError {
-            message: "no documents in input".to_string(),
-            span: None,
-        });
-    }
-
-    let first_doc = &surface.documents[0];
-    // Convert the first item via the bridge — supports both expressions and top-level declarations.
-    let first_expr = match first_doc.node.items.first() {
-        Some(SurfaceItem::Expr(node)) => crate::ast_convert::surface_node_to_expr(node),
-        Some(SurfaceItem::Decl(decl)) => crate::ast_convert::surface_decl_to_expr(decl),
-        None => {
-            return Err(ParseError {
-                message: "no items in first document".to_string(),
-                span: Some(first_doc.span),
-            });
-        }
-    };
-
-    Ok(first_expr)
-}
-
 /// Parse a single expression and return the first `SurfaceNode` from the first document.
 ///
-/// Replacement for [`parse_expression`] that avoids the `ast_convert` bridge entirely.
 /// Callers receive the native Surface AST; Display is handled by `SurfaceNode`/`SurfaceExpression`.
 ///
 /// Returns the first item of the first document as an `Arc<SurfaceNode>`. For top-level
-/// declaration items (`SurfaceItem::Decl`), returns an error — callers needing declarations
-/// should use `parse()` and work with `SurfaceProgram` directly.
+/// declaration items (`SurfaceItem::Decl`), wraps them in `SurfaceExpression::Decl` so
+/// top-level declarations can be displayed uniformly. For callers needing the raw
+/// `SurfaceProgram`, use `parse()` directly.
 pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, ParseError> {
     let output = parse(input)?;
     let surface = &output.program;

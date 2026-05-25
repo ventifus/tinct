@@ -912,8 +912,8 @@ pub fn entry_to_surface(entry: &Entry) -> SurfaceEntry {
 /// Convert a `SurfaceDeclaration` back to the corresponding `Spanned<Expr>`.
 ///
 /// This is the reverse of `expr_to_surface_item` for declaration forms.
-/// Used by `parse_expression()` to handle top-level declaration items.
-/// Deleted in Part E when `parse_expression()` is retired.
+/// Used by test code that needs to produce Spanned<Expr> from declaration forms.
+/// Deleted in Part E (parser-migration-d) when the evaluator fully uses Surface types.
 pub fn surface_decl_to_expr(decl: &Spanned<SurfaceDeclaration>) -> Spanned<Expr> {
     use std::rc::Rc;
 
