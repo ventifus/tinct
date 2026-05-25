@@ -1217,5 +1217,5 @@ Fix: update `macros.llt` to handle `Value::Expression` (use `type-of` or `surfac
 - [x] No macros.llt changes needed — `tag-of` already handles `Value::Variant` (what the newly-registered macros receive as args from `surface_node_to_dict`). [macro-runtime-v2-regression]
 - [x] Update stale corpus tests: deleted `quote_literal.llt-eval` (non-serializable), updated `quote_type_of.llt-eval` → `String("Expression")`, fixed `eval_basic.llt-eval`, `eval_with_env.llt-eval`, `eval_types_basic.llt-eval` to use `[seq [quote ...] []]` form. [macro-runtime-v2-regression]
 - [x] Re-run `test_do_macro_*` unit tests — all 8 pass after fixes. [macro-runtime-v2-regression]
-- [ ] Add macro-roundtrip corpus tests in `tests/corpus/eval/ast_dict/` that exercise `dict_to_surface_node_inner` via macros (currently blocked by this regression)
+- [x] Add macro-roundtrip corpus tests in `tests/corpus/eval/ast_dict/` that exercise `dict_to_surface_node_inner` via macros (currently blocked by this regression)
 

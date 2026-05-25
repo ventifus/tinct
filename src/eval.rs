@@ -738,6 +738,7 @@ pub(crate) fn as_record_row_merged(expected: &Type) -> Option<Cow<'_, Row>> {
 /// The caller is responsible for checking default_expr and calling eval() with the default
 /// if this function returns an error. This keeps the helper focused on validation logic.
 /// Guards created by this function do NOT propagate default_expr to avoid infinite recursion.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_and_wrap_record(
     entries: &IndexMap<Key, ThunkId>,
     row: &Row,
@@ -972,7 +973,7 @@ async fn collect_seq_elements(
                 break;
             }
             _ => {
-                return Err(EvalError::type_mismatch("Seq", &current.type_name(), span).into());
+                return Err(EvalError::type_mismatch("Seq", current.type_name(), span).into());
             }
         }
     }
@@ -2838,6 +2839,7 @@ fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(Str
 ///
 /// This is called once per match arm before `match_pattern` recurses, so the cost is
 /// O(|pattern|) per arm.
+#[allow(clippy::result_large_err)]
 fn check_pattern_linearity(pattern: &Spanned<Pattern>) -> Result<(), EvalError> {
     // Or-patterns: check each branch independently.
     if let Pattern::Or(branches) = &pattern.node {

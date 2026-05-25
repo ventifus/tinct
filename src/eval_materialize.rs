@@ -4364,7 +4364,7 @@ mod deep_tests {
                 for _ in 0..2100 {
                     let one = Arc::new(Thunk::new_materialized(Value::Int(1), origin));
                     let thunk = Arc::new(Thunk::new_pending_builtin(
-                        builtin_def.clone(),
+                        builtin_def,
                         vec![Arc::clone(&prev), one],
                         None,
                         origin,
@@ -4439,7 +4439,7 @@ mod deep_tests {
                     for _ in 0..2100 {
                         let one = Arc::new(Thunk::new_materialized(Value::Int(1), origin));
                         let thunk = Arc::new(Thunk::new_pending_builtin(
-                            def.clone(),
+                            *def,
                             vec![Arc::clone(&prev), one],
                             None,
                             origin,

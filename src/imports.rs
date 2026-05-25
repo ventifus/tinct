@@ -192,7 +192,7 @@ fn collect_names_above_baseline(
     env.collect_own_names(names);
 
     // Walk to parent, stopping if we've reached the baseline
-    if let Some(ref parent) = env.parent() {
+    if let Some(parent) = env.parent() {
         if !Rc::ptr_eq(parent, baseline) {
             collect_names_above_baseline(parent, baseline, names);
         }

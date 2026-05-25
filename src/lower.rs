@@ -348,16 +348,10 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             SurfaceExpression::UnquoteSplice(core_expr_to_surface_node(inner))
         }
         CoreExpr::PatternDecl { bindings } => SurfaceExpression::PatternDecl {
-            bindings: bindings
-                .iter()
-                .map(|b| core_expr_to_surface_node(b))
-                .collect(),
+            bindings: bindings.iter().map(core_expr_to_surface_node).collect(),
         },
         CoreExpr::LetDecl { bindings } => SurfaceExpression::LetDecl {
-            bindings: bindings
-                .iter()
-                .map(|b| core_expr_to_surface_node(b))
-                .collect(),
+            bindings: bindings.iter().map(core_expr_to_surface_node).collect(),
         },
         CoreExpr::Dict(entries) => SurfaceExpression::Dict(
             entries

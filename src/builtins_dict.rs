@@ -71,7 +71,7 @@ pub(crate) fn builtin_keys(
         for (i, (key, _)) in map.iter().enumerate() {
             let key_value = match key {
                 Key::Int(n) => Value::Int(*n),
-                Key::String(s) => string_val(&**s),
+                Key::String(s) => string_val(s),
             };
             let thunk = Arc::new(Thunk::new_materialized(key_value, origin));
             let thunk_id = ctx.alloc_thunk(thunk);
@@ -523,7 +523,7 @@ pub(crate) fn builtin_each_key(
             let (head_key, _) = map.get_index(offset).unwrap();
             let head_val = match head_key {
                 Key::Int(n) => Value::Int(*n),
-                Key::String(s) => string_val(&**s),
+                Key::String(s) => string_val(s),
             };
             let head = ok_val(head_val, call_span)?;
 
@@ -626,7 +626,7 @@ pub(crate) fn builtin_each_kv(
             let mut head_dict = IndexMap::new();
             let key_val = match head_key {
                 Key::Int(n) => Value::Int(*n),
-                Key::String(s) => string_val(&**s),
+                Key::String(s) => string_val(s),
             };
             head_dict.insert(
                 Key::String("key".into()),

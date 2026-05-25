@@ -168,6 +168,7 @@ pub fn typecheck_surface_program(
 ///
 /// `type_map` and `doc_map` are currently empty — all callers discard them. If a caller
 /// needs span-keyed types, use [`typecheck_surface_program`] instead.
+#[allow(clippy::type_complexity)]
 pub fn typecheck_surface_program_with_env(
     program: &SurfaceProgram,
     parent_env: Rc<TypeEnv>,
@@ -2572,6 +2573,7 @@ pub(crate) fn infer_surface_expr(
 
 /// Type-check a [class ...] declaration from SurfaceDeclaration::ClassDecl fields.
 /// Called from infer_surface_expr (Decl arm) and typecheck_surface_document — no Expr bridge needed.
+#[allow(clippy::too_many_arguments)]
 fn infer_class_decl_from_surface(
     name: &str,
     params: &[String],
@@ -5531,7 +5533,7 @@ fn infer_fn(
                     //   → call resolve_annotation which delegates to resolve_type_dict
                     // Check for function metadata keys directly on SurfaceEntries (no bridge needed for this check)
                     let has_fn_key = surface_entries.iter().any(|e| {
-                        e.node.key.as_ref().map_or(false, |k| {
+                        e.node.key.as_ref().is_some_and(|k| {
                             matches!(&k.expr, SurfaceExpression::Str(s) if matches!(s.as_str(), "return" | "constraint" | "doc" | "bind" | "kinds"))
                         })
                     });

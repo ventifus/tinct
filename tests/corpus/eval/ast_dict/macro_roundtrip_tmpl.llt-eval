@@ -1,0 +1,7 @@
+# dict_to_surface_node_inner via tmpl/i-string macro: verifies Literal, VarRef, Call
+# variant reconstruction. The `tmpl` macro builds a [str ...] call AST from Literal
+# and VarRef Variant nodes — all reconstructed via dict_to_surface_node_inner.
+# This test was blocked until the macro-runtime-v2-regression fix.
+[x: 42  msg: i"Value is $x"]
+=== out
+Dict({"x": Int(42), "msg": String("Value is 42")})

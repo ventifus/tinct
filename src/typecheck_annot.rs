@@ -43,9 +43,11 @@ fn levenshtein_distance(s1: &str, s2: &str) -> usize {
     let len2 = s2.chars().count();
     let mut matrix = vec![vec![0; len2 + 1]; len1 + 1];
 
+    #[allow(clippy::needless_range_loop)]
     for i in 0..=len1 {
         matrix[i][0] = i;
     }
+    #[allow(clippy::needless_range_loop)]
     for j in 0..=len2 {
         matrix[0][j] = j;
     }
@@ -3060,16 +3062,16 @@ pub(crate) fn resolve_type_dict(
     // SurfaceExpression::Dict forms which are not handled by the VarRef-specific paths above.
     if all_positional && entries.len() == 1 {
         if let Some(first) = entries.first() {
-            if first.node.key.is_none() {
-                if !matches!(&first.node.value.expr, SurfaceExpression::VarRef { .. }) {
-                    return resolve_type_expr(
-                        &first.node.value,
-                        env,
-                        state,
-                        ann_mapping,
-                        row_ann_mapping,
-                    );
-                }
+            if first.node.key.is_none()
+                && !matches!(&first.node.value.expr, SurfaceExpression::VarRef { .. })
+            {
+                return resolve_type_expr(
+                    &first.node.value,
+                    env,
+                    state,
+                    ann_mapping,
+                    row_ann_mapping,
+                );
             }
         }
     }
@@ -3099,7 +3101,7 @@ pub(crate) fn resolve_type_dict(
         let positional_entries: Vec<_> = entries.iter().filter(|e| e.node.key.is_none()).collect();
         let has_only_metadata_non_positional = entries.iter().all(|e| {
             e.node.key.is_none()
-                || e.node.key.as_ref().map_or(false, |k| {
+                || e.node.key.as_ref().is_some_and(|k| {
                     if let SurfaceExpression::Str(s) = &k.expr {
                         METADATA_KEYS.contains(&s.as_str())
                     } else {
@@ -3107,10 +3109,7 @@ pub(crate) fn resolve_type_dict(
                     }
                 })
         });
-        if !positional_entries.is_empty()
-            && positional_entries.len() >= 1
-            && has_only_metadata_non_positional
-            && !all_positional
+        if !positional_entries.is_empty() && has_only_metadata_non_positional && !all_positional
         // only if there are SOME keyed entries (otherwise all_positional path handles it)
         {
             let mut members = Vec::new();

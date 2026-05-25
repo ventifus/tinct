@@ -1,0 +1,8 @@
+# dict_to_surface_node_inner via begin macro: verifies Sequential variant reconstruction.
+# The `begin` macro returns Value::Variant("Sequential", {exprs: [...]}) which goes
+# through dict_to_surface_node_inner (not the Value::Expression short-circuit path).
+# This test was blocked until the macro-runtime-v2-regression fix (register_stdlib_macros_from_env
+# now registers dict-entry macros like `begin`).
+[begin [+ 1 2] [* 3 4]]
+=== out
+Int(12)
