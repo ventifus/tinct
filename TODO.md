@@ -1073,9 +1073,9 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 ### adt-constructor-types: Precise types for ADT constructors [Minor]
 
-- [ ] Track ADT constructors typed as `Type::Unknown` in `src/typecheck_dict.rs:54` — currently gradual escape hatch; goal is `Function { params: [(k, T), ...], ret: NominalVariant{tag, fields} }` for field-bearing constructors. Requires resolving payload vs. field-record semantics. [Minor — type-theorist]
+- [ ] NEEDS_DESIGN: ADT constructors typed as `Type::Unknown` in `src/typecheck_dict.rs:54` — requires `/rnd` to decide payload vs. field-record semantics before implementing precise constructor types [Minor → design decision]
 
 ### restorestate-design: Resolve RestoreState hybrid pattern inconsistency [Minor]
 
-- [ ] Decide: either delete `RestoreState` entirely (always cache errors for all states), OR restore full restoration pattern for PendingBuiltin/PendingCall — current hybrid with dead code at `src/eval_materialize.rs:82-136` is confusing. `#[allow(dead_code)]` at line 83 indicates the issue. [Minor — eval-engine]
+- [ ] NEEDS_DESIGN: RestoreState hybrid pattern in `src/eval_materialize.rs:82-136` — PendingBuiltin/PendingCall variants marked `#[allow(dead_code)]` but still constructed; requires `/rnd` to decide: delete RestoreState variants OR restore full restoration pattern [Minor → design decision]
 
