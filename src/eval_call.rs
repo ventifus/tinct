@@ -287,8 +287,8 @@ pub(crate) async fn bind_args_thunks(
             let span = default_node.span;
             Arc::new(Thunk::new_surface(
                 default_node,
-                std::sync::Arc::new(crate::ast::ResolutionTable::default()),
-                std::sync::Arc::new(crate::ast::TypeAnnotationTable::default()),
+                crate::ast::empty_resolution_table_arc(),
+                crate::ast::empty_type_annotation_table_arc(),
                 Arc::clone(default_env),
                 Arc::clone(ctx),
                 span,

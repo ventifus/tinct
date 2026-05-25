@@ -807,6 +807,33 @@ pub fn empty_type_annotation_table() -> &'static TypeAnnotationTable {
     EMPTY_TYPE_ANNOTATION_TABLE.get_or_init(TypeAnnotationTable::new)
 }
 
+/// Static empty ResolutionTable singleton (Arc-wrapped version).
+/// Use this instead of `Arc::new(ResolutionTable::new())` to avoid heap allocations.
+static EMPTY_RESOLUTION_TABLE_ARC: std::sync::OnceLock<std::sync::Arc<ResolutionTable>> =
+    std::sync::OnceLock::new();
+
+/// Returns an Arc-wrapped static empty ResolutionTable.
+/// Use this instead of `Arc::new(ResolutionTable::new())` to avoid heap allocations.
+pub fn empty_resolution_table_arc() -> std::sync::Arc<ResolutionTable> {
+    std::sync::Arc::clone(
+        EMPTY_RESOLUTION_TABLE_ARC.get_or_init(|| std::sync::Arc::new(ResolutionTable::new())),
+    )
+}
+
+/// Static empty TypeAnnotationTable singleton (Arc-wrapped version).
+/// Use this instead of `Arc::new(TypeAnnotationTable::new())` to avoid heap allocations.
+static EMPTY_TYPE_ANNOTATION_TABLE_ARC: std::sync::OnceLock<std::sync::Arc<TypeAnnotationTable>> =
+    std::sync::OnceLock::new();
+
+/// Returns an Arc-wrapped static empty TypeAnnotationTable.
+/// Use this instead of `Arc::new(TypeAnnotationTable::new())` to avoid heap allocations.
+pub fn empty_type_annotation_table_arc() -> std::sync::Arc<TypeAnnotationTable> {
+    std::sync::Arc::clone(
+        EMPTY_TYPE_ANNOTATION_TABLE_ARC
+            .get_or_init(|| std::sync::Arc::new(TypeAnnotationTable::new())),
+    )
+}
+
 /// Evaluator-internal expression — produced by lowering a SurfaceExpression.
 /// De Bruijn coordinates are plain fields (no RefCell, no Option).
 /// Never exposed to tinct code. Can be changed freely without affecting the tinct API.

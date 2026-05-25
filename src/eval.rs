@@ -8542,8 +8542,12 @@ mod tests {
         let err = materialize(&thunk, None, &ctx).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("Int") || msg.contains("type"),
-            "error should mention the expected type; got: {msg}"
+            msg.contains("E011"),
+            "error should have code E011; got: {msg}"
+        );
+        assert!(
+            msg.contains("expected Int"),
+            "error should mention expected Int; got: {msg}"
         );
         assert!(
             msg.contains("String") || msg.contains("Str"),

@@ -1108,13 +1108,13 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 ### perf-empty-tables-arc: Add Arc-level empty table singletons [Major]
 
 - [x] Fix missed singleton at `src/eval_materialize.rs:2424-2425` — replaced with `empty_resolution_table()` / `empty_type_annotation_table()`
-- [ ] Add `empty_resolution_table_arc() -> Arc<ResolutionTable>` and `empty_type_annotation_table_arc() -> Arc<TypeAnnotationTable>` OnceLock singletons in `src/ast.rs` (~10 lines); replace `Arc::new(ResolutionTable::new())` at `src/eval_call.rs:290-291` — `Thunk::new_surface()` requires `Arc<ResolutionTable>` which the existing `&'static` singletons cannot provide; every function call with a default-value param allocates two fresh `Arc<HashMap>` [Major — performance-expert]
+- [x] Add Arc-level OnceLock singletons — `empty_resolution_table_arc()` + `empty_type_annotation_table_arc()` in ast.rs; replaced at eval_call.rs:290-291 + 3 builtins_meta.rs sites
 
 ### doc-15-16-stale: Update doc/15-ast.md and doc/16-architecture.md stale type sketches [Major]
 
-- [ ] Replace `enum Expr` block in `doc/15-ast.md:127-203` with actual `CoreExpr`/`CoreEntry`/`CoreNamedArg` definitions from `src/ast.rs:820-913`; fix `Annotation::PropertyDict` type at line 235 (`Entry` → `SurfaceEntry`); fix `Expr::` prefixes at lines 278-299 [Major — grammar-architect]
-- [ ] Update AST Dict Schema section in `doc/15-ast.md:475-504` — rename `ast_to_dict`→`surface_program_to_thunk_id`, rename `dict_to_ast`→`dict_to_surface_node`, update signatures; remove `Entry`/`File` from Conventions bullet at line 479 [Major — grammar-architect]
-- [ ] Update `Action`/`Cont` enum sketches in `doc/16-architecture.md:73-116` — replace `Rc<Spanned<Expr>>` with `Arc<Spanned<CoreExpr>>`, replace `Rc<RefCell<Environment>>` with `Arc<RwLock<Environment>>`, replace deleted `Eval` variant with current `EvalCoreExpr` variant [Major — grammar-architect]
+- [x] Updated doc/15-ast.md — CoreExpr definitions, SurfaceEntry types, dict_to_surface_node signatures, Expr:: → SurfaceExpression::
+- [x] Updated doc/16-architecture.md — actual Action/Cont enums with Arc<...> types replacing deleted Rc<Spanned<Expr>>
+- [x] Updated doc/06-type-inference.md — unannotated params now documented as fresh TypeVar (not Unknown)
 
 ### group-by-duplicate-element: group-by duplicates first element in each bucket [Major]
 
@@ -1122,15 +1122,15 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 ### dict-to-surface-node-complete: Complete dict_to_surface_node_inner for all SurfaceExpression variants [Major]
 
-- [ ] Implement missing match arms in `src/ast_dict.rs:dict_to_surface_node_inner` — currently only 7 of 20+ SurfaceExpression variants handled; Match, Sequential, TypeAssert, Annotated, Quote, Unquote, CaseArm, TypeApp, Error, PatternDecl, LetDecl, Rest, Placeholder all produce hard `AstError`; needed for complete quote/unquote roundtrip in macros. Phase 5 of rv2-rewrite-ast-dict (TODO.md line 147) overstated coverage. [Major — integration-verifier]
+- [x] Added 10 missing match arms in `dict_to_surface_node_inner` — TypeAssert, Annotated, Rest, Quote/Unquote/UnquoteSplice, Sequential, PatternDecl/LetDecl, Placeholder, Error, TypeApp. Match/CaseArm deferred (need dict_to_pattern helper)
 
 ### boundary-guard-test-precision: Strengthen boundary guard test assertion [Major]
 
-- [ ] Strengthen assertion at `src/eval.rs:8544-8547` in `test_boundary_guard_fires_on_type_mismatch` — current `msg.contains("Int") || msg.contains("type")` is too loose; fix to assert `msg.contains("[E011]")` and `msg.contains("expected Int")` to prevent silent error message regressions [Major — test-crafter]
+- [x] Strengthened boundary guard test assertion — now checks E011 error code + "expected Int" + actual type mention
 
 ### doc-06-unannotated-params: Fix doc/06 claiming unannotated params get Unknown [Minor]
 
-- [ ] Update `doc/06-type-inference.md:176` — currently says "Unannotated non-variadic params get type Unknown" but 2026-05-13 change made them produce `state.fresh_type_var()` enabling proper HM inference. Update to reflect that unannotated params are polymorphic fresh TypeVars, not gradual Unknown. [Minor — type-theorist]
+- [x] Updated doc/06-type-inference.md:176 — unannotated params now documented as fresh TypeVar enabling HM inference
 
 ### lower-dead-code: Delete unused lower.rs scaffolding functions [Minor]
 

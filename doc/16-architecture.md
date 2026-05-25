@@ -69,10 +69,26 @@ The iterative evaluator replaces the recursive `eval()` / `materialize()` call s
 **`Action` enum — what the machine does next:**
 
 ```rust
-enum Action {
-    Eval { expr: Rc<Spanned<Expr>>, env: Rc<RefCell<Environment>>, depth: usize },
-    Materialize { thunk: Rc<Thunk>, mat_span: Option<Span>, depth: usize },
-    Continue(Result<Value, Box<EvalError>>),    // result ready; pop top continuation and apply
+pub(crate) enum Action {
+    /// Result ready — pop top continuation and apply, or return if stack empty
+    Continue(EvalResult<Value>),
+    /// Force this thunk to a materialized value
+    Materialize {
+        thunk: Arc<Thunk>,
+        mat_span: Option<Span>,
+    },
+    /// Evaluate a CoreExpr to a thunk (wrapping, not forcing).
+    ///
+    /// Used by TypeAssert and Guarded default expression evaluation. Calls
+    /// `eval_core_expr_pub` and wraps the result as `Action::Continue` (if already
+    /// materialized) or `Action::Materialize` (if unevaluated). This variant replaces
+    /// the old `Action::Eval { expr: Rc<Spanned<Expr>>, ... }` which required routing
+    /// through `eval_step` and the Expr-based dispatch table.
+    EvalCore {
+        expr: Arc<Spanned<CoreExpr>>,
+        env: Arc<RwLock<Environment>>,
+        ctx: Arc<EvalContext>,
+    },
 }
 ```
 
@@ -81,63 +97,127 @@ enum Action {
 Each variant captures exactly the free variables needed to resume computation after its sub-expression completes. Large fields are `Box`ed to keep frame size ≤ 96 bytes.
 
 ```rust
-enum Cont {
-    // dict construction: remaining entries, dict_env built so far
-    DictEntries {
-        remaining: Box<Vec<(Spanned<Expr>, Spanned<Expr>)>>,
-        dict_env: Rc<RefCell<Environment>>,
-        dict_map: Box<IndexMap<Key, Rc<Thunk>>>,
-    },
+pub(crate) enum Cont {
+    /// Memoize the result into the parent thunk. Used after materializing
+    /// result thunks from PendingBuiltin/PendingCall/CoreExpr/Surface branches.
+    Memoize(Box<MemoizeData>),
+    /// Defunctionalized continuation for the PendingCall branch (Reynolds, 1972).
+    /// After the function thunk is forced, this continuation inspects the
+    /// resulting `Value::Function` or `Value::Builtin`, invokes it with the captured
+    /// argument thunks, and pushes a `Memoize` continuation for the result thunk.
+    PendingCallDispatch(Box<PendingCallDispatchData>),
+    /// Defunctionalized continuation for the Guarded branch (Reynolds, 1972).
+    /// After the inner thunk is forced, this continuation runs
+    /// `validate_and_wrap_record` (for record types) or `value_matches_type` (for
+    /// scalar types), then memoizes the validated value into `thunk`.
+    GuardedValidate(Box<GuardedValidateData>),
+    /// Resume a PendingBuiltin call after iteratively materializing arg[0].
+    /// This prevents Rust stack growth from chains like $- → materialize → $- → ...
+    /// where each builtin synchronously materializes its first arg. By pre-materializing
+    /// arg[0] in the iterative loop, the chain stays on the continuation stack instead
+    /// of the Rust call stack.
+    BuiltinForceArg(Box<BuiltinForceArgData>),
+    /// Access a field from a materialized dict. Pushed after target thunk is materialized.
+    DotAccessForce(Box<DotAccessForceData>),
+    /// Validate a materialized value against a TypeAssert annotation.
+    /// Pushed by force_step's Expr::TypeAssert inline handler after evaluating the inner
+    /// expression thunk; replaces the synchronous materialize() call that was the laziness
+    /// violation in the TypeAssert branch.
+    TypeAssertCheck(Box<TypeAssertCheckData>),
+}
 
-    // function call: materialize the function expression, then dispatch
-    // Captures all free variables needed to complete the call after func is known.
-    PendingCallForceFunc {
-        thunk: Rc<Thunk>,     // the deferred function-position thunk being materialized
-        args: Box<Vec<Rc<Thunk>>>,
-        named: Box<IndexMap<String, Rc<Thunk>>>,
-        call_span: Span,
-        depth: usize,
-    },
+// Supporting data structures (large variants are boxed to keep Cont ≤96 bytes)
 
-    // access chain: remaining accesses after head is materialized
-    AccessChain {
-        remaining: Box<Vec<Spanned<Expr>>>,
-        env: Rc<RefCell<Environment>>,
-    },
+pub(crate) struct MemoizeData {
+    pub(crate) thunk: Arc<Thunk>,
+    pub(crate) origin: Option<Arc<str>>,
+    pub(crate) thunk_span: Span,
+    pub(crate) mat_span: Option<Span>,
+    pub(crate) restore: Option<RestoreState>,
+    pub(crate) ctx: Arc<EvalContext>,
+}
 
-    // document pipeline: bind result as % in child env, continue with next document
-    DocumentPipeline {
-        remaining: Box<Vec<Spanned<Expr>>>,
-        env: Rc<RefCell<Environment>>,
-    },
+pub(crate) struct PendingCallDispatchData {
+    pub(crate) thunk: Arc<Thunk>,
+    pub(crate) func_thunk: Arc<Thunk>,
+    pub(crate) args: Vec<Arc<Thunk>>,
+    pub(crate) named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
+    pub(crate) call_span: Span,
+    pub(crate) caller_env: Arc<RwLock<Environment>>,
+    pub(crate) ctx: Arc<EvalContext>,
+    pub(crate) origin: Option<Arc<str>>,
+    pub(crate) thunk_span: Span,
+    pub(crate) mat_span: Option<Span>,
+}
 
-    // ... ~14 additional variants for $if branches, TypeAssert, Guarded validation,
-    //     deep_materialize traversal, builtin arg materialization, etc.
+pub(crate) struct GuardedValidateData {
+    pub(crate) thunk: Arc<Thunk>,
+    pub(crate) expected: Type,
+    pub(crate) field_path: Vec<String>,
+    pub(crate) guard_span: Span,
+    pub(crate) inner_span: Span,
+    pub(crate) origin: Option<Arc<str>>,
+    pub(crate) thunk_span: Span,
+    pub(crate) mat_span: Option<Span>,
+    pub(crate) ctx: Arc<EvalContext>,
+    pub(crate) blame_label: Option<crate::error::BlameLabel>,
+    pub(crate) default: Option<GuardDefault>,
+    pub(crate) restore: Option<RestoreState>,
+}
+
+pub(crate) struct BuiltinForceArgData {
+    pub(crate) thunk: Arc<Thunk>,
+    pub(crate) def: crate::value::BuiltinDef,
+    pub(crate) args: Vec<Arc<Thunk>>,
+    pub(crate) named: Option<IndexMap<String, Arc<Thunk>>>,
+    pub(crate) call_span: Span,
+    pub(crate) ctx: Arc<EvalContext>,
+    pub(crate) origin: Option<Arc<str>>,
+    pub(crate) thunk_span: Span,
+    pub(crate) mat_span: Option<Span>,
+    pub(crate) arg_idx: usize,
+}
+
+pub(crate) struct DotAccessForceData {
+    pub(crate) field: crate::ast::DotKey,
+    pub(crate) access_span: Span,
+    pub(crate) target_def_span: Span,
+    pub(crate) outer_mat_span: Option<Span>,
+    pub(crate) ctx: Arc<EvalContext>,
+}
+
+pub(crate) struct TypeAssertCheckData {
+    pub(crate) annotation: Box<Spanned<Annotation>>,
+    pub(crate) resolved: Box<Option<Type>>,
+    pub(crate) expr_span: Span,
+    pub(crate) thunk_span: Span,
+    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) ctx: Arc<EvalContext>,
 }
 ```
 
-**`PendingCallForceFunc` carries `named`:** The `named` field (`Box<IndexMap<String, Rc<Thunk>>>`) is required because named args are free variables of the continuation — they were bound at the call site and must survive until the function is materialized and `bind_args_thunks` is called. Omitting `named` would silently discard named arguments, breaking the Kotlin-model call convention. (Reynolds 1972: defunctionalized continuations must capture all free variables of the original closure.)
+**`PendingCallDispatchData` carries `named`:** The `named` field (`Option<Box<IndexMap<String, Arc<Thunk>>>>`) is required because named args are free variables of the continuation — they were bound at the call site and must survive until the function is materialized and `bind_args_thunks` is called. Omitting `named` would silently discard named arguments, breaking the Kotlin-model call convention. (Reynolds 1972: defunctionalized continuations must capture all free variables of the original closure.)
 
 **Main loop sketch:**
 
 ```rust
-fn run(initial: Action, _ctx: &Rc<EvalContext>) -> EvalResult<Value> {
+async fn run(initial: Action, _ctx: &Arc<EvalContext>) -> EvalResult<Value> {
     let mut stack: Vec<Cont> = Vec::new();
     let mut action = initial;
 
     loop {
         match action {
-            Action::Eval { expr, env, ctx, depth } => {
-                action = eval_step(&expr, env, &ctx, depth, &mut stack);
+            Action::EvalCore { expr, env, ctx } => {
+                action = eval_core_expr_pub(&expr, env, &ctx, &mut stack).await;
             }
-            Action::Materialize { thunk, mat_span, depth } => {
-                action = force_step(&thunk, mat_span, depth, &mut stack);
+            Action::Materialize { thunk, mat_span } => {
+                action = force_step(&thunk, mat_span, &mut stack, &ctx).await;
             }
             Action::Continue(result) => {
                 match stack.pop() {
                     None => return result,
                     Some(cont) => {
-                        action = apply_cont(cont, result, &mut stack);
+                        action = apply_cont(cont, result, &mut stack, &ctx).await;
                     }
                 }
             }
@@ -146,7 +226,7 @@ fn run(initial: Action, _ctx: &Rc<EvalContext>) -> EvalResult<Value> {
 }
 ```
 
-**Frame size discipline:** The `≤96B` budget keeps `Vec<Cont>` cache-friendly. Large fields (`Vec`, `IndexMap`, `Box<Spanned<Expr>>`) are heap-allocated via `Box`. The `Action` and `Cont` enums together represent the full CEK machine state; depth tracking becomes `stack.len()` (no separate counter needed, though `MAX_EVAL_DEPTH` can still be applied as `stack.len() > MAX_EVAL_DEPTH`).
+**Frame size discipline:** The `≤96B` budget keeps `Vec<Cont>` cache-friendly. Large fields (`Vec`, `IndexMap`, `Arc<Spanned<CoreExpr>>`) are heap-allocated via `Box`. The `Action` and `Cont` enums together represent the full CEK machine state; depth tracking becomes `stack.len()` (no separate counter needed; `MAX_CONTINUATION_STACK = 2048` is applied as `stack.len() > 2048`).
 
 **Relationship to current `ThunkState`:** `PendingBuiltin` and `PendingCall` in `ThunkState` are proto-continuations — defunctionalized call sites captured as data. The CEK machine processes them via `Cont` variants (`Cont::BuiltinForceArg`, `Cont::PendingCallDispatch`) but does NOT remove them from ThunkState. PendingBuiltin and PendingCall are **permanent design elements** — they represent persistent deferred computation (lazy sequence steps, proxy handler dispatch) that cannot be converted to Unevaluated because builtin function pointers have no AST representation. The 7-state model (`{Unevaluated, PendingBuiltin, PendingCall, Guarded, InProgress, Materialized, Failed}`) is the stable design, not a transitional artifact.
 

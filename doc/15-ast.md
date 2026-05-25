@@ -123,116 +123,121 @@ struct Spanned<T> {
     span: Span,
 }
 
-/// The central expression type
-enum Expr {
+/// The core expression type (post-lowering, used by evaluator)
+pub enum CoreExpr {
     // Literals
     Int(i64),
     Float(f64),
     Bool(bool),
     Str(String),
 
-    // References and access
-    //
-    // `VarRef(name)` shorthand used in doc examples represents:
-    //   `VarRef { name, escaped: false, resolved: RefCell::new(None) }`
-    // The `resolved` field is a three-state sentinel populated by the variable
-    // resolution pass (src/resolve.rs):
-    //   - Outer None              = not yet processed (initial state)
-    //   - Outer Some(None)        = processed, unresolvable
-    //   - Outer Some(Some((l,s))) = resolved to (level, slot) de Bruijn coordinates
-    VarRef {
+    // VarRef with resolved de Bruijn coordinates
+    Var {
         name: String,
-        // True if written as `$name`, false if written as bare `name`.
-        // Used by expr_to_pattern (src/parser.rs) to distinguish pin patterns ($x)
-        // from bind patterns (x).
-        escaped: bool,
-        resolved: RefCell<Option<Option<(u32, u32)>>>,
+        level: u32,
+        slot: u32,
     },
+    // Unresolvable ref (include-introduced bindings) — name-based env lookup at runtime
+    FreeVar(String),
+
     DotAccess {
-        expr: Box<Spanned<Expr>>,
-        field: DotKey,  // DotKey::Ident("name") or DotKey::Int(0)
+        expr: Arc<Spanned<CoreExpr>>,
+        field: DotKey,
     },
-    // Use [get key data] (builtin) for dynamic key access, and slice/drop/take for ranges.
 
-    // Data
-    Dict(Vec<Spanned<Entry>>),
-
-    // Special forms
+    // No Pipe variant — the lowering pass rewrites Pipe to Call before evaluation.
+    Sequential(Vec<Arc<Spanned<CoreExpr>>>),
+    Dict(Vec<Spanned<CoreEntry>>),
     Call {
-        func: Box<Spanned<Expr>>,
-        args: Vec<Rc<Spanned<Expr>>>,
-        named_args: Vec<Spanned<NamedArg>>,
-        // True if the call was written in implied form `[f x]` (no `call` keyword);
-        // false if written in explicit form `[call f x]`.
-        // Used by the formatter for roundtrip fidelity: implied calls are printed without
-        // `call`, explicit calls are printed with `call`.
+        func: Arc<Spanned<CoreExpr>>,
+        args: Vec<Arc<Spanned<CoreExpr>>>,
+        named_args: Vec<Spanned<CoreNamedArg>>,
         implied: bool,
     },
     Fn {
         return_ann: Option<Spanned<Annotation>>,
-        params: Vec<Spanned<Param>>,
-        body: Rc<Spanned<Expr>>,
-        // True if created by `_` underscore desugaring (src/desugar.rs), false if user-written.
-        // Used for origin tracking (Pombrio & Krishnamurthi 2014) — tooling can distinguish
-        // sugar-generated from explicit lambdas.
+        params: Vec<Spanned<CoreParam>>,
+        body: Arc<Spanned<CoreExpr>>,
         desugared: bool,
     },
-    TypeAlias {
-        params: Vec<String>,
-        body: Box<Spanned<Expr>>,
-    },
-
-    // Type expressions
+    // Statically type-checked TypeAssert — resolved_type set from TypeAnnotationTable during lowering.
+    // Runtime behavior: structural check against resolved_type at force time.
     TypeAssert {
         annotation: Spanned<Annotation>,
-        expr: Box<Spanned<Expr>>,
-        // Filled by type checker (write-once elaboration). RefCell provides interior mutability
-        // so the type checker can write the resolved type through a shared reference (&Spanned<Expr>)
-        // without changing function signatures throughout the pipeline. Parser initializes to None.
-        resolved_type: RefCell<Option<Type>>,
+        expr: Arc<Spanned<CoreExpr>>,
+        resolved_type: Type,
     },
-
-    // Generalized annotation in value position
+    // TypeAssert for nodes absent from TypeAnnotationTable (macro-synthesized, bypassed typechecking).
+    // Falls back to default if present, raises error otherwise.
+    RuntimeTypeCheck {
+        annotation: Spanned<Annotation>,
+        expr: Arc<Spanned<CoreExpr>>,
+        default: Option<Arc<Spanned<CoreExpr>>>,
+    },
     Annotated {
         name: String,
         annotation: Spanned<Annotation>,
     },
-
-    // Row polymorphism marker in type expressions
-    Rest(Option<String>),       // ... or ...name
+    Rest(Option<String>),
+    Match {
+        scrutinee: Arc<Spanned<CoreExpr>>,
+        arms: Vec<CoreMatchArm>,
+    },
+    Quote(Arc<Spanned<CoreExpr>>),
+    Unquote(Arc<Spanned<CoreExpr>>),
+    UnquoteSplice(Arc<Spanned<CoreExpr>>),
+    PatternDecl {
+        bindings: Vec<Spanned<CoreExpr>>,
+    },
+    LetDecl {
+        bindings: Vec<Spanned<CoreExpr>>,
+    },
+    CaseArm {
+        pattern: Arc<Spanned<CoreExpr>>,
+        body: Arc<Spanned<CoreExpr>>,
+    },
+    TypeApp {
+        func: Arc<Spanned<CoreExpr>>,
+        arg: Arc<Spanned<CoreExpr>>,
+    },
+    Placeholder,
+    Error(Span),
 }
 ```
 
 ### Supporting Types
 
 ```rust
-/// A dict entry — keyed or auto-indexed
-struct Entry {
-    key: Option<Spanned<Expr>>,   // None = auto-indexed
-    value: Rc<Spanned<Expr>>,
+/// A dict/list entry in a CoreExpr::Dict.
+pub struct CoreEntry {
+    pub key: Option<Arc<Spanned<CoreExpr>>>,
+    pub value: Arc<Spanned<CoreExpr>>,
 }
 
-/// A named argument in a call expression
-struct NamedArg {
-    name: String,  // Always a bare identifier. `$key: val` syntax is rejected in call forms (only dict entries accept $-prefixed keys; see §Named Argument Key Normalization below).
-    value: Rc<Spanned<Expr>>,
+/// A named argument in a CoreExpr::Call.
+pub struct CoreNamedArg {
+    pub name: String,
+    pub value: Arc<Spanned<CoreExpr>>,
 }
-```
 
-**Named Argument Key Normalization:** The `name` field always contains a bare identifier. Only `key: val` syntax is supported for named arguments in call forms — the parser does not accept `$key: val` (a variable reference followed by `:` in a call context is a syntax error). Named arguments represent parameter name bindings (matched against `Param.name` strings by the evaluator), not value expressions.
+/// A function parameter in a CoreExpr::Fn.
+pub struct CoreParam {
+    pub name: String,
+    pub annotation: Option<Spanned<Annotation>>,
+    pub variadic: bool,
+}
 
-```rust
-/// A function parameter
-struct Param {
-    name: String,
-    annotation: Option<Spanned<Annotation>>,
-    variadic: bool,               // true if preceded by ...
+/// A match arm in a CoreExpr::Match.
+pub struct CoreMatchArm {
+    pub pattern: Spanned<Pattern>,
+    pub guard: Option<Arc<Spanned<CoreExpr>>>,
+    pub body: Arc<Spanned<CoreExpr>>,
 }
 
 /// An annotation (type or property dict)
 enum Annotation {
     Simple(String),               // x@Number — shorthand
-    PropertyDict(Vec<Spanned<Entry>>),  // x@[type: Number  default: 30]
+    PropertyDict(Vec<Spanned<SurfaceEntry>>),  // x@[type: Number  default: 30]
     Annotated(String, Box<Annotation>),  // Seq@Int — chained annotation
 }
 ```
@@ -245,7 +250,7 @@ enum Annotation {
 | `Float(3.14)` | `3.14` | Float literal |
 | `Bool(true)` | `true` | Boolean literal |
 | `Str("hello")` | `"hello"` | String literal (quoted) |
-| `VarRef { name: "x", .. }` | `x` or `$x` | Variable reference (bare identifier or escaped); `resolved` cache populated by the variable resolution pass |
+| `VarRef { name: "x", .. }` | `x` or `$x` | Variable reference (bare identifier or escaped); resolution results live in `ResolutionTable` keyed by `NodeId` |
 | `DotAccess { field: DotKey::Ident("b"), .. }` | `a.b` | String key access: looks up `Key::String("b")` on `a` |
 | `DotAccess { field: DotKey::Int(0), .. }` | `a.0` | Integer key access: looks up `Key::Int(0)` on `a` (auto-indexed dicts) |
 | `Pipe { lhs, rhs }` | `a \| f` | **Pipe is present in the Surface AST and eliminated by the lowering pass (`src/lower.rs`) before evaluation. The evaluator never sees `SurfaceExpression::Pipe`.** Lowering rewrites `Pipe { lhs, rhs }` to `CoreExpr::Call { func: rhs, args: [lhs], ... }` (equivalent to `f(a)` for `a \| f`). The type checker operates on the Surface AST and handles Pipe directly. |
@@ -275,7 +280,7 @@ enum Annotation {
 
 #### LetDecl, CaseArm, and Placeholder Details
 
-**LetDecl** — `Expr::LetDecl { bindings: Vec<Spanned<Expr>> }` — is a binding declaration list introduced by the `let` keyword. Each binding is one of:
+**LetDecl** — `SurfaceExpression::LetDecl { bindings: Vec<Spanned<SurfaceExpression>> }` — is a binding declaration list introduced by the `let` keyword. Each binding is one of:
 
 - `VarRef { name, escaped: false, .. }` — bare identifier binding (e.g., `x`)
 - `Annotated { name, annotation }` — typed binding (e.g., `x@Int`) or structural test (e.g., `v: Ok`)
@@ -289,14 +294,14 @@ LetDecl appears in:
 - Type class declarations: `[class [let Equatable a] ...]` (TypeVar binding list)
 - Instance patterns: `[instance Class [pattern [let a@Int b@Float]] ...]`
 
-**CaseArm** — `Expr::CaseArm { pattern, body }` — is a match arm with explicit scoping introduced by the `case` keyword. The pattern can be:
+**CaseArm** — `SurfaceExpression::CaseArm { pattern, body }` — is a match arm with explicit scoping introduced by the `case` keyword. The pattern can be:
 
 - `LetDecl` — binding pattern that introduces variables into the body's scope (e.g., `[case [let x@Int] body]`)
 - Any other expression — exact-value match (e.g., `[case 42 body]`, `[case "hello" body]`)
 
 CaseArm is used inside `[match ...]` expressions. The `match` evaluator tries each arm's pattern in order. For LetDecl patterns, the type checker validates that the binding constraints are satisfiable and binds the matched value. For exact-value patterns, the evaluator compares the scrutinee for equality.
 
-**Placeholder** — `Expr::Placeholder` — represents the `...` token when used as an expression (not as a Rest marker in type contexts). The type checker assigns it type `Unknown`, meaning it satisfies any constraint without producing a type error. At evaluation time, forcing a Placeholder thunk raises an `UnimplementedError` with the message `"placeholder \`...\` was evaluated — replace with an implementation"`. This allows developers to write incomplete code that type-checks but defers implementation details.
+**Placeholder** — `SurfaceExpression::Placeholder` — represents the `...` token when used as an expression (not as a Rest marker in type contexts). The type checker assigns it type `Unknown`, meaning it satisfies any constraint without producing a type error. At evaluation time, forcing a Placeholder thunk raises an `UnimplementedError` with the message `"placeholder \`...\` was evaluated — replace with an implementation"`. This allows developers to write incomplete code that type-checks but defers implementation details.
 
 Example use in a try block:
 
@@ -472,11 +477,11 @@ Left-associativity: `a | f | g` parses as `(a | f) | g`, which lowers to `[g [f 
 
 ## AST Dict Schema
 
-`ast_to_dict` (`src/ast_dict.rs`) serializes the `Expr` AST to tinct dicts. `dict_to_ast` converts dicts back to `Expr`. These two functions are the shared primitive for quasiquoting (`[quote]`), macros (`[defmacro]`), and the tinct-hosted formatter. The canonical schema is defined in `doc/feature/ast-schema.md`.
+`surface_node_to_dict` (`src/ast_dict.rs`) serializes the Surface AST to tinct dicts. `dict_to_surface_node` converts dicts back to `Arc<SurfaceNode>`. These two functions are the shared primitive for quasiquoting (`[quote]`), macros (`[defmacro]`), and the tinct-hosted formatter. The canonical schema is defined in `doc/feature/ast-schema.md`.
 
 ### Conventions
 
-- **`Value::Variant` tag on Expr nodes** — `Variant("Call", {fn: ..., args: ...})`, `Variant("VarRef", {name: "x", span: ...})`. Tags are PascalCase. Structural nodes (Entry, Annotation, Pattern, Document, File) remain plain dicts with a `type:` string discriminator
+- **`Value::Variant` tag on Expr nodes** — `Variant("Call", {fn: ..., args: ...})`, `Variant("VarRef", {name: "x", span: ...})`. Tags are PascalCase. Structural nodes (SurfaceEntry, Annotation, Pattern, SurfaceDocument, SurfaceProgram) remain plain dicts with a `type:` string discriminator
 - **`[]` for absent optionals** — never omit the key (except comment fields, which are absent when empty)
 - **`span:` on every node** — `[start: [line: 1 col: 5 offset: 4] end: [line: 1 col: 12 offset: 11]]`. "Every node" means every `Spanned<T>` wrapper, not every sub-element; `DotKey` has no independent span
 - **`schema-version: 1`** on the root `File` node — bump on breaking changes
@@ -492,16 +497,16 @@ Left-associativity: `a | f | g` parses as `(a | f) | g`, which lowers to `[g [f 
 | `comments: None` | Compact mode, quasiquoting | No comment fields emitted |
 | `comments: Some(map)` | Full formatter | `leading-comments:`, `trailing-comment:`, `blank-before:` on entries and documents |
 
-### dict_to_ast
+### dict_to_surface_node
 
-`dict_to_ast(v: &Value) -> Result<Expr, AstError>` validates and reconstructs an `Expr`:
+`dict_to_surface_node(v: &Value, ctx: &DictToAstContext) -> Result<Arc<SurfaceNode>, AstError>` validates and reconstructs a `SurfaceNode`:
 
-- Accepts both `Value::Variant` (new format from `ast_to_dict`) and legacy plain dicts with a `type:` string discriminator (backward compat)
+- Accepts both `Value::Variant` (new format from `surface_node_to_dict`) and legacy plain dicts with a `type:` string discriminator (backward compat)
 - Required fields must be present and of the correct shape
 - `span:` is optional — absent nodes get a synthetic zero span
 - Unknown fields are ignored (forward-compatible)
 
-Synthetic nodes (from `dict_to_ast` with absent `span:`) receive a `SyntheticId(u64)` for tracking in the macro expansion blackhole detection set.
+Synthetic nodes (from `dict_to_surface_node` with absent `span:`) receive a `SyntheticId(u64)` for tracking in the macro expansion blackhole detection set.
 
 ### Auto-Indexing
 

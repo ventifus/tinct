@@ -1981,8 +1981,8 @@ pub(crate) fn builtin_eval(
         } else {
             // No program provided - use empty tables (expressions won't have resolution info)
             (
-                std::sync::Arc::new(crate::ast::ResolutionTable::new()),
-                std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+                crate::ast::empty_resolution_table_arc(),
+                crate::ast::empty_type_annotation_table_arc(),
             )
         };
 
@@ -2149,8 +2149,8 @@ pub(crate) fn builtin_eval_types(
         }
 
         // Create empty resolution and type tables
-        let res_table = std::sync::Arc::new(crate::ast::ResolutionTable::new());
-        let types_table = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
+        let res_table = crate::ast::empty_resolution_table_arc();
+        let types_table = crate::ast::empty_type_annotation_table_arc();
 
         // Create Surface thunks for each expression
         let mut result_seq = Value::Dict(IndexMap::new()); // Start with empty (nil)
@@ -2295,8 +2295,8 @@ pub(crate) fn builtin_include_cache_put(
                     };
                     crate::eval::IncludeCacheEntry::Cached(
                         payload_thunk,
-                        std::sync::Arc::new(crate::ast::ResolutionTable::new()),
-                        std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+                        crate::ast::empty_resolution_table_arc(),
+                        crate::ast::empty_type_annotation_table_arc(),
                     )
                 }
                 other => {

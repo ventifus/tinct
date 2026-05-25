@@ -1334,6 +1334,161 @@ fn dict_to_surface_node_inner(
             }
         }
 
+        // ---- TypeAssert ----
+        "type-assert" | "TypeAssert" => {
+            let annotation_val = get_dict_field(&dict, "annotation", &["type"], ctx)?;
+            let annotation = dict_to_annotation(&annotation_val, &["annotation"], ctx)?;
+            let expr_val = get_dict_field(&dict, "expr", &["type"], ctx)?;
+            let expr = dict_to_surface_node_inner(&expr_val, ctx)?;
+            SurfaceExpression::TypeAssert { annotation, expr }
+        }
+
+        // ---- Annotated ----
+        "annotated" | "Annotated" => {
+            let name = get_string_field(&dict, "name", &["type"], ctx)?;
+            let annotation_val = get_dict_field(&dict, "annotation", &["type"], ctx)?;
+            let annotation = dict_to_annotation(&annotation_val, &["annotation"], ctx)?;
+            SurfaceExpression::Annotated { name, annotation }
+        }
+
+        // ---- Rest ----
+        "rest" | "Rest" => {
+            let name_val = get_dict_field(&dict, "name", &["type"], ctx)?;
+            let name = match name_val {
+                Value::Dict(ref d) if d.is_empty() => None,
+                Value::String {
+                    ref source,
+                    start,
+                    end,
+                } => Some(source[start..end].to_string()),
+                _ => {
+                    return Err(AstError {
+                        message: "name must be String or empty dict".into(),
+                        field_path: vec!["name".into()],
+                    })
+                }
+            };
+            SurfaceExpression::Rest(name)
+        }
+
+        // ---- Quote ----
+        "quote" | "Quote" => {
+            let expr_val = get_dict_field(&dict, "expr", &["type"], ctx)?;
+            let expr = dict_to_surface_node_inner(&expr_val, ctx)?;
+            SurfaceExpression::Quote(expr)
+        }
+
+        // ---- Unquote ----
+        "unquote" | "Unquote" => {
+            let expr_val = get_dict_field(&dict, "expr", &["type"], ctx)?;
+            let expr = dict_to_surface_node_inner(&expr_val, ctx)?;
+            SurfaceExpression::Unquote(expr)
+        }
+
+        // ---- UnquoteSplice ----
+        "unquote-splice" | "UnquoteSplice" => {
+            let expr_val = get_dict_field(&dict, "expr", &["type"], ctx)?;
+            let expr = dict_to_surface_node_inner(&expr_val, ctx)?;
+            SurfaceExpression::UnquoteSplice(expr)
+        }
+
+        // ---- Sequential ----
+        "sequential" | "Sequential" => {
+            let exprs_val = get_dict_field(&dict, "exprs", &["type"], ctx)?;
+            let exprs_list = extract_list(&exprs_val, &["exprs"], ctx)?;
+            let mut exprs = Vec::new();
+            for expr_val in exprs_list {
+                exprs.push(dict_to_surface_node_inner(&expr_val, ctx)?);
+            }
+            SurfaceExpression::Sequential(exprs)
+        }
+
+        // ---- PatternDecl ----
+        "pattern-decl" | "PatternDecl" => {
+            let bindings_val = get_dict_field(&dict, "bindings", &["type"], ctx)?;
+            let bindings_list = extract_list(&bindings_val, &["bindings"], ctx)?;
+            let mut bindings = Vec::new();
+            for binding_val in bindings_list {
+                bindings.push(dict_to_surface_node_inner(&binding_val, ctx)?);
+            }
+            SurfaceExpression::PatternDecl { bindings }
+        }
+
+        // ---- LetDecl ----
+        "let-decl" | "LetDecl" => {
+            let bindings_val = get_dict_field(&dict, "bindings", &["type"], ctx)?;
+            let bindings_list = extract_list(&bindings_val, &["bindings"], ctx)?;
+            let mut bindings = Vec::new();
+            for binding_val in bindings_list {
+                bindings.push(dict_to_surface_node_inner(&binding_val, ctx)?);
+            }
+            SurfaceExpression::LetDecl { bindings }
+        }
+
+        // ---- Placeholder ----
+        "placeholder" | "Placeholder" => SurfaceExpression::Placeholder,
+
+        // ---- Error ----
+        "ast-error" | "AstError" => {
+            let error_span_val = get_dict_field(&dict, "span", &["type"], ctx)?;
+            let error_span = match &error_span_val {
+                Value::Dict(span_dict) => {
+                    let start_id =
+                        span_dict
+                            .get(&Key::String("start".into()))
+                            .ok_or_else(|| AstError {
+                                message: "span dict missing 'start' field".into(),
+                                field_path: vec!["span".into()],
+                            })?;
+                    let start_thunk = ctx.get_thunk(*start_id);
+                    let start_val = start_thunk.try_get_materialized().ok_or_else(|| AstError {
+                        message: "span.start is not materialized".into(),
+                        field_path: vec!["span".into(), "start".into()],
+                    })?;
+
+                    let end_id =
+                        span_dict
+                            .get(&Key::String("end".into()))
+                            .ok_or_else(|| AstError {
+                                message: "span dict missing 'end' field".into(),
+                                field_path: vec!["span".into()],
+                            })?;
+                    let end_thunk = ctx.get_thunk(*end_id);
+                    let end_val = end_thunk.try_get_materialized().ok_or_else(|| AstError {
+                        message: "span.end is not materialized".into(),
+                        field_path: vec!["span".into(), "end".into()],
+                    })?;
+
+                    let start = extract_position(&start_val, ctx).ok_or_else(|| AstError {
+                        message: "invalid start position".into(),
+                        field_path: vec!["span".into(), "start".into()],
+                    })?;
+                    let end = extract_position(&end_val, ctx).ok_or_else(|| AstError {
+                        message: "invalid end position".into(),
+                        field_path: vec!["span".into(), "end".into()],
+                    })?;
+
+                    Span::new(start, end)
+                }
+                _ => {
+                    return Err(AstError {
+                        message: "span must be Dict".into(),
+                        field_path: vec!["span".into()],
+                    })
+                }
+            };
+            SurfaceExpression::Error(error_span)
+        }
+
+        // ---- TypeApp ----
+        "type-app" | "TypeApp" => {
+            let func_val = get_dict_field(&dict, "func", &["type"], ctx)?;
+            let func = dict_to_surface_node_inner(&func_val, ctx)?;
+            let arg_val = get_dict_field(&dict, "arg", &["type"], ctx)?;
+            let arg = dict_to_surface_node_inner(&arg_val, ctx)?;
+            SurfaceExpression::TypeApp { func, arg }
+        }
+
         // ---- Unknown variant: hard error (all variants must be handled natively) ----
         _ => {
             return Err(AstError {
