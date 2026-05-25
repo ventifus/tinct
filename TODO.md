@@ -1191,9 +1191,9 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 `eval_core_expr` (src/eval.rs:1424-1530, 1626-1703) handles `Sequential` and `Match` via direct async recursion — calling `eval_core_expr()` and `materialize()` internally without pushing CEK continuations. Every nested match arm or sequential expression adds a Rust async frame, not a `Cont` on the heap-allocated continuation stack. `check_stack_depth` cannot guard these paths because they bypass `force_step` entirely. Deeply nested `Match` expressions (e.g., 100-level pattern matching chains or 500-expression sequential blocks) can exhaust Rust's async call stack despite the CEK machine's intent to bound recursion.
 
-- [ ] Add `Cont::SequentialStep { remaining: Vec<Arc<Spanned<CoreExpr>>>, env, ctx }` to handle `CoreExpr::Sequential` iteratively in `apply_cont`
-- [ ] Add `Cont::MatchDispatch { arms, scrutinee_thunk, scrutinee_value, env, ctx }` to handle `CoreExpr::Match` iteratively in `apply_cont`
-- [ ] Update `force_step` / `eval_core_expr` to push these continuations instead of recursing
+- [x] Added `Cont::SequentialStep` (boxed `SequentialStepData`) — iterative sequential evaluation with dict binding extraction and child environments
+- [x] Added `Cont::MatchDispatch` (boxed `MatchDispatchData`) + `Cont::MatchGuardCheck` (boxed `MatchGuardCheckData`) — iterative pattern matching with guard evaluation
+- [x] `eval_core_expr` Sequential/Match arms now wrap as `UnevaluatedState::CoreExpr` thunks; `force_step` handles them via inline CoreExpr detection, pushing continuations instead of recursing
 - **Files:** `src/eval_materialize.rs` (new Cont variants, apply_cont arms), `src/eval.rs` (Sequential and Match arms in eval_core_expr)
 
 ### typeassert-is-predicate: `is:` predicate in TypeAssert silently ignored [Critical]

@@ -1420,107 +1420,15 @@ fn eval_core_expr<'a>(
                 expr.span,
             ))),
 
-            // Sequential: evaluate each expression in order, return the last result
-            CoreExpr::Sequential(exprs) => {
-                if exprs.is_empty() {
-                    return Ok(Arc::new(Thunk::new_materialized(
-                        Value::Dict(IndexMap::new()),
-                        expr.span,
-                    )));
-                }
-
-                let mut current_env = Arc::clone(env);
-
-                for (i, seq_expr) in exprs.iter().enumerate() {
-                    let is_last = i == exprs.len() - 1;
-
-                    if is_last {
-                        // Last expression: evaluate directly as CoreExpr
-                        return eval_core_expr(seq_expr, &current_env, ctx).await;
-                    }
-
-                    // Extract static keys from the expression BEFORE evaluating.
-                    // Only CoreExpr::Dict with static keys creates a new scope (mirrors resolve.rs).
-                    // Use core_expr_is_static_key (from eval_dict_mod) to keep predicate in sync.
-                    let static_keys: Option<HashSet<String>> = match &seq_expr.node {
-                        CoreExpr::Dict(entries) => {
-                            let keys: Vec<String> = entries
-                                .iter()
-                                .filter_map(|entry| {
-                                    entry.node.key.as_ref().and_then(|k| {
-                                        if core_expr_is_static_key(&k.node) {
-                                            match &k.node {
-                                                CoreExpr::Str(s) => Some(s.clone()),
-                                                CoreExpr::Annotated { name, .. } => {
-                                                    Some(name.clone())
-                                                }
-                                                _ => None,
-                                            }
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                })
-                                .collect();
-                            if keys.is_empty() {
-                                None
-                            } else {
-                                Some(keys.into_iter().collect())
-                            }
-                        }
-                        _ => None,
-                    };
-
-                    // Intermediate expression: evaluate as CoreExpr, materialize, and extract dict bindings
-                    let thunk = eval_core_expr(seq_expr, &current_env, ctx).await?;
-                    let value = materialize(&thunk, Some(&seq_expr.span), ctx).await?;
-
-                    // Create child environment with bindings from intermediate expression.
-                    // CRITICAL: Only insert static-key entries to preserve slot alignment with the resolver.
-                    // If static_keys is None (non-Dict expression or Dict with no static keys), no scope is created.
-                    if let Some(ref static_key_set) = static_keys {
-                        // Flatten Overlay to Dict for scope chain binding.
-                        // Only computed when static_keys is Some — avoids wasted work when no scope is created.
-                        let map = match value {
-                            Value::Dict(map) => map,
-                            Value::Overlay(l, r) => crate::builtins::flatten_overlay(
-                                &l,
-                                &r,
-                                "sequential expression",
-                                ctx,
-                                seq_expr.span,
-                            )?,
-                            _ => {
-                                return Err(EvalError::type_mismatch_ctx(
-                                    format!("sequential expression #{}", i + 1),
-                                    "Dict",
-                                    value.type_name(),
-                                    seq_expr.span,
-                                )
-                                .into());
-                            }
-                        };
-
-                        let child_env = Arc::new(RwLock::new(Environment::with_parent(
-                            Arc::clone(&current_env),
-                        )));
-                        for (key, val_thunk_id) in map {
-                            if let Key::String(name) = key {
-                                if static_key_set.contains(name.as_ref()) {
-                                    let val_thunk = ctx.get_thunk(val_thunk_id);
-                                    child_env
-                                        .write()
-                                        .unwrap()
-                                        .insert(name.to_string(), val_thunk);
-                                }
-                            }
-                        }
-                        current_env = child_env;
-                    }
-                }
-
-                unreachable!("eval_core_expr Sequential: loop did not return")
-            }
+            // Sequential: wrap as CoreExpr thunk — the CEK machine will handle iterative
+            // evaluation via SequentialStep and SequentialBindings continuations.
+            // This eliminates async recursion on the Rust stack for deeply nested sequential blocks.
+            CoreExpr::Sequential(_) => Ok(Arc::new(Thunk::new_unevaluated_core(
+                Arc::new(expr.clone()),
+                Arc::clone(env),
+                Arc::clone(ctx),
+                expr.span,
+            ))),
 
             // Dict: call eval_dict_core directly with the CoreEntry slice.
             // Eliminates the Vec<Spanned<Entry>> allocation and per-entry core_expr_to_expr
@@ -1620,88 +1528,15 @@ fn eval_core_expr<'a>(
             )
             .into()),
 
-            // Match: implement natively — materialize the scrutinee, then try each arm
-            // in order. Do NOT route through expr_to_core_expr: that would convert
-            // Expr::Match → CoreExpr::Match and loop back here via eval_core_expr.
-            CoreExpr::Match { scrutinee, arms } => {
-                // Evaluate the scrutinee to a thunk, then force it.
-                let scrutinee_thunk = eval_core_expr(scrutinee, env, ctx).await?;
-                let scrutinee_value =
-                    materialize(&scrutinee_thunk, Some(&scrutinee.span), ctx).await?;
-
-                // Try each arm in order.
-                for arm in arms {
-                    // PM3: Reject non-linear patterns before attempting to match.
-                    // A non-linear pattern like `[a: x  b: x  ...]:` would silently
-                    // rebind `x` to the last matched field. ML semantics require each
-                    // variable to appear at most once per arm.
-                    check_pattern_linearity(&arm.pattern).map_err(Box::new)?;
-
-                    // Try the pattern.
-                    let matched_env = match_pattern(
-                        &arm.pattern.node,
-                        &scrutinee_value,
-                        env,
-                        &arm.pattern.span,
-                        ctx,
-                    )
-                    .await?;
-
-                    if let Some(arm_env) = matched_env {
-                        // Pattern matched. If there is a guard, evaluate it.
-                        if let Some(guard_expr) = &arm.guard {
-                            let guard_thunk = eval_core_expr(guard_expr, &arm_env, ctx).await?;
-                            let guard_value =
-                                materialize(&guard_thunk, Some(&guard_expr.span), ctx).await?;
-
-                            // PM1: If the guard evaluated to a callable (predicate function),
-                            // invoke it with the scrutinee value and use the result as the guard.
-                            // This handles `[is: positive?]` style guards where the `is:` value
-                            // is a function reference rather than an inline boolean expression.
-                            let guard_value = match guard_value {
-                                Value::Function { .. } | Value::Builtin(_) => {
-                                    // Wrap the predicate function as a materialized thunk.
-                                    let pred_thunk = Arc::new(Thunk::new_materialized(
-                                        guard_value,
-                                        guard_expr.span,
-                                    ));
-                                    // Create a PendingCall: pred(scrutinee_value)
-                                    let call_thunk = Arc::new(Thunk::new_pending_call(
-                                        pred_thunk,
-                                        vec![Arc::clone(&scrutinee_thunk)],
-                                        IndexMap::new(),
-                                        guard_expr.span,
-                                        Arc::clone(env),
-                                        guard_expr.span,
-                                        None,
-                                        Arc::clone(ctx),
-                                    ));
-                                    // Force the call to get the predicate result.
-                                    materialize(&call_thunk, Some(&guard_expr.span), ctx).await?
-                                }
-                                other => other,
-                            };
-
-                            // Guard is falsy — skip this arm and try the next one.
-                            // Bool(false) and empty Dict (null []) are falsy; everything else is truthy.
-                            let is_truthy = match &guard_value {
-                                Value::Bool(b) => *b,
-                                Value::Dict(map) => !map.is_empty(),
-                                _ => true,
-                            };
-                            if !is_truthy {
-                                continue;
-                            }
-                        }
-                        // Arm matched (and guard passed). Evaluate the body.
-                        return eval_core_expr(&arm.body, &arm_env, ctx).await;
-                    }
-                    // Pattern did not match — try the next arm.
-                }
-
-                // No arm matched: non-exhaustive match.
-                Err(EvalError::match_exhaustion(scrutinee_value.type_name(), expr.span).into())
-            }
+            // Match: wrap as CoreExpr thunk — the CEK machine will handle iterative
+            // evaluation via MatchDispatch and MatchGuardCheck continuations.
+            // This eliminates async recursion on the Rust stack for deeply nested match chains.
+            CoreExpr::Match { .. } => Ok(Arc::new(Thunk::new_unevaluated_core(
+                Arc::new(expr.clone()),
+                Arc::clone(env),
+                Arc::clone(ctx),
+                expr.span,
+            ))),
 
             // Quote: convert CoreExpr→SurfaceNode and walk with eval_quote_walk.
             //
@@ -2840,7 +2675,7 @@ fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(Str
 /// This is called once per match arm before `match_pattern` recurses, so the cost is
 /// O(|pattern|) per arm.
 #[allow(clippy::result_large_err)]
-fn check_pattern_linearity(pattern: &Spanned<Pattern>) -> Result<(), EvalError> {
+pub(crate) fn check_pattern_linearity(pattern: &Spanned<Pattern>) -> Result<(), EvalError> {
     // Or-patterns: check each branch independently.
     if let Pattern::Or(branches) = &pattern.node {
         for branch in branches {
@@ -2868,7 +2703,7 @@ fn check_pattern_linearity(pattern: &Spanned<Pattern>) -> Result<(), EvalError> 
 /// Returns Ok(Some(env)) if the pattern matches (env contains any bindings from the pattern).
 /// Returns Ok(None) if the pattern does not match.
 /// Returns Err if there's an evaluation error (e.g., undefined pin variable).
-fn match_pattern<'a>(
+pub(crate) fn match_pattern<'a>(
     pattern: &'a Pattern,
     value: &'a Value,
     env: &'a Arc<RwLock<Environment>>,

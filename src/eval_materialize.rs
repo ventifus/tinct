@@ -6,7 +6,7 @@
 //! that materializes thunks without recursion. The CEK machine design is documented
 //! in doc/08-evaluation.md §Iterative Evaluator.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -17,9 +17,10 @@ use crate::ast::{Annotation, CoreExpr, Span, Spanned, SurfaceExpression};
 use crate::builtins::{flatten_overlay, MAX_COLLECT_SIZE};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
-    annotation_has_structural_fields, as_record_row_merged, eval_core_expr_pub, format_field_path,
-    format_type_for_assert, materialize, maybe_wrap_guard, validate_and_wrap_record,
-    value_matches_type, EvalContext, DEFAULT_ANNOTATION_KEY,
+    annotation_has_structural_fields, as_record_row_merged, check_pattern_linearity,
+    eval_core_expr_pub, format_field_path, format_type_for_assert, match_pattern, materialize,
+    maybe_wrap_guard, validate_and_wrap_record, value_matches_type, EvalContext,
+    DEFAULT_ANNOTATION_KEY,
 };
 use crate::eval_access::invoke_proxy_handler;
 use crate::eval_call::{invoke_function, CallContext};
@@ -300,6 +301,44 @@ pub(crate) struct DotAccessForceData {
     pub(crate) ctx: Arc<EvalContext>,
 }
 
+/// Payload for Cont::SequentialStep. Boxed to keep the Cont enum ≤96 bytes.
+pub(crate) struct SequentialStepData {
+    /// Remaining expressions to evaluate (index into the original Sequential exprs vec).
+    /// When idx reaches exprs.len(), the Sequential is complete and we return the last value.
+    pub(crate) idx: usize,
+    pub(crate) exprs: Arc<Vec<Arc<Spanned<CoreExpr>>>>,
+    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) ctx: Arc<EvalContext>,
+    pub(crate) seq_span: Span,
+}
+
+/// Payload for Cont::MatchDispatch. Boxed to keep the Cont enum ≤96 bytes.
+pub(crate) struct MatchDispatchData {
+    /// The arms to try matching. Index starts at 0.
+    pub(crate) arm_idx: usize,
+    pub(crate) arms: Arc<Vec<crate::ast::CoreMatchArm>>,
+    /// The original environment for fallback matching
+    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) ctx: Arc<EvalContext>,
+    pub(crate) match_span: Span,
+}
+
+/// Payload for Cont::MatchGuardCheck. Boxed to keep the Cont enum ≤96 bytes.
+pub(crate) struct MatchGuardCheckData {
+    /// Current arm index (for continuing to next arm if guard fails)
+    pub(crate) arm_idx: usize,
+    pub(crate) arms: Arc<Vec<crate::ast::CoreMatchArm>>,
+    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) ctx: Arc<EvalContext>,
+    pub(crate) match_span: Span,
+    /// Environment with pattern bindings from the matched arm
+    pub(crate) arm_env: Arc<RwLock<Environment>>,
+    /// The scrutinee value (needed for predicate invocation and fallback)
+    pub(crate) scrutinee_value: Value,
+    /// The arm body to evaluate if guard passes
+    pub(crate) body: Arc<Spanned<CoreExpr>>,
+}
+
 /// Continuation variants for iterative materialization. Each represents
 /// "what to do after a sub-thunk has been materialized."
 ///
@@ -343,6 +382,16 @@ pub(crate) enum Cont {
     /// → &Arc<SurfaceNode> → lower::lower → Action::EvalCore. When annotations store CoreExpr
     /// values natively, this becomes a no-op clone.
     TypeAssertCheck(Box<TypeAssertCheckData>),
+    /// Process the next step in a Sequential expression chain.
+    /// After an intermediate expression is materialized (and its dict bindings extracted),
+    /// this continuation evaluates the next expression in the sequence.
+    SequentialStep(Box<SequentialStepData>),
+    /// Dispatch to the next arm after materializing the scrutinee in a Match expression.
+    /// Tries each arm pattern in order until one matches, then evaluates that arm's body.
+    MatchDispatch(Box<MatchDispatchData>),
+    /// Check the guard result for a matched arm and either evaluate the body (guard passed)
+    /// or continue to the next arm (guard failed).
+    MatchGuardCheck(Box<MatchGuardCheckData>),
 }
 
 // Compile-time assertion: Cont must be ≤96 bytes to fit in one cache line.
@@ -1187,6 +1236,103 @@ pub(crate) async fn force_step(
             return Action::Materialize {
                 thunk: inner_thunk,
                 mat_span: Some(core_expr.span),
+            };
+        }
+
+        // Handle CoreExpr::Sequential inline — prevents loop through eval_core_expr.
+        // The CEK machine evaluates expressions iteratively via SequentialStep continuations.
+        if let crate::ast::CoreExpr::Sequential(exprs) = &core_expr.node {
+            if exprs.is_empty() {
+                // Empty sequential: return empty dict
+                thunk.set_materialized(Value::Dict(IndexMap::new()));
+                return Action::Continue(Ok(Value::Dict(IndexMap::new())));
+            }
+
+            // Memoize the final result
+            stack.push(Cont::Memoize(Box::new(MemoizeData {
+                thunk: Arc::clone(thunk),
+                origin,
+                thunk_span,
+                mat_span,
+                restore: Some(RestoreState::CoreExpr {
+                    expr: Arc::clone(&core_expr),
+                    env: Arc::clone(&env),
+                    ctx: Arc::clone(&thunk_ctx),
+                }),
+                ctx: Arc::clone(&thunk_ctx),
+            })));
+
+            // Evaluate the first expression and push a SequentialStep to handle the result
+            let first_expr = &exprs[0];
+            stack.push(Cont::SequentialStep(Box::new(
+                crate::eval_materialize::SequentialStepData {
+                    idx: 0,
+                    exprs: Arc::new(exprs.clone()),
+                    env: Arc::clone(&env),
+                    ctx: Arc::clone(&thunk_ctx),
+                    seq_span: core_expr.span,
+                },
+            )));
+
+            // Evaluate the first expression
+            return Action::EvalCore {
+                expr: Arc::clone(first_expr),
+                env,
+                ctx: thunk_ctx,
+            };
+        }
+
+        // Handle CoreExpr::Match inline — prevents loop through eval_core_expr.
+        // The CEK machine evaluates arms iteratively via MatchDispatch continuations.
+        if let crate::ast::CoreExpr::Match { scrutinee, arms } = &core_expr.node {
+            // Evaluate the scrutinee first
+            let scrutinee_thunk = match eval_core_expr_pub(scrutinee, &env, &thunk_ctx).await {
+                Ok(t) => t,
+                Err(e) => {
+                    let decorated = attach_materialization_context(
+                        e,
+                        mat_span.as_ref(),
+                        origin.as_deref(),
+                        thunk_span,
+                    );
+                    if decorated.kind.is_cacheable() {
+                        thunk.cache_failure_once(&decorated);
+                    } else {
+                        thunk.restore_unevaluated(restore);
+                    }
+                    return Action::Continue(Err(decorated));
+                }
+            };
+
+            // Push Memoize to cache the final match result
+            stack.push(Cont::Memoize(Box::new(MemoizeData {
+                thunk: Arc::clone(thunk),
+                origin,
+                thunk_span,
+                mat_span,
+                restore: Some(RestoreState::CoreExpr {
+                    expr: Arc::clone(&core_expr),
+                    env: Arc::clone(&env),
+                    ctx: Arc::clone(&thunk_ctx),
+                }),
+                ctx: Arc::clone(&thunk_ctx),
+            })));
+
+            // Push MatchDispatch to try arms after scrutinee is materialized
+            stack.push(Cont::MatchDispatch(Box::new(
+                crate::eval_materialize::MatchDispatchData {
+                    arm_idx: 0,
+                    arms: Arc::new(arms.clone()),
+                    env: Arc::clone(&env),
+                    ctx: Arc::clone(&thunk_ctx),
+                    match_span: core_expr.span,
+                },
+            )));
+
+            // Materialize the scrutinee
+            return Action::Materialize {
+                thunk: scrutinee_thunk,
+                mat_span: Some(scrutinee.span),
             };
         }
 
@@ -2659,6 +2805,275 @@ pub(crate) async fn apply_cont(
                         Action::Continue(Ok(value))
                     }
                 },
+            }
+        }
+        Cont::SequentialStep(data) => {
+            let SequentialStepData {
+                idx,
+                exprs,
+                env,
+                ctx,
+                seq_span,
+            } = *data;
+
+            // Result is the materialized value from the previous expression
+            match result {
+                Err(e) => Action::Continue(Err(e)),
+                Ok(intermediate_value) => {
+                    // Process the value to extract bindings if needed
+                    let next_idx = idx + 1;
+                    if next_idx >= exprs.len() {
+                        // This was the last expression — return its value
+                        return Action::Continue(Ok(intermediate_value));
+                    }
+
+                    // Extract static keys from the CURRENT expression (at idx) for scope creation
+                    let current_expr = &exprs[idx];
+                    let static_keys: Option<HashSet<String>> = match &current_expr.node {
+                        CoreExpr::Dict(entries) => {
+                            use crate::eval::core_expr_is_static_key;
+                            let keys: Vec<String> = entries
+                                .iter()
+                                .filter_map(|entry| {
+                                    entry.node.key.as_ref().and_then(|k| {
+                                        if core_expr_is_static_key(&k.node) {
+                                            match &k.node {
+                                                CoreExpr::Str(s) => Some(s.clone()),
+                                                CoreExpr::Annotated { name, .. } => Some(name.clone()),
+                                                _ => None,
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                                .collect();
+                            if keys.is_empty() {
+                                None
+                            } else {
+                                Some(keys.into_iter().collect())
+                            }
+                        }
+                        _ => None,
+                    };
+
+                    // Create child environment with bindings from the intermediate expression
+                    let new_env = if let Some(ref static_key_set) = static_keys {
+                        // Flatten Overlay to Dict for scope chain binding
+                        let map = match intermediate_value {
+                            Value::Dict(map) => map,
+                            Value::Overlay(l, r) => match crate::builtins::flatten_overlay(
+                                &l,
+                                &r,
+                                "sequential expression",
+                                &ctx,
+                                current_expr.span,
+                            ) {
+                                Ok(map) => map,
+                                Err(e) => return Action::Continue(Err(e)),
+                            },
+                            _ => {
+                                return Action::Continue(Err(Box::new(
+                                    EvalError::type_mismatch_ctx(
+                                        format!("sequential expression #{}", idx + 1),
+                                        "Dict",
+                                        intermediate_value.type_name(),
+                                        current_expr.span,
+                                    ),
+                                )));
+                            }
+                        };
+
+                        let child_env =
+                            Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
+                        for (key, val_thunk_id) in map {
+                            if let Key::String(name) = key {
+                                if static_key_set.contains(name.as_ref()) {
+                                    let val_thunk = ctx.get_thunk(val_thunk_id);
+                                    child_env.write().unwrap().insert(name.to_string(), val_thunk);
+                                }
+                            }
+                        }
+                        child_env
+                    } else {
+                        // No static keys — no scope created, continue with same env
+                        env
+                    };
+
+                    // Push continuation for the NEXT expression
+                    let next_expr = &exprs[next_idx];
+                    stack.push(Cont::SequentialStep(Box::new(SequentialStepData {
+                        idx: next_idx,
+                        exprs: Arc::clone(&exprs),
+                        env: new_env.clone(),
+                        ctx: Arc::clone(&ctx),
+                        seq_span,
+                    })));
+
+                    // Evaluate the next expression
+                    Action::EvalCore {
+                        expr: Arc::clone(next_expr),
+                        env: new_env,
+                        ctx,
+                    }
+                }
+            }
+        }
+        Cont::MatchDispatch(data) => {
+            let MatchDispatchData {
+                arm_idx,
+                arms,
+                env,
+                ctx,
+                match_span,
+            } = *data;
+
+            // Result is the materialized scrutinee value
+            match result {
+                Err(e) => Action::Continue(Err(e)),
+                Ok(scrutinee_value) => {
+                    // Try each arm starting from arm_idx
+                    for i in arm_idx..arms.len() {
+                        let arm = &arms[i];
+
+                        // PM3: Reject non-linear patterns
+                        if let Err(e) = check_pattern_linearity(&arm.pattern) {
+                            return Action::Continue(Err(Box::new(e)));
+                        }
+
+                        // Try the pattern (this is async, so we need to spawn a sub-action)
+                        // For now, we'll block on pattern matching since it's typically fast
+                        // TODO: Make pattern matching iterative too
+                        let matched_env_result = crate::async_rt::block_on_anywhere(match_pattern(
+                            &arm.pattern.node,
+                            &scrutinee_value,
+                            &env,
+                            &arm.pattern.span,
+                            &ctx,
+                        ));
+
+                        let matched_env = match matched_env_result {
+                            Ok(opt) => opt,
+                            Err(e) => return Action::Continue(Err(e)),
+                        };
+
+                        if let Some(arm_env) = matched_env {
+                            // Pattern matched. If there is a guard, evaluate it.
+                            if let Some(guard_expr) = &arm.guard {
+                                // Push a continuation to check the guard result
+                                stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
+                                    arm_idx: i,
+                                    arms: Arc::clone(&arms),
+                                    env: Arc::clone(&env),
+                                    ctx: Arc::clone(&ctx),
+                                    match_span,
+                                    arm_env: Arc::clone(&arm_env),
+                                    scrutinee_value: scrutinee_value.clone(),
+                                    body: Arc::clone(&arm.body),
+                                })));
+
+                                // Evaluate the guard
+                                return Action::EvalCore {
+                                    expr: Arc::clone(guard_expr),
+                                    env: arm_env,
+                                    ctx,
+                                };
+                            }
+
+                            // No guard — arm matched, evaluate body
+                            return Action::EvalCore {
+                                expr: Arc::clone(&arm.body),
+                                env: arm_env,
+                                ctx,
+                            };
+                        }
+                        // Pattern did not match — continue to next arm
+                    }
+
+                    // No arm matched: non-exhaustive match
+                    Action::Continue(Err(Box::new(EvalError::match_exhaustion(
+                        scrutinee_value.type_name(),
+                        match_span,
+                    ))))
+                }
+            }
+        }
+        Cont::MatchGuardCheck(data) => {
+            let MatchGuardCheckData {
+                arm_idx,
+                arms,
+                env,
+                ctx,
+                match_span,
+                arm_env,
+                scrutinee_value,
+                body,
+            } = *data;
+
+            match result {
+                Err(e) => Action::Continue(Err(e)),
+                Ok(guard_value) => {
+                    // PM1: If the guard is callable, invoke it with the scrutinee
+                    let guard_value = match guard_value {
+                        Value::Function { .. } | Value::Builtin(_) => {
+                            // Create a thunk for the scrutinee
+                            let scrutinee_thunk = Arc::new(Thunk::new_materialized(
+                                scrutinee_value.clone(),
+                                match_span,
+                            ));
+                            // Create a thunk for the predicate
+                            let pred_thunk =
+                                Arc::new(Thunk::new_materialized(guard_value, match_span));
+                            // Create a PendingCall thunk
+                            let call_thunk = Arc::new(Thunk::new_pending_call(
+                                pred_thunk,
+                                vec![scrutinee_thunk],
+                                IndexMap::new(),
+                                match_span,
+                                Arc::clone(&arm_env),
+                                match_span,
+                                None,
+                                Arc::clone(&ctx),
+                            ));
+                            // Force the call
+                            match crate::async_rt::block_on_anywhere(materialize(
+                                &call_thunk,
+                                Some(&match_span),
+                                &ctx,
+                            )) {
+                                Ok(v) => v,
+                                Err(e) => return Action::Continue(Err(e)),
+                            }
+                        }
+                        other => other,
+                    };
+
+                    // Check if the guard is truthy
+                    let is_truthy = match &guard_value {
+                        Value::Bool(b) => *b,
+                        Value::Dict(map) => !map.is_empty(),
+                        _ => true,
+                    };
+
+                    if is_truthy {
+                        // Guard passed — evaluate the body
+                        Action::EvalCore {
+                            expr: body,
+                            env: arm_env,
+                            ctx,
+                        }
+                    } else {
+                        // Guard failed — try the next arm
+                        stack.push(Cont::MatchDispatch(Box::new(MatchDispatchData {
+                            arm_idx: arm_idx + 1,
+                            arms,
+                            env,
+                            ctx: Arc::clone(&ctx),
+                            match_span,
+                        })));
+                        Action::Continue(Ok(scrutinee_value))
+                    }
+                }
             }
         }
     }
