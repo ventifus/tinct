@@ -1498,8 +1498,8 @@ The code is authoritative: `src/typecheck.rs:5501` confirms `None => Ok(Type::Un
 
 **type-theorist Minor 2.** `src/type_class.rs:49-52` (KNOWN ISSUE T6): `Constraint::new_by_name` creates a minimal `ClassDecl` with empty `determines` vec. Any constraint on an FD-bearing class created via `new_by_name` silently skips FD improvement.
 
-- [ ] Sprint: `chr-new-by-name-audit` — audit all `new_by_name` call sites and verify none create constraints on Addable/Subtractable/Multipliable/Divisible classes
-- **Files:** `src/type_class.rs:49-52`
+- [x] Audit COMPLETE: only 2 call sites found — `str` builtin uses Showable, `builtin-concat` uses Appendable (both non-FD classes). No FD-bearing classes (Addable/Subtractable/Multipliable/Divisible) use `new_by_name`. All safe.
+- **Files:** `src/type_env.rs:1453,2871-2872`
 
 ### chr-overlap-insert: InstanceEnv doesn't detect structurally overlapping instances [Minor]
 
