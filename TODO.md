@@ -648,6 +648,14 @@ Discovered via `samples/versions.llt` (2026-05-23). Writing `rust-version: [@Str
 
 - [x] When a dict entry has a TypeAssert annotation `[@T expr]`, the entry's inferred type for callers should be `T` (the asserted type), not the underlying expression type. Fix the type annotation propagation in dict entry type inference. (`src/typecheck_dict.rs` or `src/typecheck.rs`)
 
+### t013-duplicate-diagnostic-emission: T013 fires multiple times for the same expression
+
+Discovered via `samples/versions.llt` (2026-05-25). The expression `[ver-line: [trim [get 1 [split "\n" after]]]]` at line 63 emits 12 identical T013 warnings for two type variables (`_t30`, `_t31`), each appearing 6 times. The same ambiguous constraint is reported once per constraint solver attempt rather than once per expression.
+
+Root cause: The constraint solver checks and emits T013 each time it tries and fails to discharge an ambiguous constraint, rather than deduplicating per (type-variable, span) pair before emitting.
+
+- [ ] Deduplicate T013 diagnostics by (type-variable, span) before emitting — each unique (typevar, span) pair should produce at most one T013 warning. (`src/typecheck.rs` constraint discharge path)
+
 ### fmt-panic-seq-materialized: `just fmt-llt-check` panics with "seq should be materialized"
 
 Discovered via `samples/versions.llt` rewrite (2026-05-23). Running `tinct fmt --check` on a file containing `[do result ...]` macro expansion causes a panic in `src/builtins_seq_reduce.rs:226:14` with message "seq should be materialized". The formatter is triggering a reduce operation on an unmaterialized Seq. Likely caused by the `do` macro expanding to `[and-then ...]` chains that the formatter tries to evaluate or partially execute.
@@ -1519,6 +1527,6 @@ The code is authoritative: `src/typecheck.rs:5501` confirms `None => Ok(Type::Un
 
 **type-theorist Minor 5.** `src/repl.rs:224-225`: the REPL builds a fresh prelude env for each type-check call. Bindings defined in earlier REPL lines produce false "undefined variable" type warnings in later lines.
 
-- [ ] Thread accumulated `TypeEnv` across REPL turns alongside the value `Environment`
+- [x] Added `type_env: Rc<TypeEnv>` to ReplSession; single typecheck_surface_program_with_env call uses accumulated env; advanced only on success path. 3 unit tests.
 - **File:** `src/repl.rs`
 

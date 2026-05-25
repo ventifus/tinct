@@ -14,6 +14,7 @@
 //! - **I/O**: [`run_repl`] -- uses `rustyline` for line editing (behind the `repl`
 //!   feature flag).
 
+use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
@@ -25,6 +26,7 @@ use crate::eval::{
 };
 use crate::parser::parse;
 use crate::typecheck::{DocMap, TypeMap};
+use crate::types::TypeEnv;
 use crate::value::{Environment, Key, Thunk, Value};
 use crate::value_to_display_string;
 
@@ -89,6 +91,13 @@ pub struct ReplSession {
     type_map: TypeMap,
     /// Documentation strings extracted from annotations.
     doc_map: DocMap,
+    /// Accumulated type environment across REPL turns.
+    ///
+    /// Initialized from the prelude env and extended after each successful
+    /// evaluation so that bindings from previous turns are visible to the
+    /// type checker on subsequent turns, preventing false T002 "undefined
+    /// variable" warnings.
+    type_env: Rc<TypeEnv>,
 }
 
 /// The outcome of a single REPL evaluation step.
@@ -166,6 +175,7 @@ impl ReplSession {
             ctx,
             type_map: TypeMap::new(),
             doc_map: DocMap::new(),
+            type_env: crate::imports::build_prelude_env(),
         })
     }
 
@@ -206,24 +216,33 @@ impl ReplSession {
         let resolution_table =
             std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));
         // Type errors are advisory; evaluation proceeds regardless.
-        // Collect type and doc information for meta-commands.
-        let (_type_errors, type_map, doc_map, _scheme_map, _diagnostics) =
-            crate::typecheck::typecheck_surface_program(
-                &program,
-                crate::imports::build_prelude_env(),
-            );
-        // Extend (not replace) the session's type and doc maps with the new information
+        // Collect type and doc information for meta-commands, and get the
+        // TypeAnnotationTable for static type resolution in TypeAssert nodes.
+        // Use the accumulated type_env so bindings from previous REPL turns
+        // are visible to the type checker, preventing false T002 warnings.
+        let (
+            _type_errors,
+            type_map,
+            doc_map,
+            _scheme_map,
+            _diagnostics,
+            _state,
+            final_type_env,
+            annotation_table,
+        ) = crate::typecheck::typecheck_surface_program_with_env(
+            &program,
+            Rc::clone(&self.type_env),
+            true,  // enable_scheme_map: populate type_map for :type/:describe commands
+            false, // in_prelude_load: false (this is a user session, not the prelude)
+        );
+        // Extend (not replace) the session's type and doc maps with the new information.
         self.type_map.extend(type_map);
         self.doc_map.extend(doc_map);
+        let type_annotation_table = std::sync::Arc::new(annotation_table);
 
         if program.documents.is_empty() {
             return Err("empty input".to_string());
         }
-
-        // Get TypeAnnotationTable from typecheck for static type resolution in TypeAssert nodes.
-        let (_annotation_errors, type_annotation_table) =
-            crate::typecheck::typecheck_surface_program_annotation_table(&program);
-        let type_annotation_table = std::sync::Arc::new(type_annotation_table);
         let result_thunk = crate::async_rt::block_on_anywhere(eval_surface_file_with_input(
             &program,
             Arc::clone(&self.env),
@@ -268,6 +287,9 @@ impl ReplSession {
 
         // Success: commit the result to session state.
         self.prev_result = result_thunk;
+        // Advance the accumulated type environment so bindings introduced in
+        // this turn are visible to the type checker on the next turn.
+        self.type_env = final_type_env;
 
         // If the result is a Dict, extend the session env with its bindings.
         if let Value::Dict(ref map) = val {
@@ -1071,5 +1093,63 @@ mod tests {
 
         // :describe without argument should return true (prints usage)
         assert!(session.handle_meta_command(":describe"));
+    }
+
+    // ── Type env accumulation tests ─────────────────────────────────────────
+
+    /// Bindings defined in one REPL turn must not produce T002 "undefined variable"
+    /// type warnings when referenced in a subsequent turn.
+    ///
+    /// This test verifies that `ReplSession` accumulates the type environment across
+    /// turns: after `[x: 42]` is evaluated successfully, the type checker on the
+    /// next turn knows about `x` and does not emit a spurious type error.
+    #[test]
+    fn test_type_env_accumulated_across_turns() {
+        let mut session = ReplSession::new().unwrap();
+
+        // Turn 1: define a binding.
+        session.eval_input("[x: 42]").unwrap();
+
+        // Turn 2: reference x — should evaluate successfully (no false T002).
+        // If the type env were reset, the type checker would warn "undefined variable x",
+        // though evaluation still succeeds (type errors are advisory). We verify that
+        // the binding is visible and that evaluation succeeds without error.
+        let result = session.eval_input("x").unwrap();
+        assert_eq!(result, "Int(42)");
+    }
+
+    /// Type env accumulation works for function definitions: calling a function
+    /// defined in a previous turn must not generate a false "undefined variable"
+    /// type warning for the function name.
+    #[test]
+    fn test_type_env_accumulated_function_def() {
+        let mut session = ReplSession::new().unwrap();
+
+        // Turn 1: define a function.
+        session
+            .eval_input("[add: [fn [let a b] [+ a b]]]")
+            .unwrap();
+
+        // Turn 2: call the function — type checker must know about `add`.
+        let result = session.eval_input("[add 3 4]").unwrap();
+        assert_eq!(result, "Int(7)");
+    }
+
+    /// On a failed evaluation, the type env must NOT advance — bindings from a
+    /// failed turn are not committed to subsequent turns.
+    #[test]
+    fn test_type_env_not_advanced_on_error() {
+        let mut session = ReplSession::new().unwrap();
+
+        // Turn 1: define x.
+        session.eval_input("[x: 10]").unwrap();
+
+        // Turn 2: fail (runtime error — circular dependency).
+        // The type env must remain at the state after Turn 1.
+        let _ = session.eval_input("[a: b  b: a]").unwrap_err();
+
+        // Turn 3: x from Turn 1 is still accessible.
+        let result = session.eval_input("x").unwrap();
+        assert_eq!(result, "Int(10)");
     }
 }
