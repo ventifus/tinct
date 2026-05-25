@@ -1477,15 +1477,15 @@ The code is authoritative: `src/typecheck.rs:5501` confirms `None => Ok(Type::Un
 
 **security-expert Minor.** `src/builtins_io.rs:499-514`: the Text path calls `read_to_string` into an unbounded `String` then checks length. A 2 GB pipe exhausts heap before rejection fires. The Binary path at lines 467-487 correctly uses 8 KB chunks with mid-read limit.
 
-- [ ] Wrap reader with `Read::take(MAX_FILE_SIZE as u64 + 1)` before calling `read_to_string`
-- **File:** `src/builtins_io.rs:499-514`
+- [x] Wrapped reader with `.take(MAX_FILE_SIZE + 1)` before `read_to_string` — matches binary path's defensive pattern
+- **File:** `src/builtins_io.rs`
 
 ### fuzz-parse-expression-broken: Fuzz target calls deleted parse_expression() [Minor]
 
 **grammar-architect Minor 9.** `fuzz/fuzz_targets/parse.rs:14`: `let _ = tinct::parse_expression(s);` — `parse_expression` is not exported from `src/lib.rs` anymore (deleted in rv2-migrate-evaluator-bridges sprint). This fuzz target will not compile.
 
-- [ ] Change `tinct::parse_expression(s)` to `tinct::parse_surface_expression(s)` in `fuzz/fuzz_targets/parse.rs:14`
-- **File:** `fuzz/fuzz_targets/parse.rs:14`
+- [x] Changed `tinct::parse_expression(s)` to `tinct::parse_surface_expression(s)` in fuzz target
+- **File:** `fuzz/fuzz_targets/parse.rs`
 
 ### chr-mptc-membership: MPTC constraint binding doesn't check class membership [Minor]
 
@@ -1512,8 +1512,8 @@ The code is authoritative: `src/typecheck.rs:5501` confirms `None => Ok(Type::Un
 
 **computer-scientist Minor 5.** `src/desugar.rs:259-261`: wildcard `_ => expr.clone()` catches Match, TypeAssert, Quote, TypeApp etc. without recursion. A type alias declared inside a match arm body will not have ADT constructors injected.
 
-- [ ] Add recursion for Match (scrutinee + arm bodies) and TypeAssert (inner expression) in `inject_adt_constructors_expr`
-- **File:** `src/desugar.rs:259-261`
+- [x] Added Match (scrutinee + arm guards + arm bodies) and TypeAssert (inner expr) recursion to `inject_adt_constructors_expr`
+- **File:** `src/desugar.rs`
 
 ### repl-type-env-accumulation: REPL type-checks each line with fresh prelude env [Minor]
 

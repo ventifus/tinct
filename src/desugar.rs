@@ -25,7 +25,8 @@
 
 use crate::ast::{
     Annotation, Span, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
-    SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceParam, SurfaceProgram,
+    SurfaceExpression, SurfaceItem, SurfaceMatchArm, SurfaceNamedArg, SurfaceNode, SurfaceParam,
+    SurfaceProgram,
 };
 use std::sync::Arc;
 
@@ -253,6 +254,52 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
                     params: params.clone(),
                     body: new_body,
                     desugared: *desugared,
+                }
+            }
+        }
+        SurfaceExpression::Match { scrutinee, arms } => {
+            let new_scrutinee = inject_adt_constructors_node(Arc::clone(scrutinee));
+            let new_arms: Vec<SurfaceMatchArm> = arms
+                .iter()
+                .map(|arm| {
+                    let new_guard = arm
+                        .guard
+                        .as_ref()
+                        .map(|g| inject_adt_constructors_node(Arc::clone(g)));
+                    let new_body = inject_adt_constructors_node(Arc::clone(&arm.body));
+                    SurfaceMatchArm {
+                        pattern: arm.pattern.clone(),
+                        guard: new_guard,
+                        body: new_body,
+                    }
+                })
+                .collect();
+            let changed = !Arc::ptr_eq(&new_scrutinee, scrutinee)
+                || new_arms.iter().zip(arms.iter()).any(|(a, b)| {
+                    !Arc::ptr_eq(&a.body, &b.body)
+                        || match (&a.guard, &b.guard) {
+                            (Some(ag), Some(bg)) => !Arc::ptr_eq(ag, bg),
+                            (None, None) => false,
+                            _ => true,
+                        }
+                });
+            if changed {
+                SurfaceExpression::Match {
+                    scrutinee: new_scrutinee,
+                    arms: new_arms,
+                }
+            } else {
+                expr.clone()
+            }
+        }
+        SurfaceExpression::TypeAssert { annotation, expr: inner } => {
+            let new_inner = inject_adt_constructors_node(Arc::clone(inner));
+            if Arc::ptr_eq(&new_inner, inner) {
+                expr.clone()
+            } else {
+                SurfaceExpression::TypeAssert {
+                    annotation: annotation.clone(),
+                    expr: new_inner,
                 }
             }
         }

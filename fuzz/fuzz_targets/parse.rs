@@ -9,8 +9,8 @@ use libfuzzer_sys::fuzz_target;
 //   - Invalid UTF-8 must be silently rejected, not panic
 fuzz_target!(|data: &[u8]| {
     if let Ok(s) = std::str::from_utf8(data) {
-        // Both parse() and parse_expression() must not panic
+        // Both parse() and parse_surface_expression() must not panic
         let _ = tinct::parse(s);
-        let _ = tinct::parse_expression(s);
+        let _ = tinct::parse_surface_expression(s);
     }
 });

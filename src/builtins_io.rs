@@ -498,8 +498,9 @@ pub(crate) fn builtin_slurp(
         } else {
             // Read to string (Text encoding) with size limit
             let mut contents = String::new();
-            handle
-                .borrow_mut()
+            let mut borrowed = handle.borrow_mut();
+            let mut limited_reader = (&mut *borrowed).take(MAX_FILE_SIZE + 1);
+            limited_reader
                 .read_to_string(&mut contents)
                 .map_err(|e| {
                     EvalError::user_error(format!("slurp: read failed: {}", e), call_span)
