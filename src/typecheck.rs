@@ -5,11 +5,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::ast::{
-    node_id, Annotation, Entry, NamedArg, Param, Pattern, Span, Spanned, SurfaceDeclaration,
-    SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
-    TypeAnnotationTable,
+    node_id, Annotation, Entry, Param, Pattern, Span, Spanned, SurfaceDeclaration,
+    SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode,
+    SurfaceProgram, TypeAnnotationTable,
 };
 // Expr: used by production inference helpers (infer_expr, extract_narrowings, etc.).
 // TODO(rv2-delete-old-ast): remove once all inference helpers are rewritten to walk
@@ -1897,9 +1898,8 @@ pub(crate) fn infer_surface_expr(
             expr: target,
             field,
         } => {
-            // Convert to Expr for check_dot_access (Phase 4 will migrate check_dot_access)
-            let target_expr = crate::ast_convert::surface_node_to_expr(target);
-            check_dot_access(&target_expr, field, env, node.span, state, type_map)
+            // check_dot_access now takes Arc<SurfaceNode> directly
+            check_dot_access(target, field, env, node.span, state, type_map)
         }
 
         SurfaceExpression::Pipe { .. } => {
@@ -1963,109 +1963,73 @@ pub(crate) fn infer_surface_expr(
             named_args,
             implied: _,
         } => {
-            // Convert args to Expr for check_* functions (Phase 4 will eliminate this)
-            let expr_args: Vec<Rc<Spanned<Expr>>> = args
-                .iter()
-                .map(|a| Rc::new(crate::ast_convert::surface_node_to_expr(a)))
-                .collect();
-            let expr_named_args: Vec<Spanned<NamedArg>> = named_args
-                .iter()
-                .map(|na| {
-                    let value = crate::ast_convert::surface_node_to_expr(&na.node.value);
-                    Spanned::new(
-                        NamedArg {
-                            name: na.node.name.clone(),
-                            value: Rc::new(value),
-                        },
-                        na.span,
-                    )
-                })
-                .collect();
-
             // Special case: `if` is a type-level special form with path-sensitive narrowing
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 if name == "if" && args.len() == 3 && named_args.is_empty() {
-                    return infer_if(
-                        &expr_args[0],
-                        &expr_args[1],
-                        &expr_args[2],
-                        env,
-                        state,
-                        type_map,
-                    );
+                    // infer_if still takes &Spanned<Expr> — convert per-call
+                    let arg0 = crate::ast_convert::surface_node_to_expr(&args[0]);
+                    let arg1 = crate::ast_convert::surface_node_to_expr(&args[1]);
+                    let arg2 = crate::ast_convert::surface_node_to_expr(&args[2]);
+                    return infer_if(&arg0, &arg1, &arg2, env, state, type_map);
                 }
 
                 // Special case: `get-in` is a type-level special form that unfolds into
                 // repeated `get` calls for nested dict access.
                 if name == "get-in" && named_args.is_empty() {
-                    return check_get_in(
-                        &expr_args,
-                        &expr_named_args,
-                        env,
-                        node.span,
-                        state,
-                        type_map,
-                    );
+                    return check_get_in(args, named_args, env, node.span, state, type_map);
                 }
 
                 // Special case: `open` synthesizes a precise Handle(cap_row) return type when
                 // capability flag arguments are statically known VarRefs (e.g., Readable, Writable).
                 if name == "open" && named_args.is_empty() && args.len() >= 2 {
-                    return check_open(&expr_args, env, node.span, state, type_map);
+                    return check_open(args, env, node.span, state, type_map);
                 }
 
                 // Special case: `slurp` synthesizes a precise return type based on handle capabilities.
                 if name == "slurp" && named_args.is_empty() && args.len() == 1 {
-                    return check_slurp(&expr_args, env, node.span, state, type_map);
+                    return check_slurp(args, env, node.span, state, type_map);
                 }
 
                 // Special case: `connect` synthesizes a precise return type based on transport variant.
                 if name == "connect" && named_args.is_empty() && args.len() == 4 {
-                    let func_expr = crate::ast_convert::surface_node_to_expr(func);
-                    let _ = infer_expr(&func_expr, env, state, type_map); // Record func type for LSP hover
-                    return check_connect(&expr_args, env, node.span, state, type_map);
+                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_connect(args, env, node.span, state, type_map);
                 }
 
                 // Special case: `builtin-first` synthesizes a precise return type based on collection type.
                 if name == "builtin-first" && named_args.is_empty() && args.len() == 1 {
-                    let func_expr = crate::ast_convert::surface_node_to_expr(func);
-                    let _ = infer_expr(&func_expr, env, state, type_map); // Record func type for LSP hover
-                    return check_first(&expr_args, env, node.span, state, type_map);
+                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_first(args, env, node.span, state, type_map);
                 }
 
                 // Special case: `builtin-last` synthesizes a precise return type based on collection type.
                 if name == "builtin-last" && named_args.is_empty() && args.len() == 1 {
-                    let func_expr = crate::ast_convert::surface_node_to_expr(func);
-                    let _ = infer_expr(&func_expr, env, state, type_map); // Record func type for LSP hover
-                    return check_last(&expr_args, env, node.span, state, type_map);
+                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_last(args, env, node.span, state, type_map);
                 }
 
                 // Special case: `map` synthesizes a precise return type for Seq input with callback.
                 if name == "map" && named_args.is_empty() && args.len() == 2 {
-                    let func_expr = crate::ast_convert::surface_node_to_expr(func);
-                    let _ = infer_expr(&func_expr, env, state, type_map); // Record func type for LSP hover
-                    return check_map(&expr_args, env, node.span, state, type_map);
+                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_map(args, env, node.span, state, type_map);
                 }
 
                 // Special case: `builtin-map` is an alias for `map` — dispatch to check_map.
                 if name == "builtin-map" && named_args.is_empty() && args.len() == 2 {
-                    let func_expr = crate::ast_convert::surface_node_to_expr(func);
-                    let _ = infer_expr(&func_expr, env, state, type_map); // Record func type for LSP hover
-                    return check_map(&expr_args, env, node.span, state, type_map);
+                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_map(args, env, node.span, state, type_map);
                 }
 
                 // Special case: `builtin-concat` synthesizes a precise return type for Seq + Seq.
                 if name == "builtin-concat" && named_args.is_empty() && args.len() == 2 {
-                    let func_expr = crate::ast_convert::surface_node_to_expr(func);
-                    let _ = infer_expr(&func_expr, env, state, type_map); // Record func type for LSP hover
-                    return check_concat(&expr_args, env, node.span, state, type_map);
+                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_concat(args, env, node.span, state, type_map);
                 }
 
                 // Special case: `tls-layer` preserves input handle's capability row.
                 if name == "tls-layer" && named_args.is_empty() && args.len() == 3 {
-                    let func_expr = crate::ast_convert::surface_node_to_expr(func);
-                    let _ = infer_expr(&func_expr, env, state, type_map); // Record func type for LSP hover
-                    return check_tls_layer(&expr_args, env, node.span, state, type_map);
+                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_tls_layer(args, env, node.span, state, type_map);
                 }
 
                 // Special case: `+` / `builtin-add` refines return type when both args are known.
@@ -2073,7 +2037,7 @@ pub(crate) fn infer_surface_expr(
                     && named_args.is_empty()
                     && args.len() == 2
                 {
-                    return check_arithmetic(&expr_args, env, node.span, state, type_map);
+                    return check_arithmetic(args, env, node.span, state, type_map);
                 }
 
                 // Special case: `-` / `builtin-sub` — same refinement as `+`.
@@ -2081,7 +2045,7 @@ pub(crate) fn infer_surface_expr(
                     && named_args.is_empty()
                     && args.len() == 2
                 {
-                    return check_arithmetic(&expr_args, env, node.span, state, type_map);
+                    return check_arithmetic(args, env, node.span, state, type_map);
                 }
 
                 // Special case: `*` / `builtin-mul` — same refinement as `+`.
@@ -2089,7 +2053,7 @@ pub(crate) fn infer_surface_expr(
                     && named_args.is_empty()
                     && args.len() == 2
                 {
-                    return check_arithmetic(&expr_args, env, node.span, state, type_map);
+                    return check_arithmetic(args, env, node.span, state, type_map);
                 }
 
                 // Special case: `/` / `builtin-div` — always returns Float in IEEE arithmetic.
@@ -2097,7 +2061,7 @@ pub(crate) fn infer_surface_expr(
                     && named_args.is_empty()
                     && args.len() == 2
                 {
-                    return check_div(&expr_args, env, node.span, state, type_map);
+                    return check_div(args, env, node.span, state, type_map);
                 }
             }
 
@@ -2112,8 +2076,8 @@ pub(crate) fn infer_surface_expr(
                         return check_do_infer(
                             da_field,
                             name,
-                            &expr_args,
-                            &expr_named_args,
+                            args,
+                            named_args,
                             env,
                             node.span,
                             state,
@@ -2205,8 +2169,8 @@ pub(crate) fn infer_surface_expr(
                         check_call_with_scheme(
                             scheme,
                             func.span,
-                            &expr_args,
-                            &expr_named_args,
+                            args,
+                            named_args,
                             env,
                             node.span,
                             state,
@@ -2214,17 +2178,8 @@ pub(crate) fn infer_surface_expr(
                         )
                     }
                     Some(_) => {
-                        // Monomorphic: use check_call
-                        let func_expr = crate::ast_convert::surface_node_to_expr(func);
-                        check_call(
-                            &func_expr,
-                            &expr_args,
-                            &expr_named_args,
-                            env,
-                            node.span,
-                            state,
-                            type_map,
-                        )
+                        // Monomorphic: use check_call (now takes SurfaceNode directly)
+                        check_call(func, args, named_args, env, node.span, state, type_map)
                     }
                     None => {
                         // Special handling for $proxy builtin: produces Type::Proxy
@@ -2265,16 +2220,8 @@ pub(crate) fn infer_surface_expr(
                     }
                 }
             } else {
-                let func_expr = crate::ast_convert::surface_node_to_expr(func);
-                check_call(
-                    &func_expr,
-                    &expr_args,
-                    &expr_named_args,
-                    env,
-                    node.span,
-                    state,
-                    type_map,
-                )
+                // Non-VarRef func: use check_call with SurfaceNode directly
+                check_call(func, args, named_args, env, node.span, state, type_map)
             }
         }
 
@@ -2565,7 +2512,10 @@ fn infer_expr(
         Expr::DotAccess {
             expr: target,
             field,
-        } => check_dot_access(target, field, env, expr.span, state, type_map),
+        } => {
+            let surface_target = crate::ast_convert::expr_to_surface_node(target);
+            check_dot_access(&surface_target, field, env, expr.span, state, type_map)
+        }
 
         Expr::Pipe { .. } => {
             unreachable!("Pipe should be desugared before type checking")
@@ -2628,6 +2578,27 @@ fn infer_expr(
             named_args,
             implied: _,
         } => {
+            // Convert Expr args/func to SurfaceNode for check_* functions (which now take SurfaceNode).
+            // infer_expr still walks Expr; check_* functions have been migrated to SurfaceNode.
+            let surface_args: Vec<Arc<SurfaceNode>> = args
+                .iter()
+                .map(|a| crate::ast_convert::expr_to_surface_node(a))
+                .collect();
+            let surface_named_args: Vec<Spanned<SurfaceNamedArg>> = named_args
+                .iter()
+                .map(|na| {
+                    let value = crate::ast_convert::expr_to_surface_node(&na.node.value);
+                    Spanned::new(
+                        SurfaceNamedArg {
+                            name: na.node.name.clone(),
+                            value,
+                        },
+                        na.span,
+                    )
+                })
+                .collect();
+            let surface_func = crate::ast_convert::expr_to_surface_node(func);
+
             // Special case: `if` is a type-level special form with path-sensitive narrowing
             if let Expr::VarRef { name, .. } = &func.node {
                 if name == "if" && args.len() == 3 && named_args.is_empty() {
@@ -2637,7 +2608,14 @@ fn infer_expr(
                 // Special case: `get-in` is a type-level special form that unfolds into
                 // repeated `get` calls for nested dict access.
                 if name == "get-in" && named_args.is_empty() {
-                    return check_get_in(args, named_args, env, expr.span, state, type_map);
+                    return check_get_in(
+                        &surface_args,
+                        &surface_named_args,
+                        env,
+                        expr.span,
+                        state,
+                        type_map,
+                    );
                 }
 
                 // Special case: `open` synthesizes a precise Handle(cap_row) return type when
@@ -2651,7 +2629,7 @@ fn infer_expr(
                 // defines Readable/Writable as `[variant "Name"]` which types as Unknown — semantic
                 // inspection of argument types would always see Unknown and produce no precision.
                 if name == "open" && named_args.is_empty() && args.len() >= 2 {
-                    return check_open(args, env, expr.span, state, type_map);
+                    return check_open(&surface_args, env, expr.span, state, type_map);
                 }
 
                 // Special case: `slurp` synthesizes a precise return type based on handle capabilities.
@@ -2662,7 +2640,7 @@ fn infer_expr(
                 // - Text handle (no Binary flag) → String
                 // - Handle(Unknown) → String | Bytes (gradual fallback)
                 if name == "slurp" && named_args.is_empty() && args.len() == 1 {
-                    return check_slurp(args, env, expr.span, state, type_map);
+                    return check_slurp(&surface_args, env, expr.span, state, type_map);
                 }
 
                 // Special case: `connect` synthesizes a precise return type based on transport variant.
@@ -2674,7 +2652,7 @@ fn infer_expr(
                 // - Unknown transport → Union fallback
                 if name == "connect" && named_args.is_empty() && args.len() == 4 {
                     let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_connect(args, env, expr.span, state, type_map);
+                    return check_connect(&surface_args, env, expr.span, state, type_map);
                 }
 
                 // Special case: `builtin-first` synthesizes a precise return type based on collection type.
@@ -2687,7 +2665,7 @@ fn infer_expr(
                 // - Unknown/other → Unknown fallback
                 if name == "builtin-first" && named_args.is_empty() && args.len() == 1 {
                     let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_first(args, env, expr.span, state, type_map);
+                    return check_first(&surface_args, env, expr.span, state, type_map);
                 }
 
                 // Special case: `builtin-last` synthesizes a precise return type based on collection type.
@@ -2700,7 +2678,7 @@ fn infer_expr(
                 // - Unknown/other → Unknown fallback
                 if name == "builtin-last" && named_args.is_empty() && args.len() == 1 {
                     let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_last(args, env, expr.span, state, type_map);
+                    return check_last(&surface_args, env, expr.span, state, type_map);
                 }
 
                 // Special case: `map` synthesizes a precise return type for Seq input with callback.
@@ -2711,13 +2689,13 @@ fn infer_expr(
                 // - Dict input or other → Unknown fallback
                 if name == "map" && named_args.is_empty() && args.len() == 2 {
                     let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_map(args, env, expr.span, state, type_map);
+                    return check_map(&surface_args, env, expr.span, state, type_map);
                 }
 
                 // Special case: `builtin-map` is an alias for `map` — dispatch to check_map.
                 if name == "builtin-map" && named_args.is_empty() && args.len() == 2 {
                     let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_map(args, env, expr.span, state, type_map);
+                    return check_map(&surface_args, env, expr.span, state, type_map);
                 }
 
                 // Special case: `builtin-concat` synthesizes a precise return type for Seq + Seq.
@@ -2728,7 +2706,7 @@ fn infer_expr(
                 // - Dict merge or other → Unknown fallback
                 if name == "builtin-concat" && named_args.is_empty() && args.len() == 2 {
                     let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_concat(args, env, expr.span, state, type_map);
+                    return check_concat(&surface_args, env, expr.span, state, type_map);
                 }
 
                 // Special case: `tls-layer` preserves input handle's capability row.
@@ -2739,7 +2717,7 @@ fn infer_expr(
                 // - Unknown → Handle(Unknown) fallback
                 if name == "tls-layer" && named_args.is_empty() && args.len() == 3 {
                     let _ = infer_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_tls_layer(args, env, expr.span, state, type_map);
+                    return check_tls_layer(&surface_args, env, expr.span, state, type_map);
                 }
 
                 // Special case: `+` / `builtin-add` refines return type when both args are known.
@@ -2761,7 +2739,7 @@ fn infer_expr(
                     // the result type directly), leaving unresolved Addable constraints that trigger
                     // spurious T013 "ambiguous constraint" warnings during generalization of sibling
                     // bindings. check_open uses the same pattern (no infer_expr on func).
-                    return check_arithmetic(args, env, expr.span, state, type_map);
+                    return check_arithmetic(&surface_args, env, expr.span, state, type_map);
                 }
 
                 // Special case: `-` / `builtin-sub` — same refinement as `+`.
@@ -2769,7 +2747,7 @@ fn infer_expr(
                     && named_args.is_empty()
                     && args.len() == 2
                 {
-                    return check_arithmetic(args, env, expr.span, state, type_map);
+                    return check_arithmetic(&surface_args, env, expr.span, state, type_map);
                 }
 
                 // Special case: `*` / `builtin-mul` — same refinement as `+`.
@@ -2777,7 +2755,7 @@ fn infer_expr(
                     && named_args.is_empty()
                     && args.len() == 2
                 {
-                    return check_arithmetic(args, env, expr.span, state, type_map);
+                    return check_arithmetic(&surface_args, env, expr.span, state, type_map);
                 }
 
                 // Special case: `/` / `builtin-div` — always returns Float in IEEE arithmetic.
@@ -2786,7 +2764,7 @@ fn infer_expr(
                     && named_args.is_empty()
                     && args.len() == 2
                 {
-                    return check_div(args, env, expr.span, state, type_map);
+                    return check_div(&surface_args, env, expr.span, state, type_map);
                 }
             }
 
@@ -2804,7 +2782,14 @@ fn infer_expr(
                 if let Expr::VarRef { name, .. } = &da_target.node {
                     if name.starts_with(":do-infer:") && named_args.is_empty() {
                         return check_do_infer(
-                            da_field, name, args, named_args, env, expr.span, state, type_map,
+                            da_field,
+                            name,
+                            &surface_args,
+                            &surface_named_args,
+                            env,
+                            expr.span,
+                            state,
+                            type_map,
                         );
                     }
                 }
@@ -2920,7 +2905,14 @@ fn infer_expr(
                         }
                         // Polymorphic scheme: optimize by instantiating once in check_call_with_scheme
                         check_call_with_scheme(
-                            scheme, func.span, args, named_args, env, expr.span, state, type_map,
+                            scheme,
+                            func.span,
+                            &surface_args,
+                            &surface_named_args,
+                            env,
+                            expr.span,
+                            state,
+                            type_map,
                         )
                     }
                     Some(_) => {
@@ -2928,7 +2920,15 @@ fn infer_expr(
                         // placeholders not yet generalized. The monomorphic path (check_call) reaches
                         // the TypeVar arm which infers args for side effects and returns Any, deferring
                         // type resolution until all letrec bindings have been inferred.
-                        check_call(func, args, named_args, env, expr.span, state, type_map)
+                        check_call(
+                            &surface_func,
+                            &surface_args,
+                            &surface_named_args,
+                            env,
+                            expr.span,
+                            state,
+                            type_map,
+                        )
                     }
                     None => {
                         // Special handling for $proxy builtin: produces Type::Proxy
@@ -2970,7 +2970,15 @@ fn infer_expr(
                     }
                 }
             } else {
-                check_call(func, args, named_args, env, expr.span, state, type_map)
+                check_call(
+                    &surface_func,
+                    &surface_args,
+                    &surface_named_args,
+                    env,
+                    expr.span,
+                    state,
+                    type_map,
+                )
             }
         }
 
@@ -4164,7 +4172,7 @@ fn check_expr(
 /// by the builtin at runtime, not statically here. Static arity check: at least 3 args
 /// (DirCap + path + 1 flag). This matches the runtime's minimum: `open: requires >= 3 args`.
 fn check_open(
-    args: &[Rc<Spanned<Expr>>],
+    args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
@@ -4185,13 +4193,19 @@ fn check_open(
     let mut errors = Vec::new();
 
     // Check arg[0]: DirCap
-    if let Err(mut errs) = check_expr(&args[0], &Type::DirCap, env, state, type_map) {
-        errors.append(&mut errs);
+    {
+        let arg0_expr = crate::ast_convert::surface_node_to_expr(&args[0]);
+        if let Err(mut errs) = check_expr(&arg0_expr, &Type::DirCap, env, state, type_map) {
+            errors.append(&mut errs);
+        }
     }
 
     // Check arg[1]: Str (path)
-    if let Err(mut errs) = check_expr(&args[1], &Type::Str, env, state, type_map) {
-        errors.append(&mut errs);
+    {
+        let arg1_expr = crate::ast_convert::surface_node_to_expr(&args[1]);
+        if let Err(mut errs) = check_expr(&arg1_expr, &Type::Str, env, state, type_map) {
+            errors.append(&mut errs);
+        }
     }
 
     // The set of known open flag names and their canonical cap_row field names.
@@ -4216,16 +4230,16 @@ fn check_open(
 
     for flag_arg in args.iter().skip(2) {
         // Infer the flag arg for type map population (side effect: records hover type for LSP).
-        if let Ok(_flag_ty) = infer_expr(flag_arg, env, state, type_map) {
-            // Type map already populated by infer_expr above.
+        if let Ok(_flag_ty) = infer_surface_expr(flag_arg, env, state, type_map) {
+            // Type map already populated by infer_surface_expr above.
         }
 
         // Inspect AST: if the arg is a VarRef with a known flag name, collect it.
         // Accept both bare `Readable` and escaped `$Readable` forms — both refer to the
         // same prelude-defined variant constructor. The `escaped` field is `true` for `$name`,
         // `false` for bare `name`; both are semantically equivalent in value position.
-        let flag_name = match &flag_arg.node {
-            Expr::VarRef { name, .. } => {
+        let flag_name = match &flag_arg.expr {
+            SurfaceExpression::VarRef { name, .. } => {
                 KNOWN_FLAGS.iter().find_map(
                     |(flag, canonical)| {
                         if name == flag {
@@ -4286,7 +4300,7 @@ fn check_open(
 /// - Handle without Binary (text mode) → String
 /// - Handle(Unknown) or unresolved type → String | Bytes (gradual fallback)
 fn check_slurp(
-    args: &[Rc<Spanned<Expr>>],
+    args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
@@ -4304,7 +4318,7 @@ fn check_slurp(
     }
 
     // Infer the handle argument's type
-    let handle_ty = infer_expr(&args[0], env, state, type_map)?;
+    let handle_ty = infer_surface_expr(&args[0], env, state, type_map)?;
     let handle_ty = state.subst.apply(&handle_ty);
 
     // Verify the argument is actually a Handle (not just any type)
@@ -4363,7 +4377,7 @@ fn check_slurp(
 /// - Udp or UnixDatagram → DatagramHandle
 /// - Unknown transport → Union fallback
 fn check_connect(
-    args: &[Rc<Spanned<Expr>>],
+    args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
@@ -4382,11 +4396,11 @@ fn check_connect(
 
     // Infer arg types (for type checking, even if we don't use them all)
     for arg in args.iter() {
-        infer_expr(arg, env, state, type_map)?;
+        infer_surface_expr(arg, env, state, type_map)?;
     }
 
     // Inspect arg 1 (transport) — check if it's a statically-known VarRef
-    let transport_name = if let Expr::VarRef { name, .. } = &args[1].node {
+    let transport_name = if let SurfaceExpression::VarRef { name, .. } = &args[1].expr {
         Some(name.as_str())
     } else {
         None
@@ -4451,7 +4465,7 @@ fn check_connect(
 /// - Bytes → Int
 /// - Unknown or other → Unknown fallback
 fn check_first(
-    args: &[Rc<Spanned<Expr>>],
+    args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
@@ -4469,7 +4483,7 @@ fn check_first(
     }
 
     // Infer the collection argument's type
-    let coll_ty = infer_expr(&args[0], env, state, type_map)?;
+    let coll_ty = infer_surface_expr(&args[0], env, state, type_map)?;
     let coll_ty = state.subst.apply(&coll_ty);
 
     // Synthesize return type based on collection type
@@ -4492,7 +4506,7 @@ fn check_first(
 /// - Bytes → Int
 /// - Unknown or other → Unknown fallback
 fn check_last(
-    args: &[Rc<Spanned<Expr>>],
+    args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
@@ -4510,7 +4524,7 @@ fn check_last(
     }
 
     // Infer the collection argument's type
-    let coll_ty = infer_expr(&args[0], env, state, type_map)?;
+    let coll_ty = infer_surface_expr(&args[0], env, state, type_map)?;
     let coll_ty = state.subst.apply(&coll_ty);
 
     // Synthesize return type based on collection type
@@ -4532,7 +4546,7 @@ fn check_last(
 /// - Dict input → Unknown (runtime dispatch, no precise type available)
 /// - Unknown or other → Unknown fallback
 fn check_map(
-    args: &[Rc<Spanned<Expr>>],
+    args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
@@ -4550,10 +4564,10 @@ fn check_map(
     }
 
     // Infer both argument types
-    let callback_ty = infer_expr(&args[0], env, state, type_map)?;
+    let callback_ty = infer_surface_expr(&args[0], env, state, type_map)?;
     let callback_ty = state.subst.apply(&callback_ty);
 
-    let coll_ty = infer_expr(&args[1], env, state, type_map)?;
+    let coll_ty = infer_surface_expr(&args[1], env, state, type_map)?;
     let coll_ty = state.subst.apply(&coll_ty);
 
     // Synthesize return type based on collection and callback
@@ -4581,7 +4595,7 @@ fn check_map(
 /// - Seq(T) + Seq(T) → Seq(T)
 /// - Dict merge or other → Unknown fallback
 fn check_concat(
-    args: &[Rc<Spanned<Expr>>],
+    args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
@@ -4599,10 +4613,10 @@ fn check_concat(
     }
 
     // Infer both argument types
-    let arg0_ty = infer_expr(&args[0], env, state, type_map)?;
+    let arg0_ty = infer_surface_expr(&args[0], env, state, type_map)?;
     let arg0_ty = state.subst.apply(&arg0_ty);
 
-    let arg1_ty = infer_expr(&args[1], env, state, type_map)?;
+    let arg1_ty = infer_surface_expr(&args[1], env, state, type_map)?;
     let arg1_ty = state.subst.apply(&arg1_ty);
 
     // Synthesize return type based on both args
@@ -4634,7 +4648,7 @@ fn check_concat(
 /// - Handle[α] → ... → Handle[α] (same capabilities)
 /// - Unknown → Handle(Unknown) fallback
 fn check_tls_layer(
-    args: &[Rc<Spanned<Expr>>],
+    args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
@@ -4652,12 +4666,12 @@ fn check_tls_layer(
     }
 
     // Infer all argument types (for type checking)
-    let handle_ty = infer_expr(&args[0], env, state, type_map)?;
+    let handle_ty = infer_surface_expr(&args[0], env, state, type_map)?;
     let handle_ty = state.subst.apply(&handle_ty);
 
     // Infer the other args to check them, but we don't use their types
-    infer_expr(&args[1], env, state, type_map)?; // hostname
-    infer_expr(&args[2], env, state, type_map)?; // opts
+    infer_surface_expr(&args[1], env, state, type_map)?; // hostname
+    infer_surface_expr(&args[2], env, state, type_map)?; // opts
 
     // Preserve the handle's capability row
     match &handle_ty {
@@ -4691,7 +4705,7 @@ fn check_tls_layer(
 /// Division is handled separately by `check_div` because IEEE arithmetic always produces
 /// `Float` regardless of operand types.
 fn check_arithmetic(
-    args: &[Rc<Spanned<Expr>>],
+    args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
@@ -4709,10 +4723,10 @@ fn check_arithmetic(
     }
 
     // Infer both argument types and apply substitution
-    let arg0_ty = infer_expr(&args[0], env, state, type_map)?;
+    let arg0_ty = infer_surface_expr(&args[0], env, state, type_map)?;
     let arg0_ty = state.subst.apply(&arg0_ty);
 
-    let arg1_ty = infer_expr(&args[1], env, state, type_map)?;
+    let arg1_ty = infer_surface_expr(&args[1], env, state, type_map)?;
     let arg1_ty = state.subst.apply(&arg1_ty);
 
     // Numeric literal types promote: IntLiteral ≡ Int, StringLiteral is not numeric
@@ -4746,7 +4760,7 @@ fn check_arithmetic(
 /// - `Number / Number` → `Float`
 /// - Unknown / TypeVar / other → `Float` (gradual fallback)
 fn check_div(
-    args: &[Rc<Spanned<Expr>>],
+    args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
@@ -4764,8 +4778,8 @@ fn check_div(
     }
 
     // Infer args to propagate constraints (we don't use the types for refinement)
-    infer_expr(&args[0], env, state, type_map)?;
-    infer_expr(&args[1], env, state, type_map)?;
+    infer_surface_expr(&args[0], env, state, type_map)?;
+    infer_surface_expr(&args[1], env, state, type_map)?;
 
     // Division always produces Float
     Ok(Type::Float)
@@ -4799,8 +4813,8 @@ fn normalize_numeric(ty: &Type) -> NumericKind {
 /// [GET-IN-NIL]: empty path returns dict unchanged
 /// [GET-IN-CONS]: unfold via repeated field access
 fn check_get_in(
-    args: &[Rc<Spanned<Expr>>],
-    named_args: &[Spanned<NamedArg>],
+    args: &[Arc<SurfaceNode>],
+    named_args: &[Spanned<SurfaceNamedArg>],
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
@@ -4819,20 +4833,22 @@ fn check_get_in(
     }
 
     // Infer the dict type
-    let dict_ty = infer_expr(&args[1], env, state, type_map)?;
+    let dict_ty = infer_surface_expr(&args[1], env, state, type_map)?;
     let dict_ty = state.subst.apply(&dict_ty);
 
     // Check if path is a literal dict with auto-indexed string entries
-    let path_expr = &args[0].node;
+    let path_expr = &args[0].expr;
     match path_expr {
-        Expr::Dict(entries) => {
+        SurfaceExpression::Dict(entries) => {
             // Check all entries are auto-indexed StringLiterals
             let mut keys = Vec::new();
             for (idx, entry) in entries.iter().enumerate() {
                 // Check if auto-indexed (key is None or matches index)
                 let is_auto_indexed = match &entry.node.key {
                     None => true,
-                    Some(key_expr) => matches!(&key_expr.node, Expr::Int(n) if *n == idx as i64),
+                    Some(key_expr) => {
+                        matches!(&key_expr.expr, SurfaceExpression::Int(n) if *n == idx as i64)
+                    }
                 };
 
                 if !is_auto_indexed {
@@ -4841,8 +4857,8 @@ fn check_get_in(
                 }
 
                 // Check if value is a string literal
-                match &entry.node.value.node {
-                    Expr::Str(s) => keys.push(s.clone()),
+                match &entry.node.value.expr {
+                    SurfaceExpression::Str(s) => keys.push(s.clone()),
                     _ => {
                         // Gradual: non-literal path element — fall back to Unknown
                         return Ok(Type::Unknown);
@@ -4922,8 +4938,8 @@ fn check_get_in(
 fn check_do_infer(
     method: &crate::ast::DotKey,
     sentinel_name: &str,
-    args: &[Rc<Spanned<Expr>>],
-    named_args: &[Spanned<NamedArg>],
+    args: &[Arc<SurfaceNode>],
+    named_args: &[Spanned<SurfaceNamedArg>],
     env: &Rc<TypeEnv>,
     call_span: Span,
     state: &mut InferState,
@@ -4944,10 +4960,10 @@ fn check_do_infer(
     if let Some(_existing) = state.do_infer_resolutions.get(sentinel_name) {
         // Already resolved — infer remaining args for side effects and return the expected type.
         for arg in args {
-            let _ = infer_expr(arg, env, state, type_map);
+            let _ = infer_surface_expr(arg, env, state, type_map);
         }
         for na in named_args {
-            let _ = infer_expr(&na.node.value, env, state, type_map);
+            let _ = infer_surface_expr(&na.node.value, env, state, type_map);
         }
         let ret = match method_str {
             "bind" | "pure" => {
@@ -4977,7 +4993,7 @@ fn check_do_infer(
     // first_arg_already_inferred tracks whether we consumed the first arg here,
     // so Step 3 can skip it to avoid double-inference.
     let (resolved, first_arg_already_inferred) = if resolved.is_none() && !args.is_empty() {
-        let first_arg_ty = infer_expr(&args[0], env, state, type_map)
+        let first_arg_ty = infer_surface_expr(&args[0], env, state, type_map)
             .ok()
             .map(|ty| state.subst.apply(&ty));
         let rule2_result = first_arg_ty.and_then(|ty| resolve_monad_from_type(&ty, state));
@@ -4990,7 +5006,9 @@ fn check_do_infer(
     // This handles nominal constructors like [Ok ...] and [Error ...] whose types
     // currently infer as Unknown.
     let resolved = if resolved.is_none() && !args.is_empty() {
-        resolve_monad_from_expr(&args[0])
+        // Convert to Expr for resolve_monad_from_expr (still takes &Spanned<Expr>)
+        let arg0_expr = crate::ast_convert::surface_node_to_expr(&args[0]);
+        resolve_monad_from_expr(&arg0_expr)
     } else {
         resolved
     };
@@ -5002,10 +5020,10 @@ fn check_do_infer(
             // Infer remaining args for type map population before returning error.
             let start = if first_arg_already_inferred { 1 } else { 0 };
             for arg in args.iter().skip(start) {
-                let _ = infer_expr(arg, env, state, type_map);
+                let _ = infer_surface_expr(arg, env, state, type_map);
             }
             for na in named_args {
-                let _ = infer_expr(&na.node.value, env, state, type_map);
+                let _ = infer_surface_expr(&na.node.value, env, state, type_map);
             }
             return Err(vec![TypeError::new(
                 "cannot infer monad for [do] — add an explicit monad argument (e.g., [do result ...])",
@@ -5024,10 +5042,10 @@ fn check_do_infer(
     // Skip the first arg if Rule 2 already inferred it (avoid double-inference side effects).
     let start = if first_arg_already_inferred { 1 } else { 0 };
     for arg in args.iter().skip(start) {
-        let _ = infer_expr(arg, env, state, type_map);
+        let _ = infer_surface_expr(arg, env, state, type_map);
     }
     for na in named_args {
-        let _ = infer_expr(&na.node.value, env, state, type_map);
+        let _ = infer_surface_expr(&na.node.value, env, state, type_map);
     }
 
     // Step 4: Return the expected return type or a fresh TypeVar.
@@ -5150,7 +5168,7 @@ fn resolve_monad_from_expr(expr: &Spanned<Expr>) -> Option<String> {
 }
 
 fn check_dot_access(
-    target: &Spanned<Expr>,
+    target: &Arc<SurfaceNode>,
     field: &crate::ast::DotKey,
     env: &Rc<TypeEnv>,
     span: Span,
@@ -5167,7 +5185,7 @@ fn check_dot_access(
 
     // [DOT-POLY] fast-path: if target is a VarRef and its scheme has inner_schemes,
     // instantiate the field's scheme polymorphically
-    if let Expr::VarRef { name, .. } = &target.node {
+    if let SurfaceExpression::VarRef { name, .. } = &target.expr {
         if let Some(scheme) = env.get(name) {
             if let Some(ref inner_schemes) = scheme.inner_schemes {
                 if let Some(field_scheme) = inner_schemes.get(field_str) {
@@ -5178,7 +5196,7 @@ fn check_dot_access(
         }
     }
 
-    let target_ty = infer_expr(target, env, state, type_map)?;
+    let target_ty = infer_surface_expr(target, env, state, type_map)?;
     // Apply the global accumulated substitution so that constraints from prior accesses
     // on the same target are visible (doc/07-type-extensions.md Part 5).
     let target_ty = state.subst.apply(&target_ty);
@@ -5239,14 +5257,14 @@ fn check_dot_access(
 
 /// Type check integer dot access: `$data.0`
 fn check_dot_access_int(
-    target: &Spanned<Expr>,
+    target: &Arc<SurfaceNode>,
     index: i64,
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let target_ty = infer_expr(target, env, state, type_map)?;
+    let target_ty = infer_surface_expr(target, env, state, type_map)?;
     let target_ty = state.subst.apply(&target_ty);
 
     let field_name = index.to_string();
@@ -5327,8 +5345,8 @@ fn is_concrete_type(ty: &Type) -> bool {
 fn check_call_with_scheme(
     scheme: &TypeScheme,
     func_span: Span,
-    args: &[Rc<Spanned<Expr>>],
-    named_args: &[Spanned<NamedArg>],
+    args: &[Arc<SurfaceNode>],
+    named_args: &[Spanned<SurfaceNamedArg>],
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
@@ -5400,7 +5418,7 @@ fn check_call_with_scheme(
             let mut arg_types = Vec::with_capacity(args.len());
             let mut arg_errors: Option<Vec<TypeError>> = None;
             for a in args {
-                match infer_expr(a, env, state, type_map) {
+                match infer_surface_expr(a, env, state, type_map) {
                     Ok(ty) => arg_types.push(ty),
                     Err(mut errs) => {
                         arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
@@ -5521,9 +5539,9 @@ fn check_call_with_scheme(
                             // Mark param as consumed (Task 1: Robinson idempotency)
                             consumed_params.insert(param_idx);
                             // Infer named arg type and unify
-                            match infer_expr(&na.node.value, env, state, type_map) {
+                            match infer_surface_expr(&na.node.value, env, state, type_map) {
                                 Ok(arg_ty) => {
-                                    // Task 2: merge state.subst updates from infer_expr into local subst
+                                    // Task 2: merge state.subst updates from infer_surface_expr into local subst
                                     subst
                                         .type_map
                                         .borrow_mut()
@@ -5594,12 +5612,12 @@ fn check_call_with_scheme(
         Type::Unknown => {
             // Infer positional args for type map population (needed for LSP hover on Unknown-typed functions).
             // This loop runs only for Unknown-typed callees — for Type::Function arms, positional args are
-            // already inferred exactly once in CALL-POLY (infer_expr at line 934).
+            // already inferred exactly once in CALL-POLY (infer_surface_expr at line 934).
             // Running it here unconditionally would cause double-inference for Function calls, mutating
             // state.name_counter and state.subst a second time in violation of single-pass Algorithm W.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_expr(arg, env, state, type_map);
+                let _ = infer_surface_expr(arg, env, state, type_map);
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             // Previously these were inferred in a pre-dispatch loop before `match &func_ty`, which
@@ -5607,7 +5625,7 @@ fn check_call_with_scheme(
             // args again). Moving inference to each arm ensures single-pass Algorithm W.
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
-                if let Err(mut errs) = infer_expr(&na.node.value, env, state, type_map) {
+                if let Err(mut errs) = infer_surface_expr(&na.node.value, env, state, type_map) {
                     named_arg_errors.append(&mut errs);
                 }
             }
@@ -5642,15 +5660,15 @@ fn check_call_with_scheme(
 ///   Note: named-arg checking fires only for resolved function types; same-dict letrec forward
 ///   references fall through to the `TypeVar` arm and skip named-arg validation.
 fn check_call(
-    func: &Spanned<Expr>,
-    args: &[Rc<Spanned<Expr>>],
-    named_args: &[Spanned<NamedArg>],
+    func: &Arc<SurfaceNode>,
+    args: &[Arc<SurfaceNode>],
+    named_args: &[Spanned<SurfaceNamedArg>],
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let func_ty = infer_expr(func, env, state, type_map)?;
+    let func_ty = infer_surface_expr(func, env, state, type_map)?;
     // Apply state.subst to resolve any TypeVars bound during infer_expr (e.g., from infer_fn
     // with polymorphic return annotations). Without this, has_inference_vars() incorrectly returns
     // true for already-bound TypeVars, causing CALL-POLY to fire and double-instantiate.
@@ -5725,20 +5743,21 @@ fn check_call(
                     // Boundary guard tracking and bidirectional checking:
                     // - For lambda args: use check_expr (lambda checking mode, no inference needed)
                     // - For non-lambda args: infer, check for Unknown, then subsume (avoids double-inference)
-                    match &arg.node {
-                        Expr::Fn { .. } => {
+                    match &arg.expr {
+                        SurfaceExpression::Fn { .. } => {
                             // Lambda: use check_expr for bidirectional lambda checking mode.
                             // Lambdas can't be Unknown, so no boundary guard needed.
                             // param_ty is ground under the CALL-MONO invariant (!func_ty.has_inference_vars()),
                             // so no explicit state.subst.apply() is needed here — check_expr applies
                             // state.subst to its expected type internally, which is a no-op on ground types.
-                            if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
+                            let arg_expr = crate::ast_convert::surface_node_to_expr(arg);
+                            if let Err(mut errs) = check_expr(&arg_expr, param_ty, env, state, type_map) {
                                 errors.append(&mut errs);
                             }
                         }
                         _ => {
                             // Non-lambda: infer once, check Unknown, then subsume (no double-inference).
-                            match infer_expr(arg, env, state, type_map) {
+                            match infer_surface_expr(arg, env, state, type_map) {
                                 Ok(arg_ty) => {
                                     // Apply substitution before Unknown check and subsumption.
                                     let arg_ty_resolved = if state.subst.is_empty() {
@@ -5793,7 +5812,7 @@ fn check_call(
                     // The last param is the variadic param — extract its Seq element type
                     if let Some((_, Type::Seq(elem_ty))) = params.last() {
                         for arg in args.iter().skip(non_variadic_param_count) {
-                            match infer_expr(arg, env, state, type_map) {
+                            match infer_surface_expr(arg, env, state, type_map) {
                                 Ok(arg_ty) => {
                                     // Widen literal types before unifying to allow [f 10 20 30]
                                     // where 10, 20, 30 all unify with Int element type.
@@ -5860,8 +5879,8 @@ fn check_call(
                             // Boundary guard tracking: after inferring the arg type, if it is
                             // Unknown and the parameter expects a concrete type, record the span
                             // for gradual typing boundary guard insertion. This avoids a redundant
-                            // pre-call infer_expr that would mutate state before the actual check.
-                            match infer_expr(&na.node.value, env, state, type_map) {
+                            // pre-call infer_surface_expr that would mutate state before the actual check.
+                            match infer_surface_expr(&na.node.value, env, state, type_map) {
                                 Ok(arg_ty) => {
                                     // Boundary guard check (post-inference, single-pass)
                                     if is_concrete_type(param_ty) {
@@ -5954,7 +5973,8 @@ fn check_call(
                     .enumerate()
                 {
                     consumed_params.insert(idx);
-                    if let Err(mut errs) = check_expr(arg, param_ty, env, state, type_map) {
+                    let arg_expr = crate::ast_convert::surface_node_to_expr(arg);
+                    if let Err(mut errs) = check_expr(&arg_expr, param_ty, env, state, type_map) {
                         arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                     }
                 }
@@ -5965,7 +5985,7 @@ fn check_call(
                     // The last param is the variadic param — extract its Seq element type
                     if let Some((_, Type::Seq(elem_ty))) = inst_params.last() {
                         for arg in args.iter().skip(non_variadic_param_count) {
-                            match infer_expr(arg, env, state, type_map) {
+                            match infer_surface_expr(arg, env, state, type_map) {
                                 Ok(arg_ty) => {
                                     // Widen literal types before unifying
                                     let widened_ty = match arg_ty {
@@ -6033,11 +6053,11 @@ fn check_call(
 
                             // Check named arg: infer arg type once, then record boundary guard
                             // if arg is Unknown and param expects a concrete type, then unify.
-                            // This avoids a redundant pre-call infer_expr that would mutate
+                            // This avoids a redundant pre-call infer_surface_expr that would mutate
                             // state before the actual bidirectional check (the prior pattern of
-                            // calling infer_expr twice — once for guard, once via check_expr —
+                            // calling infer_surface_expr twice — once for guard, once via check_expr —
                             // left stale type vars from the first call affecting the second).
-                            match infer_expr(&na.node.value, env, state, type_map) {
+                            match infer_surface_expr(&na.node.value, env, state, type_map) {
                                 Ok(arg_ty) => {
                                     // Boundary guard check (post-inference, single-pass)
                                     if is_concrete_type(param_ty) {
@@ -6108,7 +6128,7 @@ fn check_call(
             // infer args for side effects and return Any.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_expr(arg, env, state, type_map);
+                let _ = infer_surface_expr(arg, env, state, type_map);
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             // Previously these were inferred in a pre-dispatch loop before `match &func_ty`, which
@@ -6116,7 +6136,7 @@ fn check_call(
             // infer named args again). Moving inference to each arm ensures single-pass Algorithm W.
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
-                if let Err(mut errs) = infer_expr(&na.node.value, env, state, type_map) {
+                if let Err(mut errs) = infer_surface_expr(&na.node.value, env, state, type_map) {
                     named_arg_errors.append(&mut errs);
                 }
             }
@@ -6129,17 +6149,17 @@ fn check_call(
         Type::Unknown => {
             // Infer positional args for type map population (needed for LSP hover on Unknown-typed functions).
             // This loop runs only for Unknown-typed callees — for Type::Function arms, positional args are
-            // already inferred exactly once in CALL-MONO (check_expr at line 1011) or CALL-POLY (infer_expr).
+            // already inferred exactly once in CALL-MONO (check_expr at line 1011) or CALL-POLY (infer_surface_expr).
             // Running it here unconditionally would cause double-inference for Function calls, mutating
             // state.name_counter and state.subst a second time in violation of single-pass Algorithm W.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_expr(arg, env, state, type_map);
+                let _ = infer_surface_expr(arg, env, state, type_map);
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
-                if let Err(mut errs) = infer_expr(&na.node.value, env, state, type_map) {
+                if let Err(mut errs) = infer_surface_expr(&na.node.value, env, state, type_map) {
                     named_arg_errors.append(&mut errs);
                 }
             }
@@ -7045,7 +7065,6 @@ mod tests {
     use super::*;
     use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode};
     use crate::types::{Constraint, Kind};
-    use std::sync::Arc;
 
     /// Build a `Spanned<SurfaceEntry>` for use in `Annotation::PropertyDict` test constructions.
     /// Migrated from old `sp(Entry { ... })` form during rv2-migrate-annotation Phase 1.
