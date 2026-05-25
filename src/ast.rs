@@ -786,6 +786,27 @@ impl Default for TypeAnnotationTable {
     }
 }
 
+/// Static empty ResolutionTable singleton.
+/// Use this instead of `&ResolutionTable::new()` to avoid heap allocations.
+static EMPTY_RESOLUTION_TABLE: std::sync::OnceLock<ResolutionTable> = std::sync::OnceLock::new();
+
+/// Returns a static empty ResolutionTable.
+/// Use this instead of `&ResolutionTable::new()` to avoid heap allocations.
+pub fn empty_resolution_table() -> &'static ResolutionTable {
+    EMPTY_RESOLUTION_TABLE.get_or_init(ResolutionTable::new)
+}
+
+/// Static empty TypeAnnotationTable singleton.
+/// Use this instead of `&TypeAnnotationTable::new()` to avoid heap allocations.
+static EMPTY_TYPE_ANNOTATION_TABLE: std::sync::OnceLock<TypeAnnotationTable> =
+    std::sync::OnceLock::new();
+
+/// Returns a static empty TypeAnnotationTable.
+/// Use this instead of `&TypeAnnotationTable::new()` to avoid heap allocations.
+pub fn empty_type_annotation_table() -> &'static TypeAnnotationTable {
+    EMPTY_TYPE_ANNOTATION_TABLE.get_or_init(TypeAnnotationTable::new)
+}
+
 /// Evaluator-internal expression — produced by lowering a SurfaceExpression.
 /// De Bruijn coordinates are plain fields (no RefCell, no Option).
 /// Never exposed to tinct code. Can be changed freely without affecting the tinct API.

@@ -79,10 +79,8 @@ fn wrap_with_nominal_validation(
 // Surface AST evaluation — runtime-v2 pipeline
 // ============================================================================
 //
-// These functions bypass the Expr/File/Document bridge and evaluate SurfaceProgram
-// directly. `eval_surface_document` lowers each SurfaceNode to CoreExpr via lower.rs,
-// then calls eval_core_expr_pub. This eliminates the surface_program_to_file +
-// expr_to_core_expr round-trip from the hot evaluation path.
+// These functions evaluate SurfaceProgram directly. `eval_surface_document` lowers
+// each SurfaceNode to CoreExpr via lower.rs, then calls eval_core_expr_pub.
 //
 // Callers must provide:
 // - ResolutionTable: from resolve::resolve_surface_program (variable de Bruijn coords)

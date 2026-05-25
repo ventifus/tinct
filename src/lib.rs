@@ -246,10 +246,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         format!("{e}")
     };
     // Type errors are advisory; evaluation proceeds regardless.
-    // Use the surface-based path: typecheck_surface_program_with_env bridges to the
-    // File-based path internally via surface_program_to_file, eliminating the manual
-    // surface_program_to_file step here. The TypeAnnotationTable is now populated
-    // directly by typecheck_surface_program_with_env — no second typecheck call needed.
+    // The TypeAnnotationTable is populated by typecheck_surface_program_with_env.
     let (
         _type_errors,
         _type_map,
@@ -406,10 +403,7 @@ pub fn eval_source_with_cap_net(
         }
         format!("{e}")
     };
-    // Use the surface-based path: typecheck_surface_program_with_env bridges to the
-    // File-based path internally via surface_program_to_file, eliminating the manual
-    // surface_program_to_file step here. The TypeAnnotationTable is now populated
-    // directly by typecheck_surface_program_with_env — no second typecheck call needed.
+    // The TypeAnnotationTable is populated by typecheck_surface_program_with_env.
     let (
         _type_errors,
         _type_map,
@@ -556,8 +550,6 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let _resolution_table = resolve::resolve_surface_program(&program);
     // Type check the surface program with prelude-seeded environment.
-    // typecheck_surface_program bridges to the File-based path internally via
-    // surface_program_to_file; callers no longer need the intermediate File AST.
     let env = imports::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
         typecheck::typecheck_surface_program(&program, env);
@@ -604,8 +596,6 @@ pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let _resolution_table = resolve::resolve_surface_program(&program);
     // Type check the surface program with prelude-seeded environment.
-    // typecheck_surface_program bridges to the File-based path internally via
-    // surface_program_to_file; callers no longer need the intermediate File AST.
     let env = imports::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
         typecheck::typecheck_surface_program(&program, env);

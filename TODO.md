@@ -1056,21 +1056,20 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 - [ ] Add 13 unit tests for `resolve_surface_program()` in `src/resolve.rs` test module — coverage: VarRef resolution (found/not-found), Dict static keys, Fn params, Sequential scope injection, multi-document isolation, all match arms. These were deleted by the E3-expand-resolve-imports sprint without replacement. [Major — test-crafter]
 
-### try-closure-test: Add missing tests for builtin_try VarRef fix [Major]
+### try-closure-test: Add missing tests for builtin_try VarRef fix [Major] ✅ DONE
 
-- [ ] Add corpus test `tests/corpus/eval/builtins/try_closure_varref.llt-eval` — `[x: 42  result: [try [fn [] $x]]]` should evaluate to `Variant(Ok, Int(42))`; proves the `call_env = with_parent(closure_env)` De Bruijn fix at `src/builtins_meta.rs:166-177` [Major — test-crafter]
-- [ ] Add corpus test `tests/corpus/eval/errors/try_depth_exceeded.llt-eval` — prove `try` does NOT catch `DepthExceeded` (re-propagation at `src/builtins_meta.rs:219-227`) [Minor — test-crafter]
+- [x] Add corpus test `try_closure_varref.llt-eval` — proves closure variable capture in try blocks
+- [x] `try_depth_exceeded` already exists as `try_does_not_catch_resource_limit.llt-eval`
 
-### perf-empty-tables: Cache empty ResolutionTable/TypeAnnotationTable in static singletons [Major]
+### perf-empty-tables: Cache empty ResolutionTable/TypeAnnotationTable in static singletons [Major] ✅ DONE
 
-- [ ] Add `empty_resolution_table() -> &'static Arc<ResolutionTable>` and `empty_type_annotation_table() -> &'static Arc<TypeAnnotationTable>` using `OnceLock` in `src/ast.rs` (~20 lines total) [Major — performance-expert]
-- [ ] Replace all 11 `ResolutionTable::new()` / `TypeAnnotationTable::new()` call sites in `src/eval_materialize.rs` (5 sites), `src/eval.rs` (3 sites), `src/eval_call.rs` (1 site) with static singleton references — each allocation is 96 bytes per thunk force [Major — performance-expert]
+- [x] Added `empty_resolution_table()` and `empty_type_annotation_table()` OnceLock singletons in `src/ast.rs`
+- [x] Replaced 11 call sites in eval_materialize.rs, eval.rs, eval_call.rs
 
-### comment-cleanup: Delete stale bridge/migration comments [Major]
+### comment-cleanup: Delete stale bridge/migration comments [Major] ✅ DONE
 
-- [ ] Delete stale bridge comment block from `src/eval_call.rs:47-50` — claims "function position still converted via core_expr_to_expr" but line 63 already calls `eval_core_expr_pub` directly [Major — eval-engine]
-- [ ] Delete orphaned `ast_convert`/`surface_program_to_file`/`expr_to_core_expr` references from comments in `src/eval_pipeline.rs:84-85`, `src/lib.rs:193,250-251,410-411,560,608` [Major — integration-verifier]
-- [ ] Rephrase or delete stale `TODO(parts-e):` comments (6 occurrences in `src/eval_dict.rs:154`, `src/eval_call.rs:50`, `src/eval_materialize.rs:110,263,344`) — Parts E is complete [Minor — eval-engine]
+- [x] Deleted stale bridge comments from eval_call.rs, eval_pipeline.rs, lib.rs
+- [x] Rephrased `TODO(parts-e)` → `TODO(future)` in eval_dict.rs, eval_call.rs, eval_materialize.rs
 
 ### adt-constructor-types: Precise types for ADT constructors [Minor]
 

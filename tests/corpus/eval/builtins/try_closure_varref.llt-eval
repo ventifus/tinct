@@ -1,0 +1,3 @@
+[x: 42  result: [try [fn [] $x]]]
+=== out
+["x": 42  "result": [Ok 42]]

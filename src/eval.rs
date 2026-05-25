@@ -1009,8 +1009,8 @@ fn eval_quote_preprocess<'a>(
                 // Evaluate the unquoted expression and convert back to SurfaceNode
                 let core = crate::lower::lower(
                     inner,
-                    &crate::ast::ResolutionTable::new(),
-                    &crate::ast::TypeAnnotationTable::new(),
+                    crate::ast::empty_resolution_table(),
+                    crate::ast::empty_type_annotation_table(),
                 );
                 let thunk = eval_core_expr(&core, env, ctx).await?;
                 let value = materialize(&thunk, Some(&inner.span), ctx).await?;
@@ -1064,8 +1064,8 @@ fn eval_quote_preprocess<'a>(
                         // Evaluate the unquote-splice expression
                         let core = crate::lower::lower(
                             inner,
-                            &crate::ast::ResolutionTable::new(),
-                            &crate::ast::TypeAnnotationTable::new(),
+                            crate::ast::empty_resolution_table(),
+                            crate::ast::empty_type_annotation_table(),
                         );
                         let thunk = eval_core_expr(&core, env, ctx).await?;
                         let value = materialize(&thunk, Some(&inner.span), ctx).await?;
@@ -1294,9 +1294,11 @@ pub(crate) fn eval_surface_fn(
     });
     // Lower SurfaceNode → CoreExpr using empty resolution/type tables.
     // Macro transformer bodies use FreeVar lookups against stdlib_env, not slot-based resolution.
-    let empty_res = crate::ast::ResolutionTable::new();
-    let empty_types = crate::ast::TypeAnnotationTable::new();
-    let core_fn = crate::lower::lower(&fn_node, &empty_res, &empty_types);
+    let core_fn = crate::lower::lower(
+        &fn_node,
+        crate::ast::empty_resolution_table(),
+        crate::ast::empty_type_annotation_table(),
+    );
     crate::async_rt::block_on_anywhere(eval_core_expr(&core_fn, &env, ctx))
 }
 
@@ -3336,9 +3338,11 @@ mod tests {
         env: Arc<RwLock<Environment>>,
         ctx: &Arc<EvalContext>,
     ) -> EvalResult<Arc<Thunk>> {
-        let res = crate::ast::ResolutionTable::new();
-        let types = crate::ast::TypeAnnotationTable::new();
-        let core_expr = crate::lower::lower(&node, &res, &types);
+        let core_expr = crate::lower::lower(
+            &node,
+            crate::ast::empty_resolution_table(),
+            crate::ast::empty_type_annotation_table(),
+        );
         crate::async_rt::block_on_anywhere(super::eval_core_expr(&core_expr, &env, ctx))
     }
 
@@ -8173,7 +8177,7 @@ mod tests {
         let mut surface_program = parsed.program;
         crate::desugar::desugar_surface_program(&mut surface_program);
         let res = std::sync::Arc::new(crate::resolve::resolve_surface_program(&surface_program));
-        let types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
+        let types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::default());
         let thunk = crate::async_rt::block_on_anywhere(super::eval_surface_file(
             &surface_program,
             Arc::clone(&env),
@@ -8249,7 +8253,7 @@ mod tests {
                 let res = std::sync::Arc::new(crate::resolve::resolve_surface_program(
                     &parsed_output.program,
                 ));
-                let types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
+                let types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::default());
                 let env = crate::builtins::create_stdlib_env()
                     .expect("stdlib env creation should succeed");
                 let type_stage_env =

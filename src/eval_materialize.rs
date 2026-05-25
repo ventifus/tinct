@@ -108,8 +108,7 @@ pub(crate) enum RestoreState {
     },
     /// Restore a Surface thunk for non-cacheable errors (e.g., DepthExceeded).
     /// Holds the raw SurfaceNode so the thunk can be re-lowered on retry.
-    /// TODO(parts-e): replace with RestoreState::CoreExpr (store already-lowered CoreExpr)
-    /// to avoid re-lowering on each DepthExceeded retry.
+    /// TODO(future): store already-lowered CoreExpr to avoid re-lowering on retry.
     Surface {
         node: std::sync::Arc<crate::ast::SurfaceNode>,
         res: std::sync::Arc<crate::ast::ResolutionTable>,
@@ -258,11 +257,10 @@ pub(crate) struct GuardedValidateData {
 
 /// Payload for Cont::TypeAssertCheck. Boxed to keep the Cont enum ≤96 bytes.
 ///
-/// TODO(parts-e): `annotation` is Box<Spanned<Annotation>> where Annotation::PropertyDict
-/// entries store SurfaceNode values. The default-fallback paths in apply_cont extract
-/// the "default:" property as &Arc<SurfaceNode>, lower via `crate::lower::lower`, and
-/// dispatch as Action::EvalCore. When Annotation stores CoreExpr values natively, the
-/// conversion becomes a zero-cost Arc<Spanned<CoreExpr>> clone.
+/// TODO(future): Annotation::PropertyDict entries store SurfaceNode values. Default-fallback
+/// paths extract "default:" as &Arc<SurfaceNode>, lower via `crate::lower::lower`, and dispatch
+/// as Action::EvalCore. When Annotation stores CoreExpr values natively, this becomes a
+/// zero-cost Arc<Spanned<CoreExpr>> clone.
 pub(crate) struct TypeAssertCheckData {
     pub(crate) annotation: Box<Spanned<Annotation>>,
     pub(crate) resolved: Box<Option<Type>>,
@@ -340,11 +338,10 @@ pub(crate) enum Cont {
     /// expression thunk; replaces the synchronous materialize() call that was the laziness
     /// violation in the TypeAssert branch.
     ///
-    /// TODO(parts-e): TypeAssertCheckData::annotation is Box<Spanned<Annotation>>, and
-    /// Annotation::PropertyDict entries are SurfaceEntry whose values are Arc<SurfaceNode>.
-    /// The default-fallback paths in apply_cont call annotation.node.get_property("default:")
-    /// → &Arc<SurfaceNode> → lower::lower → Action::EvalCore. When annotations
-    /// store CoreExpr values natively, the conversion becomes a no-op clone.
+    /// TODO(future): Annotation::PropertyDict entries are SurfaceEntry whose values are
+    /// Arc<SurfaceNode>. Default-fallback paths call annotation.node.get_property("default:")
+    /// → &Arc<SurfaceNode> → lower::lower → Action::EvalCore. When annotations store CoreExpr
+    /// values natively, this becomes a no-op clone.
     TypeAssertCheck(Box<TypeAssertCheckData>),
 }
 
@@ -759,8 +756,8 @@ pub(crate) async fn force_step(
         //
         // The round-trip here is: SurfaceNode → lower() → Spanned<CoreExpr> → eval_core_expr()
         // → Arc<Thunk>. The lower() call is done here; the result is a CoreExpr thunk.
-        // TODO(parts-e): pre-lower Surface thunks at creation time (store as CoreExpr thunk)
-        // to avoid re-lowering on each DepthExceeded retry.
+        // TODO(future): pre-lower Surface thunks at creation time (store as CoreExpr) to avoid
+        // re-lowering on each DepthExceeded retry.
         //
         // After lower() we call eval_core_expr() to get a result thunk, then push a Memoize
         // continuation and return Action::Materialize to force the result thunk iteratively.
@@ -940,10 +937,8 @@ pub(crate) async fn force_step(
             };
         }
 
-        // TODO(parts-e): eval_core_expr itself may recurse for complex CoreExpr variants
-        // (Sequential, Match, etc.) — those will need their own CEK continuation variants
-        // to be fully iterative. For now, this at least removes the Surface → force_step
-        // panic and integrates Surface handling into the CEK machine.
+        // TODO(future): eval_core_expr may recurse for complex CoreExpr variants (Sequential,
+        // Match) — those need their own CEK continuation variants to be fully iterative.
         match crate::eval::eval_core_expr_pub(&lowered, &env, &thunk_ctx).await {
             Ok(result_thunk) => {
                 // Fast path: if eval_core_expr already produced a materialized thunk
@@ -2311,8 +2306,8 @@ pub(crate) async fn apply_cont(
                                         (
                                             Arc::new(crate::lower::lower(
                                                 node,
-                                                &crate::ast::ResolutionTable::new(),
-                                                &crate::ast::TypeAnnotationTable::new(),
+                                                crate::ast::empty_resolution_table(),
+                                                crate::ast::empty_type_annotation_table(),
                                             )),
                                             Arc::clone(&env),
                                         )
@@ -2359,8 +2354,8 @@ pub(crate) async fn apply_cont(
                                     Action::EvalCore {
                                         expr: Arc::new(crate::lower::lower(
                                             default_node,
-                                            &crate::ast::ResolutionTable::new(),
-                                            &crate::ast::TypeAnnotationTable::new(),
+                                            crate::ast::empty_resolution_table(),
+                                            crate::ast::empty_type_annotation_table(),
                                         )),
                                         env,
                                         ctx: Arc::clone(&ctx),
@@ -2499,8 +2494,8 @@ pub(crate) async fn apply_cont(
                                     return Action::EvalCore {
                                         expr: Arc::new(crate::lower::lower(
                                             default_node,
-                                            &crate::ast::ResolutionTable::new(),
-                                            &crate::ast::TypeAnnotationTable::new(),
+                                            crate::ast::empty_resolution_table(),
+                                            crate::ast::empty_type_annotation_table(),
                                         )),
                                         env,
                                         ctx: Arc::clone(&ctx),
@@ -2531,8 +2526,8 @@ pub(crate) async fn apply_cont(
                                     return Action::EvalCore {
                                         expr: Arc::new(crate::lower::lower(
                                             default_node,
-                                            &crate::ast::ResolutionTable::new(),
-                                            &crate::ast::TypeAnnotationTable::new(),
+                                            crate::ast::empty_resolution_table(),
+                                            crate::ast::empty_type_annotation_table(),
                                         )),
                                         env,
                                         ctx: Arc::clone(&ctx),

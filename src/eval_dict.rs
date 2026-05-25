@@ -151,8 +151,8 @@ pub(crate) async fn eval_dict_core(
                 string_val(s),
                 entry.node.value.span,
             )),
-            // Non-literal: use UnevaluatedState::CoreExpr — no CoreExpr→Expr round-trip.
-            // TODO(parts-e): Thunk::new_unevaluated_core_with_env_id (for the env_id fast path).
+            // Non-literal: use UnevaluatedState::CoreExpr.
+            // TODO(future): Thunk::new_unevaluated_core_with_env_id for env_id fast path.
             _ => Arc::new(Thunk::new_unevaluated_core(
                 Arc::clone(&entry.node.value),
                 Arc::clone(

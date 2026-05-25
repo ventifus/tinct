@@ -43,13 +43,11 @@ pub(crate) fn func_label_core(expr: &CoreExpr) -> Option<Arc<str>> {
 /// avoiding the per-argument `core_expr_to_expr` allocation that the old bridge code
 /// performed in `eval_core_expr`.
 ///
-/// # Round-trips still present
+/// # Implementation notes
 ///
-/// The function position is still converted to `Expr` via `core_expr_to_expr` because
-/// `eval()` is the public entry point. Arguments use `Thunk::new_unevaluated_core`
-/// (storing `Arc<Spanned<CoreExpr>>` directly) — no per-arg `core_expr_to_expr` allocation.
-/// TODO(parts-e): expose `eval_core_expr` publicly so the function position can also
-/// skip the `Expr` round-trip.
+/// Arguments use `Thunk::new_unevaluated_core` (storing `Arc<Spanned<CoreExpr>>` directly)
+/// — no per-arg allocation. The function expression is evaluated directly via
+/// `eval_core_expr`, avoiding bridge round-trips.
 pub(crate) async fn eval_call_core(
     func_expr: &Spanned<CoreExpr>,
     args: &[Arc<Spanned<CoreExpr>>],
@@ -289,8 +287,8 @@ pub(crate) async fn bind_args_thunks(
             let span = default_node.span;
             Arc::new(Thunk::new_surface(
                 default_node,
-                std::sync::Arc::new(crate::ast::ResolutionTable::new()),
-                std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+                std::sync::Arc::new(crate::ast::ResolutionTable::default()),
+                std::sync::Arc::new(crate::ast::TypeAnnotationTable::default()),
                 Arc::clone(default_env),
                 Arc::clone(ctx),
                 span,
