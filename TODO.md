@@ -1444,18 +1444,16 @@ Fixes: (a) change `eval_stack: Vec<(String, Span)>` to `Vec<(Arc<str>, Span)>` â
 
 Errors routed through the `cap_net` path silently miss macro expansion attribution when provenance is only in a stack frame or secondary span.
 
-- [ ] Extract `fn attach_macro_provenance(err: Box<EvalError>, provenance: &ProvenanceMap) -> Box<EvalError>` in `src/lib.rs`
-- [ ] Replace both closures with calls to the shared function
-- **File:** `src/lib.rs:217-247,392-405`
+- [x] Extracted `fn attach_macro_provenance()` in lib.rs; both closures now call the shared function (4-check version: definition, materialization, stack frames, secondary span)
+- **File:** `src/lib.rs`
 
 ### error-missing-cap-e-code: Capability-required error uses E099 (Internal) [Major]
 
 **integration-verifier M3.** `src/eval_pipeline.rs:166`: when a required capability annotation (`%api@NetCap`) is missing, the error is raised via `EvalError::internal(message, span)` (E099). This is a user-actionable error ("add `--cap-net` to your invocation") that should have a dedicated stable E-code.
 
-- [ ] Add `ErrorKind::CapabilityRequired { cap_name: String }` with E003 (currently free)
-- [ ] Add constructor `EvalError::capability_required(name, annotation, span)`
-- [ ] Update `eval_pipeline.rs:166` to use the new constructor
-- **Files:** `src/error.rs`, `src/eval_pipeline.rs:166`
+- [x] Added `ErrorKind::CapabilityRequired { message }` with E044; constructor `EvalError::capability_required(message, span)`
+- [x] Updated `eval_pipeline.rs:166` to use `EvalError::capability_required` instead of `EvalError::internal`
+- **Files:** `src/error.rs`, `src/eval_pipeline.rs`
 
 ### doc-06-param-type-contradiction: doc/06 contradicts itself about unannotated param types [Major]
 

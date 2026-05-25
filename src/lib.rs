@@ -169,6 +169,43 @@ pub use lsp::run_lsp;
 /// Runtime value types: values, thunks, environments, and dict keys.
 pub use value::{ClockCapInner, DirPerms, Environment, Key, NetCapEntry, Thunk, Value};
 
+/// Attach macro expansion provenance to an error by checking if any of the error's
+/// spans (definition, materialization, stack frames, secondary) match a provenance entry.
+fn attach_macro_provenance(
+    mut err: Box<EvalError>,
+    provenance: &std::collections::HashMap<expand::SpanKey, expand::MacroProvenance>,
+) -> Box<EvalError> {
+    if err.macro_expansion.is_none() {
+        // Check definition span
+        let mut found = provenance.get(&expand::SpanKey::from(err.definition_span));
+        // Check materialization span
+        if found.is_none() {
+            if let Some(mat_span) = err.materialization_span {
+                found = provenance.get(&expand::SpanKey::from(mat_span));
+            }
+        }
+        // Check stack frame spans
+        if found.is_none() {
+            for frame in &err.stack {
+                if let Some(prov) = provenance.get(&expand::SpanKey::from(frame.span)) {
+                    found = Some(prov);
+                    break;
+                }
+            }
+        }
+        // Check secondary span
+        if found.is_none() {
+            if let Some((sec_span, _)) = err.secondary_span {
+                found = provenance.get(&expand::SpanKey::from(sec_span));
+            }
+        }
+        if let Some(prov) = found {
+            err.macro_expansion = Some((prov.macro_name.clone(), prov.call_site_span));
+        }
+    }
+    err
+}
+
 /// Parse and evaluate LLT source, returning the result in **LLT display format**
 /// (e.g. `Int(42)`, `Dict({"x": Int(1)})`) -- not JSON.
 ///
@@ -211,40 +248,8 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
     let provenance = expand_result.provenance;
 
-    // Helper: attach macro expansion provenance to errors before formatting.
-    // Checks if the error's definition span, materialization span, or any stack
-    // frame span matches a provenance entry from macro expansion.
-    let attach_provenance = |mut e: Box<error::EvalError>| -> String {
-        if e.macro_expansion.is_none() {
-            // Check definition span
-            let mut found = provenance.get(&expand::SpanKey::from(e.definition_span));
-            // Check materialization span
-            if found.is_none() {
-                if let Some(mat_span) = e.materialization_span {
-                    found = provenance.get(&expand::SpanKey::from(mat_span));
-                }
-            }
-            // Check stack frame spans
-            if found.is_none() {
-                for frame in &e.stack {
-                    if let Some(prov) = provenance.get(&expand::SpanKey::from(frame.span)) {
-                        found = Some(prov);
-                        break;
-                    }
-                }
-            }
-            // Check secondary span
-            if found.is_none() {
-                if let Some((sec_span, _)) = e.secondary_span {
-                    found = provenance.get(&expand::SpanKey::from(sec_span));
-                }
-            }
-            if let Some(prov) = found {
-                e.macro_expansion = Some((prov.macro_name.clone(), prov.call_site_span));
-            }
-        }
-        format!("{e}")
-    };
+    let attach_provenance =
+        |e: Box<error::EvalError>| -> String { format!("{}", attach_macro_provenance(e, &provenance)) };
     // Type errors are advisory; evaluation proceeds regardless.
     // The TypeAnnotationTable is populated by typecheck_surface_program_with_env.
     let (
@@ -389,20 +394,8 @@ pub fn eval_source_with_cap_net(
     let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
     let provenance = expand_result.provenance;
 
-    let attach_provenance = |mut e: Box<error::EvalError>| -> String {
-        if e.macro_expansion.is_none() {
-            let mut found = provenance.get(&expand::SpanKey::from(e.definition_span));
-            if found.is_none() {
-                if let Some(mat_span) = e.materialization_span {
-                    found = provenance.get(&expand::SpanKey::from(mat_span));
-                }
-            }
-            if let Some(prov) = found {
-                e.macro_expansion = Some((prov.macro_name.clone(), prov.call_site_span));
-            }
-        }
-        format!("{e}")
-    };
+    let attach_provenance =
+        |e: Box<error::EvalError>| -> String { format!("{}", attach_macro_provenance(e, &provenance)) };
     // The TypeAnnotationTable is populated by typecheck_surface_program_with_env.
     let (
         _type_errors,

@@ -163,7 +163,7 @@ pub async fn eval_surface_document(
                     ));
                 }
 
-                return Err(EvalError::internal(message, caps_ann.span).into());
+                return Err(EvalError::capability_required(message, caps_ann.span).into());
             }
         }
     }

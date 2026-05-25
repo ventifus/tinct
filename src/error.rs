@@ -203,6 +203,11 @@ pub enum ErrorKind {
     ResourceLimitExceeded {
         message: String,
     },
+    /// Capability required but not provided (e.g., network access without --cap-net).
+    /// User-actionable error indicating missing capability flag.
+    CapabilityRequired {
+        message: String,
+    },
 
     // --- Include errors (E050-E059) ---
     IncludeNotAvailable,
@@ -441,6 +446,10 @@ impl PartialEq for ErrorKind {
                 Self::ResourceLimitExceeded { message: m1 },
                 Self::ResourceLimitExceeded { message: m2 },
             ) => m1 == m2,
+            (
+                Self::CapabilityRequired { message: m1 },
+                Self::CapabilityRequired { message: m2 },
+            ) => m1 == m2,
             (Self::IncludeNotAvailable, Self::IncludeNotAvailable) => true,
             (
                 Self::IncludeIoError {
@@ -577,6 +586,7 @@ impl ErrorKind {
             Self::JsonDepthExceeded { .. } => "E041",
             Self::IncludeForbidden => "E042",
             Self::ResourceLimitExceeded { .. } => "E043",
+            Self::CapabilityRequired { .. } => "E044",
             Self::IncludeNotAvailable => "E050",
             Self::IncludeIoError { .. } => "E051",
             Self::IncludeCycle { .. } => "E052",
@@ -887,6 +897,7 @@ impl fmt::Display for ErrorKind {
             }
             Self::IncludeForbidden => write!(f, "filesystem access is disabled (--no-fs)"),
             Self::ResourceLimitExceeded { message } => write!(f, "{}", message),
+            Self::CapabilityRequired { message } => write!(f, "{}", message),
             Self::IncludeNotAvailable => write!(f, "include: not available in this context"),
             Self::IncludeIoError { path, detail } => {
                 write!(f, "include: cannot access \"{path}\": {detail}")
@@ -1199,6 +1210,19 @@ impl EvalError {
     pub fn depth_exceeded(limit: usize, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::DepthExceeded { limit },
+            definition_span,
+            materialization_span: None,
+            stack: SmallVec::new(),
+            secondary_span: None,
+            macro_expansion: None,
+            blame: None,
+            pipeline_stage: None,
+        }
+    }
+
+    pub fn capability_required(message: String, definition_span: Span) -> Self {
+        Self {
+            kind: ErrorKind::CapabilityRequired { message },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -2440,6 +2464,9 @@ mod tests {
             ErrorKind::ResourceLimitExceeded {
                 message: "test: resource limit exceeded (1000)".to_string(),
             },
+            ErrorKind::CapabilityRequired {
+                message: "test: capability required".to_string(),
+            },
             ErrorKind::IncludeNotAvailable,
             ErrorKind::IncludeIoError {
                 path: "x".to_string(),
@@ -3026,6 +3053,15 @@ mod tests {
                 }
             ),
             "upper: output would exceed 64 MB limit (67108864 bytes)"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ErrorKind::CapabilityRequired {
+                    message: "%net@NetCap is required but not provided".to_string(),
+                }
+            ),
+            "%net@NetCap is required but not provided"
         );
 
         // Include errors (E050-E059)
@@ -4469,11 +4505,11 @@ mod tests {
         }
         // Verify the count matches all_error_kind_variants() — the canonical list.
         // If variants are added or removed, update all_error_kind_variants() to match.
-        // Current count: 43 variants (verified against the ErrorKind enum definition).
+        // Current count: 44 variants (verified against the ErrorKind enum definition).
         assert_eq!(
             variants.len(),
-            43,
-            "Expected 43 ErrorKind variants in all_error_kind_variants(); got {}. \
+            44,
+            "Expected 44 ErrorKind variants in all_error_kind_variants(); got {}. \
              Update all_error_kind_variants() if variants were added or removed.",
             variants.len()
         );
@@ -4605,6 +4641,7 @@ mod tests {
                 ErrorKind::BuilderFinished { .. } => "E082",
                 ErrorKind::SchemaViolation { .. } => "E090",
                 ErrorKind::KindMismatch { .. } => "E091",
+                ErrorKind::CapabilityRequired { .. } => "E044",
                 ErrorKind::Internal { .. } => "E099",
             }
         }
