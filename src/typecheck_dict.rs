@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use super::{infer_expr, resolve_annotation, resolve_type_expr, TypeMap};
+use super::{infer_surface_expr, resolve_annotation, resolve_type_expr, TypeMap};
 use crate::ast::{Span, Spanned, SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::types::{
     generalize_with_doc, unify, InferState, Row, Substitution, Type, TypeAlias, TypeEnv, TypeError,
@@ -400,9 +400,8 @@ pub(crate) fn infer_dict(
                 )
         );
         if is_class_or_instance {
-            // Convert to Expr for infer_expr (which registers class/instance into state)
-            let value_expr = crate::ast_convert::surface_node_to_expr(&entry.node.value);
-            match infer_expr(&value_expr, &dict_env_rc, state, type_map) {
+            // Infer class/instance expression (registers into state)
+            match infer_surface_expr(&entry.node.value, &dict_env_rc, state, type_map) {
                 Ok(ty) => {
                     let (ref key_name, _) = key_entries[idx];
                     if let Some(name) = key_name {
@@ -547,10 +546,10 @@ pub(crate) fn infer_dict(
                         errors.append(&mut nested_errs);
                         (Ok(ty), Some(schemes))
                     } else {
-                        // Convert SurfaceNode to Expr for infer_expr
-                        let value_expr =
-                            crate::ast_convert::surface_node_to_expr(&entry.node.value);
-                        (infer_expr(&value_expr, &dict_env_rc, state, type_map), None)
+                        (
+                            infer_surface_expr(&entry.node.value, &dict_env_rc, state, type_map),
+                            None,
+                        )
                     };
 
                 // Constraints generated during this entry's inference are now in state.constraints.
@@ -822,14 +821,11 @@ pub(crate) fn entry_key_name(
             SurfaceExpression::Int(n) => Some(n.to_string()),
             // Annotated key: name@[doc: "..."] — extract name directly
             SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
-            _ => {
-                let key_expr = crate::ast_convert::surface_node_to_expr(key_node);
-                match infer_expr(&key_expr, env, state, type_map) {
-                    Ok(Type::StringLiteral(s)) => Some(s),
-                    Ok(Type::IntLiteral(n)) => Some(n.to_string()),
-                    _ => None,
-                }
-            }
+            _ => match infer_surface_expr(key_node, env, state, type_map) {
+                Ok(Type::StringLiteral(s)) => Some(s),
+                Ok(Type::IntLiteral(n)) => Some(n.to_string()),
+                _ => None,
+            },
         },
         None => {
             let name = auto_index.to_string();

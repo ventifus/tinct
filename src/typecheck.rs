@@ -569,15 +569,15 @@ fn typecheck_surface_document(
                 env = Rc::new(new_env);
             }
         } else {
-            // Convert SurfaceNode back to Expr for type inference
-            let expr = crate::ast_convert::surface_node_to_expr(surface_node);
             // Non-dict expression: infer at incremented level so type variables can be
             // properly generalized when threading Record fields as schemes into the env.
             // Mirrors typecheck_document lines 1041-1112.
             let enclosing_level = state.level;
             state.level += 1;
 
-            match infer_expr(&expr, &env, state, type_map) {
+            // TODO(rv2-delete-old-ast): expr still needed for register_type_aliases and error spans
+            let expr = crate::ast_convert::surface_node_to_expr(surface_node);
+            match infer_surface_expr(surface_node, &env, state, type_map) {
                 Ok(ty) => {
                     state.level = enclosing_level;
                     table.insert(node_id(surface_node), ty.clone());
@@ -1824,6 +1824,666 @@ fn extract_param_indices(
     }
 
     Ok(indices)
+}
+
+/// Type-infer a SurfaceNode expression.
+///
+/// Natively walks SurfaceExpression variants without converting to Expr.
+/// Recursive calls use `infer_surface_expr` for child SurfaceNodes.
+/// Bridge to check_* functions (via surface_node_to_expr) will be eliminated in Phase 4.
+pub(crate) fn infer_surface_expr(
+    node: &std::sync::Arc<SurfaceNode>,
+    env: &Rc<TypeEnv>,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    let result = match &node.expr {
+        SurfaceExpression::Int(n) => Ok(Type::IntLiteral(*n)),
+        SurfaceExpression::Float(_) => Ok(Type::Float),
+        SurfaceExpression::Bool(_) => Ok(Type::Bool),
+        SurfaceExpression::Str(s) => Ok(Type::StringLiteral(s.clone())),
+
+        SurfaceExpression::VarRef { name, .. } => {
+            if let Some(scheme) = env.get(name) {
+                // Record scheme in scheme_map for LSP hover (constraints + type vars).
+                // Only store when scheme collection is enabled and the scheme is polymorphic
+                // (has constraints or quantified type vars — monomorphic schemes show the
+                // same info via type_map and don't need the extra constraint display).
+                if !scheme.constraints.is_empty() || !scheme.type_vars.is_empty() {
+                    if let Some(ref mut smap) = state.scheme_map {
+                        let key = (node.span.start.offset, node.span.end.offset);
+                        smap.insert(key, scheme.clone());
+                    }
+                }
+                Ok(instantiate_scheme(scheme, state.level, state))
+            } else {
+                let mut err = TypeError::undefined_variable(name, node.span);
+                if let Some(&cause_span) = state.failed_bindings.get(name.as_str()) {
+                    err.notes.push(format!(
+                        "  = note: `{name}` could not be defined because its definition at {}:{} failed type checking",
+                        cause_span.start.line, cause_span.start.column
+                    ));
+                } else if !state.in_prelude_load
+                    && crate::builtins::builtin_primary_names().contains(name.as_str())
+                {
+                    // T002: raw Rust builtin referenced directly in user code.
+                    // The name is known to the runtime but was not exported by prelude.
+                    err.notes.push(format!(
+                        "  = note: `{name}` is a Rust builtin that is not exported by the prelude\n  = help: use the prelude-exported wrapper instead, or load a stdlib module via [include %libdir \"<module>.llt\"]"
+                    ));
+                    state.diagnostics.push(crate::error::TypeDiagnostic {
+                        message: format!(
+                            "raw builtin `{name}` is not available in user code — use the prelude-exported version or include the relevant stdlib module"
+                        ),
+                        span: node.span,
+                        code: "T002",
+                        level: crate::error::DiagnosticLevel::Warn,
+                    });
+                }
+                Err(vec![err])
+            }
+        }
+
+        SurfaceExpression::Dict(entries) => {
+            let (ty, _schemes, errs) = infer_dict(entries, env, state, type_map, node.span);
+            if errs.is_empty() {
+                Ok(ty)
+            } else {
+                Err(errs)
+            }
+        }
+
+        SurfaceExpression::DotAccess {
+            expr: target,
+            field,
+        } => {
+            // Convert to Expr for check_dot_access (Phase 4 will migrate check_dot_access)
+            let target_expr = crate::ast_convert::surface_node_to_expr(target);
+            check_dot_access(&target_expr, field, env, node.span, state, type_map)
+        }
+
+        SurfaceExpression::Pipe { .. } => {
+            unreachable!("Pipe should be desugared before type checking")
+        }
+
+        SurfaceExpression::Sequential(exprs) => {
+            // Multi-expression sequential evaluation (let-binding semantics).
+            // Each expression's result dict extends the type environment for the next.
+            // The last expression's type is the overall result type.
+            if exprs.is_empty() {
+                return Ok(Type::Record(Row {
+                    fields: HashMap::new(),
+                }));
+            }
+
+            let mut current_env = Rc::clone(env);
+
+            for (i, seq_expr) in exprs.iter().enumerate() {
+                let is_last = i == exprs.len() - 1;
+
+                if is_last {
+                    // Last expression: return its type
+                    return infer_surface_expr(seq_expr, &current_env, state, type_map);
+                }
+
+                // Intermediate expression: infer and extract record bindings
+                let expr_ty = infer_surface_expr(seq_expr, &current_env, state, type_map)?;
+
+                // Extract record fields to extend the type environment
+                if let Type::Record(row) = expr_ty {
+                    // Create child environment with bindings from intermediate expression
+                    let mut child_env = TypeEnv::with_parent(&current_env);
+
+                    // Add field types to environment
+                    for (field_name, field_ty) in &row.fields {
+                        child_env.insert(field_name.clone(), field_ty.clone());
+                    }
+
+                    current_env = Rc::new(child_env);
+                } else {
+                    // Intermediate expression must be a record (dict)
+                    return Err(vec![TypeError::new(
+                        format!(
+                            "sequential expression requires intermediate expressions to be dicts, got {}",
+                            expr_ty
+                        ),
+                        seq_expr.span,
+                    )]);
+                }
+            }
+
+            unreachable!(
+                "infer_surface_expr Sequential: loop did not return — exprs was non-empty but is_last never triggered"
+            )
+        }
+
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            implied: _,
+        } => {
+            // Convert args to Expr for check_* functions (Phase 4 will eliminate this)
+            let expr_args: Vec<Rc<Spanned<Expr>>> = args
+                .iter()
+                .map(|a| Rc::new(crate::ast_convert::surface_node_to_expr(a)))
+                .collect();
+            let expr_named_args: Vec<Spanned<NamedArg>> = named_args
+                .iter()
+                .map(|na| {
+                    let value = crate::ast_convert::surface_node_to_expr(&na.node.value);
+                    Spanned::new(
+                        NamedArg {
+                            name: na.node.name.clone(),
+                            value: Rc::new(value),
+                        },
+                        na.span,
+                    )
+                })
+                .collect();
+
+            // Special case: `if` is a type-level special form with path-sensitive narrowing
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                if name == "if" && args.len() == 3 && named_args.is_empty() {
+                    return infer_if(
+                        &expr_args[0],
+                        &expr_args[1],
+                        &expr_args[2],
+                        env,
+                        state,
+                        type_map,
+                    );
+                }
+
+                // Special case: `get-in` is a type-level special form that unfolds into
+                // repeated `get` calls for nested dict access.
+                if name == "get-in" && named_args.is_empty() {
+                    return check_get_in(
+                        &expr_args,
+                        &expr_named_args,
+                        env,
+                        node.span,
+                        state,
+                        type_map,
+                    );
+                }
+
+                // Special case: `open` synthesizes a precise Handle(cap_row) return type when
+                // capability flag arguments are statically known VarRefs (e.g., Readable, Writable).
+                if name == "open" && named_args.is_empty() && args.len() >= 2 {
+                    return check_open(&expr_args, env, node.span, state, type_map);
+                }
+
+                // Special case: `slurp` synthesizes a precise return type based on handle capabilities.
+                if name == "slurp" && named_args.is_empty() && args.len() == 1 {
+                    return check_slurp(&expr_args, env, node.span, state, type_map);
+                }
+
+                // Special case: `connect` synthesizes a precise return type based on transport variant.
+                if name == "connect" && named_args.is_empty() && args.len() == 4 {
+                    let func_expr = crate::ast_convert::surface_node_to_expr(func);
+                    let _ = infer_expr(&func_expr, env, state, type_map); // Record func type for LSP hover
+                    return check_connect(&expr_args, env, node.span, state, type_map);
+                }
+
+                // Special case: `builtin-first` synthesizes a precise return type based on collection type.
+                if name == "builtin-first" && named_args.is_empty() && args.len() == 1 {
+                    let func_expr = crate::ast_convert::surface_node_to_expr(func);
+                    let _ = infer_expr(&func_expr, env, state, type_map); // Record func type for LSP hover
+                    return check_first(&expr_args, env, node.span, state, type_map);
+                }
+
+                // Special case: `builtin-last` synthesizes a precise return type based on collection type.
+                if name == "builtin-last" && named_args.is_empty() && args.len() == 1 {
+                    let func_expr = crate::ast_convert::surface_node_to_expr(func);
+                    let _ = infer_expr(&func_expr, env, state, type_map); // Record func type for LSP hover
+                    return check_last(&expr_args, env, node.span, state, type_map);
+                }
+
+                // Special case: `map` synthesizes a precise return type for Seq input with callback.
+                if name == "map" && named_args.is_empty() && args.len() == 2 {
+                    let func_expr = crate::ast_convert::surface_node_to_expr(func);
+                    let _ = infer_expr(&func_expr, env, state, type_map); // Record func type for LSP hover
+                    return check_map(&expr_args, env, node.span, state, type_map);
+                }
+
+                // Special case: `builtin-map` is an alias for `map` — dispatch to check_map.
+                if name == "builtin-map" && named_args.is_empty() && args.len() == 2 {
+                    let func_expr = crate::ast_convert::surface_node_to_expr(func);
+                    let _ = infer_expr(&func_expr, env, state, type_map); // Record func type for LSP hover
+                    return check_map(&expr_args, env, node.span, state, type_map);
+                }
+
+                // Special case: `builtin-concat` synthesizes a precise return type for Seq + Seq.
+                if name == "builtin-concat" && named_args.is_empty() && args.len() == 2 {
+                    let func_expr = crate::ast_convert::surface_node_to_expr(func);
+                    let _ = infer_expr(&func_expr, env, state, type_map); // Record func type for LSP hover
+                    return check_concat(&expr_args, env, node.span, state, type_map);
+                }
+
+                // Special case: `tls-layer` preserves input handle's capability row.
+                if name == "tls-layer" && named_args.is_empty() && args.len() == 3 {
+                    let func_expr = crate::ast_convert::surface_node_to_expr(func);
+                    let _ = infer_expr(&func_expr, env, state, type_map); // Record func type for LSP hover
+                    return check_tls_layer(&expr_args, env, node.span, state, type_map);
+                }
+
+                // Special case: `+` / `builtin-add` refines return type when both args are known.
+                if (name == "+" || name == "builtin-add")
+                    && named_args.is_empty()
+                    && args.len() == 2
+                {
+                    return check_arithmetic(&expr_args, env, node.span, state, type_map);
+                }
+
+                // Special case: `-` / `builtin-sub` — same refinement as `+`.
+                if (name == "-" || name == "builtin-sub")
+                    && named_args.is_empty()
+                    && args.len() == 2
+                {
+                    return check_arithmetic(&expr_args, env, node.span, state, type_map);
+                }
+
+                // Special case: `*` / `builtin-mul` — same refinement as `+`.
+                if (name == "*" || name == "builtin-mul")
+                    && named_args.is_empty()
+                    && args.len() == 2
+                {
+                    return check_arithmetic(&expr_args, env, node.span, state, type_map);
+                }
+
+                // Special case: `/` / `builtin-div` — always returns Float in IEEE arithmetic.
+                if (name == "/" || name == "builtin-div")
+                    && named_args.is_empty()
+                    && args.len() == 2
+                {
+                    return check_div(&expr_args, env, node.span, state, type_map);
+                }
+            }
+
+            // Special case: do-infer sentinel — inferred [do] form monad resolution.
+            if let SurfaceExpression::DotAccess {
+                expr: da_target,
+                field: da_field,
+            } = &func.expr
+            {
+                if let SurfaceExpression::VarRef { name, .. } = &da_target.expr {
+                    if name.starts_with(":do-infer:") && named_args.is_empty() {
+                        return check_do_infer(
+                            da_field,
+                            name,
+                            &expr_args,
+                            &expr_named_args,
+                            env,
+                            node.span,
+                            state,
+                            type_map,
+                        );
+                    }
+                }
+            }
+
+            // Special case: if func is a VarRef to a polymorphic scheme, pass the scheme
+            // directly to avoid double instantiation (VAR-POLY followed by CALL-POLY).
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                // Monomorphic recursion check (same logic as infer_expr)
+                if state.current_function.as_ref() == Some(name) {
+                    let fn_resolved_ty = env
+                        .get(name)
+                        .map(|scheme| state.subst.apply(&scheme.body))
+                        .unwrap_or_else(|| state.fresh_type_var());
+
+                    match &fn_resolved_ty {
+                        Type::Function {
+                            params,
+                            ret,
+                            variadic,
+                        } => {
+                            // Monomorphic recursion: the function's type is already known.
+                            let variadic = *variadic;
+                            let params = params.clone();
+                            let ret = ret.clone();
+
+                            let total_supplied = args.len() + named_args.len();
+                            let min_required = if variadic && !params.is_empty() {
+                                params.len() - 1
+                            } else {
+                                params.len()
+                            };
+                            if total_supplied < min_required
+                                || (!variadic && total_supplied != params.len())
+                            {
+                                return Err(vec![TypeError::new(
+                                    format!(
+                                        "arity mismatch: expected {}{} argument(s), got {}",
+                                        if variadic { "at least " } else { "" },
+                                        min_required,
+                                        total_supplied,
+                                    ),
+                                    node.span,
+                                )]);
+                            }
+
+                            for (arg, (_param_name, param_ty)) in args.iter().zip(params.iter()) {
+                                let arg_ty = infer_surface_expr(arg, env, state, type_map)?;
+                                let mut subst = std::mem::take(&mut state.subst);
+                                let unify_result =
+                                    unify(&arg_ty, param_ty, &mut subst, state, arg.span);
+                                state.subst = subst;
+                                if let Err(uerr) = unify_result {
+                                    return Err(vec![uerr]);
+                                }
+                            }
+                            for na in named_args {
+                                let _ = infer_surface_expr(&na.node.value, env, state, type_map)?;
+                            }
+                            return Ok(state.subst.apply(&ret));
+                        }
+                        _ => {
+                            // TypeVar or other non-Function type: allow speculatively.
+                            for arg in args {
+                                let _ = infer_surface_expr(arg, env, state, type_map)?;
+                            }
+                            for na in named_args {
+                                let _ = infer_surface_expr(&na.node.value, env, state, type_map)?;
+                            }
+                            return Ok(state.fresh_type_var());
+                        }
+                    }
+                }
+
+                match env.get(name) {
+                    Some(scheme) if !scheme.type_vars.is_empty() => {
+                        // Record scheme for LSP hover
+                        if !scheme.constraints.is_empty() || !scheme.type_vars.is_empty() {
+                            if let Some(ref mut smap) = state.scheme_map {
+                                let key = (func.span.start.offset, func.span.end.offset);
+                                smap.insert(key, scheme.clone());
+                            }
+                        }
+                        // Polymorphic scheme: optimize by instantiating once in check_call_with_scheme
+                        check_call_with_scheme(
+                            scheme,
+                            func.span,
+                            &expr_args,
+                            &expr_named_args,
+                            env,
+                            node.span,
+                            state,
+                            type_map,
+                        )
+                    }
+                    Some(_) => {
+                        // Monomorphic: use check_call
+                        let func_expr = crate::ast_convert::surface_node_to_expr(func);
+                        check_call(
+                            &func_expr,
+                            &expr_args,
+                            &expr_named_args,
+                            env,
+                            node.span,
+                            state,
+                            type_map,
+                        )
+                    }
+                    None => {
+                        // Special handling for $proxy builtin: produces Type::Proxy
+                        if name == "proxy" {
+                            // Infer arguments for type map population
+                            for arg in args {
+                                let _ = infer_surface_expr(arg, env, state, type_map)?;
+                            }
+                            for na in named_args {
+                                let _ = infer_surface_expr(&na.node.value, env, state, type_map)?;
+                            }
+                            Ok(Type::Proxy)
+                        } else {
+                            let mut err = TypeError::undefined_variable(name, func.span);
+                            if let Some(&cause_span) = state.failed_bindings.get(name.as_str()) {
+                                err.notes.push(format!(
+                                    "  = note: `{name}` could not be defined because its definition at {}:{} failed type checking",
+                                    cause_span.start.line, cause_span.start.column
+                                ));
+                            } else if !state.in_prelude_load
+                                && crate::builtins::builtin_primary_names().contains(name.as_str())
+                            {
+                                // T002: raw Rust builtin referenced directly in user code.
+                                err.notes.push(format!(
+                                    "  = note: `{name}` is a Rust builtin that is not exported by the prelude\n  = help: use the prelude-exported wrapper instead, or load a stdlib module via [include %libdir \"<module>.llt\"]"
+                                ));
+                                state.diagnostics.push(crate::error::TypeDiagnostic {
+                                    message: format!(
+                                        "raw builtin `{name}` is not available in user code — use the prelude-exported version or include the relevant stdlib module"
+                                    ),
+                                    span: func.span,
+                                    code: "T002",
+                                    level: crate::error::DiagnosticLevel::Warn,
+                                });
+                            }
+                            Err(vec![err])
+                        }
+                    }
+                }
+            } else {
+                let func_expr = crate::ast_convert::surface_node_to_expr(func);
+                check_call(
+                    &func_expr,
+                    &expr_args,
+                    &expr_named_args,
+                    env,
+                    node.span,
+                    state,
+                    type_map,
+                )
+            }
+        }
+
+        SurfaceExpression::Fn { .. } => {
+            // Convert to Expr for infer_fn (Phase 4 will migrate infer_fn)
+            let expr = crate::ast_convert::surface_node_to_expr(node);
+            infer_expr(&expr, env, state, type_map)
+        }
+
+        SurfaceExpression::TypeAssert {
+            annotation,
+            expr: inner,
+        } => {
+            // Convert to Expr for resolve_type_assert (Phase 4 will migrate)
+            let expr = crate::ast_convert::surface_node_to_expr(node);
+            if let Expr::TypeAssert { resolved_type, .. } = &expr.node {
+                resolve_type_assert(
+                    annotation,
+                    &Rc::new(crate::ast_convert::surface_node_to_expr(inner)),
+                    resolved_type,
+                    env,
+                    node.span,
+                    state,
+                    type_map,
+                )
+            } else {
+                unreachable!("surface_node_to_expr for TypeAssert did not produce Expr::TypeAssert")
+            }
+        }
+
+        SurfaceExpression::Annotated { name, annotation } => {
+            // Create per-annotation-scope mappings for type and row variables.
+            let mut ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
+            let mut row_ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
+            let mut ann_mapping_opt = ann_mapping.as_mut();
+            let mut row_ann_mapping_opt = row_ann_mapping.as_mut();
+            resolve_annotated(
+                name,
+                annotation,
+                env,
+                node.span,
+                state,
+                &mut ann_mapping_opt,
+                &mut row_ann_mapping_opt,
+            )
+            .map_err(|e| vec![e])
+        }
+
+        SurfaceExpression::Quote(_inner) => {
+            // [quote expr] produces a dict representing the AST.
+            Ok(Type::Record(Row {
+                fields: HashMap::new(),
+            }))
+        }
+
+        SurfaceExpression::Unquote(inner) => {
+            // [unquote expr] evaluates expr and returns its type.
+            infer_surface_expr(inner, env, state, type_map)
+        }
+
+        SurfaceExpression::UnquoteSplice(inner) => {
+            // [unquote-splice expr] expects expr to be a list (Dict with integer keys).
+            let inner_ty = infer_surface_expr(inner, env, state, type_map)?;
+
+            let expected_list_ty = Type::Record(Row {
+                fields: HashMap::new(),
+            });
+
+            let mut subst = std::mem::take(&mut state.subst);
+            let result = unify(&inner_ty, &expected_list_ty, &mut subst, state, inner.span);
+            state.subst = subst;
+            result.map_err(|_e| {
+                vec![TypeError::new(
+                    format!("unquote-splice expects a list (Dict), got {}", inner_ty),
+                    inner.span,
+                )]
+            })?;
+
+            Ok(expected_list_ty)
+        }
+
+        SurfaceExpression::Match { .. } => {
+            // Convert to Expr for match inference (Phase 4 will migrate)
+            let expr = crate::ast_convert::surface_node_to_expr(node);
+            infer_expr(&expr, env, state, type_map)
+        }
+
+        SurfaceExpression::Decl(decl_box) => {
+            // Handle declaration forms embedded in expression context
+            match **decl_box {
+                SurfaceDeclaration::ClassDecl { .. } => {
+                    // Convert to Expr for class decl handling (Phase 4 will migrate)
+                    let expr = crate::ast_convert::surface_node_to_expr(node);
+                    infer_expr(&expr, env, state, type_map)
+                }
+                SurfaceDeclaration::InstanceDecl { .. } => {
+                    // Convert to Expr for instance decl handling (Phase 4 will migrate)
+                    let expr = crate::ast_convert::surface_node_to_expr(node);
+                    infer_expr(&expr, env, state, type_map)
+                }
+                SurfaceDeclaration::TypeAlias { .. } => {
+                    // Convert to Expr for type alias expansion (Phase 4 will migrate)
+                    let expr = crate::ast_convert::surface_node_to_expr(node);
+                    infer_expr(&expr, env, state, type_map)
+                }
+                SurfaceDeclaration::DefMacro { .. } => {
+                    Err(vec![TypeError::new(
+                        "defmacro should be removed by expansion pass before typechecking (internal error)",
+                        node.span,
+                    )])
+                }
+                SurfaceDeclaration::MacroDecl { .. } => Err(vec![TypeError::new(
+                    "MacroDecl should be removed by expansion pass before typechecking (internal error)",
+                    node.span,
+                )]),
+                SurfaceDeclaration::Splice(..) => Err(vec![TypeError::new(
+                    "Splice should be removed by expansion pass before typechecking (internal error)",
+                    node.span,
+                )]),
+                SurfaceDeclaration::SyntaxClass { .. } => Err(vec![TypeError::new(
+                    "SyntaxClass should be removed by expansion pass before typechecking (internal error)",
+                    node.span,
+                )]),
+            }
+        }
+
+        SurfaceExpression::LetDecl { bindings } => {
+            // LetDecl in value position is always an error (only valid in binding contexts).
+            let msg = if bindings.len() > 1 {
+                "multi-element [let ...] pattern not yet supported — use single binding".to_string()
+            } else {
+                "binding declaration [let ...] is not valid in expression position".to_string()
+            };
+            Err(vec![TypeError::new(msg, node.span)])
+        }
+
+        SurfaceExpression::CaseArm { pattern, body } => {
+            // Convert to Expr for case arm checking (Phase 4 will migrate)
+            let pattern_expr = crate::ast_convert::surface_node_to_expr(pattern);
+            let body_expr = Rc::new(crate::ast_convert::surface_node_to_expr(body));
+            typecheck_case_arm(
+                &pattern_expr,
+                &body_expr,
+                &Type::Unknown,
+                env,
+                state,
+                type_map,
+            )
+        }
+
+        SurfaceExpression::Placeholder => {
+            // Gradual: placeholder (`...`) is the explicit gradual typing escape hatch.
+            Ok(Type::Unknown)
+        }
+
+        SurfaceExpression::Rest(_) => Err(vec![TypeError::new(
+            "rest marker (...) is only valid inside type expressions",
+            node.span,
+        )]),
+
+        SurfaceExpression::TypeApp { .. } => {
+            // TypeApp is type-level only — look up the resolved App type from type_map.
+            if let Some(ref map) = type_map {
+                let key = (node.span.start.offset, node.span.end.offset);
+                if let Some(resolved_ty) = map.get(&key) {
+                    return Ok(resolved_ty.clone());
+                }
+            }
+            // Gradual: TypeApp outside annotation context
+            Ok(Type::Unknown)
+        }
+
+        SurfaceExpression::PatternDecl { .. } => {
+            // PatternDecl should never appear in value positions (only in instance arms)
+            Err(vec![TypeError::new(
+                "pattern declaration is only valid in instance match arms",
+                node.span,
+            )])
+        }
+
+        SurfaceExpression::Error(span) => Err(vec![TypeError::new(
+            format!(
+                "syntax error at {}:{} (cannot typecheck error node)",
+                span.start.line, span.start.column
+            ),
+            node.span,
+        )]),
+    };
+
+    // Record the inferred type in the type map (if collecting).
+    // On error, record Type::Error as a sentinel so that LSP hover shows <error>
+    // rather than no type at all, and parent expressions can see Error via the type_map
+    // rather than inferring from a missing entry.
+    // Simplify compound types (RDNF step 1d) before storing so LSP hover shows the
+    // reduced form (e.g., Union([Int, Int]) → Int, Intersection([Never, T]) → Never).
+    if let Some(ref mut map) = type_map {
+        let key = (node.span.start.offset, node.span.end.offset);
+        match &result {
+            Ok(ty) => {
+                let simplified = Type::simplify_type(ty.clone());
+                map.insert(key, simplified);
+            }
+            Err(_) => {
+                map.insert(key, Type::Error);
+            }
+        }
+    }
+
+    result
 }
 
 fn infer_expr(
@@ -6424,13 +7084,12 @@ mod tests {
         crate::desugar::desugar_surface_program(&mut program);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
-        // Extract first expression from SurfaceProgram, convert to Expr for infer_expr
+        // Extract first expression from SurfaceProgram
         let node = match &program.documents[0].node.items[0] {
             crate::ast::SurfaceItem::Expr(n) => n,
             _ => panic!("expected expression item"),
         };
-        let expr = crate::ast_convert::surface_node_to_expr(node);
-        infer_expr(&expr, &env, &mut state, &mut None).unwrap()
+        infer_surface_expr(node, &env, &mut state, &mut None).unwrap()
     }
 
     fn doc_env(input: &str) -> Rc<TypeEnv> {
@@ -6710,8 +7369,7 @@ mod tests {
             crate::ast::SurfaceItem::Expr(n) => n,
             _ => panic!("expected expression item"),
         };
-        let expr = crate::ast_convert::surface_node_to_expr(node);
-        let errs = infer_expr(&expr, &env, &mut state, &mut None).unwrap_err();
+        let errs = infer_surface_expr(node, &env, &mut state, &mut None).unwrap_err();
         assert_eq!(errs.len(), 2, "infer_expr should return all dict errors");
         assert!(errs[0].message.contains("undefined1"));
         assert!(errs[1].message.contains("undefined2"));
@@ -7424,8 +8082,7 @@ mod tests {
             crate::ast::SurfaceItem::Expr(n) => n,
             _ => panic!("expected expression item"),
         };
-        let expr = crate::ast_convert::surface_node_to_expr(node);
-        let result = infer_expr(&expr, &parent_env, &mut state, &mut None);
+        let result = infer_surface_expr(node, &parent_env, &mut state, &mut None);
 
         // Must produce a not_a_function error, not a panic.
         assert!(
@@ -10573,8 +11230,7 @@ mod tests {
             crate::ast::SurfaceItem::Expr(n) => n,
             _ => panic!("expected expression item"),
         };
-        let expr = crate::ast_convert::surface_node_to_expr(node);
-        let result = infer_expr(&expr, &parent_env, &mut state, &mut Some(&mut type_map));
+        let result = infer_surface_expr(node, &parent_env, &mut state, &mut Some(&mut type_map));
 
         // The call to an Any-typed function returns Any.
         assert_eq!(
@@ -10584,15 +11240,13 @@ mod tests {
         );
 
         // Extract the span of the `42` argument from the parsed AST to look it up in type_map.
-        let arg_span = match &expr.node {
-            Expr::Call {
-                args, implied: _, ..
-            } => {
+        let arg_span = match &node.expr {
+            crate::ast::SurfaceExpression::Call { args, .. } => {
                 assert_eq!(args.len(), 1, "expected exactly one positional arg");
                 let arg = &args[0];
                 (arg.span.start.offset, arg.span.end.offset)
             }
-            other => panic!("expected Expr::Call, got {other:?}"),
+            other => panic!("expected SurfaceExpression::Call, got {other:?}"),
         };
 
         // The span of `42` must appear in type_map: the Type::Unknown arm must have inferred it.
@@ -14854,10 +15508,9 @@ mod tests {
             crate::ast::SurfaceItem::Expr(n) => n,
             _ => panic!("expected expression item"),
         };
-        let expr = crate::ast_convert::surface_node_to_expr(node);
         // Errors are expected (advisory): Unknown arg vs Int param produces a type error,
         // but the boundary guard collection happens before the unification error is returned.
-        let _ = infer_expr(&expr, &parent_env, &mut state, &mut None);
+        let _ = infer_surface_expr(node, &parent_env, &mut state, &mut None);
 
         // The boundary guard must have been collected: Unknown crossed into Int.
         assert!(
@@ -14915,8 +15568,7 @@ mod tests {
             crate::ast::SurfaceItem::Expr(n) => n,
             _ => panic!("expected expression item"),
         };
-        let expr = crate::ast_convert::surface_node_to_expr(node);
-        let ty = infer_expr(&expr, &env, &mut state, &mut None).unwrap();
+        let ty = infer_surface_expr(node, &env, &mut state, &mut None).unwrap();
         assert_eq!(
             ty,
             Type::Unknown,

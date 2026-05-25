@@ -205,10 +205,10 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 6. Once infer_expr has zero callers, delete it
 7. Remove `use crate::ast::Expr;` production import from typecheck.rs
 
-- [ ] Phase 1: Create `infer_surface_expr` stub (bridge wrapper) + migrate typecheck_surface_document and typecheck_dict.rs callers to use it (`src/typecheck.rs`, `src/typecheck_dict.rs`)
-- [ ] Phase 2: Migrate Literal/VarRef/Dict/Call/Fn match arms natively in `infer_surface_expr` (eliminate bridge for common cases)
-- [ ] Phase 3: Migrate remaining match arms (Match, DotAccess, TypeAssert, Sequential, Pipe, etc.) natively
-- [ ] Phase 4: Migrate 14 `check_*` helpers from `Rc<Spanned<Expr>>` to `Arc<SurfaceNode>` inputs
+- [x] Phase 1: Create `infer_surface_expr` stub (bridge wrapper) + migrate typecheck_surface_document and typecheck_dict.rs callers to use it (`src/typecheck.rs`, `src/typecheck_dict.rs`)
+- [x] Phase 2: Migrate Literal/VarRef/Dict/Call/Fn/Sequential/Quote/Unquote/Placeholder/Rest/Annotated/LetDecl match arms natively in `infer_surface_expr`
+- [x] Phase 3: Partial — common arms migrated natively; Fn/Match/TypeAssert/CaseArm/Decl still bridge to `infer_expr` (need helper function migration first)
+- [ ] Phase 4: Migrate 16 `check_*` helpers + `infer_fn`/`resolve_type_assert`/`typecheck_case_arm` from `Rc<Spanned<Expr>>` to `Arc<SurfaceNode>` inputs
 - [ ] Phase 5: Migrate expand.rs and eval.rs surface_node_to_expr/expr_to_surface_node callers (reduce bridge footprint)
 - [ ] Phase 6: Delete infer_expr + remove production `use crate::ast::Expr;` from typecheck.rs
 
