@@ -207,12 +207,20 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `surface_entries_to_entries` deleted (dead code, 2026-05-24 commit 42d3108)
 - [x] `eval_materialize.rs` TypeAssert/RuntimeTypeCheck: consolidated double-bridge to `surface_node_to_core_expr` helper (commit 42d3108)
 
-**Remaining (macro system bridges):**
-- [ ] Migrate `eval.rs` quote/unquote handling (lines 918, 976, 999-1034): `expr_to_core_expr`/`core_expr_to_expr`/`expr_to_surface_node` — macro AST roundtrip bridges
-- [ ] Migrate `expand.rs` macro body evaluation (lines 1401, 1474): replace `surface_node_to_expr` + `Expr::Fn` with direct SurfaceNode evaluation
-- [x] Retire `parse_expression` production caller (parser.rs:148): replaced `parse_expression(source)` + `expr_to_surface_node` bridge with `parse(source)` + direct `SurfaceItem::Expr` extraction — no Expr bridge needed. NOTE: `parse_expression` itself stays `pub` (not `#[cfg(test)]`) because corpus_tests.rs (integration test in separate crate) uses it to produce Expr Display strings for `=== out` corpus expectations; marking it `#[cfg(test)]` would break that crate.
-- [ ] Delete `surface_program_to_file`/`file_to_surface_program` from ast_convert.rs (test-only callers)
-- [ ] After all callers removed: delete `ast_convert.rs` entirely
+**COMPLETED:**
+- [x] eval.rs quote/unquote (eval_quote_walk, value_to_surface_node) fully migrated to Arc<SurfaceNode>
+- [x] eval.rs eval/eval_recursive/maybe_wrap_guard DELETED (dead); eval_surface_fn uses lower::lower+eval_core_expr 
+- [x] eval_materialize.rs TypeAssert/RuntimeTypeCheck: uses lower::lower directly (no surface_node_to_core_expr bridge)
+- [x] lower.rs: direct CoreExpr→SurfaceNode converter added (no ast_convert dependency)
+- [x] expand.rs: surface_node_to_expr import REMOVED; uses eval_surface_fn instead
+- [x] parser.rs: expr_to_pattern_with_guard migrated to surface_node_to_pattern_with_guard
+- [x] parser.rs:148 production caller retired; parse_expression stays pub for integration tests
+
+**Remaining (only integration test API blocker):**
+- [ ] `parse_expression` in parser.rs is used by `corpus_tests.rs` (integration test, external crate) — cannot be `#[cfg(test)]`. Its body uses ast_convert. Options: (a) migrate corpus_tests.rs away from parse_expression, (b) inline parse_expression's body without ast_convert, (c) accept ast_convert remains pub (all other production code is clean)
+- [ ] Once `parse_expression`'s ast_convert dependency is resolved: delete ast_convert.rs entirely
+
+**STATUS**: All production code (non-test, non-integration-test-API) is now ast_convert-free. ast_convert is production-reachable only via `parse_expression`.
 
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files
 
