@@ -359,11 +359,30 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                 .map(|b| core_expr_to_surface_node(b))
                 .collect(),
         },
-        CoreExpr::CaseArm { .. }
-        | CoreExpr::TypeApp { .. }
-        | CoreExpr::Dict(_)
-        | CoreExpr::Error(_)
-        | CoreExpr::Placeholder => SurfaceExpression::Placeholder,
+        CoreExpr::Dict(entries) => SurfaceExpression::Dict(
+            entries
+                .iter()
+                .map(|e| {
+                    crate::ast::Spanned::new(
+                        crate::ast::SurfaceEntry {
+                            key: e.node.key.as_ref().map(|k| core_expr_to_surface_node(k)),
+                            value: core_expr_to_surface_node(&e.node.value),
+                        },
+                        e.span,
+                    )
+                })
+                .collect(),
+        ),
+        CoreExpr::CaseArm { pattern, body } => SurfaceExpression::CaseArm {
+            pattern: core_expr_to_surface_node(pattern),
+            body: core_expr_to_surface_node(body),
+        },
+        CoreExpr::TypeApp { func, arg } => SurfaceExpression::TypeApp {
+            func: core_expr_to_surface_node(func),
+            arg: core_expr_to_surface_node(arg),
+        },
+        CoreExpr::Error(span) => SurfaceExpression::Error(*span),
+        CoreExpr::Placeholder => SurfaceExpression::Placeholder,
     }
 }
 

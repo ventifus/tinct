@@ -1046,7 +1046,7 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 ### quote-roundtrip-fidelity: core_expr_to_surface_expr drops Dict/CaseArm/TypeApp in quote [Major]
 
-- [ ] Implement missing structural conversions in `src/lower.rs:core_expr_to_surface_expr` — `CoreExpr::Dict` currently maps to `Placeholder` (destroying dict structure); `[quote [a: 1 b: 2]]` produces `Value::Expression(Placeholder)`. Add Dict, CaseArm, TypeApp, Error conversions (all direct recursive maps with same field shapes). [Major — computer-scientist]
+- [x] Implement missing structural conversions in `src/lower.rs:core_expr_to_surface_expr` — Dict, CaseArm, TypeApp, Error now properly converted (no longer collapsed to Placeholder)
 
 ### boundary-guard-impl: Implement boundary guard application in eval_core_expr [Major]
 
