@@ -4,6 +4,18 @@ Completed milestones and sprints, moved from TODO.md.
 
 ## runtime-v2 Migration
 
+### rv2-infer-surface: Rewrite infer_expr to walk SurfaceNode natively ✅ DONE (2026-05-24)
+
+All phases complete across 10+ commits. Net: ~2500 lines deleted, ~800 lines added. **348 typecheck tests pass.**
+
+- [x] Phase 1: Created infer_surface_expr; migrated 10 callers in typecheck_surface_document/typecheck_dict.rs
+- [x] Phase 2-3: 15+ match arms native (Int/Float/Bool/Str/VarRef/Dict/Fn/Match/Sequential/Quote/TypeAssert/Decl/etc.)
+- [x] Phase 4: All 16 check_* helpers migrated to Arc<SurfaceNode>
+- [x] Phase 5-6: infer_expr DELETED (943 lines); infer_if/infer_fn/typecheck_case_arm migrated
+- [x] Final cleanup: extract_narrowings/extract_param_indices/extract_pattern_types/register_type_aliases/check_surface_expr/resolve_monad_from_surface all native; production `use crate::ast::Expr;` removed from typecheck.rs
+
+Remaining Expr dependencies (evaluator-layer bridges, not part of this sprint): eval.rs (quote/unquote), expand.rs (macro body Expr::Fn), parser.rs, desugar.rs, eval_pipeline.rs.
+
 ### rv2-delete-old-ast: Delete old File/Document types and test wrappers (2026-05-24, partial)
 
 **Completed:**

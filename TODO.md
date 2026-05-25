@@ -190,27 +190,6 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Remove standalone `use crate::ast::Expr;` from `src/expand.rs`
 
 
-### rv2-infer-surface: Rewrite infer_expr to walk SurfaceNode natively
-
-**Blocks:** rv2-delete-old-ast (ast_convert.rs deletion, Expr/File removal from ast.rs)
-
-`infer_expr` in `src/typecheck.rs` takes `Rc<Spanned<Expr>>` and is the production type inference core (~3000 lines, called 80+ times recursively). 14 `check_*` helper functions also take `&[Rc<Spanned<Expr>>]`. All remaining `surface_node_to_expr` / `expr_to_surface_node` bridge calls in typecheck.rs, typecheck_dict.rs, expand.rs, eval.rs, and parser.rs exist because `infer_expr` requires `Expr`.
-
-**Approach:**
-1. Add `infer_surface_expr(node: &Arc<SurfaceNode>, env, state, type_map) -> Result<Type, Vec<TypeError>>` alongside infer_expr — initially a thin bridge wrapper calling infer_expr via surface_node_to_expr
-2. Update all callers in `typecheck_surface_document` to call `infer_surface_expr` instead of bridging
-3. Update `typecheck_dict.rs` (4 sites) to call `infer_surface_expr`
-4. Migrate each `Expr::*` arm in `infer_expr` → `SurfaceExpression::*` arm in `infer_surface_expr` (25-30 variants)
-5. Migrate 14 `check_*` builtin helpers to take `&[Arc<SurfaceNode>]` instead of `&[Rc<Spanned<Expr>>]`
-6. Once infer_expr has zero callers, delete it
-7. Remove `use crate::ast::Expr;` production import from typecheck.rs
-
-- [x] Phase 1: Create `infer_surface_expr` stub (bridge wrapper) + migrate typecheck_surface_document and typecheck_dict.rs callers to use it (`src/typecheck.rs`, `src/typecheck_dict.rs`)
-- [x] Phase 2: Migrate Literal/VarRef/Dict/Call/Fn/Sequential/Quote/Unquote/Placeholder/Rest/Annotated/LetDecl match arms natively in `infer_surface_expr`
-- [x] Phase 3: Fn/Match/TypeAssert/Decl/RuntimeTypeCheck arms migrated natively in infer_surface_expr (commit e90f830)
-- [x] Phase 4: All 16 `check_*` helpers migrated to `Arc<SurfaceNode>`; infer_surface_expr Call arm passes args directly (commit 4c87d4c)
-- [x] Phase 5-6: `infer_expr` DELETED (943 lines, commit e90f830); `infer_if`, `infer_fn`, `typecheck_case_arm` migrated to SurfaceNode; `infer_class_decl_from_expr`/`infer_instance_decl_from_expr` helpers still use Expr internally (future cleanup)
-- [x] Final cleanup: All production Expr usage removed from typecheck.rs + typecheck_annot.rs (commits 0244164, 79e4f91, a5e487a, d8846b5). `use crate::ast::Expr;` moved to `#[cfg(test)]`. Remaining Expr dependencies: eval.rs (quote/unquote: expr_to_core_expr, core_expr_to_expr), expand.rs (macro body Expr::Fn), parser.rs, desugar.rs, eval_pipeline.rs — these are evaluator-layer bridges not part of this sprint.
 
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files
 
