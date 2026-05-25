@@ -1,6 +1,7 @@
 //! Type checker: infers types from AST expressions, resolves type aliases,
 //! validates type assertions, and performs Hindley-Milner style type variable
 //! unification for polymorphic function calls.
+//!
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -10,12 +11,10 @@ use crate::ast::{
     SurfaceDocument, SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
     TypeAnnotationTable,
 };
-// Expr: used by production inference helpers (infer_expr, extract_narrowings, typecheck_document,
-// etc.) and by #[cfg(test)] reset_expr / reset_elaboration. TODO(rv2-delete-old-ast): remove once
-// typecheck_document and all inference helpers are rewritten to walk SurfaceExpression natively.
+// Expr: used by production inference helpers (infer_expr, extract_narrowings, etc.).
+// TODO(rv2-delete-old-ast): remove once all inference helpers are rewritten to walk
+// SurfaceExpression natively.
 use crate::ast::Expr;
-#[cfg(test)]
-use crate::ast::{Document, File}; // test-only: Document used by reset_elaboration; File by typecheck_file_* wrappers
 use crate::coverage;
 use crate::types::{
     generalize, instantiate_at_level, instantiate_scheme, resolve_has_field, unify, InferState,
@@ -45,367 +44,6 @@ type MatchArmData<'a> = (Vec<Type>, Span, &'a Vec<Spanned<Entry>>);
 
 /// Re-export SchemeMap from types for LSP consumers.
 pub use crate::types::SchemeMap;
-
-/// Reset all elaboration state in the AST (TypeAssert.resolved_type fields).
-/// This allows re-typechecking a cached AST without triggering the write-once
-/// invariant assertion in resolve_type_assert.
-///
-/// Uses interior mutability via RefCell, so only needs &File (not &mut File).
-#[cfg(test)]
-fn reset_elaboration(file: &File) {
-    for doc in &file.documents {
-        for expr in &doc.node.expressions {
-            reset_expr(expr.as_ref());
-        }
-    }
-}
-
-/// Recursively reset resolved_type in all TypeAssert nodes.
-#[cfg(test)]
-fn reset_expr(expr: &Spanned<Expr>) {
-    match &expr.node {
-        // Literals: no children
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Str(_)
-        | Expr::VarRef { .. }
-        | Expr::Rest(_)
-        | Expr::Placeholder
-        | Expr::TypeApp { .. }
-        | Expr::MacroDecl { .. }
-        | Expr::Splice(..)
-        | Expr::SyntaxClass { .. }
-        | Expr::Error(_) => {}
-
-        // Access expressions: recurse into target
-        Expr::DotAccess { expr: target, .. } => {
-            reset_expr(target);
-        }
-        // Dict: recurse into keys and values
-        Expr::Dict(entries) => {
-            for entry_spanned in entries {
-                if let Some(key_spanned) = &entry_spanned.node.key {
-                    reset_expr(key_spanned);
-                }
-                reset_expr(&entry_spanned.node.value);
-            }
-        }
-
-        // Call: recurse into func, args, and named args
-        Expr::Call {
-            func,
-            args,
-            named_args,
-            implied: _,
-        } => {
-            reset_expr(func);
-            for arg in args {
-                reset_expr(arg);
-            }
-            for named_arg_spanned in named_args {
-                reset_expr(&named_arg_spanned.node.value);
-            }
-        }
-
-        // Fn: recurse into parameter annotations, return annotation, and body
-        Expr::Fn {
-            params: _,
-            body,
-            return_ann: _,
-            desugared: _,
-        } => {
-            // Annotations (param types, return type) are type expressions and
-            // cannot contain TypeAssert nodes — no reset needed.
-            reset_expr(body);
-        }
-
-        // TypeAlias: recurse into the aliased expression
-        Expr::TypeAlias { body, .. } => {
-            reset_expr(body);
-        }
-
-        // TypeAssert: reset resolved_type and recurse into inner expression
-        // Note: we don't recurse into the annotation because annotations are
-        // type expressions and shouldn't contain TypeAssert nodes
-        Expr::TypeAssert {
-            expr: inner,
-            resolved_type,
-            ..
-        } => {
-            *resolved_type.borrow_mut() = None;
-            reset_expr(inner);
-        }
-
-        // Pipe: recurse into both sides
-        Expr::Pipe { lhs, rhs } => {
-            reset_expr(lhs);
-            reset_expr(rhs);
-        }
-
-        // Sequential: recurse into all expressions
-        Expr::Sequential(exprs) => {
-            for seq_expr in exprs {
-                reset_expr(seq_expr);
-            }
-        }
-
-        // Annotated: annotations don't contain TypeAssert nodes, so nothing to reset
-        Expr::Annotated { .. } => {}
-
-        // Quote: recurse into the inner expression
-        Expr::Quote(inner) => {
-            reset_expr(inner);
-        }
-
-        // Unquote and UnquoteSplice: recurse into the inner expression
-        Expr::Unquote(inner) | Expr::UnquoteSplice(inner) => {
-            reset_expr(inner);
-        }
-
-        // DefMacro: recurse into the body
-        Expr::DefMacro { body, .. } => {
-            reset_expr(body);
-        }
-
-        // Match: recurse into scrutinee and arm bodies
-        Expr::Match { scrutinee, arms } => {
-            reset_expr(scrutinee);
-            for arm in arms {
-                if let Some(guard) = &arm.guard {
-                    reset_expr(guard);
-                }
-                reset_expr(&arm.body);
-            }
-        }
-
-        // ClassDecl: recurse into method signatures
-        Expr::ClassDecl { methods, .. } => {
-            for method in methods {
-                if let Some(key) = &method.node.key {
-                    reset_expr(key);
-                }
-                reset_expr(&method.node.value);
-            }
-        }
-
-        // InstanceDecl: recurse into pattern expressions and method implementations
-        Expr::InstanceDecl { arms, .. } => {
-            for (pattern_expr, methods) in arms {
-                reset_expr(pattern_expr);
-                for method in methods {
-                    if let Some(key) = &method.node.key {
-                        reset_expr(key);
-                    }
-                    reset_expr(&method.node.value);
-                }
-            }
-        }
-
-        // PatternDecl: recurse into bindings
-        Expr::PatternDecl { bindings } => {
-            for binding in bindings {
-                reset_expr(binding);
-            }
-        }
-
-        // LetDecl: recurse into bindings
-        Expr::LetDecl { bindings } => {
-            for binding in bindings {
-                reset_expr(binding);
-            }
-        }
-
-        // CaseArm: recurse into pattern and body
-        Expr::CaseArm { pattern, body } => {
-            reset_expr(pattern);
-            reset_expr(body);
-        }
-    }
-}
-
-/// Type-check a file, returning errors, a type map, and a doc map for LSP features.
-/// The type map and doc map are populated even when errors occur, covering
-/// every expression that was successfully inferred.
-///
-/// Automatically resets elaboration state before typechecking, allowing
-/// re-typechecking of cached ASTs (LSP use case) without triggering the
-/// write-once invariant assertion in resolve_type_assert.
-
-/// Test-only convenience wrapper: typecheck with default prelude env.
-/// All external callers now use `typecheck_surface_program*`.
-#[cfg(test)]
-fn typecheck_file_with_types(
-    file: &File,
-) -> (
-    Vec<TypeError>,
-    TypeMap,
-    DocMap,
-    SchemeMap,
-    Vec<crate::error::TypeDiagnostic>,
-) {
-    typecheck_file_with_types_and_env(file, crate::imports::build_prelude_env())
-}
-
-/// Type-check a parsed [`File`] with a custom initial type environment.
-///
-/// Like [`typecheck_file_with_types`], but accepts a custom initial environment.
-/// This is used by the LSP to seed the type environment with prelude names,
-/// suppressing false "undefined variable" errors for stdlib functions.
-#[cfg(test)]
-fn typecheck_file_with_types_and_env(
-    file: &File,
-    initial_env: Rc<TypeEnv>,
-) -> (
-    Vec<TypeError>,
-    TypeMap,
-    DocMap,
-    SchemeMap,
-    Vec<crate::error::TypeDiagnostic>,
-) {
-    typecheck_file_with_types_and_env_and_source(file, initial_env, None)
-}
-
-/// Type-check a parsed [`File`] with a custom initial type environment and source path.
-///
-/// Like [`typecheck_file_with_types_and_env`], but accepts an optional source path
-/// for diagnostics that need to know the source file.
-#[cfg(test)]
-fn typecheck_file_with_types_and_env_and_source(
-    file: &File,
-    initial_env: Rc<TypeEnv>,
-    // source_path was previously used for T009 builtin-* alias diagnostics.
-    // T009 was removed as part of the primitive-privacy sprint (Phase 4).
-    // The parameter is kept for API compatibility; callers may still pass Some(path).
-    _source_path: Option<String>,
-) -> (
-    Vec<TypeError>,
-    TypeMap,
-    DocMap,
-    SchemeMap,
-    Vec<crate::error::TypeDiagnostic>,
-) {
-    let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _final_env) =
-        typecheck_file_with_types_and_env_and_source_returning_state(
-            file,
-            initial_env,
-            true,
-            false,
-        );
-    (errors, type_map, doc_map, scheme_map, diagnostics)
-}
-
-/// Like [`typecheck_file_with_types_and_env_and_source`], but also returns the final
-/// [`InferState`] and the final [`TypeEnv`].
-///
-/// The returned [`InferState`] is used by `imports::build_prelude_env_inner` to capture
-/// the prelude's `instance_env` for propagation to user-code type-checking sessions, and
-/// by the eval pipeline to extract `boundary_guards` for gradual typing runtime checks.
-///
-/// The returned [`TypeEnv`] holds the accumulated type environment after processing all
-/// documents. Bindings for successfully-typechecked documents appear as generalized
-/// [`TypeScheme`]s — the authoritative source for polymorphic prelude function types.
-/// Documents that return errors (via [`typecheck_document`] → `Err`) do NOT contribute
-/// to the returned env (their partial env is discarded). Callers requiring best-effort
-/// coverage (e.g., `imports::typecheck_and_merge_stdlib_module`) should fall back to
-/// the [`TypeMap`] for any bindings missing from the returned env.
-#[cfg(test)]
-fn typecheck_file_with_types_and_env_and_source_returning_state(
-    file: &File,
-    initial_env: Rc<TypeEnv>,
-    enable_scheme_map: bool,
-    in_prelude_load: bool,
-) -> (
-    Vec<TypeError>,
-    TypeMap,
-    DocMap,
-    SchemeMap,
-    Vec<crate::error::TypeDiagnostic>,
-    InferState,
-    Rc<TypeEnv>,
-) {
-    // Reset elaboration state to allow re-typechecking cached ASTs
-    reset_elaboration(file);
-
-    let mut errors = Vec::new();
-    let mut diagnostics = Vec::new();
-    let mut env = initial_env;
-    let mut state = InferState::new();
-    // Seed with prelude instances so user code sees class instances registered by prelude.llt.
-    // This call is a no-op when the cache is empty (i.e., when we ARE type-checking the prelude).
-    crate::imports::seed_infer_state_from_prelude_cache(&mut state);
-
-    // Set the prelude load flag if requested (optimization for prelude type-checking)
-    state.in_prelude_load = in_prelude_load;
-
-    if enable_scheme_map {
-        // Enable scheme collection for LSP hover (constraints display).
-        state.scheme_map = Some(SchemeMap::new());
-    }
-    let mut type_map = TypeMap::new();
-    let mut doc_map = DocMap::new();
-    let mut named_types: HashMap<String, Type> = HashMap::new();
-    let mut pipeline_type = Type::Record(Row {
-        fields: HashMap::new(),
-    });
-
-    for doc in &file.documents {
-        // Skip type-stage documents — they are handled separately by create_type_stage_env()
-        // and should not be type-checked in the runtime pipeline.
-        if doc.node.stage == Some(crate::ast::Stage::Type) {
-            continue;
-        }
-
-        match typecheck_document(
-            doc,
-            &env,
-            &mut state,
-            &mut Some(&mut type_map),
-            &pipeline_type,
-            &named_types,
-        ) {
-            Ok((new_env, doc_output_type, mut advisory)) => {
-                env = new_env;
-                // Report advisory errors (expects:/output_type) without blocking propagation.
-                errors.append(&mut advisory);
-                // Store named section type if this document has a name
-                if let Some(ref name) = doc.node.name {
-                    named_types.insert(name.clone(), doc_output_type.clone());
-                }
-                // Update pipeline type for next document
-                pipeline_type = doc_output_type;
-            }
-            Err(mut doc_errors) => errors.append(&mut doc_errors),
-        }
-    }
-
-    // Extract doc strings from all documents
-    extract_doc_strings(file, &mut doc_map);
-
-    // Extract scheme_map from state (was populated during VarRef inference).
-    let scheme_map = state.scheme_map.take().unwrap_or_default();
-
-    // Scan for type quality issues (Unknown types, over-broad annotations).
-    // scan_type_quality takes &SurfaceProgram; convert via bridge (test-only path).
-    let surface_for_scan = crate::ast_convert::file_to_surface_program(file);
-    scan_type_quality(&type_map, &surface_for_scan, &mut diagnostics);
-
-    // Extract diagnostics accumulated during type inference (e.g., T013 ambiguous constraints).
-    // These are distinct from scan_type_quality diagnostics (T010/T011 Unknown type warnings).
-    // Without this, state.diagnostics are only visible to callers that inspect the returned
-    // state directly — typecheck_source (and the corpus test pipeline) would silently drop them.
-    diagnostics.append(&mut state.diagnostics);
-
-    (
-        errors,
-        type_map,
-        doc_map,
-        scheme_map,
-        diagnostics,
-        state,
-        env,
-    )
-}
 
 /// Type-check a SurfaceProgram and return a TypeAnnotationTable.
 ///
@@ -1096,113 +734,10 @@ pub(crate) fn typecheck_surface_document_native(
 ///
 /// Walks the AST looking for `doc:` properties in `@[...]` annotations.
 /// Populates the doc_map with entries like `param_name -> "doc string"`.
-#[cfg(test)]
-fn extract_doc_strings(file: &File, doc_map: &mut DocMap) {
-    for document in &file.documents {
-        for expr in &document.node.expressions {
-            extract_doc_from_expr(&expr.node, doc_map, None);
-        }
-    }
-}
-
-/// Recursively extract doc strings from an expression tree.
-///
-/// `binding_name`: When recursing into a dict entry value, this is the entry's binding name
-/// (used to key function-level doc strings extracted from return annotations).
-#[cfg(test)]
-fn extract_doc_from_expr(expr: &Expr, doc_map: &mut DocMap, binding_name: Option<&str>) {
-    match expr {
-        Expr::Fn {
-            return_ann,
-            params,
-            body,
-            ..
-        } => {
-            // Extract doc strings from parameter annotations
-            for param in params {
-                if let Some(ref ann) = param.node.annotation {
-                    if let Some(doc_node) = ann.node.get_property("doc") {
-                        if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
-                            doc_map.insert(param.node.name.clone(), doc_string.clone());
-                        }
-                    }
-                }
-            }
-            // Extract doc from return annotation if present (function-level doc)
-            if let Some(binding) = binding_name {
-                if let Some(ref ann) = return_ann {
-                    if let Some(doc_node) = ann.node.get_property("doc") {
-                        if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
-                            doc_map.insert(binding.to_string(), doc_string.clone());
-                        }
-                    }
-                }
-            }
-            // Recurse into function body
-            extract_doc_from_expr(&body.node, doc_map, None);
-        }
-        Expr::Dict(entries) => {
-            for entry in entries {
-                // Extract doc from key annotation (e.g., name@[doc: "..."])
-                if let Some(ref key_expr) = entry.node.key {
-                    if let Expr::Annotated { name, annotation } = &key_expr.node {
-                        if let Some(doc_node) = annotation.node.get_property("doc") {
-                            if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
-                                doc_map.insert(name.clone(), doc_string.clone());
-                            }
-                        }
-                        // Thread the binding name when recursing into the value
-                        extract_doc_from_expr(&entry.node.value.node, doc_map, Some(name));
-                        continue;
-                    }
-                    // Plain VarRef key (e.g., `calc: [fn@[doc: "..."] ...]`)
-                    // Thread the binding name so fn return annotations can be keyed
-                    if let Expr::VarRef { name, .. } = &key_expr.node {
-                        extract_doc_from_expr(&entry.node.value.node, doc_map, Some(name));
-                        continue;
-                    }
-                }
-                // No annotation on key, recurse without binding name
-                extract_doc_from_expr(&entry.node.value.node, doc_map, None);
-            }
-        }
-        Expr::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } => {
-            extract_doc_from_expr(&func.node, doc_map, None);
-            for arg in args {
-                extract_doc_from_expr(&arg.node, doc_map, None);
-            }
-            for named_arg in named_args {
-                extract_doc_from_expr(&named_arg.node.value.node, doc_map, None);
-            }
-        }
-        Expr::DotAccess { expr: target, .. } => {
-            extract_doc_from_expr(&target.node, doc_map, None);
-        }
-        Expr::TypeAssert { expr: inner, .. } => {
-            extract_doc_from_expr(&inner.node, doc_map, None);
-        }
-        Expr::TypeAlias { body, .. } => {
-            extract_doc_from_expr(&body.node, doc_map, None);
-        }
-        Expr::Pipe { lhs, rhs } => {
-            extract_doc_from_expr(&lhs.node, doc_map, None);
-            extract_doc_from_expr(&rhs.node, doc_map, None);
-        }
-        // Literals and VarRef have no children to recurse into
-        _ => {}
-    }
-}
-
 /// Extract documentation strings from a SurfaceProgram.
 ///
 /// Walks the Surface AST looking for `doc:` properties in `@[...]` annotations on
-/// function parameters and return annotations. Populates the doc_map the same way
-/// as `extract_doc_strings` does for the File AST.
+/// function parameters and return annotations.
 fn extract_doc_strings_surface(program: &SurfaceProgram, doc_map: &mut DocMap) {
     for doc_spanned in &program.documents {
         for item in &doc_spanned.node.items {
@@ -1298,408 +833,6 @@ fn extract_doc_from_surface_node(
             }
         }
         _ => {}
-    }
-}
-
-/// Helper for tests that don't need pipeline/named types.
-/// Advisory errors (expects:/output_type) are promoted to fatal in this helper so that
-/// test assertions written as `.expect("typecheck should succeed")` still catch them.
-#[cfg(test)]
-fn typecheck_document_simple(
-    doc: &Spanned<Document>,
-    parent_env: &Rc<TypeEnv>,
-    state: &mut InferState,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Result<Rc<TypeEnv>, Vec<TypeError>> {
-    let empty_record = Type::Record(Row {
-        fields: HashMap::new(),
-    });
-    let named_types = HashMap::new();
-    typecheck_document(
-        doc,
-        parent_env,
-        state,
-        type_map,
-        &empty_record,
-        &named_types,
-    )
-    .and_then(|(env, _ty, advisory)| {
-        if advisory.is_empty() {
-            Ok(env)
-        } else {
-            Err(advisory)
-        }
-    })
-}
-
-/// `expects:` and `output_type` annotation errors are advisory — they are returned inside the
-/// `Ok` tuple so callers can propagate pipeline types even when an annotation check fails.
-/// Fatal body errors (inference failures, undefined variables, etc.) are returned as `Err`.
-#[cfg(test)]
-fn typecheck_document(
-    doc: &Spanned<Document>,
-    parent_env: &Rc<TypeEnv>,
-    state: &mut InferState,
-    type_map: &mut Option<&mut TypeMap>,
-    pipeline_type: &Type,
-    named_types: &HashMap<String, Type>,
-) -> Result<(Rc<TypeEnv>, Type, Vec<TypeError>), Vec<TypeError>> {
-    let mut errors = Vec::new();
-    // Advisory errors from `expects:` and `output_type` annotations. These do not block
-    // pipeline-type propagation — they are returned in the Ok tuple so callers can continue
-    // threading types across --- boundaries even when an annotation contract is violated.
-    let mut advisory_errors: Vec<TypeError> = Vec::new();
-
-    // Create environment with % and %name bindings
-    let mut env = TypeEnv::with_parent(parent_env);
-
-    // Bind % (pipeline variable) with the incoming type
-    env.insert("%".to_string(), pipeline_type.clone());
-
-    // Bind all named sections as %name
-    for (name, ty) in named_types {
-        env.insert(format!("%{}", name), ty.clone());
-    }
-
-    let mut env = Rc::new(env);
-
-    // Validate expects annotation if present.
-    // `expects:` is advisory: errors go into advisory_errors, not errors, so a contract
-    // violation does not block pipeline-type propagation for subsequent documents.
-    if let Some(ref expects_ann) = doc.node.expects {
-        match resolve_annotation(
-            &expects_ann.node,
-            &env,
-            expects_ann.span,
-            state,
-            &mut None,
-            &mut None,
-        ) {
-            Ok(expected_type) => {
-                // Apply substitution before consistency check
-                let (pipeline_type_resolved, expected_type_resolved) = if state.subst.is_empty() {
-                    (pipeline_type.clone(), expected_type.clone())
-                } else {
-                    (
-                        state.subst.apply(pipeline_type),
-                        state.subst.apply(&expected_type),
-                    )
-                };
-                let passes = Type::is_subtype(&pipeline_type_resolved, &expected_type_resolved)
-                    || ((contains_unknown_or_top(&pipeline_type_resolved)
-                        || contains_unknown_or_top(&expected_type_resolved))
-                        && Type::is_consistent(&pipeline_type_resolved, &expected_type_resolved));
-                if !passes {
-                    advisory_errors.push(TypeError::new(
-                        format!(
-                            "Pipeline input type {} does not satisfy expects contract {}",
-                            pipeline_type_resolved, expected_type_resolved
-                        ),
-                        expects_ann.span,
-                    ));
-                }
-            }
-            Err(e) => advisory_errors.push(e),
-        }
-    }
-
-    // Process caps: declarations if present.
-    // Each cap entry (%name: @Type) extends the environment with that capability variable.
-    if let Some(ref caps_ann) = doc.node.caps {
-        // Need to make env mutable to extend it
-        let mut env_mut = (*env).clone();
-        for (cap_name, annotation) in &caps_ann.node {
-            match resolve_annotation(annotation, &env, caps_ann.span, state, &mut None, &mut None) {
-                Ok(cap_type) => {
-                    // Insert capability variable with % prefix
-                    env_mut.insert(format!("%{}", cap_name), cap_type);
-                }
-                Err(e) => {
-                    // Caps annotation errors are fatal (not advisory).
-                    // If a capability type annotation is invalid, we can't type-check the document.
-                    errors.push(e);
-                }
-            }
-        }
-        env = Rc::new(env_mut);
-    }
-
-    let mut result_type = Type::Record(Row {
-        fields: HashMap::new(),
-    });
-
-    let exprs = &doc.node.expressions;
-    if exprs.is_empty() {
-        // Validate output annotation even for empty document.
-        // output_type annotation mismatches are advisory; they do not block Ok.
-        if let Some(ref output_ann) = doc.node.output_type {
-            match resolve_annotation(
-                &output_ann.node,
-                &env,
-                output_ann.span,
-                state,
-                &mut None,
-                &mut None,
-            ) {
-                Ok(expected_output) => {
-                    // Apply substitution before consistency check
-                    let (result_type_resolved, expected_output_resolved) = if state.subst.is_empty()
-                    {
-                        (result_type.clone(), expected_output.clone())
-                    } else {
-                        (
-                            state.subst.apply(&result_type),
-                            state.subst.apply(&expected_output),
-                        )
-                    };
-                    let passes = Type::is_subtype(&result_type_resolved, &expected_output_resolved)
-                        || ((contains_unknown_or_top(&result_type_resolved)
-                            || contains_unknown_or_top(&expected_output_resolved))
-                            && Type::is_consistent(
-                                &result_type_resolved,
-                                &expected_output_resolved,
-                            ));
-                    if !passes {
-                        advisory_errors.push(TypeError::new(
-                            format!(
-                                "Document output type {} does not match annotation {}",
-                                result_type_resolved, expected_output_resolved
-                            ),
-                            output_ann.span,
-                        ));
-                    }
-                }
-                Err(e) => advisory_errors.push(e),
-            }
-        }
-
-        let mut result_env = TypeEnv::with_parent(&env);
-        result_env.insert("%".to_string(), result_type.clone());
-
-        // Body is empty (no fatal errors possible), always return Ok.
-        // advisory_errors (expects:/output_type) are included in Ok for the caller to report.
-        if errors.is_empty() {
-            return Ok((Rc::new(result_env), result_type, advisory_errors));
-        } else {
-            return Err(errors);
-        }
-    }
-
-    let mut last_dict_schemes: Option<HashMap<String, TypeScheme>> = None;
-    // Carries the inferred Record type and the enclosing_level saved before inference,
-    // so that generalization in the block below the loop uses the correct level explicitly.
-    let mut last_record_type: Option<(Type, u32)> = None;
-    let mut last_expr: Option<&Spanned<Expr>> = None;
-
-    for (i, expr_rc) in exprs.iter().enumerate() {
-        let expr = expr_rc.as_ref();
-        let is_last = i == exprs.len() - 1;
-
-        // Special handling for Dict expressions at document level to preserve schemes
-        if let Expr::Dict(entries) = &expr.node {
-            // Convert Entry-based entries to SurfaceEntry for infer_dict
-            let surface_entries: Vec<Spanned<SurfaceEntry>> = entries
-                .iter()
-                .map(|e| {
-                    let key = e
-                        .node
-                        .key
-                        .as_ref()
-                        .map(crate::ast_convert::expr_to_surface_node);
-                    let value = crate::ast_convert::expr_to_surface_node(&e.node.value);
-                    Spanned::new(SurfaceEntry { key, value }, e.span)
-                })
-                .collect();
-            let (ty, schemes, mut dict_errs) =
-                infer_dict(&surface_entries, &env, state, type_map, expr.span);
-            errors.append(&mut dict_errs);
-            if is_last {
-                result_type = ty;
-                last_dict_schemes = Some(schemes);
-                last_expr = Some(expr);
-            } else {
-                // Record the inferred dict type in type_map so LSP hover works
-                // for non-last Dict positions in a document. infer_dict is called
-                // directly here (bypassing infer_expr), so type_map insertion
-                // must be done explicitly — infer_expr's auto-insert at line 522
-                // is not reached for this code path.
-                if let Some(ref mut map) = type_map {
-                    let key = (expr.span.start.offset, expr.span.end.offset);
-                    map.insert(key, ty.clone());
-                }
-                let mut new_env = TypeEnv::with_parent(&env);
-                for (name, scheme) in &schemes {
-                    new_env.insert_scheme(name.clone(), scheme.clone());
-                }
-                let mut alias_errs = register_type_aliases(expr, &mut new_env, &env, state);
-                errors.append(&mut alias_errs);
-                env = Rc::new(new_env);
-            }
-        } else {
-            if is_last {
-                // Last expression: always infer at an incremented level so that any type
-                // variables introduced during inference are at a higher level than the
-                // document boundary, making them generalizable when threading field schemes.
-                // The level is restored immediately after inference (line 127).
-                let enclosing_level = state.level;
-                state.level += 1;
-
-                match infer_expr(expr, &env, state, type_map) {
-                    Ok(ty) => {
-                        state.level = enclosing_level;
-                        result_type = ty.clone();
-                        // Track last non-Dict Record type and its enclosing_level for scheme
-                        // threading. Storing enclosing_level here makes it available explicitly
-                        // at the generalization site below (defense-in-depth per Kiselyov 2013).
-                        if matches!(&ty, Type::Record(_)) {
-                            last_record_type = Some((ty, enclosing_level));
-                        }
-                        last_expr = Some(expr);
-                    }
-                    Err(mut errs) => {
-                        state.level = enclosing_level;
-                        errors.append(&mut errs);
-                        // Populate type_map with Error for LSP hover on failed expressions.
-                        // infer_expr already inserts Type::Error into type_map before returning Err,
-                        // but typecheck_document re-inserts here for the outer span (the document-level
-                        // expression span may differ from the inner sub-expression span that infer_expr
-                        // recorded). Use Type::Error (not Any) so LSP shows <error> not Any.
-                        if let Some(ref mut map) = type_map {
-                            let key = (expr.span.start.offset, expr.span.end.offset);
-                            map.insert(key, Type::Error);
-                        }
-                    }
-                }
-            } else {
-                // Non-last expression: infer at incremented level (mirroring Dict's level
-                // management) so that type variables can be properly generalized when
-                // threading Record fields as schemes into the environment.
-                let enclosing_level = state.level;
-                state.level += 1;
-
-                match infer_expr(expr, &env, state, type_map) {
-                    Ok(ty) => {
-                        state.level = enclosing_level; // Restore before generalization
-                        match &ty {
-                            Type::Record(Row { fields, .. }) => {
-                                // Non-dict Record expressions (e.g., from a function call)
-                                // thread field types as generalized schemes, mirroring Dict behavior.
-                                // This enables polymorphic field access for Records returned from
-                                // polymorphic functions.
-                                let mut new_env = TypeEnv::with_parent(&env);
-                                for (name, field_ty) in fields {
-                                    let scheme = generalize(enclosing_level, field_ty, state);
-                                    new_env.insert_scheme(name.clone(), scheme);
-                                }
-                                let mut alias_errs =
-                                    register_type_aliases(expr, &mut new_env, &env, state);
-                                errors.append(&mut alias_errs);
-                                env = Rc::new(new_env);
-                            }
-                            Type::Unknown => {} // Gradual: dict type inference failed (second occurrence)
-                            _ => errors.push(TypeError::not_a_record(&ty, expr.span)),
-                        }
-                    }
-                    Err(mut errs) => {
-                        state.level = enclosing_level; // Restore even on error
-                        errors.append(&mut errs);
-                        // Populate type_map with Error for LSP hover on failed expressions.
-                        // Use Type::Error (not Any) so LSP shows <error> not Any (see comment
-                        // in the last-expression error path above).
-                        if let Some(ref mut map) = type_map {
-                            let key = (expr.span.start.offset, expr.span.end.offset);
-                            map.insert(key, Type::Error);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let mut result_env = TypeEnv::with_parent(&env);
-
-    // If the last expression was a dict, thread its schemes into the result environment.
-    // For dict literals, also attach inner_schemes to enable polymorphic dot-access.
-    if let Some(schemes) = last_dict_schemes {
-        for (name, scheme) in schemes {
-            // If the scheme's body is a Record type and this came from a dict literal,
-            // the dict literal's inner schemes should be attached to enable [DOT-POLY].
-            // However, at this point we don't have access to the inner dict's schemes.
-            // This will be handled separately for nested dicts.
-            result_env.insert_scheme(name, scheme);
-        }
-    }
-
-    // If the last expression was a non-Dict Record, generalize and thread its fields.
-    // enclosing_level is the level that was active before inference of the last expression.
-    // At this point state.level has been restored to enclosing_level (line 127 above), so
-    // `enclosing_level == state.level`, but we use the named variable stored in
-    // last_record_type for explicitness and defense-in-depth (Kiselyov 2013): any type
-    // variable with ℓ(α) > enclosing_level is generalizable, exactly mirroring infer_dict
-    // Pass 4 which generalizes at the enclosing level it saved before incrementing.
-    if let Some((Type::Record(Row { fields, .. }), enclosing_level)) = last_record_type {
-        for (name, field_ty) in fields {
-            let scheme = generalize(enclosing_level, &field_ty, state);
-            result_env.insert_scheme(name, scheme);
-        }
-    }
-
-    // Register type aliases from the last expression
-    // Note: errors are intentionally ignored here, matching the behavior of infer_dict Pass 2.
-    // Type alias resolution errors are reported when the aliases are used, not when registered.
-    if let Some(expr) = last_expr {
-        let _ = register_type_aliases(expr, &mut result_env, &env, state);
-    }
-
-    // Validate output annotation if present.
-    // output_type annotation mismatches are advisory; they do not block Ok.
-    if let Some(ref output_ann) = doc.node.output_type {
-        match resolve_annotation(
-            &output_ann.node,
-            &result_env,
-            output_ann.span,
-            state,
-            &mut None,
-            &mut None,
-        ) {
-            Ok(expected_output) => {
-                // Apply substitution before consistency check
-                let (result_type_resolved, expected_output_resolved) = if state.subst.is_empty() {
-                    (result_type.clone(), expected_output.clone())
-                } else {
-                    (
-                        state.subst.apply(&result_type),
-                        state.subst.apply(&expected_output),
-                    )
-                };
-                let passes = Type::is_subtype(&result_type_resolved, &expected_output_resolved)
-                    || ((contains_unknown_or_top(&result_type_resolved)
-                        || contains_unknown_or_top(&expected_output_resolved))
-                        && Type::is_consistent(&result_type_resolved, &expected_output_resolved));
-                if !passes {
-                    advisory_errors.push(TypeError::new(
-                        format!(
-                            "Document output type {} does not match annotation {}",
-                            result_type_resolved, expected_output_resolved
-                        ),
-                        output_ann.span,
-                    ));
-                }
-            }
-            Err(e) => advisory_errors.push(e),
-        }
-    }
-
-    result_env.insert("%".to_string(), result_type.clone());
-
-    if errors.is_empty() {
-        // No fatal body errors: return Ok with advisory_errors so caller can report them
-        // without blocking pipeline-type propagation.
-        Ok((Rc::new(result_env), result_type, advisory_errors))
-    } else {
-        // Fatal body errors: still append advisory errors so all errors are reported together.
-        errors.append(&mut advisory_errors);
-        Err(errors)
     }
 }
 
@@ -7289,26 +6422,45 @@ mod tests {
     fn infer(input: &str) -> Type {
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
-        let expr = &file.node.documents[0].node.expressions[0];
-        infer_expr(expr, &env, &mut state, &mut None).unwrap()
+        // Extract first expression from SurfaceProgram, convert to Expr for infer_expr
+        let node = match &program.documents[0].node.items[0] {
+            crate::ast::SurfaceItem::Expr(n) => n,
+            _ => panic!("expected expression item"),
+        };
+        let expr = crate::ast_convert::surface_node_to_expr(node);
+        infer_expr(&expr, &env, &mut state, &mut None).unwrap()
     }
 
     fn doc_env(input: &str) -> Rc<TypeEnv> {
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
-        typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None).unwrap()
+        let mut table = TypeAnnotationTable::new();
+        let empty_pipeline = Type::Record(Row {
+            fields: HashMap::new(),
+        });
+        let named_types = HashMap::new();
+        let (result_env, _ty, errors) = typecheck_surface_document(
+            &program.documents[0].node,
+            &env,
+            &mut state,
+            &mut table,
+            &mut None,
+            &empty_pipeline,
+            &named_types,
+        );
+        if !errors.is_empty() {
+            panic!("doc_env: typecheck error: {:?}", errors);
+        }
+        result_env
     }
 
     fn doc_env_with_builtins(input: &str) -> Rc<TypeEnv> {
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         // Populate PRELUDE_INSTANCE_CACHE so Equatable/Comparable/Showable/etc. instances are
         // available via dynamic resolution (no longer hardcoded in satisfies_constraint).
         // We call build_prelude_env() for the side-effect of populating the cache, but still
@@ -7318,7 +6470,24 @@ mod tests {
         let env = Rc::new(TypeEnv::with_builtins());
         let mut state = InferState::new();
         crate::imports::seed_infer_state_from_prelude_cache(&mut state);
-        typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None).unwrap()
+        let mut table = TypeAnnotationTable::new();
+        let empty_pipeline = Type::Record(Row {
+            fields: HashMap::new(),
+        });
+        let named_types = HashMap::new();
+        let (result_env, _ty, errors) = typecheck_surface_document(
+            &program.documents[0].node,
+            &env,
+            &mut state,
+            &mut table,
+            &mut None,
+            &empty_pipeline,
+            &named_types,
+        );
+        if !errors.is_empty() {
+            panic!("doc_env_with_builtins: typecheck error: {:?}", errors);
+        }
+        result_env
     }
 
     fn result_type(input: &str) -> Type {
@@ -7373,38 +6542,36 @@ mod tests {
     fn file_env_impl(input: &str, with_builtins: bool) -> Rc<TypeEnv> {
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let mut env = if with_builtins {
             Rc::new(TypeEnv::with_builtins())
         } else {
             Rc::new(TypeEnv::new())
         };
         let mut state = InferState::new();
+        let mut table = TypeAnnotationTable::new();
         let mut named_types: HashMap<String, Type> = HashMap::new();
         let mut pipeline_type = Type::Record(Row {
             fields: HashMap::new(),
         });
-        for doc in &file.node.documents {
-            match typecheck_document(
+        for doc_spanned in &program.documents {
+            let doc = &doc_spanned.node;
+            let (new_env, doc_output_type, errors) = typecheck_surface_document(
                 doc,
                 &env,
                 &mut state,
+                &mut table,
                 &mut None,
                 &pipeline_type,
                 &named_types,
-            ) {
-                Ok((new_env, doc_output_type, advisory)) => {
-                    if !advisory.is_empty() {
-                        panic!("file_env: advisory typecheck error: {:?}", advisory);
-                    }
-                    if let Some(ref name) = doc.node.name {
-                        named_types.insert(name.clone(), doc_output_type.clone());
-                    }
-                    pipeline_type = doc_output_type;
-                    env = new_env;
-                }
-                Err(errs) => panic!("file_env: typecheck error: {:?}", errs),
+            );
+            if !errors.is_empty() {
+                panic!("file_env: typecheck error: {:?}", errors);
             }
+            if let Some(ref name) = doc.name {
+                named_types.insert(name.clone(), doc_output_type.clone());
+            }
+            pipeline_type = doc_output_type;
+            env = new_env;
         }
         env
     }
@@ -7537,11 +6704,14 @@ mod tests {
             .unwrap()
             .program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
-        let expr = &file.node.documents[0].node.expressions[0];
-        let errs = infer_expr(expr, &env, &mut state, &mut None).unwrap_err();
+        let node = match &program.documents[0].node.items[0] {
+            crate::ast::SurfaceItem::Expr(n) => n,
+            _ => panic!("expected expression item"),
+        };
+        let expr = crate::ast_convert::surface_node_to_expr(node);
+        let errs = infer_expr(&expr, &env, &mut state, &mut None).unwrap_err();
         assert_eq!(errs.len(), 2, "infer_expr should return all dict errors");
         assert!(errs[0].message.contains("undefined1"));
         assert!(errs[1].message.contains("undefined2"));
@@ -7820,14 +6990,27 @@ mod tests {
             .unwrap()
             .program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
+        let mut table = TypeAnnotationTable::new();
+        let empty_pipeline = Type::Record(Row {
+            fields: HashMap::new(),
+        });
+        let named_types = HashMap::new();
 
         // Typecheck the document
-        let doc_env =
-            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
-                .unwrap();
+        let (doc_env, _ty, errors) = typecheck_surface_document(
+            &program.documents[0].node,
+            &env,
+            &mut state,
+            &mut table,
+            &mut None,
+            &empty_pipeline,
+            &named_types,
+        );
+        if !errors.is_empty() {
+            panic!("typecheck should succeed, got errors: {:?}", errors);
+        }
 
         // Get the type of 'result' — β, resolved by Pass 3b to StringLiteral("hello")
         let result_ty = match doc_env.get("result") {
@@ -8218,7 +7401,6 @@ mod tests {
         let input = "[call $f 1]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
         // Build env with `f: ∀a. Int` — polymorphic scheme, non-function body.
         // type_vars non-empty satisfies the dispatch guard at line ~286, routing to
@@ -8238,8 +7420,12 @@ mod tests {
         let parent_env = Rc::new(parent_env);
 
         let mut state = InferState::new();
-        let expr = &file.node.documents[0].node.expressions[0];
-        let result = infer_expr(expr, &parent_env, &mut state, &mut None);
+        let node = match &program.documents[0].node.items[0] {
+            crate::ast::SurfaceItem::Expr(n) => n,
+            _ => panic!("expected expression item"),
+        };
+        let expr = crate::ast_convert::surface_node_to_expr(node);
+        let result = infer_expr(&expr, &parent_env, &mut state, &mut None);
 
         // Must produce a not_a_function error, not a panic.
         assert!(
@@ -8265,13 +7451,26 @@ mod tests {
         let input = "[result: [call $builtin-range 0 10]]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
         let env = Rc::new(TypeEnv::with_builtins());
         let mut state = InferState::new();
-        let new_env =
-            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
-                .expect("typecheck should succeed");
+        let mut table = TypeAnnotationTable::new();
+        let empty_pipeline = Type::Record(Row {
+            fields: HashMap::new(),
+        });
+        let named_types = HashMap::new();
+        let (new_env, _ty, errors) = typecheck_surface_document(
+            &program.documents[0].node,
+            &env,
+            &mut state,
+            &mut table,
+            &mut None,
+            &empty_pipeline,
+            &named_types,
+        );
+        if !errors.is_empty() {
+            panic!("typecheck should succeed, got errors: {:?}", errors);
+        }
 
         let result_ty = new_env
             .get("result")
@@ -8293,15 +7492,35 @@ mod tests {
         let input = "[d: [a: 1  b: 2]]\n[result: [call $keys $d]]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
         let mut env = Rc::new(TypeEnv::with_builtins());
         let mut state = InferState::new();
+        let mut table = TypeAnnotationTable::new();
+        let mut named_types: HashMap<String, Type> = HashMap::new();
+        let mut pipeline_type = Type::Record(Row {
+            fields: HashMap::new(),
+        });
 
         // Process both documents
-        for doc in &file.node.documents {
-            env = typecheck_document_simple(doc, &env, &mut state, &mut None)
-                .expect("typecheck should succeed");
+        for doc_spanned in &program.documents {
+            let doc = &doc_spanned.node;
+            let (new_env, doc_output_type, errors) = typecheck_surface_document(
+                doc,
+                &env,
+                &mut state,
+                &mut table,
+                &mut None,
+                &pipeline_type,
+                &named_types,
+            );
+            if !errors.is_empty() {
+                panic!("typecheck should succeed, got errors: {:?}", errors);
+            }
+            if let Some(ref name) = doc.name {
+                named_types.insert(name.clone(), doc_output_type.clone());
+            }
+            pipeline_type = doc_output_type;
+            env = new_env;
         }
 
         let result_ty = env
@@ -8324,13 +7543,26 @@ mod tests {
         let input = "[result: [call $+ 1 2]]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
         let env = Rc::new(TypeEnv::with_builtins());
         let mut state = InferState::new();
-        let new_env =
-            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
-                .expect("typecheck should succeed");
+        let mut table = TypeAnnotationTable::new();
+        let empty_pipeline = Type::Record(Row {
+            fields: HashMap::new(),
+        });
+        let named_types = HashMap::new();
+        let (new_env, _ty, errors) = typecheck_surface_document(
+            &program.documents[0].node,
+            &env,
+            &mut state,
+            &mut table,
+            &mut None,
+            &empty_pipeline,
+            &named_types,
+        );
+        if !errors.is_empty() {
+            panic!("typecheck should succeed, got errors: {:?}", errors);
+        }
 
         let result_ty = new_env
             .get("result")
@@ -8446,15 +7678,35 @@ mod tests {
         let input = "[s: [call $builtin-range 0 5]]\n[result: [call $builtin-collect $s]]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
         let mut env = Rc::new(TypeEnv::with_builtins());
         let mut state = InferState::new();
+        let mut table = TypeAnnotationTable::new();
+        let mut named_types: HashMap<String, Type> = HashMap::new();
+        let mut pipeline_type = Type::Record(Row {
+            fields: HashMap::new(),
+        });
 
         // Process both documents
-        for doc in &file.node.documents {
-            env = typecheck_document_simple(doc, &env, &mut state, &mut None)
-                .expect("typecheck should succeed");
+        for doc_spanned in &program.documents {
+            let doc = &doc_spanned.node;
+            let (new_env, doc_output_type, errors) = typecheck_surface_document(
+                doc,
+                &env,
+                &mut state,
+                &mut table,
+                &mut None,
+                &pipeline_type,
+                &named_types,
+            );
+            if !errors.is_empty() {
+                panic!("typecheck should succeed, got errors: {:?}", errors);
+            }
+            if let Some(ref name) = doc.name {
+                named_types.insert(name.clone(), doc_output_type.clone());
+            }
+            pipeline_type = doc_output_type;
+            env = new_env;
         }
 
         let result_ty = env
@@ -8835,7 +8087,6 @@ mod tests {
         // Test that Mappable class has Operator-kinded param registered in kind_env
         let mut program = crate::parse("[x: 1]").unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let _file = crate::ast_convert::surface_program_to_file(&program);
         let state = InferState::new();
 
         // Verify Mappable is registered with Kind::Operator
@@ -11309,7 +10560,6 @@ mod tests {
         let input = "[call $f 42]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
         // Build a parent env with `f: Any` — monomorphic scheme, empty type_vars.
         let mut parent_env = TypeEnv::new();
@@ -11319,8 +10569,12 @@ mod tests {
         let mut state = InferState::new();
         let mut type_map = TypeMap::new();
 
-        let expr = &file.node.documents[0].node.expressions[0];
-        let result = infer_expr(expr, &parent_env, &mut state, &mut Some(&mut type_map));
+        let node = match &program.documents[0].node.items[0] {
+            crate::ast::SurfaceItem::Expr(n) => n,
+            _ => panic!("expected expression item"),
+        };
+        let expr = crate::ast_convert::surface_node_to_expr(node);
+        let result = infer_expr(&expr, &parent_env, &mut state, &mut Some(&mut type_map));
 
         // The call to an Any-typed function returns Any.
         assert_eq!(
@@ -11734,25 +10988,45 @@ mod tests {
         // Parse and desugar
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let mut env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
+        let mut table = TypeAnnotationTable::new();
+        let named_types: HashMap<String, Type> = HashMap::new();
+        let mut pipeline_type = Type::Record(Row {
+            fields: HashMap::new(),
+        });
 
         // Process first document (should succeed)
-        let doc1 = &file.node.documents[0];
-        env = typecheck_document_simple(doc1, &env, &mut state, &mut None)
-            .expect("first document should type-check");
+        let (new_env, doc_output_type, errors) = typecheck_surface_document(
+            &program.documents[0].node,
+            &env,
+            &mut state,
+            &mut table,
+            &mut None,
+            &pipeline_type,
+            &named_types,
+        );
+        if !errors.is_empty() {
+            panic!("first document should type-check, got errors: {:?}", errors);
+        }
+        env = new_env;
+        pipeline_type = doc_output_type;
 
         let level_after_doc1 = state.level;
 
         // Process second document (should fail with undefined variable)
-        let doc2 = &file.node.documents[1];
-        let result = typecheck_document_simple(doc2, &env, &mut state, &mut None);
-        assert!(result.is_err(), "second document should fail");
+        let (_, _, errors) = typecheck_surface_document(
+            &program.documents[1].node,
+            &env,
+            &mut state,
+            &mut table,
+            &mut None,
+            &pipeline_type,
+            &named_types,
+        );
+        assert!(!errors.is_empty(), "second document should fail");
         assert!(
-            result.unwrap_err()[0]
-                .message
-                .contains("undefined variable"),
+            errors[0].message.contains("undefined variable"),
             "error should be about undefined variable"
         );
 
@@ -11763,9 +11037,22 @@ mod tests {
         );
 
         // Process third document (should succeed, proving level was restored)
-        let doc3 = &file.node.documents[2];
-        env = typecheck_document_simple(doc3, &env, &mut state, &mut None)
-            .expect("third document should type-check correctly after level restoration");
+        let (new_env, _, errors) = typecheck_surface_document(
+            &program.documents[2].node,
+            &env,
+            &mut state,
+            &mut table,
+            &mut None,
+            &pipeline_type,
+            &named_types,
+        );
+        if !errors.is_empty() {
+            panic!(
+                "third document should type-check correctly after level restoration, got errors: {:?}",
+                errors
+            );
+        }
+        env = new_env;
 
         // Verify the result has the correct type
         // x: IntLiteral(42), so $x: IntLiteral(42)
@@ -12234,29 +11521,46 @@ mod tests {
         let input = "[id: [fn [let x@a] $x]]\n---\n[result: [call $id 42]]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
         let mut env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
         let mut type_map = TypeMap::new();
+        let mut table = TypeAnnotationTable::new();
+        let named_types: HashMap<String, Type> = HashMap::new();
+        let mut pipeline_type = Type::Record(Row {
+            fields: HashMap::new(),
+        });
 
         // Process document 1 (defines `id`)
-        env = typecheck_document_simple(
-            &file.node.documents[0],
+        let (new_env, doc_output_type, errors) = typecheck_surface_document(
+            &program.documents[0].node,
             &env,
             &mut state,
+            &mut table,
             &mut Some(&mut type_map),
-        )
-        .expect("document 1 should type-check");
+            &pipeline_type,
+            &named_types,
+        );
+        if !errors.is_empty() {
+            panic!("document 1 should type-check, got errors: {:?}", errors);
+        }
+        env = new_env;
+        pipeline_type = doc_output_type;
 
         // Process document 2 (calls `$id`)
-        env = typecheck_document_simple(
-            &file.node.documents[1],
+        let (new_env, _, errors) = typecheck_surface_document(
+            &program.documents[1].node,
             &env,
             &mut state,
+            &mut table,
             &mut Some(&mut type_map),
-        )
-        .expect("document 2 should type-check");
+            &pipeline_type,
+            &named_types,
+        );
+        if !errors.is_empty() {
+            panic!("document 2 should type-check, got errors: {:?}", errors);
+        }
+        env = new_env;
 
         // Verify result resolves to IntLiteral(42) (polymorphic call preserves literal type)
         let result_ty = env
@@ -12269,6 +11573,9 @@ mod tests {
             Type::IntLiteral(42),
             "CALL-POLY should return the argument type via identity function"
         );
+
+        // Convert to File AST to extract span information for type_map assertions
+        let file = crate::ast_convert::surface_program_to_file(&program);
 
         // Find the span of `$id` in `[result: [call $id 42]]` from the second document.
         // The outer expression in document 2 is a Dict [result: [call $id 42]].
@@ -12379,7 +11686,7 @@ mod tests {
     #[test]
     fn test_double_typecheck_no_panic() {
         // Regression test for LSP double-typecheck panic risk.
-        // Before the fix, calling typecheck_file_with_types twice on the same AST
+        // Before the fix, calling typecheck_surface_program twice on the same AST
         // would trigger the write-once invariant assertion in resolve_type_assert.
         // After the fix, reset_elaboration clears resolved_type fields before each typecheck.
         let input = r#"
@@ -12390,11 +11697,10 @@ mod tests {
 
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
         // First typecheck: should succeed
         let (errors1, type_map1, _doc_map1, _scheme_map1, _diagnostics1) =
-            typecheck_file_with_types(&file.node);
+            typecheck_surface_program(&program, crate::imports::build_prelude_env());
         assert!(
             errors1.is_empty() || errors1.iter().all(|e| !e.message.contains("panic")),
             "First typecheck should not panic"
@@ -12406,7 +11712,7 @@ mod tests {
 
         // Second typecheck on the same AST: should not panic due to reset_elaboration
         let (errors2, type_map2, _doc_map2, _scheme_map2, _diagnostics2) =
-            typecheck_file_with_types(&file.node);
+            typecheck_surface_program(&program, crate::imports::build_prelude_env());
         assert!(
             errors2.is_empty() || errors2.iter().all(|e| !e.message.contains("panic")),
             "Second typecheck should not panic"
@@ -12418,7 +11724,7 @@ mod tests {
 
         // Third typecheck to be extra sure
         let (errors3, _type_map3, _doc_map3, _scheme_map3, _diagnostics3) =
-            typecheck_file_with_types(&file.node);
+            typecheck_surface_program(&program, crate::imports::build_prelude_env());
         assert!(
             errors3.is_empty() || errors3.iter().all(|e| !e.message.contains("panic")),
             "Third typecheck should not panic"
@@ -12432,14 +11738,13 @@ mod tests {
         // When infer_expr fails on a sub-expression, Type::Error must be recorded in the
         // type_map for LSP hover so the parent expression sees <error> rather than nothing.
         //
-        // Test via typecheck_file_with_types: $undefined is a VarRef that fails, so the
+        // Test via typecheck_surface_program: $undefined is a VarRef that fails, so the
         // type_map entry for its span must be Type::Error.
         let input = "$undefined";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let (errors, type_map, _doc_map, _scheme_map, _diagnostics) =
-            typecheck_file_with_types(&file.node);
+            typecheck_surface_program(&program, crate::imports::build_prelude_env());
 
         // Must have an error (undefined variable)
         assert!(!errors.is_empty(), "expected type error for $undefined");
@@ -12566,13 +11871,26 @@ mod tests {
         "#;
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
         let env = Rc::new(TypeEnv::with_builtins());
         let mut state = InferState::new();
-        let new_env =
-            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
-                .expect("typecheck should succeed");
+        let mut table = TypeAnnotationTable::new();
+        let empty_pipeline = Type::Record(Row {
+            fields: HashMap::new(),
+        });
+        let named_types = HashMap::new();
+        let (new_env, _ty, errors) = typecheck_surface_document(
+            &program.documents[0].node,
+            &env,
+            &mut state,
+            &mut table,
+            &mut None,
+            &empty_pipeline,
+            &named_types,
+        );
+        if !errors.is_empty() {
+            panic!("typecheck should succeed, got errors: {:?}", errors);
+        }
 
         // $seq should return Seq(Int) — all args are IntLiterals
         let seq_ty = new_env.get("seq_result").unwrap().body.clone();
@@ -12724,15 +12042,14 @@ mod tests {
 
     #[test]
     fn test_typecheck_with_types_returns_diagnostics() {
-        // Verify that typecheck_file_with_types_and_env returns diagnostics in the tuple
+        // Verify that typecheck_surface_program returns diagnostics in the tuple
         let input = "[x: 42]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
         let env = Rc::new(TypeEnv::new());
         let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-            typecheck_file_with_types_and_env(&file.node, env);
+            typecheck_surface_program(&program, env);
         assert!(
             errors.is_empty(),
             "simple dict should typecheck without errors"
@@ -13353,13 +12670,23 @@ mod tests {
             .unwrap()
             .program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let env = Rc::new(TypeEnv::with_builtins());
         let mut state = InferState::new();
         let mut type_map = TypeMap::new();
-        let mut type_map_opt = Some(&mut type_map);
-        let _ =
-            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut type_map_opt);
+        let mut table = TypeAnnotationTable::new();
+        let empty_pipeline = Type::Record(Row {
+            fields: HashMap::new(),
+        });
+        let named_types = HashMap::new();
+        let _ = typecheck_surface_document(
+            &program.documents[0].node,
+            &env,
+            &mut state,
+            &mut table,
+            &mut Some(&mut type_map),
+            &empty_pipeline,
+            &named_types,
+        );
 
         // The type map should have entries for the narrowed `x` in the then branch
         // We can't easily check the exact span, but verify the type map is populated
@@ -14005,10 +13332,10 @@ mod tests {
     fn test_doc_extraction_from_param_annotation() {
         // Test existing functionality: extract doc from parameter annotations
         let input = "[f: [fn [let x@[doc: \"The input value\"]] x]]";
-        let file =
-            crate::ast_convert::surface_program_to_file(&crate::parse(input).unwrap().program);
+        let mut program = crate::parse(input).unwrap().program;
+        crate::desugar::desugar_surface_program(&mut program);
         let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
-            typecheck_file_with_types(&file.node);
+            typecheck_surface_program(&program, crate::imports::build_prelude_env());
 
         assert_eq!(doc_map.get("x"), Some(&"The input value".to_string()));
     }
@@ -14017,10 +13344,10 @@ mod tests {
     fn test_doc_extraction_from_dict_entry_key() {
         // Test Task 1: extract doc from dict entry key annotation
         let input = "[myFunc@[doc: \"My function\"]: [fn [let] 42]]";
-        let file =
-            crate::ast_convert::surface_program_to_file(&crate::parse(input).unwrap().program);
+        let mut program = crate::parse(input).unwrap().program;
+        crate::desugar::desugar_surface_program(&mut program);
         let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
-            typecheck_file_with_types(&file.node);
+            typecheck_surface_program(&program, crate::imports::build_prelude_env());
 
         assert_eq!(doc_map.get("myFunc"), Some(&"My function".to_string()));
     }
@@ -14029,10 +13356,10 @@ mod tests {
     fn test_doc_extraction_from_fn_return_annotation() {
         // Test Task 2: extract doc from function return annotation
         let input = "[count@[]: [fn@[type: Int  doc: \"Returns the count\"] [] 42]]";
-        let file =
-            crate::ast_convert::surface_program_to_file(&crate::parse(input).unwrap().program);
+        let mut program = crate::parse(input).unwrap().program;
+        crate::desugar::desugar_surface_program(&mut program);
         let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
-            typecheck_file_with_types(&file.node);
+            typecheck_surface_program(&program, crate::imports::build_prelude_env());
 
         assert_eq!(doc_map.get("count"), Some(&"Returns the count".to_string()));
     }
@@ -14043,10 +13370,10 @@ mod tests {
         let input = r#"
 [helper@[doc: "Helper function"]: [fn@[doc: "Adds two numbers"] [let a@[doc: "First number"] b@[doc: "Second number"]] [+ a b]]]
         "#;
-        let file =
-            crate::ast_convert::surface_program_to_file(&crate::parse(input).unwrap().program);
+        let mut program = crate::parse(input).unwrap().program;
+        crate::desugar::desugar_surface_program(&mut program);
         let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
-            typecheck_file_with_types(&file.node);
+            typecheck_surface_program(&program, crate::imports::build_prelude_env());
 
         // When both key annotation and return annotation have doc:, the return annotation
         // wins because it is extracted later during recursion (overwrite semantics).
@@ -14699,10 +14026,23 @@ mod tests {
             .unwrap()
             .program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
-        let result_env =
-            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
-                .unwrap();
+        let mut table = TypeAnnotationTable::new();
+        let empty_pipeline = Type::Record(Row {
+            fields: HashMap::new(),
+        });
+        let named_types = HashMap::new();
+        let (result_env, _ty, errors) = typecheck_surface_document(
+            &program.documents[0].node,
+            &env,
+            &mut state,
+            &mut table,
+            &mut None,
+            &empty_pipeline,
+            &named_types,
+        );
+        if !errors.is_empty() {
+            panic!("typecheck should succeed, got errors: {:?}", errors);
+        }
         match result_env.get("result").map(|s| &s.body) {
             Some(Type::Int) => {}
             Some(other) => panic!("expected Int from builtin-get on Map[String Int], got {other}"),
@@ -14724,10 +14064,23 @@ mod tests {
         let mut state = InferState::new();
         let mut program = crate::parse("[result: [get? \"key\" m]]").unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
-        let result_env =
-            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
-                .unwrap();
+        let mut table = TypeAnnotationTable::new();
+        let empty_pipeline = Type::Record(Row {
+            fields: HashMap::new(),
+        });
+        let named_types = HashMap::new();
+        let (result_env, _ty, errors) = typecheck_surface_document(
+            &program.documents[0].node,
+            &env,
+            &mut state,
+            &mut table,
+            &mut None,
+            &empty_pipeline,
+            &named_types,
+        );
+        if !errors.is_empty() {
+            panic!("typecheck should succeed, got errors: {:?}", errors);
+        }
         let null_ty = Type::Record(Row {
             fields: HashMap::new(),
         });
@@ -14916,10 +14269,23 @@ mod tests {
             .unwrap()
             .program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
-        let result_env =
-            typecheck_document_simple(&file.node.documents[0], &env, &mut state, &mut None)
-                .unwrap();
+        let mut table = TypeAnnotationTable::new();
+        let empty_pipeline = Type::Record(Row {
+            fields: HashMap::new(),
+        });
+        let named_types = HashMap::new();
+        let (result_env, _ty, errors) = typecheck_surface_document(
+            &program.documents[0].node,
+            &env,
+            &mut state,
+            &mut table,
+            &mut None,
+            &empty_pipeline,
+            &named_types,
+        );
+        if !errors.is_empty() {
+            panic!("typecheck should succeed, got errors: {:?}", errors);
+        }
         match result_env.get("result").map(|s| &s.body) {
             Some(Type::Union(members)) => {
                 assert!(
@@ -15047,9 +14413,8 @@ mod tests {
             .unwrap()
             .program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::new()));
+            typecheck_surface_program(&program, Rc::new(TypeEnv::new()));
 
         // Should have no type errors
         assert!(
@@ -15074,9 +14439,8 @@ mod tests {
             .unwrap()
             .program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::new()));
+            typecheck_surface_program(&program, Rc::new(TypeEnv::new()));
 
         // Should have no type errors or diagnostics
         assert!(
@@ -15098,9 +14462,8 @@ mod tests {
             .unwrap()
             .program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::new()));
+            typecheck_surface_program(&program, Rc::new(TypeEnv::new()));
 
         // Should have no type errors
         assert!(
@@ -15133,9 +14496,8 @@ mod tests {
         // Test that [@Unknown expr] produces Info diagnostic (T011)
         let mut program = crate::parse("[x: [@Unknown 42]]").unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::new()));
+            typecheck_surface_program(&program, Rc::new(TypeEnv::new()));
 
         // Should have no type errors
         assert!(
@@ -15170,9 +14532,8 @@ mod tests {
             .unwrap()
             .program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::new()));
+            typecheck_surface_program(&program, Rc::new(TypeEnv::new()));
 
         // Should have no type errors
         assert!(
@@ -15208,9 +14569,8 @@ mod tests {
             .unwrap()
             .program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::new()));
+            typecheck_surface_program(&program, Rc::new(TypeEnv::new()));
 
         // Should have no type errors or diagnostics
         assert!(
@@ -15384,10 +14744,9 @@ mod tests {
                 .unwrap()
                 .program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let _ = crate::imports::build_prelude_env(); // populate PRELUDE_INSTANCE_CACHE
         let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::new()));
+            typecheck_surface_program(&program, Rc::new(TypeEnv::new()));
 
         assert!(
             errors.is_empty(),
@@ -15425,11 +14784,10 @@ mod tests {
             .unwrap()
             .program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let _ = crate::imports::build_prelude_env(); // populate PRELUDE_INSTANCE_CACHE
                                                      // Use TypeEnv::with_builtins() so `+` (a builtin) is in scope.
         let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-            typecheck_file_with_types_and_env(&file.node, Rc::new(TypeEnv::with_builtins()));
+            typecheck_surface_program(&program, Rc::new(TypeEnv::with_builtins()));
 
         assert!(
             errors.is_empty(),
@@ -15466,7 +14824,6 @@ mod tests {
         let input = "[call $f $x]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
 
         let mut parent_env = TypeEnv::new();
         // `f: ∀a. Fn(Int) -> a` — polymorphic (non-empty type_vars) forces
@@ -15493,10 +14850,14 @@ mod tests {
         let parent_env = Rc::new(parent_env);
 
         let mut state = InferState::new();
-        let expr = &file.node.documents[0].node.expressions[0];
+        let node = match &program.documents[0].node.items[0] {
+            crate::ast::SurfaceItem::Expr(n) => n,
+            _ => panic!("expected expression item"),
+        };
+        let expr = crate::ast_convert::surface_node_to_expr(node);
         // Errors are expected (advisory): Unknown arg vs Int param produces a type error,
         // but the boundary guard collection happens before the unification error is returned.
-        let _ = infer_expr(expr, &parent_env, &mut state, &mut None);
+        let _ = infer_expr(&expr, &parent_env, &mut state, &mut None);
 
         // The boundary guard must have been collected: Unknown crossed into Int.
         assert!(
@@ -15548,11 +14909,14 @@ mod tests {
         // Verify via direct infer call. Since `...` is a Placeholder token, we parse it.
         let mut program = crate::parse("...").unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let file = crate::ast_convert::surface_program_to_file(&program);
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
-        let expr = &file.node.documents[0].node.expressions[0];
-        let ty = infer_expr(expr, &env, &mut state, &mut None).unwrap();
+        let node = match &program.documents[0].node.items[0] {
+            crate::ast::SurfaceItem::Expr(n) => n,
+            _ => panic!("expected expression item"),
+        };
+        let expr = crate::ast_convert::surface_node_to_expr(node);
+        let ty = infer_expr(&expr, &env, &mut state, &mut None).unwrap();
         assert_eq!(
             ty,
             Type::Unknown,

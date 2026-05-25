@@ -4,6 +4,20 @@ Completed milestones and sprints, moved from TODO.md.
 
 ## runtime-v2 Migration
 
+### rv2-delete-old-ast: Delete old File/Document types and test wrappers (2026-05-24, partial)
+
+**Completed:**
+- [x] Migrated ~28 typecheck.rs tests from `typecheck_file_with_types`/`surface_program_to_file` to `typecheck_surface_program*` API
+- [x] Migrated test helpers (`infer`, `doc_env`, `doc_env_with_builtins`, `file_env_impl`) to use `typecheck_surface_document` directly
+- [x] Deleted `typecheck_file_with_types` (4 wrapper functions), `typecheck_document` (367 lines), `typecheck_document_simple`, `reset_elaboration`, `reset_expr`, `extract_doc_strings` — all `#[cfg(test)]`
+- [x] Deleted `Document` import from typecheck.rs
+- [x] Deleted old Expr-based functions from ast_dict.rs (~2000 lines): `ast_to_dict_expr`, `expr_to_thunk_id`, `entry_to_thunk_id`, `named_arg_to_thunk_id`, `param_to_thunk_id`, `dict_to_surface_program`, `dict_to_file`, `dict_to_ast`, `dict_to_ast_from_dict`, `dict_to_entry`, `dict_to_named_arg`, `dict_to_param`, `dict_to_pattern`
+- [x] Updated TODO.md with accurate blockers for remaining deletion work
+
+**Still blocked:**
+- Delete `ast_convert.rs` entirely → production callers of `surface_node_to_expr`/`expr_to_surface_node` in typecheck.rs, typecheck_dict.rs, expand.rs, eval.rs, parser.rs
+- Delete `Expr`/`Document`/`File` from `ast.rs` → `infer_expr` production function walks Expr natively; requires `rv2-infer-surface` sprint to rewrite
+
 ### rv2-e3b-stdlib-macro-scanner: Migrate register_stdlib_macros_from_env + pre_scan_expr to SurfaceExpression ✅ DONE (2026-05-23)
 
 **What changed (src/expand.rs):**

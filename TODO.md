@@ -209,12 +209,14 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `src/expand.rs` — `Expr` split out of compound production import to standalone `use crate::ast::Expr;` (still needed by macro expander; BLOCKED on E3e expander cutover to SurfaceExpression)
 
 **Once ALL above are migrated:**
-- [ ] Delete `src/ast_convert.rs` dead code DONE (2026-05-23): deleted `file_to_surface_program_with_types` + 4 private helpers; remaining live functions (`file_to_surface_program`, `surface_program_to_file`, `expr_to_core_expr`, etc.) still needed
-- [ ] Delete `src/ast_convert.rs` entirely — once `file_to_surface_program`, `surface_program_to_file`, `expr_to_core_expr` callers are all migrated
+- [x] Delete `src/ast_convert.rs` dead code — deleted `file_to_surface_program_with_types` + 4 private helpers (2026-05-23); remaining live functions: `surface_node_to_expr`, `expr_to_surface_node`, `expr_to_core_expr`, `core_expr_to_expr` (production callers in typecheck.rs, typecheck_dict.rs, eval.rs, expand.rs, parser.rs)
+- [x] Migrate typecheck.rs tests from `typecheck_file_with_types` to `typecheck_surface_program` — 28 tests migrated; test helpers (`infer`, `doc_env`, `file_env_impl`) now use `typecheck_surface_document` directly; `typecheck_file_with_types*` (4 wrappers), `typecheck_document` (367 lines), `reset_elaboration`, `reset_expr`, `extract_doc_strings` all deleted (2026-05-24)
 - [x] Delete `src/ast_dict.rs` old Expr-based functions (`ast_to_dict`, `ast_to_dict_expr`, `dict_to_ast`, `dict_to_file`, `dict_to_surface_program`, `expr_to_thunk_id`, `entry_to_thunk_id`, `named_arg_to_thunk_id`, `param_to_thunk_id`) — DONE
-- [ ] Delete `Expr`, `Document`, `File` from `src/ast.rs` — all consumers migrated
-- [ ] `src/desugar.rs` — NOT deletable: old `desugar_file` was already deleted; `desugar_surface_program`/`desugar_surface_node` are the live API and will remain
-- [x] `just build` passes; `just test` passes
+- [x] Clean up `#[cfg(test)]` imports — `Document` import removed from typecheck.rs; `File` only remains for 3 legitimate ast_convert self-tests
+- [ ] Delete `src/ast_convert.rs` entirely — **BLOCKED**: 6 production callers of `surface_node_to_expr` (expand.rs ×2, typecheck_dict.rs ×4, typecheck.rs ×7) + `expr_to_surface_node` (typecheck.rs ×4, eval.rs ×6, parser.rs ×5) + `expr_to_core_expr`/`core_expr_to_expr` (eval.rs ×2). These exist because `infer_expr` still takes `Rc<Spanned<Expr>>` — needs full type checker rewrite to SurfaceNode
+- [ ] Delete `Expr`, `Document`, `File` from `src/ast.rs` — **BLOCKED**: `infer_expr` (typecheck.rs production) walks Expr; 14 `check_*` functions take `&[Rc<Spanned<Expr>>]` args; `Document` and `File` eliminated from typecheck.rs (only 3 ast_convert self-tests remain). Requires new sprint: `rv2-infer-surface` to rewrite `infer_expr` to walk SurfaceNode natively
+- [x] `src/desugar.rs` — confirmed NOT deletable: `desugar_surface_program`/`desugar_surface_node` are the live API
+- [x] `just build` passes; `just test` passes (pre-existing test failures NOT caused by this sprint)
 
 **Pre-existing corpus test failures (NOT caused by this sprint):**
 - `tests/corpus/eval/typecheck/warnings/constraint_*` (9 tests) — typecheck strict-warnings errors treated as test failures; pre-existing CHR regressions from runtime-v2 merge
