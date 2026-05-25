@@ -1425,9 +1425,9 @@ Fix: replace with `(1u8).hash(state); self.0.hash(state);` — produces identica
 
 Fixes: (a) change `eval_stack: Vec<(String, Span)>` to `Vec<(Arc<str>, Span)>` — eliminate String allocation since `origin` is already `Option<Arc<str>>`; (b) consider replacing `Arc<Mutex<EvalState>>` with thread-local `RefCell<EvalState>` to eliminate lock overhead.
 
-- [ ] Change eval_stack label type to `Arc<str>` in `EvalState` and all 4 push sites in eval_materialize.rs
-- [ ] Sprint: `perf-eval-stack` (thread-local RefCell replacement is a larger change, scope separately)
-- **Files:** `src/eval_materialize.rs:546-549,709-710,1756,1839`, `src/eval.rs` (EvalState def)
+- [x] Changed eval_stack from `Vec<(String, Span)>` to `Vec<(Arc<str>, Span)>` in EvalState; updated EvalStackGuard::push signature; 5 push sites now use `origin.clone().unwrap_or_else(|| Arc::from("thunk"))` — eliminates String allocation on every builtin dispatch
+- [x] Updated CircularDependency::cycle_path to `Vec<(Arc<str>, Span)>` for type consistency
+- **Files:** `src/eval.rs`, `src/eval_materialize.rs`, `src/error.rs`
 
 ### perf-eval-dict-batch-lock: eval_dict_core acquires lock N times in fill loop [Major]
 

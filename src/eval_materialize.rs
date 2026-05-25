@@ -370,7 +370,7 @@ struct EvalStackGuard {
 
 impl EvalStackGuard {
     /// Push an entry onto the eval_stack and create a guard that will pop on drop.
-    fn push(state: &Arc<Mutex<crate::eval::EvalState>>, entry: (String, Span)) -> Self {
+    fn push(state: &Arc<Mutex<crate::eval::EvalState>>, entry: (Arc<str>, Span)) -> Self {
         state.lock().unwrap().eval_stack.push(entry);
         EvalStackGuard {
             state: Arc::clone(state),
@@ -545,7 +545,7 @@ pub(crate) async fn force_step(
         // continuation (BuiltinForceArg, Memoize) that inherits pop responsibility.
         let eval_stack_guard = EvalStackGuard::push(
             &thunk_ctx.state,
-            (origin.as_deref().unwrap_or("thunk").to_string(), thunk_span),
+            (origin.clone().unwrap_or_else(|| Arc::from("thunk")), thunk_span),
         );
 
         // Wrap args/named in Option so each exclusive match arm can move them
@@ -706,7 +706,7 @@ pub(crate) async fn force_step(
         // PendingCallDispatch continuation inherits eval_stack pop responsibility.
         let eval_stack_guard = EvalStackGuard::push(
             &thunk_ctx.state,
-            (origin.as_deref().unwrap_or("thunk").to_string(), thunk_span),
+            (origin.clone().unwrap_or_else(|| Arc::from("thunk")), thunk_span),
         );
 
         stack.push(Cont::PendingCallDispatch(Box::new(
@@ -1696,7 +1696,7 @@ pub(crate) async fn apply_cont(
                                         let guard_eval_stack = EvalStackGuard::push(
                                             &guard_ctx.state,
                                             (
-                                                origin.as_deref().unwrap_or("thunk").to_string(),
+                                                origin.clone().unwrap_or_else(|| Arc::from("thunk")),
                                                 thunk_span,
                                             ),
                                         );
@@ -1753,7 +1753,7 @@ pub(crate) async fn apply_cont(
                                 };
                                 let guard_eval_stack = EvalStackGuard::push(
                                     &guard_ctx.state,
-                                    (origin.as_deref().unwrap_or("thunk").to_string(), thunk_span),
+                                    (origin.clone().unwrap_or_else(|| Arc::from("thunk")), thunk_span),
                                 );
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Arc::clone(&thunk),
@@ -1836,7 +1836,7 @@ pub(crate) async fn apply_cont(
                                 };
                                 let guard_eval_stack = EvalStackGuard::push(
                                     &guard_ctx.state,
-                                    (origin.as_deref().unwrap_or("thunk").to_string(), thunk_span),
+                                    (origin.clone().unwrap_or_else(|| Arc::from("thunk")), thunk_span),
                                 );
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Arc::clone(&thunk),

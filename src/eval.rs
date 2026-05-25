@@ -168,7 +168,7 @@ pub struct EvalState {
     /// `x` requires `a`, which requires `b`, which requires `x` (cycle).
     ///
     /// Upper bound: MAX_EVAL_DEPTH (256) entries × ~80 bytes/entry ≈ 20 KB.
-    pub eval_stack: Vec<(String, Span)>,
+    pub eval_stack: Vec<(Arc<str>, Span)>,
     /// Runtime class registry: class_name -> (params, superclasses, method_defaults)
     /// Stores default method implementations for filling in instance dictionaries.
     pub class_registry: HashMap<String, RuntimeClassDecl>,

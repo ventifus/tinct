@@ -1,6 +1,7 @@
 //! Evaluator error types with definition-site spans, materialization-site spans, and stack frames.
 
 use std::fmt;
+use std::sync::Arc;
 
 use smallvec::SmallVec;
 
@@ -264,7 +265,7 @@ pub enum ErrorKind {
         /// Each entry represents a thunk in the evaluation chain leading to the cycle.
         /// Empty if cycle path tracking was disabled or the cycle was detected before
         /// the stack was populated.
-        cycle_path: Vec<(String, Span)>,
+        cycle_path: Vec<(Arc<str>, Span)>,
     },
     /// Non-exhaustive match: no pattern arm matched the scrutinee.
     /// `scrutinee_type` is the runtime type of the value that failed to match
@@ -1160,7 +1161,7 @@ impl EvalError {
     pub fn circular_dependency(
         name: &str,
         definition_span: Span,
-        cycle_path: Vec<(String, Span)>,
+        cycle_path: Vec<(Arc<str>, Span)>,
     ) -> Self {
         Self {
             kind: ErrorKind::CircularDependency {
