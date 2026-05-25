@@ -88,7 +88,8 @@ pub mod expand;
 pub(crate) mod lower;
 // runtime-v2: surface AST field extraction for match dispatch and dot-access.
 pub(crate) mod surface_fields;
-// runtime-v2: bridge converter from old File/Expr AST to SurfaceProgram (transitional).
+// runtime-v2: bridge converter. Still used by parse_expression (integration test API) and test code.
+// TODO(rv2-delete-old-ast): retire parse_expression from corpus_tests.rs, then delete ast_convert.
 pub mod ast_convert;
 // Literate tinct: extract and evaluate tinct code blocks from Markdown files.
 pub mod literate;

@@ -240,11 +240,109 @@ fn lower_expr(
 /// with de Bruijn indices. Users expect `[quote x]` to show the variable name "x",
 /// not `FreeVar(0)`.
 ///
-/// TODO(rv2-delete-old-ast): Replace with a direct CoreExpr→SurfaceExpression converter
-/// when the old Expr bridge is deleted. Delete `core_expr_to_expr` + `expr_to_surface_node`
-/// at that time.
+/// Direct CoreExpr→SurfaceNode conversion (no Expr bridge).
 pub fn core_expr_to_surface_node(expr: &crate::ast::Spanned<crate::ast::CoreExpr>) -> Arc<SurfaceNode> {
-    crate::ast_convert::expr_to_surface_node(&crate::ast_convert::core_expr_to_expr(expr))
+    Arc::new(SurfaceNode {
+        expr: core_expr_to_surface_expr(&expr.node),
+        span: expr.span,
+    })
+}
+
+fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
+    use crate::ast::{CoreExpr, SurfaceMatchArm};
+    match core {
+        CoreExpr::Int(n) => SurfaceExpression::Int(*n),
+        CoreExpr::Float(f) => SurfaceExpression::Float(*f),
+        CoreExpr::Bool(b) => SurfaceExpression::Bool(*b),
+        CoreExpr::Str(s) => SurfaceExpression::Str(s.clone()),
+        CoreExpr::Var { name, .. } | CoreExpr::FreeVar(name) => SurfaceExpression::VarRef {
+            name: name.clone(),
+            escaped: false,
+        },
+        CoreExpr::DotAccess { expr, field } => SurfaceExpression::DotAccess {
+            expr: core_expr_to_surface_node(expr),
+            field: field.clone(),
+        },
+        CoreExpr::Sequential(exprs) => {
+            SurfaceExpression::Sequential(exprs.iter().map(|e| core_expr_to_surface_node(e)).collect())
+        }
+        CoreExpr::Call { func, args, named_args, implied } => SurfaceExpression::Call {
+            func: core_expr_to_surface_node(func),
+            args: args.iter().map(|a| core_expr_to_surface_node(a)).collect(),
+            named_args: named_args
+                .iter()
+                .map(|na| {
+                    crate::ast::Spanned::new(
+                        crate::ast::SurfaceNamedArg {
+                            name: na.node.name.clone(),
+                            value: core_expr_to_surface_node(&na.node.value),
+                        },
+                        na.span,
+                    )
+                })
+                .collect(),
+            implied: *implied,
+        },
+        CoreExpr::Fn { return_ann, params, body, desugared } => SurfaceExpression::Fn {
+            return_ann: return_ann.clone(),
+            params: params
+                .iter()
+                .map(|p| {
+                    crate::ast::Spanned::new(
+                        crate::ast::SurfaceParam {
+                            name: p.node.name.clone(),
+                            annotation: p.node.annotation.clone(),
+                            variadic: p.node.variadic,
+                        },
+                        p.span,
+                    )
+                })
+                .collect(),
+            body: core_expr_to_surface_node(body),
+            desugared: *desugared,
+        },
+        CoreExpr::TypeAssert { annotation, expr, .. } => SurfaceExpression::TypeAssert {
+            annotation: annotation.clone(),
+            expr: core_expr_to_surface_node(expr),
+        },
+        // RuntimeTypeCheck has no SurfaceExpression equivalent; map to TypeAssert (annotation-only)
+        CoreExpr::RuntimeTypeCheck { annotation, expr, .. } => SurfaceExpression::TypeAssert {
+            annotation: annotation.clone(),
+            expr: core_expr_to_surface_node(expr),
+        },
+        CoreExpr::Annotated { name, annotation } => SurfaceExpression::Annotated {
+            name: name.clone(),
+            annotation: annotation.clone(),
+        },
+        CoreExpr::Rest(name) => SurfaceExpression::Rest(name.clone()),
+        CoreExpr::Match { scrutinee, arms } => SurfaceExpression::Match {
+            scrutinee: core_expr_to_surface_node(scrutinee),
+            arms: arms
+                .iter()
+                .map(|arm| SurfaceMatchArm {
+                    pattern: arm.pattern.clone(),
+                    guard: arm.guard.as_ref().map(|g| core_expr_to_surface_node(g)),
+                    body: core_expr_to_surface_node(&arm.body),
+                })
+                .collect(),
+        },
+        CoreExpr::Quote(inner) => SurfaceExpression::Quote(core_expr_to_surface_node(inner)),
+        CoreExpr::Unquote(inner) => SurfaceExpression::Unquote(core_expr_to_surface_node(inner)),
+        CoreExpr::UnquoteSplice(inner) => {
+            SurfaceExpression::UnquoteSplice(core_expr_to_surface_node(inner))
+        }
+        CoreExpr::PatternDecl { bindings } => SurfaceExpression::PatternDecl {
+            bindings: bindings.iter().map(|b| core_expr_to_surface_node(b)).collect(),
+        },
+        CoreExpr::LetDecl { bindings } => SurfaceExpression::LetDecl {
+            bindings: bindings.iter().map(|b| core_expr_to_surface_node(b)).collect(),
+        },
+        CoreExpr::CaseArm { .. }
+        | CoreExpr::TypeApp { .. }
+        | CoreExpr::Dict(_)
+        | CoreExpr::Error(_)
+        | CoreExpr::Placeholder => SurfaceExpression::Placeholder,
+    }
 }
 
 /// Lower an entire SurfaceProgram's expressions in a document.
