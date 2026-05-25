@@ -230,6 +230,23 @@ fn lower_expr(
     }
 }
 
+/// Convert a `Spanned<CoreExpr>` back to an `Arc<SurfaceNode>` for quote/unquote evaluation.
+///
+/// Bridges through `Expr` via `core_expr_to_expr` + `expr_to_surface_node`.
+/// Used by the `CoreExpr::Quote` arm to get a `SurfaceNode` for `eval_quote_walk`.
+///
+/// DESIGN DECISION: This round-trip (CoreExpr→Expr→SurfaceNode) is intentional.
+/// Quote captures *surface syntax* for metaprogramming, not the desugared CoreExpr form
+/// with de Bruijn indices. Users expect `[quote x]` to show the variable name "x",
+/// not `FreeVar(0)`.
+///
+/// TODO(rv2-delete-old-ast): Replace with a direct CoreExpr→SurfaceExpression converter
+/// when the old Expr bridge is deleted. Delete `core_expr_to_expr` + `expr_to_surface_node`
+/// at that time.
+pub fn core_expr_to_surface_node(expr: &crate::ast::Spanned<crate::ast::CoreExpr>) -> Arc<SurfaceNode> {
+    crate::ast_convert::expr_to_surface_node(&crate::ast_convert::core_expr_to_expr(expr))
+}
+
 /// Lower an entire SurfaceProgram's expressions in a document.
 ///
 /// Utility for batch-lowering all expression items in a document.

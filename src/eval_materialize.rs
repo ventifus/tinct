@@ -260,7 +260,7 @@ pub(crate) struct GuardedValidateData {
 ///
 /// TODO(parts-e): `annotation` is Box<Spanned<Annotation>> where Annotation::PropertyDict
 /// entries store SurfaceNode values. The default-fallback paths in apply_cont extract
-/// the "default:" property as &Arc<SurfaceNode>, convert via surface_node_to_core_expr, and
+/// the "default:" property as &Arc<SurfaceNode>, lower via `crate::lower::lower`, and
 /// dispatch as Action::EvalCore. When Annotation stores CoreExpr values natively, the
 /// conversion becomes a zero-cost Arc<Spanned<CoreExpr>> clone.
 pub(crate) struct TypeAssertCheckData {
@@ -343,7 +343,7 @@ pub(crate) enum Cont {
     /// TODO(parts-e): TypeAssertCheckData::annotation is Box<Spanned<Annotation>>, and
     /// Annotation::PropertyDict entries are SurfaceEntry whose values are Arc<SurfaceNode>.
     /// The default-fallback paths in apply_cont call annotation.node.get_property("default:")
-    /// → &Arc<SurfaceNode> → surface_node_to_core_expr → Action::EvalCore. When annotations
+    /// → &Arc<SurfaceNode> → lower::lower → Action::EvalCore. When annotations
     /// store CoreExpr values natively, the conversion becomes a no-op clone.
     TypeAssertCheck(Box<TypeAssertCheckData>),
 }
@@ -442,7 +442,7 @@ pub(crate) enum Action {
     /// through `eval_step` and the Expr-based dispatch table.
     ///
     /// Default expressions from `Annotation::get_property("default:")` are converted
-    /// from `Arc<SurfaceNode>` to `Spanned<CoreExpr>` at emit time via `surface_node_to_core_expr`.
+    /// from `Arc<SurfaceNode>` to `Spanned<CoreExpr>` at emit time via `lower::lower`.
     /// Emit sites: GuardedValidate default-fallback (apply_cont) and TypeAssertCheck
     /// default-fallback (apply_cont).
     EvalCore {
@@ -2309,9 +2309,9 @@ pub(crate) async fn apply_cont(
                                     .get_property(DEFAULT_ANNOTATION_KEY)
                                     .map(|node| {
                                         (
-                                            Arc::new(crate::ast_convert::surface_node_to_core_expr(
-                                                node,
-                                            )),
+                                            Arc::new(
+                                                crate::lower::lower(node, &crate::ast::ResolutionTable::new(), &crate::ast::TypeAnnotationTable::new()),
+                                            ),
                                             Arc::clone(&env),
                                         )
                                     });
@@ -2355,9 +2355,13 @@ pub(crate) async fn apply_cont(
                                     // Evaluate default expression iteratively.
                                     // The result will flow to the next continuation on the stack.
                                     Action::EvalCore {
-                                        expr: Arc::new(crate::ast_convert::surface_node_to_core_expr(
-                                            default_node,
-                                        )),
+                                        expr: Arc::new(
+                                            crate::lower::lower(
+                                                default_node,
+                                                &crate::ast::ResolutionTable::new(),
+                                                &crate::ast::TypeAnnotationTable::new(),
+                                            ),
+                                        ),
                                         env,
                                         ctx: Arc::clone(&ctx),
                                     }
@@ -2420,8 +2424,10 @@ pub(crate) async fn apply_cont(
                             // Evaluate default expression iteratively.
                             // The result will flow to the next continuation on the stack.
                             Action::EvalCore {
-                                expr: Arc::new(crate::ast_convert::surface_node_to_core_expr(
+                                expr: Arc::new(crate::lower::lower(
                                     default_node,
+                                    &crate::ast::ResolutionTable::new(),
+                                    &crate::ast::TypeAnnotationTable::new(),
                                 )),
                                 env,
                                 ctx: Arc::clone(&ctx),
@@ -2491,9 +2497,13 @@ pub(crate) async fn apply_cont(
                                     // Evaluate default expression iteratively.
                                     // The result will flow to the next continuation on the stack.
                                     return Action::EvalCore {
-                                        expr: Arc::new(crate::ast_convert::surface_node_to_core_expr(
-                                            default_node,
-                                        )),
+                                        expr: Arc::new(
+                                            crate::lower::lower(
+                                                default_node,
+                                                &crate::ast::ResolutionTable::new(),
+                                                &crate::ast::TypeAnnotationTable::new(),
+                                            ),
+                                        ),
                                         env,
                                         ctx: Arc::clone(&ctx),
                                     };
@@ -2521,9 +2531,13 @@ pub(crate) async fn apply_cont(
                                     // Evaluate default expression iteratively.
                                     // The result will flow to the next continuation on the stack.
                                     return Action::EvalCore {
-                                        expr: Arc::new(crate::ast_convert::surface_node_to_core_expr(
-                                            default_node,
-                                        )),
+                                        expr: Arc::new(
+                                            crate::lower::lower(
+                                                default_node,
+                                                &crate::ast::ResolutionTable::new(),
+                                                &crate::ast::TypeAnnotationTable::new(),
+                                            ),
+                                        ),
                                         env,
                                         ctx: Arc::clone(&ctx),
                                     };

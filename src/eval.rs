@@ -1046,7 +1046,7 @@ fn eval_quote_preprocess<'a>(
         match &node.expr {
             SurfaceExpression::Unquote(inner) => {
                 // Evaluate the unquoted expression and convert back to SurfaceNode
-                let core = crate::ast_convert::surface_node_to_core_expr(inner);
+                let core = crate::lower::lower(inner, &crate::ast::ResolutionTable::new(), &crate::ast::TypeAnnotationTable::new());
                 let thunk = eval_core_expr(&core, env, ctx).await?;
                 let value = materialize(&thunk, Some(&inner.span), ctx).await?;
                 value_to_surface_node(&value, inner.span, ctx)
@@ -1098,7 +1098,7 @@ fn eval_quote_preprocess<'a>(
                     // Handle unquote-splicing in call argument position
                     if let SurfaceExpression::UnquoteSplice(inner) = &arg.expr {
                         // Evaluate the unquote-splice expression
-                        let core = crate::ast_convert::surface_node_to_core_expr(inner);
+                        let core = crate::lower::lower(inner, &crate::ast::ResolutionTable::new(), &crate::ast::TypeAnnotationTable::new());
                         let thunk = eval_core_expr(&core, env, ctx).await?;
                         let value = materialize(&thunk, Some(&inner.span), ctx).await?;
 
@@ -1712,7 +1712,7 @@ fn eval_core_expr<'a>(
             // SurfaceNode tree to handle unquotes and produces Value::Expression(SurfaceNode),
             // which represents the code as written, not as compiled.
             CoreExpr::Quote(inner) => {
-                let surface_node = crate::ast_convert::core_expr_to_surface_node(inner);
+                let surface_node = crate::lower::core_expr_to_surface_node(inner);
                 eval_quote_walk(surface_node, env.clone(), ctx).await
             }
 
