@@ -1302,6 +1302,27 @@ pub(crate) fn eval_surface_fn(
     crate::async_rt::block_on_anywhere(eval_core_expr(&core_fn, &env, ctx))
 }
 
+/// Wrap a thunk with a boundary guard if the span matches a guard in the context.
+///
+/// Boundary guards are populated by the type checker to enforce type constraints at
+/// specific expression boundaries (e.g., function parameters, type assertions).
+///
+/// If `span` matches a guard in `ctx.boundary_guards`, wraps `thunk` in a `Guarded`
+/// thunk that will check the type when forced. Otherwise returns `thunk` unchanged.
+fn maybe_wrap_guard(thunk: Arc<Thunk>, span: Span, ctx: &Arc<EvalContext>) -> Arc<Thunk> {
+    let guards = ctx.boundary_guards.read().unwrap();
+    if let Some(expected_type) = guards.get(&span) {
+        Arc::new(Thunk::new_guarded(
+            thunk,
+            expected_type.clone(),
+            vec![], // empty field path for top-level guards
+            span,
+        ))
+    } else {
+        thunk
+    }
+}
+
 /// Evaluate a CoreExpr to a thunk (transitional path for runtime-v2).
 ///
 /// This is the new CoreExpr evaluation entry point. It handles:
@@ -1745,6 +1766,7 @@ fn eval_core_expr<'a>(
             )
             .into()),
         }
+        .map(|thunk| maybe_wrap_guard(thunk, expr.span, ctx))
     }) // end Box::pin(async move {
 }
 
@@ -8466,7 +8488,6 @@ mod tests {
 
     /// Boundary guard: Int expected, Int given — guard fires but passes.
     #[test]
-    #[ignore = "pre-existing: boundary guard application not yet implemented in eval_core_expr (requires guard check post-step in eval_core_expr or force_step)"]
     fn test_boundary_guard_passes_on_matching_type() {
         // Span that will carry the guard.
         let guarded_span = test_span(1, 1, 1, 4);
@@ -8496,7 +8517,6 @@ mod tests {
     /// Boundary guard: Int expected, String given — guard fires and returns a
     /// type_assert_failed error with a helpful message.
     #[test]
-    #[ignore = "pre-existing: boundary guard application not yet implemented in eval_core_expr"]
     fn test_boundary_guard_fires_on_type_mismatch() {
         // Span that will carry the guard.
         let guarded_span = test_span(1, 1, 1, 7);
@@ -8562,7 +8582,6 @@ mod tests {
     /// Boundary guard: guard is lazy — eval() wraps the thunk without forcing it.
     /// The Guarded state must persist between eval() and materialize().
     #[test]
-    #[ignore = "pre-existing: boundary guard application not yet implemented in eval_core_expr"]
     fn test_boundary_guard_is_lazy() {
         let guarded_span = test_span(1, 1, 1, 5);
 

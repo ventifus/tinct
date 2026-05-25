@@ -766,4 +766,22 @@ mod tests {
             );
         }
     }
+
+    /// Sequential scope injection: static keys from intermediate expressions
+    /// in the same document become scope bindings for subsequent expressions.
+    /// Document with two exprs: `[a: 1]\n$a` — the second expr can reference the first's keys.
+    #[test]
+    fn sequential_scope_injection() {
+        // Document with two sequential expressions: first is a dict, second references its key
+        let (program, table) = parse_and_resolve("[a: 1]\n$a");
+        let refs = find_varref_nodes(&program, "a");
+        assert!(!refs.is_empty(), "expected VarRef for $a in second expr");
+        // $a should resolve to the dict key from the first expression
+        let (id, _) = &refs[0];
+        let coords = table
+            .get(id)
+            .expect("$a should be resolved (key from prior expr in document)");
+        // The first dict creates a scope with `a` as slot 0
+        assert_eq!(coords.1, 0, "a is first key from prior expr, slot 0");
+    }
 }

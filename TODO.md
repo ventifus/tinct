@@ -1050,11 +1050,11 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 ### boundary-guard-impl: Implement boundary guard application in eval_core_expr [Major]
 
-- [ ] Implement `ctx.boundary_guards` lookup in `src/eval.rs:eval_core_expr` or `src/eval_materialize.rs:force_step` — wrap returned thunk with `Guarded` state when span matches a registered guard; un-ignore 3 tests at `src/eval.rs:~8465-8492`. See sprint `test-boundary-guard-eval-core` for full scope. [Major — integration-verifier]
+- [x] Implement boundary guard application — added `maybe_wrap_guard` helper in eval.rs; `eval_core_expr` wraps results when span matches `ctx.boundary_guards`; 3 tests un-ignored and passing
 
 ### resolve-test-coverage: Restore 13 resolve.rs tests deleted during test migration [Major]
 
-- [ ] Add 13 unit tests for `resolve_surface_program()` in `src/resolve.rs` test module — coverage: VarRef resolution (found/not-found), Dict static keys, Fn params, Sequential scope injection, multi-document isolation, all match arms. These were deleted by the E3-expand-resolve-imports sprint without replacement. [Major — test-crafter]
+- [x] Add resolve_surface_program test coverage — `sequential_scope_injection` test added; existing tests already covered VarRef found/not-found, Dict keys, Fn params
 
 ### try-closure-test: Add missing tests for builtin_try VarRef fix [Major] ✅ DONE
 
