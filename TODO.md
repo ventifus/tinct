@@ -37,7 +37,7 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Phase 1: Frame stack types — StackFrame uses Arc<SurfaceNode>, push_value takes Arc<SurfaceNode>
 - [x] Phase 2: Expression construction sites — 130 SurfaceExpression:: usages in parser.rs
 - [x] Phase 3: Output type — ParseOutput.program: SurfaceProgram; all expand_surface_program() callers
-- [ ] Delete `src/ast_convert.rs` — **BLOCKED**: 118 active callers in eval pipeline (expr_to_core_expr, surface_program_to_file)
+- [ ] Delete `src/ast_convert.rs` — **BLOCKED**: production callers remain (surface_node_to_expr: expand.rs×2, typecheck_dict.rs×4, typecheck.rs×7; expr_to_surface_node: typecheck.rs×4, eval.rs×6, parser.rs×5; expr_to_core_expr/core_expr_to_expr: eval.rs×2). Root cause: infer_expr still takes Rc<Spanned<Expr>>. **Depends on: rv2-infer-surface**
 - [x] `just build` passes ✓; `just test-lib` passes 1889/0 ✓; corpus tests have pre-existing CHR failures
 
 ### Parts B + E — Parser, resolver, typechecker, expander migration + Evaluator cutover (ATOMIC) — remaining items BLOCKED
@@ -63,12 +63,12 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 **Part E — Evaluator cutover + delete old types:**
 ✅ **Rc→Arc migration DONE (commit b0aa803)** — Arc<Thunk>, Arc<RwLock<Environment>>, Arc<EvalContext>, Mutex<ThunkState> throughout. E1-E3 are now UNBLOCKED.
-- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File` etc — **BLOCKED**: typecheck/formatter/repl/LSP/builtins_meta.rs/main.rs still consume File; must migrate remaining callers first (eval_document/eval_file now deleted — partial unblock)
+- [ ] Delete from `src/ast.rs`: `Expr`, `Document`, `File` — **BLOCKED**: infer_expr (typecheck.rs production, ~3000 lines) still walks Expr; 14 check_* helpers take &[Rc<Spanned<Expr>>]. Document removed from typecheck.rs (2026-05-24). **Depends on: rv2-infer-surface**
 - [x] **MAJOR MILESTONE**: UnevaluatedState::Expr DELETED (commit 18711a0) — evaluator fully CoreExpr-based
 - [x] Migrate eval_call.rs, eval_dict.rs, eval_materialize.rs to CoreExpr — deleted old eval_dict/eval_call functions; ~30 new_unevaluated call sites converted; force_step handles CoreExpr::DotAccess/TypeAssert/RuntimeTypeCheck inline; eval_step deleted; Action::EvalCore added
 - [x] Delete `src/eval_deep.rs` — moved deep_materialize to eval_materialize.rs; file deleted ✓ (commit 92ff2fc)
 - [x] Migrate eval_pipeline.rs to SurfaceProgram — added eval_surface_document/eval_surface_file/eval_surface_file_with_input; lib.rs callers (eval_source_with_config, eval_source_with_cap_net) now call eval_surface_file; resolution_table kept (no longer discarded); TODO(surface-typecheck): wire TypeAnnotationTable from surface typecheck path so TypeAssert nodes get statically-resolved types (currently empty table → RuntimeTypeCheck fallback)
-- [ ] Delete: `src/eval_pipeline.rs` (eval_surface_* functions stay), `src/ast_dict.rs` (Expr internals replaced by Surface bridges), `src/ast_convert.rs` (dead cluster deleted 2026-05-23; remaining functions still have callers) — `src/desugar.rs` is NOT being deleted (Surface API only, actively used); `Expr/File/Document` still used by typecheck, formatter, repl, LSP, expand, parser
+- [x] Delete old Expr functions from `src/eval_pipeline.rs` (eval_document/eval_file/eval_file_with_input deleted 2026-05-23); old Expr functions from `src/ast_dict.rs` deleted 2026-05-24 (~2000 lines); dead cluster from `ast_convert.rs` deleted 2026-05-23; `src/desugar.rs` NOT deleted (Surface API only, live). Remaining: ast_convert.rs entirely + Expr/File from ast.rs → **BLOCKED on rv2-infer-surface**
 - [x] Update `IncludeCacheEntry::Cached` — **DONE**
 - [x] Rc→Arc migration — **DONE (commit b0aa803)**: 34 files, 2450 ins, 2437 del
 - [x] **`cargo check` clean** — `just build` passes with -D warnings ✓ (commit 18711a0)
@@ -189,6 +189,28 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] Delete `pre_scan_expr`, `pre_scan_expr_spanned`, `pre_scan_expr_value`, `expand_expr`, `expand_expr_inner`, `expand_macro_call`, `validate_syntax_class`, `validate_against_pattern` dead-code functions (`src/expand.rs`)
 - [x] Remove standalone `use crate::ast::Expr;` from `src/expand.rs`
 
+
+### rv2-infer-surface: Rewrite infer_expr to walk SurfaceNode natively
+
+**Blocks:** rv2-delete-old-ast (ast_convert.rs deletion, Expr/File removal from ast.rs)
+
+`infer_expr` in `src/typecheck.rs` takes `Rc<Spanned<Expr>>` and is the production type inference core (~3000 lines, called 80+ times recursively). 14 `check_*` helper functions also take `&[Rc<Spanned<Expr>>]`. All remaining `surface_node_to_expr` / `expr_to_surface_node` bridge calls in typecheck.rs, typecheck_dict.rs, expand.rs, eval.rs, and parser.rs exist because `infer_expr` requires `Expr`.
+
+**Approach:**
+1. Add `infer_surface_expr(node: &Arc<SurfaceNode>, env, state, type_map) -> Result<Type, Vec<TypeError>>` alongside infer_expr — initially a thin bridge wrapper calling infer_expr via surface_node_to_expr
+2. Update all callers in `typecheck_surface_document` to call `infer_surface_expr` instead of bridging
+3. Update `typecheck_dict.rs` (4 sites) to call `infer_surface_expr`
+4. Migrate each `Expr::*` arm in `infer_expr` → `SurfaceExpression::*` arm in `infer_surface_expr` (25-30 variants)
+5. Migrate 14 `check_*` builtin helpers to take `&[Arc<SurfaceNode>]` instead of `&[Rc<Spanned<Expr>>]`
+6. Once infer_expr has zero callers, delete it
+7. Remove `use crate::ast::Expr;` production import from typecheck.rs
+
+- [ ] Phase 1: Create `infer_surface_expr` stub (bridge wrapper) + migrate typecheck_surface_document and typecheck_dict.rs callers to use it (`src/typecheck.rs`, `src/typecheck_dict.rs`)
+- [ ] Phase 2: Migrate Literal/VarRef/Dict/Call/Fn match arms natively in `infer_surface_expr` (eliminate bridge for common cases)
+- [ ] Phase 3: Migrate remaining match arms (Match, DotAccess, TypeAssert, Sequential, Pipe, etc.) natively
+- [ ] Phase 4: Migrate 14 `check_*` helpers from `Rc<Spanned<Expr>>` to `Arc<SurfaceNode>` inputs
+- [ ] Phase 5: Migrate expand.rs and eval.rs surface_node_to_expr/expr_to_surface_node callers (reduce bridge footprint)
+- [ ] Phase 6: Delete infer_expr + remove production `use crate::ast::Expr;` from typecheck.rs
 
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files
 
