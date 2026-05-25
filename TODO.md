@@ -1756,6 +1756,26 @@ The code is authoritative: `src/typecheck.rs:5501` confirms `None => Ok(Type::Un
 - [x] Added `type_env: Rc<TypeEnv>` to ReplSession; single typecheck_surface_program_with_env call uses accumulated env; advanced only on success path. 3 unit tests.
 - **File:** `src/repl.rs`
 
+### versions-e099: Fix E099 error node at net.llt:79:58 in just versions [Major]
+
+When running `just versions`, E099 "syntax error at 79:58 (cannot evaluate error node)" fires during execution of `crate-latest`. The error node is at net.llt line 79, col 58 — the LAST CHARACTER (5th closing bracket `]`) of the `fetch` function expression:
+- Line 78: `  fetch: [fn [cap@NetCap url-string@String]`  
+- Line 79: `    [builtin-try [fn [] [http-get cap [url url-string]]]]]`  ← col 58 = this last `]`
+
+Investigation:
+- Net.llt brackets are correctly balanced (verified: 7 opens, 7 closes)
+- The TypeChecker does NOT create `SurfaceExpression::Error` nodes — only parser does
+- `builtin-try` would CATCH a runtime error from `connect` (the 3-arg bug was fixed)
+- The error node must come from the PARSER or MACRO EXPANDER for net.llt
+- No obvious parse errors in net.llt; no macro calls that could fail
+- The `chr-overlap-insert` check is guarded by `!in_prelude_load` so doesn't affect net.llt
+- The `check_arithmetic` validation doesn't fire for net.llt's integer arithmetic
+- Requires debug instrumentation: add debug print to `eval.rs:1605` before firing E099 to print the actual source position, then trace back to what AST node it is
+
+- [ ] Add debug print to `src/eval.rs:1605` to identify the actual source of the error node
+- [ ] Fix whatever is creating the `SurfaceExpression::Error` at net.llt:79:58
+- **Files:** `src/eval.rs` (debug), then whatever file creates the error node
+
 ### indexable-fd-scc-fix: Fix Indexable FD firing in SCC-based dict inference [Major]
 
 Root cause (identified 2026-05-24): the `improve_functional_dependency_inner` machinery for the Indexable class IS correct, and the constraint IS correctly placed in the scheme for the prelude's `get` wrapper. However, at user call sites inside large SCC-based letrec groups (like versions.llt's second document dict), the constraint is generated across multiple SCC iterations. When `generalize_with_doc` runs for the outer binding, early-iteration TypeVars (e.g., `_t30`, `_t31`) are in `entry_constraints[entry_name]` but `is_discharged("_t30")` returns false because those vars are not in `state.subst` at generalization time (only the LOCAL dict `subst`, not `state.subst`, has them via the SCC-merge path). The constraint is dropped as ambiguous (T013) and the return type stays as an unresolved TypeVar.
