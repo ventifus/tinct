@@ -38,6 +38,7 @@ use crate::types::{Row, Type};
 use crate::value::{string_val, Environment, Key, Thunk, Value};
 
 pub(crate) const DEFAULT_ANNOTATION_KEY: &str = "default";
+pub(crate) const IS_ANNOTATION_KEY: &str = "is";
 
 /// Type alias for the optional default expression + environment pair used by guarded thunks.
 /// Reduces type_complexity in function signatures that carry this optional default.

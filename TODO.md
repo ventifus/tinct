@@ -1200,10 +1200,10 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 `Cont::TypeAssertCheck` handler (`src/eval_materialize.rs:2480-2518`): when `resolved_type` is `Some` and `value_matches_type` returns true, returns `Action::Continue(Ok(value))` immediately without checking the `is:` predicate. A failing corpus test already exists (`tests/corpus/eval/errors/typeassert_is_predicate_fails.llt-eval`). The 80-line comment block at lines 2481-2517 documents the gap and what is needed. Contract predicates have zero runtime effect — `[@[type: Int  is: [between 0 255]] 300]` silently passes.
 
-- [ ] After `value_matches_type` returns true, check `annotation.node.get_property("is")` — if present, evaluate as predicate
-- [ ] If predicate is a Function/Builtin, invoke with value and check truthiness (same logic as Match guard at eval.rs:1661-1694)
-- [ ] If truthy: return value. If falsy: check `default:`, else fail with `type_assert_failed("_ (is: predicate failed)", ...)`
-- [ ] Add `Cont::PredicateCheck { value, annotation, expr_span, thunk_span, env, ctx }` to avoid async recursion
+- [x] After `value_matches_type` returns true, check `annotation.node.get_property("is")` — evaluate predicate expression, push PredicateCheck continuation
+- [x] PredicateCheck handler: invoke callable predicate with value, check truthiness (mirrors MatchGuardCheck)
+- [x] On falsy: check `default:` property → evaluate if present, else fail with `type_assert_failed("_ (is: predicate failed)", ...)`
+- [x] Added `Cont::PredicateCheck(Box<PredicateCheckData>)` with value, annotation, spans, env, ctx
 - **Files:** `src/eval_materialize.rs` (TypeAssertCheck handler + new Cont variant)
 
 ### boundary-guard-dot-access: Boundary guards not applied to dot-accessed field values [Major]

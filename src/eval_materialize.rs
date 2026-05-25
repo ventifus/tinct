@@ -20,7 +20,7 @@ use crate::eval::{
     annotation_has_structural_fields, as_record_row_merged, check_pattern_linearity,
     eval_core_expr_pub, format_field_path, format_type_for_assert, match_pattern, materialize,
     maybe_wrap_guard, validate_and_wrap_record, value_matches_type, EvalContext,
-    DEFAULT_ANNOTATION_KEY,
+    DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
 };
 use crate::eval_access::invoke_proxy_handler;
 use crate::eval_call::{invoke_function, CallContext};
@@ -339,6 +339,21 @@ pub(crate) struct MatchGuardCheckData {
     pub(crate) body: Arc<Spanned<CoreExpr>>,
 }
 
+/// Payload for Cont::PredicateCheck. Boxed to keep the Cont enum ≤96 bytes.
+pub(crate) struct PredicateCheckData {
+    /// The value being checked (already materialized and type-validated)
+    pub(crate) value: Value,
+    /// The annotation (needed for extracting default: property on failure)
+    pub(crate) annotation: Box<Spanned<Annotation>>,
+    /// Span of the TypeAssert expression (for error reporting)
+    pub(crate) expr_span: Span,
+    /// Span where the value was produced (for error reporting)
+    pub(crate) thunk_span: Span,
+    /// Environment for evaluating the default expression if predicate fails
+    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) ctx: Arc<EvalContext>,
+}
+
 /// Continuation variants for iterative materialization. Each represents
 /// "what to do after a sub-thunk has been materialized."
 ///
@@ -392,6 +407,10 @@ pub(crate) enum Cont {
     /// Check the guard result for a matched arm and either evaluate the body (guard passed)
     /// or continue to the next arm (guard failed).
     MatchGuardCheck(Box<MatchGuardCheckData>),
+    /// Check the result of an is: predicate evaluation for a TypeAssert.
+    /// After materializing the predicate result, checks truthiness and either returns
+    /// the original value (predicate passed) or evaluates the default expression / fails.
+    PredicateCheck(Box<PredicateCheckData>),
 }
 
 // Compile-time assertion: Cont must be ≤96 bytes to fit in one cache line.
@@ -2634,44 +2653,33 @@ pub(crate) async fn apply_cont(
                                 }
                             }
                         } else if value_matches_type(&value, &expected) {
-                            // KNOWN ISSUE: `is:` predicate validation not implemented
-                            //
-                            // After type validation passes, TypeAssert should check if the annotation
-                            // has an `is:` property and evaluate it as a predicate. For example:
-                            //   [@[type: Int  is: positive?] $x]
-                            // should call `positive?($x)` after verifying `$x` is an Int.
-                            //
-                            // Implementation requirements (mirroring match guard logic at eval.rs:1738-1764):
-                            // 1. Check if annotation.node.get_property("is") exists
-                            // 2. Evaluate the predicate expression in the current environment
-                            // 3. If the result is a Function/Builtin, invoke it with the value as argument
-                            // 4. Check if the result is truthy (Bool(true), non-empty Dict, or any non-Bool/non-Dict)
-                            // 5. If falsy:
-                            //    - If `default:` property exists, evaluate and return the default
-                            //    - Otherwise, fail with EvalError::type_assert_failed("_ (is: predicate failed)", ...)
-                            // 6. If truthy, return the value unchanged
-                            //
-                            // Challenges:
-                            // - Requires eval_core_expr and materialize calls, which need to be integrated
-                            //   into the iterative continuation loop (can't just call .await here)
-                            // - Need to create a new continuation type (e.g., PredicateCheck) to defer
-                            //   the predicate evaluation and result validation
-                            // - Need to handle errors from predicate evaluation (should propagate, not
-                            //   treat as "predicate failed")
-                            //
-                            // The match arm guard implementation (eval.rs:1733-1776) is the reference:
-                            // it evaluates the guard, checks if it's callable (then invokes it), and
-                            // checks truthiness. TypeAssert needs the same logic but with different
-                            // error handling (fail assertion vs skip arm).
-                            //
-                            // Test expectation: tests/corpus/eval/errors/typeassert_is_predicate_fails.llt-eval
-                            // expects [@[type: Int  is: [between 0 255]] 300] to fail with
-                            // "type assertion failed: expected _ (is: predicate failed), got Int"
-                            //
-                            // For now, the `is:` predicate is silently ignored when present.
-                            // The type checker does NOT validate `is:` predicates statically (they are
-                            // runtime-only contracts), so this gap means predicates have no effect.
-                            Action::Continue(Ok(value))
+                            // Type matches — check if there's an is: predicate to evaluate
+                            let is_predicate = annotation.node.get_property(IS_ANNOTATION_KEY).cloned();
+                            if let Some(predicate_node) = is_predicate
+                            {
+                                // Push a PredicateCheck continuation to handle the predicate result
+                                stack.push(Cont::PredicateCheck(Box::new(PredicateCheckData {
+                                    value: value.clone(),
+                                    annotation,
+                                    expr_span,
+                                    thunk_span,
+                                    env: Arc::clone(&env),
+                                    ctx: Arc::clone(&ctx),
+                                })));
+                                // Evaluate the predicate expression
+                                Action::EvalCore {
+                                    expr: Arc::new(crate::lower::lower(
+                                        &predicate_node,
+                                        crate::ast::empty_resolution_table(),
+                                        crate::ast::empty_type_annotation_table(),
+                                    )),
+                                    env,
+                                    ctx: Arc::clone(&ctx),
+                                }
+                            } else {
+                                // No is: predicate — type check passed, return value
+                                Action::Continue(Ok(value))
+                            }
                         } else if let Some(default_node) =
                             annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                         {
@@ -3072,6 +3080,98 @@ pub(crate) async fn apply_cont(
                             match_span,
                         })));
                         Action::Continue(Ok(scrutinee_value))
+                    }
+                }
+            }
+        }
+
+        Cont::PredicateCheck(data) => {
+            let PredicateCheckData {
+                value,
+                annotation,
+                expr_span,
+                thunk_span,
+                env,
+                ctx,
+            } = *data;
+
+            match result {
+                Err(e) => Action::Continue(Err(e)),
+                Ok(predicate_value) => {
+                    // If the predicate is callable, invoke it with the value as argument
+                    // (mirroring match guard logic at MatchGuardCheck)
+                    let predicate_result_value = match predicate_value {
+                        Value::Function { .. } | Value::Builtin(_) => {
+                            // Create a thunk for the value
+                            let value_thunk =
+                                Arc::new(Thunk::new_materialized(value.clone(), thunk_span));
+                            // Create a thunk for the predicate
+                            let pred_thunk = Arc::new(Thunk::new_materialized(
+                                predicate_value,
+                                expr_span,
+                            ));
+                            // Create a PendingCall thunk
+                            let call_thunk = Arc::new(Thunk::new_pending_call(
+                                pred_thunk,
+                                vec![value_thunk],
+                                IndexMap::new(),
+                                expr_span,
+                                Arc::clone(&env),
+                                expr_span,
+                                None,
+                                Arc::clone(&ctx),
+                            ));
+                            // Force the call
+                            match crate::async_rt::block_on_anywhere(materialize(
+                                &call_thunk,
+                                Some(&expr_span),
+                                &ctx,
+                            )) {
+                                Ok(v) => v,
+                                Err(e) => return Action::Continue(Err(e)),
+                            }
+                        }
+                        other => other,
+                    };
+
+                    // Check if the predicate result is truthy
+                    let is_truthy = match &predicate_result_value {
+                        Value::Bool(b) => *b,
+                        Value::Dict(map) => !map.is_empty(),
+                        _ => true,
+                    };
+
+                    if is_truthy {
+                        // Predicate passed — return the original value
+                        Action::Continue(Ok(value))
+                    } else {
+                        // Predicate failed — check for default: or fail
+                        if let Some(default_node) =
+                            annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                        {
+                            // Evaluate default expression iteratively
+                            Action::EvalCore {
+                                expr: Arc::new(crate::lower::lower(
+                                    default_node,
+                                    crate::ast::empty_resolution_table(),
+                                    crate::ast::empty_type_annotation_table(),
+                                )),
+                                env,
+                                ctx: Arc::clone(&ctx),
+                            }
+                        } else {
+                            // No default — fail with predicate failed error
+                            let mut err = EvalError::type_assert_failed(
+                                "_ (is: predicate failed)",
+                                value.type_name(),
+                                thunk_span,
+                            )
+                            .with_materialization_span(expr_span);
+                            if thunk_span != expr_span {
+                                err = err.with_secondary_span(thunk_span, "value produced here");
+                            }
+                            Action::Continue(Err(err.into()))
+                        }
                     }
                 }
             }
