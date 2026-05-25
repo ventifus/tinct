@@ -512,6 +512,20 @@ pub fn expr_to_core_expr(expr: &Spanned<Expr>) -> Spanned<crate::ast::CoreExpr> 
     Spanned::new(expr_inner_to_core_expr(&expr.node, expr.span), expr.span)
 }
 
+/// Convert a `SurfaceNode` directly to a `Spanned<CoreExpr>`.
+///
+/// This is a convenience wrapper that composes `surface_node_to_expr` and `expr_to_core_expr`
+/// into a single call, reducing bridge surface area at call sites. It is the preferred way to
+/// obtain a `CoreExpr` from an `Arc<SurfaceNode>` (e.g., for `default:` property evaluation
+/// in TypeAssert continuations).
+///
+/// TODO(rv2-delete-old-ast): When `SurfaceNode` can lower directly to `CoreExpr` without going
+/// through `Expr`, replace this with a direct lowering path and delete `surface_node_to_expr`
+/// and `expr_to_core_expr`.
+pub fn surface_node_to_core_expr(node: &Arc<SurfaceNode>) -> Spanned<crate::ast::CoreExpr> {
+    expr_to_core_expr(&surface_node_to_expr(node))
+}
+
 fn expr_inner_to_core_expr(expr: &Expr, span: crate::ast::Span) -> crate::ast::CoreExpr {
     use crate::ast::{CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam};
 
@@ -637,7 +651,7 @@ fn expr_inner_to_core_expr(expr: &Expr, span: crate::ast::Span) -> crate::ast::C
                 let default = annotation
                     .node
                     .get_property("default")
-                    .map(|node| Arc::new(expr_to_core_expr(&surface_node_to_expr(node))));
+                    .map(|node| Arc::new(surface_node_to_core_expr(node)));
                 CoreExpr::RuntimeTypeCheck {
                     annotation: annotation.clone(),
                     expr: Arc::new(expr_to_core_expr(inner)),

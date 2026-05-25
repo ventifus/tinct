@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::{check_surface_expr, contains_unknown_or_top, infer_surface_expr, TypeMap};
-use crate::ast::{Annotation, Entry, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode};
+use crate::ast::{Annotation, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::types::{Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
 
 /// Find the closest match to `target` in `candidates` using Levenshtein distance.
@@ -63,33 +63,6 @@ fn levenshtein_distance(s1: &str, s2: &str) -> usize {
     }
 
     matrix[len1][len2]
-}
-
-/// Convert a slice of Surface dict entries into the old `Entry`-based representation.
-///
-/// This bridge is no longer needed by the main type-resolution path (all functions now
-/// take `&[Spanned<SurfaceEntry>]` directly). Kept for any remaining callers in tests
-/// or other code that still operates on the Expr-based representation.
-#[allow(dead_code)]
-pub(crate) fn surface_entries_to_entries(
-    surface_entries: &[Spanned<SurfaceEntry>],
-) -> Vec<Spanned<Entry>> {
-    surface_entries
-        .iter()
-        .map(|se| {
-            Spanned::new(
-                Entry {
-                    key: se
-                        .node
-                        .key
-                        .as_ref()
-                        .map(crate::ast_convert::surface_node_to_expr),
-                    value: Rc::new(crate::ast_convert::surface_node_to_expr(&se.node.value)),
-                },
-                se.span,
-            )
-        })
-        .collect()
 }
 
 pub(crate) fn expand_type_alias(

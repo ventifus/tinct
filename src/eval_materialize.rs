@@ -259,10 +259,10 @@ pub(crate) struct GuardedValidateData {
 /// Payload for Cont::TypeAssertCheck. Boxed to keep the Cont enum ≤96 bytes.
 ///
 /// TODO(parts-e): `annotation` is Box<Spanned<Annotation>> where Annotation::PropertyDict
-/// entries store Spanned<Expr> values. The default-fallback paths in apply_cont extract
-/// the "default:" property as &Spanned<Expr>, convert via expr_to_core_expr, and dispatch
-/// as Action::EvalCore. When Annotation stores CoreExpr values natively, the conversion
-/// becomes a zero-cost Arc<Spanned<CoreExpr>> clone.
+/// entries store SurfaceNode values. The default-fallback paths in apply_cont extract
+/// the "default:" property as &Arc<SurfaceNode>, convert via surface_node_to_core_expr, and
+/// dispatch as Action::EvalCore. When Annotation stores CoreExpr values natively, the
+/// conversion becomes a zero-cost Arc<Spanned<CoreExpr>> clone.
 pub(crate) struct TypeAssertCheckData {
     pub(crate) annotation: Box<Spanned<Annotation>>,
     pub(crate) resolved: Box<Option<Type>>,
@@ -341,10 +341,10 @@ pub(crate) enum Cont {
     /// violation in the TypeAssert branch.
     ///
     /// TODO(parts-e): TypeAssertCheckData::annotation is Box<Spanned<Annotation>>, and
-    /// Annotation::PropertyDict entries are Spanned<Entry> whose values are Spanned<Expr>.
+    /// Annotation::PropertyDict entries are SurfaceEntry whose values are Arc<SurfaceNode>.
     /// The default-fallback paths in apply_cont call annotation.node.get_property("default:")
-    /// → &Spanned<Expr> → expr_to_core_expr → Action::EvalCore. When annotations store
-    /// CoreExpr values natively, the expr_to_core_expr call becomes a no-op clone.
+    /// → &Arc<SurfaceNode> → surface_node_to_core_expr → Action::EvalCore. When annotations
+    /// store CoreExpr values natively, the conversion becomes a no-op clone.
     TypeAssertCheck(Box<TypeAssertCheckData>),
 }
 
@@ -442,7 +442,7 @@ pub(crate) enum Action {
     /// through `eval_step` and the Expr-based dispatch table.
     ///
     /// Default expressions from `Annotation::get_property("default:")` are converted
-    /// from `Spanned<Expr>` to `Spanned<CoreExpr>` at emit time via `expr_to_core_expr`.
+    /// from `Arc<SurfaceNode>` to `Spanned<CoreExpr>` at emit time via `surface_node_to_core_expr`.
     /// Emit sites: GuardedValidate default-fallback (apply_cont) and TypeAssertCheck
     /// default-fallback (apply_cont).
     EvalCore {
@@ -2309,8 +2309,8 @@ pub(crate) async fn apply_cont(
                                     .get_property(DEFAULT_ANNOTATION_KEY)
                                     .map(|node| {
                                         (
-                                            Arc::new(crate::ast_convert::expr_to_core_expr(
-                                                &crate::ast_convert::surface_node_to_expr(node),
+                                            Arc::new(crate::ast_convert::surface_node_to_core_expr(
+                                                node,
                                             )),
                                             Arc::clone(&env),
                                         )
@@ -2355,8 +2355,8 @@ pub(crate) async fn apply_cont(
                                     // Evaluate default expression iteratively.
                                     // The result will flow to the next continuation on the stack.
                                     Action::EvalCore {
-                                        expr: Arc::new(crate::ast_convert::expr_to_core_expr(
-                                            &crate::ast_convert::surface_node_to_expr(default_node),
+                                        expr: Arc::new(crate::ast_convert::surface_node_to_core_expr(
+                                            default_node,
                                         )),
                                         env,
                                         ctx: Arc::clone(&ctx),
@@ -2420,8 +2420,8 @@ pub(crate) async fn apply_cont(
                             // Evaluate default expression iteratively.
                             // The result will flow to the next continuation on the stack.
                             Action::EvalCore {
-                                expr: Arc::new(crate::ast_convert::expr_to_core_expr(
-                                    &crate::ast_convert::surface_node_to_expr(default_node),
+                                expr: Arc::new(crate::ast_convert::surface_node_to_core_expr(
+                                    default_node,
                                 )),
                                 env,
                                 ctx: Arc::clone(&ctx),
@@ -2491,8 +2491,8 @@ pub(crate) async fn apply_cont(
                                     // Evaluate default expression iteratively.
                                     // The result will flow to the next continuation on the stack.
                                     return Action::EvalCore {
-                                        expr: Arc::new(crate::ast_convert::expr_to_core_expr(
-                                            &crate::ast_convert::surface_node_to_expr(default_node),
+                                        expr: Arc::new(crate::ast_convert::surface_node_to_core_expr(
+                                            default_node,
                                         )),
                                         env,
                                         ctx: Arc::clone(&ctx),
@@ -2521,8 +2521,8 @@ pub(crate) async fn apply_cont(
                                     // Evaluate default expression iteratively.
                                     // The result will flow to the next continuation on the stack.
                                     return Action::EvalCore {
-                                        expr: Arc::new(crate::ast_convert::expr_to_core_expr(
-                                            &crate::ast_convert::surface_node_to_expr(default_node),
+                                        expr: Arc::new(crate::ast_convert::surface_node_to_core_expr(
+                                            default_node,
                                         )),
                                         env,
                                         ctx: Arc::clone(&ctx),
