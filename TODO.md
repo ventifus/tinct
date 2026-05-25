@@ -207,10 +207,10 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 - [x] Phase 1: Create `infer_surface_expr` stub (bridge wrapper) + migrate typecheck_surface_document and typecheck_dict.rs callers to use it (`src/typecheck.rs`, `src/typecheck_dict.rs`)
 - [x] Phase 2: Migrate Literal/VarRef/Dict/Call/Fn/Sequential/Quote/Unquote/Placeholder/Rest/Annotated/LetDecl match arms natively in `infer_surface_expr`
-- [x] Phase 3: Partial — common arms migrated natively; Fn/Match/TypeAssert/CaseArm/Decl still bridge to `infer_expr` (need helper function migration first)
-- [ ] Phase 4: Migrate 16 `check_*` helpers + `infer_fn`/`resolve_type_assert`/`typecheck_case_arm` from `Rc<Spanned<Expr>>` to `Arc<SurfaceNode>` inputs
-- [ ] Phase 5: Migrate expand.rs and eval.rs surface_node_to_expr/expr_to_surface_node callers (reduce bridge footprint)
-- [ ] Phase 6: Delete infer_expr + remove production `use crate::ast::Expr;` from typecheck.rs
+- [x] Phase 3: Fn/Match/TypeAssert/Decl/RuntimeTypeCheck arms migrated natively in infer_surface_expr (commit e90f830)
+- [x] Phase 4: All 16 `check_*` helpers migrated to `Arc<SurfaceNode>`; infer_surface_expr Call arm passes args directly (commit 4c87d4c)
+- [x] Phase 5-6: `infer_expr` DELETED (943 lines, commit e90f830); `infer_if`, `infer_fn`, `typecheck_case_arm` migrated to SurfaceNode; `infer_class_decl_from_expr`/`infer_instance_decl_from_expr` helpers still use Expr internally (future cleanup)
+- [ ] Final cleanup: Migrate `extract_narrowings(cond: &Spanned<Expr>)` → `&Arc<SurfaceNode>` + rewrite `infer_class_decl_from_expr`/`infer_instance_decl_from_expr` without Expr; then remove `use crate::ast::Expr;` production import from typecheck.rs (`src/typecheck.rs`, `src/typecheck_annot.rs`)
 
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files
 
