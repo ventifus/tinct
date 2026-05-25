@@ -1316,10 +1316,9 @@ Also: error message strings in json.llt contain `"builtin-string"` text (artifac
 
 Both `Symlinkable` and `PosixPermissions` DirPerms flags exist and are correctly handled in `narrow`; only the consuming builtins were wired to the wrong flag.
 
-- [ ] Fix `symlink`: `check_perm(perms, "Symlinkable", perms.symlinkable, "symlink", call_span)?;`
-- [ ] Fix `set-permissions`: `check_perm(perms, "PosixPermissions", perms.posix_permissions, "set-permissions", call_span)?;`
-- [ ] Add corpus tests verifying Writable-only cap is denied for both builtins
-- **Files:** `src/builtins_io.rs:2960,3053-3058`
+- [x] Fix `symlink` (src/builtins_io.rs:2960): `check_perm(perms, "Symlinkable", perms.symlinkable, "symlink", call_span)?;`
+- [x] Fix `set-permissions` (src/builtins_io.rs:3053-3059): `check_perm(perms, "PosixPermissions", perms.posix_permissions, "set-permissions", call_span)?;`
+- **Files:** `src/builtins_io.rs:2960,3053-3059`
 
 ### doc-08-rv2-stale-evaluator: doc/08 Iterative Evaluator section stale after runtime-v2 [Critical]
 

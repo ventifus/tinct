@@ -2957,7 +2957,7 @@ pub(crate) fn builtin_symlink(
 
         // Extract DirCap and check permissions
         let (dir, perms) = extract_dir_cap(&dir_val, "symlink", args[0].span)?;
-        check_perm(perms, "Writable", perms.writable, "symlink", call_span)?;
+        check_perm(perms, "Symlinkable", perms.symlinkable, "symlink", call_span)?;
 
         let target = require_string("symlink", target_val, args[1].span)?;
         let link_path = require_string("symlink", link_path_val, args[2].span)?;
@@ -3052,8 +3052,8 @@ pub(crate) fn builtin_set_permissions(
         let (dir, perms) = extract_dir_cap(&dir_val, "set-permissions", args[0].span)?;
         check_perm(
             perms,
-            "Writable",
-            perms.writable,
+            "PosixPermissions",
+            perms.posix_permissions,
             "set-permissions",
             call_span,
         )?;
