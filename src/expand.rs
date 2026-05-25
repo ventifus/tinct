@@ -36,7 +36,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{Param, Span, Spanned, SurfaceEntry, SurfaceNamedArg, SurfaceNode};
-use crate::ast_convert::surface_node_to_expr;
 use crate::ast_dict::{dict_to_surface_node, surface_node_to_dict, AstToDictOpts};
 use crate::builtins;
 use crate::error::{EvalError, EvalResult};
@@ -1320,7 +1319,7 @@ fn register_surface_macro_decl(
     ctx: &Arc<EvalContext>,
     stdlib_env: &Arc<RwLock<Environment>>,
 ) -> EvalResult<()> {
-    use crate::ast::{Expr, SurfaceDeclaration, SurfaceExpression};
+    use crate::ast::{SurfaceDeclaration, SurfaceExpression};
 
     match decl {
         SurfaceDeclaration::MacroDecl { name, params, body } => {
@@ -1397,20 +1396,14 @@ fn register_surface_macro_decl(
                 ));
             }
 
-            // Build Expr::Fn from body and evaluate to get the transformer Value::Function.
-            let body_spanned = surface_node_to_expr(body);
-            let fn_expr = Expr::Fn {
-                return_ann: None,
-                params: all_fn_params,
-                body: Rc::new(body_spanned),
-                desugared: false,
-            };
-            let fn_spanned = Spanned::new(fn_expr, decl_span);
-            let transformer_value = crate::async_rt::block_on_anywhere(crate::eval::eval(
-                Rc::new(fn_spanned),
+            // Evaluate the macro transformer body as a function thunk.
+            let transformer_value = crate::eval::eval_surface_fn(
+                all_fn_params,
+                body,
+                decl_span,
                 Arc::clone(stdlib_env),
                 ctx,
-            ))?;
+            )?;
 
             env.register_macro(
                 name.clone(),
@@ -1471,19 +1464,14 @@ fn register_surface_macro_decl(
                 _ => vec![],
             };
 
-            let body_spanned = surface_node_to_expr(body);
-            let fn_expr = Expr::Fn {
-                return_ann: None,
-                params: param_vec,
-                body: Rc::new(body_spanned),
-                desugared: false,
-            };
-            let fn_spanned = Spanned::new(fn_expr, decl_span);
-            let transformer_value = crate::async_rt::block_on_anywhere(crate::eval::eval(
-                Rc::new(fn_spanned),
+            // Evaluate the macro transformer body as a function thunk.
+            let transformer_value = crate::eval::eval_surface_fn(
+                param_vec,
+                body,
+                decl_span,
                 Arc::clone(stdlib_env),
                 ctx,
-            ))?;
+            )?;
 
             env.register_macro(
                 name.clone(),

@@ -1374,6 +1374,34 @@ pub fn eval(
     }) // end Box::pin(async move {
 }
 
+/// Evaluate a SurfaceNode function body with given params as a macro transformer.
+///
+/// Hides the `Expr::Fn` construction inside eval.rs so that `expand.rs` does not need
+/// to import `surface_node_to_expr` or `Expr`. The `Expr::Fn` bridge is intentional here
+/// and is the ONLY remaining `Expr` usage for macro transformer registration.
+///
+/// Returns the resulting `Value::Function` thunk, ready for use as a macro transformer.
+///
+/// TODO(rv2-delete-old-ast): replace with a native SurfaceExpression::Fn evaluator
+/// once the E3e expander cutover to SurfaceExpression is complete.
+pub(crate) fn eval_surface_fn(
+    params: Vec<Spanned<Param>>,
+    body: &Arc<crate::ast::SurfaceNode>,
+    span: Span,
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<Arc<Thunk>> {
+    let body_expr = crate::ast_convert::surface_node_to_expr(body);
+    let fn_expr = Expr::Fn {
+        return_ann: None,
+        params,
+        body: Rc::new(body_expr),
+        desugared: false,
+    };
+    let fn_spanned = Spanned::new(fn_expr, span);
+    crate::async_rt::block_on_anywhere(eval(Rc::new(fn_spanned), env, ctx))
+}
+
 /// Evaluate a CoreExpr to a thunk (transitional path for runtime-v2).
 ///
 /// This is the new CoreExpr evaluation entry point. It handles:
