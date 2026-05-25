@@ -13,7 +13,7 @@ use crate::ast::{
     TypeAnnotationTable,
 };
 // All production inference helpers now walk SurfaceExpression natively.
-// Expr is test-only: test stubs (check_expr, resolve_monad_from_expr_test) build Expr ASTs directly.
+// No Expr bridge needed — tests use parse_surface_expression directly.
 use crate::coverage;
 use crate::types::{
     generalize, instantiate_at_level, instantiate_scheme, resolve_has_field, unify, InferState,
@@ -6146,28 +6146,8 @@ fn check_overbroad_annotations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Expr, Param, SurfaceEntry, SurfaceExpression, SurfaceNode};
+    use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode};
     use crate::types::{Constraint, Kind};
-
-    // Test-only bridge: allows tests that build Expr::Fn directly to call check_surface_expr
-    // by converting through expr_to_surface_node. Production code uses check_surface_expr directly.
-    fn check_expr(
-        expr: &Spanned<Expr>,
-        expected: &Type,
-        env: &Rc<TypeEnv>,
-        state: &mut InferState,
-        type_map: &mut Option<&mut TypeMap>,
-    ) -> Result<(), Vec<TypeError>> {
-        let node = crate::ast_convert::expr_to_surface_node(expr);
-        check_surface_expr(&node, expected, env, state, type_map)
-    }
-
-    // Test-only bridge: allows tests that build Expr::Call directly to call resolve_monad_from_surface
-    // by converting through expr_to_surface_node. Production code uses resolve_monad_from_surface directly.
-    fn resolve_monad_from_expr(expr: &Spanned<Expr>) -> Option<String> {
-        let node = crate::ast_convert::expr_to_surface_node(expr);
-        resolve_monad_from_surface(&node)
-    }
 
     /// Build a `Spanned<SurfaceEntry>` for use in `Annotation::PropertyDict` test constructions.
     /// Migrated from old `sp(Entry { ... })` form during rv2-migrate-annotation Phase 1.
@@ -11350,33 +11330,40 @@ mod tests {
             "CALL-POLY should return the argument type via identity function"
         );
 
-        // Convert to File AST to extract span information for type_map assertions
-        let file = crate::ast_convert::surface_program_to_file(&program);
-
         // Find the span of `$id` in `[result: [call $id 42]]` from the second document.
+        // Traverse the SurfaceProgram directly (no ast_convert conversion needed).
         // The outer expression in document 2 is a Dict [result: [call $id 42]].
-        // We need to dig into the dict entry's value to find the Call expression.
-        let doc2_expr = &file.node.documents[1].node.expressions[0];
-        let func_span = match &doc2_expr.node {
-            Expr::Dict(entries) => {
+        let doc2_item = program.documents[1]
+            .node
+            .items
+            .first()
+            .expect("document 2 should have at least one item");
+        let doc2_node = match doc2_item {
+            crate::ast::SurfaceItem::Expr(node) => node,
+            other => panic!("expected SurfaceItem::Expr in document 2, got {other:?}"),
+        };
+        let func_span = match &doc2_node.expr {
+            SurfaceExpression::Dict(entries) => {
                 // Find the entry with key "result"
                 let call_entry = entries
                     .iter()
                     .find(|e| {
-                        matches!(&e.node.key, Some(k) if matches!(&k.node, Expr::Str(s) if s == "result"))
+                        matches!(&e.node.key, Some(k) if matches!(&k.expr, SurfaceExpression::Str(s) if s == "result"))
                     })
                     .expect("should have 'result' entry");
-                match &call_entry.node.value.node {
-                    Expr::Call {
-                        func, implied: _, ..
-                    } => (func.span.start.offset, func.span.end.offset),
+                match &call_entry.node.value.expr {
+                    SurfaceExpression::Call { func, .. } => {
+                        (func.span.start.offset, func.span.end.offset)
+                    }
                     other => {
-                        panic!("expected Expr::Call as value of 'result' entry, got {other:?}")
+                        panic!("expected SurfaceExpression::Call as value of 'result' entry, got {other:?}")
                     }
                 }
             }
-            Expr::Call { func, .. } => (func.span.start.offset, func.span.end.offset),
-            other => panic!("expected Expr::Dict or Expr::Call in document 2, got {other:?}"),
+            SurfaceExpression::Call { func, .. } => (func.span.start.offset, func.span.end.offset),
+            other => {
+                panic!("expected SurfaceExpression::Dict or Call in document 2, got {other:?}")
+            }
         };
 
         // The func span ($id) must appear in type_map.
@@ -11397,44 +11384,16 @@ mod tests {
         );
     }
 
-    // -- check_expr lambda arity mismatch --
+    // -- check_surface_expr lambda arity mismatch --
 
     #[test]
     fn test_check_expr_lambda_arity_mismatch() {
         // Lambda with 2 params checked against a Fn type expecting 1 param triggers the
-        // arity check inside check_expr's lambda checking mode (lines 433-442).
+        // arity check inside check_surface_expr's lambda checking mode.
         //
-        // We call check_expr directly with a hand-built AST to test the actual arity check
-        // code path without going through the full parse pipeline.
-        let span = Span::origin();
-
-        // Build: [fn [x y] $x] — a 2-param lambda
-        let param_x = Spanned::new(
-            Param {
-                name: "x".to_string(),
-                annotation: None,
-                variadic: false,
-            },
-            span,
-        );
-        let param_y = Spanned::new(
-            Param {
-                name: "y".to_string(),
-                annotation: None,
-                variadic: false,
-            },
-            span,
-        );
-        let body = Spanned::new(Expr::var_ref("x".to_string()), span);
-        let lambda = Spanned::new(
-            Expr::Fn {
-                return_ann: None,
-                params: vec![param_x, param_y],
-                body: Rc::new(body),
-                desugared: false,
-            },
-            span,
-        );
+        // Parse [fn [let x  let y] $x] — a 2-param lambda — via text.
+        let lambda = crate::parser::parse_surface_expression("[fn [let x  let y] $x]")
+            .expect("parse failed");
 
         // Expected type: Fn(String -> Int) — a 1-param function type
         let expected_ty = Type::Function {
@@ -11445,7 +11404,7 @@ mod tests {
 
         let env = Rc::new(TypeEnv::new());
         let mut state = InferState::new();
-        let result = check_expr(&lambda, &expected_ty, &env, &mut state, &mut None);
+        let result = check_surface_expr(&lambda, &expected_ty, &env, &mut state, &mut None);
 
         assert!(
             result.is_err(),
@@ -14905,48 +14864,9 @@ mod tests {
 
     #[test]
     fn test_do_infer_resolve_monad_from_expr_ok_constructor() {
-        // Unit test for resolve_monad_from_expr: [Ok x] → "result".
-        use crate::ast::{Expr, Position, Span, Spanned};
-
-        // Helper to create dummy spans for tests
-        let dummy_span = |start: usize, end: usize| Span {
-            start: Position {
-                offset: start,
-                line: 1,
-                column: start,
-            },
-            end: Position {
-                offset: end,
-                line: 1,
-                column: end,
-            },
-        };
-
-        // Build AST for [Ok 1] — Call { func: VarRef("Ok"), args: [1], implied: true }
-        let ok_var = Expr::VarRef {
-            name: "Ok".to_string(),
-            escaped: false,
-            resolved: Default::default(),
-        };
-        let one_lit = Expr::Int(1);
-        let ok_call = Expr::Call {
-            func: Box::new(Spanned {
-                node: ok_var,
-                span: dummy_span(0, 2),
-            }),
-            args: vec![Rc::new(Spanned {
-                node: one_lit,
-                span: dummy_span(3, 4),
-            })],
-            named_args: vec![],
-            implied: true,
-        };
-        let expr = Spanned {
-            node: ok_call,
-            span: dummy_span(0, 5),
-        };
-
-        let resolved = resolve_monad_from_expr(&expr);
+        // Unit test for resolve_monad_from_surface: [Ok x] → "result".
+        let node = crate::parser::parse_surface_expression("[Ok 1]").expect("parse failed");
+        let resolved = resolve_monad_from_surface(&node);
         assert_eq!(
             resolved,
             Some("result".to_string()),
@@ -14956,47 +14876,10 @@ mod tests {
 
     #[test]
     fn test_do_infer_resolve_monad_from_expr_error_constructor() {
-        // Unit test for resolve_monad_from_expr: [Error "msg"] → "result".
+        // Unit test for resolve_monad_from_surface: [Error "msg"] → "result".
         // Tinct's Result type uses "Error" (not "Err") as the error constructor.
-        use crate::ast::{Expr, Position, Span, Spanned};
-
-        let dummy_span = |start: usize, end: usize| Span {
-            start: Position {
-                offset: start,
-                line: 1,
-                column: start,
-            },
-            end: Position {
-                offset: end,
-                line: 1,
-                column: end,
-            },
-        };
-
-        let err_var = Expr::VarRef {
-            name: "Error".to_string(),
-            escaped: false,
-            resolved: Default::default(),
-        };
-        let str_lit = Expr::Str("msg".to_string());
-        let err_call = Expr::Call {
-            func: Box::new(Spanned {
-                node: err_var,
-                span: dummy_span(0, 3),
-            }),
-            args: vec![Rc::new(Spanned {
-                node: str_lit,
-                span: dummy_span(4, 9),
-            })],
-            named_args: vec![],
-            implied: true,
-        };
-        let expr = Spanned {
-            node: err_call,
-            span: dummy_span(0, 10),
-        };
-
-        let resolved = resolve_monad_from_expr(&expr);
+        let node = crate::parser::parse_surface_expression("[Error msg]").expect("parse failed");
+        let resolved = resolve_monad_from_surface(&node);
         assert_eq!(
             resolved,
             Some("result".to_string()),
@@ -15006,46 +14889,9 @@ mod tests {
 
     #[test]
     fn test_do_infer_resolve_monad_from_expr_case_sensitive() {
-        // Unit test for resolve_monad_from_expr: [ok x] (lowercase) → None.
-        use crate::ast::{Expr, Position, Span, Spanned};
-
-        let dummy_span = |start: usize, end: usize| Span {
-            start: Position {
-                offset: start,
-                line: 1,
-                column: start,
-            },
-            end: Position {
-                offset: end,
-                line: 1,
-                column: end,
-            },
-        };
-
-        let ok_var_lower = Expr::VarRef {
-            name: "ok".to_string(), // lowercase
-            escaped: false,
-            resolved: Default::default(),
-        };
-        let one_lit = Expr::Int(1);
-        let ok_call = Expr::Call {
-            func: Box::new(Spanned {
-                node: ok_var_lower,
-                span: dummy_span(0, 2),
-            }),
-            args: vec![Rc::new(Spanned {
-                node: one_lit,
-                span: dummy_span(3, 4),
-            })],
-            named_args: vec![],
-            implied: true,
-        };
-        let expr = Spanned {
-            node: ok_call,
-            span: dummy_span(0, 5),
-        };
-
-        let resolved = resolve_monad_from_expr(&expr);
+        // Unit test for resolve_monad_from_surface: [ok x] (lowercase) → None.
+        let node = crate::parser::parse_surface_expression("[ok 1]").expect("parse failed");
+        let resolved = resolve_monad_from_surface(&node);
         assert_eq!(
             resolved, None,
             "[ok ...] (lowercase) should not resolve — case-sensitive check required"
@@ -15054,34 +14900,9 @@ mod tests {
 
     #[test]
     fn test_do_infer_resolve_monad_from_expr_non_constructor() {
-        // Unit test for resolve_monad_from_expr: bare VarRef or other expr → None.
-        use crate::ast::{Expr, Position, Span, Spanned};
-
-        let dummy_span = |start: usize, end: usize| Span {
-            start: Position {
-                offset: start,
-                line: 1,
-                column: start,
-            },
-            end: Position {
-                offset: end,
-                line: 1,
-                column: end,
-            },
-        };
-
-        // Bare VarRef (not a Call)
-        let ok_var = Expr::VarRef {
-            name: "Ok".to_string(),
-            escaped: false,
-            resolved: Default::default(),
-        };
-        let expr = Spanned {
-            node: ok_var,
-            span: dummy_span(0, 2),
-        };
-
-        let resolved = resolve_monad_from_expr(&expr);
+        // Unit test for resolve_monad_from_surface: bare VarRef → None.
+        let node = crate::parser::parse_surface_expression("$Ok").expect("parse failed");
+        let resolved = resolve_monad_from_surface(&node);
         assert_eq!(
             resolved, None,
             "Bare VarRef (not a constructor call) should not resolve"
@@ -15090,54 +14911,16 @@ mod tests {
 
     #[test]
     fn test_do_infer_resolve_monad_from_expr_explicit_call_no_match() {
-        // Unit test for resolve_monad_from_expr: [call Ok 1] with implied: false → None.
+        // Unit test for resolve_monad_from_surface: [call $Ok 1] with implied: false → None.
         //
-        // The AST fallback only recognizes implied constructor syntax ([Ok 1] → implied: true).
-        // Explicit call form ([call Ok 1] → implied: false) must not trigger monad resolution —
+        // The surface fallback only recognizes implied constructor syntax ([Ok 1] → implied: true).
+        // Explicit call form ([call $Ok 1] → implied: false) must not trigger monad resolution —
         // it is a lower-level construct that should not be pattern-matched heuristically.
-        use crate::ast::{Expr, Position, Span, Spanned};
-
-        let dummy_span = |start: usize, end: usize| Span {
-            start: Position {
-                offset: start,
-                line: 1,
-                column: start,
-            },
-            end: Position {
-                offset: end,
-                line: 1,
-                column: end,
-            },
-        };
-
-        // Build AST for [call Ok 1] — Call { func: VarRef("Ok"), args: [1], implied: false }
-        let ok_var = Expr::VarRef {
-            name: "Ok".to_string(),
-            escaped: false,
-            resolved: Default::default(),
-        };
-        let one_lit = Expr::Int(1);
-        let ok_call = Expr::Call {
-            func: Box::new(Spanned {
-                node: ok_var,
-                span: dummy_span(0, 2),
-            }),
-            args: vec![Rc::new(Spanned {
-                node: one_lit,
-                span: dummy_span(3, 4),
-            })],
-            named_args: vec![],
-            implied: false, // explicit [call ...] form, NOT implied constructor syntax
-        };
-        let expr = Spanned {
-            node: ok_call,
-            span: dummy_span(0, 5),
-        };
-
-        let resolved = resolve_monad_from_expr(&expr);
+        let node = crate::parser::parse_surface_expression("[call $Ok 1]").expect("parse failed");
+        let resolved = resolve_monad_from_surface(&node);
         assert_eq!(
             resolved, None,
-            "[call Ok 1] (explicit call, implied: false) must not resolve — only implied constructor syntax triggers AST fallback"
+            "[call $Ok 1] (explicit call, implied: false) must not resolve — only implied constructor syntax triggers surface fallback"
         );
     }
 

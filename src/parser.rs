@@ -345,7 +345,7 @@ fn adjust_surface_entries(
 /// Supports both simple annotations (`@Number`) and property dict annotations (`@[type: Number default: 0]`).
 /// Property dict annotations are parsed by extracting the bracket sub-string from `input` and
 /// re-parsing it as a standalone expression via `parse2`, then converting the resulting
-/// `Expr::Dict` into `Annotation::PropertyDict`.
+/// `SurfaceExpression::Dict` into `Annotation::PropertyDict`.
 ///
 /// If `recovered_errors` is provided, certain errors will be recovered from by returning an
 /// error annotation placeholder and collecting the error instead of propagating it.
@@ -811,7 +811,7 @@ enum CallArg {
 /// there was a blank line (consecutive newlines) before that node.
 ///
 /// `errors` contains parse errors that were recovered from during parsing. These are
-/// errors that occurred inside bracket forms; the parser substituted an `Expr::Error`
+/// errors that occurred inside bracket forms; the parser substituted an `SurfaceExpression::Error`
 /// node and continued. Fatal errors (lexer failure, unclosed brackets at top level)
 /// still cause `parse()` to return `Err(...)`.
 ///
@@ -877,13 +877,13 @@ fn skip_to_closing_bracket(tokens: &[Spanned<Token>], from_idx: usize) -> usize 
 /// 1. Records the error in `recovered_errors`.
 /// 2. Pops the innermost `StackFrame` (which contained the error).
 /// 3. For Dict/Call frames: builds a partial expression with valid entries collected so far,
-///    plus an `Expr::Error` entry for the malformed part.
-/// 4. For other frames: pushes `Expr::Error(error_span)` to the parent.
+///    plus an `SurfaceExpression::Error` entry for the malformed part.
+/// 4. For other frames: pushes `SurfaceExpression::Error(error_span)` to the parent.
 /// 5. Skips `i` past the `]` that closes the abandoned frame, accounting for nested brackets.
 ///
 /// After calling this, the caller should `continue` the main token loop.
 ///
-/// `error_span`: the span to use for the `Expr::Error` node.
+/// `error_span`: the span to use for the `SurfaceExpression::Error` node.
 /// `skip_from_idx`: index of the first token to search from when looking for the matching `]`.
 ///
 /// Returns the new token index (pointing past the closing `]`, or at `tokens.len()` if not found).
@@ -1082,7 +1082,7 @@ fn recover_from_bracket_error(
 /// Since no frame was pushed, this
 /// function does NOT pop anything. It:
 /// 1. Records the error in `recovered_errors`.
-/// 2. Pushes `Expr::Error(error_span)` to the current top frame (or document).
+/// 2. Pushes `SurfaceExpression::Error(error_span)` to the current top frame (or document).
 /// 3. Skips `i` past the `]` that closes the bracket that failed to open.
 ///
 /// `skip_from_idx` should be the token index just after the `[` that triggered the error
@@ -1137,7 +1137,7 @@ fn recover_from_failed_open(
 /// - Comment collection: leading and trailing comments attached by span offset
 ///
 /// When errors occur inside bracket forms, the parser recovers by substituting an
-/// `Expr::Error` node and skipping to the matching `]`. Recovered errors are collected
+/// `SurfaceExpression::Error` node and skipping to the matching `]`. Recovered errors are collected
 /// in `ParseOutput.errors`. Fatal errors (lexer failure, unclosed brackets) still
 /// cause this function to return `Err(...)`.
 pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
@@ -1786,7 +1786,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 };
 
                 // Helper: recover from a CloseBracket-handler error (frame already popped).
-                // Pushes Expr::Error to the new top-of-stack or doc, records the error, and
+                // Pushes SurfaceExpression::Error to the new top-of-stack or doc, records the error, and
                 // falls through to the `last_significant_span`/`i += 1`/`continue` at the end.
                 macro_rules! close_bracket_recover {
                     ($err:expr) => {{
@@ -3154,7 +3154,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ref mut pending_key,
                             ..
                         }) => {
-                            // Dict key: Expr::Str
+                            // Dict key: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(s.clone()),
                                 span,
@@ -3178,7 +3178,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ref mut pending_key,
                             ..
                         }) => {
-                            // Method name in class: Expr::Str
+                            // Method name in class: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(s.clone()),
                                 span,
@@ -3192,7 +3192,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ref mut pending_key,
                             ..
                         }) => {
-                            // Method name in instance: Expr::Str
+                            // Method name in instance: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(s.clone()),
                                 span,
@@ -3206,7 +3206,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ref mut pending_key,
                             ..
                         }) => {
-                            // Field name in syntax-class: Expr::Str
+                            // Field name in syntax-class: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(s.clone()),
                                 span,
@@ -4171,7 +4171,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ref mut pending_key,
                             ..
                         }) => {
-                            // Dict key: Expr::Str
+                            // Dict key: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(keyword_str.to_string()),
                                 span,
@@ -4195,7 +4195,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ref mut pending_key,
                             ..
                         }) => {
-                            // Method name in class: Expr::Str
+                            // Method name in class: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(keyword_str.to_string()),
                                 span,
@@ -4209,7 +4209,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ref mut pending_key,
                             ..
                         }) => {
-                            // Method name in instance: Expr::Str
+                            // Method name in instance: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(keyword_str.to_string()),
                                 span,
@@ -4223,7 +4223,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ref mut pending_key,
                             ..
                         }) => {
-                            // Field name in syntax-class: Expr::Str
+                            // Field name in syntax-class: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(keyword_str.to_string()),
                                 span,
@@ -5839,7 +5839,7 @@ pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, ParseEr
 /// `ParseOutput.errors` and returns a synthetic AST.
 ///
 /// Errors that occur inside bracket forms are recovered from: the parser substitutes
-/// `Expr::Error` nodes and continues. Fatal errors (lexer failure, unclosed brackets at
+/// `SurfaceExpression::Error` nodes and continues. Fatal errors (lexer failure, unclosed brackets at
 /// top level) are also recovered: they are recorded in `ParseOutput.errors` and a minimal
 /// empty `File` AST is returned.
 ///
@@ -5904,50 +5904,38 @@ pub fn format_parse_error(err: &ParseError, source: &str, file_name: &str) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::rc::Rc;
 
     /// Helper: parse successfully and return the first expression from the first document.
-    /// Uses the ast_convert bridge to return old Expr AST for backward compat with tests.
-    fn parse_expr(input: &str) -> Spanned<Expr> {
+    /// Returns `Arc<SurfaceNode>` directly — no ast_convert bridge needed.
+    fn parse_surf_node(input: &str) -> Arc<SurfaceNode> {
         let output = parse(input).expect("parse failed");
         let first_doc = &output.program.documents[0].node;
         match first_doc.items.first() {
-            Some(SurfaceItem::Expr(node)) => crate::ast_convert::surface_node_to_expr(node),
+            Some(SurfaceItem::Expr(node)) => Arc::clone(node),
             _ => panic!("first item is not an expression"),
         }
     }
 
-    /// Helper: convert SurfaceDocument to old Document AST via bridge.
-    /// Only used by tests that haven't been migrated yet.
-    fn surface_doc_to_doc(surf_doc: &SurfaceDocument) -> Document {
-        let expressions = surf_doc
+    /// Helper: extract all expression nodes from a SurfaceDocument.
+    /// Returns `Vec<Arc<SurfaceNode>>` — no ast_convert bridge needed.
+    fn surf_items(surf_doc: &SurfaceDocument) -> Vec<Arc<SurfaceNode>> {
+        surf_doc
             .items
             .iter()
             .filter_map(|item| match item {
-                SurfaceItem::Expr(node) => {
-                    Some(Rc::new(crate::ast_convert::surface_node_to_expr(node)))
-                }
-                SurfaceItem::Decl(_) => None, // Skip declarations in expression list
+                SurfaceItem::Expr(node) => Some(Arc::clone(node)),
+                SurfaceItem::Decl(_) => None,
             })
-            .collect();
-
-        Document {
-            expressions,
-            name: surf_doc.name.clone(),
-            output_type: surf_doc.output_type.clone(),
-            expects: surf_doc.expects.clone(),
-            caps: surf_doc.caps.clone(),
-            stage: surf_doc.stage.clone(),
-        }
+            .collect()
     }
 
     #[test]
     fn test_empty_dict() {
         let output = parse("[]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        assert_eq!(doc.expressions.len(), 1);
-        match &doc.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items = surf_items(&output.program.documents[0].node);
+        assert_eq!(items.len(), 1);
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 0);
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -5957,13 +5945,16 @@ mod tests {
     #[test]
     fn test_dict_one_value() {
         let output = parse("[42]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        assert_eq!(doc.expressions.len(), 1);
-        match &doc.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items = surf_items(&output.program.documents[0].node);
+        assert_eq!(items.len(), 1);
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
                 assert!(entries[0].node.key.is_none()); // auto-indexed
-                assert!(matches!(&entries[0].node.value.node, Expr::Int(42)));
+                assert!(matches!(
+                    &entries[0].node.value.expr,
+                    SurfaceExpression::Int(42)
+                ));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -5972,24 +5963,30 @@ mod tests {
     #[test]
     fn test_keyed_entry() {
         let output = parse("[a: 1 b: 2]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 2);
                 // First entry: a: 1
                 assert!(entries[0].node.key.is_some());
-                match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::Str(s) => assert_eq!(s, "a"),
+                match &entries[0].node.key.as_ref().unwrap().expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "a"),
                     other => panic!("expected key 'a', got {other:?}"),
                 }
-                assert!(matches!(&entries[0].node.value.node, Expr::Int(1)));
+                assert!(matches!(
+                    &entries[0].node.value.expr,
+                    SurfaceExpression::Int(1)
+                ));
                 // Second entry: b: 2
                 assert!(entries[1].node.key.is_some());
-                match &entries[1].node.key.as_ref().unwrap().node {
-                    Expr::Str(s) => assert_eq!(s, "b"),
+                match &entries[1].node.key.as_ref().unwrap().expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "b"),
                     other => panic!("expected key 'b', got {other:?}"),
                 }
-                assert!(matches!(&entries[1].node.value.node, Expr::Int(2)));
+                assert!(matches!(
+                    &entries[1].node.value.expr,
+                    SurfaceExpression::Int(2)
+                ));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -5998,21 +5995,21 @@ mod tests {
     #[test]
     fn test_call_simple() {
         let output = parse("[call $f 1 2]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Call {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Call {
                 func,
                 args,
                 named_args,
                 ..
             } => {
-                match &func.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "f"),
+                match &func.expr {
+                    SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "f"),
                     other => panic!("expected VarRef for func, got {other:?}"),
                 }
                 assert_eq!(args.len(), 2);
-                assert!(matches!(&args[0].node, Expr::Int(1)));
-                assert!(matches!(&args[1].node, Expr::Int(2)));
+                assert!(matches!(&args[0].expr, SurfaceExpression::Int(1)));
+                assert!(matches!(&args[1].expr, SurfaceExpression::Int(2)));
                 assert_eq!(named_args.len(), 0);
             }
             other => panic!("expected Call, got {other:?}"),
@@ -6022,22 +6019,25 @@ mod tests {
     #[test]
     fn test_call_named_args() {
         let output = parse("[call $f x: 1]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Call {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Call {
                 func,
                 args,
                 named_args,
                 ..
             } => {
-                match &func.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "f"),
+                match &func.expr {
+                    SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "f"),
                     other => panic!("expected VarRef for func, got {other:?}"),
                 }
                 assert_eq!(args.len(), 0);
                 assert_eq!(named_args.len(), 1);
                 assert_eq!(named_args[0].node.name, "x");
-                assert!(matches!(&named_args[0].node.value.node, Expr::Int(1)));
+                assert!(matches!(
+                    &named_args[0].node.value.expr,
+                    SurfaceExpression::Int(1)
+                ));
             }
             other => panic!("expected Call, got {other:?}"),
         }
@@ -6046,16 +6046,16 @@ mod tests {
     #[test]
     fn test_fn_simple() {
         let output = parse("[fn [let] 42]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Fn {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn {
                 params,
                 body,
                 return_ann,
                 desugared,
             } => {
                 assert_eq!(params.len(), 0);
-                assert!(matches!(&body.node, Expr::Int(42)));
+                assert!(matches!(&body.expr, SurfaceExpression::Int(42)));
                 assert!(return_ann.is_none());
                 assert!(!*desugared);
             }
@@ -6083,8 +6083,8 @@ mod tests {
 
     #[test]
     fn test_literal_int() {
-        let expr = parse_expr("42");
-        assert!(matches!(expr.node, Expr::Int(42)));
+        let expr = parse_surf_node("42");
+        assert!(matches!(expr.expr, SurfaceExpression::Int(42)));
     }
 
     #[test]
@@ -6168,16 +6168,16 @@ mod tests {
     #[test]
     fn test_type_assert_simple() {
         let output = parse("[@Number 42]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::TypeAssert {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::TypeAssert {
                 annotation, expr, ..
             } => {
                 match &annotation.node {
                     Annotation::Simple(name) => assert_eq!(name, "Number"),
                     other => panic!("expected Simple annotation, got {other:?}"),
                 }
-                assert!(matches!(&expr.node, Expr::Int(42)));
+                assert!(matches!(&expr.expr, SurfaceExpression::Int(42)));
             }
             other => panic!("expected TypeAssert, got {other:?}"),
         }
@@ -6188,16 +6188,19 @@ mod tests {
         // $a[0] — BracketAccess syntax removed. Now parses as two separate expressions:
         // VarRef("a") and Dict([Int(0)]). The `[` is always OpenBracket.
         let output = parse("$a[0]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        assert_eq!(doc.expressions.len(), 2);
-        match &doc.expressions[0].node {
-            Expr::VarRef { name, .. } => assert_eq!(name, "a"),
+        let items = surf_items(&output.program.documents[0].node);
+        assert_eq!(items.len(), 2);
+        match &items[0].expr {
+            SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "a"),
             other => panic!("expected VarRef, got {other:?}"),
         }
-        match &doc.expressions[1].node {
-            Expr::Dict(entries) => {
+        match &items[1].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::Int(0)));
+                assert!(matches!(
+                    &entries[0].node.value.expr,
+                    SurfaceExpression::Int(0)
+                ));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -6376,17 +6379,17 @@ mod tests {
             "multi-expression fn bodies should parse successfully via Sequential, got errors: {:?}",
             output.errors
         );
-        // The fn body should be wrapped in Expr::Sequential
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        let expr = &doc.expressions[0].node;
+        // The fn body should be wrapped in SurfaceExpression::Sequential
+        let items = surf_items(&output.program.documents[0].node);
+        let expr = &items[0].expr;
         match expr {
-            Expr::Fn { body, .. } => match &body.node {
-                Expr::Sequential(exprs) => {
+            SurfaceExpression::Fn { body, .. } => match &body.expr {
+                SurfaceExpression::Sequential(exprs) => {
                     assert_eq!(exprs.len(), 2, "expected 2 expressions in Sequential body");
                 }
-                other => panic!("expected Sequential body, got: {other}"),
+                other => panic!("expected Sequential body, got: {other:?}"),
             },
-            other => panic!("expected Fn expression, got: {other}"),
+            other => panic!("expected Fn expression, got: {other:?}"),
         }
     }
 
@@ -6570,16 +6573,19 @@ mod tests {
     fn test_keyword_as_dict_key() {
         // [call: 1] — "call" followed by colon → dict, not a call form (Fix 2)
         let output = parse("[call: 1]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
                 let key = entries[0].node.key.as_ref().expect("expected keyed entry");
-                match &key.node {
-                    Expr::Str(s) => assert_eq!(s, "call"),
+                match &key.expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "call"),
                     other => panic!("expected key 'call', got {other:?}"),
                 }
-                assert!(matches!(&entries[0].node.value.node, Expr::Int(1)));
+                assert!(matches!(
+                    &entries[0].node.value.expr,
+                    SurfaceExpression::Int(1)
+                ));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -6589,21 +6595,21 @@ mod tests {
     fn test_all_keywords_as_dict_keys() {
         // [call: 1 fn: 2 type: 3] — all three keywords as dict keys
         let output = parse("[call: 1 fn: 2 type: 3]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 3);
                 let expected_keys = ["call", "fn", "type"];
                 let expected_values = [1i64, 2, 3];
                 for (i, (key, val)) in expected_keys.iter().zip(expected_values.iter()).enumerate()
                 {
                     let entry_key = entries[i].node.key.as_ref().expect("expected keyed entry");
-                    match &entry_key.node {
-                        Expr::Str(s) => assert_eq!(s.as_str(), *key),
+                    match &entry_key.expr {
+                        SurfaceExpression::Str(s) => assert_eq!(s.as_str(), *key),
                         other => panic!("expected key '{key}', got {other:?}"),
                     }
-                    match &entries[i].node.value.node {
-                        Expr::Int(n) => assert_eq!(*n, *val),
+                    match &entries[i].node.value.expr {
+                        SurfaceExpression::Int(n) => assert_eq!(*n, *val),
                         other => panic!("expected Int({val}), got {other:?}"),
                     }
                 }
@@ -6616,16 +6622,16 @@ mod tests {
     fn test_whitespace_in_form_classification() {
         // "[ call $f]" — leading whitespace before keyword; peek skips it → still a Call form
         let output = parse("[ call $f]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Call {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Call {
                 func,
                 args,
                 named_args,
                 ..
             } => {
-                match &func.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "f"),
+                match &func.expr {
+                    SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "f"),
                     other => panic!("expected VarRef for func, got {other:?}"),
                 }
                 assert_eq!(args.len(), 0);
@@ -6639,20 +6645,23 @@ mod tests {
     fn test_keyed_entry_with_bracket_value() {
         // [a: [1]] — dict with keyed entry whose value is a nested dict (Fix 1)
         let output = parse("[a: [1]]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
                 let key = entries[0].node.key.as_ref().expect("expected keyed entry");
-                match &key.node {
-                    Expr::Str(s) => assert_eq!(s, "a"),
+                match &key.expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "a"),
                     other => panic!("expected key 'a', got {other:?}"),
                 }
                 // Value should be a Dict containing Int(1)
-                match &entries[0].node.value.node {
-                    Expr::Dict(inner_entries) => {
+                match &entries[0].node.value.expr {
+                    SurfaceExpression::Dict(inner_entries) => {
                         assert_eq!(inner_entries.len(), 1);
-                        assert!(matches!(&inner_entries[0].node.value.node, Expr::Int(1)));
+                        assert!(matches!(
+                            &inner_entries[0].node.value.expr,
+                            SurfaceExpression::Int(1)
+                        ));
                     }
                     other => panic!("expected inner Dict, got {other:?}"),
                 }
@@ -6665,25 +6674,28 @@ mod tests {
     fn test_call_named_arg_bracket_value() {
         // [call $f x: [1]] — call with named arg whose value is a nested dict (Fix 1)
         let output = parse("[call $f x: [1]]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Call {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Call {
                 func,
                 args,
                 named_args,
                 ..
             } => {
-                match &func.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "f"),
+                match &func.expr {
+                    SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "f"),
                     other => panic!("expected VarRef for func, got {other:?}"),
                 }
                 assert_eq!(args.len(), 0);
                 assert_eq!(named_args.len(), 1);
                 assert_eq!(named_args[0].node.name, "x");
-                match &named_args[0].node.value.node {
-                    Expr::Dict(inner_entries) => {
+                match &named_args[0].node.value.expr {
+                    SurfaceExpression::Dict(inner_entries) => {
                         assert_eq!(inner_entries.len(), 1);
-                        assert!(matches!(&inner_entries[0].node.value.node, Expr::Int(1)));
+                        assert!(matches!(
+                            &inner_entries[0].node.value.expr,
+                            SurfaceExpression::Int(1)
+                        ));
                     }
                     other => panic!("expected inner Dict for named arg value, got {other:?}"),
                 }
@@ -6696,24 +6708,30 @@ mod tests {
     fn test_call_only_named_args() {
         // [call $f x: 1 y: 2] — call with func and two named args, no positional
         let output = parse("[call $f x: 1 y: 2]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Call {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Call {
                 func,
                 args,
                 named_args,
                 ..
             } => {
-                match &func.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "f"),
+                match &func.expr {
+                    SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "f"),
                     other => panic!("expected VarRef for func, got {other:?}"),
                 }
                 assert_eq!(args.len(), 0);
                 assert_eq!(named_args.len(), 2);
                 assert_eq!(named_args[0].node.name, "x");
-                assert!(matches!(&named_args[0].node.value.node, Expr::Int(1)));
+                assert!(matches!(
+                    &named_args[0].node.value.expr,
+                    SurfaceExpression::Int(1)
+                ));
                 assert_eq!(named_args[1].node.name, "y");
-                assert!(matches!(&named_args[1].node.value.node, Expr::Int(2)));
+                assert!(matches!(
+                    &named_args[1].node.value.expr,
+                    SurfaceExpression::Int(2)
+                ));
             }
             other => panic!("expected Call, got {other:?}"),
         }
@@ -6775,9 +6793,9 @@ mod tests {
     fn test_mixed_keyed_and_auto_indexed() {
         // [a: 1 2 b: 3] — keyed, auto-indexed, keyed entries
         let output = parse("[a: 1 2 b: 3]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(
                     entries.len(),
                     3,
@@ -6790,28 +6808,37 @@ mod tests {
                     .key
                     .as_ref()
                     .expect("entry 0 should have key");
-                match &key0.node {
-                    Expr::Str(s) => assert_eq!(s, "a"),
+                match &key0.expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "a"),
                     other => panic!("expected key 'a', got {other:?}"),
                 }
-                assert!(matches!(&entries[0].node.value.node, Expr::Int(1)));
+                assert!(matches!(
+                    &entries[0].node.value.expr,
+                    SurfaceExpression::Int(1)
+                ));
                 // Entry 1: key=None (auto-indexed), value=2
                 assert!(
                     entries[1].node.key.is_none(),
                     "entry 1 should be auto-indexed (no key)"
                 );
-                assert!(matches!(&entries[1].node.value.node, Expr::Int(2)));
+                assert!(matches!(
+                    &entries[1].node.value.expr,
+                    SurfaceExpression::Int(2)
+                ));
                 // Entry 2: key=Some("b"), value=3
                 let key2 = entries[2]
                     .node
                     .key
                     .as_ref()
                     .expect("entry 2 should have key");
-                match &key2.node {
-                    Expr::Str(s) => assert_eq!(s, "b"),
+                match &key2.expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "b"),
                     other => panic!("expected key 'b', got {other:?}"),
                 }
-                assert!(matches!(&entries[2].node.value.node, Expr::Int(3)));
+                assert!(matches!(
+                    &entries[2].node.value.expr,
+                    SurfaceExpression::Int(3)
+                ));
             }
             other => panic!("expected Dict, got {other:?}"),
         }
@@ -6822,9 +6849,9 @@ mod tests {
     #[test]
     fn test_fn_params_simple() {
         let output = parse("[fn [let x y] $x]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Fn {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn {
                 params,
                 body,
                 return_ann,
@@ -6837,7 +6864,9 @@ mod tests {
                 assert_eq!(params[1].node.name, "y");
                 assert!(params[1].node.annotation.is_none());
                 assert!(!params[1].node.variadic);
-                assert!(matches!(&body.node, Expr::VarRef { name, .. } if name == "x"));
+                assert!(
+                    matches!(&body.expr, SurfaceExpression::VarRef { name, .. } if name == "x")
+                );
                 assert!(return_ann.is_none());
                 assert!(!desugared);
             }
@@ -6848,9 +6877,9 @@ mod tests {
     #[test]
     fn test_fn_params_annotated() {
         let output = parse("[fn [let x@Int] $x]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Fn { params, .. } => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn { params, .. } => {
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].node.name, "x");
                 assert!(params[0].node.annotation.is_some());
@@ -6867,9 +6896,9 @@ mod tests {
     #[test]
     fn test_fn_return_annotation() {
         let output = parse("[fn@Number [let x] $x]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Fn {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn {
                 return_ann, params, ..
             } => {
                 assert!(return_ann.is_some());
@@ -6887,9 +6916,9 @@ mod tests {
     #[test]
     fn test_fn_variadic() {
         let output = parse("[fn [let ...args] $args]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Fn { params, .. } => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn { params, .. } => {
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].node.name, "args");
                 assert!(params[0].node.variadic);
@@ -6902,11 +6931,11 @@ mod tests {
     #[test]
     fn test_dot_access_simple() {
         let output = parse("$a.b").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::DotAccess { expr, field } => {
-                match &expr.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::DotAccess { expr, field } => {
+                match &expr.expr {
+                    SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "a"),
                     other => panic!("expected VarRef, got {other:?}"),
                 }
                 assert_eq!(*field, DotKey::Ident("b".to_string()));
@@ -6918,21 +6947,21 @@ mod tests {
     #[test]
     fn test_dot_access_chain() {
         let output = parse("$a.b.c").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::DotAccess {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::DotAccess {
                 expr: outer_expr,
                 field: outer_field,
             } => {
                 assert_eq!(*outer_field, DotKey::Ident("c".to_string()));
-                match &outer_expr.node {
-                    Expr::DotAccess {
+                match &outer_expr.expr {
+                    SurfaceExpression::DotAccess {
                         expr: inner_expr,
                         field: inner_field,
                     } => {
                         assert_eq!(*inner_field, DotKey::Ident("b".to_string()));
-                        match &inner_expr.node {
-                            Expr::VarRef { name, .. } => assert_eq!(name, "a"),
+                        match &inner_expr.expr {
+                            SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "a"),
                             other => panic!("expected VarRef at base, got {other:?}"),
                         }
                     }
@@ -6947,24 +6976,24 @@ mod tests {
     fn test_dot_access_inside_call() {
         // [call $fn $a.b]
         let output = parse("[call $fn $a.b]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Call {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Call {
                 func,
                 args,
                 named_args,
                 ..
             } => {
-                match &func.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "fn"),
+                match &func.expr {
+                    SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "fn"),
                     other => panic!("expected VarRef for func, got {other:?}"),
                 }
                 assert_eq!(args.len(), 1);
-                match &args[0].node {
-                    Expr::DotAccess { expr, field } => {
+                match &args[0].expr {
+                    SurfaceExpression::DotAccess { expr, field } => {
                         assert_eq!(*field, DotKey::Ident("b".to_string()));
-                        match &expr.node {
-                            Expr::VarRef { name, .. } => assert_eq!(name, "a"),
+                        match &expr.expr {
+                            SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "a"),
                             other => panic!("expected VarRef, got {other:?}"),
                         }
                     }
@@ -6980,20 +7009,20 @@ mod tests {
     fn test_dot_access_inside_dict() {
         // [x: $y.z]
         let output = parse("[x: $y.z]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
                 assert!(entries[0].node.key.is_some());
-                match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::Str(s) => assert_eq!(s, "x"),
+                match &entries[0].node.key.as_ref().unwrap().expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "x"),
                     other => panic!("expected key 'x', got {other:?}"),
                 }
-                match &entries[0].node.value.node {
-                    Expr::DotAccess { expr, field } => {
+                match &entries[0].node.value.expr {
+                    SurfaceExpression::DotAccess { expr, field } => {
                         assert_eq!(*field, DotKey::Ident("z".to_string()));
-                        match &expr.node {
-                            Expr::VarRef { name, .. } => assert_eq!(name, "y"),
+                        match &expr.expr {
+                            SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "y"),
                             other => panic!("expected VarRef, got {other:?}"),
                         }
                     }
@@ -7010,13 +7039,13 @@ mod tests {
         assert_eq!(output.program.documents.len(), 2);
 
         // First document
-        let doc1 = surface_doc_to_doc(&output.program.documents[0].node);
-        assert_eq!(doc1.expressions.len(), 1);
-        match &doc1.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items1 = surf_items(&output.program.documents[0].node);
+        assert_eq!(items1.len(), 1);
+        match &items1[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
-                match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::Str(s) => assert_eq!(s, "a"),
+                match &entries[0].node.key.as_ref().unwrap().expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "a"),
                     other => panic!("expected key 'a', got {other:?}"),
                 }
             }
@@ -7024,13 +7053,13 @@ mod tests {
         }
 
         // Second document
-        let doc2 = surface_doc_to_doc(&output.program.documents[1].node);
-        assert_eq!(doc2.expressions.len(), 1);
-        match &doc2.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items2 = surf_items(&output.program.documents[1].node);
+        assert_eq!(items2.len(), 1);
+        match &items2[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
-                match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::Str(s) => assert_eq!(s, "b"),
+                match &entries[0].node.key.as_ref().unwrap().expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "b"),
                     other => panic!("expected key 'b', got {other:?}"),
                 }
             }
@@ -7120,18 +7149,18 @@ mod tests {
         // "$a .b" has whitespace before dot; dot access is not whitespace-sensitive (unlike '['),
         // so this parses as a single DotAccess expression (same as "$a.b").
         let output = parse("$a .b").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
+        let items = surf_items(&output.program.documents[0].node);
         assert_eq!(
-            doc.expressions.len(),
+            items.len(),
             1,
             "expected 1 expression (DotAccess), got {}",
-            doc.expressions.len()
+            items.len()
         );
-        match &doc.expressions[0].node {
-            Expr::DotAccess { expr: inner, field } => {
+        match &items[0].expr {
+            SurfaceExpression::DotAccess { expr: inner, field } => {
                 assert_eq!(*field, DotKey::Ident("b".to_string()));
-                match &inner.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "a"),
+                match &inner.expr {
+                    SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "a"),
                     other => panic!("expected VarRef('a') inside DotAccess, got {other:?}"),
                 }
             }
@@ -7143,21 +7172,24 @@ mod tests {
     fn test_bracket_parses_as_separate_dict() {
         // "$a [0]" parses as two separate expressions: VarRef and Dict([Int(0)])
         let output = parse("$a [0]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
+        let items = surf_items(&output.program.documents[0].node);
         assert_eq!(
-            doc.expressions.len(),
+            items.len(),
             2,
             "expected 2 expressions (VarRef 'a' + Dict containing Int(0)), got {}",
-            doc.expressions.len()
+            items.len()
         );
-        match &doc.expressions[0].node {
-            Expr::VarRef { name, .. } => assert_eq!(name, "a"),
+        match &items[0].expr {
+            SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "a"),
             other => panic!("expected VarRef('a') as first expr, got {other:?}"),
         }
-        match &doc.expressions[1].node {
-            Expr::Dict(entries) => {
+        match &items[1].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
-                assert!(matches!(&entries[0].node.value.node, Expr::Int(0)));
+                assert!(matches!(
+                    &entries[0].node.value.expr,
+                    SurfaceExpression::Int(0)
+                ));
             }
             other => panic!("expected Dict([Int(0)]) as second expr, got {other:?}"),
         }
@@ -7167,9 +7199,9 @@ mod tests {
     fn test_fn_params_mixed() {
         // [fn [let x y@Int ...rest] $x] — simple + annotated + variadic
         let output = parse("[fn [let x y@Int ...rest] $x]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Fn { params, body, .. } => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn { params, body, .. } => {
                 assert_eq!(params.len(), 3);
                 // param 0: simple "x"
                 assert_eq!(params[0].node.name, "x");
@@ -7188,7 +7220,9 @@ mod tests {
                 assert!(params[2].node.variadic);
                 assert!(params[2].node.annotation.is_none());
                 // body
-                assert!(matches!(&body.node, Expr::VarRef { name, .. } if name == "x"));
+                assert!(
+                    matches!(&body.expr, SurfaceExpression::VarRef { name, .. } if name == "x")
+                );
             }
             other => panic!("expected Fn, got {other:?}"),
         }
@@ -7198,9 +7232,9 @@ mod tests {
     fn test_fn_both_annotations() {
         // [fn@Number [let x@Int] $x] — return annotation + annotated param
         let output = parse("[fn@Number [let x@Int] $x]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Fn {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn {
                 params,
                 return_ann,
                 body,
@@ -7222,7 +7256,9 @@ mod tests {
                 }
                 assert!(!params[0].node.variadic);
                 // Body
-                assert!(matches!(&body.node, Expr::VarRef { name, .. } if name == "x"));
+                assert!(
+                    matches!(&body.expr, SurfaceExpression::VarRef { name, .. } if name == "x")
+                );
             }
             other => panic!("expected Fn, got {other:?}"),
         }
@@ -7233,20 +7269,16 @@ mod tests {
         // "[x: 1].x" — dot access immediately after closing bracket (no whitespace)
         // The lexer emits Dot (access operator) after ']' since CloseBracket is in access context.
         let output = parse("[x: 1].x").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        assert_eq!(
-            doc.expressions.len(),
-            1,
-            "expected 1 expression (DotAccess)"
-        );
-        match &doc.expressions[0].node {
-            Expr::DotAccess { expr, field } => {
+        let items = surf_items(&output.program.documents[0].node);
+        assert_eq!(items.len(), 1, "expected 1 expression (DotAccess)");
+        match &items[0].expr {
+            SurfaceExpression::DotAccess { expr, field } => {
                 assert_eq!(*field, DotKey::Ident("x".to_string()));
-                match &expr.node {
-                    Expr::Dict(entries) => {
+                match &expr.expr {
+                    SurfaceExpression::Dict(entries) => {
                         assert_eq!(entries.len(), 1);
-                        match &entries[0].node.key.as_ref().unwrap().node {
-                            Expr::Str(s) => assert_eq!(s, "x"),
+                        match &entries[0].node.key.as_ref().unwrap().expr {
+                            SurfaceExpression::Str(s) => assert_eq!(s, "x"),
                             other => panic!("expected key 'x', got {other:?}"),
                         }
                     }
@@ -7288,13 +7320,13 @@ mod tests {
         );
 
         // Document 1: [a: 1]
-        let doc1 = surface_doc_to_doc(&output.program.documents[0].node);
-        assert_eq!(doc1.expressions.len(), 1);
-        match &doc1.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items1 = surf_items(&output.program.documents[0].node);
+        assert_eq!(items1.len(), 1);
+        match &items1[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
-                match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::Str(s) => assert_eq!(s, "a"),
+                match &entries[0].node.key.as_ref().unwrap().expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "a"),
                     other => panic!("expected key 'a' in doc1, got {other:?}"),
                 }
             }
@@ -7302,13 +7334,13 @@ mod tests {
         }
 
         // Document 2: [b: 2]
-        let doc2 = surface_doc_to_doc(&output.program.documents[1].node);
-        assert_eq!(doc2.expressions.len(), 1);
-        match &doc2.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items2 = surf_items(&output.program.documents[1].node);
+        assert_eq!(items2.len(), 1);
+        match &items2[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
-                match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::Str(s) => assert_eq!(s, "b"),
+                match &entries[0].node.key.as_ref().unwrap().expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "b"),
                     other => panic!("expected key 'b' in doc2, got {other:?}"),
                 }
             }
@@ -7316,13 +7348,13 @@ mod tests {
         }
 
         // Document 3: [c: 3]
-        let doc3 = surface_doc_to_doc(&output.program.documents[2].node);
-        assert_eq!(doc3.expressions.len(), 1);
-        match &doc3.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items3 = surf_items(&output.program.documents[2].node);
+        assert_eq!(items3.len(), 1);
+        match &items3[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
-                match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::Str(s) => assert_eq!(s, "c"),
+                match &entries[0].node.key.as_ref().unwrap().expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "c"),
                     other => panic!("expected key 'c' in doc3, got {other:?}"),
                 }
             }
@@ -7334,16 +7366,16 @@ mod tests {
     fn test_fn_empty_params() {
         // [fn [let] 42] — fn with explicit empty param list, body Int(42)
         let output = parse("[fn [let] 42]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Fn {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn {
                 params,
                 body,
                 return_ann,
                 desugared,
             } => {
                 assert_eq!(params.len(), 0, "expected empty param list");
-                assert!(matches!(&body.node, Expr::Int(42)));
+                assert!(matches!(&body.expr, SurfaceExpression::Int(42)));
                 assert!(return_ann.is_none());
                 assert!(!desugared);
             }
@@ -7358,9 +7390,9 @@ mod tests {
         //  0123456789012345678
         //  offset 9 = 'x', offset 10 = '@', offset 11..13 = "Int"
         let output = parse("[fn [let x@Int] $x]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Fn { params, .. } => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn { params, .. } => {
                 assert_eq!(params.len(), 1);
                 let param_span = params[0].span;
                 assert_eq!(
@@ -7408,9 +7440,9 @@ mod tests {
 
     #[test]
     fn test_annotated_bare_word() {
-        let expr = parse_expr("word@Int");
-        match &expr.node {
-            Expr::Annotated { name, annotation } => {
+        let expr = parse_surf_node("word@Int");
+        match &expr.expr {
+            SurfaceExpression::Annotated { name, annotation } => {
                 assert_eq!(name, "word");
                 match &annotation.node {
                     Annotation::Simple(s) => assert_eq!(s, "Int"),
@@ -7446,32 +7478,29 @@ mod tests {
         // Dict on line 4 (after 3 comment lines)
         let input = "# Line 1\n# Line 2\n# Line 3\n[x: 10\n y: 20]";
         let output = parse(input).expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        let dict_expr = &doc.expressions[0];
-
-        // The opening bracket '[' is at line 4, column 1
-        assert_eq!(dict_expr.span.start.line, 4, "Dict should start on line 4");
+        let items = surf_items(&output.program.documents[0].node);
+        // The first item is the dict; its span should start at line 4, column 1
+        assert_eq!(items[0].span.start.line, 4, "Dict should start on line 4");
         assert_eq!(
-            dict_expr.span.start.column, 1,
+            items[0].span.start.column, 1,
             "Dict should start at column 1"
         );
 
         // Also test a nested bracket form
         let input2 = "# Line 1\n[outer: [inner: 1]]";
         let output2 = parse(input2).expect("parse failed");
-        let file2 = crate::ast_convert::surface_program_to_file(&output2.program);
-        let doc2 = &file2.node.documents[0].node;
-        match &doc2.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items2 = surf_items(&output2.program.documents[0].node);
+        match &items2[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
                 // Outer dict starts on line 2
                 assert_eq!(
-                    doc2.expressions[0].span.start.line, 2,
+                    items2[0].span.start.line, 2,
                     "Outer dict should start on line 2"
                 );
                 // Inner dict should also have correct line/column (line 2, after "outer: ")
-                match &entries[0].node.value.node {
-                    Expr::Dict(_) => {
+                match &entries[0].node.value.expr {
+                    SurfaceExpression::Dict(_) => {
                         let inner_span = entries[0].node.value.span;
                         assert_eq!(
                             inner_span.start.line, 2,
@@ -7496,11 +7525,10 @@ mod tests {
         // Call form on line 3
         let input_call = "# Line 1\n# Line 2\n[call $f 1]";
         let output = parse(input_call).expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        let call_expr = &doc.expressions[0];
-        match &call_expr.node {
-            Expr::Call { .. } => {
-                assert_eq!(call_expr.span.start.line, 3, "Call should start on line 3");
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Call { .. } => {
+                assert_eq!(items[0].span.start.line, 3, "Call should start on line 3");
             }
             other => panic!("expected Call, got {other:?}"),
         }
@@ -7508,11 +7536,10 @@ mod tests {
         // Fn form on line 3
         let input_fn = "# Line 1\n# Line 2\n[fn [let x] $x]";
         let output = parse(input_fn).expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        let fn_expr = &doc.expressions[0];
-        match &fn_expr.node {
-            Expr::Fn { .. } => {
-                assert_eq!(fn_expr.span.start.line, 3, "Fn should start on line 3");
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn { .. } => {
+                assert_eq!(items[0].span.start.line, 3, "Fn should start on line 3");
             }
             other => panic!("expected Fn, got {other:?}"),
         }
@@ -7535,12 +7562,11 @@ mod tests {
         // TypeAssert form on line 3
         let input_assert = "# Line 1\n# Line 2\n[@Int 42]";
         let output = parse(input_assert).expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        let assert_expr = &doc.expressions[0];
-        match &assert_expr.node {
-            Expr::TypeAssert { .. } => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::TypeAssert { .. } => {
                 assert_eq!(
-                    assert_expr.span.start.line, 3,
+                    items[0].span.start.line, 3,
                     "TypeAssert should start on line 3"
                 );
             }
@@ -7567,10 +7593,10 @@ mod tests {
     // --- Error recovery tests (Items 2-5 of parser-error-recovery sprint) ---
 
     /// A single error inside brackets is recovered from: parse() returns Ok, the
-    /// document contains an Expr::Error node, and ParseOutput.errors has one entry.
+    /// document contains an SurfaceExpression::Error node, and ParseOutput.errors has one entry.
     #[test]
     fn test_recovery_single_error_inside_brackets() {
-        // [a:] — key without value; recovered with Expr::Error node
+        // [a:] — key without value; recovered with SurfaceExpression::Error node
         let output = parse("[a:]").expect("recovery should succeed");
         assert_eq!(output.errors.len(), 1, "expected exactly 1 recovered error");
         assert!(
@@ -7578,22 +7604,18 @@ mod tests {
             "expected 'key without value' error, got: {}",
             output.errors[0].message
         );
-        // The document should contain one expression (the Expr::Error node)
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        assert_eq!(
-            doc.expressions.len(),
-            1,
-            "expected 1 expression (Error node)"
-        );
+        // The document should contain one expression (the SurfaceExpression::Error node)
+        let items = surf_items(&output.program.documents[0].node);
+        assert_eq!(items.len(), 1, "expected 1 expression (Error node)");
         assert!(
-            matches!(doc.expressions[0].node, Expr::Error(_)),
-            "expected Expr::Error node after recovery, got: {:?}",
-            doc.expressions[0].node
+            matches!(items[0].expr, SurfaceExpression::Error(_)),
+            "expected SurfaceExpression::Error node after recovery, got: {:?}",
+            items[0].expr
         );
     }
 
     /// Multiple errors are all collected: parse() returns Ok with multiple entries in
-    /// ParseOutput.errors, and the document contains multiple Expr::Error nodes.
+    /// ParseOutput.errors, and the document contains multiple SurfaceExpression::Error nodes.
     #[test]
     fn test_recovery_multiple_errors() {
         // Two consecutive broken bracket forms at document level
@@ -7604,20 +7626,20 @@ mod tests {
             "expected 2 recovered errors, got {:?}",
             output.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
+        let items = surf_items(&output.program.documents[0].node);
         assert_eq!(
-            doc.expressions.len(),
+            items.len(),
             2,
             "expected 2 expressions (2 Error nodes), got {}",
-            doc.expressions.len()
+            items.len()
         );
         assert!(
-            matches!(doc.expressions[0].node, Expr::Error(_)),
-            "expected first expression to be Expr::Error"
+            matches!(items[0].expr, SurfaceExpression::Error(_)),
+            "expected first expression to be SurfaceExpression::Error"
         );
         assert!(
-            matches!(doc.expressions[1].node, Expr::Error(_)),
-            "expected second expression to be Expr::Error"
+            matches!(items[1].expr, SurfaceExpression::Error(_)),
+            "expected second expression to be SurfaceExpression::Error"
         );
     }
 
@@ -7634,20 +7656,20 @@ mod tests {
             output.errors[0].message
         );
         // The outer dict should have one entry
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        assert_eq!(doc.expressions.len(), 1, "expected 1 top-level expression");
-        match &doc.expressions[0].node {
-            Expr::Dict(entries) => {
+        let items = surf_items(&output.program.documents[0].node);
+        assert_eq!(items.len(), 1, "expected 1 top-level expression");
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1, "expected 1 outer entry");
-                match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::Str(s) => assert_eq!(s, "outer"),
+                match &entries[0].node.key.as_ref().unwrap().expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "outer"),
                     other => panic!("expected key 'outer', got {other:?}"),
                 }
-                // The value should be the Expr::Error from the inner bracket
+                // The value should be the SurfaceExpression::Error from the inner bracket
                 assert!(
-                    matches!(entries[0].node.value.node, Expr::Error(_)),
-                    "expected Expr::Error as outer value, got: {:?}",
-                    entries[0].node.value.node
+                    matches!(entries[0].node.value.expr, SurfaceExpression::Error(_)),
+                    "expected SurfaceExpression::Error as outer value, got: {:?}",
+                    entries[0].node.value.expr
                 );
             }
             other => panic!("expected outer Dict, got {other:?}"),
@@ -7664,9 +7686,9 @@ mod tests {
             "expected no errors for valid input, got: {:?}",
             output.errors
         );
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        assert_eq!(doc.expressions.len(), 1);
-        assert!(matches!(doc.expressions[0].node, Expr::Dict(_)));
+        let items = surf_items(&output.program.documents[0].node);
+        assert_eq!(items.len(), 1);
+        assert!(matches!(items[0].expr, SurfaceExpression::Dict(_)));
     }
 
     /// parse_with_recovery on errored input returns ParseOutput with errors collected.
@@ -7711,23 +7733,23 @@ mod tests {
             output.errors[0].message
         );
 
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        assert_eq!(doc.expressions.len(), 1, "expected 1 expression");
+        let items = surf_items(&output.program.documents[0].node);
+        assert_eq!(items.len(), 1, "expected 1 expression");
 
         // The recover_from_bracket_error() function builds a partial dict when there are
         // valid entries, adding an error entry for the failed part
-        match &doc.expressions[0].node {
-            Expr::Dict(entries) => {
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
                 // Should have 2 entries: the valid "a: 1" plus the error entry
                 assert_eq!(entries.len(), 2, "expected 2 entries (1 valid + 1 error)");
 
                 // First entry should be a: 1
-                match &entries[0].node.key.as_ref().unwrap().node {
-                    Expr::Str(s) => assert_eq!(s, "a", "expected key 'a'"),
+                match &entries[0].node.key.as_ref().unwrap().expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "a", "expected key 'a'"),
                     other => panic!("expected key 'a', got {other:?}"),
                 }
-                match &entries[0].node.value.node {
-                    Expr::Int(n) => assert_eq!(*n, 1, "expected value 1"),
+                match &entries[0].node.value.expr {
+                    SurfaceExpression::Int(n) => assert_eq!(*n, 1, "expected value 1"),
                     other => panic!("expected value 1, got {other:?}"),
                 }
 
@@ -7737,8 +7759,8 @@ mod tests {
                     "expected error entry to have no key"
                 );
                 assert!(
-                    matches!(entries[1].node.value.node, Expr::Error(_)),
-                    "expected Expr::Error as second entry value"
+                    matches!(entries[1].node.value.expr, SurfaceExpression::Error(_)),
+                    "expected SurfaceExpression::Error as second entry value"
                 );
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -7763,16 +7785,13 @@ mod tests {
         );
         // The annotation error cascades: invalid token after @ is recovered, but the
         // subsequent `:` in TypeAssert context triggers a second recovery that produces
-        // Expr::Error for the whole form. This is correct — the form is malformed.
+        // SurfaceExpression::Error for the whole form. This is correct — the form is malformed.
         assert_eq!(output.program.documents.len(), 1, "expected 1 document");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        assert!(
-            !doc.expressions.is_empty(),
-            "expected at least 1 expression"
-        );
-        match &doc.expressions[0].node {
-            Expr::Error(_) | Expr::Dict(_) => {
-                // Either Expr::Error (cascading recovery) or Dict (partial preservation)
+        let items = surf_items(&output.program.documents[0].node);
+        assert!(!items.is_empty(), "expected at least 1 expression");
+        match &items[0].expr {
+            SurfaceExpression::Error(_) | SurfaceExpression::Dict(_) => {
+                // Either SurfaceExpression::Error (cascading recovery) or Dict (partial preservation)
             }
             other => panic!("expected Error or Dict, got {other:?}"),
         }
@@ -7810,13 +7829,13 @@ mod tests {
         // Bracket access and range access syntax have been removed.
 
         // $_ in dict key position: [$_: 42]
-        let expr = parse_expr("[$_: 42]");
-        match &expr.node {
-            Expr::Dict(entries) => {
+        let expr = parse_surf_node("[$_: 42]");
+        match &expr.expr {
+            SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
                 let key_expr = entries[0].node.key.as_ref().expect("expected key");
-                match &key_expr.node {
-                    Expr::VarRef { name, .. } => {
+                match &key_expr.expr {
+                    SurfaceExpression::VarRef { name, .. } => {
                         assert_eq!(name, "_", "$_ as dict key should be VarRef")
                     }
                     other => panic!("expected VarRef(_) for dict key, got {other:?}"),
@@ -7831,9 +7850,9 @@ mod tests {
     /// i"Hello $name" emits [tmpl "Hello $name"] — the macro expands it at compile time.
     #[test]
     fn test_desugar_interpolated_string_varref() {
-        let expr = parse_expr(r#"i"Hello $name""#);
-        match &expr.node {
-            Expr::Call {
+        let expr = parse_surf_node(r#"i"Hello $name""#);
+        match &expr.expr {
+            SurfaceExpression::Call {
                 func,
                 args,
                 named_args,
@@ -7841,14 +7860,14 @@ mod tests {
             } => {
                 assert!(!implied, "expected non-implied call");
                 assert!(named_args.is_empty());
-                match &func.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "tmpl"),
+                match &func.expr {
+                    SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "tmpl"),
                     other => panic!("expected func=VarRef(tmpl), got {other:?}"),
                 }
                 // One arg: the raw template string "Hello $name"
                 assert_eq!(args.len(), 1);
-                match &args[0].node {
-                    Expr::Str(s) => assert_eq!(s, "Hello $name"),
+                match &args[0].expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "Hello $name"),
                     other => panic!("expected args[0]=Str(\"Hello $name\"), got {other:?}"),
                 }
             }
@@ -7859,45 +7878,45 @@ mod tests {
     /// i"${[+ $x 1]}" emits [tmpl "${0}" [+ $x 1]] — expr is passed as extra arg.
     #[test]
     fn test_desugar_interpolated_string_expr() {
-        let expr = parse_expr(r#"i"${[+ $x 1]}""#);
-        match &expr.node {
-            Expr::Call {
+        let expr = parse_surf_node(r#"i"${[+ $x 1]}""#);
+        match &expr.expr {
+            SurfaceExpression::Call {
                 func,
                 args,
                 implied,
                 ..
             } => {
                 assert!(!implied);
-                match &func.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "tmpl"),
+                match &func.expr {
+                    SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "tmpl"),
                     other => panic!("expected func=VarRef(tmpl), got {other:?}"),
                 }
                 // Two args: raw template string "${0}" and the re-parsed expr [+ $x 1]
                 assert_eq!(args.len(), 2, "expected 2 args: template + expr arg");
-                match &args[0].node {
-                    Expr::Str(s) => assert_eq!(s, "${0}"),
+                match &args[0].expr {
+                    SurfaceExpression::Str(s) => assert_eq!(s, "${0}"),
                     other => panic!("expected args[0]=Str(\"${{0}}\"), got {other:?}"),
                 }
                 // args[1] is the re-parsed [+ $x 1] — an implied Call
-                match &args[1].node {
-                    Expr::Call {
+                match &args[1].expr {
+                    SurfaceExpression::Call {
                         func: inner_func,
                         args: inner_args,
                         implied: inner_implied,
                         ..
                     } => {
                         assert!(*inner_implied, "inner call [+ $x 1] should be implied");
-                        match &inner_func.node {
-                            Expr::VarRef { name, .. } => assert_eq!(name, "+"),
+                        match &inner_func.expr {
+                            SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "+"),
                             other => panic!("expected inner func VarRef(+), got {other:?}"),
                         }
                         assert_eq!(inner_args.len(), 2);
-                        match &inner_args[0].node {
-                            Expr::VarRef { name, .. } => assert_eq!(name, "x"),
+                        match &inner_args[0].expr {
+                            SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "x"),
                             other => panic!("expected VarRef(x) as arg 0, got {other:?}"),
                         }
-                        match &inner_args[1].node {
-                            Expr::Int(1) => {}
+                        match &inner_args[1].expr {
+                            SurfaceExpression::Int(1) => {}
                             other => panic!("expected Int(1) as arg 1, got {other:?}"),
                         }
                     }
@@ -7912,11 +7931,11 @@ mod tests {
     /// Parser emits [tmpl "prefix $name suffix ${0} end" [+ $x 1]].
     #[test]
     fn test_desugar_interpolated_string_mixed() {
-        let expr = parse_expr(r#"i"prefix $name suffix ${[+ $x 1]} end""#);
-        match &expr.node {
-            Expr::Call { func, args, .. } => {
-                match &func.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "tmpl"),
+        let expr = parse_surf_node(r#"i"prefix $name suffix ${[+ $x 1]} end""#);
+        match &expr.expr {
+            SurfaceExpression::Call { func, args, .. } => {
+                match &func.expr {
+                    SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "tmpl"),
                     other => panic!("expected func=VarRef(tmpl), got {other:?}"),
                 }
                 // Two args: raw template + expr arg
@@ -7927,12 +7946,12 @@ mod tests {
                 );
                 // args[0]: raw template with ${0} placeholder
                 assert!(
-                    matches!(&args[0].node, Expr::Str(s) if s == "prefix $name suffix ${0} end"),
+                    matches!(&args[0].expr, SurfaceExpression::Str(s) if s == "prefix $name suffix ${0} end"),
                     "expected raw template string, got {:?}",
-                    &args[0].node
+                    &args[0].expr
                 );
                 // args[1]: re-parsed expression [+ $x 1]
-                assert!(matches!(&args[1].node, Expr::Call { .. }));
+                assert!(matches!(&args[1].expr, SurfaceExpression::Call { .. }));
             }
             other => panic!("expected Call, got {other:?}"),
         }
@@ -7956,18 +7975,18 @@ mod tests {
     /// `a | b` parses as Pipe { lhs: VarRef("a"), rhs: VarRef("b") }.
     #[test]
     fn test_pipe_basic() {
-        let expr = parse_expr("a | b");
-        match &expr.node {
-            Expr::Pipe { lhs, rhs } => {
+        let expr = parse_surf_node("a | b");
+        match &expr.expr {
+            SurfaceExpression::Pipe { lhs, rhs } => {
                 assert!(
-                    matches!(&lhs.node, Expr::VarRef { name, .. } if name == "a"),
+                    matches!(&lhs.expr, SurfaceExpression::VarRef { name, .. } if name == "a"),
                     "expected lhs = VarRef(a), got {:?}",
-                    lhs.node
+                    lhs.expr
                 );
                 assert!(
-                    matches!(&rhs.node, Expr::VarRef { name, .. } if name == "b"),
+                    matches!(&rhs.expr, SurfaceExpression::VarRef { name, .. } if name == "b"),
                     "expected rhs = VarRef(b), got {:?}",
-                    rhs.node
+                    rhs.expr
                 );
             }
             other => panic!("expected Pipe, got {other:?}"),
@@ -7977,30 +7996,30 @@ mod tests {
     /// `a | b | c` is left-associative: parsed as `(a | b) | c`.
     #[test]
     fn test_pipe_left_assoc() {
-        let expr = parse_expr("a | b | c");
-        match &expr.node {
-            Expr::Pipe { lhs, rhs } => {
+        let expr = parse_surf_node("a | b | c");
+        match &expr.expr {
+            SurfaceExpression::Pipe { lhs, rhs } => {
                 // rhs must be VarRef("c")
                 assert!(
-                    matches!(&rhs.node, Expr::VarRef { name, .. } if name == "c"),
+                    matches!(&rhs.expr, SurfaceExpression::VarRef { name, .. } if name == "c"),
                     "expected rhs = VarRef(c), got {:?}",
-                    rhs.node
+                    rhs.expr
                 );
                 // lhs must be Pipe { a | b }
-                match &lhs.node {
-                    Expr::Pipe {
+                match &lhs.expr {
+                    SurfaceExpression::Pipe {
                         lhs: inner_lhs,
                         rhs: inner_rhs,
                     } => {
                         assert!(
-                            matches!(&inner_lhs.node, Expr::VarRef { name, .. } if name == "a"),
+                            matches!(&inner_lhs.expr, SurfaceExpression::VarRef { name, .. } if name == "a"),
                             "expected inner_lhs = VarRef(a), got {:?}",
-                            inner_lhs.node
+                            inner_lhs.expr
                         );
                         assert!(
-                            matches!(&inner_rhs.node, Expr::VarRef { name, .. } if name == "b"),
+                            matches!(&inner_rhs.expr, SurfaceExpression::VarRef { name, .. } if name == "b"),
                             "expected inner_rhs = VarRef(b), got {:?}",
-                            inner_rhs.node
+                            inner_rhs.expr
                         );
                     }
                     other => panic!("expected nested Pipe for lhs, got {other:?}"),
@@ -8017,18 +8036,18 @@ mod tests {
     #[test]
     fn test_pipe_inside_brackets() {
         // $x | [f $y] — top-level pipe, RHS is an explicit Call
-        let expr = parse_expr("$x | [f $y]");
-        match &expr.node {
-            Expr::Pipe { lhs, rhs } => {
+        let expr = parse_surf_node("$x | [f $y]");
+        match &expr.expr {
+            SurfaceExpression::Pipe { lhs, rhs } => {
                 assert!(
-                    matches!(&lhs.node, Expr::VarRef { name, .. } if name == "x"),
+                    matches!(&lhs.expr, SurfaceExpression::VarRef { name, .. } if name == "x"),
                     "expected lhs = VarRef(x), got {:?}",
-                    lhs.node
+                    lhs.expr
                 );
                 assert!(
-                    matches!(&rhs.node, Expr::Call { .. }),
+                    matches!(&rhs.expr, SurfaceExpression::Call { .. }),
                     "expected rhs = Call, got {:?}",
-                    rhs.node
+                    rhs.expr
                 );
             }
             other => panic!("expected Pipe, got {other:?}"),
@@ -8038,18 +8057,18 @@ mod tests {
     /// `a.b | c.d` — dot access on both sides of pipe.
     #[test]
     fn test_pipe_dot_then_pipe() {
-        let expr = parse_expr("$data.name | upper");
-        match &expr.node {
-            Expr::Pipe { lhs, rhs } => {
+        let expr = parse_surf_node("$data.name | upper");
+        match &expr.expr {
+            SurfaceExpression::Pipe { lhs, rhs } => {
                 assert!(
-                    matches!(&lhs.node, Expr::DotAccess { .. }),
+                    matches!(&lhs.expr, SurfaceExpression::DotAccess { .. }),
                     "expected lhs = DotAccess, got {:?}",
-                    lhs.node
+                    lhs.expr
                 );
                 assert!(
-                    matches!(&rhs.node, Expr::VarRef { name, .. } if name == "upper"),
+                    matches!(&rhs.expr, SurfaceExpression::VarRef { name, .. } if name == "upper"),
                     "expected rhs = VarRef(upper), got {:?}",
-                    rhs.node
+                    rhs.expr
                 );
             }
             other => panic!("expected Pipe, got {other:?}"),
@@ -8061,9 +8080,9 @@ mod tests {
     /// `$a.0` parses as DotAccess with DotKey::Int(0).
     #[test]
     fn test_dot_access_int_key() {
-        let expr = parse_expr("$a.0");
-        match &expr.node {
-            Expr::DotAccess { field, .. } => {
+        let expr = parse_surf_node("$a.0");
+        match &expr.expr {
+            SurfaceExpression::DotAccess { field, .. } => {
                 assert!(
                     matches!(field, DotKey::Int(0)),
                     "expected DotKey::Int(0), got {:?}",
@@ -8077,9 +8096,9 @@ mod tests {
     /// `$a.0.name` parses as chained DotAccess: outer is Ident("name"), inner is Int(0).
     #[test]
     fn test_dot_access_int_then_ident() {
-        let expr = parse_expr("$a.0.name");
-        match &expr.node {
-            Expr::DotAccess {
+        let expr = parse_surf_node("$a.0.name");
+        match &expr.expr {
+            SurfaceExpression::DotAccess {
                 expr: target,
                 field,
                 ..
@@ -8091,8 +8110,8 @@ mod tests {
                     field
                 );
                 // inner: DotAccess on $a with Int(0)
-                match &target.node {
-                    Expr::DotAccess {
+                match &target.expr {
+                    SurfaceExpression::DotAccess {
                         field: inner_field, ..
                     } => {
                         assert!(
@@ -8112,9 +8131,9 @@ mod tests {
     /// `%` is a plain bare-word character — no special-case path in the lexer or parser.
     #[test]
     fn test_percent_cwd_as_varref() {
-        let expr = parse_expr("%cwd");
-        match &expr.node {
-            Expr::VarRef { name, .. } => assert_eq!(name, "%cwd"),
+        let expr = parse_surf_node("%cwd");
+        match &expr.expr {
+            SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "%cwd"),
             other => panic!("expected VarRef(\"%cwd\"), got {other:?}"),
         }
     }
@@ -8122,9 +8141,9 @@ mod tests {
     /// `%nc` parses as `VarRef("%nc")` — injected cap names work uniformly.
     #[test]
     fn test_percent_nc_as_varref() {
-        let expr = parse_expr("%nc");
-        match &expr.node {
-            Expr::VarRef { name, .. } => assert_eq!(name, "%nc"),
+        let expr = parse_surf_node("%nc");
+        match &expr.expr {
+            SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "%nc"),
             other => panic!("expected VarRef(\"%nc\"), got {other:?}"),
         }
     }
@@ -8132,9 +8151,9 @@ mod tests {
     /// Bare `%` parses as `VarRef("%")` — the pipeline input variable.
     #[test]
     fn test_percent_bare_as_varref() {
-        let expr = parse_expr("%");
-        match &expr.node {
-            Expr::VarRef { name, .. } => assert_eq!(name, "%"),
+        let expr = parse_surf_node("%");
+        match &expr.expr {
+            SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "%"),
             other => panic!("expected VarRef(\"%\"), got {other:?}"),
         }
     }
@@ -8143,12 +8162,12 @@ mod tests {
     /// The `%cwd` identifier is consumed as one token; `.` emits Dot; `field` is the access field.
     #[test]
     fn test_percent_cwd_dot_access() {
-        let expr = parse_expr("%cwd.field");
-        match &expr.node {
-            Expr::DotAccess { expr: inner, field } => {
+        let expr = parse_surf_node("%cwd.field");
+        match &expr.expr {
+            SurfaceExpression::DotAccess { expr: inner, field } => {
                 assert_eq!(*field, DotKey::Ident("field".to_string()));
-                match &inner.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "%cwd"),
+                match &inner.expr {
+                    SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "%cwd"),
                     other => panic!("expected VarRef(\"%cwd\") inside DotAccess, got {other:?}"),
                 }
             }
@@ -8159,17 +8178,17 @@ mod tests {
     /// `[open %cwd "Cargo.toml" "r"]` parses as a Call with `%cwd` as a positional arg.
     #[test]
     fn test_percent_cwd_as_call_arg() {
-        let expr = parse_expr("[open %cwd \"Cargo.toml\" \"r\"]");
-        match &expr.node {
-            Expr::Call { func, args, .. } => {
-                match &func.node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "open"),
+        let expr = parse_surf_node("[open %cwd \"Cargo.toml\" \"r\"]");
+        match &expr.expr {
+            SurfaceExpression::Call { func, args, .. } => {
+                match &func.expr {
+                    SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "open"),
                     other => panic!("expected VarRef(\"open\") as func, got {other:?}"),
                 }
                 assert_eq!(args.len(), 3);
                 // First arg: %cwd (args contains Arc<SurfaceNode> directly)
-                match &args[0].node {
-                    Expr::VarRef { name, .. } => assert_eq!(name, "%cwd"),
+                match &args[0].expr {
+                    SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "%cwd"),
                     other => panic!("expected VarRef(\"%cwd\") as first arg, got {other:?}"),
                 }
             }
@@ -8182,9 +8201,9 @@ mod tests {
     /// otherwise `0.1` would be lexed as a single Float token.
     #[test]
     fn test_dot_access_int_chain() {
-        let expr = parse_expr("$a.0.1");
-        match &expr.node {
-            Expr::DotAccess {
+        let expr = parse_surf_node("$a.0.1");
+        match &expr.expr {
+            SurfaceExpression::DotAccess {
                 expr: target,
                 field,
                 ..
@@ -8196,8 +8215,8 @@ mod tests {
                     field
                 );
                 // inner: DotAccess on $a with Int(0)
-                match &target.node {
-                    Expr::DotAccess {
+                match &target.expr {
+                    SurfaceExpression::DotAccess {
                         field: inner_field, ..
                     } => {
                         assert!(
@@ -8253,9 +8272,9 @@ mod tests {
     fn test_fn_params_letdecl_simple() {
         // Test [fn [let x y] body] — LetDecl as parameter list
         let output = parse("[fn [let x y] [+ $x $y]]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Fn {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn {
                 params,
                 body,
                 return_ann,
@@ -8268,7 +8287,7 @@ mod tests {
                 assert_eq!(params[1].node.name, "y");
                 assert!(params[1].node.annotation.is_none());
                 assert!(!params[1].node.variadic);
-                assert!(matches!(&body.node, Expr::Call { .. })); // [+ $x $y]
+                assert!(matches!(&body.expr, SurfaceExpression::Call { .. })); // [+ $x $y]
                 assert!(return_ann.is_none());
                 assert!(!desugared);
             }
@@ -8280,9 +8299,9 @@ mod tests {
     fn test_fn_params_letdecl_annotated() {
         // Test [fn [let x@Int y] body] — LetDecl with annotations
         let output = parse("[fn [let x@Int y] [+ $x $y]]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Fn { params, .. } => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn { params, .. } => {
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0].node.name, "x");
                 assert!(params[0].node.annotation.is_some());
@@ -8303,9 +8322,9 @@ mod tests {
     fn test_fn_params_letdecl_mixed() {
         // Test [fn [let x@Int y@String z] body]
         let output = parse("[fn [let x@Int y@String z] $x]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Fn { params, .. } => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn { params, .. } => {
                 assert_eq!(params.len(), 3);
                 assert_eq!(params[0].node.name, "x");
                 assert!(params[0].node.annotation.is_some());
@@ -8324,9 +8343,9 @@ mod tests {
         // In [let ...], whitespace between ... and the name is insignificant:
         // `... y` parses identically to `...y` (both create a variadic param named y).
         let output = parse("[fn [let x ...y] $x]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Fn { params, .. } => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn { params, .. } => {
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0].node.name, "x");
                 assert!(!params[0].node.variadic);
@@ -8408,9 +8427,9 @@ mod tests {
         // ThunkStateGuard aliasing hazard (see TODO.md sprint-2b-shim-removal). When
         // that hazard is resolved, add an eval integration test here.
         let output = parse("[fn [let x@Int y] [+ $x $y]]").expect("parse failed");
-        let doc = surface_doc_to_doc(&output.program.documents[0].node);
-        match &doc.expressions[0].node {
-            Expr::Fn { params, .. } => {
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Fn { params, .. } => {
                 assert_eq!(params.len(), 2, "expected 2 params");
                 assert_eq!(params[0].node.name, "x");
                 assert!(
