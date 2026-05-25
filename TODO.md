@@ -1397,10 +1397,10 @@ Both `Symlinkable` and `PosixPermissions` DirPerms flags exist and are correctly
 
 Any regression in these ops is invisible to the test suite.
 
-- [ ] Add `tests/corpus/eval/builtins/builder_get_or_insert.llt-eval` (key absent → inserts default)
-- [ ] Add `tests/corpus/eval/builtins/builder_get_or_existing.llt-eval` (key present → existing wins)
-- [ ] Add `tests/corpus/eval/builtins/builder_snapshot.llt-eval` (snapshot then mutate → snapshot unchanged)
-- [ ] Add `tests/corpus/eval/builtins/builder_delete.llt-eval` (set key, delete it, finish → key absent)
+- [x] Add `tests/corpus/eval/builtins/builder_get_or_insert.llt-eval` (key absent → inserts default)
+- [x] Add `tests/corpus/eval/builtins/builder_get_or_existing.llt-eval` (key present → existing wins)
+- [x] Add `tests/corpus/eval/builtins/builder_snapshot.llt-eval` (snapshot then mutate → snapshot unchanged)
+- [x] Add `tests/corpus/eval/builtins/builder_delete.llt-eval` (set key, delete it, finish → key absent)
 - **Files:** `tests/corpus/eval/builtins/`
 
 ### chr-dispatch-corpus: CHR constraint resolution has no end-to-end dispatch proof [Major]
