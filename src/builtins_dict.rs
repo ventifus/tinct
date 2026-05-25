@@ -684,7 +684,7 @@ pub(crate) fn builtin_each_kv(
 /// can chain further operations).
 ///
 /// NOTE: Returns the looked-up/inserted ThunkId value (not the builder).
-/// Usage pattern: `[builder-set b k [cons x [builder-get-or b k [make-entry 0 x]]]]`
+/// Usage pattern: `[builder-set b k [cons x [builder-get-or b k []]]]`
 pub(crate) fn builtin_builder_get_or(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {

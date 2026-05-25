@@ -120,20 +120,18 @@ builder-snapshot@[Fn [b@Builder] Dict]           # O(n) full clone of current st
 
 ```tinct
 group-by: [fn [let f xs]
-    [b: [make-builder]]
-    [builtin-reduce
-        [fn [let b x]
-            [k:      [f x]]
-            [bucket: [if [builder-has? b k] [builder-get b k] []]]
-            [builder-set b k [cons x bucket]]]
-        b
-        xs]
-    [build-dict
-        [map [fn [let e] [key: e.key  value: [reverse [collect e.value]]]]
-             [entries [builder-finish b]]]]]
+    [let raw
+        [builder-finish
+            [builtin-reduce
+                [fn [let b x]
+                    [let k [f x]]
+                    [builder-set b k [cons x [builder-get-or b k []]]]]
+                [make-builder]
+                xs]]]
+    [map-entries [fn [let e] [reverse e.value]] raw]]
 ```
 
-Each bucket is a lazy `Seq` accumulated by `cons` — O(1) per element. After `builder-finish`, each bucket is reversed and collected in one O(bucket-size) pass. Total: O(n).
+Each bucket is a Dict accumulated by `cons` (O(1) prepend onto the bucket Dict using `cons`). After `builder-finish`, each bucket is reversed in one O(bucket-size) pass. Total: O(n).
 
 ### Seq Rewrite for List-Building Functions
 

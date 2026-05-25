@@ -395,7 +395,13 @@ fn typecheck_surface_document(
                         state,
                         &mut None,
                     ) {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            // Drain TypeAnnotationTable entries produced during ClassDecl inference
+                            // to prevent them from leaking into subsequent items.
+                            for (nid, ty) in state.type_annotation_table.drain() {
+                                table.insert(nid, ty);
+                            }
+                        }
                         Err(mut errs) => {
                             errors.append(&mut errs);
                             // Drain TypeAssert entries from failed expression to prevent leaking into next iteration
@@ -415,7 +421,13 @@ fn typecheck_surface_document(
                         state,
                         &mut None,
                     ) {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            // Drain TypeAnnotationTable entries produced during InstanceDecl inference
+                            // to prevent them from leaking into subsequent items.
+                            for (nid, ty) in state.type_annotation_table.drain() {
+                                table.insert(nid, ty);
+                            }
+                        }
                         Err(mut errs) => {
                             errors.append(&mut errs);
                             // Drain TypeAssert entries from failed expression to prevent leaking into next iteration

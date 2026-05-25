@@ -68,15 +68,15 @@ enum SurfaceExpression {
     VarRef { name: String, escaped: bool },
     Dict(Vec<SurfaceEntry>),
     Call { func: Arc<SurfaceNode>, args: Vec<Arc<SurfaceNode>>, named_args: Vec<SurfaceNamedArg>, implied: bool },
-    Fn { params: Vec<SurfaceParam>, body: Arc<SurfaceNode>, return_ann: Option<Annotation>, desugared: bool },
-    DotAccess { expr: Arc<SurfaceNode>, field: String },
+    Fn { return_ann: Option<Spanned<Annotation>>, params: Vec<Spanned<SurfaceParam>>, body: Arc<SurfaceNode>, desugared: bool },
+    DotAccess { expr: Arc<SurfaceNode>, field: DotKey },
     Pipe { lhs: Arc<SurfaceNode>, rhs: Arc<SurfaceNode> },
     // ... other variants (Sequential, Match, TypeAssert, Quote, Unquote, etc.)
 }
 
 /// Declarations (TypeAlias, ClassDecl, InstanceDecl, DefMacro, etc.)
 enum SurfaceDeclaration {
-    TypeAlias { params: Vec<String>, body: Annotation },
+    TypeAlias { params: Vec<String>, body: Arc<SurfaceNode> },
     ClassDecl { /* ... */ },
     InstanceDecl { /* ... */ },
     DefMacro { /* ... */ },
@@ -280,7 +280,7 @@ enum Annotation {
 
 #### LetDecl, CaseArm, and Placeholder Details
 
-**LetDecl** — `SurfaceExpression::LetDecl { bindings: Vec<Spanned<SurfaceExpression>> }` — is a binding declaration list introduced by the `let` keyword. Each binding is one of:
+**LetDecl** — `SurfaceExpression::LetDecl { bindings: Vec<Arc<SurfaceNode>> }` — is a binding declaration list introduced by the `let` keyword. Each binding is one of:
 
 - `VarRef { name, escaped: false, .. }` — bare identifier binding (e.g., `x`)
 - `Annotated { name, annotation }` — typed binding (e.g., `x@Int`) or structural test (e.g., `v: Ok`)
@@ -325,19 +325,9 @@ Positional (auto-indexed) and keyed (named) entries may appear in any order with
 [$a $b key: val]        # valid: 0: ref(a), 1: ref(b), key: val
 [key: val $a $b]        # valid: key: val, 0: ref(a), 1: ref(b)
 [$a key: val $b]        # valid: 0: ref(a), key: val, 1: ref(b)
-=== error
-type errors:
-  undefined variable: a at 1:2-1:4
-  undefined variable: b at 1:5-1:7
-  undefined variable: val at 1:13-1:16
-  undefined variable: val at 2:7-2:10
-  undefined variable: a at 2:11-2:13
-  undefined variable: b at 2:14-2:16
-  undefined variable: a at 3:2-3:4
-  undefined variable: val at 3:10-3:13
-  undefined variable: b at 3:14-3:16
-
 ```
+
+When a named argument is provided for a positional parameter, the type checker raises an error.
 
 Rest entries (`...` and `...name`) may also appear at any position.
 
@@ -388,7 +378,7 @@ error: multiple variadic parameters
     |               ^^^
 ```
 
-The older `[fn [x y] body]` syntax (bare parameter list without `let`) is still supported for backward compatibility but the formatter emits `[fn [let x y] body]`.
+The formatter always emits `[fn [let x y] body]`.
 
 ### Bracket Nesting Depth Limit
 
@@ -426,15 +416,15 @@ The following constructs are rejected inside annotation brackets:
 | Rejected form | Why |
 |--------------|-----|
 | `call` | Explicit call special form — `implied: false`, produces a rejected non-Dict, non-implied-VarRef-call result |
-| `fn` | Special form — produces `Expr::Fn`, not `Expr::Dict` |
-| `type` | Special form — produces `Expr::TypeAlias`, not `Expr::Dict` |
-| `type_assert_body` (`[@Annotation expr]`) | Produces `Expr::TypeAssert`, not `Expr::Dict` — rejected even though it is not a named special form keyword |
+| `fn` | Special form — produces `SurfaceExpression::Fn`, not `SurfaceExpression::Dict` |
+| `type` | Special form — produces `SurfaceDeclaration::TypeAlias`, not `SurfaceExpression::Dict` |
+| `type_assert_body` (`[@Annotation expr]`) | Produces `SurfaceExpression::TypeAssert`, not `SurfaceExpression::Dict` — rejected even though it is not a named special form keyword |
 
 All four are caught by the same check in `parse_annotation`: after re-parsing the bracket sub-string, the result is classified as follows:
 
-- `Expr::Dict` → accepted as a property dict annotation (named entries, e.g. `[type: Number  default: 30]`).
-- `Expr::Call { implied: true, func: VarRef(..), .. }` → accepted as a positional union type annotation: the func and each arg become auto-indexed `Entry` values in a `PropertyDict`. This handles `fn@[Int Null]` (parameterized) and `fn@[a Null]` (type variable). Both uppercase and lowercase VarRef heads are accepted.
-- Anything else (explicit `call` form with `implied: false`, `Expr::Fn`, `Expr::TypeAlias`, `Expr::TypeAssert`) → parse error: "property dict annotation must be a dict expression".
+- `SurfaceExpression::Dict` → accepted as a property dict annotation (named entries, e.g. `[type: Number  default: 30]`).
+- `SurfaceExpression::Call { implied: true, func: VarRef(..), .. }` → accepted as a positional union type annotation: the func and each arg become auto-indexed `Entry` values in a `PropertyDict`. This handles `fn@[Int Null]` (parameterized) and `fn@[a Null]` (type variable). Both uppercase and lowercase VarRef heads are accepted.
+- Anything else (explicit `call` form with `implied: false`, `SurfaceExpression::Fn`, `SurfaceDeclaration::TypeAlias`, `SurfaceExpression::TypeAssert`) → parse error: "property dict annotation must be a dict expression".
 
 `type_assert_body` is rejected on the "anything else" basis, not because of keyword disambiguation.
 

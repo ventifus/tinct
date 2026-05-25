@@ -213,8 +213,9 @@ pub(crate) struct MemoizeData {
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
     // Some when the original thunk state can be restored on non-cacheable errors.
-    // None only for the GuardedValidate default-fallback path where the thunk has
-    // already transitioned to a new state and the prior state is no longer available.
+    // Always Some for all push sites (PendingBuiltin, PendingCall, GuardedValidate default-fallback).
+    // GuardedValidate default-fallback builds a fresh RestoreState::Guarded rather than
+    // consuming the original restore via take(), ensuring Memoize always has a valid restore.
     pub(crate) restore: Option<RestoreState>,
     pub(crate) ctx: Arc<EvalContext>,
 }
@@ -628,33 +629,30 @@ pub(crate) async fn force_step(
             };
         }
 
-        // Pre-clone args/named for state restoration on non-cacheable errors (e.g. DepthExceeded).
-        // Arc<Thunk> clones are cheap (atomic ref count only). The Vec and IndexMap container
-        // clones are the only allocation overhead. named is None in the common case (line 632),
-        // so the IndexMap clone is free for most builtins. This restores the thunk to PendingBuiltin
-        // when DepthExceeded occurs, allowing retry at higher continuation budget.
-        let args_for_restore = args.as_ref().expect("args set above").clone();
-        let named_for_restore = named.as_ref().expect("named set above").clone();
-
-        // `named` is None for internally-created thunks (common case); only $apply
-        // passes named args through. Take ownership to avoid cloning Vec/IndexMap.
+        // Clone args/named for the builtin call; keep originals in the Option slots for
+        // state restoration on the slow path (non-pre-materialized result) or on
+        // non-cacheable errors (e.g. DepthExceeded). This defers Vec/IndexMap container
+        // allocs to after the fast-path check — when the builtin returns a pre-materialized
+        // thunk, the originals are simply dropped with no restore clone needed.
         let builtin_args = crate::value::BuiltinArgs {
-            args: args.take().expect("args set above"),
-            named: named.take().expect("named set above"),
+            args: args.as_ref().expect("args set above").clone(),
+            named: named.as_ref().expect("named set above").clone(),
             call_span,
             ctx: Arc::clone(&thunk_ctx),
         };
 
         match (def.func)(builtin_args).await {
             Ok(result_thunk) => {
-                // Fast path: if the builtin already materialized its result, skip recursion
+                // Fast path: if the builtin already materialized its result, skip recursion.
+                // Originals in args/named are dropped here — no restore clone needed.
                 if let Some(value) = result_thunk.try_get_materialized() {
                     // eval_stack_guard pops on drop (armed)
                     thunk.set_materialized(value.clone());
                     Action::Continue(Ok(value))
                 } else {
-                    // Restore to PendingBuiltin on non-cacheable errors (e.g. DepthExceeded)
-                    // so the thunk can be retried at a higher continuation budget.
+                    // Slow path: move originals into the Memoize restore payload.
+                    // Arc<Thunk> clones are cheap (atomic ref count only); the Vec/IndexMap
+                    // containers are moved here (not cloned) — no extra alloc on this path.
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                         thunk: Arc::clone(thunk),
                         origin,
@@ -662,8 +660,8 @@ pub(crate) async fn force_step(
                         mat_span,
                         restore: Some(RestoreState::PendingBuiltin {
                             def,
-                            args: args_for_restore,
-                            named: named_for_restore,
+                            args: args.take().expect("args set above"),
+                            named: named.take().expect("named set above"),
                             call_span,
                             ctx: Arc::clone(&thunk_ctx),
                         }),
@@ -692,8 +690,8 @@ pub(crate) async fn force_step(
                 } else {
                     thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
                         def,
-                        args: args_for_restore,
-                        named: named_for_restore,
+                        args: args.take().expect("args set above"),
+                        named: named.take().expect("named set above"),
                         call_span,
                         ctx: thunk_ctx,
                     });
@@ -1279,12 +1277,11 @@ pub(crate) async fn apply_cont(
                     } else if let Some(restore_state) = restore {
                         restore_state.restore(&thunk);
                     }
-                    // restore is Some for all Memoize push sites except the GuardedValidate
-                    // default-fallback paths that call restore.take() and may yield None when
-                    // the restore state has been consumed. PendingBuiltin and PendingCall paths
-                    // always provide Some(restore). restore: None means a non-cacheable error
-                    // leaves the thunk in InProgress — valid only for the default-fallback case
-                    // where the thunk will be materialized via the default value path instead.
+                    // restore is Some for all Memoize push sites. GuardedValidate
+                    // default-fallback paths build a fresh RestoreState::Guarded rather than
+                    // consuming the original via take(), so Memoize always receives Some(restore)
+                    // when the default expression hits a non-cacheable error (e.g., DepthExceeded).
+                    // PendingBuiltin and PendingCall paths always provide Some(restore).
                     Action::Continue(Err(e))
                 }
             }
@@ -1669,6 +1666,33 @@ pub(crate) async fn apply_cont(
                                         // without a Memoize pop. Only the default-fallback
                                         // paths push Cont::Memoize, so we push here to keep
                                         // eval_stack balanced. Memoize inherits pop responsibility.
+                                        //
+                                        // Build a fresh RestoreState for Memoize rather than
+                                        // consuming `restore` via take(). If the default expression
+                                        // hits DepthExceeded, Memoize must be able to restore the
+                                        // thunk to Guarded state — including the original default
+                                        // so a retry at shallower depth can attempt it again.
+                                        // Consuming restore here would leave Memoize with None on a
+                                        // second call (if restore was already taken by another path).
+                                        let memoize_restore = if let Some(RestoreState::Guarded {
+                                            ref inner,
+                                            ..
+                                        }) = restore
+                                        {
+                                            Some(RestoreState::Guarded {
+                                                inner: Arc::clone(inner),
+                                                expected: expected.clone(),
+                                                field_path: field_path.clone(),
+                                                guard_span,
+                                                blame_label: blame_label.clone(),
+                                                default: Some((
+                                                    Arc::clone(&default_expr),
+                                                    Arc::clone(&default_env),
+                                                )),
+                                            })
+                                        } else {
+                                            None
+                                        };
                                         let guard_eval_stack = EvalStackGuard::push(
                                             &guard_ctx.state,
                                             (
@@ -1681,7 +1705,7 @@ pub(crate) async fn apply_cont(
                                             origin: Some(Arc::from("default fallback")),
                                             thunk_span,
                                             mat_span,
-                                            restore: restore.take(),
+                                            restore: memoize_restore,
                                             ctx: Arc::clone(&guard_ctx),
                                         })));
                                         // Memoize continuation inherits eval_stack pop responsibility
@@ -1706,6 +1730,27 @@ pub(crate) async fn apply_cont(
                             if let Some((default_expr, default_env)) = default {
                                 // Push to eval_stack to match the Memoize pop (see
                                 // comment at the first default-fallback site above).
+                                // Build a fresh RestoreState rather than consuming restore
+                                // (see comment at the first default-fallback site above).
+                                let memoize_restore = if let Some(RestoreState::Guarded {
+                                    ref inner,
+                                    ..
+                                }) = restore
+                                {
+                                    Some(RestoreState::Guarded {
+                                        inner: Arc::clone(inner),
+                                        expected: expected.clone(),
+                                        field_path: field_path.clone(),
+                                        guard_span,
+                                        blame_label: blame_label.clone(),
+                                        default: Some((
+                                            Arc::clone(&default_expr),
+                                            Arc::clone(&default_env),
+                                        )),
+                                    })
+                                } else {
+                                    None
+                                };
                                 let guard_eval_stack = EvalStackGuard::push(
                                     &guard_ctx.state,
                                     (origin.as_deref().unwrap_or("thunk").to_string(), thunk_span),
@@ -1715,7 +1760,7 @@ pub(crate) async fn apply_cont(
                                     origin: Some(Arc::from("default fallback")),
                                     thunk_span,
                                     mat_span,
-                                    restore: restore.take(),
+                                    restore: memoize_restore,
                                     ctx: Arc::clone(&guard_ctx),
                                 })));
                                 // Memoize continuation inherits eval_stack pop responsibility
@@ -1768,6 +1813,27 @@ pub(crate) async fn apply_cont(
                             if let Some((default_expr, default_env)) = default {
                                 // Push to eval_stack to match the Memoize pop (see
                                 // comment at the first default-fallback site above).
+                                // Build a fresh RestoreState rather than consuming restore
+                                // (see comment at the first default-fallback site above).
+                                let memoize_restore = if let Some(RestoreState::Guarded {
+                                    ref inner,
+                                    ..
+                                }) = restore
+                                {
+                                    Some(RestoreState::Guarded {
+                                        inner: Arc::clone(inner),
+                                        expected: expected.clone(),
+                                        field_path: field_path.clone(),
+                                        guard_span,
+                                        blame_label: blame_label.clone(),
+                                        default: Some((
+                                            Arc::clone(&default_expr),
+                                            Arc::clone(&default_env),
+                                        )),
+                                    })
+                                } else {
+                                    None
+                                };
                                 let guard_eval_stack = EvalStackGuard::push(
                                     &guard_ctx.state,
                                     (origin.as_deref().unwrap_or("thunk").to_string(), thunk_span),
@@ -1777,7 +1843,7 @@ pub(crate) async fn apply_cont(
                                     origin: Some(Arc::from("default fallback")),
                                     thunk_span,
                                     mat_span,
-                                    restore: restore.take(),
+                                    restore: memoize_restore,
                                     ctx: Arc::clone(&guard_ctx),
                                 })));
                                 // Memoize continuation inherits eval_stack pop responsibility
@@ -1943,24 +2009,24 @@ pub(crate) async fn apply_cont(
                     }
 
                     // All forced and strict args materialized — call the builtin.
-                    // Pre-clone args/named for state restoration on non-cacheable errors.
-                    // Arc<Thunk> clones are cheap; named is None in the common case.
-                    let args_for_restore = args.as_ref().expect("args set above").clone();
-                    let named_for_restore = named.as_ref().expect("named set above").clone();
+                    // Clone args/named for the builtin call; keep originals in the Option
+                    // slots for restore on the slow path or on non-cacheable errors.
+                    // This defers Vec/IndexMap allocs to after the fast-path check.
                     let builtin_args = crate::value::BuiltinArgs {
-                        args: args.take().expect("args set above"),
-                        named: named.take().expect("named set above"),
+                        args: args.as_ref().expect("args set above").clone(),
+                        named: named.as_ref().expect("named set above").clone(),
                         call_span,
                         ctx: Arc::clone(&thunk_ctx),
                     };
                     match (def.func)(builtin_args).await.map_err(&decorate) {
                         Ok(result_thunk) => {
+                            // Fast path: originals dropped here — no restore clone needed.
                             if let Some(value) = result_thunk.try_get_materialized() {
                                 // eval_stack_guard pops on drop (armed)
                                 thunk.set_materialized(value.clone());
                                 Action::Continue(Ok(value))
                             } else {
-                                // Restore to PendingBuiltin on non-cacheable errors (e.g. DepthExceeded).
+                                // Slow path: move originals into the Memoize restore payload.
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Arc::clone(&thunk),
                                     origin,
@@ -1968,8 +2034,8 @@ pub(crate) async fn apply_cont(
                                     mat_span,
                                     restore: Some(RestoreState::PendingBuiltin {
                                         def,
-                                        args: args_for_restore,
-                                        named: named_for_restore,
+                                        args: args.take().expect("args set above"),
+                                        named: named.take().expect("named set above"),
                                         call_span,
                                         ctx: Arc::clone(&thunk_ctx),
                                     }),
@@ -1992,8 +2058,8 @@ pub(crate) async fn apply_cont(
                                 thunk.restore_unevaluated(
                                     crate::value::UnevaluatedState::Builtin {
                                         def,
-                                        args: args_for_restore,
-                                        named: named_for_restore,
+                                        args: args.take().expect("args set above"),
+                                        named: named.take().expect("named set above"),
                                         call_span,
                                         ctx: thunk_ctx,
                                     },

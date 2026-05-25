@@ -1489,6 +1489,54 @@ fn dict_to_surface_node_inner(
             SurfaceExpression::TypeApp { func, arg }
         }
 
+        // ---- Match ----
+        "match" | "Match" => {
+            use crate::ast::SurfaceMatchArm;
+            let scrutinee_val = get_dict_field(&dict, "scrutinee", &["type"], ctx)?;
+            let scrutinee = dict_to_surface_node_inner(&scrutinee_val, ctx)?;
+
+            let arms_val = get_dict_field(&dict, "arms", &["type"], ctx)?;
+            let arms_list = extract_list(&arms_val, &["arms"], ctx)?;
+            let mut arms = Vec::new();
+            for (i, arm_val) in arms_list.into_iter().enumerate() {
+                let i_str = i.to_string();
+                let arm_dict = match arm_val {
+                    Value::Dict(d) => d,
+                    _ => {
+                        return Err(AstError {
+                            message: format!("match arm {} must be Dict", i),
+                            field_path: vec!["arms".into(), i_str.clone()],
+                        })
+                    }
+                };
+                let pattern_val = get_dict_field(&arm_dict, "pattern", &["arms", &i_str], ctx)?;
+                let pattern = dict_to_pattern(&pattern_val, &["arms", &i_str, "pattern"], ctx)?;
+                let guard = match get_optional_dict_field(&arm_dict, "guard", ctx)? {
+                    Some(guard_val) if !is_empty_dict(&guard_val) => {
+                        Some(dict_to_surface_node_inner(&guard_val, ctx)?)
+                    }
+                    _ => None,
+                };
+                let body_val = get_dict_field(&arm_dict, "body", &["arms", &i_str], ctx)?;
+                let body = dict_to_surface_node_inner(&body_val, ctx)?;
+                arms.push(SurfaceMatchArm {
+                    pattern,
+                    guard,
+                    body,
+                });
+            }
+            SurfaceExpression::Match { scrutinee, arms }
+        }
+
+        // ---- CaseArm ----
+        "case-arm" | "CaseArm" => {
+            let pattern_val = get_dict_field(&dict, "pattern", &["type"], ctx)?;
+            let pattern = dict_to_surface_node_inner(&pattern_val, ctx)?;
+            let body_val = get_dict_field(&dict, "body", &["type"], ctx)?;
+            let body = dict_to_surface_node_inner(&body_val, ctx)?;
+            SurfaceExpression::CaseArm { pattern, body }
+        }
+
         // ---- Unknown variant: hard error (all variants must be handled natively) ----
         _ => {
             return Err(AstError {
@@ -1841,6 +1889,155 @@ fn pattern_to_thunk_id(
     }
 
     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
+}
+
+/// Deserialize a `Spanned<Pattern>` from a dict produced by `pattern_to_thunk_id`.
+///
+/// Used by `dict_to_surface_node_inner` (Match arm patterns).
+fn dict_to_pattern(
+    val: &Value,
+    path: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Spanned<crate::ast::Pattern>, AstError> {
+    use crate::ast::{LiteralPattern, Pattern};
+
+    let dict = match val {
+        Value::Dict(d) => d,
+        _ => {
+            return Err(AstError {
+                message: "pattern must be Dict".into(),
+                field_path: path.iter().map(|s| s.to_string()).collect(),
+            })
+        }
+    };
+
+    let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
+    let kind = get_string_field(dict, "type", path, ctx)?;
+
+    let pattern = match kind.as_str() {
+        "wildcard" => Pattern::Wildcard,
+
+        "variable" => {
+            let name = get_string_field(dict, "name", path, ctx)?;
+            Pattern::Variable(name)
+        }
+
+        "type_tag" => {
+            let tag = get_string_field(dict, "tag", path, ctx)?;
+            Pattern::TypeTag(tag)
+        }
+
+        "pin" => {
+            let name = get_string_field(dict, "name", path, ctx)?;
+            Pattern::Pin(name)
+        }
+
+        "literal" => {
+            let value_val = get_field(dict, "value", path, ctx)?;
+            let lit = match value_val {
+                Value::Int(n) => LiteralPattern::Int(n),
+                Value::Float(f) => LiteralPattern::Float(f),
+                Value::Bool(b) => LiteralPattern::Bool(b),
+                Value::String {
+                    ref source,
+                    start,
+                    end,
+                } => LiteralPattern::Str(source[start..end].to_string()),
+                _ => {
+                    return Err(AstError {
+                        message: "literal pattern value must be Int, Float, Bool, or String".into(),
+                        field_path: path.iter().map(|s| s.to_string()).collect(),
+                    })
+                }
+            };
+            Pattern::Literal(lit)
+        }
+
+        "dict" => {
+            let fields_val = get_dict_field(dict, "fields", path, ctx)?;
+            let fields_list = extract_list(&fields_val, path, ctx)?;
+            let mut fields = Vec::new();
+            for (i, field_val) in fields_list.into_iter().enumerate() {
+                let i_str = i.to_string();
+                let field_dict = match field_val {
+                    Value::Dict(d) => d,
+                    _ => {
+                        return Err(AstError {
+                            message: format!("dict pattern field {} must be Dict", i),
+                            field_path: path.iter().map(|s| s.to_string()).collect(),
+                        })
+                    }
+                };
+                let key = get_string_field(&field_dict, "key", &[&i_str], ctx)?;
+                let pat_val = get_dict_field(&field_dict, "pattern", &[&i_str], ctx)?;
+                let mut pat_path: Vec<String> = path.iter().map(|s| s.to_string()).collect();
+                pat_path.push(i_str.clone());
+                pat_path.push("pattern".to_string());
+                let pat_path_refs: Vec<&str> = pat_path.iter().map(|s| s.as_str()).collect();
+                let spanned_pat = dict_to_pattern(&pat_val, &pat_path_refs, ctx)?;
+                fields.push((key, spanned_pat));
+            }
+            let rest = get_bool_field(dict, "rest", path, ctx)?;
+            Pattern::Dict { fields, rest }
+        }
+
+        "seq" => {
+            let head_val = get_dict_field(dict, "head", path, ctx)?;
+            let tail_val = get_dict_field(dict, "tail", path, ctx)?;
+            let mut head_path: Vec<String> = path.iter().map(|s| s.to_string()).collect();
+            head_path.push("head".to_string());
+            let mut tail_path: Vec<String> = path.iter().map(|s| s.to_string()).collect();
+            tail_path.push("tail".to_string());
+            let head_path_refs: Vec<&str> = head_path.iter().map(|s| s.as_str()).collect();
+            let tail_path_refs: Vec<&str> = tail_path.iter().map(|s| s.as_str()).collect();
+            let head = dict_to_pattern(&head_val, &head_path_refs, ctx)?;
+            let tail = dict_to_pattern(&tail_val, &tail_path_refs, ctx)?;
+            Pattern::Seq {
+                head: Box::new(head),
+                tail: Box::new(tail),
+            }
+        }
+
+        "constructor" => {
+            let tag = get_string_field(dict, "tag", path, ctx)?;
+            let binding = match get_optional_dict_field(dict, "binding", ctx)? {
+                Some(binding_val) if !is_empty_dict(&binding_val) => {
+                    let mut binding_path: Vec<String> =
+                        path.iter().map(|s| s.to_string()).collect();
+                    binding_path.push("binding".to_string());
+                    let binding_path_refs: Vec<&str> =
+                        binding_path.iter().map(|s| s.as_str()).collect();
+                    let spanned = dict_to_pattern(&binding_val, &binding_path_refs, ctx)?;
+                    Some(Box::new(spanned))
+                }
+                _ => None,
+            };
+            Pattern::Constructor { tag, binding }
+        }
+
+        "or" => {
+            let patterns_val = get_dict_field(dict, "patterns", path, ctx)?;
+            let patterns_list = extract_list(&patterns_val, path, ctx)?;
+            let mut patterns = Vec::new();
+            for (i, pat_val) in patterns_list.into_iter().enumerate() {
+                let i_str = i.to_string();
+                let mut pat_path: Vec<String> = path.iter().map(|s| s.to_string()).collect();
+                pat_path.push(i_str);
+                let pat_path_refs: Vec<&str> = pat_path.iter().map(|s| s.as_str()).collect();
+                patterns.push(dict_to_pattern(&pat_val, &pat_path_refs, ctx)?);
+            }
+            Pattern::Or(patterns)
+        }
+
+        _ => {
+            return Err(AstError {
+                message: format!("unknown pattern type: {}", kind),
+                field_path: path.iter().map(|s| s.to_string()).collect(),
+            })
+        }
+    };
+
+    Ok(Spanned::new(pattern, span))
 }
 
 fn annotation_to_thunk_id(

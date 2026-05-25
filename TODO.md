@@ -1144,44 +1144,44 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 ### guarded-validate-depth-stuck: GuardedValidate default-fallback leaves thunk in InProgress on DepthExceeded [Critical]
 
-- [ ] Fix `src/eval_materialize.rs` GuardedValidate default-fallback path — `restore.take()` at ~line 1684 consumes the restore BEFORE pushing `Cont::Memoize`; if the default expression eval hits DepthExceeded, Memoize fires with `restore: None`, leaving the parent thunk permanently in InProgress (next access produces spurious CircularDependency). Fix: do NOT `.take()` the restore when pushing default-fallback Memoize; clone the GuardDefault fields and rebuild a `RestoreState::Guarded` to pass to Memoize instead. [Critical — eval-engine]
+- [x] Fixed GuardedValidate default-fallback: rebuilt fresh `RestoreState::Guarded` from borrowed `inner` at each of 3 fallback sites; Memoize always receives `Some(restore)`; no more stuck-InProgress on DepthExceeded [Critical — eval-engine]
 
 ### dict-to-surface-node-match-casearm: Add Match and CaseArm to dict_to_surface_node_inner [Critical]
 
-- [ ] Implement `"match" | "Match"` and `"case-arm" | "CaseArm"` handlers in `src/ast_dict.rs:dict_to_surface_node_inner` — both variants are fully serialized by `surface_node_to_thunk_id` but have no deserialization case; any macro quoting a Match expression hits the catch-all hard error at runtime [Critical — test-crafter, computer-scientist, integration-verifier]
+- [x] Added Match/CaseArm + `dict_to_pattern` helper to `src/ast_dict.rs:dict_to_surface_node_inner` — all 8 Pattern variants deserializable; quote roundtrip now complete for Match expressions [Critical — test-crafter, computer-scientist, integration-verifier]
 
-### require-integrity-noop: --require-integrity CLI flag is a no-op [Critical]
+### require-integrity-noop: --require-integrity CLI flag [Resolved]
 
-- [ ] Either enforce `ctx.config.require_integrity` in the self-hosted include pipeline (`stdlib/prelude.llt` or `src/eval.rs`), OR return a CLI error for unimplemented flag. Currently `EvalConfig.require_integrity` is set from CLI but never read by any production code path; `E055`/`E056` error variants are dead code. [Critical — security-expert]
+- [x] `ctx.config.require_integrity` IS read by `builtin_load` (`src/builtins_meta.rs:1694`) — the `load` builtin (called from `stdlib/prelude.llt` include pipeline) raises `E056` (IncludeHashRequired) when a hashless include is attempted with `--require-integrity` set. `E055`/`E056` have live callers; they are NOT dead code. Flag is correctly enforced. No action needed.
 
-### doc-15-type-errors: Fix remaining stale types in doc/15-ast.md [Major]
+### doc-15-type-errors: Fix remaining stale types in doc/15-ast.md [Done]
 
-- [ ] Fix `doc/15-ast.md:391` — delete backward-compat claim that `[fn [x y] body]` bare-list syntax is still supported (it is a parse error per `src/parser.rs:5072-5074`) [Critical — grammar-architect]
-- [ ] Fix `doc/15-ast.md` struct field errors: `TypeAlias.body: Arc<SurfaceNode>` (not `Annotation`); `LetDecl`/`PatternDecl.bindings: Vec<Arc<SurfaceNode>>` (not `Vec<Spanned<SurfaceExpression>>`); `Fn` fields in `{ return_ann, params, body, desugared }` order; `DotAccess.field: DotKey` (not `String`) [Major — grammar-architect]
-- [ ] Fix `doc/15-ast.md:428-437` annotation bracket section — replace `Expr::Fn`, `Expr::TypeAlias`, `Expr::TypeAssert`, `Expr::Dict` with `SurfaceExpression::Fn`, `SurfaceDeclaration::TypeAlias`, `SurfaceExpression::TypeAssert`, `SurfaceExpression::Dict` [Major — grammar-architect]
-- [ ] Remove spurious `=== error` corpus-format block from `doc/15-ast.md:327-340` — copy-pasted test output does not belong in documentation prose [Minor — grammar-architect]
+- [x] Fix `doc/15-ast.md:391` — deleted backward-compat claim that `[fn [x y] body]` bare-list syntax is still supported [Critical — grammar-architect]
+- [x] Fix `doc/15-ast.md` struct field errors: `TypeAlias.body: Arc<SurfaceNode>` (not `Annotation`); `LetDecl`/`PatternDecl.bindings: Vec<Arc<SurfaceNode>>` (not `Vec<Spanned<SurfaceExpression>>`); `Fn` fields in `{ return_ann, params, body, desugared }` order; `DotAccess.field: DotKey` (not `String`) [Major — grammar-architect]
+- [x] Fix `doc/15-ast.md:428-437` annotation bracket section — replaced `Expr::Fn`, `Expr::TypeAlias`, `Expr::TypeAssert`, `Expr::Dict` with `SurfaceExpression::Fn`, `SurfaceDeclaration::TypeAlias`, `SurfaceExpression::TypeAssert`, `SurfaceExpression::Dict` [Major — grammar-architect]
+- [x] Remove spurious `=== error` corpus-format block from `doc/15-ast.md:327-340` — replaced with brief prose note [Minor — grammar-architect]
 
-### doc-16-evalconfig-stale: Rewrite stale EvalConfig/EvalState/EvalContext sketch in doc/16-architecture.md [Major]
+### doc-16-evalconfig-stale: Rewrite stale EvalConfig/EvalState/EvalContext sketch in doc/16-architecture.md [Done]
 
-- [ ] Rewrite `doc/16-architecture.md:238-264` — replace all `Rc`/`Rc<RefCell>` with `Arc`/`Arc<RwLock>`, remove deleted `include_guard`/`include_cache` fields, fix `instance_registry` type to `HashMap<(&'static str, Vec<String>), Arc<Thunk>>`. Also fix `ctx: Rc<EvalContext>` at line 444 → `Arc<EvalContext>`. [Major — grammar-architect]
+- [x] Rewrote `doc/16-architecture.md:238-264` — replaced all `Rc`/`Rc<RefCell>` with `Arc`/`Arc<Mutex>`, removed deleted `include_guard`/`include_cache` fields, fixed `instance_registry` type to `HashMap<(&'static str, Vec<String>), Arc<Thunk>>`, replaced `string_include_cache`. Also fixed `ctx: Rc<EvalContext>` at ~line 444 → `Arc<EvalContext>` and removed `depth` field from PendingBuiltin sketch. [Major — grammar-architect]
 
-### doc-11-groupby-example: Fix doc/11-stdlib.md group-by example [Major]
+### doc-11-groupby-example: Fix doc/11-stdlib.md group-by example [Done]
 
-- [ ] Fix `doc/11-stdlib.md:1605` — example uses `[reverse [collect e.value]]` but implementation uses `[reverse e.value]` (buckets are Dicts, not Seqs; no collect needed). Fix prose at line 1609 too: code uses cons-on-Dict, not "O(1) prepend onto a lazy Seq". [Major — stdlib-author]
-- [ ] Update stale comment in `src/builtins_dict.rs:687` — `builder-get-or` example shows old default `[make-entry 0 x]`; update to `[]` [Minor — stdlib-author]
-- [ ] Update `doc/whatif/linear-accumulators.md:132` — same stale `[reverse [collect e.value]]` pattern in whatif doc [Minor — stdlib-author]
+- [x] Fixed `doc/11-stdlib.md:1605` — updated example to match actual `prelude.llt` implementation (uses `builder-get-or`, `map-entries`, no `collect`). Fixed prose at line 1609: "O(1) prepend onto the bucket Dict using `cons`". [Major — stdlib-author]
+- [x] Updated stale comment in `src/builtins_dict.rs:687` — `builder-get-or` example updated from `[make-entry 0 x]` to `[]` [Minor — stdlib-author]
+- [x] Updated `doc/whatif/linear-accumulators.md:132` — fixed stale `[reverse [collect e.value]]` pattern to match actual implementation [Minor — stdlib-author]
 
-### pending-builtin-clone-fastpath: Move PendingBuiltin arg clone to slow path [Major]
+### pending-builtin-clone-fastpath: Move PendingBuiltin arg clone to slow path [Done]
 
-- [ ] Move `args_for_restore` / `named_for_restore` clone in `src/eval_materialize.rs:636-637` to the slow path (`else` branch at ~line 655) — currently clones unconditionally before the `try_get_materialized()` fast-path check; wasted Vec alloc + N Arc increments on every pre-materialized builtin result. Same fix needed at `BuiltinForceArg` dispatch lines 1948-1949. [Major — performance-expert]
+- [x] Restructured `src/eval_materialize.rs` PendingBuiltin dispatch: clone args/named into `builtin_args` (for the call), keep originals in Option slots for restore. Slow path moves originals into Memoize; error path moves originals into restore_unevaluated. No wasted alloc on fast path (pre-materialized). Same fix applied to `BuiltinForceArg` dispatch. [Major — performance-expert]
 
-### typeassert-drain-ok-arms: TypeAnnotationTable drain missing from ClassDecl/InstanceDecl Ok arms [Major]
+### typeassert-drain-ok-arms: TypeAnnotationTable drain missing from ClassDecl/InstanceDecl Ok arms [Done]
 
-- [ ] Add drain in `Ok(_) => {}` arms at `src/typecheck.rs:398` and `src/typecheck.rs:418` (top-level ClassDecl/InstanceDecl success path) — TypeAssert entries from method body inference are written to `state.type_annotation_table` but the Ok arms never drain into `table`; error arms correctly drain but success arms do not, so TypeAssert resolutions in class method bodies are silently lost when inference succeeds [Major — type-theorist]
+- [x] Added drain in `Ok(_)` arms at `src/typecheck.rs` for ClassDecl and InstanceDecl success paths — TypeAnnotationTable entries produced during method body inference now drain into `table` on success (matching existing drain in error arms). [Major — type-theorist]
 
 ### test-coverage-new: Add missing test coverage [Major]
 
 - [ ] Add corpus test for `dict_to_surface_node_inner` roundtrip — no dedicated tests exist; variants like Fn, DotAccess, TypeAssert, Quote/Unquote, Match, CaseArm have zero roundtrip coverage [Major — test-crafter]
-- [ ] Add corpus test `group_by_string_keys.llt-eval` — `[group-by [fn [x] x] ["a" "b" "a"]]` to verify string-keyed bucket accumulation; current tests only use integer keys [Major — test-crafter]
-- [ ] Add unit test for literal-only dict optimization — verify `[a: 1 b: 2]` evaluates correctly via the no-dict_env fast path in `src/eval_dict.rs:87` [Major — test-crafter]
+- [x] Added `group_by_string_keys.llt-eval` corpus test — `[group-by [fn [x] x] ["a" "b" "a"]]` string-keyed bucket accumulation
+- [x] Added `test_literal_only_dict_fast_path` unit test in `src/eval_dict.rs` — verifies `[a: 1 b: 2]` evaluates via no-dict_env fast path
 

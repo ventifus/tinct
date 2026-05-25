@@ -1,0 +1,7 @@
+# group-by: group string elements by identity — string keys, multiple buckets
+# "a" appears at positions 0 and 2, "b" at position 1.
+# Insertion order: "a" bucket first, then "b" bucket.
+# Each bucket: elements cons-prepended then reversed, restoring insertion order.
+[group-by [fn [x] x] ["a" "b" "a"]]
+=== out
+Dict({"a": Dict({0: String("a"), 1: String("a")}), "b": Dict({0: String("b")})})

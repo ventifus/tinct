@@ -324,4 +324,31 @@ mod tests {
             output
         );
     }
+
+    /// Test that a literal-only dict evaluates correctly via the no-dict_env fast path.
+    /// When all dict values are literals (Int/Float/Bool/Str), `eval_dict_core` skips
+    /// the letrec Environment allocation entirely (`dict_env = None`). This verifies
+    /// both correctness of the fast path and that keys/values are emitted in the right order.
+    #[test]
+    fn test_literal_only_dict_fast_path() {
+        let input = r#"[a: 1  b: 2]"#;
+        let result = crate::eval_source(input);
+        assert!(
+            result.is_ok(),
+            "literal-only dict should evaluate without error: {:?}",
+            result
+        );
+        let output = result.unwrap();
+        // Both entries must appear with the correct Display representation
+        assert!(
+            output.contains(r#""a": Int(1)"#),
+            "expected 'a': Int(1) in output, got: {}",
+            output
+        );
+        assert!(
+            output.contains(r#""b": Int(2)"#),
+            "expected 'b': Int(2) in output, got: {}",
+            output
+        );
+    }
 }

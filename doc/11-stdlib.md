@@ -1593,20 +1593,18 @@ The `Maybe` type is declared in the prelude: `Maybe: [type [a] [Some a] | [None]
 
 ```tinct
 group-by: [fn [let f xs]
-    [b: [make-builder]]
-    [builtin-reduce
-        [fn [let b x]
-            [k:      [f x]]
-            [bucket: [if [builder-has? b k] [builder-get b k] []]]
-            [builder-set b k [cons x bucket]]]
-        b
-        xs]
-    [build-dict
-        [map [fn [let e] [key: e.key  value: [reverse [collect e.value]]]]
-             [entries [builder-finish b]]]]]
+    [let raw
+        [builder-finish
+            [builtin-reduce
+                [fn [let b x]
+                    [let k [f x]]
+                    [builder-set b k [cons x [builder-get-or b k []]]]]
+                [make-builder]
+                xs]]]
+    [map-entries [fn [let e] [reverse e.value]] raw]]
 ```
 
-Each bucket accumulates elements via `cons` (O(1) prepend onto a lazy Seq). After `builder-finish`, each bucket is reversed and collected into a Dict in one O(n) pass. Total: O(n).
+Each bucket accumulates elements via `cons` (O(1) prepend onto the bucket Dict). After `builder-finish`, each bucket is reversed in one O(n) pass. Total: O(n).
 
 **Frozen invariant:** Once `builder-finish` is called, the builder's inner map is `take()`n (set to `None`). All subsequent mutations (`builder-set`, `builder-delete`) and reads (`builder-snapshot`, `builder-get`) return errors identifying the frozen state. This prevents accidental reuse after finishing.
 

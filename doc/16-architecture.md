@@ -236,31 +236,29 @@ The evaluator threads an `EvalContext` through `eval()`, `materialize()`, and bu
 
 EvalContext is defined and threaded throughout the evaluator. There is no thread-local `INCLUDE_CTX`. The iterative CEK machine uses heap-allocated continuations with no depth tracking.
 
-**Config/State split:** EvalContext separates immutable session configuration from mutable evaluation state. Config is `Rc` (no RefCell) — the compiler enforces immutability. State is `Rc<RefCell>` for interior mutability.
+**Config/State split:** EvalContext separates immutable session configuration from mutable evaluation state. Config is `Arc` (no Mutex) — the compiler enforces immutability. State is `Arc<Mutex>` for interior mutability.
 
 ```rust
 struct EvalConfig {
     base_dir: cap_std::fs::Dir,
-    stdlib_env: Rc<RefCell<Environment>>,
+    stdlib_env: Arc<RwLock<Environment>>,
     no_fs: bool,
     require_integrity: bool,
 }
 
 struct EvalState {
-    include_guard: HashSet<(u64, u64)>,        // (dev, ino) file identity
-    include_cache: HashMap<(u64, u64), Rc<Thunk>>,
+    string_include_cache: HashMap<String, IncludeCacheEntry>,  // content-addressed include cache
     include_chain: Vec<(String, Span)>,
     eval_stack: Vec<(String, Span)>,
     class_registry: HashMap<String, RuntimeClassDecl>,
-    // class_name interned via intern_class_name (&'static str); type_tag is String
-    instance_registry: HashMap<(&'static str, String), Rc<Thunk>>,
+    // class_name interned via intern_class_name (&'static str); type_tags is Vec<String> (MPTC)
+    instance_registry: HashMap<(&'static str, Vec<String>), Arc<Thunk>>,
     registered_classes: HashSet<String>,
-    // trace_log, eval_stats
 }
 
 struct EvalContext {
-    config: Rc<EvalConfig>,         // shared, immutable
-    state: Rc<RefCell<EvalState>>,   // shared, mutable
+    config: Arc<EvalConfig>,         // shared, immutable
+    state: Arc<Mutex<EvalState>>,    // shared, mutable
 }
 ```
 
@@ -268,7 +266,7 @@ struct EvalContext {
 
 - `Environment` — variable bindings and lexical scope chain. Created and nested per scope.
 
-**Key invariant:** EvalContext is evaluation-session infrastructure; Environment is lexical scoping; depth is call-stack tracking. A single EvalContext is shared across the entire evaluation of a file, while Environments are created per scope and depth increments per recursive call.
+**Key invariant:** EvalContext is evaluation-session infrastructure; Environment is lexical scoping. A single EvalContext is shared across the entire evaluation of a file, while Environments are created per scope.
 
 **Threading pattern:** `Arc<EvalContext>` — thunks capture `Arc::clone(&ctx)` at creation time and use it at materialization time. This is necessary because thunks are deferred (`Unevaluated`, `PendingBuiltin`, `PendingCall`) and materialized in a different stack frame than where they were created. Unlike `Environment` (which uses `Arc<RwLock<...>>`), EvalContext does not need an outer lock because it achieves interior mutability through its `state: Arc<Mutex<EvalState>>` field — the config is immutable by construction and only the state needs mutation.
 
@@ -438,11 +436,10 @@ enum Value {
 // ThunkState:
 ThunkState::PendingBuiltin {
     def: BuiltinDef,              // replaces separate name + func fields
-    args: Box<Vec<Rc<Thunk>>>,
-    named: Box<IndexMap<String, Rc<Thunk>>>,
-    depth: usize,
+    args: Box<Vec<Arc<Thunk>>>,
+    named: Box<IndexMap<String, Arc<Thunk>>>,
     call_span: Span,
-    ctx: Rc<EvalContext>,
+    ctx: Arc<EvalContext>,
 }
 ```
 
