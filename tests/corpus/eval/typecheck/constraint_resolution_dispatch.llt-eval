@@ -1,0 +1,52 @@
+# Constraint resolution dispatch: verifies CHR constraint resolution selects the correct instance
+# when multiple instances of the same class exist for different types.
+#
+# MUTATION TEST: If resolve_instance() always returned the first registered instance without
+# checking unification, or returned instances in the wrong order, this test would fail because:
+# - Calling [describe-it 42] with Int would get the wrong instance (Str or Bool)
+# - The type checker would infer the wrong result type
+# - Type errors or wrong output values would expose the bug
+#
+# This test exercises instance selection with THREE instances of the same class Describable,
+# each for a different type (Int, Str, Bool), each producing a distinguishably different output.
+[
+  # Define the class with a single method
+  Describable: [class [let Describable a] []
+    describe: [Fn@String [a]]]
+
+  # Instance 1: Describable for Int
+  DescribableInt: [instance Describable [pattern [Int]]:
+    describe: [fn [let x@Int] "integer"]]
+
+  # Instance 2: Describable for Str
+  DescribableStr: [instance Describable [pattern [Str]]:
+    describe: [fn [let x@Str] "text"]]
+
+  # Instance 3: Describable for Bool
+  DescribableBool: [instance Describable [pattern [Bool]]:
+    describe: [fn [let x@Bool] "boolean"]]
+
+  # Polymorphic function with Describable constraint
+  # The type checker must resolve the correct instance when this is called
+  describe-it: [fn@[constraint: [a: Describable] return: String] [let x@a]
+    [match x
+      Int:  "integer"
+      Str:  "text"
+      Bool: "boolean"
+      _:    "unknown"]]
+
+  # Test case 1: call with Int → should resolve DescribableInt instance
+  r1: [describe-it 42]
+
+  # Test case 2: call with Str → should resolve DescribableStr instance
+  r2: [describe-it "hello"]
+
+  # Test case 3: call with Bool → should resolve DescribableBool instance
+  r3: [describe-it true]
+]
+
+---
+
+%.r1
+=== out
+String("integer")

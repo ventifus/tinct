@@ -18,8 +18,8 @@ use crate::builtins::{flatten_overlay, MAX_COLLECT_SIZE};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
     annotation_has_structural_fields, as_record_row_merged, eval_core_expr_pub, format_field_path,
-    format_type_for_assert, materialize, validate_and_wrap_record, value_matches_type, EvalContext,
-    DEFAULT_ANNOTATION_KEY,
+    format_type_for_assert, materialize, maybe_wrap_guard, validate_and_wrap_record,
+    value_matches_type, EvalContext, DEFAULT_ANNOTATION_KEY,
 };
 use crate::eval_access::invoke_proxy_handler;
 use crate::eval_call::{invoke_function, CallContext};
@@ -2144,6 +2144,8 @@ pub(crate) async fn apply_cont(
                                     // Use outer_mat_span if available (preserves outermost call-site in chains
                                     // like a.b.c), otherwise fall back to access_span (the current access).
                                     let thunk = ctx.get_thunk(*thunk_id);
+                                    // Apply boundary guards if this access site has a guard registered.
+                                    let thunk = maybe_wrap_guard(thunk, access_span, &ctx);
                                     Action::Materialize {
                                         thunk,
                                         mat_span: outer_mat_span.or(Some(access_span)),
@@ -2177,6 +2179,8 @@ pub(crate) async fn apply_cont(
                             {
                                 Ok(thunk) => {
                                     // Use outer_mat_span for proxy handler results (same as Dict case above).
+                                    // Apply boundary guards if this access site has a guard registered.
+                                    let thunk = maybe_wrap_guard(thunk, access_span, &ctx);
                                     Action::Materialize {
                                         thunk,
                                         mat_span: outer_mat_span.or(Some(access_span)),
@@ -2232,6 +2236,8 @@ pub(crate) async fn apply_cont(
                                 &node, &field_str, &ctx,
                             );
                             let thunk = Arc::new(Thunk::new_materialized(field_value, access_span));
+                            // Apply boundary guards if this access site has a guard registered.
+                            let thunk = maybe_wrap_guard(thunk, access_span, &ctx);
                             Action::Materialize {
                                 thunk,
                                 mat_span: outer_mat_span.or(Some(access_span)),
@@ -2256,6 +2262,8 @@ pub(crate) async fn apply_cont(
                                 _ => Value::Dict(indexmap::IndexMap::new()),
                             };
                             let thunk = Arc::new(Thunk::new_materialized(val, access_span));
+                            // Apply boundary guards if this access site has a guard registered.
+                            let thunk = maybe_wrap_guard(thunk, access_span, &ctx);
                             Action::Materialize {
                                 thunk,
                                 mat_span: outer_mat_span.or(Some(access_span)),
@@ -2349,6 +2357,8 @@ pub(crate) async fn apply_cont(
                                 _ => Value::Dict(indexmap::IndexMap::new()),
                             };
                             let thunk = Arc::new(Thunk::new_materialized(val, access_span));
+                            // Apply boundary guards if this access site has a guard registered.
+                            let thunk = maybe_wrap_guard(thunk, access_span, &ctx);
                             Action::Materialize {
                                 thunk,
                                 mat_span: outer_mat_span.or(Some(access_span)),

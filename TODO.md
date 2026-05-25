@@ -1210,8 +1210,8 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 `Cont::DotAccessForce` handler (`src/eval_materialize.rs:2135-2165`): retrieves a field's `ThunkId` from a `Value::Dict` and returns `Action::Materialize { thunk, mat_span }` directly. The field thunk is NOT passed through `maybe_wrap_guard()`. In contrast, every result from `eval_core_expr` goes through `maybe_wrap_guard` at line 1778. Type checker boundary guards keyed by field-access expression spans (set via `set_boundary_guards()`) are silently missed for dot-accessed values.
 
-- [ ] After retrieving `thunk` from `ctx.get_thunk(*thunk_id)` in the `Some(thunk_id)` arm (~line 2146), call `maybe_wrap_guard(thunk, access_span, &ctx)` before returning `Action::Materialize`
-- [ ] Same for the `Value::Expression` dot-access branch (~line 2234)
+- [x] Applied `maybe_wrap_guard` to all 5 DotAccessForce result paths: Dict field, Proxy handler, Expression field, Program metadata, Document metadata. Made `maybe_wrap_guard` pub(crate) for cross-module access.
+- **Files:** `src/eval_materialize.rs` (DotAccessForce handler), `src/eval.rs` (maybe_wrap_guard visibility)
 - **File:** `src/eval_materialize.rs` (~lines 2141-2152, 2234)
 
 ### doc-08-match-sequential-cek-caveat: doc/08 "no depth limit" claim incomplete [Minor]
@@ -1239,8 +1239,8 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 `src/eval_dict.rs` lines 199-207: `slot_idx` increments for every static key even when `env_id` is `None` (literal-only dict fast path). The `fill_letrec_slot` call is correctly guarded by `if let Some(id) = env_id`, so the increment is harmless but wastes cycles for large literal dicts.
 
-- [ ] Guard slot_idx increment with `if env_id.is_some()` or restructure as `if let Some(id) = env_id { fill_letrec_slot(id, slot_idx, thunk_id); slot_idx += 1; }`
-- **File:** `src/eval_dict.rs` (~line 199)
+- [x] Guard slot_idx increment with `if is_static_key && env_id.is_some()` — done in perf-eval-dict-batch-lock sprint (commit 59dc11d)
+- **File:** `src/eval_dict.rs`
 
 ---
 
@@ -1407,7 +1407,7 @@ Any regression in these ops is invisible to the test suite.
 
 **test-crafter M4.** All CHR corpus tests verify that programs typecheck and eval correctly, but none prove that the resolver selected the **correct instance implementation** for a given type. If the resolver always returned the first registered instance, all existing tests would still pass.
 
-- [ ] Add `tests/corpus/eval/typecheck/constraint_resolution_dispatch.llt-eval` — two instances exist and produce distinguishably different output; verifies correct instance is selected per type
+- [x] Added `constraint_resolution_dispatch.llt-eval` — class Describable with Int/Str/Bool instances producing distinct output; proves correct instance selection
 - **Files:** `tests/corpus/eval/typecheck/`
 
 ### perf-strkey-hash-alloc: StrKey::hash allocates Rc<str> on every dot-access lookup [Major]
