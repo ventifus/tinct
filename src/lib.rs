@@ -1,7 +1,8 @@
 //! Parser, evaluator, type system, and builtins for the tinct language.
 //!
 //! [`parse`] takes an input string and returns a fully-spanned `File` AST (one or more documents).
-//! [`parse_expression`] is a convenience wrapper that parses a single expression (deprecated, no library callers).
+//! [`parse_surface_expression`] parses a single expression and returns the native `Arc<SurfaceNode>` (no bridge).
+//! [`parse_expression`] is a deprecated wrapper that returns `Spanned<Expr>` via `ast_convert`; use `parse_surface_expression` instead.
 //! [`eval_source`] parses and evaluates LLT source with the standard library environment.
 //!
 //! Additional public API:
@@ -88,8 +89,9 @@ pub mod expand;
 pub(crate) mod lower;
 // runtime-v2: surface AST field extraction for match dispatch and dot-access.
 pub(crate) mod surface_fields;
-// runtime-v2: bridge converter. Still used by parse_expression (integration test API) and test code.
-// TODO(rv2-delete-old-ast): retire parse_expression from corpus_tests.rs, then delete ast_convert.
+// runtime-v2: bridge converter. Still used by deprecated parse_expression and formatter/eval test code.
+// TODO(rv2-delete-old-ast): migrate remaining parse_expression callers (formatter.rs×4, eval.rs×1),
+// then delete parse_expression and ast_convert.rs entirely.
 pub mod ast_convert;
 // Literate tinct: extract and evaluate tinct code blocks from Markdown files.
 pub mod literate;
@@ -111,7 +113,11 @@ pub use ast::{
     TypeAnnotationTable,
 };
 /// Parser entry points and error type.
-pub use parser::{format_parse_error, parse, parse_expression, ParseError, ParseOutput};
+#[allow(deprecated)]
+// parse_expression is deprecated; kept for backward compat while callers migrate
+pub use parser::{
+    format_parse_error, parse, parse_expression, parse_surface_expression, ParseError, ParseOutput,
+};
 
 pub use eval::deep_materialize;
 /// Evaluation functions.

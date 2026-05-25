@@ -15,8 +15,8 @@ use std::fs;
 use std::path::PathBuf;
 use test_helpers::{find_test_files, run_corpus_dir, split_test_file, CorpusOutcome};
 use tinct::{
-    eval_source_with_cap_net, eval_source_with_config, parse, parse_expression, typecheck_source,
-    typecheck_source_errors_only,
+    eval_source_with_cap_net, eval_source_with_config, parse, parse_surface_expression,
+    typecheck_source, typecheck_source_errors_only,
 };
 
 #[test]
@@ -36,8 +36,8 @@ fn test_valid_corpus() {
                     Ok(_) => {
                         // For files with === out, we need to produce the AST Display string
                         let output = if test.expectations.out.is_some() {
-                            match parse_expression(&test.input) {
-                                Ok(ast) => Some(format!("{}", ast.node)),
+                            match parse_surface_expression(&test.input) {
+                                Ok(surface_node) => Some(format!("{}", surface_node)),
                                 Err(e) => {
                                     return CorpusOutcome {
                                         output: None,

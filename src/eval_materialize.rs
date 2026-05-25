@@ -2309,9 +2309,11 @@ pub(crate) async fn apply_cont(
                                     .get_property(DEFAULT_ANNOTATION_KEY)
                                     .map(|node| {
                                         (
-                                            Arc::new(
-                                                crate::lower::lower(node, &crate::ast::ResolutionTable::new(), &crate::ast::TypeAnnotationTable::new()),
-                                            ),
+                                            Arc::new(crate::lower::lower(
+                                                node,
+                                                &crate::ast::ResolutionTable::new(),
+                                                &crate::ast::TypeAnnotationTable::new(),
+                                            )),
                                             Arc::clone(&env),
                                         )
                                     });
@@ -2355,13 +2357,11 @@ pub(crate) async fn apply_cont(
                                     // Evaluate default expression iteratively.
                                     // The result will flow to the next continuation on the stack.
                                     Action::EvalCore {
-                                        expr: Arc::new(
-                                            crate::lower::lower(
-                                                default_node,
-                                                &crate::ast::ResolutionTable::new(),
-                                                &crate::ast::TypeAnnotationTable::new(),
-                                            ),
-                                        ),
+                                        expr: Arc::new(crate::lower::lower(
+                                            default_node,
+                                            &crate::ast::ResolutionTable::new(),
+                                            &crate::ast::TypeAnnotationTable::new(),
+                                        )),
                                         env,
                                         ctx: Arc::clone(&ctx),
                                     }
@@ -2497,13 +2497,11 @@ pub(crate) async fn apply_cont(
                                     // Evaluate default expression iteratively.
                                     // The result will flow to the next continuation on the stack.
                                     return Action::EvalCore {
-                                        expr: Arc::new(
-                                            crate::lower::lower(
-                                                default_node,
-                                                &crate::ast::ResolutionTable::new(),
-                                                &crate::ast::TypeAnnotationTable::new(),
-                                            ),
-                                        ),
+                                        expr: Arc::new(crate::lower::lower(
+                                            default_node,
+                                            &crate::ast::ResolutionTable::new(),
+                                            &crate::ast::TypeAnnotationTable::new(),
+                                        )),
                                         env,
                                         ctx: Arc::clone(&ctx),
                                     };
@@ -2531,13 +2529,11 @@ pub(crate) async fn apply_cont(
                                     // Evaluate default expression iteratively.
                                     // The result will flow to the next continuation on the stack.
                                     return Action::EvalCore {
-                                        expr: Arc::new(
-                                            crate::lower::lower(
-                                                default_node,
-                                                &crate::ast::ResolutionTable::new(),
-                                                &crate::ast::TypeAnnotationTable::new(),
-                                            ),
-                                        ),
+                                        expr: Arc::new(crate::lower::lower(
+                                            default_node,
+                                            &crate::ast::ResolutionTable::new(),
+                                            &crate::ast::TypeAnnotationTable::new(),
+                                        )),
                                         env,
                                         ctx: Arc::clone(&ctx),
                                     };

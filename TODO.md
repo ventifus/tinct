@@ -217,10 +217,10 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] parser.rs:148 production caller retired; parse_expression stays pub for integration tests
 
 **Remaining (only integration test API blocker):**
-- [ ] `parse_expression` in parser.rs is used by `corpus_tests.rs` (integration test, external crate) — cannot be `#[cfg(test)]`. Its body uses ast_convert. Options: (a) migrate corpus_tests.rs away from parse_expression, (b) inline parse_expression's body without ast_convert, (c) accept ast_convert remains pub (all other production code is clean)
-- [ ] Once `parse_expression`'s ast_convert dependency is resolved: delete ast_convert.rs entirely
+- [x] `parse_expression` in parser.rs is used by `corpus_tests.rs` (integration test, external crate) — migrated: `parse_surface_expression` added to parser.rs; corpus_tests.rs now uses `parse_surface_expression`; `SurfaceExpression`/`SurfaceDeclaration` Display extended to cover all variants; `parse_expression` marked `#[deprecated]`. Option (a) completed.
+- [ ] Delete `ast_convert.rs` entirely — **BLOCKED**: `parse_expression` (still pub for backward compat) still calls `ast_convert`; formatter.rs/eval.rs test code still call `parse_expression` directly. Once those remaining callers are migrated, delete `parse_expression` and then `ast_convert.rs`.
 
-**STATUS**: All production code (non-test, non-integration-test-API) is now ast_convert-free. ast_convert is production-reachable only via `parse_expression`.
+**STATUS**: `corpus_tests.rs` is now ast_convert-free. `parse_expression` is deprecated. Remaining ast_convert callers: `parse_expression` body (deprecated), formatter.rs×4 tests, eval.rs×1 test.
 
 ### rv2-delete-old-ast: Delete Expr/Document/File and old pipeline files
 

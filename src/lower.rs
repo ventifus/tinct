@@ -241,7 +241,9 @@ fn lower_expr(
 /// not `FreeVar(0)`.
 ///
 /// Direct CoreExpr→SurfaceNode conversion (no Expr bridge).
-pub fn core_expr_to_surface_node(expr: &crate::ast::Spanned<crate::ast::CoreExpr>) -> Arc<SurfaceNode> {
+pub fn core_expr_to_surface_node(
+    expr: &crate::ast::Spanned<crate::ast::CoreExpr>,
+) -> Arc<SurfaceNode> {
     Arc::new(SurfaceNode {
         expr: core_expr_to_surface_expr(&expr.node),
         span: expr.span,
@@ -263,10 +265,15 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             expr: core_expr_to_surface_node(expr),
             field: field.clone(),
         },
-        CoreExpr::Sequential(exprs) => {
-            SurfaceExpression::Sequential(exprs.iter().map(|e| core_expr_to_surface_node(e)).collect())
-        }
-        CoreExpr::Call { func, args, named_args, implied } => SurfaceExpression::Call {
+        CoreExpr::Sequential(exprs) => SurfaceExpression::Sequential(
+            exprs.iter().map(|e| core_expr_to_surface_node(e)).collect(),
+        ),
+        CoreExpr::Call {
+            func,
+            args,
+            named_args,
+            implied,
+        } => SurfaceExpression::Call {
             func: core_expr_to_surface_node(func),
             args: args.iter().map(|a| core_expr_to_surface_node(a)).collect(),
             named_args: named_args
@@ -283,7 +290,12 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                 .collect(),
             implied: *implied,
         },
-        CoreExpr::Fn { return_ann, params, body, desugared } => SurfaceExpression::Fn {
+        CoreExpr::Fn {
+            return_ann,
+            params,
+            body,
+            desugared,
+        } => SurfaceExpression::Fn {
             return_ann: return_ann.clone(),
             params: params
                 .iter()
@@ -301,12 +313,16 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             body: core_expr_to_surface_node(body),
             desugared: *desugared,
         },
-        CoreExpr::TypeAssert { annotation, expr, .. } => SurfaceExpression::TypeAssert {
+        CoreExpr::TypeAssert {
+            annotation, expr, ..
+        } => SurfaceExpression::TypeAssert {
             annotation: annotation.clone(),
             expr: core_expr_to_surface_node(expr),
         },
         // RuntimeTypeCheck has no SurfaceExpression equivalent; map to TypeAssert (annotation-only)
-        CoreExpr::RuntimeTypeCheck { annotation, expr, .. } => SurfaceExpression::TypeAssert {
+        CoreExpr::RuntimeTypeCheck {
+            annotation, expr, ..
+        } => SurfaceExpression::TypeAssert {
             annotation: annotation.clone(),
             expr: core_expr_to_surface_node(expr),
         },
@@ -332,10 +348,16 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             SurfaceExpression::UnquoteSplice(core_expr_to_surface_node(inner))
         }
         CoreExpr::PatternDecl { bindings } => SurfaceExpression::PatternDecl {
-            bindings: bindings.iter().map(|b| core_expr_to_surface_node(b)).collect(),
+            bindings: bindings
+                .iter()
+                .map(|b| core_expr_to_surface_node(b))
+                .collect(),
         },
         CoreExpr::LetDecl { bindings } => SurfaceExpression::LetDecl {
-            bindings: bindings.iter().map(|b| core_expr_to_surface_node(b)).collect(),
+            bindings: bindings
+                .iter()
+                .map(|b| core_expr_to_surface_node(b))
+                .collect(),
         },
         CoreExpr::CaseArm { .. }
         | CoreExpr::TypeApp { .. }

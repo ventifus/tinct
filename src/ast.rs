@@ -716,16 +716,20 @@ impl fmt::Display for SurfaceExpression {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SurfaceExpression::Int(n) => write!(f, "{n}"),
-            SurfaceExpression::Float(x) => write!(f, "{x}"),
-            SurfaceExpression::Bool(b) => write!(f, "{b}"),
-            SurfaceExpression::Str(s) => write!(f, "\"{s}\""),
-            SurfaceExpression::VarRef { name, escaped } => {
-                if *escaped {
-                    write!(f, "${name}")
+            SurfaceExpression::Float(n) => {
+                let s = n.to_string();
+                if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+                    write!(f, "{s}.0")
                 } else {
-                    write!(f, "{name}")
+                    write!(f, "{s}")
                 }
             }
+            SurfaceExpression::Bool(b) => write!(f, "{b}"),
+            SurfaceExpression::Str(s) => write!(f, "{s:?}"),
+            // Emit name as-is. `%`-prefixed refs already include `%` in the name.
+            // Plain identifiers and (indistinguishable) EscapedRefs both display without `$` —
+            // Display is used for error messages, not source roundtripping.
+            SurfaceExpression::VarRef { name, .. } => write!(f, "{name}"),
             SurfaceExpression::Placeholder => write!(f, "..."),
             SurfaceExpression::Rest(None) => write!(f, "..."),
             SurfaceExpression::Rest(Some(name)) => write!(f, "...{name}"),
@@ -733,8 +737,178 @@ impl fmt::Display for SurfaceExpression {
             SurfaceExpression::Annotated { name, annotation } => {
                 write!(f, "{name}@{}", annotation.node)
             }
-            // For complex forms, use debug formatting as a fallback.
-            other => write!(f, "{other:?}"),
+            SurfaceExpression::Dict(entries) => {
+                write!(f, "[")?;
+                for (i, entry) in entries.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, "  ")?;
+                    }
+                    if let Some(key) = &entry.node.key {
+                        write!(f, "{}: {}", key, entry.node.value)?;
+                    } else {
+                        write!(f, "{}", entry.node.value)?;
+                    }
+                }
+                write!(f, "]")
+            }
+            SurfaceExpression::Call {
+                func,
+                args,
+                named_args,
+                implied,
+            } => {
+                if *implied {
+                    write!(f, "[{}", func)?;
+                } else {
+                    write!(f, "[call {}", func)?;
+                }
+                for arg in args {
+                    write!(f, " {}", arg)?;
+                }
+                for na in named_args {
+                    write!(f, " {}: {}", na.node.name, na.node.value)?;
+                }
+                write!(f, "]")
+            }
+            SurfaceExpression::Fn {
+                return_ann,
+                params,
+                body,
+                desugared: _,
+            } => {
+                write!(f, "[fn")?;
+                if let Some(ann) = return_ann {
+                    write!(f, "@{}", ann.node)?;
+                }
+                write!(f, " [let")?;
+                for p in params.iter() {
+                    write!(f, " ")?;
+                    if p.node.variadic {
+                        write!(f, "...")?;
+                    }
+                    write!(f, "{}", p.node.name)?;
+                    if let Some(ann) = &p.node.annotation {
+                        write!(f, "@{}", ann.node)?;
+                    }
+                }
+                write!(f, "] {}]", body)
+            }
+            SurfaceExpression::DotAccess { expr, field } => match field {
+                DotKey::Ident(s) => write!(f, "{}.{s}", expr),
+                DotKey::Int(n) => write!(f, "{}.{n}", expr),
+            },
+            SurfaceExpression::Pipe { lhs, rhs } => write!(f, "{} | {}", lhs, rhs),
+            SurfaceExpression::Sequential(exprs) => {
+                write!(f, "(seq")?;
+                for expr in exprs {
+                    write!(f, " {}", expr)?;
+                }
+                write!(f, ")")
+            }
+            SurfaceExpression::TypeAssert { annotation, expr } => {
+                write!(f, "[@{} {}]", annotation.node, expr)
+            }
+            SurfaceExpression::Quote(inner) => write!(f, "[quote {}]", inner),
+            SurfaceExpression::Unquote(inner) => write!(f, "[unquote {}]", inner),
+            SurfaceExpression::UnquoteSplice(inner) => write!(f, "[unquote-splice {}]", inner),
+            SurfaceExpression::Match { scrutinee, arms } => {
+                write!(f, "[match {}", scrutinee)?;
+                for arm in arms {
+                    write!(f, " {} {}", arm.pattern.node, arm.body)?;
+                }
+                write!(f, "]")
+            }
+            SurfaceExpression::LetDecl { bindings } => {
+                write!(f, "[let")?;
+                for binding in bindings {
+                    write!(f, " {}", binding)?;
+                }
+                write!(f, "]")
+            }
+            SurfaceExpression::PatternDecl { bindings } => {
+                write!(f, "[pattern")?;
+                for binding in bindings {
+                    write!(f, " {}", binding)?;
+                }
+                write!(f, "]")
+            }
+            SurfaceExpression::CaseArm { pattern, body } => {
+                write!(f, "[case {} {}]", pattern, body)
+            }
+            SurfaceExpression::TypeApp { func, arg } => write!(f, "@[{} {}]", func, arg),
+            SurfaceExpression::Decl(decl) => {
+                // Delegate to SurfaceDeclaration Display.
+                write!(f, "{}", decl)
+            }
+        }
+    }
+}
+
+impl fmt::Display for SurfaceDeclaration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SurfaceDeclaration::TypeAlias { params, body } => {
+                if params.is_empty() {
+                    write!(f, "[type {}]", body)
+                } else {
+                    write!(f, "[type [{}] {}]", params.join(" "), body)
+                }
+            }
+            SurfaceDeclaration::ClassDecl {
+                name,
+                params,
+                methods,
+                ..
+            } => {
+                write!(f, "[class [{name}")?;
+                for p in params {
+                    write!(f, " {p}")?;
+                }
+                write!(f, "]")?;
+                for entry in methods {
+                    if let Some(key) = &entry.node.key {
+                        write!(f, " {}: {}", key, entry.node.value)?;
+                    }
+                }
+                write!(f, "]")
+            }
+            SurfaceDeclaration::InstanceDecl { class_name, arms } => {
+                write!(f, "[instance {class_name}")?;
+                for (pattern, methods) in arms {
+                    write!(f, " {}", pattern)?;
+                    write!(f, ":")?;
+                    for entry in methods {
+                        if let Some(key) = &entry.node.key {
+                            write!(f, " {}: {}", key, entry.node.value)?;
+                        }
+                    }
+                }
+                write!(f, "]")
+            }
+            SurfaceDeclaration::DefMacro { name, params, body } => {
+                write!(f, "[defmacro {} {} {}]", name, params, body)
+            }
+            SurfaceDeclaration::MacroDecl { name, params, body } => {
+                write!(f, "[macro {} {} {}]", name, params, body)
+            }
+            SurfaceDeclaration::SyntaxClass {
+                name,
+                pattern,
+                message,
+            } => {
+                write!(f, "[syntax-class {} pattern: {}", name, pattern)?;
+                if let Some(msg) = message {
+                    write!(f, " message: {:?}", msg)?;
+                }
+                write!(f, "]")
+            }
+            SurfaceDeclaration::Splice(forms) => {
+                write!(f, "[splice")?;
+                for form in forms {
+                    write!(f, " {}", form)?;
+                }
+                write!(f, "]")
+            }
         }
     }
 }

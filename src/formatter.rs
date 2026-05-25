@@ -1836,6 +1836,7 @@ mod tests {
     /// The formatter must preserve `_` verbatim. After formatting and re-parsing
     /// the AST should be structurally identical to parsing the original source.
     #[test]
+    #[allow(deprecated)] // parse_expression still used here; switch to parse_surface_expression when formatter tests are migrated
     fn test_underscore_roundtrip_call_dot_access() {
         let input = "[map _.age users]";
         let formatted = format_source(input).unwrap();
@@ -1853,6 +1854,7 @@ mod tests {
 
     /// Format `[filter _.active users]` and verify round-trip.
     #[test]
+    #[allow(deprecated)]
     fn test_underscore_roundtrip_call_field_filter() {
         let input = "[filter _.active users]";
         let formatted = format_source(input).unwrap();
@@ -1865,6 +1867,7 @@ mod tests {
 
     /// Format `[+ _ 1]` (bare _ in arg position) and verify round-trip.
     #[test]
+    #[allow(deprecated)]
     fn test_underscore_roundtrip_bare_arg() {
         let input = "[+ _ 1]";
         let formatted = format_source(input).unwrap();
@@ -1877,6 +1880,7 @@ mod tests {
 
     /// Format `_.name.first` (chained dot access on _) and verify round-trip.
     #[test]
+    #[allow(deprecated)]
     fn test_underscore_roundtrip_chained_dot_access() {
         let input = "_.name.first";
         let formatted = format_source(input).unwrap();

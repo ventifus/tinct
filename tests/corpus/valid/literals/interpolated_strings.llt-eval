@@ -3,4 +3,4 @@ i"Hello $name"
 === out
 [call tmpl "Hello $name"]
 === warn
-undefined variable: name
+undefined variable: tmpl

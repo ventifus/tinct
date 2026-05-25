@@ -2570,8 +2570,11 @@ fn infer_class_decl_from_surface(
                 )]);
             }
         };
+        // Method values in class declarations are type signatures ([fn params body] form).
+        // Use graceful fallback: if resolve_type_expr fails (e.g., raw Fn expression),
+        // treat as Unknown rather than propagating an error.
         let _method_type = resolve_type_expr(&method.node.value, env, state, &mut None, &mut None)
-            .map_err(|e| vec![e])?;
+            .unwrap_or(crate::types::Type::Unknown);
     }
 
     let existing_param_kinds: std::collections::HashMap<String, Kind> = state

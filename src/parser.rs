@@ -4707,7 +4707,9 @@ fn surface_node_to_pattern(node: Arc<SurfaceNode>) -> Result<Spanned<Pattern>, P
 
 /// Convert a SurfaceNode to a pattern, extracting guard if present.
 /// This is the primary path — `expr_to_pattern_with_guard` is a legacy bridge.
-fn surface_node_to_pattern_with_guard(node: Arc<SurfaceNode>) -> Result<PatternWithGuard, ParseError> {
+fn surface_node_to_pattern_with_guard(
+    node: Arc<SurfaceNode>,
+) -> Result<PatternWithGuard, ParseError> {
     let span = node.span;
     let (pattern, guard) = match &node.expr {
         // Handle Pipe as or-pattern separator
@@ -5814,6 +5816,9 @@ fn push_value(
 /// This function has no production callers in the library — all library code
 /// now uses `parse()` directly. It is kept as a public API for integration
 /// tests (corpus_tests.rs) that compare Expr AST Display output.
+#[deprecated(
+    note = "Use parse_surface_expression instead; parse_expression uses ast_convert bridge"
+)]
 pub fn parse_expression(input: &str) -> Result<Spanned<Expr>, ParseError> {
     let output = parse(input)?;
     let surface = &output.program;
@@ -5839,6 +5844,44 @@ pub fn parse_expression(input: &str) -> Result<Spanned<Expr>, ParseError> {
     };
 
     Ok(first_expr)
+}
+
+/// Parse a single expression and return the first `SurfaceNode` from the first document.
+///
+/// Replacement for [`parse_expression`] that avoids the `ast_convert` bridge entirely.
+/// Callers receive the native Surface AST; Display is handled by `SurfaceNode`/`SurfaceExpression`.
+///
+/// Returns the first item of the first document as an `Arc<SurfaceNode>`. For top-level
+/// declaration items (`SurfaceItem::Decl`), returns an error — callers needing declarations
+/// should use `parse()` and work with `SurfaceProgram` directly.
+pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, ParseError> {
+    let output = parse(input)?;
+    let surface = &output.program;
+
+    if surface.documents.is_empty() {
+        return Err(ParseError {
+            message: "no documents in input".to_string(),
+            span: None,
+        });
+    }
+
+    let first_doc = &surface.documents[0];
+    match first_doc.node.items.first() {
+        Some(SurfaceItem::Expr(node)) => Ok(Arc::clone(node)),
+        Some(SurfaceItem::Decl(decl)) => {
+            // Top-level declarations are wrapped in SurfaceExpression::Decl so they
+            // can be displayed uniformly. The Display impl for SurfaceDeclaration
+            // produces the canonical rendering matching Expr Display for the same forms.
+            Ok(Arc::new(SurfaceNode {
+                expr: SurfaceExpression::Decl(Box::new(decl.node.clone())),
+                span: decl.span,
+            }))
+        }
+        None => Err(ParseError {
+            message: "no items in first document".to_string(),
+            span: Some(first_doc.span),
+        }),
+    }
 }
 
 /// Parse tinct source text with error recovery.
