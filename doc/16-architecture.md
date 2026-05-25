@@ -55,14 +55,14 @@
 **Cross-module coupling:**
 
 - Circular dependency: builtins.rs calls `materialize`/`invoke_function` (eval.rs); eval.rs calls `standard_builtins()` (builtins.rs). Safe because dependency is at function-call level, not module init.
-- Elaboration write-once: typecheck writes `TypeAssert.resolved_type` (RefCell) exactly once; re-typechecking the same AST panics. Parse a fresh AST for each typecheck run.
-- Include cache: `EvalContext.state.include_cache` (HashMap keyed by file identity) memoizes `$include` results — same file included twice returns the cached thunk without re-evaluation.
+- Elaboration write-once: type annotations are resolved from `TypeAnnotationTable` (a side-table keyed by `NodeId`) during lowering. `CoreExpr::TypeAssert.resolved_type` is a plain field set once at lower time — no `RefCell`, no re-typecheck panic. Parse a fresh `SurfaceProgram` for each typecheck run (side tables are separate).
+- Include cache: `EvalContext.state.string_include_cache` (`HashMap<String, IncludeCacheEntry>`, content-addressed, keyed by `blake3(cap-identity + "|" + source_text)`) memoizes `$include` results — the old inode-keyed `include_guard` and `include_cache` fields are deleted.
 
 ### Iterative Evaluator — Defunctionalized CPS (CEK Machine)
 
 > For the formal evaluation semantics (thunk lifecycle, materialization rules, laziness design), see [Evaluation](08-evaluation.md). For the type system extensions that interact with evaluation (TypeAssert contracts, row polymorphism), see [Type System Extensions](07-type-extensions.md).
 >
-> **Implementation note:** The iterative `run()` loop with `Vec<Cont>` stack drives all materialization. `eval_call` returns PendingCall thunks for lazy dispatch. DotAccess uses `DotAccessForce` continuations. TypeAssertCheck default expressions use Action::Eval. **One remaining recursive path:** `eval_recursive` (TypeAssert inner expression at eval_materialize.rs:1855 — needs a thunk without materializing, cannot use Action::Eval which goes through wrap_thunk). Modules: `eval_call.rs`, `eval_deep.rs`, `eval_access.rs`.
+> **Implementation note:** The iterative `run()` loop with `Vec<Cont>` stack drives all materialization. `eval_call` returns PendingCall thunks for lazy dispatch. DotAccess uses `DotAccessForce` continuations. TypeAssertCheck default expressions use `Action::EvalCore`. **No remaining recursive eval paths** — `eval_recursive` is deleted; `Action::EvalCore` drives all `CoreExpr` evaluation. Modules: `eval_call.rs`, `eval_access.rs` (`eval_deep.rs` deleted in runtime-v2).
 
 The iterative evaluator replaces the recursive `eval()` / `materialize()` call stack with an explicit continuation stack. The design follows Reynolds (1972) defunctionalization: each recursive call becomes a first-class `Cont` value pushed onto a `Vec<Cont>` stack. The main loop is a two-register machine `(action: Action, stack: Vec<Cont>)`.
 
@@ -242,8 +242,17 @@ EvalContext is defined and threaded throughout the evaluator. There is no thread
 struct EvalConfig {
     base_dir: cap_std::fs::Dir,
     stdlib_env: Arc<RwLock<Environment>>,
+    /// Type-stage environment (type-level builtins only); used by `builtin_eval_types`.
+    type_stage_env: Arc<RwLock<Environment>>,
     no_fs: bool,
+    /// Enforces integrity hashes on all `$include` calls when true.
     require_integrity: bool,
+    /// Macro inject defaults: macro_name -> inject_default_name.
+    /// Populated by the expansion pass; used by the `macro-injects` builtin.
+    macro_injects_map: HashMap<String, String>,
+    /// Source file path where evaluation started (if available).
+    /// Propagated to FnAnnotation for LSP hover and diagnostics.
+    source_file: Option<String>,
 }
 
 struct EvalState {
@@ -280,7 +289,7 @@ struct EvalContext {
 
 - **CLI (main.rs):** Constructs EvalContext from CLI args (file path → base_dir), passes to eval_surface_file.
 - **LSP:** Each DocumentState gets its own EvalContext. DocumentStore extracts base_dir from document URI. Config (stdlib_env) is shared across documents; state is per-document.
-- **REPL:** Single EvalContext per session. Include state (guard, cache) persists across eval_input() calls. Session env accumulates bindings across commands. **Limitation:** `eval_input()` calls `parse_expression()` which returns the last expression of the FIRST document only; `---`-separated multi-doc input silently discards all documents after the first.
+- **REPL:** Single EvalContext per session. Include state (guard, cache) persists across eval_input() calls. Session env accumulates bindings across commands. `eval_input()` calls `parse()` (returns a full `SurfaceProgram`) then passes the entire program to `eval_surface_file_with_input()`, so `---`-separated multi-document input works correctly across all documents.
 
 **Precedent:** Nix's `EvalState`, Nickel's `VirtualMachine`, Dhall's normalization context. Standard pattern in mature language implementations for separating evaluation infrastructure from variable bindings.
 
@@ -563,13 +572,13 @@ These costs are negligible for ordinary use but can accumulate in tight recursiv
 
 - **Environment lookup is O(depth)**: `Environment::get()` walks the parent chain on every variable reference. Deeply nested scopes compound this cost.
 - **IndexMap ~20% slower than HashMap**: Dict operations use `IndexMap` to preserve insertion order (required for dict semantics). Type-level `Substitution.type_map`/`row_map` also use `IndexMap` but could be `HashMap` (order irrelevant).
-- **Thunk boxing cost**: Every value is wrapped in `Rc<RefCell<ThunkState>>`. Lazy evaluation requires this indirection but adds allocation and refcounting overhead.
+- **Thunk boxing cost**: Every value is wrapped in `Arc<Thunk>` (post-runtime-v2). The `Thunk` struct holds a `ThunkInner` with `Mutex<Option<UnevaluatedState>>` (taken on evaluation start) and `tokio::sync::OnceCell<Result<Value, Arc<EvalError>>>` (set exactly once on completion). Lazy evaluation requires this indirection but adds allocation and `Arc` refcounting overhead.
 - **Substitution::apply() is O(type_size)**: Type inference calls `apply()` per unification. Each call allocates a `HashSet<String>` for cycle detection and walks the entire type tree.
 
 **Known bottlenecks:**
 
-- Rc clone frequency in dict construction loops
-- AST deep-clone per call argument (until AST nodes become Rc)
+- `Arc` clone frequency in dict construction loops (Rc→Arc migration complete; `Arc` clone cost is higher due to atomic refcount)
+- AST node sharing via `Arc<SurfaceNode>` (arena-based allocation is the next step; full `ThunkId`-in-`Value` migration deferred to Phase 3)
 - Type tree traversal during multi-pass dict inference
 
 ## Security & Threat Model

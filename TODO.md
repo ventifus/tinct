@@ -1347,10 +1347,13 @@ Both `Symlinkable` and `PosixPermissions` DirPerms flags exist and are correctly
 - Line 566: "Thunk boxing cost: `Rc<RefCell<ThunkState>>`" — now `Arc<Mutex<Option<UnevaluatedState>>>`
 - Line 571-572: bottlenecks mention "Rc clone frequency" and "until AST nodes become Rc" — both stale post-rv2
 
-- [ ] Fix lines 58, 59, 65 stale implementation note block
-- [ ] Fix line 283 parse_expression reference
-- [ ] Fix lines 241-247 EvalConfig sketch (add missing fields or add "(abbreviated)" note)
-- [ ] Fix lines 566, 571-572 performance notes
+- [x] Fix line 58 Elaboration write-once → TypeAnnotationTable side-table design
+- [x] Fix line 59 include_cache → string_include_cache (content-addressed, blake3 key)
+- [x] Fix line 65 eval_recursive/Action::Eval/eval_deep.rs stale note → Action::EvalCore, no recursive paths
+- [x] Fix line ~283 parse_expression() → parse() (REPL calls parse() + eval_surface_file_with_input())
+- [x] Fix lines 241-247 EvalConfig sketch — added type_stage_env, macro_injects_map, source_file
+- [x] Fix line ~566 Thunk boxing cost → Arc<Thunk> with Mutex<Option<UnevaluatedState>> + OnceCell
+- [x] Fix lines 571-572 bottlenecks → Arc clone cost (Rc migration complete)
 - **File:** `doc/16-architecture.md`
 
 ### doc-11-builtin-count-wrong: Builtin counts wrong in both doc/11 files [Major]
