@@ -130,7 +130,7 @@ These leverage lazy evaluation and can be regular functions. Each function is cl
 | `get`, `get-or`, `has?` | Structural — key lookup, returns thunk |
 | `get-in`, `get-in-or` | **Materializing** — deep path access. Takes a dict and a list of keys, traverses nested dicts. Must evaluate each key lookup. `get-in-or` returns a default on missing keys instead of erroring. |
 | `set`, `remove` | Structural — add/remove entries |
-| `merge` | **Lazy** — returns `Value::Overlay(left, right)` in O(1). Neither operand is materialized. Flattening to IndexMap is deferred to access time. Values remain as thunk Arc-clones. |
+| `merge` | **Materializing** — builds new `IndexMap` from both operands (O(n)); individual values remain as lazy thunks. |
 | `keys` | Structural — keys are always evaluated, not thunks |
 | `values`, `entries` | Structural — returns thunks in dict insertion order |
 | `update` | Lazy-transforming — produces thunk `[call $f $old-value]` |
@@ -299,19 +299,19 @@ Any `include`d stdlib module can shadow the primary-name operators in lexical sc
 
 Only `stdlib/prelude.llt` is loaded automatically at startup (bundled at compile time via `include_str!`). All other stdlib modules must be loaded explicitly with `[include ...]`. At startup:
 
-1. `create_root_env()` pre-injects all Rust builtins directly into the bootstrap environment — all 333 builtin functions are registered by name (e.g., `builtin-lt`, `builtin-add`, `eval`, `raise`, `from-json`, `load`, `blake3`, etc.)
+1. `create_root_env()` pre-injects all Rust builtins directly into the bootstrap environment — all 301 builtin functions are registered by name (e.g., `builtin-lt`, `builtin-add`, `eval`, `raise`, `from-json`, `load`, `blake3`, etc.)
 2. `create_stdlib_env_inner()` parses and evaluates `stdlib/prelude.llt` in a child of the bootstrap env — prelude can access all builtins via the environment chain
 3. Prelude exports its public wrappers (`<`, `=`, `+`, `if`, `not`, `>`, `and`, `or`, ...) into the stdlib env, shadowing some builtin names with user-friendly wrappers
 4. User code inherits the stdlib env — `builtin-*` names are accessible via the environment chain, but shadowed by prelude wrappers where appropriate
 
 ```text
-Bootstrap env: all 333 Rust builtins (builtin-lt, builtin-add, eval, raise, load, blake3, ...)
+Bootstrap env: all 301 Rust builtins (builtin-lt, builtin-add, eval, raise, load, blake3, ...)
   └── Stdlib env: prelude.llt exports (<, =, +, -, *, /, if, filter, map, not, >, and, or, ...)
         └── User code / domain stdlib ([include "stdlib/sql.llt"] shadows filter, map, <, =, ...)
               └── User predicates and programs
 ```
 
-The prelude wraps 37 builtins with stable `builtin-*` aliases (`builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div`, `builtin-eq`, `builtin-lt`, `builtin-if`, `builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-map`, `builtin-filter`, `builtin-take`, `builtin-drop`, `builtin-reduce`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-rest`, `builtin-cons`, `builtin-reverse`, `builtin-sort`, `builtin-get`, `builtin-length`, `builtin-append`, `builtin-str`, `builtin-split`, `builtin-str-length`, `builtin-str-slice`, `builtin-raise`) so domain modules can shadow the primary names while still calling the original implementation. All other builtins (e.g., `eval`, `from-json`, `load`) are used directly by name.
+The prelude wraps builtins with stable `builtin-*` aliases (`builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div`, `builtin-eq`, `builtin-lt`, `builtin-if`, `builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-map`, `builtin-filter`, `builtin-take`, `builtin-drop`, `builtin-reduce`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-rest`, `builtin-cons`, `builtin-reverse`, `builtin-sort`, `builtin-get`, `builtin-length`, `builtin-append`, `builtin-str`, `builtin-split`, `builtin-str-length`, `builtin-str-slice`, `builtin-raise`) so domain modules can shadow the primary names while still calling the original implementation. All other builtins (e.g., `eval`, `from-json`, `load`) are used directly by name.
 
 **Optional stdlib modules** — load with `[include libdir "<module>.llt"]`. The `libdir` variable is a `DirCap` injected at startup pointing to the installed stdlib directory (resolves to `stdlib/` in dev builds, `<prefix>/share/tinct/stdlib/` in installed builds):
 
@@ -355,9 +355,9 @@ The stdlib follows four organizing principles:
 
 ## Stdlib Function Reference
 
-**Architecture:** 333 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + ~117 LLT-implemented functions in `stdlib/prelude.llt` (including shadowable wrappers). The shadowable wrappers are: operators (`<`, `=`, `+`, `-`, `*`, `/`, `if`), core collection ops (`filter`, `map`, `reduce`, `take`, `drop`), and sequence/list ops (`seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`), dict ops (`get`, `length`, `append`), and string ops (`str`, `split`, `str-length`, `str-slice`), plus `raise`. All wrapped builtins remain accessible via 37 stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`, `builtin-add`, `builtin-get`, `builtin-str`, `builtin-raise`). `collect-kv`, `str-repeat`, and `str-find` are pure LLT implementations in `prelude.llt` — shadowable via `$include` like other prelude functions, but with no `builtin-*` aliases.
+**Architecture:** 301 Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) + ~117 LLT-implemented functions in `stdlib/prelude.llt` (including shadowable wrappers). The shadowable wrappers are: operators (`<`, `=`, `+`, `-`, `*`, `/`, `if`), core collection ops (`filter`, `map`, `reduce`, `take`, `drop`), and sequence/list ops (`seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`), dict ops (`get`, `length`, `append`), and string ops (`str`, `split`, `str-length`, `str-slice`), plus `raise`. All wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`, `builtin-add`, `builtin-get`, `builtin-str`, `builtin-raise`). `collect-kv`, `str-repeat`, and `str-find` are pure LLT implementations in `prelude.llt` — shadowable via `$include` like other prelude functions, but with no `builtin-*` aliases.
 
-**Total stdlib API:** 333 Rust builtins + ~117 prelude LLT functions = ~450 functions available after prelude load.
+**Total stdlib API:** 301 Rust builtins + ~117 prelude LLT functions = ~418 functions available after prelude load.
 
 Functions available to all user code. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`, `-step`, `-check`) are omitted from this reference.
 

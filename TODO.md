@@ -1363,16 +1363,14 @@ Both `Symlinkable` and `PosixPermissions` DirPerms flags exist and are correctly
 - `doc/11-stdlib.md:302,308,358,360` says "333 builtins" — actual is 301; total arithmetic also wrong ("333 + ~117 = ~450" should be "301 + ~117 = ~418")
 - `doc/11-stdlib.md:314` says "37 stable `builtin-*` aliases" — stale (many more added since)
 
-- [ ] Update `doc/11a-builtins.md:3,1063` → 301
-- [ ] Update `doc/11-stdlib.md:302,308,358,360` → 301; fix total arithmetic
-- [ ] Update "37 stable `builtin-*` aliases" to accurate count or durable phrasing
+- [x] Update `doc/11a-builtins.md:3,1063` → 301
+- [x] Update `doc/11-stdlib.md:302,308,358,360` → 301; fix total arithmetic (301 + ~117 = ~418)
+- [x] Remove stale "37 stable builtin-* aliases" count
 - **Files:** `doc/11a-builtins.md`, `doc/11-stdlib.md`
 
 ### doc-11-merge-lazy-claim: doc/11-stdlib.md claims merge is lazy O(1) Overlay [Major]
 
-**stdlib-author M3.** `doc/11-stdlib.md:133` dict operations table entry for `merge` reads: "Lazy — returns `Value::Overlay(left, right)` in O(1)." This is entirely wrong — `builtin_merge` clones both operands into a new `IndexMap`. `Value::Overlay` does not exist in the codebase (was a proposed future optimization that never landed).
-
-- [ ] Update merge row in `doc/11-stdlib.md:133` to: "Materializing — builds new IndexMap from both dicts (O(n)); values remain as lazy thunks"
+- [x] Updated merge row in `doc/11-stdlib.md:133` → "Materializing — builds new IndexMap from both operands (O(n)); individual values remain as lazy thunks"
 - **File:** `doc/11-stdlib.md`
 
 ### check-arithmetic-no-validation: check_arithmetic accepts non-numeric operands silently [Major]
