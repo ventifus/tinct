@@ -1035,11 +1035,10 @@ All 9 specialist agents reviewed the codebase after the runtime-v2 migration com
 
 Multiple doc files still reference the old Expr/File/Document pipeline or carry stale counts:
 
-- [ ] Update `doc/16-architecture.md:12` — change "File > Document > Expr" to "SurfaceProgram > SurfaceDocument > SurfaceNode > SurfaceExpression" [Critical — integration-verifier]
-- [ ] Update `doc/16-architecture.md:43-54` — add lower.rs pass between Desugar and Evaluator; update pipeline to "Source → Parser(SurfaceProgram) → Desugar → Resolver → TypeCheck → Eval(lower→CoreExpr) → Output"; remove MAX_EVAL_DEPTH row from Security table (line 527) [Critical — integration-verifier, security-expert]
-- [ ] Update `doc/11-stdlib.md:301,357` — correct builtin count from 284 to **333** (actual count from `standard_builtins()`); update stable alias count on line 313; add summary table: Rust builtins (333) + Prelude LLT (117) + Total (450) [Critical — stdlib-author]
-- [ ] Update `doc/02-syntax.md`, `doc/15-ast.md` — remove stale File/Document/Expr references; update parser description from "PEG/pest" to "hand-written iterative descent" if still present [Minor — grammar-architect]
-- [ ] Add §Iterative Evaluator to `doc/08-evaluation.md` after line 350 — document MAX_CONTINUATION_STACK (2048), rationale vs old MAX_EVAL_DEPTH (256) [Minor — eval-engine]
+- [x] Update `doc/16-architecture.md` — pipeline updated to SurfaceProgram; lower.rs pass added; MAX_EVAL_DEPTH replaced with MAX_CONTINUATION_STACK in security table
+- [x] Update `doc/11-stdlib.md` — builtin count corrected to 333; summary table added (333 Rust + ~117 LLT = ~450 total)
+- [x] Update `doc/02-syntax.md`, `doc/15-ast.md` — stale Expr/File/Document references removed; Surface AST documented; pipe lowering clarified
+- [x] Add §Iterative Evaluator to `doc/08-evaluation.md` — MAX_CONTINUATION_STACK (2048) documented with CEK machine rationale
 
 ### typeassert-elaboration-fix: TypeAnnotationTable not populated for nested TypeAssert nodes [Critical]
 

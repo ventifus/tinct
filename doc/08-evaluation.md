@@ -207,7 +207,7 @@ This is explicit by design — no accidental infinite materialization.
 | Layer | Mechanism | What it catches |
 |-------|-----------|----------------|
 | Blackholing | `InProgress` thunk state sentinel | Direct cycles: a thunk that references itself during evaluation |
-| Depth limit | `MAX_EVAL_DEPTH=256` | Runaway recursion: deeply nested or diverging evaluation chains |
+| Continuation stack limit | `MAX_CONTINUATION_STACK = 2048` | Runaway recursion: deeply nested or diverging evaluation chains (iterative CEK machine) |
 | Tail discipline | `$collect`/`$head`/`$tail` type checks | Malformed tails: sequence tail that evaluates to a non-Seq, non-`[]` value |
 
 **Built-in constructors are productive by construction.** The standard sequence API guarantees productivity for well-behaved arguments:
@@ -1376,9 +1376,17 @@ Per execution context:
 
 ## Iterative Evaluator (CEK Machine)
 
-**Decision:** Replace the recursive `eval()` / `materialize()` call stack with an iterative CEK machine (Control-Environment-Kontinuation). Continuations are defunctionalized — each closure that CPS would create becomes a variant in a `Cont` enum, stored in a `Vec<Cont>` stack.
+**Implementation:** The evaluator uses an iterative CEK machine (Control-Environment-Kontinuation) with an explicit bounded continuation stack (`MAX_CONTINUATION_STACK = 2048` in `src/eval_materialize.rs`). This replaced the old recursive evaluator which used `MAX_EVAL_DEPTH = 256` and relied on Rust's call stack.
 
-**Problem:** `eval()` and `materialize()` are mutually recursive across 8+ call patterns. Deeply-nested lazy chains exhaust the Rust call stack before `MAX_EVAL_DEPTH` fires. Tinct works around this with a 64MB worker thread stack.
+**Evaluation depth is bounded by:**
+- Parser depth limit: `MAX_PARSE_DEPTH = 256` (nested syntax depth)
+- Continuation stack limit: `MAX_CONTINUATION_STACK = 2048` (evaluation nesting depth)
+- Cycle detection: `InProgress` thunk state sentinel (catches circular references)
+- Rust stack bounds: the CEK machine runs iteratively on the heap, avoiding deep Rust recursion
+
+**Decision:** Replace the recursive `eval()` / `materialize()` call stack with an iterative CEK machine. Continuations are defunctionalized — each closure that CPS would create becomes a variant in a `Cont` enum, stored in a `Vec<Cont>` stack.
+
+**Problem:** `eval()` and `materialize()` are mutually recursive across 8+ call patterns. Deeply-nested lazy chains exhausted the Rust call stack before `MAX_EVAL_DEPTH` fired. The old implementation required a 64MB worker thread stack.
 
 **Architecture:** Two enums, one loop.
 

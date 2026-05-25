@@ -627,7 +627,7 @@ Type aliases are resolved at type-check time — they have no runtime cost.
 
 The parser produces `Annotation::PropertyDict` for `@[...]` forms. During type checking, `resolve_type_expr` in `src/typecheck_annot.rs` resolves these by pattern-matching on the constructor name (`Seq`, `Map`, etc.) and creating the corresponding `Type::*` variant (`Type::Seq`, `Type::Map`). This happens after parsing completes, when annotations are resolved to concrete types.
 
-Note: The `Expr::TypeApp` AST variant exists for legacy reasons but is never constructed by the parser. Type constructor applications are resolved directly during type checking, not during parsing.
+Note: The `SurfaceExpression::TypeApp` AST variant exists for legacy reasons but is never constructed by the parser. Type constructor applications are resolved directly during type checking, not during parsing.
 
 **Row polymorphism.** `...` marks an open record type; `...name` introduces a named row variable:
 
@@ -940,7 +940,7 @@ keyword_fn   = "fn" ~ !ident_char ~ !colon_ahead
 keyword_type = "type" ~ !ident_char ~ !colon_ahead
 
 // Lookahead: optional horizontal whitespace then colon.
-// ws_chars matches only spaces and tabs (not newlines), so "call\n:" is a CallExpr, not a Dict entry.
+// ws_chars matches only spaces and tabs (not newlines), so "call\n:" is a Call expression, not a Dict entry.
 colon_ahead = ws_chars* ~ ":"
 ws_chars    = " " | "\t"
 
@@ -1069,18 +1069,18 @@ The parser determines how to interpret a `[]` by examining its first entry:
 **Why parser-level:** The distinction between calls and data must be unambiguous before evaluation. The head-position rule classifies brackets at parse time, before any thunks are created.
 
 ```tinct
-[f x]                 # CallExpr — implied call: bare identifier "f" in head
-[f x y]              # CallExpr — call f(x, y)
-[call f x]           # CallExpr — explicit call (identical AST to implied)
-[fn [x] x]           # FnExpr
-[type [Fn@b [a]]]    # TypeExpr
+[f x]                 # Call — implied call: bare identifier "f" in head
+[f x y]              # Call — call f(x, y)
+[call f x]           # Call — explicit call (identical AST to implied)
+[fn [x] x]           # Fn
+[type [Fn@b [a]]]    # TypeAlias
 
 [call: something]    # Dict — "call" followed by ":" is a key, not a keyword
 [$f x y]             # Dict (data sequence) — $-prefixed head prevents call
-[f]                  # CallExpr — zero-argument call to f
+[f]                  # Call — zero-argument call to f
 [$f]                 # Dict — single-element sequence containing ref(f)
 [call
-: value]             # CallExpr — newline breaks colon_ahead (it only matches spaces/tabs, not newlines)
+: value]             # Call — newline breaks colon_ahead (it only matches spaces/tabs, not newlines)
 ```
 
 ---

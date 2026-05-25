@@ -9,7 +9,7 @@
        │
        ▼
 ┌─────────────┐
-│   Parser    │  Text → AST (File > Document > Expr)
+│   Parser    │  Text → AST (SurfaceProgram > SurfaceDocument > SurfaceNode > SurfaceExpression)
 └──────┬──────┘
        │
        ▼
@@ -40,14 +40,14 @@
 
 ### Implementation Architecture
 
-**Pipeline phases:** Source text → Parser → Desugar → TypeCheck → Evaluator → Serializer → Output
+**Pipeline phases:** Source text → Lexer → Parser (SurfaceProgram) → Desugar (SurfaceProgram) → Resolver (ResolutionTable) → TypeCheck (TypeAnnotationTable) → Lower (SurfaceNode → CoreExpr) → Eval (CoreExpr) → Output (Value)
 
 **Key contracts:**
 
 - `BuiltinFn` signature: `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>>` (no `+ Send` — futures are `!Send`); `BuiltinArgs` carries owned `args: Vec<Arc<Thunk>>`, `named: Option<IndexMap<String, Arc<Thunk>>>`, `call_span: Span`, `ctx: Arc<EvalContext>`
 - `Value` serialization: every `Value` variant must have handlers in both `value_to_json()` and `value_to_display_string()` (src/lib.rs)
 - Type checker role: advisory only — type errors are warnings, evaluation proceeds regardless
-- AST coverage: every `Expr` variant requires both an `eval` handler (src/eval.rs) and a `typecheck` handler (src/typecheck.rs)
+- AST coverage: every `SurfaceExpression` variant requires both a `lower` handler (src/lower.rs producing `CoreExpr`) and a `typecheck` handler (src/typecheck.rs); every `CoreExpr` variant requires an `eval_core_expr` handler (src/eval.rs)
 - Builtin registration: all builtins must appear in `standard_builtins()` (src/builtins.rs) — this is the authoritative list
 - Environment chain: builtins → stdlib → user code (root env contains Rust-native builtins; stdlib env wraps root and loads prelude.llt; user code inherits from stdlib)
 - Desugar ordering: `desugar_surface_program()` runs after parse and before both typecheck and eval in all entry points (eval_source, eval_surface_file_with_input, CLI, REPL, stdlib loading, lsp/document.rs::update_document)
@@ -521,10 +521,11 @@ LLT source files are **untrusted input**. The parser, type checker, and evaluato
 | **Split parts** | `MAX_SPLIT_PARTS = 1,000,000` | `src/builtins_string.rs:23` | Prevents memory exhaustion from adversarial `$split` patterns |
 | **LSP document size** | `MAX_DOCUMENT_SIZE = 10 MB` | `src/lsp/server.rs:22` | Rejects oversized documents before parsing (equals `MAX_FILE_SIZE`) |
 | **LSP method names** | `MAX_METHOD_NAME_LEN = 256` | `src/lsp/server.rs:33` | Prevents pathological LSP method name allocation |
+| **Continuation stack** | `MAX_CONTINUATION_STACK = 2048` | `src/eval_materialize.rs` | Bounds iterative CEK machine continuation depth; prevents unbounded stack growth |
 | **File I/O** | `--no-fs` flag, LSP default | `src/main.rs:39`, `src/lsp/document.rs:109` | Disables `$include` and `$from-json` file reads; LSP enables by default (CWE-22 mitigation) |
 | **Eval timeout** | `--timeout` flag (Unix only) | `src/main.rs:43` | Wall-clock timeout with SIGALRM; exits with code 2 on expiry |
 
-**Note:** There is no `MAX_EVAL_DEPTH` — evaluation depth is bounded only by available Rust call stack. Input nesting is still bounded by `MAX_PARSE_DEPTH` (256).
+**Note:** Evaluation depth is bounded by the iterative CEK machine's continuation stack (`MAX_CONTINUATION_STACK = 2048`), cycle detection (`InProgress` sentinel), and parser depth limit (`MAX_PARSE_DEPTH = 256`). The old recursive evaluator with `MAX_EVAL_DEPTH = 256` was replaced by the iterative CEK machine in the runtime-v2 migration.
 
 **What is NOT restricted:**
 

@@ -14,31 +14,30 @@ The hand-written parser provides precise control over error messages, whitespace
 
 ## AST Node Types
 
-### Top-Level Types
+### Top-Level Types (Surface AST)
+
+The parser natively constructs a **Surface AST** composed of these key types:
 
 ```rust
-/// A complete tinct file — one or more documents separated by ---
-struct File {
-    documents: Vec<Spanned<Document>>,
+/// Top-level container for a complete parsed file
+struct SurfaceProgram {
+    documents: Vec<Spanned<SurfaceDocument>>,
 }
 
-/// A document — one or more expressions forming a scope chain,
+/// A document — one or more items (expressions or declarations) forming a scope chain,
 /// optionally carrying section-header metadata from the preceding `---` line.
-struct Document {
-    expressions: Vec<Rc<Spanned<Expr>>>,
+struct SurfaceDocument {
+    items: Vec<SurfaceItem>,
     /// Section name from `--- %name`, e.g. `"config"` (bare name, no `%` sigil).
     /// `None` for anonymous documents.
     name: Option<String>,
     /// Output type annotation from `--- %name@Type` or `--- @Type`.
-    /// Stored as a parsed `Annotation` with its source span.
     output_type: Option<Spanned<Annotation>>,
     /// Input contract from `--- expects: Type`.
-    /// The type checker emits an advisory error if the incoming `%` type does not match.
     expects: Option<Spanned<Annotation>>,
     /// Capability declarations from `--- caps: [...]`.
     caps: Option<Spanned<Vec<(String, Annotation)>>>,
-    /// Document stage from `--- stage: type`.
-    /// Determines how the document is evaluated. Defaults to `Stage::Runtime` if `None`.
+    /// Document stage from `--- stage: type` (defaults to `Stage::Runtime` if `None`).
     stage: Option<Stage>,
 }
 
@@ -47,24 +46,11 @@ enum Stage {
     Runtime,  // Default: evaluated in the main pipeline
     Type,     // Type-stage: evaluated for type aliases and class declarations
 }
-```
 
-The optional fields — `name`, `output_type`, `expects`, `caps`, `stage` — are populated by the section-header parser when a `---` line carries metadata (e.g. `--- %config@Config expects: InputType caps: [%nc: @NetCap] stage: type`). All are `None` for anonymous documents (bare `---` or the implicit first document). The `name` string is the bare section name without the `%` sigil (`"config"`, not `"%config"`). Callers (the evaluator and type checker) add the `%` prefix when binding the value into scope (e.g. `format!("%{}", name)`). `output_type` and `expects` store the full source span of the annotation so the type checker can point to the right source location in advisory error messages.
-
-The `stage` field controls how the document is evaluated. `Stage::Type` documents are evaluated during type inference to populate the type-stage environment with type aliases and class declarations. `Stage::Runtime` documents (the default when `stage` is `None`) are evaluated in the main pipeline. The parser accepts `--- stage: type` as a section-header pragma; `type` is the only valid stage name. See `doc/09-documents.md` for section-header pragma syntax.
-
-The `parse()` function returns `Result<ParseOutput, ParseError>`.
-
-The `parse_expression(input)` function is a test and convenience helper that parses the input and returns the first expression of the first document. Multi-expression inputs discard all but the first expression; multi-document inputs discard all but the first document (`---`-separated multi-doc input returns only the first document). No scope chain is built — bindings from earlier expressions are not preserved. This is parse-level convenience, not an evaluator.
-
-### Surface AST (runtime-v2 native output)
-
-The parser natively constructs a **Surface AST** composed of three key types:
-
-```rust
-/// Top-level container for a complete parsed file
-struct SurfaceProgram {
-    documents: Vec<Spanned<SurfaceDocument>>,
+/// Document items: either expressions or declarations
+enum SurfaceItem {
+    Expr(Arc<SurfaceNode>),
+    Decl(Spanned<SurfaceDeclaration>),
 }
 
 /// Wrapper node with source span (Arc for shared ownership)
@@ -73,8 +59,29 @@ struct SurfaceNode {
     span: Span,
 }
 
-/// Expression enum — same variants as Expr (Int, Float, VarRef, Pipe, etc.)
-enum SurfaceExpression { /* ... */ }
+/// Expression enum — literals, references, calls, functions, etc.
+enum SurfaceExpression {
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+    VarRef { name: String, escaped: bool },
+    Dict(Vec<SurfaceEntry>),
+    Call { func: Arc<SurfaceNode>, args: Vec<Arc<SurfaceNode>>, named_args: Vec<SurfaceNamedArg>, implied: bool },
+    Fn { params: Vec<SurfaceParam>, body: Arc<SurfaceNode>, return_ann: Option<Annotation>, desugared: bool },
+    DotAccess { expr: Arc<SurfaceNode>, field: String },
+    Pipe { lhs: Arc<SurfaceNode>, rhs: Arc<SurfaceNode> },
+    // ... other variants (Sequential, Match, TypeAssert, Quote, Unquote, etc.)
+}
+
+/// Declarations (TypeAlias, ClassDecl, InstanceDecl, DefMacro, etc.)
+enum SurfaceDeclaration {
+    TypeAlias { params: Vec<String>, body: Annotation },
+    ClassDecl { /* ... */ },
+    InstanceDecl { /* ... */ },
+    DefMacro { /* ... */ },
+    // ... other variants
+}
 ```
 
 The Surface AST is the parser's native output and the authoritative representation before lowering. Key characteristics:
@@ -82,11 +89,20 @@ The Surface AST is the parser's native output and the authoritative representati
 - **Arc-wrapped nodes:** `Arc<SurfaceNode>` enables shared ownership across multiple references without copying the AST.
 - **Side-table design:** Variable resolution (`ResolutionTable`) and type annotations (`TypeAnnotationTable`) are stored separately, keyed by `NodeId` (derived from `Arc` raw pointer). This replaces the old `RefCell<Option<...>>` in-node mutation pattern.
 - **Pipe is preserved:** `SurfaceExpression::Pipe` remains in the Surface AST. The **lowering pass** (`src/lower.rs`) eliminates Pipe by rewriting it to `Call` before evaluation (see §Pipe Desugaring below).
+- **Expr/Decl separation:** Documents contain `SurfaceItem` entries, which are either expressions (`SurfaceItem::Expr`) or declarations (`SurfaceItem::Decl`). This separates top-level declarations (TypeAlias, ClassDecl, etc.) from expressions at the type level.
 - **ParseOutput returns SurfaceProgram:** `parse()` returns `ParseOutput { program: SurfaceProgram, ... }`. The `.program` field is the native Surface AST.
 
-The old `Expr` type (with `Rc<Spanned<Expr>>` and `RefCell` mutation) is deprecated. All new code should use the Surface AST types.
+The `parse()` function returns `Result<ParseOutput, ParseError>`.
 
-### Core Expression Type
+The `parse_expression(input)` function is a test and convenience helper that parses the input and returns the first expression of the first document. Multi-expression inputs discard all but the first expression; multi-document inputs discard all but the first document (`---`-separated multi-doc input returns only the first document). No scope chain is built — bindings from earlier expressions are not preserved. This is parse-level convenience, not an evaluator.
+
+### Core AST (Evaluation)
+
+After the Surface AST is resolved and type-checked, the **lowering pass** (`src/lower.rs`) transforms `SurfaceNode` into `CoreExpr` for evaluation. The Core AST is simpler than the Surface AST:
+
+- **Pipe eliminated:** `SurfaceExpression::Pipe` is rewritten to nested `Call` expressions.
+- **Resolution baked in:** Variable references are resolved to de Bruijn indices or environment lookups.
+- **Type assertions removed:** Type checking happens before lowering; runtime evaluation uses `CoreExpr` without type information.
 
 ```rust
 /// Source location
@@ -232,7 +248,7 @@ enum Annotation {
 | `VarRef { name: "x", .. }` | `x` or `$x` | Variable reference (bare identifier or escaped); `resolved` cache populated by the variable resolution pass |
 | `DotAccess { field: DotKey::Ident("b"), .. }` | `a.b` | String key access: looks up `Key::String("b")` on `a` |
 | `DotAccess { field: DotKey::Int(0), .. }` | `a.0` | Integer key access: looks up `Key::Int(0)` on `a` (auto-indexed dicts) |
-| `Pipe { lhs, rhs }` | `a \| f` | **Pipe is present in the Surface AST and eliminated by the lowering pass (`src/lower.rs`) before evaluation. The evaluator never sees `Expr::Pipe`.** Lowering rewrites `Pipe { lhs, rhs }` to `Call { func: rhs, args: [lhs], implied: true }` (equivalent to `f(a)` for `a \| f`). The type checker operates on the Surface AST and handles Pipe directly. |
+| `Pipe { lhs, rhs }` | `a \| f` | **Pipe is present in the Surface AST and eliminated by the lowering pass (`src/lower.rs`) before evaluation. The evaluator never sees `SurfaceExpression::Pipe`.** Lowering rewrites `Pipe { lhs, rhs }` to `CoreExpr::Call { func: rhs, args: [lhs], ... }` (equivalent to `f(a)` for `a \| f`). The type checker operates on the Surface AST and handles Pipe directly. |
 | `Sequential(exprs)` | Multi-expression fn body | Sequential expressions with let\* semantics; each expression's result dict extends environment for subsequent expressions |
 | `Dict(entries)` | `["a" "b" "c"]` or `[k: v]` | Dict/list literal |
 | `Call` | `[f x]` or `[call f x]` | Function application (implied or explicit) |
@@ -423,7 +439,7 @@ When no `type:` key is present, the bracket is interpreted as a type expression 
 
 ## Desugaring Rules
 
-**Pre-typecheck/eval transformations:** All desugaring rules in this section are applied before type checking and evaluation. The desugar pass (`src/desugar.rs`) runs immediately after parsing, producing a transformed AST that the type checker and evaluator consume. The type checker and evaluator never see the original sugared forms (e.g., `Expr::Pipe` is always desugared to `Expr::Call` before type checking begins).
+**Pre-typecheck/eval transformations:** Most desugaring rules in this section are applied in the desugar pass (`src/desugar.rs`) which runs immediately after parsing. **Exception:** Pipe (`|`) is NOT eliminated by the desugar pass — it remains in the Surface AST and is handled by the type checker. Pipe is eliminated later by the **lowering pass** (`src/lower.rs`) after type checking but before evaluation.
 
 ### Access Chains
 
@@ -436,21 +452,21 @@ Dot notation and bracket notation desugar to nested access nodes:
 | `[get 5 data]` | `Call(VarRef("get"), [Int(5), VarRef("data")])` — use `get` builtin for dynamic key access |
 | `a.b.0.c` | `DotAccess(DotAccess(DotAccess(VarRef("a"), Ident("b")), Int(0)), Ident("c"))` |
 
-### Pipe Desugaring
+### Pipe Lowering
 
-`|` is a desugar-only infix operator. The parser emits `Expr::Pipe { lhs, rhs }` and the desugar pass (`src/desugar.rs`) immediately rewrites it to `Expr::Call` before the resolution and evaluation passes run. The evaluator never sees `Expr::Pipe`; the `Expr::Pipe` arm in `src/resolve.rs` is an `unreachable!` guard.
+`|` is preserved in the Surface AST and eliminated by the **lowering pass** (`src/lower.rs`). The parser emits `SurfaceExpression::Pipe { lhs, rhs }`, which remains intact through desugar, resolve, and typecheck. The lowering pass (which runs after type checking but before evaluation) rewrites Pipe to `CoreExpr::Call` before the evaluator runs. The evaluator never sees Pipe.
 
-Three desugar rules, applied in priority order:
+Three lowering rules, applied in priority order:
 
-| Surface syntax | Desugar rule | Call form |
-|---------------|-------------|-----------|
+| Surface syntax | Lowering rule | Call form |
+|---------------|--------------|-----------|
 | `$_ \| f` | WRAP-PIPE: `lhs` is `$_` (implicit arg) | `[fn [_] [f _]]` — wraps the pipeline in a lambda |
 | `a \| [f ...]` | CALL-EXTEND: `rhs` is an explicit `Call` | `[f ... a]` — prepends `lhs` as first arg |
 | `a \| f` | CALL-WRAP: `rhs` is anything else (VarRef, DotAccess, …) | `[f a]` — wraps `lhs` as the single arg |
 
-Left-associativity: `a | f | g` parses as `(a | f) | g`, which desugars to `[g [f a]]`.
+Left-associativity: `a | f | g` parses as `(a | f) | g`, which lowers to `[g [f a]]`.
 
-**Note:** Pipe is eliminated in the desugar pass before type checking and variable resolution run. Any tooling pass that may see `Expr::Pipe` must either run before desugar or handle it explicitly as unreachable.
+**Note:** Pipe is eliminated in the lowering pass AFTER type checking. The type checker must handle `SurfaceExpression::Pipe` explicitly.
 
 ---
 
