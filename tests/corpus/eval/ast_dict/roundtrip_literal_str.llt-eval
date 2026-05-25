@@ -1,0 +1,5 @@
+# dict_to_surface_node_inner roundtrip: Literal(str) variant
+# [quote "hello"] produces Value::Expression(Literal str node); eval re-evaluates it.
+[eval [seq [quote "hello"] []]]
+=== out
+String("hello")

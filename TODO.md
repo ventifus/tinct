@@ -1181,7 +1181,40 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 ### test-coverage-new: Add missing test coverage [Major]
 
-- [ ] Add corpus test for `dict_to_surface_node_inner` roundtrip — no dedicated tests exist; variants like Fn, DotAccess, TypeAssert, Quote/Unquote, Match, CaseArm have zero roundtrip coverage [Major — test-crafter]
+- [x] Add corpus tests for `[eval [seq [quote EXPR] []]]` roundtrip — 5 tests in `tests/corpus/eval/ast_dict/`: Literal(int), Literal(str), Call, TypeAssert, Match. Uses `[seq ...]` form (correct Seq for builtin_eval), not `[0: ...]` dict form. Note: the `eval+quote` path does NOT call `dict_to_surface_node_inner` directly (SurfaceNode is used as-is via `Thunk::new_surface`); the macro-based path that DOES call `dict_to_surface_node_inner` is blocked by the runtime-v2 macro regression below. [Major — test-crafter]
 - [x] Added `group_by_string_keys.llt-eval` corpus test — `[group-by [fn [x] x] ["a" "b" "a"]]` string-keyed bucket accumulation
 - [x] Added `test_literal_only_dict_fast_path` unit test in `src/eval_dict.rs` — verifies `[a: 1 b: 2]` evaluates via no-dict_env fast path
+
+### macro-runtime-v2-regression: Fix macro system broken by runtime-v2 merge [Critical]
+
+After the runtime-v2 merge, the macro system is broken in two ways:
+
+**1. `expand_macro_call_surface` calls `dict_to_surface_node(Value::Expression(...))` which fails.**
+The macro body (e.g. `[quote [if [unquote cond] ...]]`) evaluates to `Value::Expression(SurfaceNode)`.
+`expand_macro_call_surface` then calls `dict_to_surface_node(&deep_result)` but `dict_to_surface_node_inner`
+only handles `Value::Variant` and `Value::Dict` — not `Value::Expression`. Fix: add a `Value::Expression(node) => Ok(Arc::clone(node))` short-circuit in `dict_to_surface_node` before calling `dict_to_surface_node_inner`.
+
+**2. `macros.llt` uses `tag-of` expecting `Value::Variant` AST nodes but gets `Value::Dict`.**
+The `[do]` macro (`stdlib/macros.llt`) uses `[tag-of expr]` to dispatch on AST node type.
+Pre-runtime-v2, `[quote expr]` produced `Value::Dict` with a `"type":` field. Post-runtime-v2,
+`[quote expr]` produces `Value::Expression(SurfaceNode)`, NOT `Value::Dict`. `tag-of` on a
+`Value::Expression` returns the string tag via `surface_expr_tag`, not via the dict `"type":` field.
+Fix: update `macros.llt` to handle `Value::Expression` (use `type-of` or `surface_expr_tag` dispatch).
+
+**Failing tests:** `test_do_macro_single_step`, `test_do_macro_one_binding_step`, `test_do_macro_three_steps`,
+`test_do_macro_err_propagation`, `test_do_macro_inferred_form_binding`, `test_do_macro_no_steps_calls_pure`
+— all fail with `[E010] type mismatch: expected Variant, got Dict` deep in `macros.llt`.
+
+**Stale corpus tests** (also from runtime-v2 merge):
+- `tests/corpus/eval/quote_literal.llt-eval` — expects `Variant(Literal, Dict({...}))` but `[quote 42]` now returns `Value::Expression`; display would be `Expression(literal)`. Update or delete.
+- `tests/corpus/eval/quote_type_of.llt-eval` — expects `String("Dict")` for `[type-of [quote x]]` but `type-of` on `Value::Expression` returns `"Expression"`. Update or delete.
+- `tests/corpus/eval/builtins/eval_basic.llt-eval` — `[eval [0: [quote 42]]]` uses a `Value::Dict` arg; `builtin_eval` requires `Value::Seq`. Should be `[eval [seq [quote 42] []]]`. Update.
+- `tests/corpus/eval/builtins/eval_with_env.llt-eval` — same `[0: ...]` issue. Update.
+- `tests/corpus/eval/builtins/eval_types_basic.llt-eval` — same `[0: ...]` issue. Update.
+
+- [ ] Fix `dict_to_surface_node` to short-circuit on `Value::Expression(node)` — return `Ok(Arc::clone(node))` before calling `dict_to_surface_node_inner` (`src/ast_dict.rs:dict_to_surface_node`)
+- [ ] Update `stdlib/macros.llt` to handle `Value::Expression` nodes from `[quote ...]` — `tag-of` path needs to handle the new expression type
+- [ ] Update stale corpus tests: `quote_literal.llt-eval`, `quote_type_of.llt-eval`, `eval_basic.llt-eval`, `eval_with_env.llt-eval`, `eval_types_basic.llt-eval`
+- [ ] Re-run `test_do_macro_*` unit tests — all should pass after fixes
+- [ ] Add macro-roundtrip corpus tests in `tests/corpus/eval/ast_dict/` that exercise `dict_to_surface_node_inner` via macros (currently blocked by this regression)
 

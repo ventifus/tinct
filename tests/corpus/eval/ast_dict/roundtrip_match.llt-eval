@@ -1,0 +1,8 @@
+# dict_to_surface_node_inner roundtrip: Match variant (recently added)
+# [quote [match ...]] produces a Match node; eval re-evaluates it.
+[eval [seq [quote [match 1
+    0: "zero"
+    1: "one"
+    _: "other"]] []]]
+=== out
+String("one")
