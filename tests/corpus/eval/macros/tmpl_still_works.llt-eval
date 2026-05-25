@@ -1,0 +1,9 @@
+# tmpl macro: verify string interpolation still works after Expression migration
+# The tmpl macro in stdlib/macros.llt now uses builtin-variant to construct AST nodes
+# This test ensures the macro expansion boundary works correctly with Value::Expression
+[
+  name: "world"
+  greeting: i"hello $name"
+]
+=== out
+Dict({"name": String("world"), "greeting": String("hello world")})

@@ -79,31 +79,6 @@ pub struct CommentMaps<'a> {
 //          `param_to_thunk_id`, `dict_to_ast`, `dict_to_file`, `dict_to_surface_program`
 //          deleted — zero production callers.
 
-/// Convert a SurfaceNode to a dict representation.
-///
-/// Phase 2 native path: walks `SurfaceExpression` directly without going through
-/// `ast_convert`. All `SurfaceExpression` variants are handled natively.
-pub fn surface_node_to_dict(
-    node: &Arc<SurfaceNode>,
-    opts: &AstToDictOpts,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
-    surface_node_to_dict_inner(node, opts, ctx)
-}
-
-/// Walk a SurfaceNode natively, producing the canonical dict schema.
-///
-/// Handles all `SurfaceExpression` variants directly, without going through `ast_convert`.
-/// `SurfaceDeclaration` variants are handled separately via `surface_decl_to_thunk_id`.
-fn surface_node_to_dict_inner(
-    node: &Arc<SurfaceNode>,
-    opts: &AstToDictOpts,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
-    let id = surface_node_to_thunk_id(node, opts, ctx)?;
-    Ok(ctx.thunk_arena.lock().unwrap().get(id).clone())
-}
-
 /// Convert a SurfaceNode to a ThunkId containing its dict representation.
 ///
 /// Handles all `SurfaceExpression` variants. Schema (Variant tags, key names) is the
@@ -2132,7 +2107,6 @@ fn annotation_to_thunk_id(
 
                     // Annotation entry values are strings/ints for simple cases,
                     // or full AST dicts for compound values like [a: Numeric] or Seq@Int.
-                    // TODO(rv2-migrate-annotation Phase 7): use surface_node_to_thunk_id natively.
                     let value_id = match &e.node.value.expr {
                         crate::ast::SurfaceExpression::Str(s) => ctx.alloc_thunk(Arc::new(
                             Thunk::new_materialized(string_val(s), e.node.value.span),
@@ -2140,11 +2114,9 @@ fn annotation_to_thunk_id(
                         crate::ast::SurfaceExpression::Int(n) => ctx.alloc_thunk(Arc::new(
                             Thunk::new_materialized(Value::Int(*n), e.node.value.span),
                         )),
-                        _ => ctx.alloc_thunk(surface_node_to_dict(
-                            &e.node.value,
-                            &AstToDictOpts::default(),
-                            ctx,
-                        )?),
+                        _ => {
+                            surface_node_to_thunk_id(&e.node.value, &AstToDictOpts::default(), ctx)?
+                        }
                     };
 
                     entry_dict.insert(Key::String("value".into()), value_id);
@@ -2493,61 +2465,6 @@ mod tests {
             }
             other => panic!("expected Variant, got {:?}", other),
         }
-    }
-
-    #[test]
-    fn test_surface_node_to_dict_int() {
-        // Replaces the old ast_to_dict_expr test (deleted in rv2-e3b; ast_to_dict_expr removed).
-        use crate::ast::{SurfaceExpression, SurfaceNode};
-        let node = Arc::new(SurfaceNode {
-            expr: SurfaceExpression::Int(42),
-            span: crate::ast::Span::origin(),
-        });
-        let opts = AstToDictOpts::default();
-        let ctx = test_ctx();
-        let thunk = surface_node_to_dict(&node, &opts, &ctx).unwrap();
-
-        let outer = thunk
-            .try_get_materialized()
-            .expect("thunk not materialized");
-        let (tag, map) = peel_variant(outer, &ctx);
-        assert_eq!(tag, "Literal");
-
-        // Check kind field
-        let kind_id = map.get(&Key::String("kind".into())).unwrap();
-        let kind_thunk = ctx.get_thunk(*kind_id);
-        assert_eq!(kind_thunk.try_get_materialized(), Some(string_val("int")));
-
-        // Check value field
-        let value_id = map.get(&Key::String("value".into())).unwrap();
-        let value_thunk = ctx.get_thunk(*value_id);
-        assert_eq!(value_thunk.try_get_materialized(), Some(Value::Int(42)));
-    }
-
-    #[test]
-    fn test_surface_node_to_dict_var() {
-        // Replaces the old ast_to_dict_expr test (deleted in rv2-e3b; ast_to_dict_expr removed).
-        use crate::ast::{SurfaceExpression, SurfaceNode};
-        let node = Arc::new(SurfaceNode {
-            expr: SurfaceExpression::VarRef {
-                name: "x".to_string(),
-                escaped: false,
-            },
-            span: crate::ast::Span::origin(),
-        });
-        let opts = AstToDictOpts::default();
-        let ctx = test_ctx();
-        let thunk = surface_node_to_dict(&node, &opts, &ctx).unwrap();
-
-        let outer = thunk
-            .try_get_materialized()
-            .expect("thunk not materialized");
-        let (tag, map) = peel_variant(outer, &ctx);
-        assert_eq!(tag, "VarRef");
-
-        let name_id = map.get(&Key::String("name".into())).unwrap();
-        let name_thunk = ctx.get_thunk(*name_id);
-        assert_eq!(name_thunk.try_get_materialized(), Some(string_val("x")));
     }
 
     #[test]

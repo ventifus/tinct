@@ -249,36 +249,29 @@ do-empty-dict-node: [fn [let]
 
 # Check if a step AST is a binding step (a dict literal with at least one entry).
 # A binding step was written as [name: expr] in the do-block.
-# Dual-dispatch: works with both old Variant("Dict") and new Value::Expression(Dict).
 do-is-binding: [fn [let step]
   [= [tag-of step] "Dict"]]
 
 # Check if the first arg looks like an inferred-form step rather than an explicit monad.
-# Explicit monad args are Var (new schema) / VarRef (old schema) or DotAccess.
+# Explicit monad args are Var or DotAccess.
 # Inferred form: the first arg is a binding dict or any other expression.
 # Returns true if this is the inferred form (no explicit monad given).
 do-is-inferred-form: [fn [let first-arg]
-  # tag-of returns "Var" for Value::Expression(VarRef), "VarRef" for old Variant
-  [if [or [= [tag-of first-arg] "Var"] [= [tag-of first-arg] "VarRef"]]
+  [if [= [tag-of first-arg] "Var"]
     false
     [if [= [tag-of first-arg] "DotAccess"]
       false
       true]]]
 
 # Extract the binding name from a binding step.
-# Works with both old Variant("Dict") and new Value::Expression(Dict).
 # For Value::Expression(Dict): step.entries returns {0: Entry{key, value, span}}.
-# The key entry is a Var or StrLiteral whose "name"/"value" field is the binding name.
-# For old Variant: step.entries[0].key is Variant("Literal", {value: name}).
+# The key entry is a Var expression whose "name" field is the binding name.
 do-binding-name: [fn [let step]
   [entry-key: [get "key" [get 0 [get "entries" step]]]]
-  [if [= [tag-of entry-key] "Literal"]
-    [get "value" entry-key]
-    [get "name" entry-key]]]
+  [get "name" entry-key]]
 
 # Extract the bound expression AST from a binding step.
 # For Value::Expression(Dict): step.entries[0].value is the value expr.
-# For old Variant: same field access path.
 do-binding-expr: [fn [let step]
   [get "value" [get 0 [get "entries" step]]]]
 
@@ -404,13 +397,13 @@ tmpl: [fn [let template ...parts]
 # monad dict. The dot-access (m.bind, m.pure) is generated as an AST node and
 # resolved at evaluation time. This avoids any arena-crossing ThunkId issues.
 do: [fn [let first ...rest]
-  # first = first AST arg (Variant node)
-  # rest = Seq of remaining AST args (Variant nodes)
+  # first = first AST arg (Expression node)
+  # rest = Seq of remaining AST args (Expression nodes)
   # Convert rest Seq to Dict for easier processing
   [rest-dict: [collect rest]]
   # Check if first is an inferred-form step (dict binding or other non-monad expression)
   # vs an explicit monad argument (var reference).
-  # Explicit monad: [tag-of first] == "VarRef" or "DotAccess"
+  # Explicit monad: [tag-of first] == "Var" or "DotAccess"
   # Inferred form: [tag-of first] == "Dict" (binding step) or anything else
   [if [do-is-inferred-form first]
     # Inferred [do] form: ALL args are steps (prepend first to rest-dict).

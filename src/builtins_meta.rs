@@ -1145,6 +1145,12 @@ pub(crate) fn builtin_tag_of(
 /// Forms:
 /// - `[variant "Tag"]` — unit variant (no payload)
 /// - `[variant "Tag" payload]` — variant with payload (stored as ThunkId)
+///
+/// Special behavior for AST variant names:
+/// When the tag is a known AST variant name (VarRef, Literal, Call, Dict, etc.),
+/// the payload dict is converted to a Value::Expression(SurfaceNode) using
+/// dict_to_surface_node. This enables the macro call convention migration from
+/// Dict-encoded AST to native Value::Expression.
 pub(crate) fn builtin_variant(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -1196,15 +1202,76 @@ pub(crate) fn builtin_variant(
                         end,
                     } => {
                         let tag = &source[start..end];
-                        // Store the payload as a ThunkId (lazy, won't be forced until accessed)
-                        let payload_id = ctx.alloc_thunk(Arc::clone(payload_thunk));
-                        ok_val(
-                            Value::Variant {
+
+                        // Check if this is a known AST variant name
+                        let is_ast_variant = matches!(
+                            tag,
+                            "VarRef"
+                                | "Literal"
+                                | "Call"
+                                | "Dict"
+                                | "LetDecl"
+                                | "Fn"
+                                | "Sequential"
+                                | "Annotated"
+                                | "DotAccess"
+                                | "TypeAssert"
+                                | "Match"
+                                | "Quote"
+                                | "Unquote"
+                                | "UnquoteSplice"
+                                | "Rest"
+                                | "Placeholder"
+                                | "Pipe"
+                                | "AstError"
+                                | "PatternDecl"
+                                | "TypeApp"
+                                | "CaseArm"
+                        );
+
+                        if is_ast_variant {
+                            // Convert payload dict to SurfaceNode using dict_to_surface_node
+                            let payload_val =
+                                materialize(payload_thunk, Some(&call_span), &ctx).await?;
+                            // Wrap as Variant so dict_to_surface_node can extract the tag
+                            let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                payload_val,
+                                call_span,
+                            )));
+                            let variant_val = Value::Variant {
                                 tag: tag.to_string(),
                                 payload: Some(payload_id),
-                            },
-                            call_span,
-                        )
+                            };
+                            let surface_node =
+                                crate::ast_dict::dict_to_surface_node(&variant_val, &ctx).map_err(
+                                    |e| {
+                                        Box::new(EvalError::user_error(
+                                            format!(
+                                        "variant '{}': failed to convert payload to AST node{}: {}",
+                                        tag,
+                                        if e.field_path.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(" (at field {})", e.field_path.join("."))
+                                        },
+                                        e.message
+                                    ),
+                                            call_span,
+                                        ))
+                                    },
+                                )?;
+                            ok_val(Value::Expression(surface_node), call_span)
+                        } else {
+                            // Non-AST variant: store the payload as a ThunkId (lazy, won't be forced until accessed)
+                            let payload_id = ctx.alloc_thunk(Arc::clone(payload_thunk));
+                            ok_val(
+                                Value::Variant {
+                                    tag: tag.to_string(),
+                                    payload: Some(payload_id),
+                                },
+                                call_span,
+                            )
+                        }
                     }
                     _ => Err(Box::new(EvalError::type_mismatch(
                         "String",

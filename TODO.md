@@ -170,34 +170,19 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 - [x] `just build` passes [commit 9370184]
 
 
-### rv2-macro-native-expression: Migrate macro call convention to Value::Expression
+### rv2-delete-ast-dict: Delete remaining ast_dict.rs functions and the file itself
 
-**No new design needed** — answer implied by runtime-v2 + macros-v2 combined. macros-v2 defined the macro API using Dict-encoded AST; runtime-v2 specified `Value::Expression` as the native AST type.
+**Deferred from rv2-macro-native-expression (2026-05-25).** Two functions remain:
+- `dict_to_surface_node` — still called by builtins_meta.rs (builtin_variant), expand.rs (fallback path), eval.rs (value_to_surface_node)
+- `surface_program_to_dict` — still called by formatter.rs (format_source_tinct_with_dir)
 
-**The key insight:** Change `builtin-variant` for known AST type names (`VarRef`, `Literal`, `Call`, `Fn`, `Dict`, etc.) to return `Value::Expression(Arc<SurfaceNode>)` instead of `Value::Variant`. macros.llt code like `[builtin-variant "VarRef" [name: var-name]]` stays **unchanged** — only what the builtin produces changes. No structural macro redesign needed. `dict_to_surface_node` already passes through `Value::Expression` (macro-runtime-v2-regression fix). The `tag-of` dual-dispatch in macros.llt already handles Expression input.
-
-**After this sprint:**
-- `builtin-variant` for AST type names → `Value::Expression` (not `Value::Variant`)
-- `surface_node_to_dict`, `dict_to_surface_node` → deleted from `src/ast_dict.rs`
-- `src/ast_dict.rs` → deleted entirely
-- `deep_materialize` calls in expand.rs (lines 1184, 1218, 1298) → eliminated
-- `tag-of` dual-dispatch shims in macros.llt → removed (Expression only)
-- `all_thunks_materialized` debug assert in expand.rs:1304 → removed
-
-- [ ] Change `builtin-variant` to return `Value::Expression(SurfaceNode)` for known AST variant names — VarRef, Literal, Call, Fn, Dict, Sequential, DotAccess, TypeAssert, Match, Quote, Unquote, UnquoteSplice, Annotated, Rest, etc. (`src/builtins_meta.rs`)
-- [ ] Change `expand_macro_call` to pass args as `Value::Expression` thunks directly (remove `surface_node_to_dict`) (`src/expand.rs:1173`)
-- [ ] Change `expand_macro_call` to accept `Value::Expression` output directly (remove `dict_to_surface_node`) (`src/expand.rs:1310`)
-- [ ] Remove the three `deep_materialize` calls in expand.rs (`src/expand.rs:1184,1218,1298`)
-- [ ] Remove `tag-of` dual-dispatch shims from `macros.llt` — Expression-only input. Specific sites:
-  - `do-is-inferred-form` (macros.llt:260-266): remove `"VarRef"` arm, keep only `"Var"` (Expression tag for VarRef nodes)
-  - `do-binding-name` (macros.llt:273-277): remove `"Literal"` arm (old Variant schema key), keep only `"name"` field access
-  - `do-is-binding` (macros.llt:252-254): verify `"Dict"` tag still correct for Expression; remove backwards-compat comment
-  - (`stdlib/macros.llt`)
-- [ ] Delete `surface_node_to_dict`, `dict_to_surface_node` from `src/ast_dict.rs`
-- [ ] Delete `src/ast_dict.rs` entirely — no remaining functions
-- [ ] Remove `deep_materialize` import from `src/expand.rs`
-- [ ] Remove `all_thunks_materialized` debug assert in expand.rs:1304
-- [ ] Add corpus tests: macro receiving Expression arg, macro producing Expression, tmpl interpolation still correct
+- [ ] Migrate `builtin_variant` to construct SurfaceNode directly instead of calling dict_to_surface_node (`src/builtins_meta.rs`)
+- [ ] Remove `dict_to_surface_node` fallback path from `expand_macro_call` — Expression-only (`src/expand.rs`)
+- [ ] Migrate `value_to_surface_node` in eval.rs to not need dict_to_surface_node (`src/eval.rs`)
+- [ ] Delete `dict_to_surface_node` from `src/ast_dict.rs`
+- [ ] Migrate `format_source_tinct_with_dir` to pass AST to formatter without dict conversion (`src/formatter.rs`)
+- [ ] Delete `surface_program_to_dict` from `src/ast_dict.rs`
+- [ ] Delete `src/ast_dict.rs` entirely
 
 ### rv2-deep-materialize-delete: Delete `deep_materialize` after output and macro migration
 

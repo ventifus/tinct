@@ -1,0 +1,15 @@
+# builtin-variant returns Expression (not Variant) for known AST variant names
+# After runtime-v2 merge, macros work with Value::Expression directly
+[
+  # Create a VarRef AST node using builtin-variant
+  node: [builtin-variant "VarRef" [name: "x"]]
+
+  # Verify it's an Expression value (not a Variant)
+  node-type: [type-of node]
+
+  # Verify tag-of works on Expression values
+  # VarRef nodes have the tag "Var" (from surface_expr_tag)
+  node-tag: [tag-of node]
+]
+=== out
+Dict({"node": Expression(VarRef { name: "x", escaped: false, resolved: None, span: Span(0:0-0:0) }), "node-type": String("Expression"), "node-tag": String("Var")})

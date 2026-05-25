@@ -1,0 +1,8 @@
+# Macro returns wrong type: macro transformers must return Expression or Dict.
+# This macro returns an Int, which is invalid.
+[macro bad-macro [let arg]
+  42]
+
+[bad-macro "hello"]
+=== error
+macro 'bad-macro' must return Expression or Dict, got Int

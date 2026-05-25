@@ -467,7 +467,7 @@ Left-associativity: `a | f | g` parses as `(a | f) | g`, which lowers to `[g [f 
 
 ## AST Dict Schema
 
-`surface_node_to_dict` (`src/ast_dict.rs`) serializes the Surface AST to tinct dicts. `dict_to_surface_node` converts dicts back to `Arc<SurfaceNode>`. These two functions are the shared primitive for quasiquoting (`[quote]`), macros (`[defmacro]`), and the tinct-hosted formatter. The canonical schema is defined in `doc/feature/ast-schema.md`.
+`surface_program_to_dict` (`src/ast_dict.rs`) serializes the Surface AST to tinct dicts. `dict_to_surface_node` converts dicts back to `Arc<SurfaceNode>`. These functions are the shared primitive for quasiquoting (`[quote]`), macros (`[defmacro]`), and the tinct-hosted formatter. The canonical schema is defined in `doc/feature/ast-schema.md`.
 
 ### Conventions
 
@@ -491,7 +491,7 @@ Left-associativity: `a | f | g` parses as `(a | f) | g`, which lowers to `[g [f 
 
 `dict_to_surface_node(v: &Value, ctx: &DictToAstContext) -> Result<Arc<SurfaceNode>, AstError>` validates and reconstructs a `SurfaceNode`:
 
-- Accepts both `Value::Variant` (new format from `surface_node_to_dict`) and legacy plain dicts with a `type:` string discriminator (backward compat)
+- Accepts both `Value::Variant` (new format from `surface_program_to_dict`) and legacy plain dicts with a `type:` string discriminator (backward compat)
 - Required fields must be present and of the correct shape
 - `span:` is optional — absent nodes get a synthetic zero span
 - Unknown fields are ignored (forward-compatible)

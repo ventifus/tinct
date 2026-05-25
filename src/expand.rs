@@ -6,9 +6,9 @@
 //! 1. Walk the AST top-down
 //! 2. Register `DefMacro` nodes by evaluating their transformer in a fresh context
 //! 3. Expand `Call` nodes if the function name matches a registered macro:
-//!    - Quote arguments via `surface_node_to_dict` (through surface bridge)
-//!    - Call the macro transformer with the quoted args
-//!    - Convert the result back to AST via `dict_to_surface_node` (through surface bridge)
+//!    - Pass arguments as `Value::Expression` (native AST nodes)
+//!    - Call the macro transformer with the Expression values
+//!    - Accept result as `Value::Expression` or convert from Dict (fallback)
 //!    - Replace the Call node with the expansion
 //!    - Re-expand the result (fixpoint)
 //! 4. Track in-progress expansions to detect infinite recursion
@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{Param, Span, Spanned, SurfaceEntry, SurfaceNamedArg, SurfaceNode};
-use crate::ast_dict::{dict_to_surface_node, surface_node_to_dict, AstToDictOpts};
+use crate::ast_dict::dict_to_surface_node;
 use crate::builtins;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{self, EvalContext};
@@ -1130,8 +1130,6 @@ fn expand_macro_call_surface(
         call_site_id,
     };
 
-    let opts = AstToDictOpts::default();
-
     // Validate annotated params (surface-native variant detection)
     let bindings: Vec<&Arc<SurfaceNode>> = match &params_pattern.expr {
         crate::ast::SurfaceExpression::LetDecl { bindings } => bindings.iter().collect(),
@@ -1167,28 +1165,11 @@ fn expand_macro_call_surface(
         }
     }
 
-    // Quote each SurfaceNode argument directly (no expr_to_surface_node needed)
+    // Pass each SurfaceNode argument as Value::Expression directly (no dict conversion needed)
     let mut positional_thunks: Vec<Arc<Thunk>> = Vec::with_capacity(args.len());
     for arg in args {
-        let dict_thunk = surface_node_to_dict(arg, &opts, ctx)?;
-        let arg_val = eval::materialize_sync(&dict_thunk, Some(&call_span), ctx).map_err(|e| {
-            EvalError::user_error(
-                format!(
-                    "macro '{}': failed to quote argument for expansion: {}",
-                    macro_name, e.kind
-                ),
-                call_span,
-            )
-        })?;
-        let deep_arg_val =
-            eval::deep_materialize(&arg_val, ctx, Some(&call_span)).map_err(|mut e| {
-                e.push_frame(
-                    format!("deep-materializing argument for macro '{}'", macro_name),
-                    call_span,
-                );
-                e
-            })?;
-        positional_thunks.push(Arc::new(Thunk::new_materialized(deep_arg_val, call_span)));
+        let arg_val = Value::Expression(Arc::clone(arg));
+        positional_thunks.push(Arc::new(Thunk::new_materialized(arg_val, call_span)));
     }
 
     // Thread inject: binding
@@ -1204,29 +1185,8 @@ fn expand_macro_call_surface(
             },
             span: call_span,
         });
-        let binding_thunk = surface_node_to_dict(&binding_node, &opts, ctx)?;
-        let binding_val =
-            eval::materialize_sync(&binding_thunk, Some(&call_span), ctx).map_err(|e| {
-                EvalError::user_error(
-                    format!(
-                        "macro '{}': failed to quote binding name '{}': {}",
-                        macro_name, binding_name, e.kind
-                    ),
-                    call_span,
-                )
-            })?;
-        let deep_binding_val = eval::deep_materialize(&binding_val, ctx, Some(&call_span))
-            .map_err(|mut e| {
-                e.push_frame(
-                    format!("deep-materializing binding arg for macro '{}'", macro_name),
-                    call_span,
-                );
-                e
-            })?;
-        positional_thunks.push(Arc::new(Thunk::new_materialized(
-            deep_binding_val,
-            call_span,
-        )));
+        let binding_val = Value::Expression(binding_node);
+        positional_thunks.push(Arc::new(Thunk::new_materialized(binding_val, call_span)));
     }
 
     // Materialize the transformer
@@ -1295,33 +1255,48 @@ fn expand_macro_call_surface(
         err
     })?;
 
-    let deep_result = eval::deep_materialize(&result_val, ctx, None).map_err(|mut e| {
-        e.push_frame(format!("in expansion of `{}`", macro_name), call_span);
-        e
-    })?;
+    // Check if result is already Value::Expression (new path) or needs conversion from Dict (fallback)
+    let mut expanded_node = match &result_val {
+        Value::Expression(node) => {
+            // New path: macro returned Expression directly, no conversion needed
+            Arc::clone(node)
+        }
+        Value::Dict(_) | Value::Variant { .. } => {
+            // Fallback path: macro returned Dict/Variant, need deep materialization + conversion
+            let deep_result = eval::deep_materialize(&result_val, ctx, None).map_err(|mut e| {
+                e.push_frame(format!("in expansion of `{}`", macro_name), call_span);
+                e
+            })?;
 
-    #[cfg(debug_assertions)]
-    debug_assert!(
-        all_thunks_materialized(&deep_result, ctx),
-        "macro expansion boundary violated: output contains lazy thunks"
-    );
-
-    // Convert result dict back to SurfaceNode (no bridge round-trip)
-    let mut expanded_node = dict_to_surface_node(&deep_result, ctx).map_err(|e| {
-        EvalError::user_error(
-            format!(
-                "macro '{}' returned invalid AST{}: {}",
-                macro_name,
-                if e.field_path.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (at field {})", e.field_path.join("."))
-                },
-                e.message
-            ),
-            call_span,
-        )
-    })?;
+            // Convert result dict back to SurfaceNode
+            dict_to_surface_node(&deep_result, ctx).map_err(|e| {
+                EvalError::user_error(
+                    format!(
+                        "macro '{}' returned invalid AST{}: {}",
+                        macro_name,
+                        if e.field_path.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" (at field {})", e.field_path.join("."))
+                        },
+                        e.message
+                    ),
+                    call_span,
+                )
+            })?
+        }
+        other => {
+            return Err(EvalError::user_error(
+                format!(
+                    "macro '{}' must return Expression or Dict, got {}",
+                    macro_name,
+                    other.type_name()
+                ),
+                call_span,
+            )
+            .into());
+        }
+    };
 
     if expanded_node.span == Span::origin() {
         expanded_node = Arc::new(SurfaceNode {
@@ -1818,101 +1793,4 @@ fn pre_scan_follow_libdir_include(
 
     // Pop the recursion guard
     PRESCAN_INCLUDE_STACK.with(|s| s.borrow_mut().remove(file_name));
-}
-
-/// Debug assertion helper: check that all thunks in a value tree are materialized.
-/// Used to validate the macro expansion boundary invariant: no lazy thunks cross
-/// from the stdlib arena to the expansion arena or vice versa.
-#[cfg(debug_assertions)]
-fn all_thunks_materialized(val: &Value, ctx: &Arc<EvalContext>) -> bool {
-    match val {
-        Value::Dict(map) => {
-            for thunk_id in map.values() {
-                let thunk = ctx.get_thunk(*thunk_id);
-                // Check if thunk is materialized
-                if let Some(inner_val) = thunk.try_get_materialized() {
-                    // Recursively check the materialized value
-                    if !all_thunks_materialized(&inner_val, ctx) {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-            true
-        }
-        Value::Seq {
-            head: head_id,
-            tail: tail_id,
-        } => {
-            // Check head
-            let head_thunk = ctx.get_thunk(*head_id);
-            if let Some(head_val) = head_thunk.try_get_materialized() {
-                if !all_thunks_materialized(&head_val, ctx) {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-            // Check tail
-            let tail_thunk = ctx.get_thunk(*tail_id);
-            if let Some(tail_val) = tail_thunk.try_get_materialized() {
-                if !all_thunks_materialized(&tail_val, ctx) {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-            true
-        }
-        Value::Proxy { handler } => {
-            // Check handler
-            let handler_thunk = ctx.get_thunk(*handler);
-            if let Some(handler_val) = handler_thunk.try_get_materialized() {
-                if !all_thunks_materialized(&handler_val, ctx) {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-            true
-        }
-        Value::Overlay(left, right) => {
-            // Check left
-            let left_thunk = ctx.get_thunk(*left);
-            if let Some(left_val) = left_thunk.try_get_materialized() {
-                if !all_thunks_materialized(&left_val, ctx) {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-            // Check right
-            let right_thunk = ctx.get_thunk(*right);
-            if let Some(right_val) = right_thunk.try_get_materialized() {
-                if !all_thunks_materialized(&right_val, ctx) {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-            true
-        }
-        Value::Variant {
-            payload: Some(id), ..
-        } => {
-            let thunk = ctx.get_thunk(*id);
-            if let Some(inner_val) = thunk.try_get_materialized() {
-                if !all_thunks_materialized(&inner_val, ctx) {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-            true
-        }
-        Value::Variant { payload: None, .. } => true,
-        // All other values (primitives, functions, capabilities, etc.) have no thunks to check
-        _ => true,
-    }
 }

@@ -10004,3 +10004,17 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 
 #### Backlog: json-pretty indentation gap (deferred)
 - [ ] Add indented pretty-print support to `-o json-pretty` (currently produces compact JSON identical to `-o json`)
+
+### rv2-macro-native-expression: Migrate macro call convention to Value::Expression
+
+- [x] Change `builtin-variant` to return `Value::Expression` for AST variant names — wraps payload as Variant, calls dict_to_surface_node
+- [x] Change `expand_macro_call` to pass args as `Value::Expression` directly — removed surface_node_to_dict
+- [x] Change `expand_macro_call` to accept `Value::Expression` output directly — Dict/Variant fallback preserved
+- [x] Remove 3 `deep_materialize` calls from expand.rs hot path — moved to fallback-only
+- [x] Remove dual-dispatch shims from macros.llt — VarRef/Literal arms removed
+- [x] Delete `surface_node_to_dict` from ast_dict.rs — zero external callers
+- [x] Remove `deep_materialize` import from expand.rs
+- [x] Remove `all_thunks_materialized` function from expand.rs (~100 lines)
+- [x] Add corpus tests: builtin_variant_returns_expression, tmpl_still_works, macro_returns_wrong_type
+- [ ] Delete `dict_to_surface_node` — DEFERRED: still used by builtins_meta.rs, expand.rs fallback, eval.rs
+- [ ] Delete `src/ast_dict.rs` entirely — DEFERRED: surface_program_to_dict used by formatter.rs
