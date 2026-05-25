@@ -1218,22 +1218,22 @@ Multiple doc files still reference the old Expr/File/Document pipeline or carry 
 
 `doc/08-evaluation.md` line 545: "No recursive depth limit in core evaluator. The iterative CEK machine uses a heap-allocated continuation stack, eliminating the `MAX_EVAL_DEPTH` bound." This is partially wrong: `CoreExpr::Sequential` and `CoreExpr::Match` still recurse on the Rust async call stack (see `cek-match-sequential-rust-stack` above). The claim holds for all other CoreExpr variants.
 
-- [ ] Add a caveat to doc/08 line 545: note that Sequential and Match pending full CEK coverage retain implicit Rust-stack depth sensitivity
-- **File:** `doc/08-evaluation.md` (~line 545)
+- [x] Added caveat at doc/08 line 545: Sequential and Match use async recursion, not CEK continuations (refs cek-match-sequential-rust-stack)
+- **File:** `doc/08-evaluation.md`
 
 ### doc-08-placeholder-panic-wrong: doc/08 says Placeholder panics; actually returns CircularDependency [Minor]
 
 `doc/08-evaluation.md` line 294: "materializing a `Placeholder` thunk panics." The actual behavior (value.rs:1628-1633, force_step:~line 498-515): Placeholder is indistinguishable from InProgress (`unevaluated=None, result not set`), so force_step returns `CircularDependency` error — no panic. The error is then cached via `cache_failure_once`.
 
-- [ ] Update doc/08 line 294: change "panics" to "returns a CircularDependency error (treated as InProgress by the runtime — see `is_in_progress()` in value.rs)"
-- **File:** `doc/08-evaluation.md` (~line 294)
+- [x] Updated doc/08 line 317: "panics" → "returns a CircularDependency error (runtime treats Placeholder as InProgress)"
+- **File:** `doc/08-evaluation.md`
 
 ### lower-rtc-drops-default-undocumented: core_expr_to_surface_expr drops `default:` from RuntimeTypeCheck [Nit]
 
 `src/lower.rs` lines 322-328: `CoreExpr::RuntimeTypeCheck` maps to `SurfaceExpression::TypeAssert` (annotation-only), silently dropping the `default` field. This means `[quote ...]` on a RuntimeTypeCheck expression loses the default. Low-impact (macro-synthesized nodes only) but undocumented.
 
-- [ ] Add a comment at lower.rs:322 noting the default field drop and the rationale (SurfaceExpression::TypeAssert has no `default:` field)
-- **File:** `src/lower.rs` (~line 322)
+- [x] Added comment at lower.rs:322 noting `default` field intentionally dropped (SurfaceExpression::TypeAssert has no `default` field)
+- **File:** `src/lower.rs`
 
 ### eval-dict-slot-idx-nit: slot_idx increments wastefully for literal-only dicts [Nit]
 

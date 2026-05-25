@@ -319,7 +319,9 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             annotation: annotation.clone(),
             expr: core_expr_to_surface_node(expr),
         },
-        // RuntimeTypeCheck has no SurfaceExpression equivalent; map to TypeAssert (annotation-only)
+        // RuntimeTypeCheck has no SurfaceExpression equivalent; map to TypeAssert (annotation-only).
+        // Note: the `default` field from RuntimeTypeCheck is intentionally dropped here because
+        // SurfaceExpression::TypeAssert has no `default` field (macro-synthesized nodes only).
         CoreExpr::RuntimeTypeCheck {
             annotation, expr, ..
         } => SurfaceExpression::TypeAssert {
