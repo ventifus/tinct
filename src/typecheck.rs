@@ -12,14 +12,8 @@ use crate::ast::{
     SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceProgram,
     TypeAnnotationTable,
 };
-// Expr: used by production inference helpers (check_expr, infer_fn, register_type_aliases,
-// resolve_monad_from_expr, etc.) that still operate on the Expr representation via bridge
-// conversion.
-// TODO(rv2-delete-old-ast): remove once all inference helpers are rewritten to walk
-// SurfaceExpression natively. Migrated: extract_narrowings, typecheck_case_arm, TypeAssert
-// bridge, infer_class_decl_from_surface, infer_instance_decl_from_surface,
-// extract_param_indices, extract_pattern_types, extract_binding_types.
-use crate::ast::Expr;
+// All production inference helpers now walk SurfaceExpression natively.
+// Expr is test-only: test stubs (check_expr, resolve_monad_from_expr_test) build Expr ASTs directly.
 use crate::coverage;
 use crate::types::{
     generalize, instantiate_at_level, instantiate_scheme, resolve_has_field, unify, InferState,
@@ -2163,8 +2157,7 @@ pub(crate) fn infer_surface_expr(
             body,
             ..
         } => {
-            // Convert SurfaceParam → Param (identical fields) and body SurfaceNode → Spanned<Expr>.
-            // infer_fn still takes &[Spanned<Param>] and &Spanned<Expr> — the conversion is cheap.
+            // Convert SurfaceParam → Param (identical fields).
             use crate::ast::Param;
             let params_converted: Vec<Spanned<Param>> = params
                 .iter()
@@ -2179,11 +2172,10 @@ pub(crate) fn infer_surface_expr(
                     )
                 })
                 .collect();
-            let body_expr = crate::ast_convert::surface_node_to_expr(body);
             infer_fn(
                 return_ann,
                 &params_converted,
-                &body_expr,
+                body,
                 env,
                 node.span,
                 state,
@@ -2933,8 +2925,8 @@ fn contains_unknown_or_top(ty: &Type) -> bool {
 
 /// This function is used at checking positions where the expected type is fully concrete
 /// (no type variables): CALL-MONO arguments, concrete return annotations (no TypeVars), and TypeAssert.
-fn check_expr(
-    expr: &Spanned<Expr>,
+fn check_surface_expr(
+    node: &Arc<SurfaceNode>,
     expected: &Type,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
@@ -2944,12 +2936,12 @@ fn check_expr(
     // propagate expected parameter types into the lambda.
     // Only applies when expected type is fully concrete after applying state.subst
     // (no unbound type variables) per doc/06 §[CHECK-FN].
-    if let Expr::Fn {
+    if let SurfaceExpression::Fn {
         return_ann,
         params,
         body,
         ..
-    } = &expr.node
+    } = &node.expr
     {
         if let Type::Function { .. } = expected {
             // Apply current substitution before checking for TypeVars — TypeVars that are
@@ -2998,7 +2990,7 @@ fn check_expr(
                                 expected_params.len(),
                                 params.len()
                             ),
-                            expr.span,
+                            node.span,
                         )]);
                     }
 
@@ -3098,7 +3090,7 @@ fn check_expr(
                                     vec![TypeError::type_mismatch(
                                         expected_ret,
                                         &declared,
-                                        expr.span,
+                                        node.span,
                                     )]
                                 })?;
                             } else {
@@ -3124,12 +3116,12 @@ fn check_expr(
                                     return Err(vec![TypeError::type_mismatch(
                                         &expected_ret_resolved,
                                         &declared_resolved,
-                                        expr.span,
+                                        node.span,
                                     )]);
                                 }
                             }
                             // Check body against declared return type
-                            check_expr(body, &declared, &fn_env, state, type_map)?;
+                            check_surface_expr(body, &declared, &fn_env, state, type_map)?;
                         }
                         None => {
                             // No return annotation: check body against expected return type.
@@ -3148,7 +3140,7 @@ fn check_expr(
                             } else {
                                 state.subst.apply(expected_ret)
                             };
-                            check_expr(body, &applied_ret, &fn_env, state, type_map)?;
+                            check_surface_expr(body, &applied_ret, &fn_env, state, type_map)?;
                         }
                     }
 
@@ -3159,7 +3151,7 @@ fn check_expr(
                     // bidirectional semantics for LSP hover: the lambda's type is determined
                     // by the checking context, not inferred from the body alone.
                     if let Some(ref mut map) = type_map {
-                        let key = (expr.span.start.offset, expr.span.end.offset);
+                        let key = (node.span.start.offset, node.span.end.offset);
                         map.insert(key, resolved_expected.clone());
                     }
 
@@ -3169,9 +3161,8 @@ fn check_expr(
         }
     }
 
-    // Default: synthesize then check (convert Expr to SurfaceNode for infer_surface_expr)
-    let surface_node = crate::ast_convert::expr_to_surface_node(expr);
-    let actual = infer_surface_expr(&surface_node, env, state, type_map)?;
+    // Default: synthesize then check via infer_surface_expr
+    let actual = infer_surface_expr(node, env, state, type_map)?;
     // Apply state.subst to both types before comparison — access-chain constraints
     // may have bound TypeVars in state.subst. Without substitution, the comparison
     // uses stale TypeVars.
@@ -3192,7 +3183,7 @@ fn check_expr(
         // This is the CALL-POLY path: the function is polymorphic, and we need to
         // instantiate type variables based on the argument types.
         let mut subst = std::mem::take(&mut state.subst);
-        let result = unify(&actual, &expected_resolved, &mut subst, state, expr.span);
+        let result = unify(&actual, &expected_resolved, &mut subst, state, node.span);
         state.subst = subst;
         result.map_err(|e| vec![e])
     } else {
@@ -3225,7 +3216,7 @@ fn check_expr(
             Err(vec![TypeError::type_mismatch(
                 &expected_final,
                 &actual_resolved,
-                expr.span,
+                node.span,
             )])
         } else {
             Ok(())
@@ -3298,16 +3289,14 @@ fn check_open(
 
     // Check arg[0]: DirCap
     {
-        let arg0_expr = crate::ast_convert::surface_node_to_expr(&args[0]);
-        if let Err(mut errs) = check_expr(&arg0_expr, &Type::DirCap, env, state, type_map) {
+        if let Err(mut errs) = check_surface_expr(&args[0], &Type::DirCap, env, state, type_map) {
             errors.append(&mut errs);
         }
     }
 
     // Check arg[1]: Str (path)
     {
-        let arg1_expr = crate::ast_convert::surface_node_to_expr(&args[1]);
-        if let Err(mut errs) = check_expr(&arg1_expr, &Type::Str, env, state, type_map) {
+        if let Err(mut errs) = check_surface_expr(&args[1], &Type::Str, env, state, type_map) {
             errors.append(&mut errs);
         }
     }
@@ -4108,9 +4097,7 @@ fn check_do_infer(
     // This handles nominal constructors like [Ok ...] and [Error ...] whose types
     // currently infer as Unknown.
     let resolved = if resolved.is_none() && !args.is_empty() {
-        // Convert to Expr for resolve_monad_from_expr (still takes &Spanned<Expr>)
-        let arg0_expr = crate::ast_convert::surface_node_to_expr(&args[0]);
-        resolve_monad_from_expr(&arg0_expr)
+        resolve_monad_from_surface(&args[0])
     } else {
         resolved
     };
@@ -4250,15 +4237,15 @@ fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<String> {
 /// type-level inference returns `Unknown` or another non-resolvable type.
 ///
 /// Returns `Some(monad_var_name)` if a known constructor pattern is recognized, `None` otherwise.
-fn resolve_monad_from_expr(expr: &Spanned<Expr>) -> Option<String> {
-    match &expr.node {
-        Expr::Call {
+fn resolve_monad_from_surface(node: &Arc<SurfaceNode>) -> Option<String> {
+    match &node.expr {
+        SurfaceExpression::Call {
             func,
             implied: true,
             ..
         } => {
             // Check if func is a VarRef to Ok or Error
-            if let Expr::VarRef { name, .. } = &func.node {
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 if name == "Ok" || name == "Error" {
                     return Some("result".to_string());
                 }
@@ -4847,14 +4834,13 @@ fn check_call(
                     // - For non-lambda args: infer, check for Unknown, then subsume (avoids double-inference)
                     match &arg.expr {
                         SurfaceExpression::Fn { .. } => {
-                            // Lambda: use check_expr for bidirectional lambda checking mode.
+                            // Lambda: use check_surface_expr for bidirectional lambda checking mode.
                             // Lambdas can't be Unknown, so no boundary guard needed.
                             // param_ty is ground under the CALL-MONO invariant (!func_ty.has_inference_vars()),
-                            // so no explicit state.subst.apply() is needed here — check_expr applies
+                            // so no explicit state.subst.apply() is needed here — check_surface_expr applies
                             // state.subst to its expected type internally, which is a no-op on ground types.
-                            let arg_expr = crate::ast_convert::surface_node_to_expr(arg);
                             if let Err(mut errs) =
-                                check_expr(&arg_expr, param_ty, env, state, type_map)
+                                check_surface_expr(arg, param_ty, env, state, type_map)
                             {
                                 errors.append(&mut errs);
                             }
@@ -5077,8 +5063,7 @@ fn check_call(
                     .enumerate()
                 {
                     consumed_params.insert(idx);
-                    let arg_expr = crate::ast_convert::surface_node_to_expr(arg);
-                    if let Err(mut errs) = check_expr(&arg_expr, param_ty, env, state, type_map) {
+                    if let Err(mut errs) = check_surface_expr(arg, param_ty, env, state, type_map) {
                         arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                     }
                 }
@@ -5414,7 +5399,7 @@ fn typecheck_case_arm(
 fn infer_fn(
     return_ann: &Option<Spanned<Annotation>>,
     params: &[Spanned<Param>],
-    body: &Spanned<Expr>,
+    body: &Arc<SurfaceNode>,
     env: &Rc<TypeEnv>,
     _span: Span,
     state: &mut InferState,
@@ -5505,14 +5490,13 @@ fn infer_fn(
                     //   → call resolve_fn_metadata which extracts return:, constraint:, doc:, bind:, kinds:
                     // Pure positional/structural annotation: @[Int Null] (union type), @[x: Int] (record type)
                     //   → call resolve_annotation which delegates to resolve_type_dict
-                    let entries = surface_entries_to_entries(surface_entries);
-                    let has_fn_key = entries.iter().any(|e| {
-                        if let Some(ref key) = e.node.key {
-                            matches!(&key.node, Expr::Str(s) if matches!(s.as_str(), "return" | "constraint" | "doc" | "bind" | "kinds"))
-                        } else {
-                            false
-                        }
+                    // Check for function metadata keys directly on SurfaceEntries (no bridge needed for this check)
+                    let has_fn_key = surface_entries.iter().any(|e| {
+                        e.node.key.as_ref().map_or(false, |k| {
+                            matches!(&k.expr, SurfaceExpression::Str(s) if matches!(s.as_str(), "return" | "constraint" | "doc" | "bind" | "kinds"))
+                        })
                     });
+                    let entries = surface_entries_to_entries(surface_entries);
                     if has_fn_key {
                         // Function metadata dict: extract return type from return: key.
                         let (ret, _doc) = resolve_fn_metadata(
@@ -5564,8 +5548,7 @@ fn infer_fn(
             // is_subtype(IntLiteral(42), TypeVar("_t5")) = false would reject valid code.
             // Unification mode binds the TypeVars via constraint solving.
             let result = if actual_ann.has_inference_vars() {
-                let body_surf = crate::ast_convert::expr_to_surface_node(body);
-                let body_ty = infer_surface_expr(&body_surf, &fn_env, state, type_map)?;
+                let body_ty = infer_surface_expr(body, &fn_env, state, type_map)?;
                 // Borrow-split: mem::take + restore avoids simultaneous &mut state.subst and &mut state
                 let mut subst = std::mem::take(&mut state.subst);
                 let result = unify(&body_ty, &actual_ann, &mut subst, state, body.span);
@@ -5578,7 +5561,7 @@ fn infer_fn(
                 state.subst.apply(&actual_ann)
             } else {
                 // Use checking mode for concrete return types (no type variables)
-                check_expr(body, &actual_ann, &fn_env, state, type_map)?;
+                check_surface_expr(body, &actual_ann, &fn_env, state, type_map)?;
                 actual_ann
             };
 
@@ -5587,8 +5570,7 @@ fn infer_fn(
             result
         }
         None => {
-            let body_surf = crate::ast_convert::expr_to_surface_node(body);
-            infer_surface_expr(&body_surf, &fn_env, state, type_map)?
+            infer_surface_expr(body, &fn_env, state, type_map)?
         }
     };
 
@@ -6171,8 +6153,28 @@ fn check_overbroad_annotations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode};
+    use crate::ast::{Expr, Param, SurfaceEntry, SurfaceExpression, SurfaceNode};
     use crate::types::{Constraint, Kind};
+
+    // Test-only bridge: allows tests that build Expr::Fn directly to call check_surface_expr
+    // by converting through expr_to_surface_node. Production code uses check_surface_expr directly.
+    fn check_expr(
+        expr: &Spanned<Expr>,
+        expected: &Type,
+        env: &Rc<TypeEnv>,
+        state: &mut InferState,
+        type_map: &mut Option<&mut TypeMap>,
+    ) -> Result<(), Vec<TypeError>> {
+        let node = crate::ast_convert::expr_to_surface_node(expr);
+        check_surface_expr(&node, expected, env, state, type_map)
+    }
+
+    // Test-only bridge: allows tests that build Expr::Call directly to call resolve_monad_from_surface
+    // by converting through expr_to_surface_node. Production code uses resolve_monad_from_surface directly.
+    fn resolve_monad_from_expr(expr: &Spanned<Expr>) -> Option<String> {
+        let node = crate::ast_convert::expr_to_surface_node(expr);
+        resolve_monad_from_surface(&node)
+    }
 
     /// Build a `Spanned<SurfaceEntry>` for use in `Annotation::PropertyDict` test constructions.
     /// Migrated from old `sp(Entry { ... })` form during rv2-migrate-annotation Phase 1.
