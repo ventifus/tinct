@@ -174,7 +174,9 @@ pub fn surface_node_get_field(
         (SurfaceExpression::DotAccess { expr: inner, .. }, "target") => {
             Value::Expression(Arc::clone(inner))
         }
-        (SurfaceExpression::DotAccess { field: dot_key, .. }, "field") => dot_key_to_value(dot_key),
+        (SurfaceExpression::DotAccess { field: dot_key, .. }, "field") => {
+            dot_key_to_value(dot_key, ctx)
+        }
 
         // --- Pipe ---
         (SurfaceExpression::Pipe { lhs, .. }, "lhs") => Value::Expression(Arc::clone(lhs)),
@@ -429,17 +431,44 @@ fn match_arms_to_list_dict(
     Value::Dict(map)
 }
 
-/// Convert a DotKey to a Value::Variant (Ident | Index).
-pub fn dot_key_to_value(key: &DotKey) -> Value {
+/// Convert a DotKey to a Value::Variant (Ident | Index) with payload containing the actual value.
+pub fn dot_key_to_value(key: &DotKey, ctx: &std::sync::Arc<crate::eval::EvalContext>) -> Value {
+    use crate::ast::Span;
+    use crate::value::Key;
+    use crate::value::{string_val, Thunk};
+    use indexmap::IndexMap;
+    use std::sync::Arc;
+
+    let span = Span::origin();
     match key {
-        DotKey::Ident(_) => Value::Variant {
-            tag: "Ident".into(),
-            payload: None,
-        },
-        DotKey::Int(_) => Value::Variant {
-            tag: "Index".into(),
-            payload: None,
-        },
+        DotKey::Ident(name) => {
+            let mut payload_dict = IndexMap::new();
+            payload_dict.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+            );
+            Value::Variant {
+                tag: "Ident".into(),
+                payload: Some(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(payload_dict),
+                    span,
+                )))),
+            }
+        }
+        DotKey::Int(index) => {
+            let mut payload_dict = IndexMap::new();
+            payload_dict.insert(
+                Key::String("index".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(*index), span))),
+            );
+            Value::Variant {
+                tag: "Index".into(),
+                payload: Some(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(payload_dict),
+                    span,
+                )))),
+            }
+        }
     }
 }
 

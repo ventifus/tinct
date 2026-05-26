@@ -10357,3 +10357,31 @@ Pre-existing issue discovered during sprint `rv2-output-formatter-contract` (202
 **CLI test failures — NEW (discovered 2026-05-25, 5 tests):**
 - [x] Fix `cap_fs_read_only_write_fails`, `cap_file_no_fs_suppresses_injection`, `no_fs_flag_blocks_include`, `no_fs_flag_and_timeout_flag_conjunctive_enforcement` — filesystem capability enforcement tests failing; likely regressed by async runtime changes (`rv2-async-migration`) or runtime-v2 merge affecting cap-fs enforcement path. (`tests/cli_tests.rs`, `src/eval_pipeline.rs`)
 - [x] Fix `type_warning_explicit_unknown_emitted_on_stderr` — T011 diagnostic for `@Unknown` annotation not appearing on stderr; regression likely from typecheck pipeline changes. (`tests/cli_tests.rs`, `src/typecheck.rs`)
+
+### formatter-fixes: Fix compact formatter errors and stack overflow
+
+#### Compact formatter `<error>` nodes (from formatter-fn-error)
+
+Pre-existing bug discovered during sprint `rv2-output-formatter-contract` (2026-05-25). Tests `test_tinct_formatter_compact_function` and `test_tinct_formatter_compact_call` fail because the compact formatter produces `<error>` AST nodes for function definitions and call expressions:
+
+- Input: `[add: [fn [x y] [+ x y]]]`
+- First format: `["add": <error> [fn [let ] ]]`  ← wrong key quoting + missing params
+- Second format: `["add": <error> <error> [fn [let ] ]]` ← grows each pass
+
+Root cause: `surface_program_to_dict` (in `src/ast_dict.rs`) doesn't correctly convert `SurfaceExpression::Fn` with unified-bindings params `[fn [let x y] body]` to the dict representation that the compact formatter script expects. The formatter then can't render the malformed dict back to source. Related to the `rv2-rewrite-ast-dict` work.
+
+- [x] Investigate: trace `[fn [x y] [+ x y]]` through `surface_program_to_dict` → compact formatter dict → formatter output
+- [x] Fix `ast_dict.rs`: ensure `SurfaceExpression::Fn` with unified-bindings params round-trips correctly through the compact formatter
+- [x] Re-enable `test_tinct_formatter_compact_function` and `test_tinct_formatter_compact_call`
+- [x] Fix `builtin_load` to parse only — remove `expand_surface_program`, `desugar_surface_program`, `resolve_surface_program`, `typecheck_surface_program_annotation_table` calls; return raw parsed `SurfaceProgram` with empty tables (formatters need unexpanded AST, not expansion result) (`src/builtins_meta.rs:1742-1768`)
+- [x] Update prelude `include` to call `[expand [load source name: n]]` explicitly now that `load` no longer expands (`stdlib/prelude.llt`)
+- [x] Verify `builtin_expand` is sole expand+desugar+resolve+typecheck site after fix (`src/builtins_meta.rs:1780-1838`)
+- [x] Fix `dot_key_to_value` — add payload: `Ident(name)` → `Variant("Ident", {name: name})`, `Index(i)` → `Variant("Index", {index: i})` so DotAccess field names are accessible from tinct (`src/surface_fields.rs:433-443`)
+- [x] Tests: `[load source]` returns unexpanded AST; `[ast-of [x.foo]].field.name` returns `"foo"` (`tests/corpus/eval/`)
+
+#### Stack overflow (from formatter-stack-overflow)
+
+Pre-existing failure discovered during sprint `rv2-output-formatter-contract` (2026-05-25). `format_source_tinct_with_dir` uses deep recursion in `surface_program_to_dict` and/or `expand_surface_program`. For large inputs this will eventually overflow even a 32MB stack.
+
+- [x] Investigate root cause: profile with `RUST_MIN_STACK=8388608`; identify which recursive function dominates the stack; convert to iterative or add explicit stack depth limit
+- [x] Target: formatter should handle inputs up to 10,000 nodes without stack growth

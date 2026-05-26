@@ -1750,33 +1750,14 @@ pub(crate) fn builtin_load(
             EvalError::include_parse_failed(display_name.to_string(), e.to_string(), call_span)
         })?;
 
-        // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve.
-        // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
-        // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-        let mut program = parsed.program;
-        crate::expand::expand_surface_program(&mut program, ctx.config.no_fs, &ctx.config.base_dir)
-            .await
-            .map_err(|e| {
-                EvalError::include_parse_failed(
-                    display_name.to_string(),
-                    format!("macro expansion error: {e}"),
-                    call_span,
-                )
-            })?;
-        // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
-        crate::desugar::desugar_surface_program(&mut program);
-        // Variable resolution pass (Phase 1 of arena allocation strategy).
-        let res_table = crate::resolve::resolve_surface_program(&program);
-        // Typecheck to populate TypeAnnotationTable for static type resolution in TypeAssert nodes.
-        // This enables included files to use the resolved type path instead of RuntimeTypeCheck fallback.
-        // Type errors are advisory — eval proceeds regardless. Callers that care
-        // about type errors use `builtin_eval_types`.
-        let (_annotation_errors, type_annotation_table) =
-            crate::typecheck::typecheck_surface_program_annotation_table(&program);
+        // load returns the raw parsed SurfaceProgram with empty tables.
+        // Formatters need the unexpanded AST. Callers that need expansion
+        // should call `[expand [load ...]]` explicitly.
+        let program = parsed.program;
         let program_value = Value::Program {
             program: std::sync::Arc::new(program),
-            resolutions: std::sync::Arc::new(res_table),
-            types: std::sync::Arc::new(type_annotation_table),
+            resolutions: std::sync::Arc::new(crate::ast::ResolutionTable::new()),
+            types: std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
         };
         let thunk = Arc::new(Thunk::new_materialized(program_value, call_span));
         Ok(thunk)

@@ -114,7 +114,6 @@ fn test_tinct_formatter_pretty_nested_dict() {
 }
 
 #[test]
-#[ignore = "pre-existing: compact formatter produces <error> for fn nodes — tracked in TODO as formatter-fn-error"]
 fn test_tinct_formatter_compact_function() {
     run_with_large_stack(|| {
         let input = "[add: [fn [x y] [+ x y]]]";
@@ -127,7 +126,6 @@ fn test_tinct_formatter_compact_function() {
 }
 
 #[test]
-#[ignore = "pre-existing: compact formatter produces <error> for call-with-fn nodes — tracked in TODO as formatter-fn-error"]
 fn test_tinct_formatter_compact_call() {
     run_with_large_stack(|| {
         let input = "[[fn [x] [+ x 1]] 42]";
