@@ -8256,7 +8256,9 @@ mod tests {
         )
         .unwrap();
         // x is bound to the value of b (last occurrence), which is 2
-        assert_eq!(materialize_to_value(result.0, &test_ctx()), Value::Int(2));
+        let ctx = test_ctx();
+        let val = materialize(&result, None, &ctx).unwrap();
+        assert_eq!(val, Value::Int(2));
     }
 
     #[test]

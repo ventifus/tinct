@@ -282,7 +282,7 @@ version:
 versions:
     {{container}} run {{run_flags}} --network=host \
         -e RUST_VERSION={{rust_version}} \
-        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --quiet --bin tinct -- run --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 --profile samples/versions-spans.json samples/versions.llt && cargo run --quiet --bin tinct -- run -i json -o json scripts/profile/trace.llt < samples/versions-spans.json > samples/versions-trace.json"
+        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --quiet --bin tinct -- run --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 --profile samples/versions-spans.ndjson samples/versions.llt && cargo run --quiet --bin tinct -- run -i ndjson -o json scripts/profile/trace.llt < samples/versions-spans.ndjson > samples/versions-trace.json"
 
 # Generate stdlib API reference from @[doc: "..."] annotations.
 # Writes one file per module to doc/lib/<module>.md.
@@ -369,9 +369,9 @@ clean-all: clean-images clean-volumes
 
 # Profile a tinct file and show materialization hotspots
 profile FILE:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- run --profile /tmp/spans.json {{FILE}} && cargo run --release -- run -i json scripts/profile/materialize.llt < /tmp/spans.json"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- run --profile /tmp/spans.ndjson {{FILE}} && cargo run --release -- run -i ndjson scripts/profile/materialize.llt < /tmp/spans.ndjson"
 
 # Profile a tinct file and output Perfetto trace
 profile-trace FILE:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- run --profile /tmp/spans.json {{FILE}} && cargo run --release -- run -i json -o json scripts/profile/trace.llt < /tmp/spans.json"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- run --profile /tmp/spans.ndjson {{FILE}} && cargo run --release -- run -i ndjson -o json scripts/profile/trace.llt < /tmp/spans.ndjson"
 

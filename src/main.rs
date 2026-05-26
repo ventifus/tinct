@@ -576,6 +576,37 @@ extern "C" fn timeout_handler(_sig: i32) {
     unsafe { libc::_exit(EXIT_TIMEOUT) };
 }
 
+/// Global stop flag for the profile background flush thread.
+///
+/// Set by BOTH the SIGINT handler and the main thread. The background thread exits
+/// its loop on seeing this flag. Whether it calls `_exit(130)` or returns normally
+/// depends on PROFILE_SIGINT_EXIT (see below).
+/// AtomicBool store/load with Relaxed ordering is async-signal-safe per POSIX.
+static PROFILE_FLUSH_STOP: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Set ONLY by the SIGINT handler (not by the main thread).
+///
+/// When true, the background flush thread calls `_exit(130)` after the final flush
+/// instead of returning normally. This is the Ctrl-C path: the main thread may be
+/// blocked inside `block_on` and never reach the join point, so the background thread
+/// must terminate the process itself after saving the profile.
+static PROFILE_SIGINT_EXIT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// SIGINT handler installed when `--profile` is set.
+///
+/// Sets both PROFILE_FLUSH_STOP and PROFILE_SIGINT_EXIT so the background flush thread
+/// performs a final flush and then calls `_exit(130)`. We do NOT re-raise SIGINT or call
+/// `_exit` here because the background thread needs up to 1 s to finish writing the file.
+#[cfg(unix)]
+extern "C" fn sigint_profile_handler(_sig: i32) {
+    use std::sync::atomic::Ordering;
+    PROFILE_FLUSH_STOP.store(true, Ordering::Relaxed);
+    PROFILE_SIGINT_EXIT.store(true, Ordering::Relaxed);
+    // The background thread wakes within 1 s, flushes, and calls _exit(130).
+}
+
 /// Install SIGALRM handler and start the alarm timer.
 #[cfg(unix)]
 fn install_timeout(duration_str: &str) -> Result<(), String> {
@@ -597,6 +628,30 @@ fn install_timeout(duration_str: &str) -> Result<(), String> {
         libc::alarm(seconds);
     }
 
+    Ok(())
+}
+
+/// Install the SIGINT handler that triggers profile flushing.
+///
+/// Only called when `--profile` is set. The handler sets PROFILE_FLUSH_STOP;
+/// the background flush thread polls this flag every 1 s and calls `_exit(130)`
+/// after the final flush. Without this handler, Ctrl-C kills the process before
+/// the background thread can write the profile file.
+#[cfg(unix)]
+fn install_sigint_profile_handler() -> Result<(), String> {
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = sigint_profile_handler as *const () as libc::sighandler_t;
+        // No SA_RESTART: we want blocked syscalls (e.g., block_on) to return EINTR
+        // so the main thread can propagate the cancellation. The eval loop will see
+        // errors or short-circuit and reach the join point.
+        sa.sa_flags = 0;
+        libc::sigemptyset(&mut sa.sa_mask);
+
+        if libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut()) != 0 {
+            return Err("profiling: failed to install SIGINT handler".to_string());
+        }
+    }
     Ok(())
 }
 
@@ -1127,6 +1182,128 @@ fn parse_cap_fs_entries(
     }
 
     Ok(result)
+}
+
+/// Spawn the background profile flush thread.
+///
+/// The thread loops indefinitely, sleeping in 1-second intervals. Every `flush_interval`
+/// complete intervals it calls `drain_new()` on the collector to get spans added since the
+/// last flush, serializes each span as a single-line JSON object (NDJSON), and appends
+/// them to the shared `BufWriter<File>`. When `PROFILE_FLUSH_STOP` is set (by the SIGINT
+/// handler or the main thread after eval), the thread performs one final drain and exits.
+///
+/// Uses `PROFILE_FLUSH_STOP` (global AtomicBool) rather than an `Arc<AtomicBool>` so
+/// the SIGINT signal handler (an `extern "C" fn`) can set it without needing a closure.
+///
+/// Returns the `JoinHandle` so the main thread can join and ensure the final flush
+/// completes before `run_eval` returns.
+///
+/// # Manual test procedure
+///
+/// 1. Run a long-evaluating script with `--profile /tmp/spans.ndjson`:
+///    `tinct run --profile /tmp/spans.ndjson heavy.llt`
+/// 2. After ~10 s (first flush interval), `wc -l /tmp/spans.ndjson` should show growing lines.
+///    Use `tail -f /tmp/spans.ndjson` to watch spans arrive.
+/// 3. Send Ctrl-C. Within ~1 s, the file should contain all spans written so far.
+/// 4. Let the script complete normally. The final drain in `run_eval` appends remaining spans.
+// AMBIENT-OK: Profile output file is user-specified via --profile (CLI operator choice).
+// Writing to an operator-specified output path is a legitimate ambient write — it is
+// not reading untrusted file content. The background thread cannot hold a cap_std Dir
+// because Dir is !Send and the thread is a plain OS thread.
+#[allow(clippy::disallowed_methods)]
+fn spawn_profile_flush_thread(
+    collector: Arc<std::sync::Mutex<tinct::profiling::ProfilingCollector>>,
+    file: Arc<std::sync::Mutex<std::io::BufWriter<std::fs::File>>>,
+    flush_interval_secs: u64,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        use std::io::Write;
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+
+        // Count 1-second ticks to know when a full flush interval has elapsed.
+        let mut ticks: u64 = 0;
+
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            ticks += 1;
+
+            let should_stop = PROFILE_FLUSH_STOP.load(Ordering::Relaxed);
+
+            // Flush every `flush_interval_secs` ticks, or on stop.
+            if should_stop || ticks >= flush_interval_secs {
+                ticks = 0;
+
+                // Distinguish SIGINT-stop (background thread must call _exit) from
+                // main-thread-stop (background thread should return normally so join() works).
+                // PROFILE_SIGINT_EXIT is set only by the signal handler; PROFILE_FLUSH_STOP
+                // is set by both the signal handler and the main thread.
+                let sigint_exit = PROFILE_SIGINT_EXIT.load(Ordering::Relaxed);
+
+                // Drain new spans while holding the collector lock as briefly as possible.
+                let new_spans = {
+                    match collector.lock() {
+                        Ok(mut guard) => guard.drain_new(),
+                        Err(_) => {
+                            // Lock poisoned — collector is inconsistent; nothing safe to flush.
+                            if should_stop && sigint_exit {
+                                unsafe { libc::_exit(130) };
+                            }
+                            return;
+                        }
+                    }
+                };
+
+                // Serialize each new span as one NDJSON line and append to the file.
+                if !new_spans.is_empty() {
+                    match file.lock() {
+                        Ok(mut file_guard) => {
+                            let mut write_ok = true;
+                            for span in &new_spans {
+                                match serde_json::to_string(span) {
+                                    Ok(line) => {
+                                        if let Err(e) = writeln!(file_guard, "{}", line) {
+                                            eprintln!(
+                                                "profiling: background flush write error: {e}"
+                                            );
+                                            write_ok = false;
+                                            break;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "profiling: background flush serialization error: {e}"
+                                        );
+                                        write_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if write_ok {
+                                if let Err(e) = file_guard.flush() {
+                                    eprintln!("profiling: background flush error: {e}");
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            eprintln!("profiling: background flush file lock poisoned");
+                        }
+                    }
+                }
+
+                if should_stop {
+                    if sigint_exit {
+                        // SIGINT path: main thread may be blocked in block_on and never
+                        // reach join(). We must terminate the process ourselves.
+                        // Exit code 130 = 128 + SIGINT (conventional Ctrl-C shell code).
+                        unsafe { libc::_exit(130) };
+                    }
+                    // Normal-stop path (main thread stopped us): return so join() succeeds.
+                    return;
+                }
+            }
+        }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1770,310 +1947,413 @@ fn run_eval(
     // (different base_dir) while sharing the same arena, state, and stdlib_env.
     let mut pipeline_input: Option<Arc<Thunk>> = None;
 
-    // Initialize profiling collector if --profile is set
+    // Initialize profiling collector if --profile is set, and spawn the background
+    // flush thread + install the SIGINT handler for fault-tolerant profile writing.
+    //
+    // The file is opened ONCE in truncate mode at startup. The background flush thread and
+    // the final flush path share the file via Arc<Mutex<BufWriter<File>>>. Each flush writes
+    // only new spans (via drain_new()) as NDJSON lines — one JSON object per line, no wrapping
+    // array. `tail -f spans.ndjson` works during long evaluations.
+    //
+    // IMPORTANT: PROFILE_FLUSH_STOP is a global AtomicBool. If two concurrent
+    // `tinct run --profile` invocations exist in the same process (not a supported
+    // configuration), the stop flag would be shared. This is acceptable because the
+    // flag is only used for graceful shutdown.
     let profiling_collector = profile.map(|_| {
         Arc::new(std::sync::Mutex::new(
             tinct::profiling::ProfilingCollector::new(),
         ))
     });
 
+    // Shared file writer: opened once at startup, used by both the background thread and
+    // the final flush path. None when --profile is not set.
+    // AMBIENT-OK: Profile output file is user-specified via --profile (CLI operator choice).
+    #[allow(clippy::disallowed_methods)]
+    let profile_file: Option<Arc<std::sync::Mutex<std::io::BufWriter<std::fs::File>>>> =
+        if let Some(profile_path) = profile {
+            match std::fs::File::create(profile_path) {
+                Ok(f) => Some(Arc::new(std::sync::Mutex::new(std::io::BufWriter::new(f)))),
+                Err(e) => {
+                    eprintln!("profiling: cannot open profile file {profile_path}: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+    // Spawn background flush thread and install SIGINT handler when --profile is set.
+    // flush_thread_handle is Some(_) iff profiling_collector is Some(_).
+    let flush_thread_handle: Option<std::thread::JoinHandle<()>> =
+        if let (Some(ref collector), Some(ref pfile)) = (&profiling_collector, &profile_file) {
+            // Reset global stop flags (in case a previous run in the same process set them).
+            PROFILE_FLUSH_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+            PROFILE_SIGINT_EXIT.store(false, std::sync::atomic::Ordering::Relaxed);
+
+            // Install SIGINT handler so Ctrl-C triggers a final profile flush before exit.
+            #[cfg(unix)]
+            if let Err(e) = install_sigint_profile_handler() {
+                eprintln!("warning: {e}");
+            }
+
+            Some(spawn_profile_flush_thread(
+                Arc::clone(collector),
+                Arc::clone(pfile),
+                10, // flush every 10 seconds
+            ))
+        } else {
+            None
+        };
+
     let mut thunk = None;
     let mut last_source = String::new();
     let mut last_eval_ctx: Option<Arc<EvalContext>> = None;
     let mut base_eval_ctx: Option<Arc<EvalContext>> = None;
 
-    for stage in &pipeline_stages {
-        // Read the LLT source (from file or inline expression)
-        let source = match stage {
-            PipelineStage::File(file_path) => read_source(file_path)?,
-            PipelineStage::Expr(expression) => expression.clone(),
-        };
+    // Wrap the pipeline loop and output section in a closure so we can run profile
+    // write + flush thread cleanup unconditionally regardless of success or failure.
+    // The closure captures all mutable locals by mutable reference; after it returns,
+    // `last_eval_ctx` is available for the final profile write.
+    let eval_result: Result<(), String> = (|| {
+        for stage in &pipeline_stages {
+            // Read the LLT source (from file or inline expression)
+            let source = match stage {
+                PipelineStage::File(file_path) => read_source(file_path)?,
+                PipelineStage::Expr(expression) => expression.clone(),
+            };
 
-        // Parse
-        let output = parse(&source).map_err(|e| {
-            if strict {
-                // In strict mode, use rich diagnostic formatting
+            // Parse
+            let output = parse(&source).map_err(|e| {
+                if strict {
+                    // In strict mode, use rich diagnostic formatting
+                    let file_name = match stage {
+                        PipelineStage::File(fp) => fp.as_str(),
+                        PipelineStage::Expr(_) => "<expr>",
+                    };
+                    tinct::format_parse_error(&e, &source, file_name)
+                } else {
+                    // Non-strict mode: use simple formatting
+                    format!("{e}")
+                }
+            })?;
+            // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
+            let _resolution_table =
+                tinct::resolve::resolve_surface_program(output.as_surface_program());
+            // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
+            let (_type_errors, _type_annotation_table) =
+                tinct::typecheck::typecheck_surface_program_annotation_table(
+                    output.as_surface_program(),
+                );
+
+            // Determine base directory for $include resolution (needed for expand, typecheck, and eval).
+            let file_base_dir_path = match stage {
+                PipelineStage::Expr(_) => {
+                    // Inline expressions use cwd as base directory
+                    std::env::current_dir()
+                        .map_err(|e| format!("cannot determine working directory: {e}"))?
+                }
+                PipelineStage::File(file_path) => {
+                    if file_path == "-" {
+                        std::env::current_dir()
+                            .map_err(|e| format!("cannot determine working directory: {e}"))?
+                    } else {
+                        let p = std::path::Path::new(file_path);
+                        // Use the file's parent directory; fall back to cwd if the path has no parent
+                        // (e.g., a bare filename like "test.llt").
+                        match p.parent().filter(|d| !d.as_os_str().is_empty()) {
+                            Some(dir) => dir.canonicalize().map_err(|e| {
+                                format!("cannot resolve directory for \"{file_path}\": {e}")
+                            })?,
+                            None => std::env::current_dir()
+                                .map_err(|e| format!("cannot determine working directory: {e}"))?,
+                        }
+                    }
+                }
+            };
+
+            // Open base_dir as a cap-std Dir before expand_surface_program so it can be passed in
+            // without re-acquiring ambient authority inside the expansion step.
+            let base_dir = cap_std::fs::Dir::open_ambient_dir(
+                &file_base_dir_path,
+                cap_std::ambient_authority(),
+            )
+            .map_err(|e| format!("cannot open base directory: {e}"))?;
+
+            // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve_surface_program -> typecheck -> eval.
+            // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+            // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
+            // See also: src/lib.rs (eval_source_with_config pipeline), src/expand.rs module comment.
+            let mut program = output.program;
+            tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
+                &mut program,
+                no_fs,
+                &base_dir,
+            ))
+            .map_err(|e| format!("{e}"))?;
+            // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
+            tinct::desugar::desugar_surface_program(&mut program);
+            // Variable resolution pass (Phase 1 of arena allocation strategy).
+            let resolution_table =
+                std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
+            // Type errors are advisory unless --strict is set.
+            // Build type environment with prelude + includes (if file-based).
+            let type_env = match stage {
+                PipelineStage::File(file_path) if file_path != "-" => {
+                    // File-based: use build_type_env with base_dir for include resolution
+                    let (env, _include_bindings) =
+                        tinct::build_type_env(&program, Some(&file_base_dir_path));
+                    env
+                }
+                _ => {
+                    // Stdin or inline expr: prelude-only (no include resolution)
+                    tinct::build_prelude_env()
+                }
+            };
+            let (
+                type_errors,
+                _type_map,
+                _doc_map,
+                _scheme_map,
+                type_diagnostics,
+                infer_state,
+                _final_env,
+                type_annotation_table_from_env,
+            ) = tinct::typecheck::typecheck_surface_program_with_env(
+                &program, type_env, false, // disable scheme_map (not needed for eval)
+                false, // not in prelude load
+            );
+            if !type_errors.is_empty() {
                 let file_name = match stage {
                     PipelineStage::File(fp) => fp.as_str(),
                     PipelineStage::Expr(_) => "<expr>",
                 };
-                tinct::format_parse_error(&e, &source, file_name)
-            } else {
-                // Non-strict mode: use simple formatting
-                format!("{e}")
-            }
-        })?;
-        // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-        let _resolution_table =
-            tinct::resolve::resolve_surface_program(output.as_surface_program());
-        // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
-        let (_type_errors, _type_annotation_table) =
-            tinct::typecheck::typecheck_surface_program_annotation_table(
-                output.as_surface_program(),
-            );
-
-        // Determine base directory for $include resolution (needed for expand, typecheck, and eval).
-        let file_base_dir_path = match stage {
-            PipelineStage::Expr(_) => {
-                // Inline expressions use cwd as base directory
-                std::env::current_dir()
-                    .map_err(|e| format!("cannot determine working directory: {e}"))?
-            }
-            PipelineStage::File(file_path) => {
-                if file_path == "-" {
-                    std::env::current_dir()
-                        .map_err(|e| format!("cannot determine working directory: {e}"))?
+                for err in &type_errors {
+                    eprintln!("{}", tinct::format_type_error(err, &source, file_name));
+                }
+                if strict {
+                    // In strict mode, type errors are fatal — exit.
+                    return Err("type checking failed — cannot evaluate".to_string());
                 } else {
-                    let p = std::path::Path::new(file_path);
-                    // Use the file's parent directory; fall back to cwd if the path has no parent
-                    // (e.g., a bare filename like "test.llt").
-                    match p.parent().filter(|d| !d.as_os_str().is_empty()) {
-                        Some(dir) => dir.canonicalize().map_err(|e| {
-                            format!("cannot resolve directory for \"{file_path}\": {e}")
-                        })?,
-                        None => std::env::current_dir()
-                            .map_err(|e| format!("cannot determine working directory: {e}"))?,
-                    }
+                    // Non-strict mode: type errors are advisory, print warning and continue.
+                    eprintln!(
+                        "type checking failed with {} error(s) (use --strict to make fatal)",
+                        type_errors.len()
+                    );
                 }
             }
-        };
+            // Emit type quality diagnostics (T010/T011 Unknown, T012 overbroad, T013 ambiguous, …).
+            // These are advisory and never block evaluation, even in --strict mode.
+            if !type_diagnostics.is_empty() {
+                let diag_file_name = match stage {
+                    PipelineStage::File(fp) => fp.as_str(),
+                    PipelineStage::Expr(_) => "<expr>",
+                };
+                for d in &type_diagnostics {
+                    eprintln!("{}", format_type_diagnostic(d, &source, diag_file_name));
+                }
+            }
 
-        // Open base_dir as a cap-std Dir before expand_surface_program so it can be passed in
-        // without re-acquiring ambient authority inside the expansion step.
-        let base_dir =
-            cap_std::fs::Dir::open_ambient_dir(&file_base_dir_path, cap_std::ambient_authority())
-                .map_err(|e| format!("cannot open base directory: {e}"))?;
-
-        // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve_surface_program -> typecheck -> eval.
-        // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
-        // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-        // See also: src/lib.rs (eval_source_with_config pipeline), src/expand.rs module comment.
-        let mut program = output.program;
-        tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
-            &mut program,
-            no_fs,
-            &base_dir,
-        ))
-        .map_err(|e| format!("{e}"))?;
-        // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
-        tinct::desugar::desugar_surface_program(&mut program);
-        // Variable resolution pass (Phase 1 of arena allocation strategy).
-        let resolution_table =
-            std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
-        // Type errors are advisory unless --strict is set.
-        // Build type environment with prelude + includes (if file-based).
-        let type_env = match stage {
-            PipelineStage::File(file_path) if file_path != "-" => {
-                // File-based: use build_type_env with base_dir for include resolution
-                let (env, _include_bindings) =
-                    tinct::build_type_env(&program, Some(&file_base_dir_path));
-                env
-            }
-            _ => {
-                // Stdin or inline expr: prelude-only (no include resolution)
-                tinct::build_prelude_env()
-            }
-        };
-        let (
-            type_errors,
-            _type_map,
-            _doc_map,
-            _scheme_map,
-            type_diagnostics,
-            infer_state,
-            _final_env,
-            type_annotation_table_from_env,
-        ) = tinct::typecheck::typecheck_surface_program_with_env(
-            &program, type_env, false, // disable scheme_map (not needed for eval)
-            false, // not in prelude load
-        );
-        if !type_errors.is_empty() {
-            let file_name = match stage {
-                PipelineStage::File(fp) => fp.as_str(),
-                PipelineStage::Expr(_) => "<expr>",
-            };
-            for err in &type_errors {
-                eprintln!("{}", tinct::format_type_error(err, &source, file_name));
-            }
-            if strict {
-                // In strict mode, type errors are fatal — exit.
-                return Err("type checking failed — cannot evaluate".to_string());
+            // Create or derive the evaluation context.
+            // First file: create the base context (owns the ThunkArena).
+            // Subsequent files: derive from the base context via with_base_dir_and_path so all
+            // files share the same arena — ThunkIds from earlier files remain valid in later ones.
+            let eval_ctx = if let Some(ref base) = base_eval_ctx {
+                base.with_base_dir_and_path(base_dir, Some(file_base_dir_path.clone()))
             } else {
-                // Non-strict mode: type errors are advisory, print warning and continue.
-                eprintln!(
-                    "type checking failed with {} error(s) (use --strict to make fatal)",
-                    type_errors.len()
+                let mut ctx = EvalContext::new_with_options(
+                    base_dir,
+                    Arc::clone(&env),
+                    Arc::clone(&type_stage_env),
+                    no_fs,
+                    require_integrity,
+                    env_allowed.clone(),
                 );
-            }
-        }
-        // Emit type quality diagnostics (T010/T011 Unknown, T012 overbroad, T013 ambiguous, …).
-        // These are advisory and never block evaluation, even in --strict mode.
-        if !type_diagnostics.is_empty() {
-            let diag_file_name = match stage {
-                PipelineStage::File(fp) => fp.as_str(),
-                PipelineStage::Expr(_) => "<expr>",
+                // Set profiling collector if --profile was specified
+                if let Some(ref collector) = profiling_collector {
+                    Arc::get_mut(&mut ctx).unwrap().profiling = Some(Arc::clone(collector));
+                }
+                // Share the already-open libdir Dir with the evaluator so that the self-hosted
+                // `include` (prelude.llt) can inject %libdir into nested includes without re-acquiring ambient authority.
+                if let Some(ref libdir_rc) = libdir_rc_for_ctx {
+                    ctx.set_libdir_dir(Arc::clone(libdir_rc));
+                }
+                base_eval_ctx = Some(Arc::clone(&ctx));
+                ctx
             };
-            for d in &type_diagnostics {
-                eprintln!("{}", format_type_diagnostic(d, &source, diag_file_name));
-            }
-        }
 
-        // Create or derive the evaluation context.
-        // First file: create the base context (owns the ThunkArena).
-        // Subsequent files: derive from the base context via with_base_dir_and_path so all
-        // files share the same arena — ThunkIds from earlier files remain valid in later ones.
-        let eval_ctx = if let Some(ref base) = base_eval_ctx {
-            base.with_base_dir_and_path(base_dir, Some(file_base_dir_path.clone()))
-        } else {
-            let mut ctx = EvalContext::new_with_options(
-                base_dir,
+            // Wire boundary guards and do-infer resolutions from type inference to the eval context
+            eval_ctx.set_boundary_guards(infer_state.boundary_guards);
+            eval_ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
+
+            // TypeAnnotationTable was populated directly by typecheck_surface_program_with_env
+            // above — no second typecheck call needed.
+            let type_annotation_table = std::sync::Arc::new(type_annotation_table_from_env);
+            let file_result = tinct::async_rt::block_on(tinct::eval_surface_file_with_input(
+                &program,
                 Arc::clone(&env),
-                Arc::clone(&type_stage_env),
-                no_fs,
-                require_integrity,
-                env_allowed.clone(),
-            );
-            // Set profiling collector if --profile was specified
-            if let Some(ref collector) = profiling_collector {
-                Arc::get_mut(&mut ctx).unwrap().profiling = Some(Arc::clone(collector));
-            }
-            // Share the already-open libdir Dir with the evaluator so that the self-hosted
-            // `include` (prelude.llt) can inject %libdir into nested includes without re-acquiring ambient authority.
-            if let Some(ref libdir_rc) = libdir_rc_for_ctx {
-                ctx.set_libdir_dir(Arc::clone(libdir_rc));
-            }
-            base_eval_ctx = Some(Arc::clone(&ctx));
-            ctx
-        };
+                &eval_ctx,
+                &resolution_table,
+                &type_annotation_table,
+                pipeline_input.clone(),
+            ))
+            .map_err(|e| {
+                let mut error_str = format!("{e}");
+                if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
+                    error_str.push('\n');
+                    error_str.push_str(&snippet);
+                }
+                error_str
+            })?;
 
-        // Wire boundary guards and do-infer resolutions from type inference to the eval context
-        eval_ctx.set_boundary_guards(infer_state.boundary_guards);
-        eval_ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
-
-        // TypeAnnotationTable was populated directly by typecheck_surface_program_with_env
-        // above — no second typecheck call needed.
-        let type_annotation_table = std::sync::Arc::new(type_annotation_table_from_env);
-        let file_result = tinct::async_rt::block_on(tinct::eval_surface_file_with_input(
-            &program,
-            Arc::clone(&env),
-            &eval_ctx,
-            &resolution_table,
-            &type_annotation_table,
-            pipeline_input,
-        ))
-        .map_err(|e| {
-            let mut error_str = format!("{e}");
-            if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
-                error_str.push('\n');
-                error_str.push_str(&snippet);
-            }
-            error_str
-        })?;
-
-        // Record blame provenance for the pipeline boundary.
-        // The producing stage label is the file path or expression index.
-        let stage_label = match stage {
-            PipelineStage::File(p) => p.clone(),
-            PipelineStage::Expr(_) => "(inline expression)".to_string(),
-        };
-
-        // Pass the result as lazy thunk to next file (matching --- boundary semantics).
-        // Because all files share the same ThunkArena, the ThunkIds in file_result are
-        // valid in the next file's eval context.
-        pipeline_input = Some(file_result.clone());
-
-        // Record blame for the % thunk at this pipeline boundary.
-        // This is used by contract violation errors to identify the producing stage.
-        if let Ok(tinct::Value::Dict(ref map)) =
-            tinct::materialize_sync(&file_result, None, &eval_ctx)
-        {
-            for (_, thunk_id) in map {
-                eval_ctx.record_blame(*thunk_id, stage_label.clone());
-            }
-        }
-        // Also record blame for the result thunk itself
-        // (use the thunk_arena alloc id if available)
-        let _ = stage_label; // label used above
-
-        // Keep track of the last file's result, source, and context for final output.
-        // IMPORTANT: The ThunkIds in the result's Value::Dict map are indices into the
-        // shared ThunkArena. We MUST use an eval_ctx backed by the same arena for
-        // value_to_json; since all file contexts share the arena, any of them works.
-        thunk = Some(file_result);
-        last_source = source;
-        last_eval_ctx = Some(eval_ctx);
-    }
-
-    let thunk = thunk.ok_or_else(|| "internal error: no files processed".to_string())?;
-    let eval_ctx = last_eval_ctx
-        .clone()
-        .ok_or_else(|| "internal error: no eval context".to_string())?;
-
-    // When -o flag is present, the pipeline's last expression is an output formatter
-    // that returns a String. Materialize it and write to stdout.
-    // When --eval is present without -o, force evaluation for side effects only.
-    if let Some(_output_format) = output {
-        // Output formatter was appended to pipeline — materialize and extract String
-        let val = materialize(&thunk, None, &eval_ctx).map_err(|e| {
-            let mut error_str = format!("{e}");
-            if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
-                error_str.push('\n');
-                error_str.push_str(&snippet);
-            }
-            error_str
-        })?;
-
-        match val {
-            tinct::Value::String { source, start, end } => {
-                print!("{}", &source[start..end]);
-            }
-            _ => {
-                return Err(format!(
-                    "output formatter returned {} instead of String — formatter is broken",
-                    val.type_name()
-                ));
-            }
-        }
-    } else if force_eval {
-        // --eval flag without -o: force evaluation for side effects (no output)
-        let _val = materialize(&thunk, None, &eval_ctx).map_err(|e| {
-            let mut error_str = format!("{e}");
-            if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
-                error_str.push('\n');
-                error_str.push_str(&snippet);
-            }
-            error_str
-        })?;
-        // Shallow materialization only — no deep forcing, no output
-    }
-    // Else: neither -o nor --eval specified — lazy evaluation, no output
-
-    // Write profiling data if --profile was specified
-    if let (Some(profile_path), Some(collector)) = (profile, profiling_collector) {
-        // Extract the profiling data from the base context (last_eval_ctx is the last evaluated context)
-        if let Some(ref ctx) = last_eval_ctx {
-            // Extract spans from the collector
-            let spans = {
-                let mut prof_guard = collector.lock().unwrap();
-                prof_guard.extract_spans()
+            // Record blame provenance for the pipeline boundary.
+            // The producing stage label is the file path or expression index.
+            let stage_label = match stage {
+                PipelineStage::File(p) => p.clone(),
+                PipelineStage::Expr(_) => "(inline expression)".to_string(),
             };
 
-            // Convert to tinct Value
-            let spans_value = tinct::profiling::ProfilingCollector::spans_to_value(spans, ctx);
+            // Pass the result as lazy thunk to next file (matching --- boundary semantics).
+            // Because all files share the same ThunkArena, the ThunkIds in file_result are
+            // valid in the next file's eval context.
+            pipeline_input = Some(file_result.clone());
 
-            // Serialize to JSON
-            let json = tinct::value_to_json(&spans_value, ctx, tinct::Span::origin())
-                .map_err(|e| format!("profiling: JSON serialization error: {e}"))?;
-            let json_str = serde_json::to_string_pretty(&json)
-                .map_err(|e| format!("profiling: JSON serialization error: {e}"))?;
+            // Record blame for the % thunk at this pipeline boundary.
+            // This is used by contract violation errors to identify the producing stage.
+            if let Ok(tinct::Value::Dict(ref map)) =
+                tinct::materialize_sync(&file_result, None, &eval_ctx)
+            {
+                for (_, thunk_id) in map {
+                    eval_ctx.record_blame(*thunk_id, stage_label.clone());
+                }
+            }
+            // Also record blame for the result thunk itself
+            // (use the thunk_arena alloc id if available)
+            let _ = stage_label; // label used above
 
-            // Write to file
-            std::fs::write(profile_path, json_str)
-                .map_err(|e| format!("profiling: error writing {}: {e}", profile_path))?;
+            // Keep track of the last file's result, source, and context for final output.
+            // IMPORTANT: The ThunkIds in the result's Value::Dict map are indices into the
+            // shared ThunkArena. We MUST use an eval_ctx backed by the same arena for
+            // value_to_json; since all file contexts share the arena, any of them works.
+            thunk = Some(file_result);
+            last_source = source;
+            last_eval_ctx = Some(eval_ctx);
+        }
+
+        let thunk = thunk
+            .take()
+            .ok_or_else(|| "internal error: no files processed".to_string())?;
+        let eval_ctx = last_eval_ctx
+            .clone()
+            .ok_or_else(|| "internal error: no eval context".to_string())?;
+
+        // When -o flag is present, the pipeline's last expression is an output formatter
+        // that returns a String. Materialize it and write to stdout.
+        // When --eval is present without -o, force evaluation for side effects only.
+        if output.is_some() {
+            // Output formatter was appended to pipeline — materialize and extract String
+            let val = materialize(&thunk, None, &eval_ctx).map_err(|e| {
+                let mut error_str = format!("{e}");
+                if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
+                    error_str.push('\n');
+                    error_str.push_str(&snippet);
+                }
+                error_str
+            })?;
+
+            match val {
+                tinct::Value::String { source, start, end } => {
+                    print!("{}", &source[start..end]);
+                }
+                _ => {
+                    return Err(format!(
+                        "output formatter returned {} instead of String — formatter is broken",
+                        val.type_name()
+                    ));
+                }
+            }
+        } else if force_eval {
+            // --eval flag without -o: force evaluation for side effects (no output)
+            let _val = materialize(&thunk, None, &eval_ctx).map_err(|e| {
+                let mut error_str = format!("{e}");
+                if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
+                    error_str.push('\n');
+                    error_str.push_str(&snippet);
+                }
+                error_str
+            })?;
+            // Shallow materialization only — no deep forcing, no output
+        }
+        // Else: neither -o nor --eval specified — lazy evaluation, no output
+
+        Ok(())
+    })(); // end of eval_result closure
+
+    // === Unconditional cleanup (runs on success AND failure) ===
+
+    // Stop the background flush thread and perform a final NDJSON drain.
+    //
+    // The flush thread is joined here in all exit paths (success, eval error, parse error,
+    // type error, etc.) so the final spans are always written when --profile is set.
+    // The thread exits by returning from its closure after seeing PROFILE_FLUSH_STOP=true.
+    // We do NOT call _exit from the thread when stopped by the main thread — only the
+    // SIGINT path calls _exit(130). Here the thread just returns normally.
+    if let (Some(ref collector), Some(ref pfile), Some(handle)) =
+        (&profiling_collector, &profile_file, flush_thread_handle)
+    {
+        // Signal the background thread to stop. Use SeqCst to ensure the thread sees
+        // the flag before we join (prevents a race where the thread misses the flag
+        // and loops back to sleep after we join).
+        PROFILE_FLUSH_STOP.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // Join the flush thread so its periodic writes complete before the final drain.
+        // If the thread panicked (shouldn't happen), ignore the join error — we still
+        // want to write the remaining spans below.
+        let _ = handle.join();
+
+        // Final drain: write any spans the background thread has not yet seen.
+        // The background thread may have written spans up to its last drain_new() call;
+        // drain_new() here picks up only the remainder.
+        let remaining = match collector.lock() {
+            Ok(mut guard) => guard.drain_new(),
+            Err(_) => vec![],
+        };
+
+        if !remaining.is_empty() {
+            use std::io::Write;
+            match pfile.lock() {
+                Ok(mut file_guard) => {
+                    for span in &remaining {
+                        match serde_json::to_string(span) {
+                            Ok(line) => {
+                                if let Err(e) = writeln!(file_guard, "{}", line) {
+                                    eprintln!("profiling: final write error: {e}");
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("profiling: final serialization error: {e}");
+                                break;
+                            }
+                        }
+                    }
+                    if let Err(e) = file_guard.flush() {
+                        eprintln!("profiling: final flush error: {e}");
+                    }
+                }
+                Err(_) => {
+                    eprintln!("profiling: final write skipped — file lock poisoned");
+                }
+            }
+        } else {
+            // No remaining spans; still flush to ensure background writes are committed.
+            if let Ok(mut file_guard) = pfile.lock() {
+                use std::io::Write;
+                let _ = file_guard.flush();
+            }
         }
     }
 
-    // Cancel any pending alarm before returning success
+    // Cancel any pending alarm.
     #[cfg(unix)]
     if timeout.is_some() {
         unsafe {
@@ -2081,7 +2361,7 @@ fn run_eval(
         }
     }
 
-    Ok(())
+    eval_result
 }
 
 // AMBIENT-OK: CLI bootstrap — opens file parent dir for type-checking

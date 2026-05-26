@@ -15,8 +15,27 @@ use indexmap::IndexMap;
 use crate::eval::EvalContext;
 use crate::value::{string_val, Key, Thunk, Value};
 
+/// Serialize `Option<(usize, usize)>` as `Option<i64>` using the packed
+/// `line * 1_000_000 + col` encoding that matches the schema in doc/12-tooling.md.
+/// A `None` is serialized as `null` (JSON null, not the tinct empty-dict sentinel
+/// used by the older `spans_to_value` path).
+mod packed_line_col {
+    use serde::Serializer;
+
+    pub fn serialize<S>(value: &Option<(usize, usize)>, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some((line, col)) => s.serialize_i64((line * 1_000_000 + col) as i64),
+            None => s.serialize_none(),
+        }
+    }
+}
+
 /// A single span record: one thunk materialization with full timing and attribution data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct SpanRecord {
     /// Unique span ID (monotonically increasing from 0).
     pub id: u64,
@@ -28,9 +47,11 @@ pub struct SpanRecord {
     pub create_time_us: u64,
     /// Source file path; empty string for Rust builtins.
     pub source_file: Option<String>,
-    /// Byte offset into source file (line, col).
+    /// Byte offset into source file (line, col) packed as `line * 1_000_000 + col`.
+    #[serde(serialize_with = "packed_line_col::serialize")]
     pub source_start: Option<(usize, usize)>,
-    /// Byte offset into source file (line, col).
+    /// Byte offset into source file (line, col) packed as `line * 1_000_000 + col`.
+    #[serde(serialize_with = "packed_line_col::serialize")]
     pub source_end: Option<(usize, usize)>,
     /// Leading characters of source at this span (for display in traces).
     pub source_text: Option<String>,
@@ -63,6 +84,8 @@ pub struct ProfilingCollector {
     next_id: u64,
     /// Baseline timestamp for relative microsecond measurements.
     baseline: Instant,
+    /// Index into `spans` of the first span not yet returned by `drain_new`.
+    drain_cursor: usize,
 }
 
 impl ProfilingCollector {
@@ -73,6 +96,7 @@ impl ProfilingCollector {
             open_stack: Vec::new(),
             next_id: 0,
             baseline: Instant::now(),
+            drain_cursor: 0,
         }
     }
 
@@ -176,10 +200,42 @@ impl ProfilingCollector {
         }
     }
 
+    /// Clone current spans without consuming the collector.
+    ///
+    /// Returns a point-in-time snapshot suitable for background flushing. Open spans
+    /// (those with `end_us == 0`) are included as-is — they will appear as in-progress
+    /// entries in the JSON output. The collector continues accumulating normally after
+    /// this call.
+    pub fn snapshot(&self) -> Vec<SpanRecord> {
+        self.spans.clone()
+    }
+
+    /// Returns spans added since the last drain, advancing the cursor.
+    ///
+    /// Each call returns only the spans appended after the previous call to `drain_new`.
+    /// This is used by the NDJSON background flush thread to write new spans incrementally
+    /// without re-serializing spans that have already been written.
+    pub fn drain_new(&mut self) -> Vec<SpanRecord> {
+        let new_spans = self.spans[self.drain_cursor..].to_vec();
+        self.drain_cursor = self.spans.len();
+        new_spans
+    }
+
     /// Extract all spans as a Vec, leaving the collector empty.
     /// This allows extracting profiling data without consuming the collector.
     pub fn extract_spans(&mut self) -> Vec<SpanRecord> {
         std::mem::take(&mut self.spans)
+    }
+
+    /// Serialize a snapshot of spans directly to a pretty-printed JSON string.
+    ///
+    /// Unlike `spans_to_value`, this method does NOT require an `EvalContext` and is
+    /// safe to call from a background thread. The output format is a JSON array of
+    /// objects with kebab-case keys matching the schema in doc/12-tooling.md.
+    ///
+    /// Used by the background flush thread and the SIGINT final-flush path.
+    pub fn snapshot_to_json_string(spans: &[SpanRecord]) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(spans)
     }
 
     /// Convert all collected spans to a tinct Value::Seq of dicts.

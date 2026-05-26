@@ -76,6 +76,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [Stdlib Architecture — The Rust/tinct Boundary](stdlib-architecture.md) | **Merged into async-eval.md.** See §Rust/tinct Boundary, §Serve and Connect Layers, §Stdlib Module Map. |
 | [Value Serializer Visitor](value-serializer-visitor.md) | Shared traversal for `value_to_json` + `value_to_display_string`; defer until a third format is needed |
+| [Tinct Streaming Mode (`-i stream` and `-o stream`)](data-streaming.md) | Full tinct expressions as streaming records; lazy Seq backed by `StreamReader<BufRead>`; `-o stream` emits Seq elements via `value_to_tinct`; composable tinct pipelines; eliminates serde_json from profiling; no jq required |
 
 ## Formal Verification
 

@@ -7801,6 +7801,24 @@ All tasks already implemented in prior sprint. Added 3 verification tests:
 - [x] Remove duplicate `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` at `stdlib/prelude.llt:2138–2145`
 - [x] Verify `just versions` exits 0 after the fix
 
+### profiling-sigint-flush: Stream profile as NDJSON with periodic flush and SIGINT support ✅ DONE (2026-05-25)
+
+**Root cause (found 2026-05-26):** Profile data is written at `src/main.rs:2071` only after the pipeline fully completes. If `tinct run --profile` hangs, the spans file is never created — making the trace useless for diagnosing the hang itself.
+
+**Design:** Switch the profile file format from a single JSON array to **NDJSON** (one JSON object per line). Open the file for append at evaluation start; a background thread flushes newly-closed spans every 10 seconds; SIGINT triggers a final flush before exit. The file grows incrementally and can be followed with `tail -f spans.ndjson`.
+
+**Format:** `--profile` output is one JSON object per line (concatenated JSON / streaming JSON — the format jq handles natively). The file is appended to as spans are flushed, so `tail -f spans.json` shows spans arriving in real time. Analysis scripts use `jq -s '.' spans.json | tinct run -i json ...` to slurp the stream into a JSON array — no new tinct input mode needed.
+
+- [x] Add `ProfilingCollector::drain_new(&mut self) -> Vec<SpanRecord>` — takes spans added since the last drain, leaving the rest in place (`src/profiling.rs`)
+- [x] Open the profile file for writing (truncate) at the start of `run_eval` when `--profile` is set; keep the `File` handle open for appending throughout (`src/main.rs`)
+- [x] Capture `Arc<EvalContext>` before the pipeline loop and share it with the flush thread — the existing `spans_to_value(spans, &ctx)` path handles serialization via tinct's own JSON support, no new Rust JSON code (`src/main.rs`)
+- [x] Spawn a background flush thread: every 10s call `drain_new`, convert to tinct Value via `spans_to_value`, serialize each span dict to a JSON line via tinct's JSON mechanism, append to the open file handle (`src/main.rs`)
+- [x] Install a SIGINT/SIGTERM handler that sets the cancel token; after the pipeline returns, final drain-and-append using the same path — replaces the current end-of-run write block at `src/main.rs:2052-2073` (`src/main.rs`)
+- [x] Update justfile `profile` and `profile-trace` targets to pipe through `jq -s '.'` before the tinct analysis scripts (`justfile`)
+- [x] Update justfile `versions` target trace step the same way (`justfile`)
+- [x] Test: `tinct run --profile /tmp/p.json <long-running>` — file has content after 10s, each line is valid JSON, `tail -f` works
+- [x] Test: Ctrl+C flushes remaining spans and exits cleanly
+
 ## Codebase Health (Review #6, 2026-05-15)
 
 ### health-review6: GuardedValidate branches 2+3, LSP path traversal, ambiguous TypeVar
