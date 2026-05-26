@@ -10604,3 +10604,9 @@ null?:  [fn [let x] [match x []: true  _: false]]
 - [x] Remove `builtin-int?`, `builtin-float?`, `builtin-str?`, `builtin-bool?`, `builtin-null?`, `builtin-dict?`, `builtin-fn?`, `builtin-seq?`, `builtin-proxy?`, `builtin-bytes?` from `standard_builtins()` (`src/builtins.rs`) and `src/builtins_meta.rs`
 - [x] Remove corresponding `inject_builtin_aliases` entries from `src/type_env.rs`
 - [x] Update `standard_builtins_contains_all` test count (`src/builtins.rs`)
+
+### prelude-lines: Add `lines` as a tinct prelude function ✅ DONE (2026-05-25)
+
+**Root cause (found 2026-05-26):** `lines` is missing from the prelude. It existed as a raw Rust builtin, but it's just `[split "\n" s]` — no Rust code needed. `stdlib/cli/in/ndjson.llt` was broken because it called the raw `lines` builtin directly (fixed by switching to `[split "\n" [slurp %stdin]]`), but user code cannot call `lines` at all.
+
+- [x] Add `lines@[doc: "Split a string into a Seq of lines (splits on newline)"]: [fn [let s@String] [split "\n" s]]` → `stdlib/prelude.llt`

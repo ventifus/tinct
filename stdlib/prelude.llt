@@ -748,6 +748,12 @@ Note: Returns lo if x < lo, hi if x > hi, otherwise x. Inherently materializing:
 # join: delegates to builtin-join (see wrappers section at bottom of this dict).
 # O(n) performance, dual-dispatch on Dict/Seq. Example: [join ", " ["a" "b"]] => "a, b"
 
+# Split a string into lines on newline character. Returns a Seq of strings.
+# Type: (Stringing -> Seq Stringing)
+# Example: [collect [lines "a\nb\nc"]] => ["a" "b" "c"]
+lines@[doc: "Split a string into a Seq of lines (splits on newline)"]: [fn [let s@String]
+    [split "\n" s]]
+
 # Split a string on spaces, filtering empty strings. Returns a Seq of words.
 # Type: (Stringing -> Seq Stringing)
 # Example: [collect [words "hello world"]] => ["hello" "world"]

@@ -800,12 +800,6 @@ Follow-up from builtin-privacy Phase 3. Three issues discovered when making `sam
 - [x] Update `doc/11a-builtins.md` to document `builtin-trim`, `builtin-emit`, `builtin-env`
 - [x] Update builtin count in `standard_builtins_contains_all` test (was 284, now +3 = 301; already correct)
 
-### prelude-lines: Add `lines` as a tinct prelude function
-
-**Root cause (found 2026-05-26):** `lines` is missing from the prelude. It existed as a raw Rust builtin, but it's just `[split "\n" s]` — no Rust code needed. `stdlib/cli/in/ndjson.llt` was broken because it called the raw `lines` builtin directly (fixed by switching to `[split "\n" [slurp %stdin]]`), but user code cannot call `lines` at all.
-
-- [ ] Add `lines@[doc: "Split a string into a Seq of lines (splits on newline)"]: [fn [let s@String] [split "\n" s]]` → `stdlib/prelude.llt`
-
 ### profiling-span-key-inconsistency: `snapshot_to_json_string` produces `"builtin-name"` but spec/scripts use `"builtin"`
 
 **Root cause (found 2026-05-26):** `SpanRecord.builtin_name` field is serialized by serde (with `#[serde(rename_all = "kebab-case")]`) as `"builtin-name"`. But `spans_to_value` inserts the key `"builtin"`, and the whatif spec (`doc/whatif/profiling.md` line 116) also documents it as `"builtin"`. When the `profiling-sigint-flush` sprint lands and uses `snapshot_to_json_string`, all analysis scripts (`trace.llt`, `materialize.llt`, `create.llt`) will silently fail to read the builtin name.
