@@ -10072,6 +10072,11 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] Add `Value::Overlay` arm calling `flatten_overlay`
 - [x] Make `Value::Expression` passthrough explicit rather than wildcard
 
+### error-code-stale-tests: Fix stale error code tests
+
+- [x] Fix caps_missing_error.llt-eval: E099→E044 (CapabilityRequired)
+- [x] Fix match_no_match.llt-eval: E099→E071 (MatchExhaustion)
+
 ### error-code-corpus-missing: Add missing corpus tests for E044/E071/E072
 
 - [x] Add capability_required.llt-eval for E044

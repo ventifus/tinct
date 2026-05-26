@@ -2,4 +2,4 @@
     "text":   "matched-text"
     false:    "matched-false"]
 === error
-[E099] non-exhaustive match: no pattern matched the scrutinee
+[E071] non-exhaustive match

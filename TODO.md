@@ -407,14 +407,6 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 - [ ] Verify stack-frame span search and secondary_span search are both present
 
 
-### error-code-stale-tests: Fix stale error code tests [Critical]
-
-**test-crafter.** Two existing corpus tests have outdated error code expectations. These tests currently expect E099 (Internal) but should expect the correct specific error codes that were later added to the implementation.
-
-- [ ] Fix `tests/corpus/eval/caps_missing_error.llt-eval` — change `[E099]` to `[E044]`
-- [ ] Fix `tests/corpus/eval/errors/match_no_match.llt-eval` — change `[E099]` to `[E071]`
-
-**Root cause:** These tests were written when the errors raised E099 as a catch-all. The implementation was later updated to use specific error codes (E044 for CapabilityRequired, E071 for MatchExhaustion), but the tests were not updated to match.
 
 ## Codebase Audit Findings (Health Review #306, 2026-05-25)
 

@@ -4,5 +4,5 @@
 [result: "should not execute"]
 
 === error
-[E099] %nc@NetCap is required but not provided
+[E044] %nc@NetCap is required but not provided
   inject it with:  tinct run --cap-net nc=HOST:PORT ...
