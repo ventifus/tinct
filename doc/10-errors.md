@@ -635,6 +635,8 @@ Each variant maps to a stable error code. Codes are `E` followed by a three-digi
 | E002 | `UndefinedVariable` | Access |
 | E010 | `TypeMismatch` | Type |
 | E011 | `TypeAssertFailed` | Type |
+| E012 | `MacroError` | Type |
+| E013 | `NoInstance` | Type |
 | E020 | `ArityMismatch` | Call |
 | E021 | `NamedArgConflict` | Call |
 | E022 | `UnknownNamedArg` | Call |
@@ -651,6 +653,7 @@ Each variant maps to a stable error code. Codes are `E` followed by a three-digi
 | E041 | `JsonDepthExceeded` | Limit |
 | E042 | `IncludeForbidden` | Limit |
 | E043 | `ResourceLimitExceeded` | Limit |
+| E044 | `CapabilityRequired` | Limit |
 | E050 | `IncludeNotAvailable` | Include |
 | E051 | `IncludeIoError` | Include |
 | E052 | `IncludeCycle` | Include |
@@ -664,7 +667,11 @@ Each variant maps to a stable error code. Codes are `E` followed by a three-digi
 | E062 | `JsonRange` | Conversion |
 | E063 | `UriParseError` | Conversion |
 | E070 | `CircularDependency` | Evaluation |
+| E071 | `MatchExhaustion` | Evaluation |
+| E072 | `DuplicateVariable` | Evaluation |
 | E080 | `UserError` | User |
+| E081 | `Unimplemented` | User |
+| E082 | `BuilderFinished` | User |
 | E090 | `SchemaViolation` | Schema validation |
 | E091 | `KindMismatch` | Schema validation |
 | E099 | `Internal` | Internal |

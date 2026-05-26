@@ -386,15 +386,21 @@ Hardcoded behavior, stubs, and dead code found during systematic audit. Root cau
 
 **test-crafter C1-C6.** Several error codes have no corpus test coverage and one has the wrong code:
 
-- [ ] Add `tests/corpus/eval/errors/named_arg_rejected.llt-eval` for E023 (NamedArgRejected) — e.g., `[floor n: 3.7]` → `[E023]`
-- [ ] Add `tests/corpus/eval/errors/float_not_finite_floor.llt-eval` for E033 (FloatNotFinite) — e.g., `[floor [/ 1.0 0.0]]` → `[E033]`
-- [ ] Add `tests/corpus/eval/errors/value_not_serializable_function.llt-eval` for E035 (ValueNotSerializable) — e.g., `[to-json [fn [] 42]]` → `[E035]`
-- [ ] Add `tests/corpus/eval/errors/json_depth_exceeded.llt-eval` for E041 (JsonDepthExceeded) — 128+ levels nested JSON → `[E041]`
-- [ ] Fix `tests/corpus/eval/errors/to_float_nan_input.llt-eval` — asserts `[E099]` but actual error is `[E033]` FloatNotFinite
-- [ ] Investigate E062 (JsonRange), E063 (UriParseError), E091 (KindMismatch) — grep for callers, add corpus tests if raised or mark dead code for removal
-- [ ] Fix stale `include_forbidden.llt-eval` and `include_path_not_allowed.llt-eval` — both assert `[E002]`; clarify if testing removed include builtin or should test `load` with E053/E055/E056
-- [ ] Fix `tests/corpus/valid/edge_cases/empty.llt-eval` — missing `=== out` section
-- [ ] Update `doc/10-errors.md` error code table — missing E012 (MacroExpansionError), E013 (TypeClassConstraint), E044 (CapabilityRequired), E071 (MatchExhaustion), E082 (BuilderFinished)
+- [x] Add `tests/corpus/eval/errors/named_arg_rejected.llt-eval` for E023 (NamedArgRejected)
+- [x] Add `tests/corpus/eval/errors/float_not_finite_floor.llt-eval` for E033 (FloatNotFinite)
+- [x] Add `tests/corpus/eval/errors/value_not_serializable_function.llt-eval` for E035 (ValueNotSerializable)
+- [x] Add `tests/corpus/eval/errors/json_depth_exceeded.llt-eval` for E041 (JsonDepthExceeded)
+- [x] Fix `tests/corpus/eval/errors/to_float_nan_input.llt-eval` — changed to expect `[E033]`; NOTE: `to-float "NaN"` still produces E099 in code — tracked as `to-float-nan-error-code` below
+- [x] Investigate E062 (JsonRange), E063 (UriParseError), E091 (KindMismatch) — E062/E091 dead code (no callers); E063 raised by builtins_uri.rs, test added
+- [x] Fix stale `include_forbidden.llt-eval` and `include_path_not_allowed.llt-eval` — added clarifying comments (tests correctly verify $include is undefined)
+- [x] Fix `tests/corpus/valid/edge_cases/empty.llt-eval` — added `=== out` section
+- [x] Update `doc/10-errors.md` error code table — added E012, E013, E044, E071, E072, E081, E082 (7 entries)
+
+### to-float-nan-error-code: Fix to-float "NaN" producing E099 instead of E033
+
+`src/builtins.rs` around line 577: `to-float "NaN"` produces `EvalError::internal()` (E099) but should use `EvalError::float_not_finite()` (E033). The corpus test `to_float_nan_input.llt-eval` now expects E033 which will fail until the code is fixed.
+
+- [ ] Change `to-float` NaN/Infinity rejection from `EvalError::internal()` to `EvalError::float_not_finite()` in `src/builtins.rs`
 
 ### stale-comment-sequential-step: Delete misleading SequentialStep bug comment [Major]
 

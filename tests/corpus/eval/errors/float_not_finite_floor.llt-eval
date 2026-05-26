@@ -1,0 +1,5 @@
+# floor: infinity is not a finite number (E033)
+# Division by zero produces infinity: 1.0 / 0.0 = inf
+[floor [quot 1.0 0.0]]
+=== error
+[E033] floor: inf is not a finite number

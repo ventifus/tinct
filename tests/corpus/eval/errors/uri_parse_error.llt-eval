@@ -1,0 +1,4 @@
+# uri: invalid URI without scheme separator produces parse error (E063)
+[uri "not-a-valid-uri-no-colon"]
+=== error
+[E063] URI parse error: missing scheme

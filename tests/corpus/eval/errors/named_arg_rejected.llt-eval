@@ -1,0 +1,4 @@
+# floor builtin rejects named arguments (E023)
+[floor n: 3.7]
+=== error
+[E023] floor does not accept named arguments

@@ -1,4 +1,4 @@
-# to-float: "NaN" parses to a non-finite value and is rejected (E099)
+# to-float: "NaN" parses to a non-finite value and is rejected (E033)
 [to-float "NaN"]
 === error
-[E099] to-float: "NaN" parses to a non-finite value (NaN/Infinity not allowed)
+[E033] to-float: NaN is not a finite number

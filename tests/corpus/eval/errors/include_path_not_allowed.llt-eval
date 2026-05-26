@@ -1,6 +1,8 @@
 # no_fs
-# include was removed in include-decomp-prelude; this test now verifies that calling
-# [include] raises an undefined variable error (include is no longer a builtin).
+# TEST: $include builtin was removed (include-decomp-prelude sprint)
+# This test verifies that calling [include] raises E002 (undefined variable)
+# because $include is no longer defined. The test name is historical but the
+# behavior is correct: the removed builtin produces an undefined variable error.
 [include "restricted/secret.llt"]
 === error
-[E002]
+[E002] undefined variable: include

@@ -198,13 +198,13 @@ pub fn surface_node_get_field(
         (SurfaceExpression::Fn { params, .. }, "params") => params_to_list_dict(params, ctx),
         (SurfaceExpression::Fn { body, .. }, "body") => Value::Expression(Arc::clone(body)),
         (SurfaceExpression::Fn { return_ann, .. }, "return-ann") => {
-            annotation_opt_to_value(return_ann.as_ref())
+            annotation_opt_to_value(return_ann.as_ref(), ctx)
         }
         (SurfaceExpression::Fn { desugared, .. }, "desugared") => Value::Bool(*desugared),
 
         // --- TypeAssert ---
         (SurfaceExpression::TypeAssert { annotation, .. }, "annotation") => {
-            annotation_to_value(annotation)
+            annotation_to_value(annotation, ctx)
         }
         (SurfaceExpression::TypeAssert { expr: inner, .. }, "expr") => {
             Value::Expression(Arc::clone(inner))
@@ -213,7 +213,7 @@ pub fn surface_node_get_field(
         // --- Annotated ---
         (SurfaceExpression::Annotated { name, .. }, "name") => string_val(name),
         (SurfaceExpression::Annotated { annotation, .. }, "annotation") => {
-            annotation_to_value(annotation)
+            annotation_to_value(annotation, ctx)
         }
 
         // --- Rest ---
@@ -371,6 +371,13 @@ fn params_to_list_dict(
                 p.span,
             ))),
         );
+        // Expose the parameter's type annotation text so tinct code can reconstruct
+        // full signatures (e.g. "n@Int") without source text parsing.
+        let ann_val = annotation_opt_to_value(p.node.annotation.as_ref(), ctx);
+        payload.insert(
+            Key::String("annotation".into()),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(ann_val, p.span))),
+        );
         let p_variant = Value::Variant {
             tag: "Parameter".into(),
             payload: Some(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
@@ -436,27 +443,107 @@ pub fn dot_key_to_value(key: &DotKey) -> Value {
     }
 }
 
-/// Convert an Annotation to a Value::Variant (Simple | PropertyDict | Annotated).
-pub fn annotation_to_value(ann: &Spanned<Annotation>) -> Value {
-    match &ann.node {
-        Annotation::Simple(_) => Value::Variant {
-            tag: "Simple".into(),
-            payload: None,
-        },
-        Annotation::PropertyDict(_) => Value::Variant {
-            tag: "PropertyDict".into(),
-            payload: None,
-        },
-        Annotation::Annotated(_, _) => Value::Variant {
-            tag: "Annotated".into(),
-            payload: None,
-        },
+/// Convert an Annotation to a Value::Variant with text content exposed.
+///
+/// Returns a Variant with a payload Dict that exposes the annotation's content:
+///
+/// - `Simple(name)`        → `[Simple  text: name]`
+/// - `PropertyDict(entries)` → `[PropertyDict  text: "display"  doc: "..."  return: "..."]`
+///   The `doc:` and `return:` fields are present only when those keys exist.
+/// - `Annotated(name, inner)` → `[Annotated  text: "Name@Inner"  name: "Name"  inner: "Inner"]`
+///
+/// The `text` field always contains the Display representation.
+/// This enables tinct AST-traversal code to extract annotation content (return types,
+/// doc strings) without falling back to text parsing.
+pub fn annotation_to_value(
+    ann: &Spanned<Annotation>,
+    ctx: &std::sync::Arc<crate::eval::EvalContext>,
+) -> Value {
+    annotation_inner_to_value(&ann.node, ann.span, ctx)
+}
+
+fn annotation_inner_to_value(
+    ann: &Annotation,
+    span: crate::ast::Span,
+    ctx: &std::sync::Arc<crate::eval::EvalContext>,
+) -> Value {
+    use crate::value::Thunk;
+
+    let text = ann.to_string();
+
+    let mut payload_map = indexmap::IndexMap::new();
+    payload_map.insert(
+        Key::String("text".into()),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(&text), span))),
+    );
+
+    let tag = match ann {
+        Annotation::Simple(name) => {
+            payload_map.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+            );
+            "Simple"
+        }
+        Annotation::PropertyDict(entries) => {
+            // Expose well-known property keys: doc: and return:
+            for entry in entries {
+                if let Some(key_node) = &entry.node.key {
+                    if let SurfaceExpression::Str(key_name) = &key_node.expr {
+                        if key_name == "doc" || key_name == "return" {
+                            // For string literals (doc: "..."), use the raw string.
+                            // For other expressions, use Display.
+                            let clean = if let SurfaceExpression::Str(s) = &entry.node.value.expr {
+                                s.clone()
+                            } else {
+                                entry.node.value.to_string()
+                            };
+                            payload_map.insert(
+                                Key::String(key_name.clone().into()),
+                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                    string_val(&clean),
+                                    entry.span,
+                                ))),
+                            );
+                        }
+                    }
+                }
+            }
+            "PropertyDict"
+        }
+        Annotation::Annotated(name, inner) => {
+            let inner_text = inner.to_string();
+            payload_map.insert(
+                Key::String("name".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+            );
+            payload_map.insert(
+                Key::String("inner".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(&inner_text),
+                    span,
+                ))),
+            );
+            "Annotated"
+        }
+    };
+
+    let payload_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::Dict(payload_map),
+        span,
+    )));
+    Value::Variant {
+        tag: tag.into(),
+        payload: Some(payload_tid),
     }
 }
 
-fn annotation_opt_to_value(ann: Option<&Spanned<Annotation>>) -> Value {
+fn annotation_opt_to_value(
+    ann: Option<&Spanned<Annotation>>,
+    ctx: &std::sync::Arc<crate::eval::EvalContext>,
+) -> Value {
     match ann {
-        Some(a) => annotation_to_value(a),
+        Some(a) => annotation_to_value(a, ctx),
         None => Value::Dict(indexmap::IndexMap::new()),
     }
 }
