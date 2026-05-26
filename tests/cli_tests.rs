@@ -319,7 +319,7 @@ fn eval_format_llt_float() {
 #[test]
 fn eval_flag_deep_materialize() {
     // With --eval and -o json, the -o branch is taken; --eval is a no-op in this path.
-    // Deep materialization is handled internally by $builtin-to-json, not by main.rs.
+    // Deep materialization is handled internally by to-json (codecs/json.llt), not by main.rs.
     // This test verifies that --eval + -o json together produce correct JSON output.
     let (path, _dir) = write_temp_llt("eval_flag_deep", "[a: [b: [c: 42]]]");
     let output = Command::new(tinct_bin())
@@ -1691,8 +1691,9 @@ fn eval_proxy_json_serialization_error() {
 }
 
 #[test]
-fn json_serialization_error_function() {
-    // Functions cannot be serialized to JSON via $builtin-to-json (-o json).
+fn json_serialization_function_produces_null() {
+    // Functions serialized via to-json (codecs/json.llt) produce JSON null.
+    // This matches the catch-all in to-json-primitive (tinct's JSON serializer).
     let (path, _dir) = write_temp_llt("json_ser_function", "[fn [let x] x]");
     let output = Command::new(tinct_bin())
         .args(["run", "-o", "json", path.to_str().unwrap()])
@@ -1700,20 +1701,22 @@ fn json_serialization_error_function() {
         .expect("failed to run tinct");
 
     assert!(
-        !output.status.success(),
-        "expected non-zero exit code when serializing Function to JSON"
+        output.status.success(),
+        "expected exit 0 when serializing Function to JSON (produces null), stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("cannot serialize Function to JSON") || stderr.contains("E080"),
-        "expected error about Function JSON serialization, got: {stderr}"
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "null",
+        "expected JSON null for Function, got: {stdout}"
     );
 }
 
 #[test]
-fn json_serialization_error_seq() {
-    // Seqs cannot be serialized to JSON via $builtin-to-json (-o json).
-    // Use `| collect` to convert a Seq to a JSON array.
+fn json_serialization_seq_produces_array() {
+    // Seqs serialized via to-json (codecs/json.llt) produce a JSON array.
+    // to-json-seq collects the sequence and serializes each element.
     let (path, _dir) = write_temp_llt("json_ser_seq", "[seq 1 10]");
     let output = Command::new(tinct_bin())
         .args(["run", "-o", "json", path.to_str().unwrap()])
@@ -1721,13 +1724,14 @@ fn json_serialization_error_seq() {
         .expect("failed to run tinct");
 
     assert!(
-        !output.status.success(),
-        "expected non-zero exit code when serializing Seq to JSON"
+        output.status.success(),
+        "expected exit 0 when serializing Seq to JSON (produces array), stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stderr.contains("cannot serialize Seq to JSON") || stderr.contains("E080"),
-        "expected error about Seq JSON serialization, got: {stderr}"
+        stdout.trim().starts_with('[') && stdout.trim().ends_with(']'),
+        "expected JSON array for Seq, got: {stdout}"
     );
 }
 
@@ -3389,7 +3393,7 @@ fn seq_without_output_program_does_not_drain() {
 // default CLI output via stdlib/cli/out/json.llt
 //
 // These tests verify that `tinct run -o json` produces correct JSON output.
-// The formatter path is: -o json → json.llt → $builtin-to-json → print!
+// The formatter path is: -o json → json.llt → [include codecs/json.llt] → to-json → print!
 // ---------------------------------------------------------------------------
 
 #[test]

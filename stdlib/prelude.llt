@@ -2139,6 +2139,53 @@ narrow@[doc: "Narrow a capability to a subset of operations"]: builtin-narrow
 # I/O / parsing
 from-json@[doc: "Parse a JSON string into a value"]: builtin-from-json
 
+# JSON serializer (pure tinct implementation — no Rust primitive needed)
+# Serializes primitive values (Int, Float, Bool, String, Dict, Seq, Null) to
+# compact JSON strings. AST Variant values (Program/Document/Expression) from
+# codecs/json.llt are supported when loaded separately. Unknown types produce "null".
+#
+# Helper: escape special characters in a JSON string value
+to-json-escape: [fn [let s@String]
+  [replace "\t" "\\t"
+  [replace "\r" "\\r"
+  [replace "\n" "\\n"
+  [replace "\"" "\\\""
+  [replace "\\" "\\\\" s]]]]]]
+
+# Helper: wrap a string value in JSON quotes with escaping
+to-json-string: [fn [let s@String]
+  [str "\"" [to-json-escape s] "\""]]
+
+# Helper: serialize a dict to {"key":value,...}
+# entries returns a Seq of [key: k  value: v] dicts.
+to-json-dict-impl: [fn [let d]
+  [str "{"
+    [join ","
+      [map [fn [let entry] [str [to-json-string entry.key] ":" [to-json entry.value]]]
+           [entries d]]]
+    "}"]]
+
+# Helper: serialize a seq/list to [value,...]
+to-json-seq-impl: [fn [let s]
+  [str "[" [join "," [map to-json [collect s]]] "]"]]
+
+# Public: serialize any tinct value to compact JSON string.
+# Handles: Int, Float, Bool, String, Null ([]), Dict, Seq.
+# Unknown/unserializable types produce "null".
+to-json@[doc: "Serialize a tinct value to a compact JSON string.
+Handles Int, Float, Bool, String, Null ([]), Dict, and Seq values.
+Returns a String. Unserializable values (Fn, Handle, Task, etc.) produce null."]:
+  [fn [let v]
+    [cond [
+      [[= v []]     "null"]
+      [[bool? v]    [if v "true" "false"]]
+      [[int? v]     [str v]]
+      [[float? v]   [str v]]
+      [[str? v]     [to-json-string v]]
+      [[seq? v]     [to-json-seq-impl v]]
+      [[dict? v]    [to-json-dict-impl v]]
+      [true         "null"]]]]
+
 # String trimming
 trim@[doc: "Remove leading and trailing whitespace from a string"]: builtin-trim
 

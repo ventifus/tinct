@@ -695,6 +695,23 @@ are already tracked in `runtime-v2-fix-regressions`. These 4 are not yet tracked
 - [x] `test_circular_dependency_cycle_path` — relaxed assertion for iterative CEK machine (cycle_path empty is expected)
 - [x] `test_instance_fd_consistency_violation` — re-ignored with updated reason
 
+### ci-regressions-2026-05-26: Fix pre-existing CI failures found during profiling-sigint-flush sprint
+
+Found during `just ci` run on 2026-05-26. All pre-existing (not introduced by the current sprint).
+
+**Lib test failures (under `--test-threads=1`):**
+- [ ] `builtins_async::tests::*` (8 tests) — all pass when run without `--test-threads=1` (e.g., `just test-one builtins_async`); fail only under serial execution. Root cause: async tests use a shared global tokio runtime state that conflicts with sequential ordering. Fix: isolate async runtime state per test or use `#[tokio::test]` isolation. (`src/builtins_async.rs`)
+- [ ] `typecheck::tests::test_no_false_positive_warning_for_discharged_constraints` — emits 3 spurious T013 warnings for `_t2`, `_t3`, `_t4` (Addable constraint from `[+ 1 2]` not properly discharged). Regressed after runtime-v2 merge (was passing per TODO.md line 750). Root cause: `is_discharged` in `type_env.rs` not finding the substitution binding for these type vars after SCC generalization. (`src/type_env.rs`, `src/typecheck_dict.rs`)
+
+**CLI test failures (8 tests, all pre-existing from builtin-privacy-primary-names sprint):**
+- [ ] `expr_flag_simple`, `eval_stdin_json_injection` — json.llt now includes codecs/json.llt and uses tinct `to-json` (json-delete-to-json sprint). If tests still fail, the root cause is the `%.x` pipeline lazy evaluation issue: output formatter receives a lazy thunk; when forced inside json.llt's context, `%` may resolve wrong. (`stdlib/cli/out/json.llt`, `src/main.rs` pipeline output path)
+- [ ] `cap_fs_read_only_write_fails` — raw-create with read-only perms should fail but succeeds. Cap-fs enforcement regression. (`tests/cli_tests.rs`, `src/main.rs` cap-fs handling)
+- [ ] `cap_file_no_fs_suppresses_injection` — `--cap-file` + `--no-fs` interaction broken. (`tests/cli_tests.rs`)
+- [ ] `no_fs_flag_blocks_include` — `--no-fs` should block `$include` but doesn't (include-decomp sprint changed include behavior). (`tests/cli_tests.rs`, `src/main.rs`)
+- [ ] `no_fs_flag_and_timeout_flag_conjunctive_enforcement` — `--no-fs` + `--timeout` conjunctive enforcement broken. (`tests/cli_tests.rs`)
+- [ ] `timeout_flag_exits_with_sigalrm` — `--timeout 1s` on infinite workload should exit non-zero via SIGALRM but doesn't. Possible interaction with new SIGINT handler installed by profiling sprint. (`tests/cli_tests.rs`, `src/main.rs`)
+- [ ] `type_warning_explicit_unknown_emitted_on_stderr` — T011 warning for `@Unknown` annotation not emitted on stderr. (`tests/cli_tests.rs`)
+
 ### known-bugs-fix: Fix LSP expansion, docgen arity, eval_corpus OOM
 
 - [x] **`just docgen` fails with `[E020] arity mismatch`:** removed dead-code `[strings: [include %libdir "strings.llt"] path: [include %libdir "path.llt"]]` intermediate dict from `scripts/docgen.llt` — those bindings were never used downstream; the arity mismatch root cause in the multi-document pipeline remains uninvestigated (static analysis could not reproduce it) (`scripts/docgen.llt`)
@@ -825,16 +842,6 @@ Goal: all JSON handling in tinct stdlib; `serde_json` removed from `Cargo.toml`.
 
 **Sprint order:** json-no-stdin → json-delete-to-json → json-describe-tinct → json-pretty-indent → json-native-from-json → json-remove-serde-dep
 
-### json-delete-to-json: Delete builtin_to_json and value_to_json; json.llt uses codecs/json.llt
-
-`$builtin-to-json` (builtins_meta.rs) and `value_to_json` (lib.rs) are Rust JSON serializers. `stdlib/codecs/json.llt` has a complete tinct `to-json`. The `cli/out/json.llt` formatter should call the tinct version, not the Rust primitive.
-
-- [ ] Change `stdlib/cli/out/json.llt` to include codecs/json.llt and call `[to-json %]` instead of `[call $builtin-to-json %]` (`stdlib/cli/out/json.llt`)
-- [ ] Delete `builtin_to_json` function from `src/builtins_meta.rs`
-- [ ] Remove `"to-json"` and `"builtin-to-json"` registrations from `standard_builtins()` in `src/builtins.rs`
-- [ ] Delete `value_to_json` from `src/lib.rs` — zero callers after formatter change (`src/lib.rs`)
-- [ ] Remove `value_to_json` from `pub` exports in `src/lib.rs`
-
 ### json-describe-tinct: Replace describe command serde_json with tinct to-json
 
 `run_describe` in `main.rs` builds JSON output with `serde_json::json!()` macros and `serde_json::to_string_pretty`.
@@ -844,7 +851,7 @@ Goal: all JSON handling in tinct stdlib; `serde_json` removed from `Cargo.toml`.
 
 ### json-pretty-indent: Add indented pretty-print support to `-o json-pretty`
 
-`stdlib/cli/out/json-pretty.llt` currently produces compact JSON identical to `-o json` (delegates to `$builtin-to-json`). The `codecs/json.llt` tinct implementation also produces compact output with no indentation. Once `json-delete-to-json` makes `json.llt` use `codecs/json.llt`, `json-pretty.llt` should call a `to-json-pretty` variant that adds 2-space indentation.
+`stdlib/cli/out/json-pretty.llt` currently produces compact JSON identical to `-o json` (includes `codecs/json.llt` and delegates to `to-json`). The `codecs/json.llt` tinct implementation produces compact output with no indentation. This sprint adds indentation via a new `to-json-pretty` variant.
 
 **Depends on:** json-delete-to-json (codecs/json.llt must be the canonical JSON path first)
 
@@ -1800,84 +1807,44 @@ Full audit of all stdlib `.llt` files conducted 2026-05-24. Four categories: uni
 
 ---
 
-### stdlib-conformance-unified-bindings: Migrate all stdlib files to `[fn [let ...] body]` syntax
+### stdlib-conformance-unified-bindings: Migrate all stdlib files to `[fn [let ...] body]` syntax ✅ DONE
 
 **Whatif:** `unified-bindings`
 
-Per unified-bindings.md (accepted 2026-05-17), `[fn [params] body]` without `[let ...]` is a parse error. Parser currently accepts both forms (tracked as `unified-bindings-parser-enforcement`). All new and existing stdlib code must be migrated now so that enforcement can be enabled cleanly.
+Parser enforces `[fn [let ...] body]` exclusively — `[fn [params] body]` without `[let ...]` is a parse error. All stdlib files verified clean (2026-05-26: grep for old-form `\[fn[^[]*\[[^l\]]` returns zero matches across all files).
 
-**`stdlib/strings.llt`** — 3 public functions missing `[let ...]`:
-- [ ] `pad-left` (line 113): `[fn@String [s@String width@Int pad-char@String]` → `[fn@String [let s@String width@Int pad-char@String]` (`stdlib/strings.llt:113`)
-- [ ] `pad-right` (line 124): same pattern (`stdlib/strings.llt:124`)
-- [ ] `str-reverse` (line 138): `[fn@String [s@String]` → `[fn@String [let s@String]` (`stdlib/strings.llt:138`)
+**`stdlib/strings.llt`**:
+- [x] `pad-left`, `pad-right`, `str-reverse` — all use `[let ...]`
 
-**`stdlib/datetime.llt`** — all 3 public functions missing `[let ...]`:
-- [ ] `days-between` (line 9): `[fn@Int [a@Timestamp b@Timestamp]` → add `let` (`stdlib/datetime.llt:9`)
-- [ ] `timestamp-in-range?` (line 10): `[fn@Bool [t@Timestamp start@Timestamp end@Timestamp]` → add `let` (`stdlib/datetime.llt:10`)
-- [ ] `format-date` (line 11): `[fn@String [t@Timestamp]` → add `let` (`stdlib/datetime.llt:11`)
+**`stdlib/datetime.llt`**:
+- [x] `days-between`, `timestamp-in-range?`, `format-date` — all use `[let ...]`
 
-**`stdlib/io.llt`** — 1 function missing `[let ...]`:
-- [ ] `write-lines` (line 60): inner reduce lambda `[fn [h line]` → `[fn [let h line]` (`stdlib/io.llt:60`)
+**`stdlib/io.llt`**:
+- [x] `write-lines` inner lambda — uses `[let ...]`
 
-**`stdlib/math.llt`** — all 4 functions missing `[let ...]`:
-- [ ] `hypot` (line 41): `[fn@Float [a@Number b@Number]` → add `let` (`stdlib/math.llt:41`)
-- [ ] `deg->rad` (line 48): `[fn@Float [d@Number]` → add `let` (`stdlib/math.llt:48`)
-- [ ] `rad->deg` (line 55): `[fn@Float [r@Number]` → add `let` (`stdlib/math.llt:55`)
-- [ ] `log-base` (line 62): `[fn@Float [base@Number x@Number]` → add `let` (`stdlib/math.llt:62`)
+**`stdlib/math.llt`**:
+- [x] `hypot`, `deg->rad`, `rad->deg`, `log-base` — all use `[let ...]`
 
-**`stdlib/net.llt`** — all 9 functions (2 private, 7 public) missing `[let ...]`:
-- [ ] `parse-header-fields-impl` (line 19): add `let` (`stdlib/net.llt:19`)
-- [ ] `parse-header-body` (line 32): add `let` (`stdlib/net.llt:32`)
-- [ ] `build-http-request` (line 43): add `let` (`stdlib/net.llt:43`)
-- [ ] `parse-http-response` (line 48): add `let` (`stdlib/net.llt:48`)
-- [ ] `http-get` (line 61): add `let` (`stdlib/net.llt:61`)
-- [ ] `uri-params` (line 83): add `let` to outer fn and inner lambda (`stdlib/net.llt:83`)
-- [ ] `spki-pin` (line 95): add `let` (`stdlib/net.llt:95`)
-- [ ] `uri-origin` (line 100): add `let` (`stdlib/net.llt:100`)
-- [ ] `uri->string` (line 106): add `let` (`stdlib/net.llt:106`)
+**`stdlib/net.llt`**:
+- [x] All 9 functions — use `[let ...]`
 
-**`stdlib/encoding.llt`** — ALL ~26 functions missing `[let ...]` (entire file is a single flat dict):
-- [ ] Add `let` to all function parameter lists in the entire file (`stdlib/encoding.llt`)
-- Affected: `hex-encode`, `hex-encode-impl`, `hex-encode-step`, `int-to-hex`, `hex-digit`, `hex-decode`, `hex-decode-impl`, `hex-decode-step`, `hex-digit-to-int`, `hex-digit-to-int-impl`, `base64-encode`, `base64-encode-impl`, `base64-encode-group`, `base64-encode-3bytes`, `base64-encode-2bytes`, `base64-encode-1byte`, `base64-char`, `base64-decode`, `base64-decode-impl`, `base64-decode-group`, `base64-decode-4chars`, `base64-char-to-int`, `base64-char-to-int-search`, `mask-apply`, `mask-apply-impl`, `mask-apply-step`
+**`stdlib/encoding.llt`**:
+- [x] All ~26 functions — use `[let ...]`
 
-**`stdlib/regex.llt`** — ALL ~17 functions missing `[let ...]` in both dicts:
-- [ ] Add `let` to all function parameter lists in the entire file (`stdlib/regex.llt`)
-- Affected: `re-ensure-pattern`, `re-match-impl`, `re-match-try`, `re-match-check`, `re-find-impl`, `re-find-try`, `re-find-check`, `re-findall-impl`, `re-findall-try`, `re-findall-check`, `re-compile`, `re-match`, `re-find`, `re-findall`, `re-replace`, `re-split`, `re-escape-replacement`
+**`stdlib/regex.llt`**:
+- [x] All ~17 functions — use `[let ...]`
 
-**`stdlib/path.llt`** — 3 private helper functions missing `[let ...]`:
-- [ ] `dirname-impl` (line 20): `[fn@String [parts@Dict]` → add `let` (`stdlib/path.llt:20`)
-- [ ] `dirname-drop-last` (line 29): `[fn@Dict [parts@Dict ks i@Int acc@Dict]` → add `let` (`stdlib/path.llt:29`)
-- [ ] `extension-impl` (line 37): `[fn@String [parts@Dict]` → add `let` (`stdlib/path.llt:37`)
+**`stdlib/path.llt`**:
+- [x] `dirname-impl`, `dirname-drop-last`, `extension-impl` — use `[let ...]`
 
-**`stdlib/codecs/toml-lite.llt`** — ~14 private helper functions missing `[let ...]`:
-- [ ] Add `let` to: `parse-section-name` (45), `parse-kv-build` (64), `toml-set-at-path-impl-entry` (130), `toml-set-at-path-rec` (139), `toml-set-at-path-final` (151), `toml-set-at-path-final-check` (154), `toml-merge-into-last-impl` (161), `is-array?` (166), `is-array?-check-keys` (169), `toml-append-array-rec` (176), `toml-append-array-table-impl` (188), `toml-set-at-path` (242), `toml-merge-into-last` (247), `toml-append-array-table` (253) (`stdlib/codecs/toml-lite.llt`)
+**`stdlib/codecs/toml-lite.llt`**:
+- [x] All ~14 private helper functions — use `[let ...]`
 
-**`stdlib/cli/out/csv.llt`** — ALL functions missing `[let ...]`:
-- [ ] Add `let` to: `csv-quote` (8), `csv-header` (12), `csv-row` (19), `csv-rows` (26), `csv` (33), `csv-impl` (38) (`stdlib/cli/out/csv.llt`)
+**`stdlib/cli/out/csv.llt`**, **`env.llt`**, **`yaml.llt`**, **`toml.llt`**:
+- [x] All functions — use `[let ...]`
 
-**`stdlib/cli/out/env.llt`** — ALL functions missing `[let ...]`:
-- [ ] Add `let` to: `env-entry` (6), `env-entries` (10), `env` (17) (`stdlib/cli/out/env.llt`)
-
-**`stdlib/cli/out/yaml.llt`** — ALL functions missing `[let ...]`:
-- [ ] Add `let` to all ~15 function definitions in the file (`stdlib/cli/out/yaml.llt`)
-- Affected: `yaml-needs-quote?`, `yaml-quote`, `yaml-list?`, `yaml-value`, `yaml-object`, `yaml-list`, `yaml-list-items`, `yaml-list-item`, `yaml-list-value`, `yaml-dict-inline`, `yaml-dict`, `yaml-dict-entries`, `yaml-dict-entry`, `yaml-dict-value`, `yaml`
-
-**`stdlib/cli/out/toml.llt`** — ALL functions missing `[let ...]`:
-- [ ] Add `let` to all ~11 function definitions in the file (`stdlib/cli/out/toml.llt`)
-- Affected: `toml-quote`, `toml-list?`, `toml-scalar`, `toml-array`, `toml-array-items`, `toml-partition`, `toml-flat`, `toml-tables`, `toml-value`, `toml`, `toml-impl`
-
-**`stdlib/protocols/dns.llt`** — ALL private functions + public fn bodies missing `[let ...]`:
-- [ ] Add `let` to all function parameter lists in the private dict: `dns-quot` (48), `dns-quot-impl` (53), `dns-mod` (60), `dns-encode-u16-be` (68), `dns-encode-label` (77), `dns-encode-labels-impl` (83), `dns-encode-name` (91), `dns-encode-labels-step` (94), `dns-build-header` (109), `dns-build-question` (123); also the inline `[fn@String ...]` bodies of `encode-dns-name` (165) and `build-dns-query` (185) (`stdlib/protocols/dns.llt`)
-
-**`stdlib/protocols/websocket.llt`** — ALL functions missing `[let ...]`:
-- [ ] Add `let` to all ~22 function parameter lists in the file (`stdlib/protocols/websocket.llt`)
-- Affected: `ws-quot`, `ws-quot-impl`, `ws-mod`, `ws-pow2`, `ws-pow2-impl`, `ws-xor-bit`, `ws-xor`, `ws-xor-impl`, `ws-mask-payload-impl`, `ws-build-base-header`, `ws-build-ext16`, `ws-build-frame-dispatch`, `ws-build-frame-short`, `ws-build-frame-medium`, `ws-build-frame-result`, `ws-payload-len7`, `ws-parse-ext16`, `ws-parse-ext64-impl`, `ws-parse-header-result`, `ws-parse-header-extended`, `ws-parse-header-bytes`, `ws-parse-header-bytes-step`; also the inline fn bodies in `build-ws-frame` (239), `parse-ws-frame-header` (259), `build-ws-handshake` (276)
-
-**`stdlib/protocols/socks5.llt`** — ALL functions missing `[let ...]`:
-- [ ] Add `let` to all ~20 function parameter lists in the private dict plus inline fn bodies in public dict (`stdlib/protocols/socks5.llt`)
-
-**`stdlib/protocols/grpc.llt`** — ALL functions missing `[let ...]`:
-- [ ] Add `let` to all 5 private helper function parameter lists plus inline fn bodies in `build-grpc-frame` (119) and `parse-grpc-frame-header` (140) (`stdlib/protocols/grpc.llt`)
+**`stdlib/protocols/dns.llt`**, **`websocket.llt`**, **`socks5.llt`**, **`grpc.llt`**:
+- [x] All functions — use `[let ...]`
 
 ---
 

@@ -11,7 +11,7 @@
 //! - [`create_stdlib_env`] -- create the standard library environment (Rust builtins + LLT prelude)
 //! - [`EvalContext`] -- evaluation context with base directory and stdlib environment; include_cache memoizes `include` results (same file = same cached thunk)
 //! - [`json_to_value`] -- convert `serde_json::Value` to LLT `Value`
-//! - [`value_to_json`] -- convert LLT `Value` to `serde_json::Value`
+//! - [`visit_value`] / [`JsonVisitor`] -- traverse a materialized `Value` tree for JSON output
 //! - [`value_to_display_string`] -- render a materialized `Value` as a human-readable string
 //! - [`MAX_EVAL_DEPTH`] -- recursion limit for evaluation (256)
 //! - [`MAX_FILE_SIZE`] -- file size limit for `include` and stdin (10 MB)
@@ -224,7 +224,7 @@ fn attach_and_format_error(
 /// Runs advisory type checking before evaluation (type errors are ignored).
 /// The output format recursively materializes all values (including dict entries)
 /// into a readable representation. Primarily used for testing and corpus validation.
-/// For JSON output, use [`value_to_json`] after evaluation instead.
+/// For JSON output, use [`visit_value`] with [`JsonVisitor`] after evaluation instead.
 pub fn eval_source(input: &str) -> Result<String, String> {
     eval_source_with_config(input, false)
 }
@@ -629,7 +629,7 @@ pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
 
 // --- Value Serializer Visitor Pattern ---
 //
-// `value_to_json` and `value_to_display_string` share the same structural traversal
+// `visit_value` (with `JsonVisitor`) and `value_to_display_string` share the same structural traversal
 // (depth guard, Overlay flattening, Dict/Seq entry materialization) but diverge at
 // leaf rendering. A `ValueVisitor` trait captures the shared traversal in `visit_value`
 // while each visitor impl handles the format-specific leaf rendering.
@@ -643,7 +643,7 @@ pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
 ///
 /// Dict entries are pre-converted to `Self::Output` before `visit_dict` is called,
 /// so the visitor need not recurse manually.
-pub(crate) trait ValueVisitor {
+pub trait ValueVisitor {
     type Output;
 
     fn visit_int(&self, v: i64) -> Self::Output;
@@ -696,7 +696,7 @@ pub(crate) trait ValueVisitor {
 /// # Panics
 ///
 /// Does not panic. All errors are propagated via `Result`.
-pub(crate) fn visit_value<V: ValueVisitor>(
+pub fn visit_value<V: ValueVisitor>(
     val: &value::Value,
     ctx: &Arc<eval::EvalContext>,
     depth: usize,
@@ -846,7 +846,7 @@ pub(crate) fn visit_value<V: ValueVisitor>(
 
 // --- JSON Visitor ---
 
-struct JsonVisitor;
+pub struct JsonVisitor;
 
 impl ValueVisitor for JsonVisitor {
     type Output = serde_json::Value;
@@ -880,8 +880,8 @@ impl ValueVisitor for JsonVisitor {
         serde_json::Value::Null
     }
     fn visit_dict(&self, entries: Vec<(value::Key, serde_json::Value)>) -> serde_json::Value {
-        // LLT null compatibility: [] (empty dict) serializes as JSON null,
-        // matching builtin_to_json and the old format_with_json_llt behavior.
+        // LLT null compatibility: [] (empty dict) serializes as JSON null.
+        // Matches the tinct to-json (codecs/json.llt) null? convention.
         if entries.is_empty() {
             return serde_json::Value::Null;
         }
@@ -1105,36 +1105,6 @@ impl ValueVisitor for DisplayVisitor {
     }
 }
 
-/// Convert a [`Value`](value::Value) to a [`serde_json::Value`].
-///
-/// Dict entry thunks are materialized on demand internally via [`eval::materialize`]; the caller
-/// need only pass a shallowly-materialized top-level value. If all keys are sequential integers
-/// starting from 0 the dict is serialized as a JSON array; otherwise it becomes a JSON object
-/// (integer keys are stringified).
-///
-/// Unlike [`value_to_display_string`], this rejects NaN/Infinity floats (not valid JSON).
-///
-/// Returns an error for:
-/// - `Function` / `Builtin` values (no JSON representation)
-/// - `Float` values that are NaN or infinite (not representable in JSON)
-/// - `Seq` values (must be collected to a Dict first via `$collect`)
-/// - Exceeding the maximum serialization depth (256 levels, `MAX_JSON_OUTPUT_DEPTH` in `JsonVisitor`)
-pub fn value_to_json(
-    val: &value::Value,
-    ctx: &Arc<eval::EvalContext>,
-    span: ast::Span,
-) -> Result<serde_json::Value, Box<error::EvalError>> {
-    let depth = 0;
-    // Seq has a span-bearing error; handle before the generic visitor.
-    if let value::Value::Seq { head, .. } = val {
-        let head_thunk = ctx.get_thunk(*head);
-        return Err(
-            error::EvalError::value_not_serializable("Seq".to_string(), head_thunk.span).into(),
-        );
-    }
-    visit_value(val, ctx, depth, &JsonVisitor, span)
-}
-
 /// Convert a Value into a displayable string (LLT format, not JSON).
 ///
 /// Dict entry thunks are materialized on demand internally via [`eval::materialize`]; the caller
@@ -1144,7 +1114,7 @@ pub fn value_to_json(
 /// Unlike `Value::Debug`, this renders dict values showing the complete
 /// structure, not just keys.
 ///
-/// Unlike [`value_to_json`], this accepts NaN/Infinity floats (renders as `Float(NaN)`, `Float(inf)`).
+/// Unlike [`JsonVisitor`] (used via [`visit_value`]), this accepts NaN/Infinity floats (renders as `Float(NaN)`, `Float(inf)`).
 ///
 /// `depth` tracks recursion depth to prevent stack overflow from deeply nested
 /// dict-of-dicts structures. Uses `MAX_DISPLAY_DEPTH` (5 levels); truncates deeper nesting with `...`.
@@ -1191,19 +1161,40 @@ mod tests {
 
     #[test]
     fn test_json_int() {
-        let result = value_to_json(&Value::Int(42), &test_ctx(), ast::Span::origin()).unwrap();
+        let result = visit_value(
+            &Value::Int(42),
+            &test_ctx(),
+            0,
+            &JsonVisitor,
+            ast::Span::origin(),
+        )
+        .unwrap();
         assert_eq!(result, serde_json::json!(42));
     }
 
     #[test]
     fn test_json_int_negative() {
-        let result = value_to_json(&Value::Int(-100), &test_ctx(), ast::Span::origin()).unwrap();
+        let result = visit_value(
+            &Value::Int(-100),
+            &test_ctx(),
+            0,
+            &JsonVisitor,
+            ast::Span::origin(),
+        )
+        .unwrap();
         assert_eq!(result, serde_json::json!(-100));
     }
 
     #[test]
     fn test_json_int_zero() {
-        let result = value_to_json(&Value::Int(0), &test_ctx(), ast::Span::origin()).unwrap();
+        let result = visit_value(
+            &Value::Int(0),
+            &test_ctx(),
+            0,
+            &JsonVisitor,
+            ast::Span::origin(),
+        )
+        .unwrap();
         assert_eq!(result, serde_json::json!(0));
     }
 
@@ -1211,7 +1202,14 @@ mod tests {
     fn test_json_float() {
         // 3.14 tests float serialization, not π.
         #[allow(clippy::approx_constant)]
-        let result = value_to_json(&Value::Float(3.14), &test_ctx(), ast::Span::origin()).unwrap();
+        let result = visit_value(
+            &Value::Float(3.14),
+            &test_ctx(),
+            0,
+            &JsonVisitor,
+            ast::Span::origin(),
+        )
+        .unwrap();
         #[allow(clippy::approx_constant)]
         {
             assert_eq!(result, serde_json::json!(3.14));
@@ -1220,28 +1218,50 @@ mod tests {
 
     #[test]
     fn test_json_float_negative() {
-        let result = value_to_json(&Value::Float(-2.5), &test_ctx(), ast::Span::origin()).unwrap();
+        let result = visit_value(
+            &Value::Float(-2.5),
+            &test_ctx(),
+            0,
+            &JsonVisitor,
+            ast::Span::origin(),
+        )
+        .unwrap();
         assert_eq!(result, serde_json::json!(-2.5));
     }
 
     #[test]
     fn test_json_float_zero() {
-        let result = value_to_json(&Value::Float(0.0), &test_ctx(), ast::Span::origin()).unwrap();
+        let result = visit_value(
+            &Value::Float(0.0),
+            &test_ctx(),
+            0,
+            &JsonVisitor,
+            ast::Span::origin(),
+        )
+        .unwrap();
         assert_eq!(result, serde_json::json!(0.0));
     }
 
     #[test]
     fn test_json_float_nan_error() {
-        let err =
-            value_to_json(&Value::Float(f64::NAN), &test_ctx(), ast::Span::origin()).unwrap_err();
+        let err = visit_value(
+            &Value::Float(f64::NAN),
+            &test_ctx(),
+            0,
+            &JsonVisitor,
+            ast::Span::origin(),
+        )
+        .unwrap_err();
         assert!(err.kind.to_string().contains("NaN"));
     }
 
     #[test]
     fn test_json_float_infinity_error() {
-        let err = value_to_json(
+        let err = visit_value(
             &Value::Float(f64::INFINITY),
             &test_ctx(),
+            0,
+            &JsonVisitor,
             ast::Span::origin(),
         )
         .unwrap_err();
@@ -1250,9 +1270,11 @@ mod tests {
 
     #[test]
     fn test_json_float_neg_infinity_error() {
-        let err = value_to_json(
+        let err = visit_value(
             &Value::Float(f64::NEG_INFINITY),
             &test_ctx(),
+            0,
+            &JsonVisitor,
             ast::Span::origin(),
         )
         .unwrap_err();
@@ -1261,21 +1283,37 @@ mod tests {
 
     #[test]
     fn test_json_string() {
-        let result = value_to_json(&string_val("hello"), &test_ctx(), ast::Span::origin()).unwrap();
+        let result = visit_value(
+            &string_val("hello"),
+            &test_ctx(),
+            0,
+            &JsonVisitor,
+            ast::Span::origin(),
+        )
+        .unwrap();
         assert_eq!(result, serde_json::json!("hello"));
     }
 
     #[test]
     fn test_json_string_empty() {
-        let result = value_to_json(&string_val(""), &test_ctx(), ast::Span::origin()).unwrap();
+        let result = visit_value(
+            &string_val(""),
+            &test_ctx(),
+            0,
+            &JsonVisitor,
+            ast::Span::origin(),
+        )
+        .unwrap();
         assert_eq!(result, serde_json::json!(""));
     }
 
     #[test]
     fn test_json_string_with_special_chars() {
-        let result = value_to_json(
+        let result = visit_value(
             &string_val("line\nnewline"),
             &test_ctx(),
+            0,
+            &JsonVisitor,
             ast::Span::origin(),
         )
         .unwrap();
@@ -1284,22 +1322,36 @@ mod tests {
 
     #[test]
     fn test_json_bool_true() {
-        let result = value_to_json(&Value::Bool(true), &test_ctx(), ast::Span::origin()).unwrap();
+        let result = visit_value(
+            &Value::Bool(true),
+            &test_ctx(),
+            0,
+            &JsonVisitor,
+            ast::Span::origin(),
+        )
+        .unwrap();
         assert_eq!(result, serde_json::json!(true));
     }
 
     #[test]
     fn test_json_bool_false() {
-        let result = value_to_json(&Value::Bool(false), &test_ctx(), ast::Span::origin()).unwrap();
+        let result = visit_value(
+            &Value::Bool(false),
+            &test_ctx(),
+            0,
+            &JsonVisitor,
+            ast::Span::origin(),
+        )
+        .unwrap();
         assert_eq!(result, serde_json::json!(false));
     }
 
     #[test]
     fn test_json_dict_empty_is_null() {
-        // Empty dict [] is LLT's null value; value_to_json serializes it as JSON null
-        // to match builtin-to-json and the LLT null compatibility convention.
+        // Empty dict [] is LLT's null value; JsonVisitor serializes it as JSON null
+        // to match the LLT null compatibility convention.
         let dict = Value::Dict(IndexMap::new());
-        let result = value_to_json(&dict, &test_ctx(), ast::Span::origin()).unwrap();
+        let result = visit_value(&dict, &test_ctx(), 0, &JsonVisitor, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::Value::Null);
     }
 
@@ -1310,7 +1362,7 @@ mod tests {
         map.insert(Key::String("name".into()), thunk(string_val("Alice")));
         map.insert(Key::String("age".into()), thunk(Value::Int(30)));
         let val = make_dict(map, &ctx);
-        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
+        let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!({"name": "Alice", "age": 30}));
     }
 
@@ -1322,7 +1374,7 @@ mod tests {
         map.insert(Key::Int(5), thunk(string_val("five")));
         map.insert(Key::Int(10), thunk(string_val("ten")));
         let val = make_dict(map, &ctx);
-        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
+        let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!({"5": "five", "10": "ten"}));
     }
 
@@ -1333,7 +1385,7 @@ mod tests {
         map.insert(Key::Int(0), thunk(string_val("zero")));
         map.insert(Key::String("x".into()), thunk(Value::Int(1)));
         let val = make_dict(map, &ctx);
-        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
+        let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!({"0": "zero", "x": 1}));
     }
 
@@ -1346,7 +1398,7 @@ mod tests {
         map.insert(Key::Int(1), thunk(string_val("b")));
         map.insert(Key::Int(2), thunk(string_val("c")));
         let val = make_dict(map, &ctx);
-        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
+        let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!(["a", "b", "c"]));
     }
 
@@ -1356,7 +1408,7 @@ mod tests {
         let mut map = IndexMap::new();
         map.insert(Key::Int(0), thunk(Value::Bool(true)));
         let val = make_dict(map, &ctx);
-        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
+        let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!([true]));
     }
 
@@ -1369,7 +1421,7 @@ mod tests {
         map.insert(Key::Int(0), thunk(string_val("a")));
         // First key is 1 at index 0 -> not array-like
         let val = make_dict(map, &ctx);
-        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
+        let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!({"1": "b", "0": "a"}));
     }
 
@@ -1381,7 +1433,7 @@ mod tests {
         map.insert(Key::Int(1), thunk(Value::Int(10)));
         map.insert(Key::Int(2), thunk(Value::Int(20)));
         let val = make_dict(map, &ctx);
-        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
+        let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!({"1": 10, "2": 20}));
     }
 
@@ -1395,7 +1447,7 @@ mod tests {
         outer.insert(Key::String("inner".into()), thunk(inner_val));
         outer.insert(Key::String("y".into()), thunk(Value::Int(2)));
         let val = make_dict(outer, &ctx);
-        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
+        let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!({"inner": {"x": 1}, "y": 2}));
     }
 
@@ -1413,7 +1465,7 @@ mod tests {
         arr.insert(Key::Int(0), thunk(obj1_val));
         arr.insert(Key::Int(1), thunk(obj2_val));
         let val = make_dict(arr, &ctx);
-        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
+        let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
         assert_eq!(
             result,
             serde_json::json!([{"name": "Alice"}, {"name": "Bob"}])
@@ -1428,7 +1480,7 @@ mod tests {
             env: Arc::new(RwLock::new(Environment::new())),
             annotation: None,
         };
-        let err = value_to_json(&f, &test_ctx(), ast::Span::origin()).unwrap_err();
+        let err = visit_value(&f, &test_ctx(), 0, &JsonVisitor, ast::Span::origin()).unwrap_err();
         assert!(
             err.kind
                 .to_string()
@@ -1441,7 +1493,7 @@ mod tests {
 
     #[test]
     fn test_json_function_error_span_threaded() {
-        // Verify that value_to_json uses the threaded span in errors (not Span::origin)
+        // Verify that visit_value uses the threaded span in errors (not Span::origin)
         let f = Value::Function {
             params: Rc::new(vec![]),
             body: Arc::new(ast::Spanned::new(CoreExpr::Int(0), test_span(1, 1, 1, 1))),
@@ -1449,7 +1501,7 @@ mod tests {
             annotation: None,
         };
         let call_site_span = test_span(3, 5, 3, 20);
-        let err = value_to_json(&f, &test_ctx(), call_site_span).unwrap_err();
+        let err = visit_value(&f, &test_ctx(), 0, &JsonVisitor, call_site_span).unwrap_err();
         assert_eq!(err.definition_span, call_site_span);
     }
 
@@ -1470,7 +1522,7 @@ mod tests {
                 tail: ctx.alloc_thunk(tail_thunk),
             }
         };
-        let err = value_to_json(&seq, &ctx, ast::Span::origin()).unwrap_err();
+        let err = visit_value(&seq, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap_err();
         assert!(
             err.kind
                 .to_string()
@@ -1502,7 +1554,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
         });
-        let err = value_to_json(&b, &test_ctx(), ast::Span::origin()).unwrap_err();
+        let err = visit_value(&b, &test_ctx(), 0, &JsonVisitor, ast::Span::origin()).unwrap_err();
         assert!(
             err.kind
                 .to_string()
@@ -1520,7 +1572,7 @@ mod tests {
         let proxy = Value::Proxy {
             handler: ctx.alloc_thunk(handler_thunk),
         };
-        let err = value_to_json(&proxy, &ctx, ast::Span::origin()).unwrap_err();
+        let err = visit_value(&proxy, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap_err();
         assert!(
             err.kind
                 .to_string()
@@ -1533,15 +1585,27 @@ mod tests {
 
     #[test]
     fn test_json_int_max() {
-        let result =
-            value_to_json(&Value::Int(i64::MAX), &test_ctx(), ast::Span::origin()).unwrap();
+        let result = visit_value(
+            &Value::Int(i64::MAX),
+            &test_ctx(),
+            0,
+            &JsonVisitor,
+            ast::Span::origin(),
+        )
+        .unwrap();
         assert_eq!(result, serde_json::json!(i64::MAX));
     }
 
     #[test]
     fn test_json_int_min() {
-        let result =
-            value_to_json(&Value::Int(i64::MIN), &test_ctx(), ast::Span::origin()).unwrap();
+        let result = visit_value(
+            &Value::Int(i64::MIN),
+            &test_ctx(),
+            0,
+            &JsonVisitor,
+            ast::Span::origin(),
+        )
+        .unwrap();
         assert_eq!(result, serde_json::json!(i64::MIN));
     }
 
@@ -1581,7 +1645,7 @@ mod tests {
         .expect("eval failed");
         let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
             .expect("materialize failed");
-        value_to_json(&val, &ctx, ast::Span::origin()).expect("value_to_json failed")
+        visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).expect("visit_value failed")
     }
 
     #[test]
@@ -1665,8 +1729,9 @@ mod tests {
         .expect("eval failed");
         let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
             .expect("materialize failed");
-        // value_to_json materializes nested values on demand via visit_value
-        let json = value_to_json(&val, &ctx, ast::Span::origin()).expect("value_to_json failed");
+        // visit_value materializes nested values on demand
+        let json = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin())
+            .expect("visit_value failed");
         assert_eq!(json, serde_json::json!({"a": {"b": {"c": 42}}}));
     }
 

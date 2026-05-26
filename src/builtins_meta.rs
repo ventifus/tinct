@@ -53,48 +53,6 @@ use crate::eval_call::{invoke_function, CallContext};
 use crate::eval_materialize::force_dict_tree;
 use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
 
-/// `builtin-to-json`: takes 1 arg and serializes to a JSON string.
-///
-/// This is the Rust-native JSON serializer used by the CLI output pipeline as a replacement
-/// for the LLT-based codecs/json.llt approach. Avoids the `[include %libdir ...]` dependency
-/// that was broken by the include-decomp sprint.
-///
-/// Returns a String containing the compact JSON representation of the value.
-/// Errors on non-serializable values (Function, Builtin, Seq, NaN/Infinity floats).
-pub(crate) fn builtin_to_json(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "builtin-to-json",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span,
-        )?;
-        // value_to_json materializes nested values on demand via visit_value
-        // LLT null compatibility: [] (empty dict) serializes as JSON null,
-        // matching the behavior of the old codecs/json.llt `null?` check.
-        if let crate::value::Value::Dict(ref map) = val {
-            if map.is_empty() {
-                return ok_val(crate::value::string_val("null"), call_span);
-            }
-        }
-        // Serialize to JSON using the Rust-native converter.
-        // value_to_json already receives call_span and threads it correctly through
-        // visit_value; child thunk spans are preserved for nested errors.
-        let json_val = crate::value_to_json(&val, &ctx, call_span)?;
-        let json_str = json_val.to_string();
-        ok_val(crate::value::string_val(&json_str), call_span)
-    })
-}
-
 /// `materialize`: takes 1 arg, forces it to WHNF and returns it.
 ///
 /// Gives users explicit control over evaluation order. Only forces to weak head normal form

@@ -10527,3 +10527,13 @@ If `-i` is not specified on the command line, there is no stdin input — period
 - [x] Add justfile targets: `just bench` (criterion suite), `just profile <file>` (--profile + materialize.llt), `just profile-trace <file>` (--profile + trace.llt) (`justfile`)
 - [x] Tests: end-to-end `--profile spans.json` + `tinct run -i json scripts/profile/materialize.llt < spans.json` produces valid table output
 - [x] Tests: end-to-end `--profile spans.json` + `tinct run -i json -o json scripts/profile/trace.llt < spans.json` produces valid Perfetto JSON with `traceEvents` array
+
+### json-delete-to-json: Delete builtin_to_json and value_to_json; json.llt uses codecs/json.llt
+
+`$builtin-to-json` (builtins_meta.rs) and `value_to_json` (lib.rs) are Rust JSON serializers. `stdlib/codecs/json.llt` has a complete tinct `to-json`. The `cli/out/json.llt` formatter should call the tinct version, not the Rust primitive.
+
+- [x] Change `stdlib/cli/out/json.llt` to include codecs/json.llt and call `[to-json %]` instead of `[call $builtin-to-json %]` (`stdlib/cli/out/json.llt`)
+- [x] Delete `builtin_to_json` function from `src/builtins_meta.rs`
+- [x] Remove `"to-json"` and `"builtin-to-json"` registrations from `standard_builtins()` in `src/builtins.rs`
+- [x] Delete `value_to_json` from `src/lib.rs` — zero callers after formatter change (`src/lib.rs`)
+- [x] Remove `value_to_json` from `pub` exports in `src/lib.rs`

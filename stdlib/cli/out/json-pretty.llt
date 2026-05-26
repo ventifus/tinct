@@ -1,6 +1,8 @@
-# JSON Pretty Formatter (runtime-v2)
+# JSON Pretty Formatter — uses the prelude's to-json function.
 #
-# Pretty-printing with indentation is a future enhancement.
-# For now, produces compact JSON (same as json.llt).
+# Currently produces compact JSON (same as json.llt). Indented pretty-printing
+# is tracked in the json-pretty-indent sprint.
+#
+# Returns a String (the formatted JSON output). No emit calls.
 
-[call $builtin-to-json %]
+[call $to-json %]

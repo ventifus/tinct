@@ -13,8 +13,8 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
-    create_stdlib_env, literate, materialize_sync as materialize, parse, value_to_json,
-    EvalContext, Thunk, MAX_FILE_SIZE,
+    create_stdlib_env, literate, materialize_sync as materialize, parse, visit_value, EvalContext,
+    JsonVisitor, Thunk, MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -1210,7 +1210,7 @@ fn parse_cap_fs_entries(
 // Writing to an operator-specified output path is a legitimate ambient write — it is
 // not reading untrusted file content. The background thread cannot hold a cap_std Dir
 // because Dir is !Send and the thread is a plain OS thread.
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::disallowed_types, clippy::disallowed_methods)]
 fn spawn_profile_flush_thread(
     collector: Arc<std::sync::Mutex<tinct::profiling::ProfilingCollector>>,
     file: Arc<std::sync::Mutex<std::io::BufWriter<std::fs::File>>>,
@@ -1968,7 +1968,7 @@ fn run_eval(
     // Shared file writer: opened once at startup, used by both the background thread and
     // the final flush path. None when --profile is not set.
     // AMBIENT-OK: Profile output file is user-specified via --profile (CLI operator choice).
-    #[allow(clippy::disallowed_methods)]
+    #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
     let profile_file: Option<Arc<std::sync::Mutex<std::io::BufWriter<std::fs::File>>>> =
         if let Some(profile_path) = profile {
             match std::fs::File::create(profile_path) {
@@ -2233,7 +2233,7 @@ fn run_eval(
             // Keep track of the last file's result, source, and context for final output.
             // IMPORTANT: The ThunkIds in the result's Value::Dict map are indices into the
             // shared ThunkArena. We MUST use an eval_ctx backed by the same arena for
-            // value_to_json; since all file contexts share the arena, any of them works.
+            // visit_value; since all file contexts share the arena, any of them works.
             thunk = Some(file_result);
             last_source = source;
             last_eval_ctx = Some(eval_ctx);
@@ -2948,14 +2948,15 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     })?;
 
     // Always serialize to JSON (emit is purely additive)
-    let json = value_to_json(&val, &eval_ctx, thunk.definition_span()).map_err(|e| {
-        let mut msg = format!("{e}");
-        if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
-            msg.push('\n');
-            msg.push_str(&snippet);
-        }
-        msg
-    })?;
+    let json =
+        visit_value(&val, &eval_ctx, 0, &JsonVisitor, thunk.definition_span()).map_err(|e| {
+            let mut msg = format!("{e}");
+            if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
+                msg.push('\n');
+                msg.push_str(&snippet);
+            }
+            msg
+        })?;
     let output = serde_json::to_string_pretty(&json)
         .map_err(|e| format!("JSON serialization error: {e}"))?;
 
@@ -3301,7 +3302,7 @@ fn run_literate_weave(
         };
 
         // Always serialize the result to JSON (emit is additive)
-        let json = value_to_json(&val, &eval_ctx, thunk.definition_span())
+        let json = visit_value(&val, &eval_ctx, 0, &JsonVisitor, thunk.definition_span())
             .map_err(|e| format!("error serializing code block {} result: {e}", i + 1))?;
         let output_str = serde_json::to_string(&json)
             .map_err(|e| format!("JSON serialization error in block {}: {e}", i + 1))?;

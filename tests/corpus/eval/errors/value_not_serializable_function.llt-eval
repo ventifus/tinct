@@ -1,4 +1,0 @@
-# builtin-to-json rejects Function values (E035)
-[builtin-to-json [fn [let x] x]]
-=== error
-[E035] cannot serialize Function to JSON

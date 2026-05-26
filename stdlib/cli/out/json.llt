@@ -1,13 +1,11 @@
-# JSON Compact Formatter — uses the Rust-native $builtin-to-json serializer.
+# JSON Compact Formatter — uses the prelude's to-json function.
 #
-# Previously delegated to codecs/json.llt via [include %libdir ...], but the
-# include-decomp sprint broke the [include ...] mechanism for CLI output formatters.
-# This version uses $builtin-to-json (a Rust-native builtin added to fix the regression).
+# Serializes the pipeline input (%) to a compact JSON string using the
+# to-json function from stdlib/prelude.llt.
 #
-# $builtin-to-json: deep-materializes the value and serializes to compact JSON string.
-# Handles: Int, Float, Bool, String, Dict, Seq (via collect), Null ([]).
-# Errors on: Function, Builtin, NaN/Infinity floats, unserializable values.
+# Handles: Int, Float, Bool, String, Dict, Seq, Null ([]).
+# Unserializable values (Fn, Handle, Task, etc.) produce null.
 #
 # Returns a String (the formatted JSON output). No emit calls.
 
-[call $builtin-to-json %]
+[call $to-json %]

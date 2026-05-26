@@ -885,7 +885,7 @@ tinct run -o csv -e '[[name: "Alice" score: 95] [name: "Bob" score: 87]]'
 **Note:** Formatters fall into three categories by implementation:
 
 - **LLT-recursive formatters** (`csv`, `env`, `yaml`, `toml`) — implemented entirely in LLT using recursive accumulator patterns. Subject to `MAX_EVAL_DEPTH` (~256) on very deeply nested inputs. For production use with large datasets, prefer streaming or chunked approaches.
-- **Rust-native-backed formatters** (`json`, `json-pretty`, `llt`) — delegate to Rust builtins (`$builtin-to-json`, `$llt-repr`). Not subject to the LLT recursion depth limit.
+- **Tinct-implemented formatters** (`json`, `json-pretty`) — include `stdlib/codecs/json.llt` and delegate to the tinct `to-json` function. Subject to the LLT recursion depth limit; handles sequences natively (collects and serializes as arrays). `llt` delegates to the Rust `$llt-repr` builtin.
 - **Trivial formatters** (`raw`, `none`) — simple conditional or literal expressions; no recursion and no Rust serialization. `raw` passes through String or joins Seq elements with newlines; `none` always returns `""`.
 
 **Known limitation:** The `format-instance` helper in `compact.llt` and `pretty.llt` emits a placeholder `<N arm(s)>` for instance values instead of rendering their structure. This is a temporary stub pending full instance serialization support.

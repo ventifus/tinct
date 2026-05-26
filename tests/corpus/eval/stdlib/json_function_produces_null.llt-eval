@@ -1,0 +1,8 @@
+# to-json (codecs/json.llt) handles Function values by producing null
+[include %libdir "codecs/json.llt"]
+
+---
+
+[to-json [fn [let x] x]]
+=== out
+String("null")

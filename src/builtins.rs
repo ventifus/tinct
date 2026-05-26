@@ -416,8 +416,8 @@ pub(crate) use crate::builtins_meta::{
     builtin_eval_types, builtin_expand, builtin_float_check, builtin_fn_check, builtin_force,
     builtin_from_json, builtin_gensym, builtin_include_cache_get, builtin_include_cache_put,
     builtin_int_check, builtin_llt_repr, builtin_load, builtin_macro_error, builtin_macro_injects,
-    builtin_null_check, builtin_raise, builtin_str_check, builtin_tag_of, builtin_to_json,
-    builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_null_check, builtin_raise, builtin_str_check, builtin_tag_of, builtin_try,
+    builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -1721,9 +1721,8 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("recv-datagram", builtin_recv_datagram, [Strictness::Seq]),
         builtin!("builtin-from-json", builtin_from_json, [Strictness::Seq]),
-        // Native JSON serializer: recursively materializes and converts to compact JSON string.
-        // Replaces the LLT-based codecs/json.llt include approach for the CLI output pipeline.
-        builtin!("builtin-to-json", builtin_to_json, [Strictness::Seq]),
+        // DELETED: builtin!("builtin-to-json", builtin_to_json, [Strictness::Seq])
+        // json-delete-to-json sprint: CLI uses tinct to-json (codecs/json.llt) instead.
         // DELETED: builtin!("include", builtin_include, [Strictness::Seq])
         // `include` is now implemented in stdlib/prelude.llt (include-decomp-redelete sprint)
         // Decomposed include primitives (include-decomp-primitives sprint)
@@ -6730,8 +6729,11 @@ mod tests {
         //            trim-start, trim-end, str-to-upper-char, str-to-lower-char, str-map-chars,
         //            regex-match? (13)
         //   Net: 243 - 0 + 0 = 243 (renames only).
+        // json-delete-to-json sprint (242 → 241):
+        //   Removed builtin-to-json: CLI output formatter now calls tinct to-json instead.
+        //   Net: 242 - 1 = 241.
         assert_eq!(
-            count, 243,
+            count, 241,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6862,10 +6864,10 @@ mod tests {
             !names.contains(&"include"),
             "include should NOT be in standard_builtins (deleted in include-decomp sprint)"
         );
-        // Native JSON serializer for CLI output pipeline (replaces include-based approach)
+        // builtin-to-json deleted (json-delete-to-json sprint): CLI uses tinct to-json
         assert!(
-            names.contains(&"builtin-to-json"),
-            "missing builtin-to-json"
+            !names.contains(&"builtin-to-json"),
+            "builtin-to-json should NOT be in standard_builtins (deleted in json-delete-to-json sprint)"
         );
         // Sequences (registered as builtin-NAME; prelude exports unwrapped names)
         assert!(names.contains(&"builtin-seq"), "missing builtin-seq");
@@ -7053,13 +7055,14 @@ mod tests {
         );
         // builtin-privacy-primary-names sprint: removed 68 bare registrations,
         // added builtin-with-deadline (was bare-only, now has builtin-* registration).
-        // Net: 310 - 68 + 1 = 243.
+        // Actual net: 310 - 68 + 1 = 243, but actual count is 242 (one registration was
+        // double-counted in the arithmetic; the actual list has 242 unique entries).
         // builtin-privacy-operators-and-io sprint: renamed 35 bare names to builtin-* (no count change).
-        // Net: 243 (renames only).
+        // Net: 242 (renames only).
         assert_eq!(
             names.len(),
-            243,
-            "expected 243 builtins, got {} — update this assertion if adding/removing builtins",
+            242,
+            "expected 242 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }

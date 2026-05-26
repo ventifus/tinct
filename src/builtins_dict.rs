@@ -141,7 +141,7 @@ pub(crate) fn builtin_length(
 /// `merge`: Takes 2 args (both Dicts). Returns a lazy `Value::Overlay(L, R)` — R
 /// overrides L on key collision. Construction is O(1): neither L nor R is
 /// materialized at merge time. Flattening to an IndexMap is deferred until the
-/// overlay is actually accessed (via `require_dict`, `value_to_json`, etc.).
+/// overlay is actually accessed (via `require_dict`, `visit_value`, etc.).
 ///
 /// Type validation (both args must be Dicts) is also deferred to flatten time,
 /// which means type errors surface at access time rather than at call time.
