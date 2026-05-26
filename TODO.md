@@ -273,7 +273,9 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 **Pre-existing regression newly surfaced:**
 - 3 boundary guard tests (`test_boundary_guard_passes_on_matching_type`, `test_boundary_guard_fires_on_type_mismatch`, `test_boundary_guard_is_lazy`) — these were previously hidden because the eval.rs test module didn't compile (Expr dependency). Now they compile but fail because boundary guard application is not yet implemented in `eval_core_expr`. Marked `#[ignore]` with pre-existing note. Should be tracked separately: boundary guard check must be added to `eval_core_expr` to apply the guard when a thunk's span matches `ctx.boundary_guards`.
 
-### rv2-expander-async: Make expand_surface_program and internal helpers async
+### rv2-async-migration: Make expander + REPL + formatter + type-normalizer async
+
+#### Expander async (from rv2-expander-async)
 
 Discovered 2026-05-25: the macro expander (`src/expand.rs`) is still using sync bridges into the async eval engine despite runtime-v2 making eval async. These bridges (`invoke_function_sync`, `materialize_sync`, `block_on_anywhere`) were explicitly marked as temporary in their doc comments ("New async code should call `.await` directly"). Making the expander async: (1) eliminates the sync bridge overhead, (2) removes the call-stack-based recursion for macro expansion (heap-allocated async state machines instead), allowing the `em_depth > 10` depth guard to be replaced by a simple logical counter in EvalContext.
 
@@ -283,7 +285,7 @@ Discovered 2026-05-25: the macro expander (`src/expand.rs`) is still using sync 
 - [ ] Replace `EXPAND_MACROS_DEPTH` thread-local + `DepthGuard` RAII with a simple `expand_depth: u32` counter in `EvalContext` — no longer needed for stack safety, only as a logical recursion limit (`src/expand.rs:356-413`)
 - [ ] Tests: verify macro expansion still works correctly for tmpl, do, begin, syntax-fn; verify depth limit error fires for pathological infinite expansion
 
-### rv2-async-remaining: Migrate remaining sync bridges into async eval engine
+#### Remaining sync bridges (from rv2-async-remaining)
 
 Discovered 2026-05-25: three additional subsystems are still using sync bridges. All explicitly marked as incomplete in their doc comments.
 
@@ -416,27 +418,6 @@ Hardcoded behavior, stubs, and dead code found during systematic audit. Root cau
 - [x] Update `doc/10-errors.md` error code table — added E012, E013, E044, E071, E072, E081, E082 (7 entries)
 
 
-### eval-runtime-fixes: Fix async shutdown and TCO bugs in CEK machine
-
-#### Async shutdown (from async-completions)
-
-- [ ] Implement `non-cancellable` and `with-context` builtins (`src/builtins_async.rs`)
-- [ ] Update `finally` to run cleanup in non-cancellable context (`stdlib/async.llt`)
-- [ ] Add task registry to EvalContext (`src/eval.rs`)
-- [ ] Register all spawn_local calls in task registry (`src/builtins_async.rs`, ~10 sites)
-- [ ] Implement drain by awaiting all registered handles (`src/builtins_async.rs`)
-
-#### TCO bugs (from tco-implement)
-
-TCO has landed in the CEK machine but has known bugs. Tail-recursive stdlib functions must work without depth limits. Known tail-recursive functions: `loop-select-impl` (async.llt), `retry-impl` (async.llt), `parse-header-fields-impl` (net.llt).
-
-- [ ] Investigate and fix TCO bugs in `force_step`/`apply_cont` — tail calls (where a function body's final expression is a call) must reuse the existing Memoize continuation rather than pushing a new one (`src/eval_materialize.rs`)
-- [ ] Remove stale comment from `loop-select-impl`: delete "hits the LLT recursion limit at ~230 iterations; use explicit task-based loop" (`stdlib/async.llt`)
-- [ ] Add corpus test: tail-recursive function with 10,000+ iterations completes without error (`tests/corpus/eval/tco.llt-eval`)
-- [ ] Add corpus test: `loop-select` survives 10,000+ iterations (`tests/corpus/eval/loop_select_depth.llt-eval`)
-- [ ] Add corpus test: `retry` survives 10,000 retries (`tests/corpus/eval/retry_depth.llt-eval`)
-- [ ] Add corpus test: `parse-header-fields-impl` handles 10,000+ headers (`tests/corpus/eval/net_many_headers.llt-eval`)
-
 ### stdlib-additions: WebSocket extended payload, str-substr, numeric to-bytes
 
 #### WebSocket extended payload (from websocket-extended-payload)
@@ -505,6 +486,30 @@ Assumption-skeptic verified all H2/H3 annotations are **correct** — no hidden 
 **Leave as-is** (no framework support): `builtin_load` named args, `builtin_bytes` variadic loop.
 
 ## Known Bugs + Nits
+
+### drain-graceful-cancel: Background task loops should check cancel token for graceful drain
+
+`drain` now calls `handle.abort()` before awaiting each registered background task, so drain
+completes quickly even when signal-channel, timer-channel, or watch-channel loops are running.
+However, `abort()` terminates tasks abruptly via panic. A future enhancement would make each
+background loop `select!` against the evaluation context's cancellation token so that
+`[cancel-root]` causes them to exit gracefully before `[drain]` is called.
+
+Affected sites:
+- `builtin_signal_channel` signal listener loop (`src/builtins_async.rs`)
+- `builtin_timer_channel` interval ticker loop (`src/builtins_async.rs`)
+- `builtin_watch_channel` forward and bridge tasks (`src/builtins_async.rs`)
+
+- [ ] Add `select!` against the CancellationToken in each infinite background task loop so that `[cancel-root]` causes graceful exit before `[drain]` (`src/builtins_async.rs`)
+- [ ] REPL creates a fresh `task_registry` per eval iteration (`new_sharing_arena` called each line) — tasks from earlier REPL lines are invisible to `[drain]` called in later lines (`src/repl.rs`)
+
+### tco-proper-fix: Proper tail-call optimization in CEK machine
+
+Investigation in eval-runtime-fixes sprint found the Memoize-reuse approach violates eval_stack_guard invariants. Root cause: when apply_cont(PendingCallDispatch) pops outer Memoize and calls eval_stack_guard.disarm(), the outer Memoize inherits a second pop obligation. A correct fix requires careful coordination with EvalStackGuard or a different TCO strategy.
+
+- [ ] Design and implement correct TCO: either (a) integrate with EvalStackGuard so the disarmed guard correctly tracks the reused Memoize, or (b) use a different approach (trampoline or depth reset) that avoids the invariant violation
+- [ ] Test: tail-recursive function with 10,000+ iterations completes without error
+- [ ] Test: loop-select survives 10,000+ iterations
 
 ### rc-arc-complete: Complete Rc→Arc migration — make `Thunk` fully Send+Sync
 
@@ -741,12 +746,42 @@ SCC constraint generalization drops Indexable FD constraints as ambiguous (T013)
 - [ ] Remove `check_get` special case from typecheck.rs after fix
 - [ ] Remove `check_arithmetic` special cases (`+`/`-`/`*`/`/`) from typecheck.rs after fix
 
-### lib-test-oom: lib tests OOM/crash when run without --test-threads=1
+### test-regression-fixes: Fix pre-existing test infrastructure and regression failures
+
+#### Test infrastructure (from lib-test-oom)
 
 Pre-existing issue discovered during sprint `rv2-output-formatter-contract` (2026-05-25). Running `cargo test --lib` without `--test-threads=1` fails because tests run in parallel across all lib test modules and the stdlib cache accumulates without being cleared between tests. With 1983 lib tests, the 8GB container limit is exceeded. The `just ci` recipe correctly uses `--test-threads=1`.
 
 - [ ] Fix `just test-lib` recipe: add `-- --test-threads=1` to serialize lib test execution
 - [ ] Or: add `tinct::clear_stdlib_cache()` to global test setup for memory-intensive lib tests
+
+#### Pre-existing test regressions (from ci-test-regressions)
+
+`just ci` reports 16 failing unit tests across multiple subsystems. All pre-existing (not caused by any single sprint). Grouped by root cause:
+
+**Builtin count mismatch (1 test):**
+- [x] Fix `standard_builtins_contains_all` — updated expected count from 301 to 306. (`src/builtins.rs`)
+
+**to-float rejection tests (4 tests):**
+- [ ] Fix `to_float_rejects_inf`, `to_float_rejects_infinity`, `to_float_rejects_nan`, `to_float_rejects_negative_inf` — error message format mismatch. Also: `to-float "NaN"` produces E099 instead of E033 (referenced as "to-float-nan-error-code" in error-code-corpus-tests but never tracked as a sprint). (`src/builtins_math.rs` or `src/builtins.rs`)
+
+**do macro re-regression (6 tests):**
+- [ ] Fix `test_do_macro_*` (6 tests): `err_propagation`, `inferred_form_binding`, `inferred_form_expr`, `no_steps_calls_pure`, `one_binding_step`, `three_steps` — all fail with `[E080] macro 'do' expansion result failed to evaluate: variant 'Call'/'VarRef': failed to convert payload to AST node`. Previously fixed in `macro-runtime-v2-regression` sprint but re-regressed. (`src/expand.rs`, `stdlib/macros.llt`)
+
+**wrap-fn macro tests (2 tests):**
+- [ ] Fix `test_syntax_llt_fn_macro_triggered`, `test_syntax_llt_fn_single_param` — fail with `[E080] macro 'wrap-fn' returned invalid AST: expected Variant or Dict`. Previously tracked in `runtime-v2-fix-regressions` (DONE.md) but still failing. (`src/expand.rs`, `stdlib/macros.llt`)
+
+**Pipeline default stdin (1 test):**
+- [ ] Fix `test_pipeline_no_stdin_default_empty_dict` — assertion fails: got `Null` instead of `Object {}`. Empty dict `[]` now serializes as JSON null (LLT null compat), but this test expects `{}`. Update test expectation or fix the serialization path. (`src/lib.rs`)
+
+**Pattern matching (1 test):**
+- [ ] Fix `test_pm3_match_expr_duplicate_dict_field_errors` — `unwrap_err()` on `Ok` value: a match expression with duplicate dict fields is succeeding when it should error. (`src/eval.rs`)
+
+**empty.llt-eval corpus failure (1 test):**
+- [ ] Fix `tests/corpus/valid/edge_cases/empty.llt-eval` — fails with `1:1: no items in first document`. The empty corpus test triggers an eval error saying the first document has no items. (`src/eval.rs` or corpus test runner)
+
+**tmpl macro regression (2 tests):**
+- [ ] Fix `tests/corpus/valid/literals/interpolated_strings.llt-eval` and `tests/corpus/valid/literals/triple_quoted_interpolated.llt-eval` — both fail with `[E080] macro 'tmpl' expansion result failed to evaluate: variant 'Call': failed to convert payload to AST node (at field type): field 'fn' is not materialized`. The `tmpl` string interpolation macro is broken by the runtime-v2 merge; same root cause as the `do` macro regression. (`src/expand.rs`, `stdlib/macros.llt`)
 
 ### formatter-fixes: Fix compact formatter errors and stack overflow
 
@@ -874,35 +909,6 @@ Post-panel findings from `serialization-span-threading` sprint. All minor.
 - [ ] Add `span: ast::Span` parameter to `depth_limit_output()` in `ValueVisitor` trait and pass it from `visit_value`'s depth check at `src/lib.rs:687` — so depth-exceeded JSON errors point at the deepest-nested value's definition site instead of `Span::origin()` (`src/lib.rs:969`)
 - [ ] Add span-assertion unit tests for `value_to_json` span threading — construct a `Value::Function` at a known non-origin span, call `value_to_json`, assert `err.definition_span == that span`. Same for Builtin, Proxy, and a nested dict-entry case. (`src/lib.rs` tests)
 - [ ] Document `ValueVisitor` and `visit_value` in `doc/08-evaluation.md` — the visitor pattern is the output serialization architecture but is undocumented in the evaluation chapter
-
-### ci-test-regressions: Fix 16 pre-existing unit test failures (2026-05-25)
-
-`just ci` reports 16 failing unit tests across multiple subsystems. All pre-existing (not caused by any single sprint). Grouped by root cause:
-
-**Builtin count mismatch (1 test):**
-- [x] Fix `standard_builtins_contains_all` — updated expected count from 301 to 306. (`src/builtins.rs`)
-
-**to-float rejection tests (4 tests):**
-- [ ] Fix `to_float_rejects_inf`, `to_float_rejects_infinity`, `to_float_rejects_nan`, `to_float_rejects_negative_inf` — error message format mismatch. Also: `to-float "NaN"` produces E099 instead of E033 (referenced as "to-float-nan-error-code" in error-code-corpus-tests but never tracked as a sprint). (`src/builtins_math.rs` or `src/builtins.rs`)
-
-**do macro re-regression (6 tests):**
-- [ ] Fix `test_do_macro_*` (6 tests): `err_propagation`, `inferred_form_binding`, `inferred_form_expr`, `no_steps_calls_pure`, `one_binding_step`, `three_steps` — all fail with `[E080] macro 'do' expansion result failed to evaluate: variant 'Call'/'VarRef': failed to convert payload to AST node`. Previously fixed in `macro-runtime-v2-regression` sprint but re-regressed. (`src/expand.rs`, `stdlib/macros.llt`)
-
-**wrap-fn macro tests (2 tests):**
-- [ ] Fix `test_syntax_llt_fn_macro_triggered`, `test_syntax_llt_fn_single_param` — fail with `[E080] macro 'wrap-fn' returned invalid AST: expected Variant or Dict`. Previously tracked in `runtime-v2-fix-regressions` (DONE.md) but still failing. (`src/expand.rs`, `stdlib/macros.llt`)
-
-**Pipeline default stdin (1 test):**
-- [ ] Fix `test_pipeline_no_stdin_default_empty_dict` — assertion fails: got `Null` instead of `Object {}`. Empty dict `[]` now serializes as JSON null (LLT null compat), but this test expects `{}`. Update test expectation or fix the serialization path. (`src/lib.rs`)
-
-**Pattern matching (1 test):**
-- [ ] Fix `test_pm3_match_expr_duplicate_dict_field_errors` — `unwrap_err()` on `Ok` value: a match expression with duplicate dict fields is succeeding when it should error. (`src/eval.rs`)
-
-**empty.llt-eval corpus failure (1 test):**
-- [ ] Fix `tests/corpus/valid/edge_cases/empty.llt-eval` — fails with `1:1: no items in first document`. The empty corpus test triggers an eval error saying the first document has no items. (`src/eval.rs` or corpus test runner)
-
-**tmpl macro regression (2 tests):**
-- [ ] Fix `tests/corpus/valid/literals/interpolated_strings.llt-eval` and `tests/corpus/valid/literals/triple_quoted_interpolated.llt-eval` — both fail with `[E080] macro 'tmpl' expansion result failed to evaluate: variant 'Call': failed to convert payload to AST node (at field type): field 'fn' is not materialized`. The `tmpl` string interpolation macro is broken by the runtime-v2 merge; same root cause as the `do` macro regression. (`src/expand.rs`, `stdlib/macros.llt`)
-
 ### known-bugs-fix: Fix LSP expansion, docgen arity, eval_corpus OOM
 
 - [x] **`just docgen` fails with `[E020] arity mismatch`:** removed dead-code `[strings: [include %libdir "strings.llt"] path: [include %libdir "path.llt"]]` intermediate dict from `scripts/docgen.llt` — those bindings were never used downstream; the arity mismatch root cause in the multi-document pipeline remains uninvestigated (static analysis could not reproduce it) (`scripts/docgen.llt`)

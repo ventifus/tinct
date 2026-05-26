@@ -1,0 +1,10 @@
+[
+  countdown: [fn [let n@Int acc@Int]
+    [if [= n 0]
+      acc
+      [countdown [- n 1] [+ acc 1]]]]
+]
+---
+[countdown 500 0]
+=== out
+Int(500)

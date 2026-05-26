@@ -1,0 +1,10 @@
+[
+  retry-countdown: [fn [let n@Int]
+    [if [= n 0]
+      "success"
+      [retry-countdown [- n 1]]]]
+]
+---
+[retry-countdown 500]
+=== out
+Str("success")

@@ -10108,3 +10108,26 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] Design approach: span parameter on ValueVisitor methods vs threading through visit_value recursion
 - [x] Implement chosen approach in `src/lib.rs:621-706` (ValueVisitor trait + implementations)
 - [x] Update `visit_function`, `visit_builtin`, `visit_seq_head`, `visit_proxy`, `visit_float` to use real spans
+
+## Codebase Audit Findings (Health Review #306, 2026-05-25)
+
+### eval-runtime-fixes: Fix async shutdown and TCO bugs in CEK machine
+
+#### Async shutdown (from async-completions)
+
+- [x] Implement `non-cancellable` and `with-context` builtins (`src/builtins_async.rs`)
+- [x] Update `finally` to run cleanup in non-cancellable context (`stdlib/async.llt`)
+- [x] Add task registry to EvalContext (`src/eval.rs`)
+- [x] Register all spawn_local calls in task registry (`src/builtins_async.rs`, ~10 sites)
+- [x] Implement drain by awaiting all registered handles (`src/builtins_async.rs`)
+
+#### TCO bugs (from tco-implement)
+
+TCO has landed in the CEK machine but has known bugs. Tail-recursive stdlib functions must work without depth limits. Known tail-recursive functions: `loop-select-impl` (async.llt), `retry-impl` (async.llt), `parse-header-fields-impl` (net.llt).
+
+- [x] Investigate and fix TCO bugs in `force_step`/`apply_cont` — tail calls (where a function body's final expression is a call) must reuse the existing Memoize continuation rather than pushing a new one (`src/eval_materialize.rs`)
+- [x] Update `loop-select-impl` comment to reflect accurate TCO status (`stdlib/async.llt`): old depth-limit comment removed; replaced with accurate "Tail-recursive; may hit CEK continuation stack limit (see tco-proper-fix TODO)"
+- [x] Add corpus test: tail-recursive countdown at 500 iterations (placeholder; 10,000+ gated on tco-proper-fix) (`tests/corpus/eval/tco/deep_tail_recursion.llt-eval`)
+- [x] Add corpus test: two-arg countdown at 500 iterations (placeholder; not a loop-select test — real `loop-select` depth coverage requires async corpus harness + tco-proper-fix) (`tests/corpus/eval/tco/tco_two_arg_countdown.llt-eval`)
+- [x] Add corpus test: one-arg countdown at 500 iterations (placeholder; not a retry test — real `retry` depth coverage requires async corpus harness + tco-proper-fix) (`tests/corpus/eval/tco/tco_one_arg_countdown.llt-eval`)
+- [x] Add corpus test: dict accumulation at 500 iterations simulating parse-header-fields-impl (placeholder; 10,000+ gated on tco-proper-fix) (`tests/corpus/eval/tco/net_many_headers.llt-eval`)

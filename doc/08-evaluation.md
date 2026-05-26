@@ -1183,7 +1183,7 @@ pub struct EvalContext {
 
 ### Cancellation Primitives
 
-Six builtins expose cancellation context management to LLT programs:
+Eight builtins expose cancellation context management to LLT programs:
 
 | Builtin | Signature | Description |
 |---------|-----------|-------------|
@@ -1193,6 +1193,8 @@ Six builtins expose cancellation context management to LLT programs:
 | `with-deadline` | `Context → Int → Context` | Creates a child context that auto-cancels at an absolute Unix timestamp in milliseconds |
 | `cancelled?` | `Context → Bool` | Synchronous (non-blocking) check: `true` if the context has been cancelled |
 | `cancel-task` | `Context → Null` | Explicitly cancels the context and all its child contexts |
+| `non-cancellable` | `→ Context` | Creates a fresh root cancellation token that nothing will ever cancel — for use in cleanup code that must run even when the parent context is cancelled |
+| `with-context` | `Context → Fn@[]@T → T` | Evaluates a zero-arg function under the given cancellation context — the thunk's blocking operations respond to the given context's cancellation state, not the caller's |
 
 **Implementation note (`with-cancel`):** The spec describes `cancel` as a zero-arg callable `Fn@[]@Null`. The current implementation returns a `Context` value instead, requiring `[cancel-task pair.cancel]` rather than `[pair.cancel]`. This deviation is documented in the memory palace and avoids the need to close over a Rust `CancellationToken` in a `Value::Function`. The functional semantics are equivalent.
 
@@ -1240,7 +1242,7 @@ Cancelling the parent context propagates into included files: any blocking opera
 
 ### Event Sources and Long-Running Contexts
 
-Event-source builtins (`signal-channel`, `timer-channel`, `watch-channel`) spawn background `spawn_local` tasks that run indefinitely. These background tasks do not currently hold abort handles and are not cancelled when the channel is dropped. Cancellation of the evaluation context does not interrupt background event-source tasks in the current implementation. This is a known limitation tracked in TODO.md.
+Event-source builtins (`signal-channel`, `timer-channel`, `watch-channel`) spawn background `spawn_local` tasks that run indefinitely. These background tasks are tracked in `EvalContext`'s `task_registry: Arc<Mutex<Vec<JoinHandle<()>>>>` field. The following spawn sites register their handles: `signal-channel`, `timer-channel`, `watch-channel` (×2 tasks), `with-timeout`, `with-deadline`, and `EvalContext::with_timeout_ms`. Calling `[drain]` awaits all registered handles, enabling a clean shutdown sequence: `[cancel-root] [drain] [exit-now code]`. Cancel-on-drop is not implemented — background tasks are not automatically stopped when the channel value is dropped; `[drain]` must be called explicitly.
 
 ---
 
@@ -1464,17 +1466,17 @@ pub(crate) async fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<V
 **Builtin return dispatch:** Builtins return `Arc<Thunk>`, not `Value`. After a builtin call, the CEK machine inspects the result: if the thunk is already `Materialized`, extract the value and produce `Action::Continue(Ok(value))`. If it is `Unevaluated` or `PendingBuiltin`, the dispatch depends on the **continuation context**, not a dynamic inference:
 
 - If the top of the continuation stack is `Cont::Memoize` (the builtin was called during materialization of a parent thunk), the result must be materialized — produce `Action::Materialize { thunk: result_thunk, ... }`.
-- If the top is `Cont::DictBuildValue`, `Cont::BindArgDefault`, or similar construction contexts, the result stays lazy — produce `Action::Continue(Ok(Value::from_thunk(result_thunk)))`.
+- Otherwise (any other continuation context), the result stays lazy — produce `Action::Continue(Ok(Value::from_thunk(result_thunk)))`.
 
 This is **structurally determined** by the `Cont` variant on the stack, not inferred at runtime. Each `Cont` variant statically knows whether it needs a materialized value or accepts a thunk. The strictness signature table (§Selective Materialization — Formal Specification) declares per-argument strictness for builtin *inputs*; the continuation context determines strictness for builtin *outputs*. Builtins like `$if` and `$get` return lazy thunks that must not be auto-materialized when used as dict values or function arguments.
 
 **deep_materialize:** Implemented as a separate recursive function in `eval_materialize.rs`, calling `materialize()` per dict entry and seq element with cycle detection and sharing preservation via a `HashMap` cache. The target architecture expresses this as `DeepEntries` and `DeepSeqTail` continuations within the CEK loop, eliminating the separate recursive helper.
 
-**Tail-call optimization:** In tail position (e.g., last expression in a function body), set `action = Action::Eval { body, ... }` without pushing a `Cont`. The current frame is reused. TCO for recursive stdlib functions (`fold`, `map`, `filter`) follows the same pattern: detect tail calls during the variable resolution pass, mark them, and skip the continuation push. TCO applies to user-defined function calls only. Builtin calls always push a continuation — builtins rely on `PendingBuiltin` thunk deferral for lazy behavior, not tail-call elimination.
+**Tail-call optimization:** TCO via `Memoize`-reuse was investigated but reverted due to `EvalStackGuard` invariant violations — reusing the memoize frame caused guard bookkeeping to go out of sync, producing double-cache-writes and incorrect failure propagation. Proper TCO is tracked as the `tco-proper-fix` sprint in TODO.md. Until that sprint lands, recursive calls always push a fresh `Cont::Memoize` frame. Builtin calls likewise always push a continuation — builtins rely on `PendingBuiltin` thunk deferral for lazy behavior, not tail-call elimination.
 
-**Error stack traces:** Walk `Vec<Cont>` to reconstruct the call stack. Each `Cont::CallForceFunc` carries the call-site span and label, replacing the current `EvalError::stack` vector. This gives precise "materialized at" context for every frame in the stack.
+**Error stack traces:** Walk `Vec<Cont>` to reconstruct the call stack, using each variant's stored span and label to produce precise "materialized at" context for every frame. This replaces the current `EvalError::stack` vector with a continuation-derived trace.
 
-**Cont variant count:** 6 variants — `Memoize`, `PendingCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `DotAccessForce`, `TypeAssertCheck`. Each variant stores only its specific continuation data (Arc pointers + Span + small fields). Frame size: ≤96 bytes per Cont (enforced by the compile-time assertion at `src/eval_materialize.rs:349`).
+**Cont variant count:** 11 variants — `Memoize`, `PendingCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `DotAccessForce`, `TypeAssertCheck`, `SequentialStep`, `ForceAndBind`, `MatchDispatch`, `MatchGuardCheck`, `PredicateCheck`. Each variant stores only its specific continuation data (Arc pointers + Span + small fields). Frame size: ≤96 bytes per Cont (enforced by the compile-time assertion at `src/eval_materialize.rs:349`).
 
 **Relationship to allocation strategy:** Arena allocation and flat environments integrate naturally with the CEK machine: `Cont` variants hold `ThunkId` handles into the arena, and the `Vec<Cont>` stack's lifetime defines the arena's lifetime scope.
 

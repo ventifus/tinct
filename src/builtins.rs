@@ -633,10 +633,10 @@ pub(crate) use crate::builtins_datetime::{
 // par-filter, signal-channel, timer-channel, watch-channel, and cancellation context primitives.
 pub(crate) use crate::builtins_async::{
     builtin_await, builtin_cancel_root, builtin_cancel_task, builtin_cancelled_q, builtin_channel,
-    builtin_context, builtin_drain, builtin_exit_now, builtin_par, builtin_par_filter,
-    builtin_par_map, builtin_recv, builtin_select_once, builtin_send, builtin_signal_channel,
-    builtin_task, builtin_timer_channel, builtin_watch_channel, builtin_with_cancel,
-    builtin_with_deadline, builtin_with_timeout,
+    builtin_context, builtin_drain, builtin_exit_now, builtin_non_cancellable, builtin_par,
+    builtin_par_filter, builtin_par_map, builtin_recv, builtin_select_once, builtin_send,
+    builtin_signal_channel, builtin_task, builtin_timer_channel, builtin_watch_channel,
+    builtin_with_cancel, builtin_with_context, builtin_with_deadline, builtin_with_timeout,
 };
 
 /// `first`: Return the first element of a Dict, the first character of a String,
@@ -2114,6 +2114,20 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("cancelled?", builtin_cancelled_q, [Strictness::Seq]),
         builtin!("cancel-task", builtin_cancel_task, [Strictness::Seq]),
+        builtin!("non-cancellable", builtin_non_cancellable),
+        builtin!("builtin-non-cancellable", builtin_non_cancellable),
+        builtin!(
+            "with-context",
+            builtin_with_context,
+            [Strictness::Seq, Strictness::Id],
+            1
+        ),
+        builtin!(
+            "builtin-with-context",
+            builtin_with_context,
+            [Strictness::Seq, Strictness::Id],
+            1
+        ),
         // Shutdown primitives (async-shutdown-primitives)
         builtin!("cancel-root", builtin_cancel_root),
         builtin!("builtin-cancel-root", builtin_cancel_root),
@@ -6716,9 +6730,11 @@ mod tests {
         //   builtin-trim, builtin-emit, builtin-env
         // Added 6 shutdown primitives in async-shutdown-primitives sprint (301 → 307):
         //   cancel-root, builtin-cancel-root, drain, builtin-drain, exit-now, builtin-exit-now
-        // Note: count is 306 (one shutdown primitive not yet registered — tracked in ci-test-regressions)
+        // One was subsequently unregistered (ci-test-regressions) → effective count 306.
+        // Added 4 context primitives in eval-runtime-fixes sprint (306 → 310):
+        //   non-cancellable, builtin-non-cancellable, with-context, builtin-with-context
         assert_eq!(
-            count, 306,
+            count, 310,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -7002,10 +7018,24 @@ mod tests {
         assert!(names.contains(&"builtin-trim"), "missing builtin-trim");
         assert!(names.contains(&"builtin-emit"), "missing builtin-emit");
         assert!(names.contains(&"builtin-env"), "missing builtin-env");
+        // async-shutdown-features sprint added 4 context primitives (306 → 310):
+        assert!(
+            names.contains(&"non-cancellable"),
+            "missing non-cancellable"
+        );
+        assert!(
+            names.contains(&"builtin-non-cancellable"),
+            "missing builtin-non-cancellable"
+        );
+        assert!(names.contains(&"with-context"), "missing with-context");
+        assert!(
+            names.contains(&"builtin-with-context"),
+            "missing builtin-with-context"
+        );
         assert_eq!(
             names.len(),
-            306,
-            "expected 306 builtins, got {} — update this assertion if adding/removing builtins",
+            310,
+            "expected 310 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }

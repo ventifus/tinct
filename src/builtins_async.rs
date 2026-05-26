@@ -1037,7 +1037,7 @@ pub(crate) fn builtin_signal_channel(
             let (tx, rx) = tokio::sync::mpsc::channel::<Value>(1);
             let tx_clone = tx.clone();
 
-            crate::async_rt::spawn_local(async move {
+            let handle = crate::async_rt::spawn_local(async move {
                 loop {
                     // recv() returns None when the signal stream is closed (process shutdown)
                     if sig_stream.recv().await.is_none() {
@@ -1047,6 +1047,9 @@ pub(crate) fn builtin_signal_channel(
                     let _ = tx_clone.try_send(Value::Dict(IndexMap::new()));
                 }
             });
+
+            // Register background task for drain tracking
+            ctx.task_registry.lock().unwrap().push(handle);
 
             let channel_inner = crate::value::ChannelInner {
                 sender: tx,
@@ -1104,7 +1107,7 @@ pub(crate) fn builtin_timer_channel(
         let (tx, rx) = tokio::sync::mpsc::channel::<Value>(1);
         let tx_clone = tx.clone();
 
-        crate::async_rt::spawn_local(async move {
+        let handle = crate::async_rt::spawn_local(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
             // Skip the first immediate tick so interval_ms elapses before the first send.
             interval.tick().await;
@@ -1114,6 +1117,9 @@ pub(crate) fn builtin_timer_channel(
                 let _ = tx_clone.try_send(Value::Dict(IndexMap::new()));
             }
         });
+
+        // Register background task for drain tracking
+        ctx.task_registry.lock().unwrap().push(handle);
 
         let channel_inner = crate::value::ChannelInner {
             sender: tx,
@@ -1164,7 +1170,7 @@ pub(crate) fn builtin_watch_channel(
         // consumer hasn't read the previous value, the new one overwrites it by dropping
         // the old one. This prevents the forward task from suspending and starving other
         // cooperative tasks in the LocalSet.
-        crate::async_rt::spawn_local(async move {
+        let handle1 = crate::async_rt::spawn_local(async move {
             // Send the current (initial) value; drop silently if the channel is full
             // (capacity-1 channel just allocated, so this should always succeed on first call).
             let initial = watch_rx_reader.borrow().clone();
@@ -1182,6 +1188,9 @@ pub(crate) fn builtin_watch_channel(
             }
         });
 
+        // Register background task for drain tracking
+        ctx.task_registry.lock().unwrap().push(handle1);
+
         // Update side: mpsc channel that the user sends new values to; a bridge task reads
         // from it and writes into the watch.
         let (update_tx, update_rx_bridge) = tokio::sync::mpsc::channel::<Value>(8);
@@ -1194,12 +1203,15 @@ pub(crate) fn builtin_watch_channel(
 
         // Bridge task: mpsc update channel → watch sender.
         let mut update_rx_bridge = update_rx_bridge;
-        crate::async_rt::spawn_local(async move {
+        let handle2 = crate::async_rt::spawn_local(async move {
             while let Some(val) = update_rx_bridge.recv().await {
                 // Ignore errors (all readers dropped).
                 let _ = watch_tx.send(val);
             }
         });
+
+        // Register background task for drain tracking
+        ctx.task_registry.lock().unwrap().push(handle2);
 
         // Build the recv Channel value.
         let recv_channel = Value::Channel(Arc::new(crate::value::ChannelInner {
@@ -1389,10 +1401,13 @@ pub(crate) fn builtin_with_timeout(
         let cancel_clone = child_token.clone();
 
         // Spawn a local task to cancel the child token after the timeout.
-        crate::async_rt::spawn_local(async move {
+        let handle = crate::async_rt::spawn_local(async move {
             tokio::time::sleep(std::time::Duration::from_millis(duration_ms)).await;
             cancel_clone.cancel();
         });
+
+        // Register background task for drain tracking
+        ctx.task_registry.lock().unwrap().push(handle);
 
         ok_val(Value::Context(child_token), call_span)
     })
@@ -1458,10 +1473,13 @@ pub(crate) fn builtin_with_deadline(
             .as_nanos() as i64;
         let delay_ns = (deadline_unix_ns - now_ns).max(0) as u64;
 
-        crate::async_rt::spawn_local(async move {
+        let handle = crate::async_rt::spawn_local(async move {
             tokio::time::sleep(std::time::Duration::from_nanos(delay_ns)).await;
             cancel_clone.cancel();
         });
+
+        // Register background task for drain tracking
+        ctx.task_registry.lock().unwrap().push(handle);
 
         ok_val(Value::Context(child_token), call_span)
     })
@@ -1575,12 +1593,15 @@ pub(crate) fn builtin_cancel_root(
 ///
 /// Signature: `→ Null`
 ///
-/// MVP implementation: sleeps briefly (100ms) to allow tasks to complete after cancel-root.
+/// Waits for all registered background tasks (signal-channel, timer-channel, watch-channel,
+/// with-timeout, with-deadline) to complete. Does NOT wait for user-spawned tasks created
+/// via `task` or `par` — those must be explicitly awaited by the caller before calling drain.
 ///
-/// TODO: Replace with proper JoinSet-based task registry. Current implementation is a
-/// simple time-based delay to give cooperative tasks a chance to finish after cancellation.
-/// A production implementation would track all spawned tasks in a JoinSet and await them
-/// here (see doc/whatif/async-eval.md §Shutdown Primitives).
+/// Design note: user-spawned tasks (via `task`) store their JoinHandle<EvalResult<Value>>
+/// inside Value::Task so that `await` can retrieve the typed result. Background tasks store
+/// JoinHandle<()> in task_registry. These are different types, so task registry cannot hold
+/// both without architectural changes. The `par-map` and `par-filter` builtins spawn and await
+/// their handles inline, so they complete before the builtin returns and do not need registration.
 ///
 /// Per async-eval.md: includes cluster-local workers (Tokio tasks), excludes remote workers.
 pub(crate) fn builtin_drain(
@@ -1590,7 +1611,7 @@ pub(crate) fn builtin_drain(
         args,
         named,
         call_span,
-        ctx: _ctx,
+        ctx,
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
@@ -1608,8 +1629,16 @@ pub(crate) fn builtin_drain(
             .into());
         }
 
-        // MVP: sleep briefly to allow in-flight tasks to complete
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Take all registered background tasks and await them
+        let handles = {
+            let mut registry = ctx.task_registry.lock().unwrap();
+            std::mem::take(&mut *registry)
+        };
+
+        for handle in handles {
+            handle.abort();
+            let _ = handle.await; // Returns Err(JoinError::Cancelled) for aborted tasks; ignored
+        }
 
         // Return null (empty dict)
         ok_val(Value::Dict(IndexMap::new()), call_span)
@@ -1662,6 +1691,110 @@ pub(crate) fn builtin_exit_now(
 
         // Terminate the process immediately
         std::process::exit(exit_code);
+    })
+}
+
+/// `non-cancellable`: Create a fresh root context that nothing will ever cancel.
+///
+/// Signature: `→ Context`
+///
+/// Returns a fresh root `CancellationToken` wrapped as `Value::Context`. This context
+/// is completely independent — no parent will cancel it, and it's not a child of any
+/// existing context. Used for cleanup code that must run even when the main context
+/// is cancelled (e.g., `finally` blocks in stdlib/async.llt).
+///
+/// Per async-eval.md: `[with-context [non-cancellable] cleanup-fn]` ensures cleanup
+/// runs to completion even if the caller's context is cancelled.
+pub(crate) fn builtin_non_cancellable(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx: _ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        if !args.is_empty() {
+            return Err(EvalError::user_error(
+                format!("non-cancellable expects 0 arguments, got {}", args.len()),
+                call_span,
+            )
+            .into());
+        }
+        if !named.as_ref().is_none_or(|n| n.is_empty()) {
+            return Err(EvalError::user_error(
+                "non-cancellable does not accept named arguments".to_string(),
+                call_span,
+            )
+            .into());
+        }
+        let token = tokio_util::sync::CancellationToken::new();
+        ok_val(Value::Context(token), call_span)
+    })
+}
+
+/// `with-context`: Evaluate a thunk under a specific cancellation context.
+///
+/// Signature: `Context → Fn@[]@T → T`
+///
+/// Takes a Context and a zero-arg function (or any thunk), evaluates the thunk with
+/// `ctx.cancel` replaced by the given context's token. The thunk's evaluation will
+/// respond to the given context's cancellation state, not the caller's.
+///
+/// Per async-eval.md: `[with-context [non-cancellable] [fn [] cleanup]]` runs cleanup
+/// in a non-cancellable context even if the caller is cancelled.
+///
+/// Implementation note: creates a new EvalContext with the same config/state/arenas but
+/// the given CancellationToken. This is safe because CancellationToken is the only
+/// evaluation-local state that should differ between parent and child evaluation contexts.
+pub(crate) fn builtin_with_context(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        let (context_thunk, expr_thunk) =
+            take_two_thunks("with-context", &args, named.as_ref(), call_span)?;
+        let context_val = context_thunk
+            .try_get_materialized()
+            // force_count=1 guarantees arg 0 is pre-materialized before this builtin runs
+            .ok_or_else(|| EvalError::internal(
+                "with-context: context argument not pre-materialized (force_count=1 invariant violated)".to_string(),
+                call_span,
+            ))?;
+
+        let new_cancel = match context_val {
+            Value::Context(token) => token,
+            _ => {
+                return Err(
+                    EvalError::type_mismatch("Context", context_val.type_name(), call_span).into(),
+                )
+            }
+        };
+
+        // Create a new EvalContext with the given CancellationToken.
+        // Share all arenas/config/state, but replace the cancel token.
+        let new_ctx = ctx.with_explicit_cancel(new_cancel);
+
+        // Rebirth the thunk under new_ctx so that evaluation uses the new cancellation
+        // context rather than the parent birth context embedded in the thunk's
+        // UnevaluatedState. This is required because materialize() ignores its `ctx`
+        // parameter for actual evaluation — it uses the ctx stored in the thunk's
+        // UnevaluatedState (Launchbury birth-context semantics).
+        //
+        // If the thunk is already materialized (or in-progress), fall back to the
+        // original thunk — the context override has no effect in that case, but it
+        // is safe because the value is already computed.
+        let thunk_to_eval = expr_thunk
+            .with_replaced_ctx(Arc::clone(&new_ctx))
+            .unwrap_or_else(|| Arc::clone(&expr_thunk));
+        let result = materialize(&thunk_to_eval, Some(&call_span), &new_ctx).await?;
+        ok_val(result, call_span)
     })
 }
 

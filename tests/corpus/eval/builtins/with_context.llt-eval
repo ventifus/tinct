@@ -1,0 +1,8 @@
+# with-context : evaluates expression under given Context, returns its result
+# Note: this test verifies basic execution (the thunk runs and returns its value).
+# Cancellation isolation (verifying that a thunk in a non-cancellable context completes
+# even when the parent context is cancelled) requires a running async runtime with
+# concurrent tasks and is not testable in the synchronous corpus harness.
+[with-context [non-cancellable] [fn [let] 42]]
+=== out
+Int(42)

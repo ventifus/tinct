@@ -1112,7 +1112,7 @@ const _: () = {
 
 /// Pre-evaluation state variants for the ThunkInner structure.
 /// Stores the data needed to evaluate a thunk when it's first accessed.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UnevaluatedState {
     /// Pre-lowering Surface thunk — created by the `eval` builtin.
     Surface {
@@ -1450,6 +1450,120 @@ impl Thunk {
     /// Used only for error recovery in eval.rs and eval_materialize.rs.
     pub(crate) fn restore_unevaluated(&self, state: UnevaluatedState) {
         *self.inner.unevaluated.lock().unwrap() = Some(state);
+    }
+
+    /// Create a new `Arc<Thunk>` that is identical to `self` but with `new_ctx` replacing
+    /// the birth context in the unevaluated state. Used by `builtin_with_context` to rebirth
+    /// a thunk under a non-cancellable (or otherwise overridden) context before materializing.
+    ///
+    /// Handles all unevaluated state variants that carry a `ctx` field (`CoreExpr`, `Surface`,
+    /// `AstNodeField`, `Builtin`, `Call`). For `Guarded` (which wraps an inner thunk rather
+    /// than carrying its own ctx), the inner thunk is reborn recursively.
+    ///
+    /// Returns `None` if the thunk is already taken (in-progress) or already materialized
+    /// (i.e., its unevaluated state has already been taken). The caller should fall back
+    /// to using the original thunk in that case.
+    ///
+    /// This method **clones** the unevaluated state from `self` rather than taking it.
+    /// `UnevaluatedState` derives `Clone`; all constituent fields are `Arc<>` (cheap
+    /// reference-count increments), `Vec<Arc<Thunk>>`, `Span` (Copy), or other `Clone`
+    /// types. The original thunk is left intact and continues to be evaluatable normally.
+    pub(crate) fn with_replaced_ctx(
+        &self,
+        new_ctx: Arc<crate::eval::EvalContext>,
+    ) -> Option<Arc<Thunk>> {
+        let guard = self.inner.unevaluated.lock().unwrap();
+        let state = match guard.as_ref() {
+            None => return None, // already taken (in-progress) or already materialized
+            Some(s) => s.clone(),
+        };
+        drop(guard);
+        let new_state = match state {
+            UnevaluatedState::CoreExpr { expr, env, ctx: _ } => UnevaluatedState::CoreExpr {
+                expr,
+                env,
+                ctx: new_ctx,
+            },
+            UnevaluatedState::Surface {
+                node,
+                res,
+                types,
+                env,
+                ctx: _,
+            } => UnevaluatedState::Surface {
+                node,
+                res,
+                types,
+                env,
+                ctx: new_ctx,
+            },
+            UnevaluatedState::AstNodeField {
+                node,
+                field,
+                ctx: _,
+            } => UnevaluatedState::AstNodeField {
+                node,
+                field,
+                ctx: new_ctx,
+            },
+            UnevaluatedState::Builtin {
+                def,
+                args,
+                named,
+                call_span,
+                ctx: _,
+            } => UnevaluatedState::Builtin {
+                def,
+                args,
+                named,
+                call_span,
+                ctx: new_ctx,
+            },
+            UnevaluatedState::Call {
+                func,
+                args,
+                named,
+                call_span,
+                caller_env,
+                ctx: _,
+            } => UnevaluatedState::Call {
+                func,
+                args,
+                named,
+                call_span,
+                caller_env,
+                ctx: new_ctx,
+            },
+            UnevaluatedState::Guarded {
+                inner,
+                expected,
+                field_path,
+                guard_span,
+                blame_label,
+                default,
+            } => {
+                // Guarded has no direct ctx — rebirth the inner thunk recursively.
+                let reborn_inner = inner
+                    .with_replaced_ctx(Arc::clone(&new_ctx))
+                    .unwrap_or(inner);
+                UnevaluatedState::Guarded {
+                    inner: reborn_inner,
+                    expected,
+                    field_path,
+                    guard_span,
+                    blame_label,
+                    default,
+                }
+            }
+        };
+        Some(Arc::new(Thunk {
+            inner: ThunkInner {
+                unevaluated: Mutex::new(Some(new_state)),
+                result: tokio::sync::OnceCell::new(),
+            },
+            span: self.span,
+            origin: self.origin.clone(),
+        }))
     }
 
     pub fn try_get_materialized(&self) -> Option<Value> {

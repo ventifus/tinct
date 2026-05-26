@@ -1,0 +1,7 @@
+# finally: success path — body result is returned; cleanup runs but its value is discarded.
+# Note: with-context/non-cancellable are standard builtins, so finally is testable
+# without a live async runtime. Cancellation-isolation requires concurrent tasks.
+[include %libdir "async.llt"]
+[finally [fn [let] "cleaned"] [fn [let] "done"]]
+=== out
+Str("done")

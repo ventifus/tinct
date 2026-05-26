@@ -12,8 +12,8 @@
 #   cancel-root, drain, exit-now
 #
 # NOT YET AVAILABLE (pending future sprints):
-#   non-cancellable, with-context, timeout
-#   These are tracked in TODO.md.
+#   timeout
+#   This is tracked in TODO.md.
 #
 # Usage:
 #   [include %libdir "async.llt"]
@@ -43,6 +43,8 @@ retry-impl: [fn [let n@Int thunk@Fn]
 # loop-select-impl: recursive event-loop body.
 # Calls select-once on sources, passes result to handler, then loops.
 # Checks ctx cancellation before each iteration so callers can bound the loop.
+# Tail-recursive; may hit the CEK continuation stack limit for very deep
+# recursion (see tco-proper-fix TODO sprint).
 loop-select-impl: [fn [let ctx sources@Seq handler@Fn]
     [builtin-if [cancelled? ctx]
         null
@@ -176,9 +178,8 @@ TODO: Add drain-timeout parameter when timeout builtin is available.
 
 # loop-select: repeatedly call select-once on sources until the context is
 # cancelled. On each iteration the handler is called with the received value.
-# Tail-recursive in structure; hits the LLT recursion depth limit at ~230
-# iterations. For long-running servers, use an explicit task-based loop instead
-# (see doc/whatif/async-eval.md worked examples).
+# Tail-recursive; may hit the CEK continuation stack limit for very deep
+# recursion (see tco-proper-fix TODO sprint).
 #
 # Type: (Context -> [Seq [Channel Fn]] -> Fn -> Null)
 # Example:
@@ -192,8 +193,9 @@ Example:
      [req-ch  [fn [req] [task [handle req]]]]]
     identity]
 
-Note: Tail-recursive; hits ~230 iteration depth limit. For long-running
-servers, use an explicit [task [loop ...]] pattern instead.
+Note: Tail-recursive; hits CEK continuation stack limit for very deep recursion.
+For long-running servers, use an explicit [task [loop ...]] pattern until
+tco-proper-fix is implemented.
 """]: [fn [let ctx sources@Seq handler@Fn]
     [loop-select-impl ctx sources handler]]
 
@@ -226,12 +228,9 @@ Inherently materializing: must force each attempt to catch errors.
 # Returns the body's result on success, re-raises on error.
 # Cleanup receives no arguments and its return value is discarded.
 #
-# Note: The ideal implementation uses [non-cancellable] and [with-context]
-# so cleanup runs even when the surrounding context is cancelled. Those
-# builtins are not yet available (runtime-v2 Sprint 3). The current
-# implementation runs cleanup in the same context as body; if the context
-# is cancelled while cleanup is running, cleanup may be interrupted.
-# Tracked: TODO.md runtime-v2-shutdown-primitives.
+# Cleanup runs in a non-cancellable context (fresh root CancellationToken).
+# Even if the surrounding context is cancelled, cleanup will run to completion.
+# This follows Haskell's bracket exception-masking semantics, adapted to async.
 #
 # Type: ([Fn -> Null] -> [Fn -> T] -> T)
 # Example:
@@ -244,12 +243,12 @@ Example:
     [fn [] [close-conn conn]]
     [fn [] [do-work-with conn]]]
 
-Note: cleanup runs in the caller's context (not a non-cancellable context)
-until with-context / non-cancellable are available (runtime-v2 Sprint 3).
-Cleanup return value is discarded. Rust-level EvalErrors bypass finally.
+Note: cleanup runs in a non-cancellable context — it will complete even if
+the parent context is cancelled. Cleanup return value is discarded.
+Rust-level EvalErrors bypass finally.
 """]: [fn [let cleanup@Fn body@Fn]
     [match [try body]
-        [Ok v]:    [do [cleanup] v]
-        [Error e]: [do [cleanup] [builtin-raise e]]]]
+        [Ok v]:    [do [with-context [non-cancellable] [cleanup]] v]
+        [Error e]: [do [with-context [non-cancellable] [cleanup]] [builtin-raise e]]]]
 
 ]

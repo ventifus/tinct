@@ -1522,9 +1522,6 @@ pub(crate) async fn apply_cont(
 
                         match invoke_result.map_err(&decorate) {
                             Ok(result_thunk) => {
-                                // Move args/named into RestoreState — no clone needed.
-                                // invoke_function consumed them by reference above; after
-                                // the Ok result, args/named are not needed for anything else.
                                 let restore = RestoreState::PendingCall {
                                     func: func_thunk,
                                     args: args.take().expect("args set above"),
@@ -1639,7 +1636,6 @@ pub(crate) async fn apply_cont(
                                     thunk.set_materialized(value.clone());
                                     Action::Continue(Ok(value))
                                 } else {
-                                    // Move args/named into RestoreState — no clone needed.
                                     let restore = RestoreState::PendingCall {
                                         func: func_thunk,
                                         args: args.take().expect("args set above"),

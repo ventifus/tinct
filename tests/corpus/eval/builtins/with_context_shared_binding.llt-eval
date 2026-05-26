@@ -1,0 +1,12 @@
+# with-context: shared binding regression test
+# Verifies that with-context does not destroy the source thunk's unevaluated
+# state. Previously, with_replaced_ctx took (stole) the unevaluated state from
+# the source thunk, leaving it permanently InProgress. Subsequent access to the
+# same binding would report a CircularDependency error.
+# Fix: with_replaced_ctx now clones the unevaluated state, leaving the original
+# thunk intact.
+[x: 42]
+---
+[result: [+ [with-context [non-cancellable] %.x] %.x]]
+=== out
+Dict({"result": Int(84)})

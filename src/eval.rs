@@ -264,6 +264,11 @@ pub struct EvalContext {
     /// created by `with-cancel`, `with-timeout`, and `with-deadline` hold child tokens.
     /// Cheap to clone (Arc internally); `CancellationToken::child_token()` is also cheap.
     pub cancel: tokio_util::sync::CancellationToken,
+    /// Background task handles registered here directly (signal-channel, timer-channel,
+    /// watch-channel ×2, with-timeout, with-deadline, `with_timeout_ms`). Tasks either
+    /// run indefinitely (loop until aborted) or complete with `()`. The `drain` builtin
+    /// calls `abort()` on each handle then awaits it to allow clean shutdown.
+    pub task_registry: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
 impl EvalContext {
@@ -322,6 +327,7 @@ impl EvalContext {
             do_infer_resolutions: RwLock::new(HashMap::new()),
             libdir_dir: Mutex::new(None),
             cancel: tokio_util::sync::CancellationToken::new(),
+            task_registry: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -364,6 +370,7 @@ impl EvalContext {
             do_infer_resolutions: RwLock::new(HashMap::new()),
             libdir_dir: Mutex::new(None),
             cancel: tokio_util::sync::CancellationToken::new(),
+            task_registry: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -415,6 +422,7 @@ impl EvalContext {
             do_infer_resolutions: RwLock::new(HashMap::new()),
             libdir_dir: Mutex::new(None),
             cancel: tokio_util::sync::CancellationToken::new(),
+            task_registry: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -450,6 +458,7 @@ impl EvalContext {
             do_infer_resolutions: RwLock::new(self.do_infer_resolutions.read().unwrap().clone()),
             libdir_dir: Mutex::new(self.libdir_dir.lock().unwrap().clone()),
             cancel: self.cancel.clone(),
+            task_registry: Arc::clone(&self.task_registry),
         })
     }
 
@@ -485,8 +494,38 @@ impl EvalContext {
             do_infer_resolutions: RwLock::new(self.do_infer_resolutions.read().unwrap().clone()),
             libdir_dir: Mutex::new(self.libdir_dir.lock().unwrap().clone()),
             cancel: child_token.clone(),
+            task_registry: Arc::clone(&self.task_registry),
         });
         (child_ctx, child_token)
+    }
+
+    /// Create a child EvalContext with an explicitly provided CancellationToken.
+    ///
+    /// Unlike `with_cancel_token`, this accepts a token that need not be a child of the parent's
+    /// token — it can be any token (e.g., a fresh root token from `non-cancellable`). Used by
+    /// `builtin_with_context` to avoid constructing `EvalContext` by raw field literal outside
+    /// of `eval.rs`.
+    ///
+    /// Shares all arenas, config, state, and task_registry with the parent.
+    /// Clones blame_map, boundary_guards, do_infer_resolutions, libdir_dir (per-scope fields,
+    /// same as `with_cancel_token`).
+    pub fn with_explicit_cancel(
+        self: &Arc<Self>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            config: Arc::clone(&self.config),
+            state: Arc::clone(&self.state),
+            thunk_arena: Arc::clone(&self.thunk_arena),
+            env_arena: Arc::clone(&self.env_arena),
+            env_allowed: self.env_allowed.clone(),
+            blame_map: Mutex::new(self.blame_map.lock().unwrap().clone()),
+            boundary_guards: RwLock::new(self.boundary_guards.read().unwrap().clone()),
+            do_infer_resolutions: RwLock::new(self.do_infer_resolutions.read().unwrap().clone()),
+            libdir_dir: Mutex::new(self.libdir_dir.lock().unwrap().clone()),
+            cancel,
+            task_registry: Arc::clone(&self.task_registry),
+        })
     }
 
     /// Create a child EvalContext with a timeout: automatically cancels after `ms` milliseconds.
@@ -497,10 +536,14 @@ impl EvalContext {
     pub fn with_timeout_ms(self: &Arc<Self>, ms: u64) -> Arc<Self> {
         let child_token = self.cancel.child_token();
         let cancel_clone = child_token.clone();
-        crate::async_rt::spawn_local(async move {
+        let handle = crate::async_rt::spawn_local(async move {
             tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
             cancel_clone.cancel();
         });
+
+        // Register background task for drain tracking
+        self.task_registry.lock().unwrap().push(handle);
+
         Arc::new(Self {
             config: Arc::clone(&self.config),
             state: Arc::clone(&self.state),
@@ -512,6 +555,7 @@ impl EvalContext {
             do_infer_resolutions: RwLock::new(self.do_infer_resolutions.read().unwrap().clone()),
             libdir_dir: Mutex::new(self.libdir_dir.lock().unwrap().clone()),
             cancel: child_token,
+            task_registry: Arc::clone(&self.task_registry),
         })
     }
 
