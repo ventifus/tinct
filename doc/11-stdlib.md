@@ -317,6 +317,8 @@ The prelude wraps builtins with stable `builtin-*` aliases (`builtin-add`, `buil
 
 | Module | Functions provided | When to include |
 |--------|-------------------|-----------------|
+| `async.llt` | `await-all`, `recv-all`, `par-map`, `par-filter`, `exit`, `graceful-exit`, `loop-select`, `retry`, `finally` | Async utilities (task coordination, graceful shutdown, retry loops) |
+| `numeric.llt` | `UInt8`, `UInt16`, `UInt32`, `UInt64`, `Int8`, `Int16`, `Int32`, `Int64`, `to-bytes` | Fixed-width integer type aliases with range constraints |
 | `strings.llt` | `pad-left`, `pad-right`, `str-reverse`, `upper`, `lower` | String formatting, reversal, and case conversion (`str-find`, `str-repeat` are in prelude) |
 | `math.llt` | `pi`, `e`, `phi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` | Math constants, derived trig/log functions |
 | `encoding.llt` | `base64-encode`, `base64-decode`, `hex-encode`, `hex-decode`, `mask-apply`, `bytes-reverse`, `bytes-repeat` | Binary encoding/decoding |
@@ -359,7 +361,7 @@ The stdlib follows four organizing principles:
 
 **Total stdlib API:** ~310 Rust builtins + ~117 prelude LLT functions = ~427 functions available after prelude load.
 
-Functions available to all user code. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Sequence constructors (`range`, `repeat`, `cycle`, `iterate`, `unfold`) and `join` are Rust-native builtins with no wrapper. Private implementation details (functions suffixed with `-impl`, `-step`, `-check`) are omitted from this reference.
+Functions available to all user code. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Private implementation details (functions suffixed with `-impl`, `-step`, `-check`) are omitted from this reference.
 
 **Stdlib categories:**
 

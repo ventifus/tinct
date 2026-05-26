@@ -40,7 +40,7 @@
 
 ### Implementation Architecture
 
-**Pipeline phases:** Source text → Lexer → Parser (SurfaceProgram) → Desugar (SurfaceProgram) → Resolver (ResolutionTable) → TypeCheck (TypeAnnotationTable) → Lower (SurfaceNode → CoreExpr) → Eval (CoreExpr) → Output (Value)
+**Pipeline phases:** Source text → Lexer → Parser → Expand → Desugar → Resolver → TypeCheck → Lower → Eval → Output
 
 **Key contracts:**
 
@@ -276,6 +276,8 @@ struct EvalContext {
 - `Environment` — variable bindings and lexical scope chain. Created and nested per scope.
 
 **Key invariant:** EvalContext is evaluation-session infrastructure; Environment is lexical scoping. A single EvalContext is shared across the entire evaluation of a file, while Environments are created per scope.
+
+**Arena sharing invariant:** All eval contexts that access stdlib dict fields must share the stdlib's `ThunkArena` (via `create_stdlib_env_with_arena`). Violating this causes index-out-of-bounds panics during dot-access resolution. When creating a stdlib environment, use `create_stdlib_env_with_arena(arena)` and pass the same arena instance to all contexts that will evaluate code accessing stdlib bindings. The CLI and REPL handle this correctly by creating a single arena at startup; library users must ensure arena consistency manually.
 
 **Threading pattern:** `Arc<EvalContext>` — thunks capture `Arc::clone(&ctx)` at creation time and use it at materialization time. This is necessary because thunks are deferred (`Unevaluated`, `PendingBuiltin`, `PendingCall`) and materialized in a different stack frame than where they were created. Unlike `Environment` (which uses `Arc<RwLock<...>>`), EvalContext does not need an outer lock because it achieves interior mutability through its `state: Arc<Mutex<EvalState>>` field — the config is immutable by construction and only the state needs mutation.
 
@@ -643,6 +645,17 @@ The following security features are implemented:
 - **Import integrity hashes**: `$include` with optional hash verification (Dhall-inspired) to detect file tampering; `--require-integrity` flag to enforce hashes on all includes
 - **File descriptor-based `$include`**: Eliminates TOCTOU race (canonicalize → metadata → read) by using `cap-std` for fd-based path resolution with `RESOLVE_BENEATH` semantics
 - **Dependency scanning**: `cargo audit` as CI gate to surface RustSec advisories before they accumulate
+
+### LSP Security
+
+The LSP server operates in a restricted security context distinct from CLI evaluation:
+
+- **No evaluation by default**: The LSP server never calls `eval()` during normal operation. Document sync, hover, and diagnostics are based purely on parsing and type checking. This eliminates code execution risks from untrusted document content.
+- **`no_fs=true` by default**: File I/O is disabled in LSP mode (`src/lsp/document.rs:109`), preventing `$include` from reading arbitrary files on the system. This is a defense-in-depth measure even though eval is not called.
+- **Document size limit**: `MAX_DOCUMENT_SIZE = 10 MB` (`src/lsp/server.rs:22`) rejects oversized documents before parsing, preventing memory exhaustion attacks.
+- **Method name cap**: `MAX_METHOD_NAME_LEN = 256` (`src/lsp/server.rs:33`) prevents pathological LSP method name allocation.
+
+The LSP server's attack surface is limited to the parser and type checker. Both are designed to handle malicious input gracefully (via `MAX_PARSE_DEPTH`, `MAX_LEX_DEPTH`, `MAX_SUBST_SIZE` limits) without executing user code.
 
 ### Attack Surface Analysis
 

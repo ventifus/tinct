@@ -2124,28 +2124,13 @@ All 9 specialist agents reviewed the full codebase. Findings below (Critical/Maj
 
 - [ ] Change `row.fields.get(field_name).cloned().unwrap_or(Type::Unknown)` to use `state.fresh_type_var()` at `src/type_unify.rs:580,584,595,597`
 
-### doc-health-321: Fix stale docs — builtin counts, pipeline order, security table [Critical/Major]
+#### Unknown boundary leakage (from unknown-boundary-leakage, Health Review #326)
 
-#### Builtin count contradiction (from builtin-count-fix)
+- [ ] Add lint or documentation for Unknown-typed top-level bindings at document boundaries (`src/typecheck.ts` typecheck_document OR `doc/05-type-annotations.md` §Gradual Typing Boundaries)
 
-**stdlib-author C1.** Three sources disagree: `doc/11a-builtins.md:3` says 301, `doc/11-stdlib.md:302,308` says 310, actual is 310.
+#### is_subtype depth guard (from is-subtype-depth-guard, Health Review #326)
 
-- [ ] Count unique builtin implementations across `src/builtins*.rs`; document methodology; update `doc/11a-builtins.md:3` and all occurrences in `doc/11-stdlib.md`
-- [ ] Delete incorrect sentence from `doc/11-stdlib.md:362` claiming sequence constructors have no wrappers
-- [ ] Add rows for `async.llt`, `numeric.llt`, `math.llt`, `io.llt`, `net.llt` to optional stdlib modules table at `doc/11-stdlib.md:318-333`
-
-#### Pipeline order (from pipeline-order-doc)
-
-**integration-verifier Major.** `doc/16-architecture.md:43` says "parse → desugar → typecheck" but actual order is "parse → expand → desugar → resolve → typecheck → lower → eval".
-
-- [ ] Update `doc/16-architecture.md:43` pipeline order to reflect actual: `Source text → Lexer → Parser → Expand → Desugar → Resolver → TypeCheck → Lower → Eval → Output`
-
-#### Security table (from security-doc-stale)
-
-**security-expert Minor.** Stale MAX_EVAL_DEPTH row; missing LSP no-eval documentation.
-
-- [ ] Delete stale "Eval depth" row from security table in `doc/16-architecture.md:505`; add note that continuation stack is bounded by MAX_CONTINUATION_STACK=2048
-- [ ] Add LSP subsection to `doc/16-architecture.md` §Security explaining that LSP never calls eval
+- [ ] Add `MAX_SUBTYPE_DEPTH` guard to `is_subtype` analogous to `MAX_CONSTRAINT_DEPTH=256` (`src/type_def.rs`)
 
 ### eval-health-321: Placeholder detection + AstNodeField restore gap [Major/Minor]
 
@@ -2161,4 +2146,44 @@ All 9 specialist agents reviewed the full codebase. Findings below (Critical/Maj
 **eval-engine Minor.** `src/eval_materialize.rs:108-122`: No `RestoreState::AstNodeField` variant.
 
 - [ ] Determine if `UnevaluatedState::AstNodeField` can raise non-cacheable errors; if yes, add `RestoreState::AstNodeField` variant; if no, document invariant explicitly
+
+#### PipelineBlame dead code (from pipeline-blame-orphan, Health Review #326)
+
+- [ ] Implement PipelineBlame instantiation for `%@Type` pipeline validation (4-step plan at `src/error.rs:72-86`), OR delete PipelineBlame if feature is no longer planned
+
+---
+
+---
+
+## Codebase Health Audit Findings (Health Review #326, 2026-05-25)
+
+### stdlib-health-326: Fix comparison aliases, undocumented functions, and stale doc counts [Major]
+
+#### Missing comparison aliases (from stdlib-comparison-aliases)
+
+- [ ] Add `builtin-gte`, `builtin-lte`, `builtin-gt` to `src/builtins.rs:standard_builtins()`
+- [ ] Update `stdlib/prelude.llt` private helpers to use `builtin-gte` instead of `gte-impl` workaround
+
+#### Undocumented functions (from stdlib-missing-docs)
+
+- [ ] Add `variant?`, `payload-of`, `unindent` to `doc/11-stdlib.md` with signatures and examples
+- [ ] Add corpus tests for `variant?`, `payload-of`, `unindent` in `tests/corpus/eval/stdlib/`
+
+#### Stale doc classifications (from stdlib-doc-stale)
+
+- [ ] Fix `num?`, `record?`, `map?` classification in `doc/11-stdlib.md:172-183` to "LLT stdlib"
+- [ ] Update stable `builtin-*` alias list in `doc/11-stdlib.md:238-246` to include all current aliases
+- [ ] Update stale LLT function count `~117` in `doc/11-stdlib.md:358` to actual count
+
+### test-coverage-326: CEK edge case tests + error code coverage gaps [Minor]
+
+#### CEK edge case tests (from cek-edge-case-tests)
+
+- [ ] Add 5 unit tests for continuation stack depth, GuardedValidate, RestoreState edge cases (`src/eval_materialize.rs`)
+- [ ] Add `tests/corpus/eval/errors/continuation_stack_exceeded.llt-eval` corpus test
+
+#### Error code coverage (from error-code-coverage-gaps)
+
+- [ ] Fix or delete `tests/corpus/eval/errors/include_path_not_allowed.llt-eval` — update expected error code
+- [ ] Add corpus tests for E055/E056 when include functionality supports hash validation
 

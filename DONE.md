@@ -10274,3 +10274,34 @@ SCC constraint generalization drops Indexable FD constraints as ambiguous (T013)
 - [x] Remove `check_arithmetic` special cases (`+`/`-`/`*`/`/`) from typecheck.rs after fix
 
 **FIX:** Moved local→state subst merge in `typecheck_dict.rs` to happen before generalization (lines 723-732) instead of after (was 807-814). This ensures `generalize_with_doc`'s subst_snapshot includes all bindings from the current SCC, so `is_discharged` correctly returns true for bound TypeVars. Removed 250 lines of workarounds: `check_get`, `check_arithmetic`, `check_div`, and helpers.
+
+### doc-health-321: Fix stale docs — builtin counts, pipeline order, security table [Critical/Major]
+
+#### Builtin count contradiction (from builtin-count-fix)
+
+**stdlib-author C1.** Three sources disagree: `doc/11a-builtins.md:3` says 301, `doc/11-stdlib.md:302,308` says 310, actual is 310.
+
+- [x] Count unique builtin implementations across `src/builtins*.rs`; document methodology; update `doc/11a-builtins.md:3` and all occurrences in `doc/11-stdlib.md`
+- [x] Delete incorrect sentence from `doc/11-stdlib.md:362` claiming sequence constructors have no wrappers
+- [x] Add rows for `async.llt`, `numeric.llt`, `math.llt`, `io.llt`, `net.llt` to optional stdlib modules table at `doc/11-stdlib.md:318-333`
+
+#### Pipeline order (from pipeline-order-doc)
+
+**integration-verifier Major.** `doc/16-architecture.md:43` says "parse → desugar → typecheck" but actual order is "parse → expand → desugar → resolve → typecheck → lower → eval".
+
+- [x] Update `doc/16-architecture.md:43` pipeline order to reflect actual: `Source text → Lexer → Parser → Expand → Desugar → Resolver → TypeCheck → Lower → Eval → Output`
+
+#### Security table (from security-doc-stale)
+
+**security-expert Minor.** Stale MAX_EVAL_DEPTH row; missing LSP no-eval documentation.
+
+- [x] Delete stale "Eval depth" row from security table in `doc/16-architecture.md:505`; add note that continuation stack is bounded by MAX_CONTINUATION_STACK=2048
+- [x] Add LSP subsection to `doc/16-architecture.md` §Security explaining that LSP never calls eval
+
+#### MAX_EVAL_DEPTH doc contradiction (from max-eval-depth-doc, Health Review #326)
+
+- [x] Clarify which limit is authoritative in `doc/16-architecture.md` — if MAX_EVAL_DEPTH is dead code, mark deprecated; if MAX_CONTINUATION_STACK is active, update all doc references to remove MAX_EVAL_DEPTH mentions
+
+#### Arena sharing invariant undocumented (from arena-coupling-doc, Health Review #326)
+
+- [x] Add §Arena Sharing Invariant to `doc/16-architecture.md` §EvalContext: "All eval contexts that access stdlib dict fields must share the stdlib's ThunkArena"

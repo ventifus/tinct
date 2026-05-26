@@ -1,0 +1,45 @@
++ exec flatpak-spawn --host podman run --rm --memory 8g -v .:/workspace:z -v ./target:/workspace/target:z -v tinct-cargo:/usr/local/cargo/registry -w /workspace -e RUST_MIN_STACK=67108864 -e 'RUSTFLAGS=-D warnings' rust:1.95 cargo test --test corpus_tests
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running tests/corpus_tests.rs (target/debug/deps/corpus_tests-7a35a366127448d8)
+
+running 40 tests
+test test_helpers::test_has_error_code_prefix_invalid_lowercase_e ... ok
+test test_helpers::test_has_error_code_prefix_invalid_two_digits ... ok
+test test_helpers::test_has_error_code_prefix_valid_in_middle ... ok
+test test_helpers::test_has_error_code_prefix_valid_e001 ... ok
+test test_helpers::test_has_error_code_prefix_valid_e999 ... ok
+test test_helpers::test_has_error_code_prefix_invalid_no_code ... ok
+test test_helpers::test_has_error_code_prefix_invalid_empty_string ... ok
+test test_helpers::test_has_error_code_prefix_invalid_letters_in_number ... ok
+test test_helpers::test_has_error_code_prefix_invalid_four_digits ... ok
+test test_helpers::test_has_error_code_prefix_invalid_no_brackets ... ok
+test test_helpers::test_split_test_file_error_section_only ... ok
+test test_helpers::test_split_test_file_delimiter_in_expected ... ok
+test test_helpers::test_split_test_file_eof_without_trailing_newline ... ok
+test test_helpers::test_split_test_file_error_section ... ok
+test test_helpers::test_split_test_file_multiple_sections ... ok
+test test_helpers::test_split_test_file_no_directive ... ok
+test test_helpers::test_split_test_file_empty_out_section ... ok
+test test_helpers::test_split_test_file_no_fs_prefix_false_positive ... ok
+test test_helpers::test_split_test_file_all_three_sections ... ok
+test test_helpers::test_split_test_file_missing_delimiter ... ok
+test test_helpers::test_split_test_file_empty_content ... ok
+test test_helpers::test_split_test_file_empty_warn_section ... ok
+test test_helpers::test_split_test_file_no_fs_substring_false_positive ... ok
+test test_helpers::test_split_test_file_no_fs_directive ... ok
+test test_helpers::test_split_test_file_out_section ... ok
+test test_helpers::test_split_test_file_empty_error_section ... ok
+test test_helpers::test_split_test_file_bare_delimiter_returns_error ... ok
+test test_helpers::test_split_test_file_unknown_label_returns_error ... ok
+test test_helpers::test_split_test_file_warn_section ... ok
+test test_helpers::test_split_test_file_cap_net_directive ... ok
+test test_helpers::test_split_test_file_warn_section_only ... ok
+test test_helpers::test_split_test_file_no_fs_and_cap_net_combined ... ok
+test test_invalid_corpus ... ok
+test test_corpus_structure ... ok
+test test_typecheck_error_corpus_eval ... FAILED
+test test_typecheck_error_corpus ... ok
+test test_typecheck_corpus ... FAILED
+test test_typecheck_warnings_corpus ... ok
+hellotest test_valid_corpus ... FAILED
+test test_eval_corpus has been running for over 60 seconds
