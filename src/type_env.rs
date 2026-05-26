@@ -3599,6 +3599,18 @@ impl TypeEnv {
             ("builtin-type-of", "type-of"),
             ("builtin-narrow", "narrow"),
             ("builtin-from-json", "from-json"),
+            // builtin-privacy-primary-names sprint: new builtin-* → bare-name mappings
+            ("builtin-raise", "raise"),
+            ("builtin-emit", "emit"),
+            ("builtin-env", "env"),
+            ("builtin-str", "str"),
+            ("builtin-split", "split"),
+            ("builtin-trim", "trim"),
+            ("builtin-str-length", "str-length"),
+            ("builtin-str-slice", "str-slice"),
+            ("builtin-to-int", "to-int"),
+            ("builtin-append", "append"),
+            ("builtin-length", "length"),
         ] {
             if let Some(scheme) = self.get(canonical).cloned() {
                 self.insert_scheme(alias.to_string(), scheme);

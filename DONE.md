@@ -10416,3 +10416,34 @@ Post-panel findings from `serialization-span-threading` sprint. All minor.
 - [x] Tests: corpus test `tests/corpus/eval/profiling/basic.llt` — run with `--profile`, verify span file is valid JSON containing expected fields (id, materialize-parent, create-parent, source-file, start-us, end-us)
 - [x] Tests: corpus test `tests/corpus/eval/profiling/stall.llt` — run a program that calls `builtin-slurp` on a file, verify span file contains a span with `stall-us > 0` and `stall-kind: "io"`
 - [x] Tests: unit tests in `src/profiling.rs` — `SpanRecord` round-trip through `into_value()`, verify dict key names and types
+
+### builtin-privacy-primary-names: All Rust builtins registered under `builtin-*` names; prelude wraps every one ✅ DONE (2026-05-25)
+
+**Whatif:** `doc/whatif/completed/builtin-privacy.md`
+
+**Problem:** Many Rust builtins are registered under their user-facing names (`"map"`, `"filter"`, `"reduce"`, `"str"`, `"split"`, etc.) rather than `"builtin-map"` etc. These flow through the prelude pointer-walk and land in the user TypeEnv as Rust functions — no tinct wrapper, no type annotation, no doc string. User code calling `[map f xs]` calls the Rust function directly; there is no tinct `map` in prelude.
+
+**Rule:** No Rust builtin registration name may appear in the user-facing API without a tinct prelude wrapper. Every builtin is registered as `builtin-<name>`. Prelude defines a tinct wrapper for the public name. User code only ever calls tinct.
+
+**Depends on:** `builtin-privacy` (Phase 2 complete — user TypeEnv starts from `TypeEnv::new()`)
+
+**What was done:**
+- Removed 68 bare primary registrations from `standard_builtins()` (all had `builtin-*` aliases)
+- Renamed `with-deadline` → `builtin-with-deadline` (was bare-only)
+- Added all new async `builtin-*` registrations that were missing
+- Updated `builtin_primary_names()` to fire T002 for `builtin-*` names AND remaining bare names without prelude wrappers
+- Added prelude wrappers in `stdlib/prelude.llt` for: `map`, `filter`, `take`, `drop`, `reduce`, `raise`, `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`
+- Fixed private dict to use `builtin-*` forms (`builtin-keys`, `builtin-length`, `builtin-seq?`, `builtin-dict?`, `builtin-build-dict`)
+- Updated `standard_builtins_count` and `standard_builtins_contains_all` tests (310 → 242)
+- Updated internal continuation builtins in `builtins_seq_xform.rs`, `builtins_seq_gen.rs`, `builtins_seq_reduce.rs`, `builtins_meta.rs`, `builtins_dict.rs` to use `builtin-*` names
+- Added `builtin-*` → bare-name TypeEnv aliases in `inject_builtin_aliases()`
+
+**Deferred (future sprint `builtin-privacy-operators-and-io`):**
+- Operator symbols: `+`, `-`, `*`, `/`, `=`, `<`, `if` — need prelude wrappers before renaming
+- I/O builtins: `open`, `slurp`, `connect`, `write`, `lines`, `stat`, etc. — many dozens
+- Math builtins: `pow`, `sqrt`, `log`, `sin`, `cos`, etc.
+- Datetime, network, bytes, URI builtins
+- `materialize`, `until`, `ast-of` — need careful policy decision
+- `get?` — user-facing optional access (no prelude wrapper yet)
+
+**Note:** This sprint is a prerequisite for `stdlib-conformance-builtin-privacy`. That sprint migrates non-prelude files from `builtin-reduce` → `reduce`, which only makes sense once `reduce` IS a tinct wrapper (not the Rust function itself). Run this sprint first.

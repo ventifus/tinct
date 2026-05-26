@@ -470,7 +470,7 @@ pub(crate) fn builtin_concat(
                 let tail_thunk = ctx.get_thunk(tail);
                 let step_args = vec![Arc::clone(&tail_thunk), ys_thunk];
                 let result_thunk = Arc::new(Thunk::new_pending_builtin(
-                    builtin!("concat", builtin_concat_seq_step),
+                    builtin!("builtin-concat", builtin_concat_seq_step),
                     step_args,
                     None,
                     call_span,
@@ -589,7 +589,7 @@ pub(crate) fn builtin_concat_seq_step(
                 let tail_thunk = ctx.get_thunk(tail);
                 let step_args = vec![Arc::clone(&tail_thunk), ys_thunk];
                 let new_tail = Arc::new(Thunk::new_pending_builtin(
-                    builtin!("concat", builtin_concat_seq_step),
+                    builtin!("builtin-concat", builtin_concat_seq_step),
                     step_args,
                     None,
                     call_span,

@@ -447,7 +447,11 @@ pub(crate) fn builtin_each(
                 let next_offset = ok_val(Value::Int((offset + 1) as i64), call_span)?;
                 let tail_args = vec![Arc::clone(&args[0]), next_offset];
                 let tail = Arc::new(Thunk::new_pending_builtin(
-                    builtin!("each", builtin_each, [Strictness::Spine, Strictness::Spine]),
+                    builtin!(
+                        "builtin-each",
+                        builtin_each,
+                        [Strictness::Spine, Strictness::Spine]
+                    ),
                     tail_args,
                     None,
                     call_span,

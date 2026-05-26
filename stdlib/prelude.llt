@@ -157,9 +157,14 @@
 # are defined in the PUBLIC dict and are NOT in scope when this dict is evaluated.
 #
 # Workarounds used here:
-#   gte-impl     private >= substitute using builtin-lt
-#   builtin-get  instead of the get wrapper
+#   gte-impl           private >= substitute using builtin-lt
+#   builtin-get        instead of the get wrapper
 #   builtin-if chains  instead of and/or
+#   builtin-length     instead of length (prelude wrapper not yet in scope)
+#   builtin-keys       instead of keys
+#   builtin-seq?       instead of seq?
+#   builtin-dict?      instead of dict?
+#   builtin-build-dict instead of build-dict
 
 [
 
@@ -202,7 +207,7 @@ all?-impl: [fn@Bool [let pred@Fn xs@Dict ks i@Int len@Int]
 # ============================================================================
 
 cond-impl: [fn@Any [let pairs@Dict i@Int]
-    [builtin-if [gte-impl i [length pairs]]
+    [builtin-if [gte-impl i [builtin-length pairs]]
         []
         [cond-check pairs i [builtin-get i pairs].0 [builtin-get i pairs].1]]]
 
@@ -257,8 +262,8 @@ reindex-seq-impl: values-seq-impl
 
 # zip-seq-impl: uses builtin-if chain instead of and
 zip-seq-impl: [fn@Any [let xs ys]
-    [builtin-if [seq? xs]
-        [builtin-if [seq? ys]
+    [builtin-if [builtin-seq? xs]
+        [builtin-if [builtin-seq? ys]
             [builtin-seq [[builtin-head xs] [builtin-head ys]]
                 [zip-seq-impl [builtin-tail xs] [builtin-tail ys]]]
             []]
@@ -266,7 +271,7 @@ zip-seq-impl: [fn@Any [let xs ys]
 
 # zip-dict-impl: Build lazy Seq of pairs, then collect. O(n) via cons pattern.
 zip-dict-impl: [fn@Dict [let xs@Dict ys@Dict]
-    [builtin-collect [zip-dict-seq-impl xs ys [keys xs] [keys ys] 0 [length [keys xs]] [length [keys ys]]]]]
+    [builtin-collect [zip-dict-seq-impl xs ys [builtin-keys xs] [builtin-keys ys] 0 [builtin-length [builtin-keys xs]] [builtin-length [builtin-keys ys]]]]]
 
 zip-dict-seq-impl: [fn [let xs@Dict ys@Dict xks yks i@Int xlen@Int ylen@Int]
     [builtin-if [gte-impl i xlen]
@@ -297,9 +302,9 @@ partition-step: [fn@Dict [let acc e passes@Bool]
 # Aggregate helpers (only depend on builtins + siblings)
 # ============================================================================
 
-# transpose-impl uses build-dict, builtin-map — no public functions
+# transpose-impl uses builtin-build-dict, builtin-map — no public functions
 transpose-impl: [fn@Dict [let rows@Dict col-keys]
-    [build-dict
+    [builtin-build-dict
         [builtin-map
             [fn [let col-key]
                 [key: col-key
@@ -322,7 +327,7 @@ try-or-impl: [fn [let try-result default]
 # take-while-seq: Build a lazy Seq of entries while predicate holds.
 # Used by take-while (public). Entries are [key: k value: v] dicts from each-kv.
 take-while-seq: [fn [let pred@Fn entries]
-    [builtin-if [seq? entries]
+    [builtin-if [builtin-seq? entries]
         [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
             [builtin-seq
                 [builtin-head entries]
@@ -333,7 +338,7 @@ take-while-seq: [fn [let pred@Fn entries]
 # drop-while-seq: Build a lazy Seq of entries after dropping while predicate holds.
 # Used by drop-while (public). Entries are [key: k value: v] dicts from each-kv.
 drop-while-seq: [fn [let pred@Fn entries dropping@Bool]
-    [builtin-if [seq? entries]
+    [builtin-if [builtin-seq? entries]
         [builtin-if dropping
             [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
                 [drop-while-seq pred [builtin-tail entries] true]
@@ -351,7 +356,7 @@ flatten-seq-impl: [fn [let xs@Dict ks i@Int len@Int]
         [flatten-seq-step xs ks i len [builtin-get i ks]]]]
 
 flatten-seq-step: [fn [let xs@Dict ks i@Int len@Int k]
-    [builtin-if [dict? [builtin-get k xs]]
+    [builtin-if [builtin-dict? [builtin-get k xs]]
         # Dict element: prepend all its values as a Seq, then continue with rest
         [flatten-seq-append-dict [builtin-get k xs] [flatten-seq-impl xs ks [builtin-add i 1] len]]
         # Non-dict element: cons it onto the rest
@@ -360,8 +365,8 @@ flatten-seq-step: [fn [let xs@Dict ks i@Int len@Int k]
 # flatten-seq-append-dict: Convert dict to Seq of values, then append rest.
 # This uses flatten-seq-concat-values to iterate the dict's values.
 flatten-seq-append-dict: [fn [let d@Dict rest]
-    [let ks [keys d]]
-    [flatten-seq-concat-values d ks 0 [length ks] rest]]
+    [let ks [builtin-keys d]]
+    [flatten-seq-concat-values d ks 0 [builtin-length ks] rest]]
 
 # flatten-seq-concat-values: Recursively cons all values from dict onto rest.
 flatten-seq-concat-values: [fn [let d@Dict ks i@Int len@Int rest]
@@ -374,7 +379,7 @@ flatten-seq-concat-values: [fn [let d@Dict ks i@Int len@Int rest]
 # contains-seq?: Check if a Seq contains val (O(n) linear scan).
 # Used by uniq-seq-step to check the seen set.
 contains-seq?: [fn@Bool [let seq val]
-    [builtin-if [seq? seq]
+    [builtin-if [builtin-seq? seq]
         [builtin-if [builtin-eq [builtin-head seq] val]
             true
             [contains-seq? [builtin-tail seq] val]]
@@ -406,7 +411,7 @@ reverse-seq: [fn [let seq]
     [reverse-seq-impl seq []]]
 
 reverse-seq-impl: [fn [let seq acc]
-    [builtin-if [seq? seq]
+    [builtin-if [builtin-seq? seq]
         [reverse-seq-impl [builtin-tail seq] [builtin-seq [builtin-head seq] acc]]
         acc]]
 
@@ -2124,9 +2129,20 @@ to-float@[doc: "Parse String to Float"]: builtin-to-float
 # Evaluation control
 try@[doc: "Catch errors from a zero-arg function"]: builtin-try
 apply@[doc: "Apply function to a dict of arguments"]: builtin-apply
+raise@[doc: "Raise an error with the given value"]: builtin-raise
 
 # Type introspection
 type-of@[doc: "Return the type name of a value as a String"]: builtin-type-of
+
+# Type predicates
+int?@[doc: "Check if value is an Int"]: builtin-int?
+float?@[doc: "Check if value is a Float"]: builtin-float?
+str?@[doc: "Check if value is a String"]: builtin-str?
+bool?@[doc: "Check if value is a Bool"]: builtin-bool?
+null?@[doc: "Check if value is null (empty dict [])"]: builtin-null?
+dict?@[doc: "Check if value is a Dict"]: builtin-dict?
+fn?@[doc: "Check if value is a function"]: builtin-fn?
+seq?@[doc: "Check if value is a Seq (lazy sequence node)"]: builtin-seq?
 
 # Capability operations
 narrow@[doc: "Narrow a capability to a subset of operations"]: builtin-narrow
@@ -2140,6 +2156,49 @@ trim@[doc: "Remove leading and trailing whitespace from a string"]: builtin-trim
 # I/O primitives (used directly by user code and samples)
 emit@[doc: "Emit a string to stdout without a trailing newline"]: builtin-emit
 env@[doc: "Read an environment variable by name; returns null if unset"]: builtin-env
+
+# ============================================================================
+# Sequence Operations (builtin-privacy-primary-names sprint)
+# ============================================================================
+#
+# map, filter, take, drop, reduce were previously accessible directly via the
+# Rust builtin registry. Now they are prelude wrappers around the builtin-*
+# stable aliases, making them overridable and properly namespaced.
+
+map@[doc: """Apply f to each element of a collection.
+
+Example: [map [fn [x] [* x 2]] [1 2 3]] => [2 4 6]
+
+Note: Dual-dispatch: on Dict preserves string keys, on Seq returns lazy Seq.
+"""]: [fn [let f@Fn xs] [builtin-map f xs]]
+
+filter@[doc: """Keep elements satisfying predicate.
+
+Example: [filter [fn [x] [> x 2]] [1 2 3 4]] => [3 4]
+
+Note: Dual-dispatch: on Dict preserves string keys, on Seq returns lazy Seq.
+"""]: [fn [let f@Fn xs] [builtin-filter f xs]]
+
+take@[doc: """Take first n elements from a collection.
+
+Example: [take 2 [1 2 3 4]] => [1 2]
+
+Note: Dual-dispatch: on Dict preserves string keys, on Seq returns lazy Seq.
+"""]: [fn [let n@Int xs] [builtin-take n xs]]
+
+drop@[doc: """Drop first n elements from a collection.
+
+Example: [drop 2 [1 2 3 4]] => [3 4]
+
+Note: Dual-dispatch: on Dict preserves string keys, on Seq returns lazy Seq.
+"""]: [fn [let n@Int xs] [builtin-drop n xs]]
+
+reduce@[doc: """Left fold over a collection.
+
+Example: [reduce [fn [acc x] [+ acc x]] 0 [1 2 3]] => 6
+
+Note: Dual-dispatch: on Dict folds over values (preserving insertion order), on Seq folds lazily.
+"""]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
 
 # ============================================================================
 # Numeric Range Predicates

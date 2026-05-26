@@ -98,7 +98,12 @@ pub(crate) fn builtin_map(
                     // Without force_count here, builtin_map would panic at its
                     // `args[1].try_get_materialized().expect("pre-materialized by force_count/pos_strictness")`
                     // when the tail Seq is an unevaluated thunk.
-                    builtin!("map", builtin_map, [Strictness::Id, Strictness::Spine], 1),
+                    builtin!(
+                        "builtin-map",
+                        builtin_map,
+                        [Strictness::Id, Strictness::Spine],
+                        1
+                    ),
                     tail_args,
                     None,
                     call_span,
@@ -183,7 +188,7 @@ pub(crate) fn builtin_filter(
                 let filter_args = vec![Arc::clone(&pred_thunk), dict_thunk, idx_thunk];
 
                 let result_thunk = Arc::new(Thunk::new_pending_builtin(
-                    builtin!("filter", builtin_filter_dict_step, [], 3),
+                    builtin!("builtin-filter", builtin_filter_dict_step, [], 3),
                     filter_args,
                     None,
                     call_span,
@@ -200,7 +205,7 @@ pub(crate) fn builtin_filter(
                 // recursive tail PendingBuiltins.
                 let filter_args = vec![Arc::clone(&pred_thunk), Arc::clone(&args[1])];
                 let result_thunk = Arc::new(Thunk::new_pending_builtin(
-                    builtin!("filter", builtin_filter_seq_step),
+                    builtin!("builtin-filter", builtin_filter_seq_step),
                     filter_args,
                     None,
                     call_span,
@@ -338,7 +343,7 @@ pub(crate) fn builtin_filter_dict_step(
                     next_idx_thunk,
                 ];
                 let tail = Arc::new(Thunk::new_pending_builtin(
-                    builtin!("filter", builtin_filter_dict_step, [], 3),
+                    builtin!("builtin-filter", builtin_filter_dict_step, [], 3),
                     tail_args,
                     None,
                     call_span,
@@ -427,7 +432,7 @@ pub(crate) fn builtin_filter_seq_step(
                         // Include this element; defer the rest lazily
                         let tail_args = vec![Arc::clone(&pred_thunk), Arc::clone(&tail_thunk)];
                         let new_tail = Arc::new(Thunk::new_pending_builtin(
-                            builtin!("filter", builtin_filter_seq_step),
+                            builtin!("builtin-filter", builtin_filter_seq_step),
                             tail_args,
                             None,
                             call_span,
@@ -637,7 +642,7 @@ pub(crate) fn builtin_drop(
                 let tail_thunk = ctx.get_thunk(tail);
                 let step_args = vec![n_minus_1, Arc::clone(&tail_thunk)];
                 Ok(Arc::new(Thunk::new_pending_builtin(
-                    builtin!("drop", builtin_drop_seq_step, [], 2),
+                    builtin!("builtin-drop", builtin_drop_seq_step, [], 2),
                     step_args,
                     None,
                     call_span,
@@ -705,7 +710,7 @@ pub(crate) fn builtin_drop_seq_step(
                 let tail_thunk = ctx.get_thunk(tail);
                 let step_args = vec![n_minus_1, Arc::clone(&tail_thunk)];
                 Ok(Arc::new(Thunk::new_pending_builtin(
-                    builtin!("drop", builtin_drop_seq_step, [], 2),
+                    builtin!("builtin-drop", builtin_drop_seq_step, [], 2),
                     step_args,
                     None,
                     call_span,

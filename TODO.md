@@ -806,26 +806,27 @@ Follow-up from builtin-privacy Phase 3. Three issues discovered when making `sam
 - [x] `just versions` — VERIFIED 2026-05-25: all errors fixed (E099→unified-bindings, T003→check_get, E040→reduce-loop, E070→str-length self-ref); exit 0
 - [x] Update `standard_builtins_contains_all` test count (+3: builtin-trim, builtin-emit, builtin-env) — already 301 ✓
 
-### builtin-privacy-primary-names: All Rust builtins registered under `builtin-*` names; prelude wraps every one
+## Builtin Privacy (continued)
 
-**Whatif:** `doc/whatif/completed/builtin-privacy.md`
+### builtin-privacy-operators-and-io: Rename remaining bare builtins to `builtin-*` form
 
-**Problem:** Many Rust builtins are registered under their user-facing names (`"map"`, `"filter"`, `"reduce"`, `"str"`, `"split"`, etc.) rather than `"builtin-map"` etc. These flow through the prelude pointer-walk and land in the user TypeEnv as Rust functions — no tinct wrapper, no type annotation, no doc string. User code calling `[map f xs]` calls the Rust function directly; there is no tinct `map` in prelude.
+**Problem:** The `builtin-privacy-primary-names` sprint deferred operator symbols, I/O primitives, math, datetime, network, bytes, and URI builtins. These remain registered under bare names without prelude wrappers.
 
-**Rule:** No Rust builtin registration name may appear in the user-facing API without a tinct prelude wrapper. Every builtin is registered as `builtin-<name>`. Prelude defines a tinct wrapper for the public name. User code only ever calls tinct.
+**Scope:**
+- Operators: `+`, `-`, `*`, `/`, `=`, `<`, `if` — needs parser desugaring audit + prelude wrappers
+- Math: `pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `nan?`, `inf?`, `finite?`, `float`, `band`, `bor`, `bxor`, `shl`, `shr`
+- String ops not yet wrapped: `str-chars`, `char-code`, `chr`, `str-bytes`, `bytes-str`, `str-index-of`, `trim-start`, `trim-end`, `str-to-upper-char`, `str-to-lower-char`, `str-map-chars`, `regex-match?`, `replace`, `bytes?`
+- Bytes: `bytes`, `bytes-find`, `bytes-of`, `bytes-equal?`, `ct-equal?`
+- Schema: `validate`
+- Semantically deliberate primitives: `materialize`, `until`, `ast-of`, `get?`
+- I/O: `open`, `slurp`, `connect`, `write`, `lines`, and many others — wrap in `stdlib/io.llt` (capability-gated)
+- Datetime, network, URI, meta builtins
 
-**Depends on:** `builtin-privacy` (Phase 2 complete — user TypeEnv starts from `TypeEnv::new()`)
-
-- [ ] Grep `standard_builtins()` in `src/builtins.rs` for all registrations not already using the `builtin-*` form; build exhaustive list (`src/builtins.rs`)
-- [ ] Rename each registration from `"<name>"` to `"builtin-<name>"` — e.g. `"map"` → `"builtin-map"`, `"filter"` → `"builtin-filter"`, `"reduce"` → `"builtin-reduce"`, `"str"` → `"builtin-str"`, `"split"` → `"builtin-split"`, `"join"` → `"builtin-join"`, `"length"` → `"builtin-length"`, `"keys"` → `"builtin-keys"`, `"get"` → `"builtin-get"`, `"merge"` → `"builtin-merge"`, and all remaining (`src/builtins.rs`, `src/builtins_seq_xform.rs`, `src/builtins_seq_reduce.rs`, `src/builtins_seq_gen.rs`, `src/builtins_meta.rs`, `src/builtins_io.rs`)
-- [ ] For each renamed builtin, add a tinct wrapper in `stdlib/prelude.llt` with type annotations and `doc:` string — matching the pattern of existing wrappers (`trim`, `emit`, `env`). Wrappers must not duplicate the builtin's type scheme; use `fn@[return: T  doc: "..."]` form.
-- [ ] Update `builtin_primary_names()` in `src/builtins.rs` to return the `builtin-*` names so T002 lint fires correctly for direct `builtin-*` use in non-prelude code
-- [ ] Update `standard_builtins_contains_all` test count to reflect renamed registrations
-- [ ] `just test` passes — no regressions in corpus or unit tests
-- [ ] `just lint-file samples/versions.llt` — T002/T003 clean after rename (all user-facing names now resolve to tinct wrappers)
-- [ ] `just lint-file samples/basic.llt` — same
-
-**Note:** This sprint is a prerequisite for `stdlib-conformance-builtin-privacy`. That sprint migrates non-prelude files from `builtin-reduce` → `reduce`, which only makes sense once `reduce` IS a tinct wrapper (not the Rust function itself). Run this sprint first.
+- [ ] Design policy for capability-gated builtins: wrap in stdlib module (io.llt, net.llt), not prelude (`src/builtins.rs`)
+- [ ] Rename operator symbols to `builtin-*` + add prelude wrappers (`src/builtins.rs`, `stdlib/prelude.llt`)
+- [ ] Rename math builtins, add `stdlib/math.llt` wrappers (`src/builtins.rs`, `stdlib/math.llt`)
+- [ ] Rename string ops, add prelude/strings.llt wrappers (`src/builtins.rs`, `stdlib/strings.llt`)
+- [ ] Update `standard_builtins_count` and `standard_builtins_contains_all` tests
 
 ---
 

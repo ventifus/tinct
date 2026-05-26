@@ -1255,19 +1255,10 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Id, Strictness::Id],
             1
         ),
-        // Dict primitives
-        builtin!("keys", builtin_keys, [Strictness::Spine], 1),
-        builtin!("builtin-keys", builtin_keys, [Strictness::Spine], 1), // Stable alias
-        builtin!("length", builtin_length, [Strictness::Spine], 1),
-        builtin!("builtin-length", builtin_length, [Strictness::Spine], 1), // Stable alias
-        builtin!("merge", builtin_merge),
-        builtin!("builtin-merge", builtin_merge), // Stable alias
-        builtin!(
-            "append",
-            builtin_append,
-            [Strictness::Seq, Strictness::Id],
-            1
-        ),
+        // Dict primitives (registered under builtin-NAME; prelude exports the bare names)
+        builtin!("builtin-keys", builtin_keys, [Strictness::Spine], 1),
+        builtin!("builtin-length", builtin_length, [Strictness::Spine], 1),
+        builtin!("builtin-merge", builtin_merge),
         builtin!(
             "builtin-append",
             builtin_append,
@@ -1287,39 +1278,28 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             2
         ),
         // each: 2-strictness for both 1-arg (user) and 2-arg (internal offset) calls
-        builtin!("each", builtin_each, [Strictness::Spine, Strictness::Spine]),
+        // (registered under builtin-NAME; prelude exports the bare names)
         builtin!(
             "builtin-each",
             builtin_each,
-            [Strictness::Spine, Strictness::Spine]
-        ), // Stable alias
-        builtin!(
-            "each-key",
-            builtin_each_key,
             [Strictness::Spine, Strictness::Spine]
         ),
         builtin!(
             "builtin-each-key",
             builtin_each_key,
             [Strictness::Spine, Strictness::Spine]
-        ), // Stable alias
-        builtin!(
-            "each-kv",
-            builtin_each_kv,
-            [Strictness::Spine, Strictness::Spine]
         ),
         builtin!(
             "builtin-each-kv",
             builtin_each_kv,
             [Strictness::Spine, Strictness::Spine]
-        ), // Stable alias
-        builtin!("build-dict", builtin_build_dict, [Strictness::Spine], 1),
+        ),
         builtin!(
             "builtin-build-dict",
             builtin_build_dict,
             [Strictness::Spine],
             1
-        ), // Stable alias
+        ),
         // Transient builders
         builtin!("make-builder", builtin_make_builder),
         builtin!(
@@ -1364,48 +1344,33 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Seq, Strictness::Id],
             2
         ),
-        // Strings
-        builtin!("str", builtin_str, [Strictness::Seq]), // variadic - can't use force_count
-        builtin!("builtin-str", builtin_str, [Strictness::Seq]), // Stable alias
-        builtin!(
-            "split",
-            builtin_split,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
+        // Strings (registered under builtin-NAME; prelude exports the bare names)
+        builtin!("builtin-str", builtin_str, [Strictness::Seq]), // variadic - can't use force_count
         builtin!(
             "builtin-split",
             builtin_split,
             [Strictness::Seq, Strictness::Seq],
             2
-        ), // Stable alias
+        ),
         builtin!(
             "replace",
             builtin_replace,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
         ),
-        builtin!("trim", builtin_trim, [Strictness::Seq], 1),
-        builtin!("builtin-trim", builtin_trim, [Strictness::Seq], 1), // Stable alias
-        builtin!("str-length", builtin_str_length, [Strictness::Seq], 1),
+        builtin!("builtin-trim", builtin_trim, [Strictness::Seq], 1),
         builtin!(
             "builtin-str-length",
             builtin_str_length,
             [Strictness::Seq],
             1
-        ), // Stable alias
-        builtin!(
-            "str-slice",
-            builtin_str_slice,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
         ),
         builtin!(
             "builtin-str-slice",
             builtin_str_slice,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
-        ), // Stable alias
+        ),
         builtin!("str-chars", builtin_str_chars, [Strictness::Seq], 1),
         builtin!("char-code", builtin_char_code, [Strictness::Seq], 1),
         builtin!("chr", builtin_chr, [Strictness::Seq], 1),
@@ -1465,10 +1430,9 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             2
         ),
         // Numeric
-        builtin!("floor", builtin_floor, [Strictness::Seq], 1),
-        builtin!("builtin-floor", builtin_floor, [Strictness::Seq], 1), // Stable alias
-        builtin!("round", builtin_round, [Strictness::Seq], 1),
-        builtin!("builtin-round", builtin_round, [Strictness::Seq], 1), // Stable alias
+        // Numeric (registered under builtin-NAME; prelude exports the bare names)
+        builtin!("builtin-floor", builtin_floor, [Strictness::Seq], 1),
+        builtin!("builtin-round", builtin_round, [Strictness::Seq], 1),
         builtin!("pow", builtin_pow, [Strictness::Seq, Strictness::Seq], 2),
         builtin!("sqrt", builtin_sqrt, [Strictness::Seq], 1),
         builtin!("log", builtin_log, [Strictness::Seq], 1),
@@ -1498,59 +1462,40 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("shr", builtin_shr, [Strictness::Seq, Strictness::Seq], 2),
         // Type conversion
         builtin!("float", builtin_float, [Strictness::Seq], 1),
-        // Parsing
-        builtin!("to-int", builtin_to_int, [Strictness::Seq]),
-        builtin!("builtin-to-int", builtin_to_int, [Strictness::Seq]), // Stable alias
-        builtin!("to-float", builtin_to_float, [Strictness::Seq]),
-        builtin!("builtin-to-float", builtin_to_float, [Strictness::Seq]), // Stable alias
-        // Evaluation control
+        // Parsing (registered under builtin-NAME; prelude exports the bare names)
+        builtin!("builtin-to-int", builtin_to_int, [Strictness::Seq]),
+        builtin!("builtin-to-float", builtin_to_float, [Strictness::Seq]),
+        // Evaluation control (registered under builtin-NAME; prelude exports the bare names)
         builtin!("materialize", builtin_force, [Strictness::Seq]),
-        builtin!("raise", builtin_raise, [Strictness::Seq]),
-        builtin!("builtin-raise", builtin_raise, [Strictness::Seq]), // Stable alias
+        builtin!("builtin-raise", builtin_raise, [Strictness::Seq]),
         builtin!(
             "builtin-macro-error",
             builtin_macro_error,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
-        builtin!("try", builtin_try, [Strictness::Id], 1),
-        builtin!("builtin-try", builtin_try, [Strictness::Id], 1), // Stable alias
-        builtin!(
-            "apply",
-            builtin_apply,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
+        builtin!("builtin-try", builtin_try, [Strictness::Id], 1),
         builtin!(
             "builtin-apply",
             builtin_apply,
             [Strictness::Seq, Strictness::Seq],
             2
-        ), // Stable alias
+        ),
         builtin!("until", builtin_until),
-        // Type introspection
-        builtin!("type-of", builtin_type_of, [Strictness::Seq]),
-        builtin!("builtin-type-of", builtin_type_of, [Strictness::Seq]), // Stable alias
+        // Type introspection (registered under builtin-NAME; prelude exports the bare names)
+        builtin!("builtin-type-of", builtin_type_of, [Strictness::Seq]),
         builtin!("ast-of", builtin_ast_of, [Strictness::Id]),
-        builtin!("int?", builtin_int_check, [Strictness::Seq]),
-        builtin!("builtin-int?", builtin_int_check, [Strictness::Seq]), // Stable alias
-        builtin!("float?", builtin_float_check, [Strictness::Seq]),
-        builtin!("builtin-float?", builtin_float_check, [Strictness::Seq]), // Stable alias
+        builtin!("builtin-int?", builtin_int_check, [Strictness::Seq]),
+        builtin!("builtin-float?", builtin_float_check, [Strictness::Seq]),
         // num? is implemented in LLT as [or [int? x] [float? x]] — see stdlib/prelude.llt
-        builtin!("str?", builtin_str_check, [Strictness::Seq]),
-        builtin!("builtin-str?", builtin_str_check, [Strictness::Seq]), // Stable alias
-        builtin!("bool?", builtin_bool_check, [Strictness::Seq]),
-        builtin!("builtin-bool?", builtin_bool_check, [Strictness::Seq]), // Stable alias
+        builtin!("builtin-str?", builtin_str_check, [Strictness::Seq]),
+        builtin!("builtin-bool?", builtin_bool_check, [Strictness::Seq]),
         builtin!("bytes?", builtin_bytes_check, [Strictness::Seq]),
-        builtin!("null?", builtin_null_check, [Strictness::Seq]),
-        builtin!("builtin-null?", builtin_null_check, [Strictness::Seq]), // Stable alias
-        builtin!("dict?", builtin_dict_check, [Strictness::Seq]),
-        builtin!("builtin-dict?", builtin_dict_check, [Strictness::Seq]), // Stable alias
+        builtin!("builtin-null?", builtin_null_check, [Strictness::Seq]),
+        builtin!("builtin-dict?", builtin_dict_check, [Strictness::Seq]),
         // record? and map? are implemented in LLT as aliases of dict? — see stdlib/prelude.llt
-        builtin!("fn?", builtin_fn_check, [Strictness::Seq]),
-        builtin!("builtin-fn?", builtin_fn_check, [Strictness::Seq]), // Stable alias
-        builtin!("seq?", builtin_seq_check, [Strictness::Seq]),
-        builtin!("builtin-seq?", builtin_seq_check, [Strictness::Seq]), // Stable alias
+        builtin!("builtin-fn?", builtin_fn_check, [Strictness::Seq]),
+        builtin!("builtin-seq?", builtin_seq_check, [Strictness::Seq]),
         // Schema validation
         builtin!(
             "validate",
@@ -1558,23 +1503,20 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Seq],
             2
         ),
-        // I/O
-        builtin!("emit", builtin_emit, [Strictness::Seq]),
-        builtin!("builtin-emit", builtin_emit, [Strictness::Seq]), // Stable alias
-        builtin!("env", builtin_env, [Strictness::Seq]),
-        builtin!("builtin-env", builtin_env, [Strictness::Seq]), // Stable alias
+        // I/O (emit/env registered under builtin-NAME; prelude exports the bare names)
+        builtin!("builtin-emit", builtin_emit, [Strictness::Seq]),
+        builtin!("builtin-env", builtin_env, [Strictness::Seq]),
         builtin!(
             "open",
             builtin_open,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
         builtin!("slurp", builtin_slurp, [Strictness::Seq]),
-        builtin!("narrow", builtin_narrow, [Strictness::Seq, Strictness::Seq]),
         builtin!(
             "builtin-narrow",
             builtin_narrow,
             [Strictness::Seq, Strictness::Seq]
-        ), // Stable alias
+        ),
         builtin!("revocable", builtin_revocable, [Strictness::Seq]),
         builtin!("revoke-cap", builtin_revoke_cap, [Strictness::Seq]),
         builtin!(
@@ -1739,8 +1681,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             2
         ),
         builtin!("recv-datagram", builtin_recv_datagram, [Strictness::Seq]),
-        builtin!("from-json", builtin_from_json, [Strictness::Seq]),
-        builtin!("builtin-from-json", builtin_from_json, [Strictness::Seq]), // Stable alias
+        builtin!("builtin-from-json", builtin_from_json, [Strictness::Seq]),
         // Native JSON serializer: recursively materializes and converts to compact JSON string.
         // Replaces the LLT-based codecs/json.llt include approach for the CLI output pipeline.
         builtin!("builtin-to-json", builtin_to_json, [Strictness::Seq]),
@@ -1775,32 +1716,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("builtin-cycle", builtin_cycle, [Strictness::Spine], 1),
         builtin!("builtin-iterate", builtin_iterate),
         builtin!("builtin-unfold", builtin_unfold),
-        builtin!("map", builtin_map, [Strictness::Id, Strictness::Spine], 1),
-        builtin!(
-            "filter",
-            builtin_filter,
-            [Strictness::Id, Strictness::Spine],
-            1
-        ),
-        builtin!(
-            "take",
-            builtin_take,
-            [Strictness::Seq, Strictness::Spine],
-            2
-        ),
-        builtin!(
-            "drop",
-            builtin_drop,
-            [Strictness::Seq, Strictness::Spine],
-            2
-        ),
-        builtin!(
-            "reduce",
-            builtin_reduce,
-            [Strictness::Id, Strictness::Id, Strictness::Spine],
-            1
-        ),
-        // Stable aliases for map/filter/take/drop/reduce (used internally by prelude to allow shadowing)
+        // map/filter/take/drop/reduce registered under builtin-NAME; prelude exports the bare names
         builtin!(
             "builtin-map",
             builtin_map,
@@ -1873,7 +1789,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_sort,
             [Strictness::Spine, Strictness::Spine]
         ),
-        // Stable aliases for async primitives (used internally by stdlib/async.llt to allow shadowing)
+        // Async concurrency primitives (registered under builtin-NAME; prelude exports bare names)
         builtin!("builtin-task", builtin_task),
         builtin!("builtin-await", builtin_await),
         builtin!("builtin-channel", builtin_channel),
@@ -1898,6 +1814,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Seq]
         ),
         builtin!(
+            "builtin-with-deadline",
+            builtin_with_deadline,
+            [Strictness::Seq, Strictness::Seq]
+        ),
+        builtin!(
             "builtin-cancelled-q",
             builtin_cancelled_q,
             [Strictness::Seq]
@@ -1907,6 +1828,17 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_cancel_task,
             [Strictness::Seq]
         ),
+        builtin!("builtin-non-cancellable", builtin_non_cancellable),
+        builtin!(
+            "builtin-with-context",
+            builtin_with_context,
+            [Strictness::Seq, Strictness::Id],
+            1
+        ),
+        // Shutdown primitives (async-shutdown-primitives)
+        builtin!("builtin-cancel-root", builtin_cancel_root),
+        builtin!("builtin-drain", builtin_drain),
+        builtin!("builtin-exit-now", builtin_exit_now, [Strictness::Seq]),
         // Date-time: timestamps and durations
         builtin!(
             "parse-timestamp",
@@ -2105,22 +2037,9 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
         ),
-        // Meta primitives
+        // Meta primitives (registered under builtin-NAME; prelude exports the bare names)
         // DELETED: builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq])
         // eval-ast was the old single-expression eval interface, superseded by the new eval builtin
-        builtin!("gensym", builtin_gensym, [Strictness::Seq]),
-        builtin!("llt-repr", builtin_llt_repr, [Strictness::Seq]),
-        builtin!("tag-of", builtin_tag_of, [Strictness::Seq]),
-        builtin!(
-            "variant",
-            builtin_variant,
-            [Strictness::Seq, Strictness::Id]
-        ), // Variadic: 1 arg (unit) or 2 args (tag + payload)
-        builtin!("decimal", builtin_decimal, [Strictness::Seq]),
-        builtin!("big-int", builtin_big_int, [Strictness::Seq]),
-        builtin!("proxy", builtin_proxy),
-        builtin!("macro-injects", builtin_macro_injects, [Strictness::Seq]),
-        // Meta builtin stable aliases (used internally by prelude to allow shadowing)
         builtin!("builtin-gensym", builtin_gensym, [Strictness::Seq]),
         builtin!("builtin-llt-repr", builtin_llt_repr, [Strictness::Seq]),
         builtin!("builtin-tag-of", builtin_tag_of, [Strictness::Seq]),
@@ -2137,75 +2056,45 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_macro_injects,
             [Strictness::Seq]
         ),
-        // Async concurrency primitives (runtime-v2 Sprint 2, Part B)
-        builtin!("task", builtin_task),
-        builtin!("await", builtin_await),
-        builtin!("channel", builtin_channel),
-        builtin!("send", builtin_send),
-        builtin!("recv", builtin_recv),
-        builtin!("select-once", builtin_select_once),
-        builtin!("par", builtin_par),
-        builtin!("par-map", builtin_par_map),
-        builtin!("par-filter", builtin_par_filter),
-        // Event-source channels: signal, timer, watch
-        builtin!("signal-channel", builtin_signal_channel),
-        builtin!("timer-channel", builtin_timer_channel),
-        builtin!("watch-channel", builtin_watch_channel),
-        // Cancellation context primitives (runtime-v2 Sprint 2, Part F)
-        builtin!("context", builtin_context),
-        builtin!("with-cancel", builtin_with_cancel, [Strictness::Seq]),
-        builtin!(
-            "with-timeout",
-            builtin_with_timeout,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "with-deadline",
-            builtin_with_deadline,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!("cancelled?", builtin_cancelled_q, [Strictness::Seq]),
-        builtin!("cancel-task", builtin_cancel_task, [Strictness::Seq]),
-        builtin!("non-cancellable", builtin_non_cancellable),
-        builtin!("builtin-non-cancellable", builtin_non_cancellable),
-        builtin!(
-            "with-context",
-            builtin_with_context,
-            [Strictness::Seq, Strictness::Id],
-            1
-        ),
-        builtin!(
-            "builtin-with-context",
-            builtin_with_context,
-            [Strictness::Seq, Strictness::Id],
-            1
-        ),
-        // Shutdown primitives (async-shutdown-primitives)
-        builtin!("cancel-root", builtin_cancel_root),
-        builtin!("builtin-cancel-root", builtin_cancel_root),
-        builtin!("drain", builtin_drain),
-        builtin!("builtin-drain", builtin_drain),
-        builtin!("exit-now", builtin_exit_now, [Strictness::Seq]),
-        builtin!("builtin-exit-now", builtin_exit_now, [Strictness::Seq]),
     ]
 }
 
-/// Returns the set of primary (non-`builtin-*` alias) Rust builtin names.
+/// Returns the set of raw Rust builtin names that T002 should warn about when
+/// referenced directly in user code (bypassing the prelude).
 ///
 /// Used by the T002 lint in `src/typecheck.rs` to detect when user code directly
-/// references a Rust builtin name that was not exported by prelude. The set excludes:
-/// - `builtin-*` stable aliases (internal to prelude, never user-facing)
+/// references a Rust builtin name that was not exported by prelude.
+///
+/// After the builtin-privacy-primary-names sprint, most user-facing builtins are
+/// registered under `builtin-*` form and re-exported from prelude as bare-name
+/// wrappers. T002 fires when user code references:
+/// - A `builtin-*` name directly (bypassing the prelude wrapper)
+/// - A bare builtin name that lacks a prelude wrapper (sprint debt — e.g., `pow`, I/O ops)
+///
+/// The set excludes stable non-warning cases:
 /// - `reduce_dict_step` / `reduce_seq_step` (internal continuation helpers)
-/// - `proxy` (always handled by a special typecheck arm before the undefined-variable path)
+/// - `proxy` (handled by a special typecheck arm before the undefined-variable path)
+/// - Operator symbols: `+`, `-`, `*`, `/`, `=`, `<`, `if` (syntax-level, always accessible)
+/// - `get?` (user-facing optional-get, not yet wrapped in prelude)
+/// - Builder ops: `make-builder`, `builder-*` (internal transient API, rarely user-facing)
 pub fn builtin_primary_names() -> std::collections::HashSet<&'static str> {
     standard_builtins()
         .into_iter()
         .map(|def| def.name)
         .filter(|name| {
-            !name.starts_with("builtin-")
-                && *name != "reduce_dict_step"
-                && *name != "reduce_seq_step"
-                && *name != "proxy"
+            !matches!(
+                *name,
+                // Operator symbols (accessible via prelude wrappers or parser desugaring)
+                "+" | "-" | "*" | "/" | "=" | "<" | "if"
+                // Internal helpers not needing T002
+                | "reduce_dict_step" | "reduce_seq_step" | "proxy"
+                // Intentionally-exposed primitives without prelude wrappers yet
+                | "get?" | "bytes?"
+                // Internal builder ops (transient API, not user-facing)
+                | "make-builder" | "builder-set" | "builder-delete"
+                | "builder-finish" | "builder-snapshot" | "builder-keys"
+                | "builder-get" | "builder-get-or"
+            )
         })
         .collect()
 }
@@ -6781,8 +6670,19 @@ mod tests {
         // One was subsequently unregistered (ci-test-regressions) → effective count 306.
         // Added 4 context primitives in eval-runtime-fixes sprint (306 → 310):
         //   non-cancellable, builtin-non-cancellable, with-context, builtin-with-context
+        // builtin-privacy-primary-names sprint (310 → 242):
+        //   Removed 68 bare registrations (keys, length, merge, append, each, each-key,
+        //   each-kv, build-dict, str, split, trim, str-length, str-slice, floor, round,
+        //   to-int, to-float, raise, try, apply, type-of, int?, float?, str?, bool?,
+        //   null?, dict?, fn?, seq?, emit, env, narrow, from-json, map, filter, take,
+        //   drop, reduce, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy,
+        //   macro-injects, task, await, channel, send, recv, select-once, par, par-map,
+        //   par-filter, signal-channel, timer-channel, watch-channel, context, with-cancel,
+        //   with-timeout, with-deadline, cancelled?, cancel-task, non-cancellable, with-context,
+        //   cancel-root, drain, exit-now) = 68 removed.
+        //   Added builtin-with-deadline (was bare-only, now builtin-*): +1. Net: 310 - 68 + 1 = 243.
         assert_eq!(
-            count, 310,
+            count, 243,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6801,16 +6701,16 @@ mod tests {
         assert!(names.contains(&"<"), "missing <");
         // Control
         assert!(names.contains(&"if"), "missing if");
-        // Dict primitives
-        assert!(names.contains(&"keys"), "missing keys");
-        assert!(names.contains(&"length"), "missing length");
-        assert!(names.contains(&"merge"), "missing merge");
-        assert!(names.contains(&"append"), "missing append");
-        // Strings
-        assert!(names.contains(&"str"), "missing str");
-        assert!(names.contains(&"split"), "missing split");
+        // Dict primitives (now under builtin-NAME; bare names are prelude wrappers)
+        assert!(names.contains(&"builtin-keys"), "missing builtin-keys");
+        assert!(names.contains(&"builtin-length"), "missing builtin-length");
+        assert!(names.contains(&"builtin-merge"), "missing builtin-merge");
+        assert!(names.contains(&"builtin-append"), "missing builtin-append");
+        // Strings (now under builtin-NAME; bare names are prelude wrappers)
+        assert!(names.contains(&"builtin-str"), "missing builtin-str");
+        assert!(names.contains(&"builtin-split"), "missing builtin-split");
         assert!(names.contains(&"replace"), "missing replace");
-        assert!(names.contains(&"trim"), "missing trim");
+        assert!(names.contains(&"builtin-trim"), "missing builtin-trim");
         assert!(
             names.contains(&"str-to-upper-char"),
             "missing str-to-upper-char"
@@ -6821,39 +6721,45 @@ mod tests {
         );
         assert!(names.contains(&"str-map-chars"), "missing str-map-chars");
         assert!(names.contains(&"regex-match?"), "missing regex-match?");
-        // Numeric
-        assert!(names.contains(&"floor"), "missing floor");
-        assert!(names.contains(&"round"), "missing round");
-        // Parsing
-        assert!(names.contains(&"to-int"), "missing to-int");
-        assert!(names.contains(&"to-float"), "missing to-float");
-        // Evaluation control
+        // Numeric (now under builtin-NAME; bare names are prelude wrappers)
+        assert!(names.contains(&"builtin-floor"), "missing builtin-floor");
+        assert!(names.contains(&"builtin-round"), "missing builtin-round");
+        // Parsing (now under builtin-NAME; bare names are prelude wrappers)
+        assert!(names.contains(&"builtin-to-int"), "missing builtin-to-int");
+        assert!(
+            names.contains(&"builtin-to-float"),
+            "missing builtin-to-float"
+        );
+        // Evaluation control (now under builtin-NAME; bare names are prelude wrappers)
         assert!(names.contains(&"materialize"), "missing materialize");
-        assert!(names.contains(&"raise"), "missing raise");
-        assert!(names.contains(&"try"), "missing try");
-        assert!(names.contains(&"apply"), "missing apply");
-        // Type introspection
-        assert!(names.contains(&"type-of"), "missing type-of");
+        assert!(names.contains(&"builtin-raise"), "missing builtin-raise");
+        assert!(names.contains(&"builtin-try"), "missing builtin-try");
+        assert!(names.contains(&"builtin-apply"), "missing builtin-apply");
+        // Type introspection (now under builtin-NAME; bare names are prelude wrappers)
+        assert!(
+            names.contains(&"builtin-type-of"),
+            "missing builtin-type-of"
+        );
         // llt-repr moved to builtin-llt-repr (prelude wrapper only)
-        assert!(names.contains(&"int?"), "missing int?");
-        assert!(names.contains(&"float?"), "missing float?");
+        assert!(names.contains(&"builtin-int?"), "missing builtin-int?");
+        assert!(names.contains(&"builtin-float?"), "missing builtin-float?");
         // num?, record?, map? are now LLT-implemented in stdlib/prelude.llt (not builtins)
-        assert!(names.contains(&"str?"), "missing str?");
-        assert!(names.contains(&"bool?"), "missing bool?");
-        assert!(names.contains(&"null?"), "missing null?");
-        assert!(names.contains(&"dict?"), "missing dict?");
-        assert!(names.contains(&"fn?"), "missing fn?");
-        assert!(names.contains(&"seq?"), "missing seq?");
-        // I/O
-        assert!(names.contains(&"emit"), "missing emit");
-        assert!(names.contains(&"env"), "missing env");
+        assert!(names.contains(&"builtin-str?"), "missing builtin-str?");
+        assert!(names.contains(&"builtin-bool?"), "missing builtin-bool?");
+        assert!(names.contains(&"builtin-null?"), "missing builtin-null?");
+        assert!(names.contains(&"builtin-dict?"), "missing builtin-dict?");
+        assert!(names.contains(&"builtin-fn?"), "missing builtin-fn?");
+        assert!(names.contains(&"builtin-seq?"), "missing builtin-seq?");
+        // I/O (emit/env now under builtin-NAME; bare names are prelude wrappers)
+        assert!(names.contains(&"builtin-emit"), "missing builtin-emit");
+        assert!(names.contains(&"builtin-env"), "missing builtin-env");
         assert!(
             !names.contains(&"dir-cap"),
             "dir-cap was removed (ambient cap creation)"
         );
         assert!(names.contains(&"open"), "missing open");
         assert!(names.contains(&"slurp"), "missing slurp");
-        assert!(names.contains(&"narrow"), "missing narrow");
+        assert!(names.contains(&"builtin-narrow"), "missing builtin-narrow");
         assert!(names.contains(&"revocable"), "missing revocable");
         assert!(names.contains(&"revoke-cap"), "missing revoke-cap");
         assert!(
@@ -6889,7 +6795,10 @@ mod tests {
         assert!(names.contains(&"rename"), "missing rename");
         assert!(names.contains(&"link"), "missing link");
         assert!(names.contains(&"read-link"), "missing read-link");
-        assert!(names.contains(&"from-json"), "missing from-json");
+        assert!(
+            names.contains(&"builtin-from-json"),
+            "missing builtin-from-json"
+        );
         // include was deleted (builtin_include removed in include-decomp sprint)
         assert!(
             !names.contains(&"include"),
@@ -6916,11 +6825,11 @@ mod tests {
             "missing builtin-iterate"
         );
         assert!(names.contains(&"builtin-unfold"), "missing builtin-unfold");
-        assert!(names.contains(&"map"), "missing map");
-        assert!(names.contains(&"filter"), "missing filter");
-        assert!(names.contains(&"take"), "missing take");
-        assert!(names.contains(&"drop"), "missing drop");
-        assert!(names.contains(&"reduce"), "missing reduce");
+        assert!(names.contains(&"builtin-map"), "missing builtin-map");
+        assert!(names.contains(&"builtin-filter"), "missing builtin-filter");
+        assert!(names.contains(&"builtin-take"), "missing builtin-take");
+        assert!(names.contains(&"builtin-drop"), "missing builtin-drop");
+        assert!(names.contains(&"builtin-reduce"), "missing builtin-reduce");
         assert!(names.contains(&"builtin-join"), "missing builtin-join");
         assert!(names.contains(&"builtin-concat"), "missing builtin-concat");
         // List operations (registered as builtin-NAME; prelude exports unwrapped names)
@@ -6937,15 +6846,27 @@ mod tests {
         // Access-pipeline builtins (Wave 1 sprint)
         assert!(names.contains(&"builtin-get"), "missing builtin-get");
         assert!(names.contains(&"get?"), "missing get?");
-        assert!(names.contains(&"each"), "missing each");
-        assert!(names.contains(&"each-key"), "missing each-key");
-        assert!(names.contains(&"each-kv"), "missing each-kv");
+        assert!(names.contains(&"builtin-each"), "missing builtin-each");
+        assert!(
+            names.contains(&"builtin-each-key"),
+            "missing builtin-each-key"
+        );
+        assert!(
+            names.contains(&"builtin-each-kv"),
+            "missing builtin-each-kv"
+        );
         // Total count: Wave 1 sprint added 4 access-pipeline builtins (builtin-get, each, each-key, each-kv).
         // Update this count when standard_builtins() changes.
         // eval-ast: DELETED (superseded by eval builtin)
         // gensym moved to builtin-gensym (prelude wrapper only)
-        assert!(names.contains(&"str-length"), "missing str-length");
-        assert!(names.contains(&"str-slice"), "missing str-slice");
+        assert!(
+            names.contains(&"builtin-str-length"),
+            "missing builtin-str-length"
+        );
+        assert!(
+            names.contains(&"builtin-str-slice"),
+            "missing builtin-str-slice"
+        );
         assert!(names.contains(&"str-chars"), "missing str-chars");
         assert!(names.contains(&"validate"), "missing validate");
         // Math builtins
@@ -7028,62 +6949,43 @@ mod tests {
             names.contains(&"include-cache-put"),
             "missing include-cache-put"
         );
-        // Added context primitives: context, with-cancel, with-timeout, with-deadline,
-        // cancelled?, cancel-task (+6 → 246 total from 240)
-        // Added 14 builtin-* stable aliases for prelude-missing-wrappers sprint (284 → 298)
-        assert!(names.contains(&"builtin-keys"), "missing builtin-keys");
-        assert!(names.contains(&"builtin-merge"), "missing builtin-merge");
-        assert!(names.contains(&"builtin-each"), "missing builtin-each");
-        assert!(
-            names.contains(&"builtin-each-key"),
-            "missing builtin-each-key"
-        );
-        assert!(
-            names.contains(&"builtin-each-kv"),
-            "missing builtin-each-kv"
-        );
+        // Additional builtin-* assertions (all now primary names per builtin-privacy sprint)
         assert!(
             names.contains(&"builtin-build-dict"),
             "missing builtin-build-dict"
         );
-        assert!(names.contains(&"builtin-floor"), "missing builtin-floor");
-        assert!(names.contains(&"builtin-round"), "missing builtin-round");
-        assert!(
-            names.contains(&"builtin-to-float"),
-            "missing builtin-to-float"
-        );
-        assert!(names.contains(&"builtin-try"), "missing builtin-try");
-        assert!(names.contains(&"builtin-apply"), "missing builtin-apply");
-        assert!(
-            names.contains(&"builtin-type-of"),
-            "missing builtin-type-of"
-        );
-        assert!(names.contains(&"builtin-narrow"), "missing builtin-narrow");
-        assert!(
-            names.contains(&"builtin-from-json"),
-            "missing builtin-from-json"
-        );
-        assert!(names.contains(&"builtin-trim"), "missing builtin-trim");
-        assert!(names.contains(&"builtin-emit"), "missing builtin-emit");
-        assert!(names.contains(&"builtin-env"), "missing builtin-env");
-        // async-shutdown-features sprint added 4 context primitives (306 → 310):
-        assert!(
-            names.contains(&"non-cancellable"),
-            "missing non-cancellable"
-        );
+        // async-shutdown-features sprint: non-cancellable/with-context now under builtin-NAME
         assert!(
             names.contains(&"builtin-non-cancellable"),
             "missing builtin-non-cancellable"
         );
-        assert!(names.contains(&"with-context"), "missing with-context");
         assert!(
             names.contains(&"builtin-with-context"),
             "missing builtin-with-context"
         );
+        // builtin-privacy-primary-names sprint: with-deadline now under builtin-NAME
+        assert!(
+            names.contains(&"builtin-with-deadline"),
+            "missing builtin-with-deadline"
+        );
+        // Async shutdown primitives now under builtin-NAME
+        assert!(
+            names.contains(&"builtin-cancel-root"),
+            "missing builtin-cancel-root"
+        );
+        assert!(names.contains(&"builtin-drain"), "missing builtin-drain");
+        assert!(
+            names.contains(&"builtin-exit-now"),
+            "missing builtin-exit-now"
+        );
+        // builtin-privacy-primary-names sprint: removed 68 bare registrations,
+        // added builtin-with-deadline (was bare-only, now has builtin-* registration).
+        // Previous total: 310. Removed 68 bare names. Added 1 new builtin-with-deadline.
+        // Net: 310 - 68 + 1 = 243.
         assert_eq!(
             names.len(),
-            310,
-            "expected 310 builtins, got {} — update this assertion if adding/removing builtins",
+            243,
+            "expected 243 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }
@@ -10145,7 +10047,7 @@ mod tests {
 
         // Create the PendingBuiltin thunk
         let pending_thunk = Arc::new(Thunk::new_pending_builtin(
-            builtin!("drop", builtin_drop_seq_step, [], 2),
+            builtin!("builtin-drop", builtin_drop_seq_step, [], 2),
             vec![n_remaining, seq],
             None,
             call_span(),

@@ -71,7 +71,7 @@ pub(crate) fn builtin_range(
             let head = ok_val(Value::Int(start_int), call_span)?;
             let tail_args = vec![ok_val(Value::Int(next_start), call_span)?];
             let tail = Arc::new(Thunk::new_pending_builtin(
-                builtin!("range", builtin_range),
+                builtin!("builtin-range", builtin_range),
                 tail_args,
                 None,
                 call_span,
@@ -123,7 +123,7 @@ pub(crate) fn builtin_range(
                     ok_val(Value::Int(end_int), call_span)?,
                 ];
                 let tail = Arc::new(Thunk::new_pending_builtin(
-                    builtin!("range", builtin_range),
+                    builtin!("builtin-range", builtin_range),
                     tail_args,
                     None,
                     call_span,
@@ -168,7 +168,7 @@ pub(crate) fn builtin_repeat(
         let head = Arc::clone(&args[0]);
         let tail_args = vec![Arc::clone(&args[0])];
         let tail = Arc::new(Thunk::new_pending_builtin(
-            builtin!("repeat", builtin_repeat),
+            builtin!("builtin-repeat", builtin_repeat),
             tail_args,
             None,
             call_span,
@@ -258,7 +258,7 @@ pub(crate) fn builtin_cycle_step(
             ok_val(Value::Int(next_idx), call_span)?,
         ];
         let tail = Arc::new(Thunk::new_pending_builtin(
-            builtin!("cycle", builtin_cycle_step, [], 2),
+            builtin!("builtin-cycle", builtin_cycle_step, [], 2),
             tail_args,
             None,
             call_span,
@@ -369,7 +369,7 @@ pub(crate) fn builtin_iterate(
         // tail = iterate(f, f(x))
         let tail_args = vec![Arc::clone(&f), f_of_x];
         let tail = Arc::new(Thunk::new_pending_builtin(
-            builtin!("iterate", builtin_iterate),
+            builtin!("builtin-iterate", builtin_iterate),
             tail_args,
             None,
             call_span,
@@ -441,7 +441,7 @@ pub(crate) fn builtin_unfold_step(
                 // tail = unfold_step(step, next_seed)
                 let tail_args = vec![step, Arc::clone(&next_seed)];
                 let tail = Arc::new(Thunk::new_pending_builtin(
-                    builtin!("unfold", builtin_unfold_step),
+                    builtin!("builtin-unfold", builtin_unfold_step),
                     tail_args,
                     None,
                     call_span,

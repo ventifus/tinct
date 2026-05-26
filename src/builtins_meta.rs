@@ -599,7 +599,7 @@ pub(crate) fn builtin_apply(
             // force_count=2: pre-materialize both args[0] (function) and args[1] (args-dict)
             // before calling builtin_apply_impl, which uses try_get_materialized().expect(...).
             // Must match what builtin_apply_impl actually requires.
-            builtin!("apply", builtin_apply_impl, [], 2),
+            builtin!("builtin-apply", builtin_apply_impl, [], 2),
             args,
             named_opt,
             call_span,
