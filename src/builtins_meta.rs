@@ -50,6 +50,7 @@ use crate::builtins::{
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, materialize_sync};
 use crate::eval_call::{invoke_function, CallContext};
+use crate::eval_materialize::force_dict_tree;
 use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
 
 /// `builtin-to-json`: takes 1 arg and serializes to a JSON string.
@@ -1210,9 +1211,12 @@ pub(crate) fn builtin_variant(
                             // H2: conditional force — only when tag is a known AST variant name
                             let payload_val =
                                 materialize(payload_thunk, Some(&call_span), &ctx).await?;
+                            // Deep-materialize all nested dict values so dict_to_surface_node can access them
+                            // dict_to_surface_node uses try_get_materialized on all field thunks
+                            let deep_payload = force_dict_tree(&payload_val, &ctx).await?;
                             // Wrap as Variant so dict_to_surface_node can extract the tag
                             let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                payload_val,
+                                deep_payload,
                                 call_span,
                             )));
                             let variant_val = Value::Variant {

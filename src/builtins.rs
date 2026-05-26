@@ -3597,9 +3597,7 @@ mod tests {
         }))
         .unwrap_err();
         assert!(
-            err.kind
-                .to_string()
-                .contains("parses to a non-finite value"),
+            err.kind.to_string().contains("is not a finite number"),
             "got: {}",
             err.kind
         );
@@ -3615,9 +3613,7 @@ mod tests {
         }))
         .unwrap_err();
         assert!(
-            err.kind
-                .to_string()
-                .contains("parses to a non-finite value"),
+            err.kind.to_string().contains("is not a finite number"),
             "got: {}",
             err.kind
         );
@@ -3633,9 +3629,7 @@ mod tests {
         }))
         .unwrap_err();
         assert!(
-            err.kind
-                .to_string()
-                .contains("parses to a non-finite value"),
+            err.kind.to_string().contains("is not a finite number"),
             "got: {}",
             err.kind
         );
@@ -3651,9 +3645,7 @@ mod tests {
         }))
         .unwrap_err();
         assert!(
-            err.kind
-                .to_string()
-                .contains("parses to a non-finite value"),
+            err.kind.to_string().contains("is not a finite number"),
             "got: {}",
             err.kind
         );

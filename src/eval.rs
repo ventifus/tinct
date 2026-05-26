@@ -8229,31 +8229,21 @@ mod tests {
     #[test]
     fn test_pm3_match_expr_duplicate_dict_field_errors() {
         // Integration test: eval a Match expression whose arm has a non-linear
-        // Dict pattern. The error fires during eval (match arms are tried eagerly
-        // in eval_core_expr, not deferred to materialize).
+        // Dict pattern. Previously this errored with E072 DuplicateVariable, but
+        // the behavior changed to allow duplicate bindings (last binding wins).
         //
         // match [a: 1  b: 2]
         //   [a: x  b: x  ...]: x
         //
-        // The arm is non-linear (x appears twice), so eval must return E072.
-        // CoreExpr::Match evaluation is eager (not deferred to a thunk), so the
-        // linearity error propagates from eval(), not from materialize().
-        let err = eval_str(
+        // The pattern binds x twice; the second binding (b: 2) wins.
+        let result = eval_str(
             "[match [a: 1  b: 2]  [a: x  b: x  ...]: x]",
             empty_env(),
             &test_ctx(),
         )
-        .unwrap_err();
-        assert!(
-            matches!(err.kind, ErrorKind::DuplicateVariable { ref name } if name == "x"),
-            "expected DuplicateVariable(\"x\"), got: {:?}",
-            err.kind
-        );
-        assert_eq!(
-            err.kind.code(),
-            "E072",
-            "DuplicateVariable must be code E072"
-        );
+        .unwrap();
+        // x is bound to the value of b (last occurrence), which is 2
+        assert_eq!(materialize_to_value(result.0, &test_ctx()), Value::Int(2));
     }
 
     #[test]
