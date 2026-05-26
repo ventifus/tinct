@@ -1864,8 +1864,8 @@ mod tests {
     /// in LOCAL_SET.run_until() so spawn_local tasks are driven concurrently.
     ///
     /// Uses builtin-task/builtin-await (bare names removed in builtin-privacy-primary-names sprint).
-    #[tokio::test]
-    async fn test_task_await_basic() {
+    #[test]
+    fn test_task_await_basic() {
         let result =
             crate::eval_source_with_config("[builtin-await [builtin-task [fn [let] 42]]]", false);
         // Output is the Value Display format; Int(42) renders as "Int(42)" via eval_source.
@@ -1880,8 +1880,8 @@ mod tests {
     /// Verify that `[builtin-context]` creates a fresh uncancelled Context value.
     ///
     /// Uses builtin-context/builtin-cancelled-q (bare names removed in builtin-privacy-primary-names sprint).
-    #[tokio::test]
-    async fn test_context_creates_fresh_token() {
+    #[test]
+    fn test_context_creates_fresh_token() {
         // [builtin-cancelled-q [builtin-context]] returns false — a fresh token is not cancelled.
         let result =
             crate::eval_source_with_config("[builtin-cancelled-q [builtin-context]]", false);
@@ -1895,8 +1895,8 @@ mod tests {
     /// Verify that `[builtin-cancel-task ctx]` returns null (empty dict) when given a Context.
     ///
     /// Uses builtin-cancel-task/builtin-context (bare names removed in builtin-privacy-primary-names sprint).
-    #[tokio::test]
-    async fn test_cancel_task_returns_null() {
+    #[test]
+    fn test_cancel_task_returns_null() {
         // [builtin-cancel-task [builtin-context]] should return {} (null) — the empty dict.
         let result =
             crate::eval_source_with_config("[builtin-cancel-task [builtin-context]]", false);
@@ -1909,8 +1909,8 @@ mod tests {
     }
 
     /// Verify that a cancelled? check on a token cancelled in Rust returns true.
-    #[tokio::test]
-    async fn test_cancel_task_then_cancelled_q() {
+    #[test]
+    fn test_cancel_task_then_cancelled_q() {
         // Create a fresh token, cancel it in Rust, verify is_cancelled() = true.
         let token = tokio_util::sync::CancellationToken::new();
         token.cancel();
@@ -1928,8 +1928,8 @@ mod tests {
     /// 2. After cancelling a freshly created context, [builtin-cancelled-q ...] == true
     ///
     /// Uses builtin-with-cancel/builtin-cancelled-q/builtin-context (bare names removed in builtin-privacy-primary-names sprint).
-    #[tokio::test]
-    async fn test_with_cancel_child_starts_uncancelled() {
+    #[test]
+    fn test_with_cancel_child_starts_uncancelled() {
         let result = crate::eval_source_with_config(
             "[builtin-cancelled-q [builtin-with-cancel [builtin-context]].child-ctx]",
             false,
@@ -1946,8 +1946,8 @@ mod tests {
     /// but we verify it returns a Context without error.)
     ///
     /// Uses builtin-with-timeout/builtin-cancelled-q/builtin-context (bare names removed in builtin-privacy-primary-names sprint).
-    #[tokio::test]
-    async fn test_with_timeout_returns_context() {
+    #[test]
+    fn test_with_timeout_returns_context() {
         let result = crate::eval_source_with_config(
             "[builtin-cancelled-q [builtin-with-timeout [builtin-context] 100]]",
             false,
@@ -1963,8 +1963,8 @@ mod tests {
     /// Verify that `[builtin-with-deadline ctx ts]` returns a Context without error.
     ///
     /// Uses builtin-with-deadline/builtin-cancelled-q/builtin-context (bare names removed in builtin-privacy-primary-names sprint).
-    #[tokio::test]
-    async fn test_with_deadline_returns_context() {
+    #[test]
+    fn test_with_deadline_returns_context() {
         // Deadline in the past (1 = 1970-01-01 UTC in ms) → child should be cancelled immediately.
         // sleep(0) spawned, yields. We just check it doesn't error.
         let result = crate::eval_source_with_config(
@@ -1983,8 +1983,8 @@ mod tests {
     ///
     /// We test this by calling cancel() on the Rust token directly (not through tinct),
     /// so we don't need dict syntax to share state.
-    #[tokio::test]
-    async fn test_parent_cancel_propagates_to_child_rust() {
+    #[test]
+    fn test_parent_cancel_propagates_to_child_rust() {
         let parent = tokio_util::sync::CancellationToken::new();
         let child = parent.child_token();
         assert!(!child.is_cancelled(), "child starts uncancelled");
@@ -1996,8 +1996,8 @@ mod tests {
     }
 
     /// Verify that cancelling a child does NOT cancel the parent (Rust-level check).
-    #[tokio::test]
-    async fn test_child_cancel_does_not_affect_parent_rust() {
+    #[test]
+    fn test_child_cancel_does_not_affect_parent_rust() {
         let parent = tokio_util::sync::CancellationToken::new();
         let child = parent.child_token();
         child.cancel();
@@ -2014,8 +2014,8 @@ mod tests {
     /// [builtin-channel 0] must return an error: capacity must be ≥ 1.
     ///
     /// Uses builtin-channel (bare name removed in builtin-privacy-primary-names sprint).
-    #[tokio::test]
-    async fn test_channel_capacity_zero_returns_error() {
+    #[test]
+    fn test_channel_capacity_zero_returns_error() {
         let result = crate::eval_source_with_config("[builtin-channel 0]", false);
         assert!(
             result.is_err(),
@@ -2032,8 +2032,8 @@ mod tests {
     ///
     /// This exercises the core invariant used by `cancelled?`: a new token is always
     /// in the non-cancelled state until `cancel()` is called explicitly.
-    #[tokio::test]
-    async fn test_cancelled_q_false_on_fresh_context() {
+    #[test]
+    fn test_cancelled_q_false_on_fresh_context() {
         let token = tokio_util::sync::CancellationToken::new();
         assert!(
             !token.is_cancelled(),
@@ -2047,8 +2047,8 @@ mod tests {
     /// empty Vec, triggering the "select-once requires at least one source" guard.
     ///
     /// Uses builtin-select-once (bare name removed in builtin-privacy-primary-names sprint).
-    #[tokio::test]
-    async fn test_select_once_empty_sources_returns_error() {
+    #[test]
+    fn test_select_once_empty_sources_returns_error() {
         let result = crate::eval_source_with_config("[builtin-select-once {}]", false);
         assert!(
             result.is_err(),
@@ -2070,8 +2070,8 @@ mod tests {
     ///
     /// Uses builtin-task/builtin-await (bare names removed in builtin-privacy-primary-names sprint).
     /// `try` stays as the prelude wrapper; `+` stays as the prelude wrapper (2-arg, so [+ 1 2 3] gives arity mismatch).
-    #[tokio::test]
-    async fn test_await_error_twice_returns_error_both_times() {
+    #[test]
+    fn test_await_error_twice_returns_error_both_times() {
         // Create a task that errors ([+ 1 2 3] fails: + is 2-arg). [try [fn [] ...]] catches
         // the error as [Error "msg"]. We await the same task twice — both should return
         // [Error ...], not [Ok {}].

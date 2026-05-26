@@ -601,10 +601,11 @@ fn eval_json_output_is_valid_json() {
 
 #[test]
 fn eval_stdin_json_injection() {
-    // When stdin is piped with JSON, it should be available as % in the first doc
+    // When stdin is piped with JSON and -i json is used, it should be available as % in the first doc.
+    // -i json reads %stdin and parses as JSON via stdlib/cli/in/json.llt.
     let (path, _dir) = write_temp_llt("eval_stdin_json", "[name: %.name]");
     let output = Command::new(tinct_bin())
-        .args(["run", "-o", "json", path.to_str().unwrap()])
+        .args(["run", "-i", "json", "-o", "json", path.to_str().unwrap()])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1358,10 +1359,12 @@ fn include_with_dircap_and_hash() {
 
 #[test]
 fn no_fs_flag_blocks_include() {
-    // --no-fs flag should prevent $include from accessing the filesystem
+    // --no-fs flag should prevent $include from accessing the filesystem.
+    // --eval forces the lazy result so the error is surfaced (without it, the
+    // thunk is never materialized and the program exits 0 silently).
     let (path, _dir) = write_temp_llt("no_fs_flag", "[include %cwd \"some_file.llt\"]");
     let output = Command::new(tinct_bin())
-        .args(["run", "--no-fs", path.to_str().unwrap()])
+        .args(["run", "--eval", "--no-fs", path.to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
 
@@ -1455,12 +1458,14 @@ fn timeout_flag_exits_with_sigalrm() {
     // Test that --timeout flag installs SIGALRM handler and exits with code 2.
     // Use an infinite workload (iterate with collect) that can never complete.
     // Set a short timeout (1s) to ensure SIGALRM fires.
+    // --eval forces the lazy result so the infinite loop actually runs (without
+    // it, the program exits 0 immediately without driving the computation).
     let source = r#"[call $collect [call $iterate [fn [x] [call $+ x 1]] 0]]"#;
     let (path, _dir) = write_temp_llt("timeout_flag", source);
 
     let start = std::time::Instant::now();
     let output = Command::new(tinct_bin())
-        .args(["run", "--timeout", "1s", path.to_str().unwrap()])
+        .args(["run", "--eval", "--timeout", "1s", path.to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
     let elapsed = start.elapsed();
@@ -1630,12 +1635,21 @@ fn no_fs_flag_and_timeout_flag_conjunctive_enforcement() {
     // Test that both --no-fs and --timeout flags are actively enforced
     // simultaneously. The test should fail due to --no-fs blocking $include,
     // not due to timeout.
+    // --eval forces the lazy result so the include error is surfaced (without
+    // it, the thunk is never materialized and the program exits 0 silently).
     let (path, _dir) = write_temp_llt(
         "conjunctive_enforcement",
         "[include %cwd \"some_file.llt\"]",
     );
     let output = Command::new(tinct_bin())
-        .args(["run", "--no-fs", "--timeout", "5s", path.to_str().unwrap()])
+        .args([
+            "run",
+            "--eval",
+            "--no-fs",
+            "--timeout",
+            "5s",
+            path.to_str().unwrap(),
+        ])
         .output()
         .expect("failed to run tinct");
 
@@ -1894,6 +1908,8 @@ fn cap_fs_read_only_permits_readable() {
 #[test]
 fn cap_fs_read_only_write_fails() {
     // --cap-fs mydir=DIR:r grants read-only access. raw-create should fail (needs Writable).
+    // --eval forces the lazy result so the permission error is surfaced (without it, the
+    // thunk is never materialized and the program exits 0 silently).
     let dir = TempDir::new("cap_fs_ro_write_fail");
     let main = dir.path().join("main.llt");
     let llt_content = r#"[call $raw-create %mydir "test.txt"]"#;
@@ -1903,6 +1919,7 @@ fn cap_fs_read_only_write_fails() {
     let output = Command::new(tinct_bin())
         .args([
             "run",
+            "--eval",
             "--no-cwd",
             "--no-libdir",
             "--cap-fs",
@@ -3505,10 +3522,11 @@ fn default_output_null() {
 
 #[test]
 fn expr_flag_simple() {
-    // `tinct eval -e '%.x' <<< '{"x":42}'` → 42 (with stdin JSON auto-detection)
+    // `tinct run -i json -o json -e '%.x' <<< '{"x":42}'` → 42
+    // -i json reads stdin as JSON and makes it available as % via stdlib/cli/in/json.llt.
     use std::io::Write;
     let mut child = Command::new(tinct_bin())
-        .args(["run", "-o", "json", "-e", "%.x"])
+        .args(["run", "-i", "json", "-o", "json", "-e", "%.x"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -4472,12 +4490,15 @@ fn cap_file_missing_file_errors() {
 fn cap_file_no_fs_suppresses_injection() {
     // Verify --no-fs suppresses --cap-file Handle injection.
     // The Handle is not injected, so %cfg is undefined.
+    // --eval forces the lazy result so the undefined-variable error is surfaced
+    // (without it, the thunk is never materialized and the program exits 0 silently).
     let llt_content = r#"[slurp %cfg]"#;
     let (llt_path, _llt_dir) = write_temp_llt("cap_file_no_fs_suppresses", llt_content);
 
     let output = Command::new(tinct_bin())
         .args([
             "run",
+            "--eval",
             "--no-fs",
             "--cap-file",
             "cfg=/dev/null:r",

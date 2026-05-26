@@ -695,23 +695,6 @@ are already tracked in `runtime-v2-fix-regressions`. These 4 are not yet tracked
 - [x] `test_circular_dependency_cycle_path` — relaxed assertion for iterative CEK machine (cycle_path empty is expected)
 - [x] `test_instance_fd_consistency_violation` — re-ignored with updated reason
 
-### ci-regressions-2026-05-26: Fix pre-existing CI failures found during profiling-sigint-flush sprint
-
-Found during `just ci` run on 2026-05-26. All pre-existing (not introduced by the current sprint).
-
-**Lib test failures (under `--test-threads=1`):**
-- [ ] `builtins_async::tests::*` (8 tests) — all pass when run without `--test-threads=1` (e.g., `just test-one builtins_async`); fail only under serial execution. Root cause: async tests use a shared global tokio runtime state that conflicts with sequential ordering. Fix: isolate async runtime state per test or use `#[tokio::test]` isolation. (`src/builtins_async.rs`)
-- [ ] `typecheck::tests::test_no_false_positive_warning_for_discharged_constraints` — emits 3 spurious T013 warnings for `_t2`, `_t3`, `_t4` (Addable constraint from `[+ 1 2]` not properly discharged). Regressed after runtime-v2 merge (was passing per TODO.md line 750). Root cause: `is_discharged` in `type_env.rs` not finding the substitution binding for these type vars after SCC generalization. (`src/type_env.rs`, `src/typecheck_dict.rs`)
-
-**CLI test failures (8 tests, all pre-existing from builtin-privacy-primary-names sprint):**
-- [ ] `expr_flag_simple`, `eval_stdin_json_injection` — json.llt now includes codecs/json.llt and uses tinct `to-json` (json-delete-to-json sprint). If tests still fail, the root cause is the `%.x` pipeline lazy evaluation issue: output formatter receives a lazy thunk; when forced inside json.llt's context, `%` may resolve wrong. (`stdlib/cli/out/json.llt`, `src/main.rs` pipeline output path)
-- [ ] `cap_fs_read_only_write_fails` — raw-create with read-only perms should fail but succeeds. Cap-fs enforcement regression. (`tests/cli_tests.rs`, `src/main.rs` cap-fs handling)
-- [ ] `cap_file_no_fs_suppresses_injection` — `--cap-file` + `--no-fs` interaction broken. (`tests/cli_tests.rs`)
-- [ ] `no_fs_flag_blocks_include` — `--no-fs` should block `$include` but doesn't (include-decomp sprint changed include behavior). (`tests/cli_tests.rs`, `src/main.rs`)
-- [ ] `no_fs_flag_and_timeout_flag_conjunctive_enforcement` — `--no-fs` + `--timeout` conjunctive enforcement broken. (`tests/cli_tests.rs`)
-- [ ] `timeout_flag_exits_with_sigalrm` — `--timeout 1s` on infinite workload should exit non-zero via SIGALRM but doesn't. Possible interaction with new SIGINT handler installed by profiling sprint. (`tests/cli_tests.rs`, `src/main.rs`)
-- [ ] `type_warning_explicit_unknown_emitted_on_stderr` — T011 warning for `@Unknown` annotation not emitted on stderr. (`tests/cli_tests.rs`)
-
 ### known-bugs-fix: Fix LSP expansion, docgen arity, eval_corpus OOM
 
 - [x] **`just docgen` fails with `[E020] arity mismatch`:** removed dead-code `[strings: [include %libdir "strings.llt"] path: [include %libdir "path.llt"]]` intermediate dict from `scripts/docgen.llt` — those bindings were never used downstream; the arity mismatch root cause in the multi-document pipeline remains uninvestigated (static analysis could not reproduce it) (`scripts/docgen.llt`)
@@ -816,6 +799,44 @@ Follow-up from builtin-privacy Phase 3. Three issues discovered when making `sam
 - [x] Run `tinct lint --strict` on any user-facing example scripts to verify full coverage — samples/basic.llt clean (T002/T003 only; T010 is span bug)
 - [x] Update `doc/11a-builtins.md` to document `builtin-trim`, `builtin-emit`, `builtin-env`
 - [x] Update builtin count in `standard_builtins_contains_all` test (was 284, now +3 = 301; already correct)
+
+### type-predicates-to-tinct: Replace Rust type-predicate builtins with tinct pattern matching
+
+**Motivation:** Minimum Rust builtin surface. Type predicates belong in tinct using `Pattern::TypeTag` match arms — the language's own type dispatch mechanism, which already soft-skips (`Ok(None)`) on mismatch. `type-of` is a stringly-typed escape hatch for dynamic user-facing introspection only.
+
+**Verified implementations** (from `src/eval.rs:match_pattern` + `src/value.rs:type_name()`):
+
+```llt
+int?:   [fn [let x] [match x Int:      true  _: false]]
+float?: [fn [let x] [match x Float:    true  _: false]]
+str?:   [fn [let x] [match x Str:      true  _: false]]  # Str is alias for String in TypeTag
+bool?:  [fn [let x] [match x Bool:     true  _: false]]
+dict?:  [fn [let x] [match x Dict:     true  _: false]]  # Overlay also returns "Dict" from type_name()
+seq?:   [fn [let x] [match x Seq:      true  _: false]]
+bytes?: [fn [let x] [match x Bytes:    true  _: false]]
+proxy?: [fn [let x] [match x Proxy:    true  _: false]]
+fn?:    [fn [let x] [match x Function: true  Builtin: true  _: false]]  # Value::Builtin → type_name() = "Builtin", NOT "Function"; needs two arms
+null?:  [fn [let x] [match x []:       true  _: false]]  # empty closed Dict pattern; TypeTag won't work — all dicts return "Dict" from type_name()
+```
+
+- [ ] Replace all type predicate prelude entries with the verified implementations above (`stdlib/prelude.llt`)
+- [ ] Update prelude hot-path code that calls `builtin-seq?` etc. directly to use the tinct match form (`stdlib/prelude.llt`)
+- [ ] Remove `builtin-int?`, `builtin-float?`, `builtin-str?`, `builtin-bool?`, `builtin-null?`, `builtin-dict?`, `builtin-fn?`, `builtin-seq?`, `builtin-proxy?`, `builtin-bytes?` from `standard_builtins()` (`src/builtins.rs`) and `src/builtins_meta.rs`
+- [ ] Remove corresponding `inject_builtin_aliases` entries from `src/type_env.rs`
+- [ ] Update `standard_builtins_contains_all` test count (`src/builtins.rs`)
+
+### prelude-lines: Add `lines` as a tinct prelude function
+
+**Root cause (found 2026-05-26):** `lines` is missing from the prelude. It existed as a raw Rust builtin, but it's just `[split "\n" s]` — no Rust code needed. `stdlib/cli/in/ndjson.llt` was broken because it called the raw `lines` builtin directly (fixed by switching to `[split "\n" [slurp %stdin]]`), but user code cannot call `lines` at all.
+
+- [ ] Add `lines@[doc: "Split a string into a Seq of lines (splits on newline)"]: [fn [let s@String] [split "\n" s]]` → `stdlib/prelude.llt`
+
+### profiling-span-key-inconsistency: `snapshot_to_json_string` produces `"builtin-name"` but spec/scripts use `"builtin"`
+
+**Root cause (found 2026-05-26):** `SpanRecord.builtin_name` field is serialized by serde (with `#[serde(rename_all = "kebab-case")]`) as `"builtin-name"`. But `spans_to_value` inserts the key `"builtin"`, and the whatif spec (`doc/whatif/profiling.md` line 116) also documents it as `"builtin"`. When the `profiling-sigint-flush` sprint lands and uses `snapshot_to_json_string`, all analysis scripts (`trace.llt`, `materialize.llt`, `create.llt`) will silently fail to read the builtin name.
+
+- [ ] Fix serde name to match the spec: add `#[serde(rename = "builtin")]` to `SpanRecord.builtin_name` field in `src/profiling.rs`
+- [ ] Verify `snapshot_to_json_string` output matches `spans_to_value` key schema for all 14 fields
 
 **Also update `just lint-file` test for all samples:**
 - [x] `just lint-file samples/versions.llt` — T010 span bug fixed: `scan_type_quality` now uses real line/column from SurfaceProgram span walk instead of synthetic 0:0
@@ -1772,6 +1793,46 @@ Alternatively: use `materialize_sync` in force_step's inline Sequential handler 
 - [ ] Update `EvalError::Display` to prefix span with `"<file>:"` when source file is known (`src/error.rs:1858`)
 - [ ] Audit other high-frequency `EvalError` constructors that run inside `eval_dict_core`/`eval_core_expr` and populate source file there
 - [ ] Add corpus test: `tests/corpus/errors/e030_source_file.llt` — verifies filename appears in `[E030]` output
+
+### ndjson-lines-builtin: Add `lines` builtin for lazy line-by-line reading from a Handle
+
+**Found:** 2026-05-26, while running `scripts/profile/trace.llt` against a large profiling NDJSON file.
+
+`stdlib/cli/in/ndjson.llt` uses `[slurp %stdin]` to read all of stdin, then `[split "\n" ...]` to split into lines. `slurp` is inherently eager — it reads the entire file into a `String`, and has a 10 MB safety cap (E043 error). For profiling NDJSON output (which easily exceeds 10 MB), this approach fails.
+
+`slurp` is correctly designed as an "all at once" operation and the 10 MB limit is a reasonable guard. The real fix is a `lines` builtin that lazily reads one line at a time from a Handle (the inner is already `Box<dyn BufRead>`, so `read_line` is available). The `ndjson.llt` codec should use `[lines %stdin]` instead of `[split "\n" [slurp %stdin]]`.
+
+- [ ] Add `builtin-lines: Handle → Seq<String>` — wraps `BufRead::lines()`, returns a lazy Seq where each element is a line (without trailing newline). Empty lines are included. EOF → empty Seq. (`src/builtins_io.rs`)
+- [ ] Add `lines` prelude wrapper (or register as public builtin)
+- [ ] Update `stdlib/cli/in/ndjson.llt` to use `[lines %stdin]` instead of `[split "\n" [slurp %stdin]]` — filter empty strings unchanged
+- [ ] Corpus test: feed multi-MB NDJSON to codec and verify all lines are parsed
+- **Files:** `src/builtins_io.rs`, `stdlib/cli/in/ndjson.llt`
+
+### t013-unknown-constraint-discharge: T013 fires spuriously for constrained builtins called with Unknown-typed args [Minor]
+
+**Found:** 2026-05-26, while running `scripts/profile/trace.llt` against profiling NDJSON.
+
+When a constrained builtin like `str` (Showable) or `=` (Equatable) is called with Unknown-typed arguments (e.g., field accesses on an unannotated function parameter `s`), a fresh TypeVar is instantiated for the constraint. That TypeVar gets unified with Unknown, which zeroes its level (preventing generalization). At generalization time, the TypeVar is not in `generalizable_vars` and not in the body type → T013 fires. The constraint is correctly dropped (Unknown satisfies all constraints at runtime under gradual typing), but the warning is spurious noise for valid gradual code.
+
+Fix: when a constrained TypeVar's level is zeroed due to Unknown-consistency unification, remove its constraints from `state.constraints` at that point (since Unknown satisfies all constraints — Siek & Taha 2006 gradual guarantee). Alternatively, filter out T013 for TypeVars that resolve to Unknown in the substitution before emitting.
+
+- [ ] In the Unknown-TypeVar unification arm (`src/type_unify.rs`), remove constraints on the TypeVar after zeroing its level — Unknown satisfies all constraints at runtime
+- [ ] Or: in `emit_ambiguous_constraint_diagnostics` / `generalize_with_doc`, skip T013 for TypeVars that are effectively Unknown-bound in the substitution
+- [ ] Corpus test: function with unannotated param calling `str` should produce no T013 warnings
+- **Files:** `src/type_unify.rs` (Unknown-TypeVar arm), `src/type_env.rs` (T013 emitters)
+
+### t013-instantiate-scheme-source-names: `instantiate_scheme` doesn't register source names → T013 shows `_t3` not `a` [Minor]
+
+**Found:** 2026-05-26.
+
+`instantiate_scheme` (`src/type_env.rs:173`) creates fresh TypeVars (`_t3`, `_t4`) for each quantified variable in a scheme (e.g., the `a` in `Showable a => Str`). It does NOT register these in `state.type_var_source_names`, so `format_var_name` falls back to the raw internal name. T013 shows `'_t3'` instead of `'a' (internal: _t3)`. This is a gap in the T013 readability sprint (type-inference-cleanup). Both the single-var fast path (line 185) and the multi-var general path (line 252) are missing the registration.
+
+Fix: after creating `fresh_name` for each `var` in `scheme.type_vars`, insert `state.type_var_source_names.insert(fresh_name.clone(), var.clone())` in both paths.
+
+- [ ] In single-var fast path (line 185-188): add `state.type_var_source_names.insert(fresh_name.clone(), scheme.type_vars[0].clone())`
+- [ ] In multi-var general path (line 252-259): add `state.type_var_source_names.insert(fresh_name.clone(), var.clone())` inside the loop
+- [ ] Corpus test: calling `str` with a typed arg that has an ambiguous Showable constraint should show `'a' (internal: _t...)` not just `'_t...'`
+- **Files:** `src/type_env.rs:185-188, 252-259`
 
 ---
 

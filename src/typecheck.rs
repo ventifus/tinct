@@ -1,7 +1,6 @@
 //! Type checker: infers types from AST expressions, resolves type aliases,
 //! validates type assertions, and performs Hindley-Milner style type variable
 //! unification for polymorphic function calls.
-//!
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -249,8 +248,17 @@ pub fn typecheck_surface_program_with_env(
     // Scan for type quality issues (Unknown types, over-broad annotations).
     // Uses type_map_inner — only populated when enable_scheme_map is true (LSP + typecheck_surface_program path).
     // When enable_scheme_map is false (annotation-table-only path), type_map_inner is empty so
-    // T010/T011/T012 diagnostics are suppressed — acceptable since that path is for evaluation only.
+    // T010/T011/T012 diagnostics from type_map are suppressed.
     scan_type_quality(&type_map_inner, program, &mut diagnostics);
+
+    // Always emit T011 for explicit @Unknown annotations even when enable_scheme_map=false.
+    // These are unconditional: the programmer wrote @Unknown explicitly, so the warning
+    // fires regardless of inferred type, and does not require a populated type_map.
+    // When enable_scheme_map=true, scan_type_quality already handles T011 via the type_map;
+    // we skip this scan to avoid duplicates.
+    if !enable_scheme_map {
+        scan_explicit_unknown_t011(program, &mut diagnostics);
+    }
 
     // Extract doc strings from the Surface AST (equivalent to extract_doc_strings on File AST).
     // Only needed when enable_scheme_map is true (i.e., LSP path — doc_map is for hover).
@@ -2067,7 +2075,13 @@ pub(crate) fn infer_surface_expr(
                 ) && named_args.is_empty()
                     && args.len() == 2
                 {
-                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
+                    // Infer func for LSP hover only. Save and restore constraints to prevent
+                    // the Addable constraint from scheme instantiation from leaking into the
+                    // outer scope — it would trigger spurious T013 warnings for the enclosing
+                    // dict entry, since check_arithmetic bypasses the constraint-based path.
+                    let saved_constraints = std::mem::take(&mut state.constraints);
+                    let _ = infer_surface_expr(func, env, state, type_map);
+                    state.constraints = saved_constraints;
                     return check_arithmetic(args, env, node.span, state, type_map);
                 }
 
@@ -2076,7 +2090,11 @@ pub(crate) fn infer_surface_expr(
                     && named_args.is_empty()
                     && args.len() == 2
                 {
-                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
+                    // Same constraint isolation as arithmetic above: `/`'s scheme instantiation
+                    // would add a Divisible constraint that check_div bypasses.
+                    let saved_constraints = std::mem::take(&mut state.constraints);
+                    let _ = infer_surface_expr(func, env, state, type_map);
+                    state.constraints = saved_constraints;
                     return check_div(args, env, node.span, state, type_map);
                 }
             }
@@ -6250,6 +6268,169 @@ fn stq_collect_decl_spans(decl: &SurfaceDeclaration, map: &mut HashMap<(usize, u
     }
 }
 
+/// Emit T011 diagnostics for explicit `@Unknown` annotations without requiring a type_map.
+///
+/// Used when `enable_scheme_map = false` (the normal eval path) so that T011 fires
+/// for explicitly-annotated `@Unknown` even though the type_map is not populated.
+/// When `enable_scheme_map = true`, `scan_type_quality` already handles T011 via the
+/// type_map; this function is skipped to avoid duplicates.
+///
+/// This walker fires T011 unconditionally for any `@Unknown` annotation in the source:
+/// `[fn@Unknown ...]`, `[@Unknown expr]`, etc. No inferred-type lookup is needed.
+fn scan_explicit_unknown_t011(
+    ast: &SurfaceProgram,
+    diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
+) {
+    use crate::error::{DiagnosticLevel, TypeDiagnostic};
+
+    fn emit_t011_for_node(node: &SurfaceNode, diagnostics: &mut Vec<TypeDiagnostic>) {
+        match &node.expr {
+            SurfaceExpression::TypeAssert {
+                annotation,
+                expr: inner,
+            } => {
+                if stq_is_unknown_annotation(&annotation.node) {
+                    diagnostics.push(TypeDiagnostic {
+                        level: DiagnosticLevel::Info,
+                        code: "T011",
+                        message: "explicit @Unknown annotation — type is not statically known"
+                            .to_string(),
+                        span: node.span,
+                    });
+                }
+                emit_t011_for_node(inner, diagnostics);
+            }
+            SurfaceExpression::Fn {
+                return_ann, body, ..
+            } => {
+                if let Some(ann) = return_ann {
+                    if stq_is_unknown_annotation(&ann.node) {
+                        diagnostics.push(TypeDiagnostic {
+                            level: DiagnosticLevel::Info,
+                            code: "T011",
+                            message: "explicit @Unknown annotation — type is not statically known"
+                                .to_string(),
+                            span: node.span,
+                        });
+                    }
+                }
+                emit_t011_for_node(body, diagnostics);
+            }
+            SurfaceExpression::Call {
+                func,
+                args,
+                named_args,
+                ..
+            } => {
+                emit_t011_for_node(func, diagnostics);
+                for arg in args {
+                    emit_t011_for_node(arg, diagnostics);
+                }
+                for na in named_args {
+                    emit_t011_for_node(&na.node.value, diagnostics);
+                }
+            }
+            SurfaceExpression::Sequential(exprs) => {
+                for e in exprs {
+                    emit_t011_for_node(e, diagnostics);
+                }
+            }
+            SurfaceExpression::DotAccess { expr, .. } => emit_t011_for_node(expr, diagnostics),
+            SurfaceExpression::Pipe { lhs, rhs } => {
+                emit_t011_for_node(lhs, diagnostics);
+                emit_t011_for_node(rhs, diagnostics);
+            }
+            SurfaceExpression::Dict(entries) => {
+                for entry in entries {
+                    if let Some(key) = &entry.node.key {
+                        emit_t011_for_node(key, diagnostics);
+                    }
+                    emit_t011_for_node(&entry.node.value, diagnostics);
+                }
+            }
+            SurfaceExpression::Match { scrutinee, arms } => {
+                emit_t011_for_node(scrutinee, diagnostics);
+                for arm in arms {
+                    emit_t011_for_node(&arm.body, diagnostics);
+                    if let Some(guard) = &arm.guard {
+                        emit_t011_for_node(guard, diagnostics);
+                    }
+                }
+            }
+            SurfaceExpression::Quote(e)
+            | SurfaceExpression::Unquote(e)
+            | SurfaceExpression::UnquoteSplice(e) => emit_t011_for_node(e, diagnostics),
+            SurfaceExpression::TypeApp { func, arg } => {
+                emit_t011_for_node(func, diagnostics);
+                emit_t011_for_node(arg, diagnostics);
+            }
+            SurfaceExpression::PatternDecl { bindings }
+            | SurfaceExpression::LetDecl { bindings } => {
+                for b in bindings {
+                    emit_t011_for_node(b, diagnostics);
+                }
+            }
+            SurfaceExpression::CaseArm { pattern, body } => {
+                emit_t011_for_node(pattern, diagnostics);
+                emit_t011_for_node(body, diagnostics);
+            }
+            SurfaceExpression::Decl(decl) => emit_t011_for_decl(decl, diagnostics),
+            _ => {}
+        }
+    }
+
+    fn emit_t011_for_decl(decl: &SurfaceDeclaration, diagnostics: &mut Vec<TypeDiagnostic>) {
+        match decl {
+            SurfaceDeclaration::TypeAlias { body, .. } => emit_t011_for_node(body, diagnostics),
+            SurfaceDeclaration::ClassDecl { methods, .. } => {
+                for entry in methods {
+                    if let Some(key) = &entry.node.key {
+                        emit_t011_for_node(key, diagnostics);
+                    }
+                    emit_t011_for_node(&entry.node.value, diagnostics);
+                }
+            }
+            SurfaceDeclaration::InstanceDecl { arms, .. } => {
+                for (pattern, methods) in arms {
+                    emit_t011_for_node(pattern, diagnostics);
+                    for entry in methods {
+                        if let Some(key) = &entry.node.key {
+                            emit_t011_for_node(key, diagnostics);
+                        }
+                        emit_t011_for_node(&entry.node.value, diagnostics);
+                    }
+                }
+            }
+            SurfaceDeclaration::DefMacro { params, body, .. }
+            | SurfaceDeclaration::MacroDecl { params, body, .. } => {
+                emit_t011_for_node(params, diagnostics);
+                emit_t011_for_node(body, diagnostics);
+            }
+            SurfaceDeclaration::SyntaxClass { pattern, .. } => {
+                emit_t011_for_node(pattern, diagnostics);
+            }
+            SurfaceDeclaration::Splice(forms) => {
+                for form in forms {
+                    emit_t011_for_node(form, diagnostics);
+                }
+            }
+        }
+    }
+
+    for doc_spanned in &ast.documents {
+        for item in &doc_spanned.node.items {
+            match item {
+                SurfaceItem::Expr(node) => emit_t011_for_node(node, diagnostics),
+                SurfaceItem::Decl(decl_spanned) => {
+                    emit_t011_for_decl(&decl_spanned.node, diagnostics)
+                }
+            }
+        }
+    }
+}
+
+/// Scan for type quality issues (Unknown types, over-broad annotations).
+///
 /// Emits diagnostics at base level (Info/Warn). The CLI/LSP layer WILL apply a `--strict` bump
 /// once the type-warning channel is wired (TODO — escalation is not yet implemented).
 /// This is called at the end of type checking to produce advisory notifications.

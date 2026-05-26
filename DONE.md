@@ -7819,6 +7819,23 @@ All tasks already implemented in prior sprint. Added 3 verification tests:
 - [x] Test: `tinct run --profile /tmp/p.json <long-running>` — file has content after 10s, each line is valid JSON, `tail -f` works
 - [x] Test: Ctrl+C flushes remaining spans and exits cleanly
 
+### ci-regressions-2026-05-26: Fix pre-existing CI failures found during profiling-sigint-flush sprint ✅ DONE (2026-05-25)
+
+Found during `just ci` run on 2026-05-26. All pre-existing (not introduced by the current sprint).
+
+**Lib test failures (under `--test-threads=1`):**
+- [x] `builtins_async::tests::*` (8 tests) — Root cause: `#[tokio::test] async fn` creates its own tokio current-thread runtime, conflicting with the shared `thread_local! TOKIO_RT`/`LOCAL_SET` when tests run serially on the same thread. Fix: changed all 13 tests to plain `#[test] fn` — they only call sync `eval_source_with_config` (which uses `block_on_anywhere` internally). (`src/builtins_async.rs`)
+- [x] `typecheck::tests::test_no_false_positive_warning_for_discharged_constraints` — Root cause: `infer_surface_expr(func, ...)` LSP-hover call for `+` instantiated its Addable-constrained scheme, adding constraints to `state.constraints` before `check_arithmetic` bypassed the constraint path. These leaked constraints then triggered spurious T013 at dict SCC generalization time. Fix: save/restore `state.constraints` around the LSP-hover-only `infer_surface_expr(func, ...)` call in both the arithmetic and `/` special cases. (`src/typecheck.rs`)
+
+**CLI test failures (8 tests, all pre-existing from builtin-privacy-primary-names sprint):**
+- [x] `expr_flag_simple`, `eval_stdin_json_injection` — Root cause: tests piped JSON to stdin without `-i json`, but there is no auto-detection of piped stdin JSON. Fix: added `-i json` flag so stdin is read and parsed via `stdlib/cli/in/json.llt`. (`tests/cli_tests.rs`)
+- [x] `cap_fs_read_only_write_fails` — Root cause: without `-o` or `--eval`, the lazy result thunk is never forced, so the Writable permission error inside `raw-create` was never triggered; exit code was 0. Fix: added `--eval` flag to force the result and surface the error. (`tests/cli_tests.rs`)
+- [x] `cap_file_no_fs_suppresses_injection` — Root cause: same as above — lazy thunk never forced without `--eval`. Fix: added `--eval`. (`tests/cli_tests.rs`)
+- [x] `no_fs_flag_blocks_include` — Root cause: `include` is self-hosted in prelude (include-decomp sprint); without `--eval`, the include call is never forced. With `--no-fs`, `%cwd` is undefined, but the error only surfaces when the thunk is forced. Fix: added `--eval`. (`tests/cli_tests.rs`)
+- [x] `no_fs_flag_and_timeout_flag_conjunctive_enforcement` — Root cause: same as above. Fix: added `--eval`. (`tests/cli_tests.rs`)
+- [x] `timeout_flag_exits_with_sigalrm` — Root cause: without `--eval`, the infinite `[collect [iterate ...]]` workload was never started; process exited 0 before SIGALRM could fire. Fix: added `--eval` to force the infinite computation and let SIGALRM fire. (`tests/cli_tests.rs`)
+- [x] `type_warning_explicit_unknown_emitted_on_stderr` — Root cause: `scan_type_quality` requires a populated `type_map` which is only available when `enable_scheme_map=true` (LSP path). The eval path uses `enable_scheme_map=false` so T011 was suppressed. Fix: added `scan_explicit_unknown_t011` AST walker that fires T011 for explicit `@Unknown` annotations without needing the type_map; called when `enable_scheme_map=false`. (`src/typecheck.rs`)
+
 ## Codebase Health (Review #6, 2026-05-15)
 
 ### health-review6: GuardedValidate branches 2+3, LSP path traversal, ambiguous TypeVar
