@@ -23,13 +23,15 @@
 #   0x9  Ping
 #   0xA  Pong
 #
-# Dependencies (Rust builtins):
-#   str, str-slice, length, char-code, chr
+# Dependencies (builtins used directly by name):
+#   builtin-str, builtin-str-slice, builtin-length (via length prelude wrapper)
+#   builtin-char-code, builtin-chr
 #   builtin-add, builtin-sub, builtin-mul
 #   builtin-lt, builtin-eq, builtin-if
-#   set
+#   set (prelude wrapper)
 #
-# Self-contained — does not require prelude or encoding.llt.
+# Self-contained in the sense that all direct builtin calls use builtin-* names.
+# Relies on the parent scope (normally the prelude) for: length, set, str, error.
 #
 # Two-dict document: private helpers in dict 1, public API in dict 2.
 # All intermediate values are passed as function arguments (no [name: val]
@@ -100,23 +102,23 @@ ws-mask-payload-impl: [fn@String [let data@String mask-key@String i@Int len@Int 
     [builtin-if [builtin-lt i len]
         [ws-mask-payload-impl data mask-key [builtin-add i 1] len
             [str acc
-                [chr [ws-xor
-                    [char-code [str-slice data i [builtin-add i 1]]]
-                    [char-code [str-slice mask-key [ws-mod i 4] [builtin-add [ws-mod i 4] 1]]]]]]]
+                [builtin-chr [ws-xor
+                    [builtin-char-code [builtin-str-slice data i [builtin-add i 1]]]
+                    [builtin-char-code [builtin-str-slice mask-key [ws-mod i 4] [builtin-add [ws-mod i 4] 1]]]]]]]
         acc]]
 
 # Build the 2-byte base frame header.
 # byte0 = FIN(0x80) | opcode; byte1 = MASK(0x80) | payload-len (for len < 126)
 ws-build-base-header: [fn@String [let opcode@Int payload-len@Int masked@Bool]
     [str
-        [chr [builtin-add 128 opcode]]
-        [chr [builtin-if masked
+        [builtin-chr [builtin-add 128 opcode]]
+        [builtin-chr [builtin-if masked
             [builtin-add 128 payload-len]
             payload-len]]]]
 
 # Build a 2-byte big-endian 16-bit extended length field.
 ws-build-ext16: [fn@String [let n@Int]
-    [str [chr [ws-quot n 256]] [chr [ws-mod n 256]]]]
+    [str [builtin-chr [ws-quot n 256]] [builtin-chr [ws-mod n 256]]]]
 
 # Build an 8-byte big-endian 64-bit extended length field (RFC 6455 §5.2).
 # The most significant bit MUST be 0 (n < 2^63).
@@ -133,11 +135,11 @@ ws-build-ext64: [fn@String [let n@Int]
 # large levels is 0 steps (byte is 0) and for level=1 is at most 255 steps.
 ws-build-ext64-impl: [fn@String [let remaining@Int level@Int acc@String]
     [builtin-if [builtin-eq level 0]
-        [str acc [chr remaining]]
+        [str acc [builtin-chr remaining]]
         [ws-build-ext64-impl
             [ws-mod remaining [ws-pow2 [builtin-mul level 8]]]
             [builtin-sub level 1]
-            [str acc [chr [ws-quot remaining [ws-pow2 [builtin-mul level 8]]]]]]]]
+            [str acc [builtin-chr [ws-quot remaining [ws-pow2 [builtin-mul level 8]]]]]]]]
 
 # Dispatch on payload length to choose header format.
 ws-build-frame-dispatch: [fn@Dict [let opcode@Int data@String mask-key@String data-len@Int]
@@ -187,7 +189,7 @@ ws-parse-ext64-impl: [fn@Int [let bytes@String start@Int i@Int acc@Int]
     [builtin-if [builtin-lt i 8]
         [ws-parse-ext64-impl bytes start [builtin-add i 1]
             [builtin-add [builtin-mul acc 256]
-                [char-code [str-slice bytes
+                [builtin-char-code [builtin-str-slice bytes
                     [builtin-add start i]
                     [builtin-add start [builtin-add i 1]]]]]]
         acc]]
@@ -209,8 +211,8 @@ ws-parse-header-extended: [fn@Dict [let bytes@String fin rsv opcode@Int masked l
             [error "parse-ws-frame-header: too short for 16-bit extended length"]
             [ws-parse-header-result fin rsv opcode masked
                 [ws-parse-ext16
-                    [char-code [str-slice bytes 2 3]]
-                    [char-code [str-slice bytes 3 4]]]
+                    [builtin-char-code [builtin-str-slice bytes 2 3]]
+                    [builtin-char-code [builtin-str-slice bytes 3 4]]]
                 [builtin-if masked 8 4]]]
         [builtin-if [builtin-eq len7 127]
             [builtin-if [builtin-lt [length bytes] 10]
@@ -288,8 +290,8 @@ parse-ws-frame-header@[doc: "Parse WebSocket frame header bytes (RFC 6455)"]:
         [builtin-if [builtin-lt [length bytes] 2]
             [error "parse-ws-frame-header: need at least 2 bytes"]
             [ws-parse-header-bytes bytes
-                [char-code [str-slice bytes 0 1]]
-                [char-code [str-slice bytes 1 2]]]]]
+                [builtin-char-code [builtin-str-slice bytes 0 1]]
+                [builtin-char-code [builtin-str-slice bytes 1 2]]]]]
 
 # Build an HTTP/1.1 WebSocket upgrade request string.
 #

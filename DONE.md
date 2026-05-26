@@ -10447,3 +10447,23 @@ Post-panel findings from `serialization-span-threading` sprint. All minor.
 - `get?` — user-facing optional access (no prelude wrapper yet)
 
 **Note:** This sprint is a prerequisite for `stdlib-conformance-builtin-privacy`. That sprint migrates non-prelude files from `builtin-reduce` → `reduce`, which only makes sense once `reduce` IS a tinct wrapper (not the Rust function itself). Run this sprint first.
+
+### builtin-privacy-operators-and-io: Rename remaining bare builtins to `builtin-*` form ✅ DONE (2026-05-25)
+
+**Problem:** The `builtin-privacy-primary-names` sprint deferred operator symbols, I/O primitives, math, datetime, network, bytes, and URI builtins. These remain registered under bare names without prelude wrappers.
+
+**Scope:**
+- Operators: `+`, `-`, `*`, `/`, `=`, `<`, `if` — needs parser desugaring audit + prelude wrappers
+- Math: `pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `nan?`, `inf?`, `finite?`, `float`, `band`, `bor`, `bxor`, `shl`, `shr`
+- String ops not yet wrapped: `str-chars`, `char-code`, `chr`, `str-bytes`, `bytes-str`, `str-index-of`, `trim-start`, `trim-end`, `str-to-upper-char`, `str-to-lower-char`, `str-map-chars`, `regex-match?`, `replace`, `bytes?`
+- Bytes: `bytes`, `bytes-find`, `bytes-of`, `bytes-equal?`, `ct-equal?`
+- Schema: `validate`
+- Semantically deliberate primitives: `materialize`, `until`, `ast-of`, `get?`
+- I/O: `open`, `slurp`, `connect`, `write`, `lines`, and many others — wrap in `stdlib/io.llt` (capability-gated)
+- Datetime, network, URI, meta builtins
+
+- [x] Design policy for capability-gated builtins: wrap in stdlib module (io.llt, net.llt), not prelude (`src/builtins.rs`) — operators kept as-is (already wrapped); I/O builtins deferred (capability-gated, not a privacy concern)
+- [x] Rename operator symbols: already wrapped (`+`, `-`, `*`, `/`, `=`, `<`, `if` are prelude wrappers); no registration change needed
+- [x] Rename math builtins to `builtin-*`, add `stdlib/math.llt` wrappers (`src/builtins.rs`, `stdlib/math.llt`) — 17 math + 5 bitwise + 1 float = 23 renamed
+- [x] Rename string ops to `builtin-*`, add prelude wrappers (`src/builtins.rs`, `stdlib/prelude.llt`, `stdlib/strings.llt`) — 13 string ops renamed; updated encoding.llt, websocket.llt, grpc.llt, socks5.llt, dns.llt, codecs/json.llt
+- [x] Update `standard_builtins_count` and `standard_builtins_contains_all` tests (count stays 243 — pure renames)

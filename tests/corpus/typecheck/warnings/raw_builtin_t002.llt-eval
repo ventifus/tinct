@@ -1,11 +1,10 @@
-# T002 warning: user code references a raw Rust builtin not exported by prelude.
-# `pow` is a Rust builtin but not re-exported through prelude's public API
-# (users should use stdlib/math.llt instead).
-# The type checker emits "undefined variable: pow" as a TypeError plus a
-# T002 TypeDiagnostic with a helpful hint. Eval succeeds because `pow`
-# is still present in the runtime environment.
-[pow 2.0 10.0]
+# T002 warning: user code references a raw builtin-* name not exposed by prelude.
+# `builtin-pow` is the internal Rust primitive registered under the builtin-* form.
+# User code should call `pow` from stdlib/math.llt instead.
+# The type checker emits a T002 TypeDiagnostic with a helpful hint.
+# Eval succeeds because `builtin-pow` is still present in the runtime environment.
+[builtin-pow 2.0 10.0]
 === out
 Float(1024)
 === warn
-raw builtin `pow` is not available in user code
+raw builtin `builtin-pow` is not available in user code

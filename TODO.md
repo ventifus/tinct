@@ -806,30 +806,6 @@ Follow-up from builtin-privacy Phase 3. Three issues discovered when making `sam
 - [x] `just versions` — VERIFIED 2026-05-25: all errors fixed (E099→unified-bindings, T003→check_get, E040→reduce-loop, E070→str-length self-ref); exit 0
 - [x] Update `standard_builtins_contains_all` test count (+3: builtin-trim, builtin-emit, builtin-env) — already 301 ✓
 
-## Builtin Privacy (continued)
-
-### builtin-privacy-operators-and-io: Rename remaining bare builtins to `builtin-*` form
-
-**Problem:** The `builtin-privacy-primary-names` sprint deferred operator symbols, I/O primitives, math, datetime, network, bytes, and URI builtins. These remain registered under bare names without prelude wrappers.
-
-**Scope:**
-- Operators: `+`, `-`, `*`, `/`, `=`, `<`, `if` — needs parser desugaring audit + prelude wrappers
-- Math: `pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `nan?`, `inf?`, `finite?`, `float`, `band`, `bor`, `bxor`, `shl`, `shr`
-- String ops not yet wrapped: `str-chars`, `char-code`, `chr`, `str-bytes`, `bytes-str`, `str-index-of`, `trim-start`, `trim-end`, `str-to-upper-char`, `str-to-lower-char`, `str-map-chars`, `regex-match?`, `replace`, `bytes?`
-- Bytes: `bytes`, `bytes-find`, `bytes-of`, `bytes-equal?`, `ct-equal?`
-- Schema: `validate`
-- Semantically deliberate primitives: `materialize`, `until`, `ast-of`, `get?`
-- I/O: `open`, `slurp`, `connect`, `write`, `lines`, and many others — wrap in `stdlib/io.llt` (capability-gated)
-- Datetime, network, URI, meta builtins
-
-- [ ] Design policy for capability-gated builtins: wrap in stdlib module (io.llt, net.llt), not prelude (`src/builtins.rs`)
-- [ ] Rename operator symbols to `builtin-*` + add prelude wrappers (`src/builtins.rs`, `stdlib/prelude.llt`)
-- [ ] Rename math builtins, add `stdlib/math.llt` wrappers (`src/builtins.rs`, `stdlib/math.llt`)
-- [ ] Rename string ops, add prelude/strings.llt wrappers (`src/builtins.rs`, `stdlib/strings.llt`)
-- [ ] Update `standard_builtins_count` and `standard_builtins_contains_all` tests
-
----
-
 ## Profiling and Call Tracing (`doc/whatif/profiling.md`)
 
 Span-level profiling with dual attribution (materialization-context and creation-context), stall breakdown (I/O, network, channel, timer), and Perfetto trace output. Collection via `--profile spans.json`; analysis via `scripts/profile/` tinct programs against the span file. See `doc/12-tooling.md §Profiling`.

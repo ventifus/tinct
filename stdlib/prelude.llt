@@ -2158,6 +2158,63 @@ emit@[doc: "Emit a string to stdout without a trailing newline"]: builtin-emit
 env@[doc: "Read an environment variable by name; returns null if unset"]: builtin-env
 
 # ============================================================================
+# String Primitives (builtin-privacy-operators-and-io sprint)
+# ============================================================================
+#
+# These were previously registered as bare names in standard_builtins().
+# Now registered as builtin-* and re-exported here so user code continues
+# to work without changes. stdlib/strings.llt and stdlib/encoding.llt use
+# these wrappers (or builtin-* directly) instead of the bare builtin names.
+
+# Character encoding/decoding
+char-code@[doc: "Return the Unicode codepoint of the first character of a string as an Int"]: builtin-char-code
+chr@[doc: "Return a single-character string for the given Unicode codepoint Int"]: builtin-chr
+
+# String inspection (sequence of characters, byte sequence)
+str-chars@[doc: "Return a lazy Seq of single-character strings from a string"]: builtin-str-chars
+str-bytes@[doc: "Return a Bytes value from a string (UTF-8 bytes)"]: builtin-str-bytes
+bytes-str@[doc: "Return a String decoded from a Bytes value (UTF-8)"]: builtin-bytes-str
+
+# String search
+str-index-of@[doc: "Return the byte index of the first occurrence of needle in haystack, or -1 if not found"]: builtin-str-index-of
+
+# String trimming (per-side)
+trim-start@[doc: "Remove leading whitespace from a string"]: builtin-trim-start
+trim-end@[doc: "Remove trailing whitespace from a string"]: builtin-trim-end
+
+# Character-level case conversion (single-character strings)
+str-to-upper-char@[doc: "Convert a single-character string to uppercase"]: builtin-str-to-upper-char
+str-to-lower-char@[doc: "Convert a single-character string to lowercase"]: builtin-str-to-lower-char
+
+# Character-level string mapping
+str-map-chars@[doc: "Apply a function to each character of a string, returning a new string"]: builtin-str-map-chars
+
+# Regular expression matching
+regex-match?@[doc: "Return true if the string matches the regular expression pattern"]: builtin-regex-match?
+
+# String replacement (all occurrences)
+replace@[doc: "Replace all occurrences of pattern with replacement in input"]: builtin-replace
+
+# ============================================================================
+# Bitwise Primitives (builtin-privacy-operators-and-io sprint)
+# ============================================================================
+#
+# Integer bitwise operations. Previously registered as bare names; now
+# registered as builtin-* and re-exported here.
+
+band@[doc: "Bitwise AND of two Ints"]: builtin-band
+bor@[doc: "Bitwise OR of two Ints"]: builtin-bor
+bxor@[doc: "Bitwise XOR of two Ints"]: builtin-bxor
+shl@[doc: "Left shift: value shl bits"]: builtin-shl
+shr@[doc: "Logical right shift (zero-fill): value shr bits"]: builtin-shr
+
+# ============================================================================
+# Type Conversion (builtin-privacy-operators-and-io sprint)
+# ============================================================================
+
+float@[doc: "Explicit Int to Float conversion (or Float pass-through). Allows precision loss."]: builtin-float
+
+# ============================================================================
 # Sequence Operations (builtin-privacy-primary-names sprint)
 # ============================================================================
 #

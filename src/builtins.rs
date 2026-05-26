@@ -1353,7 +1353,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             2
         ),
         builtin!(
-            "replace",
+            "builtin-replace",
             builtin_replace,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
@@ -1371,39 +1371,44 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
         ),
-        builtin!("str-chars", builtin_str_chars, [Strictness::Seq], 1),
-        builtin!("char-code", builtin_char_code, [Strictness::Seq], 1),
-        builtin!("chr", builtin_chr, [Strictness::Seq], 1),
-        builtin!("str-bytes", builtin_str_bytes, [Strictness::Seq], 1),
-        builtin!("bytes-str", builtin_bytes_str, [Strictness::Seq], 1),
+        builtin!("builtin-str-chars", builtin_str_chars, [Strictness::Seq], 1),
+        builtin!("builtin-char-code", builtin_char_code, [Strictness::Seq], 1),
+        builtin!("builtin-chr", builtin_chr, [Strictness::Seq], 1),
+        builtin!("builtin-str-bytes", builtin_str_bytes, [Strictness::Seq], 1),
+        builtin!("builtin-bytes-str", builtin_bytes_str, [Strictness::Seq], 1),
         builtin!(
-            "str-index-of",
+            "builtin-str-index-of",
             builtin_str_index_of,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
-        builtin!("trim-start", builtin_trim_start, [Strictness::Seq], 1),
-        builtin!("trim-end", builtin_trim_end, [Strictness::Seq], 1),
         builtin!(
-            "str-to-upper-char",
+            "builtin-trim-start",
+            builtin_trim_start,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!("builtin-trim-end", builtin_trim_end, [Strictness::Seq], 1),
+        builtin!(
+            "builtin-str-to-upper-char",
             builtin_str_to_upper_char,
             [Strictness::Seq],
             1
         ),
         builtin!(
-            "str-to-lower-char",
+            "builtin-str-to-lower-char",
             builtin_str_to_lower_char,
             [Strictness::Seq],
             1
         ),
         builtin!(
-            "str-map-chars",
+            "builtin-str-map-chars",
             builtin_str_map_chars,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
         builtin!(
-            "regex-match?",
+            "builtin-regex-match?",
             builtin_regex_match,
             [Strictness::Seq, Strictness::Seq],
             2
@@ -1429,39 +1434,73 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Seq],
             2
         ),
-        // Numeric
-        // Numeric (registered under builtin-NAME; prelude exports the bare names)
+        // Numeric (all registered under builtin-NAME; prelude/math.llt export bare names)
         builtin!("builtin-floor", builtin_floor, [Strictness::Seq], 1),
         builtin!("builtin-round", builtin_round, [Strictness::Seq], 1),
-        builtin!("pow", builtin_pow, [Strictness::Seq, Strictness::Seq], 2),
-        builtin!("sqrt", builtin_sqrt, [Strictness::Seq], 1),
-        builtin!("log", builtin_log, [Strictness::Seq], 1),
-        builtin!("log2", builtin_log2, [Strictness::Seq], 1),
-        builtin!("log10", builtin_log10, [Strictness::Seq], 1),
-        builtin!("exp", builtin_exp, [Strictness::Seq], 1),
-        builtin!("sin", builtin_sin, [Strictness::Seq], 1),
-        builtin!("cos", builtin_cos, [Strictness::Seq], 1),
-        builtin!("tan", builtin_tan, [Strictness::Seq], 1),
-        builtin!("asin", builtin_asin, [Strictness::Seq], 1),
-        builtin!("acos", builtin_acos, [Strictness::Seq], 1),
-        builtin!("atan", builtin_atan, [Strictness::Seq], 1),
         builtin!(
-            "atan2",
+            "builtin-pow",
+            builtin_pow,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!("builtin-sqrt", builtin_sqrt, [Strictness::Seq], 1),
+        builtin!("builtin-log", builtin_log, [Strictness::Seq], 1),
+        builtin!("builtin-log2", builtin_log2, [Strictness::Seq], 1),
+        builtin!("builtin-log10", builtin_log10, [Strictness::Seq], 1),
+        builtin!("builtin-exp", builtin_exp, [Strictness::Seq], 1),
+        builtin!("builtin-sin", builtin_sin, [Strictness::Seq], 1),
+        builtin!("builtin-cos", builtin_cos, [Strictness::Seq], 1),
+        builtin!("builtin-tan", builtin_tan, [Strictness::Seq], 1),
+        builtin!("builtin-asin", builtin_asin, [Strictness::Seq], 1),
+        builtin!("builtin-acos", builtin_acos, [Strictness::Seq], 1),
+        builtin!("builtin-atan", builtin_atan, [Strictness::Seq], 1),
+        builtin!(
+            "builtin-atan2",
             builtin_atan2,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
-        builtin!("nan?", builtin_nan_check, [Strictness::Seq], 1),
-        builtin!("inf?", builtin_inf_check, [Strictness::Seq], 1),
-        builtin!("finite?", builtin_finite_check, [Strictness::Seq], 1),
-        // Bitwise
-        builtin!("band", builtin_band, [Strictness::Seq, Strictness::Seq], 2),
-        builtin!("bor", builtin_bor, [Strictness::Seq, Strictness::Seq], 2),
-        builtin!("bxor", builtin_bxor, [Strictness::Seq, Strictness::Seq], 2),
-        builtin!("shl", builtin_shl, [Strictness::Seq, Strictness::Seq], 2),
-        builtin!("shr", builtin_shr, [Strictness::Seq, Strictness::Seq], 2),
-        // Type conversion
-        builtin!("float", builtin_float, [Strictness::Seq], 1),
+        builtin!("builtin-nan?", builtin_nan_check, [Strictness::Seq], 1),
+        builtin!("builtin-inf?", builtin_inf_check, [Strictness::Seq], 1),
+        builtin!(
+            "builtin-finite?",
+            builtin_finite_check,
+            [Strictness::Seq],
+            1
+        ),
+        // Bitwise (registered under builtin-NAME; prelude exports bare names)
+        builtin!(
+            "builtin-band",
+            builtin_band,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builtin-bor",
+            builtin_bor,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builtin-bxor",
+            builtin_bxor,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builtin-shl",
+            builtin_shl,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builtin-shr",
+            builtin_shr,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        // Type conversion (registered under builtin-NAME; prelude exports bare name)
+        builtin!("builtin-float", builtin_float, [Strictness::Seq], 1),
         // Parsing (registered under builtin-NAME; prelude exports the bare names)
         builtin!("builtin-to-int", builtin_to_int, [Strictness::Seq]),
         builtin!("builtin-to-float", builtin_to_float, [Strictness::Seq]),
@@ -2065,11 +2104,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
 /// Used by the T002 lint in `src/typecheck.rs` to detect when user code directly
 /// references a Rust builtin name that was not exported by prelude.
 ///
-/// After the builtin-privacy-primary-names sprint, most user-facing builtins are
-/// registered under `builtin-*` form and re-exported from prelude as bare-name
-/// wrappers. T002 fires when user code references:
+/// After the builtin-privacy-operators-and-io sprint, all user-facing builtins are
+/// registered under `builtin-*` form and re-exported from prelude (or math.llt/strings.llt)
+/// as bare-name wrappers. T002 fires when user code references:
 /// - A `builtin-*` name directly (bypassing the prelude wrapper)
-/// - A bare builtin name that lacks a prelude wrapper (sprint debt — e.g., `pow`, I/O ops)
+/// - A bare builtin name that lacks a prelude wrapper (capability-gated I/O, `get?`, `bytes?`)
 ///
 /// The set excludes stable non-warning cases:
 /// - `reduce_dict_step` / `reduce_seq_step` (internal continuation helpers)
@@ -6681,6 +6720,16 @@ mod tests {
         //   with-timeout, with-deadline, cancelled?, cancel-task, non-cancellable, with-context,
         //   cancel-root, drain, exit-now) = 68 removed.
         //   Added builtin-with-deadline (was bare-only, now builtin-*): +1. Net: 310 - 68 + 1 = 243.
+        // builtin-privacy-operators-and-io sprint (243 → 243):
+        //   Renamed 35 bare primary names to builtin-* (no count change — pure renames):
+        //   Math: pow, sqrt, log, log2, log10, exp, sin, cos, tan, asin, acos, atan, atan2,
+        //         nan?, inf?, finite? (16)
+        //   Bitwise: band, bor, bxor, shl, shr (5)
+        //   Type conversion: float (1)
+        //   Strings: replace, str-chars, char-code, chr, str-bytes, bytes-str, str-index-of,
+        //            trim-start, trim-end, str-to-upper-char, str-to-lower-char, str-map-chars,
+        //            regex-match? (13)
+        //   Net: 243 - 0 + 0 = 243 (renames only).
         assert_eq!(
             count, 243,
             "builtin count changed - update this test and doc/11-stdlib.md"
@@ -6706,21 +6755,30 @@ mod tests {
         assert!(names.contains(&"builtin-length"), "missing builtin-length");
         assert!(names.contains(&"builtin-merge"), "missing builtin-merge");
         assert!(names.contains(&"builtin-append"), "missing builtin-append");
-        // Strings (now under builtin-NAME; bare names are prelude wrappers)
+        // Strings (all now under builtin-NAME; bare names are prelude/strings.llt wrappers)
         assert!(names.contains(&"builtin-str"), "missing builtin-str");
         assert!(names.contains(&"builtin-split"), "missing builtin-split");
-        assert!(names.contains(&"replace"), "missing replace");
+        assert!(
+            names.contains(&"builtin-replace"),
+            "missing builtin-replace"
+        );
         assert!(names.contains(&"builtin-trim"), "missing builtin-trim");
         assert!(
-            names.contains(&"str-to-upper-char"),
-            "missing str-to-upper-char"
+            names.contains(&"builtin-str-to-upper-char"),
+            "missing builtin-str-to-upper-char"
         );
         assert!(
-            names.contains(&"str-to-lower-char"),
-            "missing str-to-lower-char"
+            names.contains(&"builtin-str-to-lower-char"),
+            "missing builtin-str-to-lower-char"
         );
-        assert!(names.contains(&"str-map-chars"), "missing str-map-chars");
-        assert!(names.contains(&"regex-match?"), "missing regex-match?");
+        assert!(
+            names.contains(&"builtin-str-map-chars"),
+            "missing builtin-str-map-chars"
+        );
+        assert!(
+            names.contains(&"builtin-regex-match?"),
+            "missing builtin-regex-match?"
+        );
         // Numeric (now under builtin-NAME; bare names are prelude wrappers)
         assert!(names.contains(&"builtin-floor"), "missing builtin-floor");
         assert!(names.contains(&"builtin-round"), "missing builtin-round");
@@ -6867,37 +6925,52 @@ mod tests {
             names.contains(&"builtin-str-slice"),
             "missing builtin-str-slice"
         );
-        assert!(names.contains(&"str-chars"), "missing str-chars");
+        assert!(
+            names.contains(&"builtin-str-chars"),
+            "missing builtin-str-chars"
+        );
         assert!(names.contains(&"validate"), "missing validate");
-        // Math builtins
-        assert!(names.contains(&"pow"), "missing pow");
-        assert!(names.contains(&"sqrt"), "missing sqrt");
-        assert!(names.contains(&"log"), "missing log");
-        assert!(names.contains(&"log2"), "missing log2");
-        assert!(names.contains(&"log10"), "missing log10");
-        assert!(names.contains(&"exp"), "missing exp");
-        assert!(names.contains(&"sin"), "missing sin");
-        assert!(names.contains(&"cos"), "missing cos");
-        assert!(names.contains(&"tan"), "missing tan");
-        assert!(names.contains(&"asin"), "missing asin");
-        assert!(names.contains(&"acos"), "missing acos");
-        assert!(names.contains(&"atan"), "missing atan");
-        assert!(names.contains(&"atan2"), "missing atan2");
-        assert!(names.contains(&"nan?"), "missing nan?");
-        assert!(names.contains(&"inf?"), "missing inf?");
-        assert!(names.contains(&"finite?"), "missing finite?");
-        // Bitwise builtins
-        assert!(names.contains(&"band"), "missing band");
-        assert!(names.contains(&"bor"), "missing bor");
-        assert!(names.contains(&"bxor"), "missing bxor");
-        assert!(names.contains(&"shl"), "missing shl");
-        assert!(names.contains(&"shr"), "missing shr");
-        // Character builtins
-        assert!(names.contains(&"char-code"), "missing char-code");
-        assert!(names.contains(&"chr"), "missing chr");
-        // Bytes stubs
-        assert!(names.contains(&"str-bytes"), "missing str-bytes");
-        assert!(names.contains(&"bytes-str"), "missing bytes-str");
+        // Math builtins (all now under builtin-NAME; math.llt exports bare names)
+        assert!(names.contains(&"builtin-pow"), "missing builtin-pow");
+        assert!(names.contains(&"builtin-sqrt"), "missing builtin-sqrt");
+        assert!(names.contains(&"builtin-log"), "missing builtin-log");
+        assert!(names.contains(&"builtin-log2"), "missing builtin-log2");
+        assert!(names.contains(&"builtin-log10"), "missing builtin-log10");
+        assert!(names.contains(&"builtin-exp"), "missing builtin-exp");
+        assert!(names.contains(&"builtin-sin"), "missing builtin-sin");
+        assert!(names.contains(&"builtin-cos"), "missing builtin-cos");
+        assert!(names.contains(&"builtin-tan"), "missing builtin-tan");
+        assert!(names.contains(&"builtin-asin"), "missing builtin-asin");
+        assert!(names.contains(&"builtin-acos"), "missing builtin-acos");
+        assert!(names.contains(&"builtin-atan"), "missing builtin-atan");
+        assert!(names.contains(&"builtin-atan2"), "missing builtin-atan2");
+        assert!(names.contains(&"builtin-nan?"), "missing builtin-nan?");
+        assert!(names.contains(&"builtin-inf?"), "missing builtin-inf?");
+        assert!(
+            names.contains(&"builtin-finite?"),
+            "missing builtin-finite?"
+        );
+        // Bitwise builtins (all now under builtin-NAME; prelude exports bare names)
+        assert!(names.contains(&"builtin-band"), "missing builtin-band");
+        assert!(names.contains(&"builtin-bor"), "missing builtin-bor");
+        assert!(names.contains(&"builtin-bxor"), "missing builtin-bxor");
+        assert!(names.contains(&"builtin-shl"), "missing builtin-shl");
+        assert!(names.contains(&"builtin-shr"), "missing builtin-shr");
+        // Character builtins (now under builtin-NAME; prelude exports bare names)
+        assert!(
+            names.contains(&"builtin-char-code"),
+            "missing builtin-char-code"
+        );
+        assert!(names.contains(&"builtin-chr"), "missing builtin-chr");
+        // Bytes stubs (now under builtin-NAME; prelude exports bare names)
+        assert!(
+            names.contains(&"builtin-str-bytes"),
+            "missing builtin-str-bytes"
+        );
+        assert!(
+            names.contains(&"builtin-bytes-str"),
+            "missing builtin-bytes-str"
+        );
         // Bytes builtins
         assert!(names.contains(&"bytes"), "missing bytes");
         assert!(names.contains(&"bytes-find"), "missing bytes-find");
@@ -6980,8 +7053,9 @@ mod tests {
         );
         // builtin-privacy-primary-names sprint: removed 68 bare registrations,
         // added builtin-with-deadline (was bare-only, now has builtin-* registration).
-        // Previous total: 310. Removed 68 bare names. Added 1 new builtin-with-deadline.
         // Net: 310 - 68 + 1 = 243.
+        // builtin-privacy-operators-and-io sprint: renamed 35 bare names to builtin-* (no count change).
+        // Net: 243 (renames only).
         assert_eq!(
             names.len(),
             243,

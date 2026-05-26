@@ -105,17 +105,17 @@ str-length: builtin-str-length
 # Case Conversion
 # ============================================================================
 
-# Convert a string to uppercase by mapping str-to-upper-char over each character.
+# Convert a string to uppercase by mapping builtin-str-to-upper-char over each character.
 # Type: (String -> String)
 # Example: [upper "hello"] => "HELLO"
 upper@[doc: "Convert a string to uppercase"]: [fn@String [let s@String]
-    [str-map-chars [fn [let c] [str-to-upper-char c]] s]]
+    [builtin-str-map-chars [fn [let c] [builtin-str-to-upper-char c]] s]]
 
-# Convert a string to lowercase by mapping str-to-lower-char over each character.
+# Convert a string to lowercase by mapping builtin-str-to-lower-char over each character.
 # Type: (String -> String)
 # Example: [lower "HELLO"] => "hello"
 lower@[doc: "Convert a string to lowercase"]: [fn@String [let s@String]
-    [str-map-chars [fn [let c] [str-to-lower-char c]] s]]
+    [builtin-str-map-chars [fn [let c] [builtin-str-to-lower-char c]] s]]
 
 # ============================================================================
 # String Padding

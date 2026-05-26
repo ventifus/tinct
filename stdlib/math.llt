@@ -4,15 +4,42 @@
 #
 # Mathematical constants and functions implemented in pure LLT.
 #
-# These functions depend on the following Rust-native math builtins:
-#   pow  sqrt  log  log2  log10  exp
-#   sin  cos  tan  asin  acos  atan  atan2
-#   nan?  inf?  finite?
+# These functions wrap the following Rust-native math builtins (registered
+# under builtin-* names; the prelude does NOT export them by default):
+#   builtin-pow  builtin-sqrt  builtin-log  builtin-log2  builtin-log10
+#   builtin-exp  builtin-sin  builtin-cos  builtin-tan
+#   builtin-asin  builtin-acos  builtin-atan  builtin-atan2
+#   builtin-nan?  builtin-inf?  builtin-finite?
 #
+# Users must [include libdir "math.llt"] to access these functions.
 # All functions in this dict can reference each other (letrec semantics).
 # ============================================================================
 
 [
+
+# ============================================================================
+# Rust-native math primitive wrappers
+# ============================================================================
+#
+# These are the stable public names for the underlying builtin-* primitives.
+# Expose them so that code including math.llt can call [pow x y], [sqrt x], etc.
+
+pow@[doc: "Power function: base raised to exponent. Returns Float."]: builtin-pow
+sqrt@[doc: "Square root. Returns Float (NaN for negative input)."]: builtin-sqrt
+log@[doc: "Natural logarithm (ln). Returns Float (-Inf for 0, NaN for negative)."]: builtin-log
+log2@[doc: "Base-2 logarithm. Returns Float."]: builtin-log2
+log10@[doc: "Base-10 logarithm. Returns Float."]: builtin-log10
+exp@[doc: "Exponential function (e^x). Returns Float."]: builtin-exp
+sin@[doc: "Sine (radians). Returns Float."]: builtin-sin
+cos@[doc: "Cosine (radians). Returns Float."]: builtin-cos
+tan@[doc: "Tangent (radians). Returns Float."]: builtin-tan
+asin@[doc: "Arcsine. Returns Float (radians)."]: builtin-asin
+acos@[doc: "Arccosine. Returns Float (radians)."]: builtin-acos
+atan@[doc: "Arctangent. Returns Float (radians)."]: builtin-atan
+atan2@[doc: "Two-argument arctangent atan2(y, x). Returns Float (radians)."]: builtin-atan2
+nan?@[doc: "True if the Float value is NaN."]: builtin-nan?
+inf?@[doc: "True if the Float value is infinite."]: builtin-inf?
+finite?@[doc: "True if the Float value is finite (not NaN and not infinite)."]: builtin-finite?
 
 # ============================================================================
 # Mathematical Constants
@@ -39,27 +66,27 @@ phi@[doc: "Golden ratio: (1 + sqrt(5)) / 2"]: 1.618033988749895
 # Example: [hypot 3 4] => 5.0
 # Example: [hypot 1 1] => 1.4142135623730951
 hypot@[doc: "Hypotenuse: Euclidean distance sqrt(a² + b²)"]: [fn@Float [let a@Number b@Number]
-    [sqrt [+ [pow a 2] [pow b 2]]]]
+    [builtin-sqrt [builtin-add [builtin-pow a 2] [builtin-pow b 2]]]]
 
 # Convert degrees to radians: d * (π / 180)
 # Type: (Number -> Float)
 # Example: [deg->rad 180] => 3.141592653589793
 # Example: [deg->rad 90] => 1.5707963267948966
 deg->rad@[doc: "Convert degrees to radians"]: [fn@Float [let d@Number]
-    [* d [/ pi 180.0]]]
+    [builtin-mul d [builtin-div pi 180.0]]]
 
 # Convert radians to degrees: r * (180 / π)
 # Type: (Number -> Float)
 # Example: [rad->deg 3.141592653589793] => 180.0
 # Example: [rad->deg 1.5707963267948966] => 90.0
 rad->deg@[doc: "Convert radians to degrees"]: [fn@Float [let r@Number]
-    [* r [/ 180.0 pi]]]
+    [builtin-mul r [builtin-div 180.0 pi]]]
 
 # Logarithm with arbitrary base: log_b(x) = ln(x) / ln(b)
 # Type: (Number -> Number -> Float)
 # Example: [log-base 2 8] => 3.0
 # Example: [log-base 10 100] => 2.0
 log-base@[doc: "Logarithm with arbitrary base"]: [fn@Float [let base@Number x@Number]
-    [/ [log x] [log base]]]
+    [builtin-div [builtin-log x] [builtin-log base]]]
 
 ]
