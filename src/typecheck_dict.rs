@@ -41,18 +41,56 @@ fn inject_adt_constructor_schemes(alias_ty: &Type, dict_env: &mut TypeEnv) {
 
 /// Register a single NominalVariant constructor into `dict_env`.
 ///
-/// Uses `Type::Unknown` (gradual ?) for the constructor type. This allows ADT constructors
-/// to be called with any arguments (gradual typing) without the type checker enforcing strict
-/// argument types. The runtime enforces correct usage by storing the payload as a Variant value.
+/// For **unit constructors** (no fields), the constructor IS the value — it has type
+/// `NominalVariant { tag, fields: {} }`. Example: `None` in `[type Option [Some a] None]`.
 ///
-/// A more precise type would be `Function { params: [...], ret: NominalVariant{...} }`, but
-/// that conflicts with pattern binding semantics: `[Circle r]` in a match arm expects `r` to
-/// have the direct payload type (e.g., Int), not a Record type derived from NominalVariant fields.
-/// Until the type system resolves payload vs. field-record semantics, Unknown is the safe choice.
-fn inject_single_constructor(tag: &str, _fields: &Row, dict_env: &mut TypeEnv) {
-    // Use Unknown so that constructor calls are accepted by the gradual type checker
-    // without false positives from payload/field type mismatches.
-    dict_env.insert(tag.to_string(), Type::Unknown);
+/// For **field constructors** (with fields), the constructor is a FUNCTION that takes
+/// the fields as named arguments and returns a `NominalVariant`. Example: `Circle` in
+/// `[type Shape [Circle r: Int]]` has type `Function { params: [("r", Int)], ret: NominalVariant("Circle", {r: Int}), variadic: false }`.
+///
+/// This allows the type checker to verify constructor call correctness: `[Circle r: 5]` ✓,
+/// `[Circle r: "hello"]` ✗ (type error: expected Int, got String).
+fn inject_single_constructor(tag: &str, fields: &Row, dict_env: &mut TypeEnv) {
+    if fields.fields.is_empty() {
+        // Unit constructor: no fields → the constructor is a value, not a function.
+        // Type: NominalVariant { tag, fields: {} }
+        dict_env.insert(
+            tag.to_string(),
+            Type::NominalVariant {
+                tag: tag.to_string(),
+                fields: Row {
+                    fields: std::collections::HashMap::new(),
+                },
+            },
+        );
+    } else {
+        // Field constructor: has fields → the constructor is a function.
+        // Type: Function { params: [(field_name, field_type), ...], ret: NominalVariant }
+        //
+        // Build params list from fields. Field order is not semantically meaningful
+        // (HashMap is unordered), but we sort by key for deterministic output.
+        let mut field_vec: Vec<_> = fields.fields.iter().collect();
+        field_vec.sort_by(|a, b| a.0.cmp(b.0));
+
+        let params: Vec<(Option<String>, Type)> = field_vec
+            .into_iter()
+            .map(|(name, ty)| (Some(name.clone()), ty.clone()))
+            .collect();
+
+        let ret = Type::NominalVariant {
+            tag: tag.to_string(),
+            fields: fields.clone(),
+        };
+
+        dict_env.insert(
+            tag.to_string(),
+            Type::Function {
+                params,
+                ret: Box::new(ret),
+                variadic: false,
+            },
+        );
+    }
 }
 
 /// Strongly Connected Component - a group of mutually dependent bindings

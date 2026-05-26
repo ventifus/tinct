@@ -10072,6 +10072,12 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] Add `Value::Overlay` arm calling `flatten_overlay`
 - [x] Make `Value::Expression` passthrough explicit rather than wildcard
 
+### nominal-variant-constructor-types: Implement precise types for ADT constructors
+
+- [x] Unit constructors get NominalVariant{tag, fields} instead of Unknown
+- [x] Field constructors get Function{params, ret: NominalVariant{...}} instead of Unknown
+- [x] Added corpus tests: nominal_variant_constructor_types + adt_constructor_type_mismatch
+
 ### attach-provenance-dedup: Extract shared provenance attachment helper
 
 - [x] Extract `attach_and_format_error(err, provenance)` shared helper in `src/lib.rs`

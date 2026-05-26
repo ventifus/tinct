@@ -1,0 +1,14 @@
+# ADT constructor call with argument type mismatch
+# Circle expects r: Int, but we pass r: String → type error
+[
+  [type Shape
+    [Circle r: Int]
+    [Square s: Int]
+  ]
+
+  bad-circle: [Circle r: "hello"]
+]
+=== out
+Dict({"Shape": Variant(Shape, Null), "Circle": Variant(Circle, Null), "Square": Variant(Square, Null), "bad-circle": Variant(Circle, String("hello"))})
+=== warn
+cannot unify Int with "hello"

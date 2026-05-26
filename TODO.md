@@ -382,13 +382,6 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 
 
 
-### nominal-variant-constructor-types: Implement precise types for ADT constructors [Major]
-
-**type-theorist M1.** `src/typecheck_dict.rs:44-56` — `inject_single_constructor` uses `Type::Unknown` for all constructor types. This disables type checking for ALL constructor calls. Unit constructors should get `NominalVariant{tag, fields}`, record constructors should get `Function { params: fields_as_params, ret: NominalVariant{...} }`.
-
-- [ ] Implement precise unit constructor types: `NominalVariant{tag, fields}` (`src/typecheck_dict.rs:44`)
-- [ ] Implement precise record constructor types: `Function { params, ret: NominalVariant{...} }` (`src/typecheck_dict.rs:44`)
-- [ ] Add corpus tests for constructor type checking
 
 ### serialization-span-threading: Thread definition spans through ValueVisitor [Major]
 
