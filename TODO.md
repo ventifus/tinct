@@ -426,17 +426,6 @@ Hardcoded behavior, stubs, and dead code found during systematic audit. Root cau
 
 
 
-### arena-phase3: Wire FlatEnv slot-based variable lookup
-
-`src/arena.rs` has 6 `#[allow(dead_code)]` items marked "arena-phase3 scaffolding": `alloc_root`, `alloc_letrec_group`, `fill_letrec_slot`, `FlatEnv.slots`, `FlatEnv.overflow`, `FlatEnv.parent`, `FlatEnv.display`. These are the scaffolding for O(1) de Bruijn slot lookup via display vectors, replacing the current environment chain traversal.
-
-Root cause: Arena phase-3 (slot-based lookup wiring into evaluator) not yet started.
-
-- [ ] Wire `alloc_root` / `fill_letrec_slot` in `eval_dict_core` — replace env chain insertion with slot assignment (`src/eval_dict.rs`, `src/arena.rs`)
-- [ ] Wire display-vector lookup in `eval_core_expr` `Var` arm — `ctx.env_arena.lookup_slot(env_id, level, slot)` replaces `env.get(name)` chain walk (`src/eval.rs`)
-- [ ] Wire `FlatEnv.overflow` for computed keys (non-string dict keys not assignable to slots) (`src/arena.rs`)
-- [ ] Delete `#[allow(dead_code)]` attributes once wired
-
 ## Builtin CPS Debt
 
 ### builtin-force-cleanup: Clean up H2/H3 annotations and migrate H1 builtins to pos_strictness
@@ -2182,4 +2171,83 @@ Per the builtin-privacy design, only `prelude.llt` is allowed to use `builtin-*`
 
 **`stdlib/cli/out/toml.llt`** — all internal helpers exported from the single dict:
 - [ ] Split into two-dict document pattern. Private dict: `toml-quote`, `toml-list?`, `toml-scalar`, `toml-array`, `toml-array-items`, `toml-partition`, `toml-flat`, `toml-tables`, `toml-value`, `toml-impl`. Public dict: `toml` only. (`stdlib/cli/out/toml.llt`)
+
+---
+
+---
+
+## Codebase Health Audit Findings (Health Review #321, 2026-05-25)
+
+All 9 specialist agents reviewed the full codebase. Findings below (Critical/Major/Minor only).
+
+### type-system-health-321: Fix Unknown return types + type inference gaps [Critical/Major]
+
+#### merge return type (from merge-return-type)
+
+**type-theorist Major.** `src/type_env.rs:2869`: `merge` typed as `Appendable a, Appendable b => (a, b) → Unknown` — allows `[merge "hello" [1 2 3]]` to type-check but produce runtime failure.
+
+- [ ] Fix `merge` return type in `src/type_env.rs:2869` — change from Unknown to `Appendable a => (a, a) → a` or add fundep constraint
+- [ ] Fix `builtin-first` and `builtin-last` return types at `src/type_env.rs:3343,3353` — currently Unknown; should return union of possible types or fresh TypeVar
+
+#### Variant type wiring (from variant-type-wiring)
+
+**type-theorist Major.** `src/type_env.rs:1892`: `Variant` returns Unknown despite `Type::NominalVariant` existing.
+
+- [ ] Wire `Variant` builtin signature to construct `Type::NominalVariant` based on tag and payload (`src/type_env.rs:1892`)
+
+#### Handle capability types (from handle-capability-types)
+
+**type-theorist Major.** Multiple I/O builtins return `Handle(Box::new(Type::Unknown))` when capability tags are registered.
+
+- [ ] Audit all Handle-returning builtins at `src/type_env.rs:2127,2281,2446,2481,2492` — update to use precise capability rows
+
+#### collect_all_vars_vec wildcard (from collect-all-vars-wildcard)
+
+**computer-scientist Minor.** `src/type_def.rs:1320`: wildcard `_ => {}` would miss new compound Type variants.
+
+- [ ] Replace `_ => {}` in `collect_all_vars_vec` with exhaustive leaf enumeration (`src/type_def.rs:1320`)
+
+#### DOT-VAR field fallback (from dot-var-field-unknown)
+
+**type-theorist Minor.** `src/type_unify.rs:580,584,595,597`: absent field fallback uses Unknown instead of fresh TypeVar.
+
+- [ ] Change `row.fields.get(field_name).cloned().unwrap_or(Type::Unknown)` to use `state.fresh_type_var()` at `src/type_unify.rs:580,584,595,597`
+
+### doc-health-321: Fix stale docs — builtin counts, pipeline order, security table [Critical/Major]
+
+#### Builtin count contradiction (from builtin-count-fix)
+
+**stdlib-author C1.** Three sources disagree: `doc/11a-builtins.md:3` says 301, `doc/11-stdlib.md:302,308` says 310, actual is 310.
+
+- [ ] Count unique builtin implementations across `src/builtins*.rs`; document methodology; update `doc/11a-builtins.md:3` and all occurrences in `doc/11-stdlib.md`
+- [ ] Delete incorrect sentence from `doc/11-stdlib.md:362` claiming sequence constructors have no wrappers
+- [ ] Add rows for `async.llt`, `numeric.llt`, `math.llt`, `io.llt`, `net.llt` to optional stdlib modules table at `doc/11-stdlib.md:318-333`
+
+#### Pipeline order (from pipeline-order-doc)
+
+**integration-verifier Major.** `doc/16-architecture.md:43` says "parse → desugar → typecheck" but actual order is "parse → expand → desugar → resolve → typecheck → lower → eval".
+
+- [ ] Update `doc/16-architecture.md:43` pipeline order to reflect actual: `Source text → Lexer → Parser → Expand → Desugar → Resolver → TypeCheck → Lower → Eval → Output`
+
+#### Security table (from security-doc-stale)
+
+**security-expert Minor.** Stale MAX_EVAL_DEPTH row; missing LSP no-eval documentation.
+
+- [ ] Delete stale "Eval depth" row from security table in `doc/16-architecture.md:505`; add note that continuation stack is bounded by MAX_CONTINUATION_STACK=2048
+- [ ] Add LSP subsection to `doc/16-architecture.md` §Security explaining that LSP never calls eval
+
+### eval-health-321: Placeholder detection + AstNodeField restore gap [Major/Minor]
+
+#### Placeholder/InProgress ambiguity (from placeholder-inprogress-ambiguity)
+
+**eval-engine Major.** `src/value.rs:1764-1770`: Placeholder thunks indistinguishable from InProgress at storage level.
+
+- [ ] Add explicit Placeholder detection in `src/eval.rs:1796-1799` — issue structured `PlaceholderForced` error rather than panic or silent failure
+- [ ] Document the three-state ambiguity in `src/value.rs:1764` comment
+
+#### AstNodeField restore (from ast-node-field-restore)
+
+**eval-engine Minor.** `src/eval_materialize.rs:108-122`: No `RestoreState::AstNodeField` variant.
+
+- [ ] Determine if `UnevaluatedState::AstNodeField` can raise non-cacheable errors; if yes, add `RestoreState::AstNodeField` variant; if no, document invariant explicitly
 

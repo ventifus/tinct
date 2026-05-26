@@ -10156,3 +10156,14 @@ Only position-based `str-slice(string, start, end)` exists; length-based form de
 
 - [ ] Add guard in `ws-build-ext64` that raises error when `n >= 2^63` (RFC 6455 §5.2 violation) (`stdlib/protocols/websocket.llt`)
 - [ ] Add corpus test for `str-substr` with `start=str-len` and `len=0` boundary case
+
+### arena-phase3: Wire FlatEnv slot-based variable lookup
+
+`src/arena.rs` has 6 `#[allow(dead_code)]` items marked "arena-phase3 scaffolding": `alloc_root`, `alloc_letrec_group`, `fill_letrec_slot`, `FlatEnv.slots`, `FlatEnv.overflow`, `FlatEnv.parent`, `FlatEnv.display`. These are the scaffolding for O(1) de Bruijn slot lookup via display vectors, replacing the current environment chain traversal.
+
+Root cause: Arena phase-3 (slot-based lookup wiring into evaluator) not yet started.
+
+- [x] Wire `alloc_root` / `fill_letrec_slot` in `eval_dict_core` — replace env chain insertion with slot assignment (`src/eval_dict.rs`, `src/arena.rs`)
+- [x] Wire display-vector lookup in `eval_core_expr` `Var` arm — `ctx.env_arena.lookup_slot(env_id, level, slot)` replaces `env.get(name)` chain walk (`src/eval.rs`)
+- [x] Wire `FlatEnv.overflow` for computed keys (non-string dict keys not assignable to slots) (`src/arena.rs`)
+- [x] Delete `#[allow(dead_code)]` attributes once wired

@@ -126,7 +126,8 @@ impl EnvArena {
     /// Allocate a root environment (no parent) with the given slot capacity.
     ///
     /// The display vector is initialized to contain only the new environment's own EnvId.
-    #[allow(dead_code)] // arena-phase3 scaffolding: will be used for dict scope allocation
+    ///
+    /// Now wired: called from `src/eval_dict.rs:109` to allocate FlatEnv for dict scopes.
     pub fn alloc_root(&mut self, slot_count: usize) -> EnvId {
         let len = self.envs.len();
         assert!(
@@ -209,7 +210,10 @@ impl EnvArena {
     /// after creating the corresponding thunk.
     ///
     /// The display vector is cloned from the parent and extended with the new environment's EnvId.
-    #[allow(dead_code)] // arena-phase3 will use this: when display-vector addressing is wired, this method allocates child FlatEnvs with parent linkage
+    ///
+    /// Future work: not yet called. When display-vector addressing is wired (arena-phase3 sprint),
+    /// this method will allocate child FlatEnvs with parent linkage for nested scopes.
+    #[allow(dead_code)]
     pub fn alloc_letrec_group(&mut self, static_key_count: usize, parent_id: EnvId) -> EnvId {
         self.alloc_child(parent_id, static_key_count as u32)
     }
@@ -218,7 +222,8 @@ impl EnvArena {
     ///
     /// Used during dict construction: after allocating the shared dict_env via
     /// `alloc_letrec_group`, fill each slot as its corresponding entry thunk is created.
-    #[allow(dead_code)] // arena-phase3 scaffolding: will be used for dict/function scope slot filling
+    ///
+    /// Now wired: called from `src/eval_dict.rs:217` to fill FlatEnv slots for dict entries.
     pub fn fill_letrec_slot(&mut self, env_id: EnvId, slot: u32, thunk_id: ThunkId) {
         self.get_mut(env_id).set_slot(slot, thunk_id);
     }
@@ -245,19 +250,33 @@ impl Default for EnvArena {
 #[derive(Debug)]
 pub(crate) struct FlatEnv {
     /// Static keys indexed by compile-time slot number from the resolver.
-    #[allow(dead_code)] // arena-phase3 scaffolding: will be used for O(1) variable lookup
+    ///
+    /// Populated by `fill_letrec_slot` (wired). Used for O(1) variable lookup when
+    /// display-vector addressing is enabled (arena-phase3 sprint).
+    #[allow(dead_code)]
     pub(crate) slots: Vec<Option<ThunkId>>,
     /// Computed keys (resolver returned None) indexed by name.
-    #[allow(dead_code)] // arena-phase3: used for computed keys when wired into eval
+    ///
+    /// Future optimization: computed-key dict entries (e.g., `[$expr: value]`) currently work
+    /// via the name-based fallback in `Environment::get()` at `src/eval.rs:1427`. This field
+    /// is scaffolding for arena-phase3 when computed keys will be stored directly in FlatEnv
+    /// to avoid Environment chain traversal overhead.
+    #[allow(dead_code)]
     pub(crate) overflow: HashMap<String, ThunkId>,
     /// Parent environment for stdlib/builtins root chain. Most environments don't need this;
     /// user-scope lookups use `(level, slot)` pairs that resolve to the correct FlatEnv directly.
-    #[allow(dead_code)] // arena-phase3: used for fallback lookup chain
+    ///
+    /// Future work: arena-phase3 will use this for fallback lookup when variables aren't
+    /// resolved at compile time (e.g., dynamic stdlib references).
+    #[allow(dead_code)]
     pub(crate) parent: Option<EnvId>,
     /// Display vector: prepopulated at creation with ancestor EnvIds indexed by level.
     /// For a scope at level `k`, `display[0..k]` contains the EnvIds of all outer scopes,
     /// and `display[k]` is self. Enables O(1) variable lookup: `arena.get(display[level]).slots[slot]`.
-    #[allow(dead_code)] // arena-phase3: used for display-vector addressing
+    ///
+    /// Future work: arena-phase3 will use this for O(1) variable lookup via
+    /// `ctx.env_arena.get(env.display[level]).slots[slot]` dispatch in `src/eval.rs`.
+    #[allow(dead_code)]
     pub(crate) display: Vec<EnvId>,
 }
 
@@ -281,7 +300,8 @@ impl FlatEnv {
     /// This is used during FlatEnv construction when filling slots in order.
     /// If `slot` is beyond the current vec length, intermediate slots are filled with
     /// `None` (unfilled placeholders). Callers must not query unfilled slots.
-    #[allow(dead_code)] // arena-phase3 scaffolding: called by fill_letrec_slot
+    ///
+    /// Now wired: called by `fill_letrec_slot` at `src/arena.rs:223`.
     pub fn set_slot(&mut self, slot: u32, id: ThunkId) {
         let slot_idx = slot as usize;
         if slot_idx >= self.slots.len() {
