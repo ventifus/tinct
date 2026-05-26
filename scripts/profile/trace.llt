@@ -1,0 +1,67 @@
+# Perfetto Chrome Trace Event Format output
+# Input: %  — Seq of span dicts (tinct run -i json -o json scripts/profile/trace.llt < spans.json)
+# Output: tinct dict — serialized to JSON by -o json flag; no codecs import needed
+
+[
+  # Span name: builtin name if present, else source-file:start-end
+  span-name: [fn [let s]
+    [if [= [] s.builtin]
+      [if [= s.source-file ""]
+        [str "span-" s.id]
+        [str s.source-file ":" s.source-start "-" s.source-end]]
+      s.builtin]]
+
+  # Stall color coding for chrome://tracing (cname field)
+  # green=normal, yellow=io, red=net, blue=channel, olive=timer
+  stall-color: [fn [let s]
+    [if [= [] s.stall-kind]
+      "good"
+      [if [= s.stall-kind "net"]
+        "terrible"
+        [if [= s.stall-kind "io"]
+          "bad"
+          [if [= s.stall-kind "channel"]
+            "yellow"
+            [if [= s.stall-kind "timer"]
+              "olive"
+              "good"]]]]]]
+
+  # Convert span to Perfetto complete event (ph: "X")
+  span-to-event: [fn [let s]
+    [ph:   "X"
+     ts:   s.start-us
+     dur:  [- s.end-us s.start-us]
+     name: [span-name s]
+     cname: [stall-color s]
+     pid:  1
+     tid:  1
+     args: [source:             s.source-text
+            materialize-parent: s.materialize-parent
+            create-parent:      s.create-parent
+            origin:             s.origin-builtin
+            cpu-us:             [- [- s.end-us s.start-us] s.stall-us]
+            stall-us:           s.stall-us
+            stall-kind:         s.stall-kind]]]
+
+  # Flow events link creation site (create-time-us) to materialization site (start-us)
+  # Flow start: "s" event at create-time-us
+  flow-start: [fn [let s]
+    [if [= [] s.create-parent]
+      []
+      [ph: "s"  id: s.id  ts: s.create-time-us  name: "lazy"  pid: 1  tid: 1]]]
+
+  # Flow end: "f" event at start-us (materialization)
+  flow-end: [fn [let s]
+    [if [= [] s.create-parent]
+      []
+      [ph: "f"  id: s.id  ts: s.start-us  name: "lazy"  pid: 1  tid: 1  bp: "e"]]]
+
+  # Flatten flow events: map each span to [flow-start flow-end], then filter out []
+  flows: [filter
+           [fn [let e] [not [= [] e]]]
+           [concat [map [fn [let s] [flow-start s]] %]
+                   [map [fn [let s] [flow-end s]] %]]]
+
+  # Return tinct dict — -o json serializes it to the Perfetto JSON format
+  [traceEvents: [concat [collect [map span-to-event %]] [collect flows]]]
+]

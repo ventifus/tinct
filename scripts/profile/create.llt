@@ -1,0 +1,89 @@
+# Creation-context hotspot table
+# Input: %  — Seq of span dicts (via tinct run -i json scripts/profile/create.llt < spans.json)
+# Output: emitted to stdout directly
+#
+# Groups spans by their creator (create-parent span's location) rather than
+# their materializer. Answers "what allocated this work?"
+
+[
+  # Materialize the Seq once — two passes required
+  spans: [collect %]
+
+  # Build a map from span ID to span-key for create-parent lookup
+  span-id-to-key: [from-entries
+                    [map [fn [let s]
+                           [key: s.id
+                            value: [if [= [] s.builtin]
+                                     [str s.source-file ":" s.source-start "-" s.source-end]
+                                     s.builtin]]]
+                         spans]]
+
+  # Pass 1: build children-wall index — total wall time of direct children per span ID
+  # Group spans by create-parent, filter out toplevel spans (create-parent = [])
+  child-groups: [group-by
+                  [fn [let s] s.create-parent]
+                  [filter [fn [let s] [not [= [] s.create-parent]]] spans]]
+
+  # Sum wall time for each parent's children
+  children-wall: [from-entries
+                   [map [fn [let g]
+                          [key:   g.key
+                           value: [reduce
+                                    [fn [let acc s] [+ acc [- s.end-us s.start-us]]]
+                                    0
+                                    g.value]]]
+                        [entries child-groups]]]
+
+  # Self time: wall time minus children's wall time
+  self-us: [fn [let s]
+    [- [- s.end-us s.start-us]
+       [get-or children-wall s.id 0]]]
+
+  # CPU time: self time minus stall time
+  cpu-us: [fn [let s] [- [self-us s] s.stall-us]]
+
+  # Group by create-parent location (use span-id-to-key to look up the key)
+  # For toplevel spans (create-parent = []), use "<toplevel>"
+  create-key: [fn [let s]
+    [if [= [] s.create-parent]
+      "<toplevel>"
+      [get-or span-id-to-key s.create-parent "<unknown>"]]]
+
+  # Aggregate spans by creation-context key
+  aggregate: [fn [let key group]
+    [location: key
+     calls:    [length group]
+     cpu-ms:   [/ [reduce [fn [let acc s] [+ acc [cpu-us s]]] 0 group] 1000]
+     wait-ms:  [/ [reduce [fn [let acc s] [+ acc s.stall-us]] 0 group] 1000]
+     total-ms: [/ [reduce [fn [let acc s] [+ acc [- s.end-us s.start-us]]] 0 group] 1000]]]
+
+  # Group by create-parent key and aggregate
+  grouped: [group-by create-key spans]
+  rows:    [sort-by
+             [fn [let a b] [> a.total-ms b.total-ms]]
+             [map [fn [let g] [aggregate g.key g.value]] [entries grouped]]]
+
+  # Format milliseconds with one decimal place
+  fmt-ms: [fn [let ms]
+    [tenths: [round [* ms 10]]]
+    [whole:  [quot tenths 10]]
+    [frac:   [mod tenths 10]]
+    [str whole "." frac]]
+
+  # Format a row (simple format without padding for now)
+  fmt-loc: [fn [let r]
+    [str [str r.calls]
+         "  "
+         [fmt-ms r.cpu-ms]
+         "  "
+         [fmt-ms r.wait-ms]
+         "  "
+         [fmt-ms r.total-ms]
+         "   "
+         r.location]]
+
+  sep: "────────────────────────────────────────────────────────────────────────────────"
+  hdr: "  calls   cpu_ms   wait_ms  total_ms   creation-context"
+
+  [emit [str sep "\n" hdr "\n" sep "\n" [join "\n" [map fmt-loc rows]] "\n" sep]]
+]

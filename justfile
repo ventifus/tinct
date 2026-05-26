@@ -367,3 +367,11 @@ clean-volumes:
 clean-all: clean-images clean-volumes
     @echo "✅ All containers and volumes removed"
 
+# Profile a tinct file and show materialization hotspots
+profile FILE:
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- run --profile /tmp/spans.json {{FILE}} && cargo run --release -- run -i json scripts/profile/materialize.llt < /tmp/spans.json"
+
+# Profile a tinct file and output Perfetto trace
+profile-trace FILE:
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- run --profile /tmp/spans.json {{FILE}} && cargo run --release -- run -i json -o json scripts/profile/trace.llt < /tmp/spans.json"
+

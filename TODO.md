@@ -810,21 +810,6 @@ Follow-up from builtin-privacy Phase 3. Three issues discovered when making `sam
 
 Span-level profiling with dual attribution (materialization-context and creation-context), stall breakdown (I/O, network, channel, timer), and Perfetto trace output. Collection via `--profile spans.json`; analysis via `scripts/profile/` tinct programs against the span file. See `doc/12-tooling.md §Profiling`.
 
-### profiling-scripts: Analysis scripts and benchmarks
-
-**Whatif:** `profiling`
-**Spec chapters:** `doc/12-tooling.md §Profiling`
-**Depends on:** `profiling-collector`, `stdlib-conformance-cleanup` (>=i fix)
-
-- [ ] Create `scripts/profile/materialize.llt` — materialization-context hotspot table; two-pass self-time algorithm using `collect`, `group-by`, `build-dict`, `get-or`; `emit` output (`scripts/profile/materialize.llt`)
-- [ ] Create `scripts/profile/create.llt` — creation-context hotspot table; groups spans by `create-parent` span location; `emit` output (`scripts/profile/create.llt`)
-- [ ] Create `scripts/profile/trace.llt` — Perfetto Chrome Trace Event Format; returns dict with `traceEvents` key; uses `cname` for stall-kind color; flow events from `create-time-us` to `start-us` via explicit int-keyed dicts `[0: flow-start  1: flow-end]` (`scripts/profile/trace.llt`)
-- [ ] Add `criterion = "0.5"` to `[dev-dependencies]` and `[[bench]] name = "eval"` to `Cargo.toml` (`Cargo.toml`)
-- [ ] Create `benches/eval.rs` with `bench_map_10k`, `bench_dict_1k`, `bench_deep_scope` benchmarks (`benches/eval.rs`)
-- [ ] Add justfile targets: `just bench` (criterion suite), `just profile <file>` (--profile + materialize.llt), `just profile-trace <file>` (--profile + trace.llt) (`justfile`)
-- [ ] Tests: end-to-end `--profile spans.json` + `tinct run -i json scripts/profile/materialize.llt < spans.json` produces valid table output
-- [ ] Tests: end-to-end `--profile spans.json` + `tinct run -i json -o json scripts/profile/trace.llt < spans.json` produces valid Perfetto JSON with `traceEvents` array
-
 ### profiling-review: Post-implementation review
 
 **Whatif:** `profiling`

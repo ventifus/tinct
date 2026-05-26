@@ -10467,3 +10467,18 @@ Post-panel findings from `serialization-span-threading` sprint. All minor.
 - [x] Rename math builtins to `builtin-*`, add `stdlib/math.llt` wrappers (`src/builtins.rs`, `stdlib/math.llt`) — 17 math + 5 bitwise + 1 float = 23 renamed
 - [x] Rename string ops to `builtin-*`, add prelude wrappers (`src/builtins.rs`, `stdlib/prelude.llt`, `stdlib/strings.llt`) — 13 string ops renamed; updated encoding.llt, websocket.llt, grpc.llt, socks5.llt, dns.llt, codecs/json.llt
 - [x] Update `standard_builtins_count` and `standard_builtins_contains_all` tests (count stays 243 — pure renames)
+
+### profiling-scripts: Analysis scripts and benchmarks ✅ DONE (2026-05-25)
+
+**Whatif:** `profiling`
+**Spec chapters:** `doc/12-tooling.md §Profiling`
+**Depends on:** `profiling-collector`, `stdlib-conformance-cleanup` (>=i fix)
+
+- [x] Create `scripts/profile/materialize.llt` — materialization-context hotspot table; two-pass self-time algorithm using `collect`, `group-by`, `build-dict`, `get-or`; `emit` output (`scripts/profile/materialize.llt`)
+- [x] Create `scripts/profile/create.llt` — creation-context hotspot table; groups spans by `create-parent` span location; `emit` output (`scripts/profile/create.llt`)
+- [x] Create `scripts/profile/trace.llt` — Perfetto Chrome Trace Event Format; returns dict with `traceEvents` key; uses `cname` for stall-kind color; flow events from `create-time-us` to `start-us` via explicit int-keyed dicts `[0: flow-start  1: flow-end]` (`scripts/profile/trace.llt`)
+- [x] Add `criterion = "0.5"` to `[dev-dependencies]` and `[[bench]] name = "eval"` to `Cargo.toml` (`Cargo.toml`)
+- [x] Create `benches/eval.rs` with `bench_map_10k`, `bench_dict_1k`, `bench_deep_scope` benchmarks (`benches/eval.rs`)
+- [x] Add justfile targets: `just bench` (criterion suite), `just profile <file>` (--profile + materialize.llt), `just profile-trace <file>` (--profile + trace.llt) (`justfile`)
+- [x] Tests: end-to-end `--profile spans.json` + `tinct run -i json scripts/profile/materialize.llt < spans.json` produces valid table output
+- [x] Tests: end-to-end `--profile spans.json` + `tinct run -i json -o json scripts/profile/trace.llt < spans.json` produces valid Perfetto JSON with `traceEvents` array

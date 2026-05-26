@@ -224,7 +224,7 @@ json-num-char?: [fn [let c@String]
       [or [builtin-eq c "-"] [builtin-eq c "+"]]]]]]]
 
 json-scan-num: [fn [let s@String i@Int]
-  [builtin-if [or [>=i [str-length s]] [not [json-num-char? [str-at i s]]]]
+  [builtin-if [or [>= i [str-length s]] [not [json-num-char? [str-at i s]]]]
     i
     [json-scan-num s [builtin-add i 1]]]]
 

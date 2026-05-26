@@ -1,0 +1,76 @@
+# Materialization-context hotspot table
+# Input: %  — Seq of span dicts (via tinct run -i json scripts/profile/materialize.llt < spans.json)
+# Output: emitted to stdout directly
+
+[
+  # Materialize the Seq once — two passes required
+  spans: [collect %]
+
+  # Pass 1: build children-wall index — total wall time of direct children per span ID
+  # Group spans by materialize-parent, filter out toplevel spans (materialize-parent = [])
+  child-groups: [group-by
+                  [fn [let s] s.materialize-parent]
+                  [filter [fn [let s] [not [= [] s.materialize-parent]]] spans]]
+
+  # Sum wall time for each parent's children
+  children-wall: [from-entries
+                   [map [fn [let g]
+                          [key:   g.key
+                           value: [reduce
+                                    [fn [let acc s] [+ acc [- s.end-us s.start-us]]]
+                                    0
+                                    g.value]]]
+                        [entries child-groups]]]
+
+  # Span key: builtin name if present, else source-file:start-end
+  span-key: [fn [let s]
+    [if [= [] s.builtin]
+      [str s.source-file ":" s.source-start "-" s.source-end]
+      s.builtin]]
+
+  # Self time: wall time minus children's wall time
+  self-us: [fn [let s]
+    [- [- s.end-us s.start-us]
+       [get-or children-wall s.id 0]]]
+
+  # CPU time: self time minus stall time
+  cpu-us: [fn [let s] [- [self-us s] s.stall-us]]
+
+  # Aggregate spans by location key
+  aggregate: [fn [let key group]
+    [location: key
+     calls:    [length group]
+     cpu-ms:   [/ [reduce [fn [let acc s] [+ acc [cpu-us s]]] 0 group] 1000]
+     wait-ms:  [/ [reduce [fn [let acc s] [+ acc s.stall-us]] 0 group] 1000]
+     total-ms: [/ [reduce [fn [let acc s] [+ acc [- s.end-us s.start-us]]] 0 group] 1000]]]
+
+  # Group by span key and aggregate
+  grouped: [group-by span-key spans]
+  rows:    [sort-by
+             [fn [let a b] [> a.total-ms b.total-ms]]
+             [map [fn [let g] [aggregate g.key g.value]] [entries grouped]]]
+
+  # Format milliseconds with one decimal place
+  fmt-ms: [fn [let ms]
+    [tenths: [round [* ms 10]]]
+    [whole:  [quot tenths 10]]
+    [frac:   [mod tenths 10]]
+    [str whole "." frac]]
+
+  # Format a row (simple format without padding for now)
+  fmt-loc: [fn [let r]
+    [str [str r.calls]
+         "  "
+         [fmt-ms r.cpu-ms]
+         "  "
+         [fmt-ms r.wait-ms]
+         "  "
+         [fmt-ms r.total-ms]
+         "   "
+         r.location]]
+
+  sep: "────────────────────────────────────────────────────────────────────────────────"
+  hdr: "  calls   cpu_ms   wait_ms  total_ms   location"
+
+  [emit [str sep "\n" hdr "\n" sep "\n" [join "\n" [map fmt-loc rows]] "\n" sep]]
+]
