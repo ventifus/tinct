@@ -398,14 +398,6 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 - [ ] Implement chosen approach in `src/lib.rs:621-706` (ValueVisitor trait + implementations)
 - [ ] Update `visit_function`, `visit_builtin`, `visit_seq_head`, `visit_proxy`, `visit_float` to use real spans
 
-### attach-provenance-dedup: Extract shared attach_macro_provenance_comprehensive helper [Major]
-
-**integration-verifier M2.** `src/lib.rs:250-252` vs `src/lib.rs:392-405` — `attach_provenance` closure duplicated between `eval_source_with_config` and `eval_source_with_cap_net`. The second version omits stack-frame span search, losing provenance for errors only in stack frames.
-
-- [ ] Extract `attach_macro_provenance_comprehensive(err, provenance)` shared helper (`src/lib.rs:174`)
-- [ ] Update both call sites to use the shared helper
-- [ ] Verify stack-frame span search and secondary_span search are both present
-
 
 
 ## Codebase Audit Findings (Health Review #306, 2026-05-25)

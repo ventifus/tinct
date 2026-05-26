@@ -205,6 +205,17 @@ fn attach_macro_provenance(
     err
 }
 
+/// Helper to attach macro provenance and format errors for display.
+/// Used by eval_source_with_config and eval_source_with_cap_net to deduplicate
+/// error attachment logic. Checks ALL 4 span sources: definition_span,
+/// materialization_span, stack frames, and secondary_span.
+fn attach_and_format_error(
+    err: Box<EvalError>,
+    provenance: &std::collections::HashMap<expand::SpanKey, expand::MacroProvenance>,
+) -> String {
+    format!("{}", attach_macro_provenance(err, provenance))
+}
+
 /// Parse and evaluate LLT source, returning the result in **LLT display format**
 /// (e.g. `Int(42)`, `Dict({"x": Int(1)})`) -- not JSON.
 ///
@@ -247,9 +258,6 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
     let provenance = expand_result.provenance;
 
-    let attach_provenance = |e: Box<error::EvalError>| -> String {
-        format!("{}", attach_macro_provenance(e, &provenance))
-    };
     // Type errors are advisory; evaluation proceeds regardless.
     // The TypeAnnotationTable is populated by typecheck_surface_program_with_env.
     let (
@@ -341,10 +349,10 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         &resolution_table,
         &type_annotation_table,
     ))
-    .map_err(&attach_provenance)?;
+    .map_err(|e| attach_and_format_error(e, &provenance))?;
     let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
-        .map_err(&attach_provenance)?;
-    value_to_display_string(&val, &ctx).map_err(&attach_provenance)
+        .map_err(|e| attach_and_format_error(e, &provenance))?;
+    value_to_display_string(&val, &ctx).map_err(|e| attach_and_format_error(e, &provenance))
 }
 
 /// Parse, eval, and materialize LLT source with optional NetCap injections.
@@ -393,9 +401,6 @@ pub fn eval_source_with_cap_net(
     let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
     let provenance = expand_result.provenance;
 
-    let attach_provenance = |e: Box<error::EvalError>| -> String {
-        format!("{}", attach_macro_provenance(e, &provenance))
-    };
     // The TypeAnnotationTable is populated by typecheck_surface_program_with_env.
     let (
         _type_errors,
@@ -471,10 +476,10 @@ pub fn eval_source_with_cap_net(
         &resolution_table,
         &type_annotation_table,
     ))
-    .map_err(&attach_provenance)?;
+    .map_err(|e| attach_and_format_error(e, &provenance))?;
     let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
-        .map_err(&attach_provenance)?;
-    value_to_display_string(&val, &ctx).map_err(&attach_provenance)
+        .map_err(|e| attach_and_format_error(e, &provenance))?;
+    value_to_display_string(&val, &ctx).map_err(|e| attach_and_format_error(e, &provenance))
 }
 
 /// Parse a NetCap allowlist entry string (same logic as CLI `--cap-net NAME=ENTRY`).

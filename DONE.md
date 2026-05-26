@@ -10072,6 +10072,12 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] Add `Value::Overlay` arm calling `flatten_overlay`
 - [x] Make `Value::Expression` passthrough explicit rather than wildcard
 
+### attach-provenance-dedup: Extract shared provenance attachment helper
+
+- [x] Extract `attach_and_format_error(err, provenance)` shared helper in `src/lib.rs`
+- [x] Update both `eval_source_with_config` and `eval_source_with_cap_net` call sites
+- [x] Both paths now use comprehensive 4-span-source lookup
+
 ### error-code-stale-tests: Fix stale error code tests
 
 - [x] Fix caps_missing_error.llt-eval: E099→E044 (CapabilityRequired)
