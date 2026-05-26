@@ -62,7 +62,7 @@
 
 > For the formal evaluation semantics (thunk lifecycle, materialization rules, laziness design), see [Evaluation](08-evaluation.md). For the type system extensions that interact with evaluation (TypeAssert contracts, row polymorphism), see [Type System Extensions](07-type-extensions.md).
 >
-> **Implementation note:** The iterative `run()` loop with `Vec<Cont>` stack drives all materialization. `eval_call` returns PendingCall thunks for lazy dispatch. DotAccess uses `DotAccessForce` continuations. TypeAssertCheck default expressions use `Action::EvalCore`. **No remaining recursive eval paths** — `eval_recursive` is deleted; `Action::EvalCore` drives all `CoreExpr` evaluation. Modules: `eval_call.rs`, `eval_access.rs` (`eval_deep.rs` deleted in runtime-v2).
+> **Implementation note:** The iterative `run()` loop with `Vec<Cont>` stack drives all materialization. `eval_call` returns PendingCall thunks for lazy dispatch. DotAccess uses `DotAccessForce` continuations. TypeAssertCheck default expressions use `Action::EvalCore`. **No remaining recursive eval paths** — `eval_recursive` is deleted; `Action::EvalCore` drives all `CoreExpr` evaluation. Modules: `eval_call.rs`, `eval_access.rs`.
 
 The iterative evaluator replaces the recursive `eval()` / `materialize()` call stack with an explicit continuation stack. The design follows Reynolds (1972) defunctionalization: each recursive call becomes a first-class `Cont` value pushed onto a `Vec<Cont>` stack. The main loop is a two-register machine `(action: Action, stack: Vec<Cont>)`.
 
@@ -120,7 +120,7 @@ pub(crate) enum Cont {
     /// Access a field from a materialized dict. Pushed after target thunk is materialized.
     DotAccessForce(Box<DotAccessForceData>),
     /// Validate a materialized value against a TypeAssert annotation.
-    /// Pushed by force_step's Expr::TypeAssert inline handler after evaluating the inner
+    /// Pushed by force_step's CoreExpr::TypeAssert inline handler after evaluating the inner
     /// expression thunk; replaces the synchronous materialize() call that was the laziness
     /// violation in the TypeAssert branch.
     TypeAssertCheck(Box<TypeAssertCheckData>),

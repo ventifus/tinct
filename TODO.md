@@ -380,11 +380,6 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 
 ## Codebase Audit Findings (Health Review #311, 2026-05-25)
 
-### doc-ast-type-migration: Purge stale Expr::/File:: references from doc/*.md [Major]
-
-**grammar-architect M1.** 342 occurrences of deleted AST type names (`Expr::`, `File::`, `Document::`) across 54 doc/*.md files. These types were deleted in runtime-v2. Requires per-file review to change to `SurfaceExpression::` or `CoreExpr::` depending on context.
-
-- [ ] Systematic purge of `Expr::`, `File::`, `Document::` references across doc/*.md files — 342 occurrences in 54 files; change each to correct SurfaceExpression:: or CoreExpr:: equivalent
 
 ### force-dict-tree-soundness: Add cycle detection and Seq/Overlay handling to force_dict_tree [Major]
 
@@ -1042,6 +1037,27 @@ Follow-up from builtin-privacy Phase 3. Three issues discovered when making `sam
 - [x] `just lint-file samples/basic.llt` — verified: T002/T003 clean; T010 is pre-existing span bug (not a regression)
 - [x] `just versions` — VERIFIED 2026-05-25: all errors fixed (E099→unified-bindings, T003→check_get, E040→reduce-loop, E070→str-length self-ref); exit 0
 - [x] Update `standard_builtins_contains_all` test count (+3: builtin-trim, builtin-emit, builtin-env) — already 301 ✓
+
+### builtin-privacy-primary-names: All Rust builtins registered under `builtin-*` names; prelude wraps every one
+
+**Whatif:** `doc/whatif/completed/builtin-privacy.md`
+
+**Problem:** Many Rust builtins are registered under their user-facing names (`"map"`, `"filter"`, `"reduce"`, `"str"`, `"split"`, etc.) rather than `"builtin-map"` etc. These flow through the prelude pointer-walk and land in the user TypeEnv as Rust functions — no tinct wrapper, no type annotation, no doc string. User code calling `[map f xs]` calls the Rust function directly; there is no tinct `map` in prelude.
+
+**Rule:** No Rust builtin registration name may appear in the user-facing API without a tinct prelude wrapper. Every builtin is registered as `builtin-<name>`. Prelude defines a tinct wrapper for the public name. User code only ever calls tinct.
+
+**Depends on:** `builtin-privacy` (Phase 2 complete — user TypeEnv starts from `TypeEnv::new()`)
+
+- [ ] Grep `standard_builtins()` in `src/builtins.rs` for all registrations not already using the `builtin-*` form; build exhaustive list (`src/builtins.rs`)
+- [ ] Rename each registration from `"<name>"` to `"builtin-<name>"` — e.g. `"map"` → `"builtin-map"`, `"filter"` → `"builtin-filter"`, `"reduce"` → `"builtin-reduce"`, `"str"` → `"builtin-str"`, `"split"` → `"builtin-split"`, `"join"` → `"builtin-join"`, `"length"` → `"builtin-length"`, `"keys"` → `"builtin-keys"`, `"get"` → `"builtin-get"`, `"merge"` → `"builtin-merge"`, and all remaining (`src/builtins.rs`, `src/builtins_seq_xform.rs`, `src/builtins_seq_reduce.rs`, `src/builtins_seq_gen.rs`, `src/builtins_meta.rs`, `src/builtins_io.rs`)
+- [ ] For each renamed builtin, add a tinct wrapper in `stdlib/prelude.llt` with type annotations and `doc:` string — matching the pattern of existing wrappers (`trim`, `emit`, `env`). Wrappers must not duplicate the builtin's type scheme; use `fn@[return: T  doc: "..."]` form.
+- [ ] Update `builtin_primary_names()` in `src/builtins.rs` to return the `builtin-*` names so T002 lint fires correctly for direct `builtin-*` use in non-prelude code
+- [ ] Update `standard_builtins_contains_all` test count to reflect renamed registrations
+- [ ] `just test` passes — no regressions in corpus or unit tests
+- [ ] `just lint-file samples/versions.llt` — T002/T003 clean after rename (all user-facing names now resolve to tinct wrappers)
+- [ ] `just lint-file samples/basic.llt` — same
+
+**Note:** This sprint is a prerequisite for `stdlib-conformance-builtin-privacy`. That sprint migrates non-prelude files from `builtin-reduce` → `reduce`, which only makes sense once `reduce` IS a tinct wrapper (not the Rust function itself). Run this sprint first.
 
 ---
 

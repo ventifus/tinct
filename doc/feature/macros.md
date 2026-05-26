@@ -169,11 +169,11 @@ Macros defined in an included file are available to the includer **only when usi
 
 ### Parser / Grammar
 
-`src/parser.rs` recognizes three new keywords: `macro` (produces `Expr::MacroDecl`), `syntax-class` (produces `Expr::SyntaxClass`), and `splice` (produces `Expr::Splice` in dict context). `[defmacro ...]` is a backward-compatible alias producing the same `Expr::MacroDecl` node. Macro invocations are syntactically identical to function calls — the expander distinguishes them by name lookup against registered macros. No change to expression parsing.
+`src/parser.rs` recognizes three new keywords: `macro` (produces `SurfaceExpression::MacroDecl`), `syntax-class` (produces `SurfaceExpression::SyntaxClass`), and `splice` (produces `SurfaceExpression::UnquoteSplice` in dict context). `[defmacro ...]` is a backward-compatible alias producing the same `SurfaceExpression::MacroDecl` node. Macro invocations are syntactically identical to function calls — the expander distinguishes them by name lookup against registered macros. No change to expression parsing.
 
 ### AST
 
-`src/parser.rs` (AST types) gains `Expr::MacroDecl` (the primary `[macro ...]` form) and `Expr::DefMacro` (deprecated alias), plus `Expr::Quote`/`Expr::Unquote` variants. `src/ast_dict.rs` defines a stable `Expr -> Value::Variant` projection (`ast_to_dict`) and its inverse (`dict_to_ast`). The schema is a public API surface — schema changes break existing macros.
+`src/parser.rs` (AST types) gains `SurfaceExpression::MacroDecl` (the primary `[macro ...]` form) and `SurfaceExpression::DefMacro` (deprecated alias), plus `SurfaceExpression::Quote`/`SurfaceExpression::Unquote`/`SurfaceExpression::UnquoteSplice` variants. `src/surface_convert.rs` defines a stable `SurfaceExpression -> Value::Variant` projection (`surface_program_to_dict`) and its inverse (`dict_to_surface_node`). The schema is a public API surface — schema changes break existing macros.
 
 ### Evaluator
 

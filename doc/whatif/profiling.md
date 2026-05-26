@@ -28,7 +28,7 @@ Without a profiling harness, these decisions cannot be made soundly.
 
 tinct executes Rust builtins that schedule tinct callbacks as `PendingCall`/`PendingBuiltin`. A Rust flamegraph shows:
 
-```
+```text
 eval() → builtin_map() → eval() → eval() → eval() → ...
 ```
 
@@ -42,7 +42,8 @@ The key cross-boundary call patterns where this matters:
 | `builtin_filter` | one PendingCall per element | O(n) re-entries |
 | `builtin_reduce` | one PendingCall per accumulation step | O(n) re-entries |
 | `builtin_loop_select` | one PendingCall per iteration | unbounded |
-| `builtin_include` | full eval of included file | one deep re-entry |
+
+`include` is not in this table — per `include-decomposition.md`, it is defined in `prelude.llt` using the eight Rust primitives (`load`, `expand`, `eval`, `blake3`, etc.). It appears in profiling output at its source location in prelude, not as a Rust builtin.
 
 ### The Lazy Evaluation Attribution Problem
 
@@ -59,35 +60,62 @@ The correct attribution model for "why is this slow?" is **forcing-context attri
 
 ## Design
 
-Two modes: **profiling** (`--profile`) and **tracing** (`--trace`). Both are built on the same span model. Either can be enabled independently.
+### Rust/Tinct Boundary
 
-### The Span Model
+The profiling system divides cleanly into two responsibilities:
 
-Every thunk force is a **span**: a timed interval identified by source location, with optional children. Spans nest naturally — a builtin that forces its arguments produces child spans for each argument's evaluation.
+**Rust** — collect raw timing data. The evaluator runs in Rust and is the only place where `Instant::now()` can bracket a thunk force. Rust accumulates a flat `Vec<SpanRecord>` during evaluation and, when evaluation completes, converts it to a tinct `Seq` of plain dicts — no JSON, no formatting.
 
+**Tinct** — format all output. Three stdlib formatters in `stdlib/profiling/` each take the span `Seq` as input and produce a `String`. The CLI runs the chosen formatter exactly as it runs any output formatter. No JSON writing happens in Rust.
+
+This boundary means no `serde_json` dependency in the profiling implementation. The Perfetto trace file is JSON written by `codecs/json.llt` in tinct, not by Rust.
+
+### Span Collection (Rust)
+
+Every thunk force is a **span**: a timed interval identified by source location. The Rust evaluator records one `SpanRecord` per forced thunk:
+
+```rust
+struct SpanRecord {
+    id:             u64,
+    parent_id:      Option<u64>,      // force parent span ID
+    source_file:    Arc<str>,         // from the thunk's Span; empty for Rust builtins
+    source_start:   u32,              // byte offset
+    source_end:     u32,              // byte offset
+    source_text:    String,           // leading characters of source at this span
+    builtin_name:   Option<&'static str>,   // set for Rust builtins; None for tinct exprs
+    origin_builtin: Option<&'static str>,   // set when scheduled by a Rust builtin
+    start_us:       u64,              // microseconds since program start
+    end_us:         u64,              // microseconds since program start
+}
 ```
-┌─ [builtin: map]  versions.llt:8  [1200ms total, 2ms self] ─────────────┐
-│ ┌─ versions.llt:12:3-12:45  [fn [let crate] ...]  [10ms] ─┐  ...       │
-│ └──────────────────────────────────────────────────────────┘            │
-└─────────────────────────────────────────────────────────────────────────┘
+
+`source_file`/`source_start`/`source_end` are taken directly from the thunk's existing `Span` — no new span infrastructure. `source_text` is a fixed-length snippet extracted from the source text already held by the include cache.
+
+When evaluation completes, `ProfilingContext::into_value()` converts the `Vec<SpanRecord>` into a `Value::Seq` of plain dicts. Each dict uses kebab-case keys matching tinct conventions:
+
+```tinct
+# One dict per span — the schema stdlib/profiling/ formatters operate on:
+{
+  id:             Int           # unique span ID
+  parent:         Int | []      # parent span ID, or [] if toplevel
+  source-file:    Str           # e.g. "versions.llt"; "" for Rust builtins
+  source-start:   Int           # byte offset into source-file
+  source-end:     Int           # byte offset into source-file
+  source-text:    Str           # source snippet for display
+  builtin:        Str | []      # builtin name if this is a Rust builtin
+  origin-builtin: Str | []      # originating Rust builtin if cross-boundary
+  start-us:       Int           # wall-clock microseconds since program start
+  end-us:         Int           # wall-clock microseconds since program start
+}
 ```
 
-Each span carries:
-
-- **source_span** — the tinct `Span` (file, start byte offset, end byte offset) of the expression being forced; already present on every thunk
-- **builtin_name** — for Rust builtins (which have no tinct source span), a static string identifying the builtin (e.g., `"map"`, `"filter"`, `"connect"`)
-- **force_parent** — the span whose force triggered this span (execution parent)
-- **origin_builtin** — when this tinct span was scheduled by a Rust builtin, the originating builtin's name (e.g., `"map"`, `"filter"`)
-- **start_ts / end_ts** — wall-clock timestamps in microseconds
-
-Tinct spans aggregate by `(file, start, end)` — every invocation of the expression at `versions.llt:12:3-12:45` contributes to the same row in the profile table, regardless of how many times it is called. Rust builtin spans aggregate by `builtin_name`. No naming layer is needed: source location is the unique, stable identity for every tinct expression.
+Tinct spans are identified by `(source-file, source-start, source-end)`. Rust builtin spans are identified by `builtin`. No naming layer is needed.
 
 ### Cross-Boundary Attribution
 
-When a Rust builtin creates a `PendingCall` to invoke a tinct function, the `PendingCall` is tagged with the originating builtin name:
+When a Rust builtin creates a `PendingCall` to invoke a tinct function, the call is tagged with the originating builtin name:
 
 ```rust
-// In builtin_map when creating per-element callbacks
 PendingCall {
     func: callback_thunk,
     args: vec![element_thunk],
@@ -96,65 +124,95 @@ PendingCall {
 }
 ```
 
-The child span inherits `origin_builtin`. In the profile table, this appears as an annotation on each tinct source location showing which Rust builtin drove its evaluation. The profiler also aggregates from the Rust side: the `[builtin: map]` row shows total child time attributable to its tinct re-entries.
+The child span inherits `origin_builtin` as its `origin-builtin` field. This makes the Rust→tinct re-entry cost visible in every formatter without any formatter needing special knowledge of the evaluator.
 
-### Profiling Mode (`--profile`)
+### Tinct Stdlib Formatters
+
+Three formatters in `stdlib/profiling/`:
+
+**`stdlib/profiling/table.llt`** — aggregates the span Seq by source location, computes `self-ms`/`total-ms`/`calls`, sorts by total time descending, produces a formatted table as a `Str`:
+
+```tinct
+# stdlib/profiling/table.llt
+# Input: %  — Seq of span dicts
+# Output: Str — formatted profile table
+
+[
+  spans:      %
+  grouped:    [group-by span-key spans]
+  aggregated: [map aggregate-group grouped]
+  sorted:     [sort-by [fn [let r] [- 0 r.total-ms]] aggregated]
+
+  header: "────────────────────────────────────────────────────────────\n  calls    self_ms   total_ms   location\n────────────────────────────────────────────────────────────\n"
+  rows:   [map format-row sorted]
+  footer: "────────────────────────────────────────────────────────────"
+
+  [str header [str-join "\n" rows] "\n" footer]
+]
+```
+
+**`stdlib/profiling/perfetto.llt`** — converts the span Seq to Perfetto Chrome Trace Event Format and serializes with `codecs/json.llt`:
+
+```tinct
+# stdlib/profiling/perfetto.llt
+# Input: %  — Seq of span dicts
+# Output: Str — Perfetto-compatible JSON (Chrome Trace Event Format)
+
+[
+  net: [include %libdir "codecs/json.llt"]
+
+  span-name: [fn [let s]
+    [if [= [] s.builtin]
+      [str s.source-file ":" s.source-start "-" s.source-end]
+      [str "[builtin: " s.builtin "]"]]]
+
+  span-to-event: [fn [let s]
+    {ph:   "X"
+     ts:   s.start-us
+     dur:  [- s.end-us s.start-us]
+     name: [span-name s]
+     pid:  1
+     tid:  1
+     args: {source:  s.source-text
+            parent:  s.parent
+            origin:  s.origin-builtin}}]
+
+  [net.to-json {traceEvents: [map span-to-event %]}]
+]
+```
+
+**`stdlib/profiling/spans.llt`** — emits the raw span Seq as JSON for programmatic analysis, also using `codecs/json.llt`.
+
+### CLI Integration
+
+After evaluation, the CLI retrieves the span `Seq` from `ProfilingContext` and runs the chosen formatter, writing its `String` output to the appropriate destination:
 
 ```sh
-tinct --profile program.llt
-tinct --profile --profile-format=json program.llt
+tinct --profile program.llt              # → table.llt → stderr
+tinct --profile-format=json program.llt  # → spans.llt → stderr
+tinct --trace out.json program.llt       # → perfetto.llt → out.json
 ```
 
-Aggregates spans by source location for tinct expressions, by builtin name for Rust builtins. Reports a sorted table to stderr after program exit:
+The CLI runs each formatter the same way it runs any output formatter — no JSON logic in Rust. The formatter receives the span `Seq` as `%`.
 
-```
-PROFILE: samples/versions.llt  [total: 1234ms]
-────────────────────────────────────────────────────────────────────────────────────────
-  calls    self_ms   total_ms   location                    source
-────────────────────────────────────────────────────────────────────────────────────────
+### Sample Output
+
+`--profile` (via `table.llt`):
+
+```text
+────────────────────────────────────────────────────────────────────────────────
+  calls    self_ms   total_ms   location
+────────────────────────────────────────────────────────────────────────────────
       1      800.0    1234.0    <toplevel>
-      3      400.0     610.0    [builtin: map]               [origin: versions.llt:8:9]
-   8432      190.0     190.0    versions.llt:12:3-12:45     [fn [let crate] [str "https://...
+      3      400.0     610.0    [builtin: map]
+   8432      190.0     190.0    versions.llt:12:3-12:45    [fn [let crate] ...
       1       60.0     200.0    [builtin: reduce]
-     12       30.0      30.0    versions.llt:31:5-31:62     [fn [let v] [split "." v]]
+     12       30.0      30.0    versions.llt:31:5-31:62    [fn [let v] [split ...
       1       20.0      20.0    [builtin: connect]
-────────────────────────────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────────────
 ```
 
-Columns:
-- **calls** — number of times this span was entered
-- **self_ms** — time in this span excluding children
-- **total_ms** — total including all child spans
-- **location** — `file:line:col` for tinct expressions; `[builtin: name]` for Rust builtins
-- **source** — leading characters of the source text at that span; `[origin: ...]` for Rust builtins shows the tinct call site that invoked them
-
-The `--profile-format=json` flag emits the raw aggregated data as JSON for programmatic analysis.
-
-### Tracing Mode (`--trace`)
-
-```sh
-tinct --trace out.json program.llt
-```
-
-Emits a [Perfetto](https://ui.perfetto.dev/)-compatible JSON trace file (Chrome Trace Event Format). Load `out.json` in the Perfetto UI for an interactive flame graph with full span nesting and timing.
-
-```json
-{"traceEvents": [
-  {"ph": "B", "ts": 0,   "name": "[builtin: map]",      "pid": 1, "tid": 1,
-   "args": {"origin": "versions.llt:8:9"}},
-  {"ph": "B", "ts": 100, "name": "versions.llt:12:3",   "pid": 1, "tid": 1,
-   "args": {"source": "[fn [let crate] [str \"https://...", "origin_builtin": "map", "call": 0}},
-  {"ph": "E", "ts": 150, "name": "versions.llt:12:3",   "pid": 1, "tid": 1},
-  {"ph": "B", "ts": 150, "name": "versions.llt:12:3",   "pid": 1, "tid": 1,
-   "args": {"source": "[fn [let crate] [str \"https://...", "origin_builtin": "map", "call": 1}},
-  {"ph": "E", "ts": 200, "name": "versions.llt:12:3",   "pid": 1, "tid": 1},
-  {"ph": "E", "ts": 200, "name": "[builtin: map]",      "pid": 1, "tid": 1}
-]}
-```
-
-The `name` field in each event is the source location (`file:line:col`) for tinct expressions, so the Perfetto UI labels every row with a precise code pointer rather than a derived name. The `args.source` field carries the actual source text snippet for display in the detail pane.
-
-Perfetto "flow events" (`ph: "s"/"f"`) connect thunk creation sites to forcing sites, making the lazy evaluation decoupling visible: an arrow links the `result: [map ...]` creation span to the `emit` forcing span.
+`--trace` (via `perfetto.llt`) — load the resulting JSON in [Perfetto UI](https://ui.perfetto.dev/) for an interactive flame graph.
 
 ### Rust-Level Profiling
 
@@ -165,13 +223,11 @@ cargo install flamegraph
 cargo flamegraph --bin tinct -- samples/versions.llt
 ```
 
-This produces a flamegraph SVG showing Rust call stacks. It answers "which Rust functions consume CPU?" but loses tinct-level attribution. Combined with `--profile`, the two views answer complementary questions:
-
 | Tool | Answers |
 |---|---|
 | `cargo flamegraph` | Which Rust functions are hot? Allocator pressure, O(n) loops in Rust. |
-| `--profile` | Which tinct functions are called most? Which builtins drive the most re-entry? |
-| `--trace` | What is the full call sequence? How do lazy thunks connect creation to forcing? |
+| `--profile` | Which source locations are forced most? Which builtins drive the most re-entry? |
+| `--trace` | What is the full execution sequence? How do lazy thunks nest? |
 
 ### Criterion Benchmarks
 
@@ -198,8 +254,6 @@ fn bench_deep_scope(c: &mut Criterion) {
 }
 ```
 
-The `bench_deep_scope` benchmark specifically provides the measurement that unblocks `string-interning.md` and `union-find-substitution.md`.
-
 ### Corpus Test Integration
 
 ```sh
@@ -207,45 +261,53 @@ just profile-test tests/corpus/foo.llt
 just trace-test   tests/corpus/foo.llt
 ```
 
-`just profile-test` runs a single corpus file with `--profile` and prints the table. `just trace-test` emits `.tmp/trace-foo.json`. Both run the full corpus evaluation including type-checking, so profiling includes type inference cost.
-
 ### Overhead Model
 
-Profiling and tracing are off by default. When disabled, the hot eval path checks a single thread-local boolean — negligible overhead that branch prediction eliminates. No compile-time feature flag is needed.
+Profiling and tracing are off by default — a single thread-local flag check per thunk force, eliminated by branch prediction. No compile-time feature flag is needed.
 
 When enabled:
 
 | Mode | Per-span overhead | Acceptable for |
 |---|---|---|
-| `--profile` | ~50ns (two `Instant::now()` + counter bump) | All programs |
-| `--trace` | ~200ns (two `Instant::now()` + Vec push) | Programs with < 5M spans |
+| `--profile` | ~50ns (two `Instant::now()` + `Vec::push`) | All programs |
+| `--trace` | ~50ns (same — serialization happens after eval, not per-span) | All programs |
 
-A program with 100,000 thunk forces incurs ~5ms profiling overhead and ~20ms tracing overhead on top of its natural runtime.
+Serialization of the span `Seq` by the tinct formatter runs after the program completes, not during evaluation.
 
 ## What Would Change
 
 ### `src/eval.rs`
 
 **Current:** thunk forces have no instrumentation.
-**Proposed:** `ProfilingContext` in `EvalContext` (initialized from CLI flags); span open/close bracketing each `materialize()` call; span identity taken directly from the thunk's existing `Span` field — no new naming infrastructure needed.
-**Impact:** Moderate — affects the hot eval path, but gated behind a runtime flag check.
+**Proposed:** `ProfilingCollector` (a `Vec<SpanRecord>` behind an `Option`) in `EvalContext`; `SpanRecord` struct (8 plain fields, no serde); span open/close bracketing each `materialize()` call using the thunk's existing `Span`. `ProfilingCollector::into_value()` converts the completed `Vec` to a `Value::Seq` of plain dicts at eval end.
+**Impact:** Moderate — affects the hot eval path, gated behind a flag check.
 
 ### `src/builtins.rs` and related
 
-**Current:** `PendingCall`/`PendingBuiltin` have no origin annotation.
-**Proposed:** `origin_builtin: Option<&'static str>` on both types; set by `builtin_map`, `builtin_filter`, `builtin_reduce`, `builtin_loop_select`, `builtin_include`, and any Rust builtin that schedules tinct callbacks.
+**Current:** `Thunk.origin` is already set at some cross-boundary sites (`"sort"`, `"str-map-chars"`, `"apply"`, etc.) but missing from the main higher-order builtins.
+**Proposed:** Set `origin: Some(Arc::from("map"))` etc. at the PendingCall creation sites in `builtin_map`, `builtin_filter`, `builtin_reduce`, `builtin_loop_select`. `builtin_include` was deleted (see `include-decomposition.md`); `include` is now tinct in prelude and profiles naturally. No other changes.
 **Impact:** Minor — one pointer-sized field per deferred call.
 
 ### `src/main.rs`
 
 **Current:** No profiling CLI flags.
-**Proposed:** `--profile`, `--profile-format=<table|json>`, `--trace <file.json>`; each initializes `ProfilingContext` before eval and finalizes (table print or file write) after.
-**Impact:** Minor — ~50 lines of flag parsing and output.
+**Proposed:** `--profile`, `--profile-format=<table|json>`, `--trace <file.json>`; each initializes `ProfilingCollector` before eval, retrieves the span `Seq` after eval, and runs the appropriate tinct stdlib formatter. No JSON writing in Rust.
+**Impact:** Minor — ~40 lines of flag parsing and formatter dispatch.
+
+### `stdlib/profiling/` (new)
+
+Three new tinct stdlib formatters:
+
+- `table.llt` — aggregates spans, formats profile table as `Str`
+- `perfetto.llt` — formats as Perfetto Chrome Trace JSON via `codecs/json.llt`
+- `spans.llt` — raw span Seq as JSON via `codecs/json.llt`
+
+All JSON output goes through `codecs/json.llt`. No serde_json anywhere in the profiling stack.
 
 ### `Cargo.toml`
 
 **Current:** No dev-dependencies for benchmarking.
-**Proposed:** `criterion = "0.5"` under `[dev-dependencies]`; `[[bench]] name = "eval"` entry.
+**Proposed:** `criterion = "0.5"` under `[dev-dependencies]`; `[[bench]] name = "eval"` entry. No new runtime dependencies.
 **Impact:** Minor — build-time only.
 
 ### `justfile`
@@ -256,7 +318,12 @@ A program with 100,000 thunk forces incurs ~5ms profiling overhead and ~20ms tra
 
 ## Prerequisites
 
-No blocking prerequisites. This proposal is entirely additive. The Criterion benchmarks produce the most stable data after the `runtime-v2` migration (`Rc`→`Arc`, `OnceLock`) stabilizes — benchmarks should target the post-migration evaluator architecture rather than the transitional state. Implementation can begin before `runtime-v2` is complete; the `--profile` and `--trace` flags work on the current evaluator.
+- **`stdlib-conformance-bugs`** — fixes the `>=i` tokenization bug in `codecs/json.llt:227`. Required before `perfetto.llt` and `spans.llt` can use `codecs/json.llt` to serialize trace output.
+- **`json-native-from-json`** or equivalent — `codecs/json.llt` must be the canonical `from-json`/`to-json` implementation, exercised and tested, before the profiling formatters depend on it.
+
+The Criterion benchmarks and `--profile` table mode (`table.llt`) have no JSON dependency and can be implemented before the above. The `--trace` and `--profile-format=json` modes require `codecs/json.llt` to be stable.
+
+The Criterion benchmarks produce the most stable data after the `runtime-v2` migration stabilizes — benchmarks should target the post-migration evaluator architecture. The `--profile`/`--trace` flags work on the current evaluator and do not block on `runtime-v2`.
 
 ## References
 

@@ -542,7 +542,7 @@ Implicit decisions in the current implementation, made explicit:
 
 **2. Confluence holds only in the pure subset.** `$include` introduces evaluation-order dependence: if file A includes file B and file B includes file A, the result depends on which is evaluated first (cycle detection fires on the second). All other tinct operations are confluent — materialization order does not affect the result. The pure subset of tinct (no `$include`) satisfies the diamond property of Ariola & Felleisen's (1997) call-by-need calculus.
 
-**3. No recursive depth limit in core evaluator.** The iterative CEK machine uses a heap-allocated continuation stack (`Vec<Cont>`), eliminating the `MAX_EVAL_DEPTH` bound that existed in the recursive evaluator. There is no depth parameter in `materialize()` or `eval()`. Individual builtins may impose their own limits (e.g., `MAX_COLLECT_SIZE` for sequence collection in `deep_materialize`), but these are domain-specific bounds, not a global recursion limit. (Note: `CoreExpr::Sequential` and `CoreExpr::Match` currently use async recursion rather than CEK continuations; see `cek-match-sequential-rust-stack` in TODO.md. Also: `DepthExceeded` as an `ErrorKind` still exists — see [Errors](10-errors.md) §Error Categories — because individual builtins may raise it for domain-specific resource limits. The eliminated limit is `MAX_EVAL_DEPTH` from the recursive evaluator call stack.)
+**3. No recursive depth limit in core evaluator.** The iterative CEK machine uses a heap-allocated continuation stack (`Vec<Cont>`), eliminating the `MAX_EVAL_DEPTH` bound that existed in the recursive evaluator. There is no depth parameter in `materialize()` or `eval()`. Individual builtins may impose their own limits (e.g., `MAX_COLLECT_SIZE` for sequence collection in `deep_materialize`), but these are domain-specific bounds, not a global recursion limit. (Note: `CoreSurfaceExpression::Sequential` and `CoreExpr::Match` currently use async recursion rather than CEK continuations; see `cek-match-sequential-rust-stack` in TODO.md. Also: `DepthExceeded` as an `ErrorKind` still exists — see [Errors](10-errors.md) §Error Categories — because individual builtins may raise it for domain-specific resource limits. The eliminated limit is `MAX_EVAL_DEPTH` from the recursive evaluator call stack.)
 
 **4. Finite vs productive thunk lifecycles.** Dict-entry thunks have a **finite lifecycle**: they must eventually reach Materialized or Failed. Seq tail thunks have a **productive lifecycle**: materializing a tail yields a Seq value (containing a new tail thunk) or the terminal `[]`. The state machine is identical; the liveness obligation differs. This distinction is not enforced by the type system — it is a semantic contract between the sequence constructors and the programmer (see §Productivity Obligations).
 
@@ -989,7 +989,7 @@ For dual-dispatch builtins, the Dict and Seq paths must agree on which non-colle
 
 ### Sequential Expressions in Function Bodies
 
-When a function body contains multiple expressions, the parser wraps them in `Expr::Sequential`. This construct enables intermediate bindings within a function while maintaining lazy evaluation semantics:
+When a function body contains multiple expressions, the parser wraps them in `SurfaceExpression::Sequential`. This construct enables intermediate bindings within a function while maintaining lazy evaluation semantics:
 
 ```tinct
 [fn [x]
@@ -1004,11 +1004,11 @@ When a function body contains multiple expressions, the parser wraps them in `Ex
 - **Environment extension:** Each intermediate expression (if it's a dict) adds its bindings to the environment for subsequent expressions
 - **Lazy intermediate bindings:** Intermediate dict values remain as unevaluated thunks — they are only materialized when accessed
 - **Result is final expression:** The value of the last expression in the sequence is the function's return value
-- **CEK machine routing:** `CoreExpr::Sequential` is handled directly inside `eval_core_expr` in `eval.rs` via a recursive async call — it iterates the expression list, materializing each intermediate dict to extend the scope chain, then tail-calls into the final expression. This path uses the Rust async call stack rather than the CEK continuation stack (see `cek-match-sequential-rust-stack` in TODO.md)
+- **CEK machine routing:** `CoreSurfaceExpression::Sequential` is handled directly inside `eval_core_expr` in `eval.rs` via a recursive async call — it iterates the expression list, materializing each intermediate dict to extend the scope chain, then tail-calls into the final expression. This path uses the Rust async call stack rather than the CEK continuation stack (see `cek-match-sequential-rust-stack` in TODO.md)
 
 This is identical to how document-level expression sequences work (see [Documents](09-documents.md) §Scope Chain Semantics), but scoped within a single function body rather than across documents.
 
-**Grammar:** The `fn_form` rule in `doc/02-syntax.md` §Complete Grammar uses `value+` to permit multiple body expressions. The parser automatically wraps `value+` in `Expr::Sequential` when more than one expression is present.
+**Grammar:** The `fn_form` rule in `doc/02-syntax.md` §Complete Grammar uses `value+` to permit multiple body expressions. The parser automatically wraps `value+` in `SurfaceExpression::Sequential` when more than one expression is present.
 
 ### Strictness Exceptions
 
@@ -1519,7 +1519,7 @@ The round-trip paths are: in-memory (`[eval [seq [ast-of f]]]`, works for pure/s
 
 ## Quote Semantics
 
-`[quote expr]` converts the syntactic form of `expr` into a `Value::Expression` — a native AST node wrapped in the Expression value type — without evaluating `expr`. The conversion happens when the `Expr::Quote` node is materialized by the normal evaluator — this is runtime evaluation, not a compile-time operation. The result can be inspected via `tag-of` (which returns the SurfaceExpression variant name, e.g., "Call", "Var") and field access (e.g., `.fn`, `.args` on a Call node).
+`[quote expr]` converts the syntactic form of `expr` into a `Value::Expression` — a native AST node wrapped in the Expression value type — without evaluating `expr`. The conversion happens when the `SurfaceExpression::Quote` node is materialized by the normal evaluator — this is runtime evaluation, not a compile-time operation. The result can be inspected via `tag-of` (which returns the SurfaceExpression variant name, e.g., "Call", "Var") and field access (e.g., `.fn`, `.args` on a Call node).
 
 `[unquote expr]` inside a `[quote ...]` evaluates `expr` in the current runtime environment when the surrounding `[quote]` is materialized, then splices the result into the AST structure. `[unquote-splice expr]` evaluates to a `Value::Seq` and splices each element into the enclosing list position. Nesting depth follows Bawden (1999): nested `[quote [quote [unquote x]]]` preserves the inner `unquote` as AST (not evaluated, since depth > 1).
 
@@ -1540,7 +1540,7 @@ parse → expand_surface_program → desugar → resolve → typecheck → eval
 3. Calls the macro function with the bound arguments
 4. Converts the result back to AST and re-expands
 
-`[macro name [let params] body]` is processed by the expander: the body is evaluated in a **fresh `EvalContext`** (not shared with the runtime pass — prevents cache pollution and depth budget erosion) that inherits `EvalConfig` (capability flags, `no_fs`). The resulting callable is registered in `MacroEnv`. The `Expr::MacroDecl` node is removed from the AST after registration — the typechecker and evaluator never see it. `[defmacro ...]` is a backward-compatible alias that produces the same registration.
+`[macro name [let params] body]` is processed by the expander: the body is evaluated in a **fresh `EvalContext`** (not shared with the runtime pass — prevents cache pollution and depth budget erosion) that inherits `EvalConfig` (capability flags, `no_fs`). The resulting callable is registered in `MacroEnv`. The `SurfaceExpression::MacroDecl` node is removed from the AST after registration — the typechecker and evaluator never see it. `[defmacro ...]` is a backward-compatible alias that produces the same registration.
 
 **Termination:** A **shared** depth counter of 100 total across all expansion in a file (not per call-site — a single recursive macro cannot consume the entire budget), plus a total node-count cap of 100k nodes post-expansion to prevent exponential AST blowup.
 
@@ -1550,7 +1550,7 @@ parse → expand_surface_program → desugar → resolve → typecheck → eval
 
 **`macro-error`:** `[macro-error span-dict message]` terminates expansion with `ErrorKind::MacroError` (E012) at the given span. `[span-of expr]` extracts the source span from any AST node as a dict. Together they enable macros to report precise, call-site-attributed errors.
 
-**`splice`:** A macro returns `Expr::Splice` to inject multiple forms into the surrounding dict context. `Splice` in expression position is an expansion-time error.
+**`splice`:** A macro returns `SurfaceExpression::UnquoteSplice` to inject multiple forms into the surrounding dict context. `UnquoteSplice` in expression position is an expansion-time error.
 
 **Include ordering:** The `$include` builtin runs the full pipeline (parse → expand_surface_program → desugar → resolve → eval) on included files. Macros defined in an included file are expanded within that file's scope, but are **not** propagated to the includer — macro definitions are expansion-time constructs that don't cross the runtime `$include` boundary. This is a consequence of Flatt (2002) phase separation.
 

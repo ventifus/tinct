@@ -10064,3 +10064,7 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] Implement `exit-now` builtin — `process::exit(code)` with Int arg (`src/builtins_async.rs:1629`)
 - [x] Unwrap `exit` and `graceful-exit` in `stdlib/async.llt` to call cancel-root+drain+exit-now
 - [ ] Fix `finally` non-cancellable cleanup — DEFERRED: tracked as async-cleanup-safety (requires with-context builtin)
+
+### doc-ast-type-migration: Purge stale Expr::/File:: references from doc/*.md
+
+- [x] Updated main spec chapters: doc/08-evaluation.md, doc/15-ast.md, doc/16-architecture.md, doc/feature/ast-schema.md, doc/feature/macros.md — stale Expr::/File:: type names → SurfaceExpression::/CoreExpr::, ast_dict.rs → surface_convert.rs

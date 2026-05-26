@@ -12,7 +12,7 @@ Three consumers share one definition. Adding a new `Expr` variant updates one fi
 
 **Quasiquoting is ergonomic.** `[quote [+ x 1]]` produces a Variant matching this schema. Users can pattern-match on Variant tags, walk `node.args`, and build new nodes manually — all using ordinary tinct operations.
 
-`src/ast_dict.rs` implements `ast_to_dict` in minimal mode, with source info and comment support via `ast-dict-source`, and `dict_to_ast` via the `dict-to-ast` sprint.
+`src/surface_convert.rs` implements `surface_program_to_dict` in minimal mode, with source info and comment support via `ast-dict-source`, and `dict_to_surface_node` via the `dict-to-ast` sprint.
 
 ## Design
 
@@ -372,9 +372,9 @@ Validation rules:
 
 ## Implementation
 
-### `src/ast_dict.rs`
+### `src/surface_convert.rs`
 
-Implements `ast_to_dict`, `ast_to_dict_expr`, and `dict_to_ast`. No changes to the `Expr` enum itself. `ast_to_dict` supports minimal mode (`None, None`) and full mode with source info and comments (via `ast-dict-source`). `dict_to_ast` is implemented via the `dict-to-ast` sprint.
+Implements `surface_program_to_dict` and `dict_to_surface_node`. No changes to the `SurfaceExpression` enum itself. `surface_program_to_dict` supports minimal mode (`None, None`) and full mode with source info and comments (via `ast-dict-source`). `dict_to_surface_node` is implemented via the `dict-to-ast` sprint.
 
 ### `doc/feature/macros.md`
 
