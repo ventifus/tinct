@@ -406,16 +406,15 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 - [ ] Update both call sites to use the shared helper
 - [ ] Verify stack-frame span search and secondary_span search are both present
 
-### error-code-corpus-missing: Add missing corpus tests for E044/E071/E072 [Critical]
 
-**test-crafter C1.** Several error codes have zero corpus coverage:
-- E044 (CapabilityRequired) — needs cap_net directive
-- E071 (MatchExhaustion) — non-exhaustive pattern match
-- E072 (DuplicateVariable) — duplicate pattern binding
+### error-code-stale-tests: Fix stale error code tests [Critical]
 
-- [ ] Add `tests/corpus/eval/errors/capability_required.llt-eval` for E044
-- [ ] Add `tests/corpus/eval/errors/match_exhaustion.llt-eval` for E071
-- [ ] Add `tests/corpus/eval/errors/duplicate_pattern_variable.llt-eval` for E072
+**test-crafter.** Two existing corpus tests have outdated error code expectations. These tests currently expect E099 (Internal) but should expect the correct specific error codes that were later added to the implementation.
+
+- [ ] Fix `tests/corpus/eval/caps_missing_error.llt-eval` — change `[E099]` to `[E044]`
+- [ ] Fix `tests/corpus/eval/errors/match_no_match.llt-eval` — change `[E099]` to `[E071]`
+
+**Root cause:** These tests were written when the errors raised E099 as a catch-all. The implementation was later updated to use specific error codes (E044 for CapabilityRequired, E071 for MatchExhaustion), but the tests were not updated to match.
 
 ## Codebase Audit Findings (Health Review #306, 2026-05-25)
 
@@ -536,34 +535,6 @@ The `lint-builtins-cps` lint ensures builtins don't call `materialize()` directl
 - [ ] Add `pos_strictness` or `force_count` to all datetime builtins that unconditionally materialize their args (Timestamp, Duration, Int, String, DirCap, ClockCap args are all always strict) — removes all inline `materialize()` H1 calls (`src/builtins_datetime.rs`)
 
 ## Known Bugs + Nits
-
-### load-expand-separation: `builtin_load` does expand+desugar+resolve+typecheck — include-decomp separation is broken
-
-Discovered 2026-05-25. The include-decomposition design intended `load` to return the raw parsed (unexpanded) `SurfaceProgram` so tools like formatters can inspect the user's original source form. Instead, `builtin_load` currently runs `expand_surface_program` + `desugar_surface_program` + `resolve_surface_program` + `typecheck_surface_program_annotation_table` before returning (`src/builtins_meta.rs:1742-1768`). `builtin_expand` then re-does the same passes on the already-expanded program — a redundant no-op.
-
-Consequences:
-- Formatters calling `[load source]` see the expanded AST, not the user's original macro call forms
-- `[expand [load ...]]` runs all passes twice
-- The raw unexpanded `Value::Program` is inaccessible from tinct
-
-Correct split per include-decomp design:
-- `load` → parse only → raw unexpanded `Value::Program` (no macro expansion)
-- `expand` → expand + desugar + resolve + typecheck → ready-to-eval `Value::Program`
-- Normal pipeline: `[eval [expand [load source name: n]] ...]`
-
-Note: docgen works despite this bug because stdlib files' public API uses no macros for their exported `fn` definitions — the expanded AST is identical to the unexpanded AST for those bindings.
-
-- [ ] Fix `builtin_load` to run parse only: remove `expand_surface_program`, `desugar_surface_program`, `resolve_surface_program`, `typecheck_surface_program_annotation_table` calls; return the raw parsed `SurfaceProgram` with empty `ResolutionTable` and `TypeAnnotationTable` (`src/builtins_meta.rs:1742-1768`)
-- [ ] Update tinct prelude's `include` function to explicitly call `[expand [load ...]]` rather than `[load ...]` alone — the explicit expand step is now required (`stdlib/prelude.llt`)
-- [ ] Verify `builtin_expand` is not redundant after fix — it should be the sole location of expand+desugar+resolve+typecheck (`src/builtins_meta.rs:1780-1838`)
-- [ ] Tests: verify `[load source]` returns unexpanded AST — a macro call form should appear as `[Call ...]` not as its expanded body (`tests/corpus/eval/`)
-
-### dot-key-to-value-payload: `dot_key_to_value` exposes no content — DotAccess field names inaccessible from tinct
-
-Discovered during docgen.llt AST introspection rewrite (2026-05-25). `dot_key_to_value` in `src/surface_fields.rs` returns `Value::Variant { tag: "Ident", payload: None }` and `Value::Variant { tag: "Index", payload: None }`. The actual field name (for `Ident`) and integer index (for `Index`) are dropped, making them inaccessible to tinct code accessing `expr.field` on a `DotAccess` expression's `field` field.
-
-- [ ] Add payload to `dot_key_to_value`: `Ident(name)` → `Variant("Ident", {name: name})`, `Index(i)` → `Variant("Index", {index: i})` (`src/surface_fields.rs:433-443`)
-- [ ] Add corpus test: `[ast-of [x.foo]].field.name` should return `"foo"` (`tests/corpus/eval/`)
 
 ### rc-arc-complete: Complete Rc→Arc migration — make `Thunk` fully Send+Sync
 
@@ -812,6 +783,11 @@ Root cause: `surface_program_to_dict` (in `src/ast_dict.rs`) doesn't correctly c
 - [ ] Investigate: trace `[fn [x y] [+ x y]]` through `surface_program_to_dict` → compact formatter dict → formatter output
 - [ ] Fix `ast_dict.rs`: ensure `SurfaceExpression::Fn` with unified-bindings params round-trips correctly through the compact formatter
 - [ ] Re-enable `test_tinct_formatter_compact_function` and `test_tinct_formatter_compact_call`
+- [ ] Fix `builtin_load` to parse only — remove `expand_surface_program`, `desugar_surface_program`, `resolve_surface_program`, `typecheck_surface_program_annotation_table` calls; return raw parsed `SurfaceProgram` with empty tables (formatters need unexpanded AST, not expansion result) (`src/builtins_meta.rs:1742-1768`)
+- [ ] Update prelude `include` to call `[expand [load source name: n]]` explicitly now that `load` no longer expands (`stdlib/prelude.llt`)
+- [ ] Verify `builtin_expand` is sole expand+desugar+resolve+typecheck site after fix (`src/builtins_meta.rs:1780-1838`)
+- [ ] Fix `dot_key_to_value` — add payload: `Ident(name)` → `Variant("Ident", {name: name})`, `Index(i)` → `Variant("Index", {index: i})` so DotAccess field names are accessible from tinct (`src/surface_fields.rs:433-443`)
+- [ ] Tests: `[load source]` returns unexpanded AST; `[ast-of [x.foo]].field.name` returns `"foo"` (`tests/corpus/eval/`)
 
 ### formatter-stack-overflow: formatter tests crashed with stack overflow — FIXED in CI
 

@@ -1,0 +1,7 @@
+# Test E072: DuplicateVariable
+# Pattern binding uses the same variable name twice
+[match [a: 1 b: 2]
+  [a: x b: x]: [+ x x]]
+
+=== error
+[E072] duplicate variable in pattern: 'x' appears more than once

@@ -1,0 +1,8 @@
+# Test E044: CapabilityRequired
+# Document requires a capability that is not provided
+# no_fs
+--- caps: [%net: @NetCap]
+[result: "should not execute"]
+
+=== error
+[E044] %net@NetCap is required but not provided

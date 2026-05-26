@@ -10072,6 +10072,12 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] Add `Value::Overlay` arm calling `flatten_overlay`
 - [x] Make `Value::Expression` passthrough explicit rather than wildcard
 
+### error-code-corpus-missing: Add missing corpus tests for E044/E071/E072
+
+- [x] Add capability_required.llt-eval for E044
+- [x] Add match_exhaustion.llt-eval for E071
+- [x] Add duplicate_pattern_variable.llt-eval for E072
+
 ### doc-ast-type-migration: Purge stale Expr::/File:: references from doc/*.md
 
 - [x] Updated main spec chapters: doc/08-evaluation.md, doc/15-ast.md, doc/16-architecture.md, doc/feature/ast-schema.md, doc/feature/macros.md — stale Expr::/File:: type names → SurfaceExpression::/CoreExpr::, ast_dict.rs → surface_convert.rs

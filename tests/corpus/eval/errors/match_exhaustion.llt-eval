@@ -1,0 +1,8 @@
+# Test E071: MatchExhaustion
+# Non-exhaustive match: no pattern matched the scrutinee
+[match 42
+  "hello": "string"
+  true: "bool"]
+
+=== error
+[E071] non-exhaustive match: no pattern matched the Int value
