@@ -682,6 +682,7 @@ pub(crate) trait ValueVisitor {
     fn depth_limit_output(
         &self,
         depth: usize,
+        span: ast::Span,
     ) -> Option<Result<Self::Output, Box<error::EvalError>>>;
 }
 
@@ -700,7 +701,7 @@ pub(crate) fn visit_value<V: ValueVisitor>(
     visitor: &V,
     span: ast::Span,
 ) -> Result<V::Output, Box<error::EvalError>> {
-    if let Some(limit_result) = visitor.depth_limit_output(depth) {
+    if let Some(limit_result) = visitor.depth_limit_output(depth, span) {
         return limit_result;
     }
     match val {
@@ -747,7 +748,7 @@ pub(crate) fn visit_value<V: ValueVisitor>(
                 crate::async_rt::block_on_anywhere(eval::materialize(&head_thunk, None, ctx))?;
             let head_span = head_thunk.span;
             let head_out = visit_value(&head_val, ctx, depth + 1, visitor, head_span)?;
-            visitor.visit_seq_head(head_out, span)
+            visitor.visit_seq_head(head_out, head_span)
         }
         value::Value::Function { params, .. } => visitor.visit_function(params, span),
         value::Value::Builtin(def) => visitor.visit_builtin(def.name, span),
@@ -975,6 +976,7 @@ impl ValueVisitor for JsonVisitor {
     fn depth_limit_output(
         &self,
         depth: usize,
+        span: ast::Span,
     ) -> Option<Result<serde_json::Value, Box<error::EvalError>>> {
         // Output depth limit: prevents infinite recursion in JSON output.
         // 256 levels of nesting is generous for any real config file.
@@ -982,7 +984,7 @@ impl ValueVisitor for JsonVisitor {
         if depth > MAX_JSON_OUTPUT_DEPTH {
             Some(Err(error::EvalError::internal(
                 format!("maximum JSON output depth ({MAX_JSON_OUTPUT_DEPTH}) exceeded"),
-                ast::Span::origin(),
+                span,
             )
             .into()))
         } else {
@@ -1088,7 +1090,11 @@ impl ValueVisitor for DisplayVisitor {
     fn visit_timezone(&self, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
         Ok("Timezone".to_string())
     }
-    fn depth_limit_output(&self, depth: usize) -> Option<Result<String, Box<error::EvalError>>> {
+    fn depth_limit_output(
+        &self,
+        depth: usize,
+        _span: ast::Span,
+    ) -> Option<Result<String, Box<error::EvalError>>> {
         if depth >= MAX_DISPLAY_DEPTH {
             Some(Ok("...".to_string()))
         } else {
@@ -1429,6 +1435,20 @@ mod tests {
             err.kind
         );
         assert_eq!(err.kind.code(), "E035");
+    }
+
+    #[test]
+    fn test_json_function_error_span_threaded() {
+        // Verify that value_to_json uses the threaded span in errors (not Span::origin)
+        let f = Value::Function {
+            params: Rc::new(vec![]),
+            body: Arc::new(ast::Spanned::new(CoreExpr::Int(0), test_span(1, 1, 1, 1))),
+            env: Arc::new(RwLock::new(Environment::new())),
+            annotation: None,
+        };
+        let call_site_span = test_span(3, 5, 3, 20);
+        let err = value_to_json(&f, &test_ctx(), call_site_span).unwrap_err();
+        assert_eq!(err.definition_span, call_site_span);
     }
 
     #[test]

@@ -10385,3 +10385,14 @@ Pre-existing failure discovered during sprint `rv2-output-formatter-contract` (2
 
 - [x] Investigate root cause: profile with `RUST_MIN_STACK=8388608`; identify which recursive function dominates the stack; convert to iterative or add explicit stack depth limit
 - [x] Target: formatter should handle inputs up to 10,000 nodes without stack growth
+
+### serialization-span-followup: Span threading completeness follow-ups
+
+Post-panel findings from `serialization-span-threading` sprint. All minor.
+
+- [x] Fix `Value::RevocableDirCap` error string in `visit_value` at `src/lib.rs:755` — `"DirCap"` → `"RevocableDirCap"` (DONE in sprint)
+- [x] Remove span clobber in `builtins_meta.rs` `builtin-to-json` error handler (`src/builtins_meta.rs:89-94`) — replaced `map_err` with plain `?` (DONE in sprint)
+- [x] Fix `visitor.visit_seq_head(head_out, span)` at `src/lib.rs:734` — should pass `head_span` (computed at line 732 from `head_thunk.span`) not the outer container span. Currently unobservable (JsonVisitor pre-check catches top-level Seq; DisplayVisitor ignores span) but will be wrong for any new visitor that uses the span in `visit_seq_head`.
+- [x] Add `span: ast::Span` parameter to `depth_limit_output()` in `ValueVisitor` trait and pass it from `visit_value`'s depth check at `src/lib.rs:687` — so depth-exceeded JSON errors point at the deepest-nested value's definition site instead of `Span::origin()` (`src/lib.rs:969`)
+- [x] Add span-assertion unit tests for `value_to_json` span threading — construct a `Value::Function` at a known non-origin span, call `value_to_json`, assert `err.definition_span == that span`. Same for Builtin, Proxy, and a nested dict-entry case. (`src/lib.rs` tests)
+- [x] Document `ValueVisitor` and `visit_value` in `doc/08-evaluation.md` — the visitor pattern is the output serialization architecture but is undocumented in the evaluation chapter

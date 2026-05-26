@@ -695,16 +695,6 @@ are already tracked in `runtime-v2-fix-regressions`. These 4 are not yet tracked
 - [x] `test_circular_dependency_cycle_path` — relaxed assertion for iterative CEK machine (cycle_path empty is expected)
 - [x] `test_instance_fd_consistency_violation` — re-ignored with updated reason
 
-### serialization-span-followup: Span threading completeness follow-ups
-
-Post-panel findings from `serialization-span-threading` sprint. All minor.
-
-- [x] Fix `Value::RevocableDirCap` error string in `visit_value` at `src/lib.rs:755` — `"DirCap"` → `"RevocableDirCap"` (DONE in sprint)
-- [x] Remove span clobber in `builtins_meta.rs` `builtin-to-json` error handler (`src/builtins_meta.rs:89-94`) — replaced `map_err` with plain `?` (DONE in sprint)
-- [ ] Fix `visitor.visit_seq_head(head_out, span)` at `src/lib.rs:734` — should pass `head_span` (computed at line 732 from `head_thunk.span`) not the outer container span. Currently unobservable (JsonVisitor pre-check catches top-level Seq; DisplayVisitor ignores span) but will be wrong for any new visitor that uses the span in `visit_seq_head`.
-- [ ] Add `span: ast::Span` parameter to `depth_limit_output()` in `ValueVisitor` trait and pass it from `visit_value`'s depth check at `src/lib.rs:687` — so depth-exceeded JSON errors point at the deepest-nested value's definition site instead of `Span::origin()` (`src/lib.rs:969`)
-- [ ] Add span-assertion unit tests for `value_to_json` span threading — construct a `Value::Function` at a known non-origin span, call `value_to_json`, assert `err.definition_span == that span`. Same for Builtin, Proxy, and a nested dict-entry case. (`src/lib.rs` tests)
-- [ ] Document `ValueVisitor` and `visit_value` in `doc/08-evaluation.md` — the visitor pattern is the output serialization architecture but is undocumented in the evaluation chapter
 ### known-bugs-fix: Fix LSP expansion, docgen arity, eval_corpus OOM
 
 - [x] **`just docgen` fails with `[E020] arity mismatch`:** removed dead-code `[strings: [include %libdir "strings.llt"] path: [include %libdir "path.llt"]]` intermediate dict from `scripts/docgen.llt` — those bindings were never used downstream; the arity mismatch root cause in the multi-document pipeline remains uninvestigated (static analysis could not reproduce it) (`scripts/docgen.llt`)

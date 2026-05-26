@@ -1275,6 +1275,26 @@ The CLI `--eval` flag was changed in sprint rv2-output-formatter-contract to per
 
 **Relationship to Nix:** Nix's `forceValueDeep` (eval.cc:2264) uses a similar `std::set<const Value *> seen` for pointer-identity cycle detection. The key difference: Nix's set is visit-tracking only (all entries are pointers, not `Option<ptr>`), because Nix uses a conservative GC and doesn't need explicit sharing preservation — shared `Value*` pointers are naturally deduplicated. Tinct's `Option<Rc<Thunk>>` design combines visit-tracking (`None`) with result caching (`Some(rc)`) in a single structure.
 
+---
+
+## ValueVisitor — Output Serialization
+
+The `ValueVisitor` trait (in `src/lib.rs`) provides a visitor pattern for structural traversal of materialized `Value` trees. It's used to produce JSON and display-string output from evaluated values.
+
+**Design:** The `visit_value` function walks a materialized `Value`, calling visitor methods for each primitive type (`visit_int`, `visit_float`, `visit_str`, `visit_bool`, etc.) and recursively traversing structured types (`visit_dict`, `visit_seq_head`). The visitor returns a type-safe `Output` associated type — `serde_json::Value` for `JsonVisitor`, `String` for `DisplayVisitor`.
+
+**Span threading:** Every `visit_*` method receives the source `Span` of the value being visited. For structured types (Dict, Seq), the span is propagated from the thunk that contained the value. This ensures that serialization errors (e.g., "cannot serialize Function to JSON") include accurate source locations pointing to where the problematic value was defined.
+
+**Depth limiting:** The `depth_limit_output(depth, span)` method allows visitors to implement recursion depth limits. `JsonVisitor` enforces a 256-level depth limit to prevent stack overflow on deeply nested structures, returning an error with the span of the depth-exceeded value. `DisplayVisitor` enforces a 5-level depth limit (used for error messages) and truncates with `"..."`.
+
+**Implementations:**
+- **JsonVisitor** (`src/lib.rs:846-992`) — produces `serde_json::Value`, used by `value_to_json` and the `$builtin-to-json` formatter. Rejects values that cannot be represented in JSON (NaN, Infinity, Function, Builtin, Seq). Detects array-like dicts (sequential integer keys 0..n) and serializes them as JSON arrays.
+- **DisplayVisitor** (`src/lib.rs:1000-1100`) — produces LLT display strings, used for error messages and debug output. Accepts all value types, rendering functions as `Function([params])` and sequences as `Seq`.
+
+**Integration with deep materialization:** Visitors assume the input `Value` is already shallow-materialized (WHNF). The `visit_value` function calls `materialize()` on each dict entry and sequence head thunk before recursing. This is a safety check — the primary forcing mechanism is `deep_materialize()`, which should be called before serialization (§Deep Materialization).
+
+---
+
 **Allocation strategy:** The runtime uses two complementary strategies: backward-compatible optimizations to the current `Arc<Thunk>` + `IndexMap<String, Arc<Thunk>>` runtime, and arena-based allocation with flat environments for deeper efficiency gains.
 
 **Current allocation profile:**
