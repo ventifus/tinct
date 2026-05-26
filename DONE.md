@@ -342,6 +342,26 @@ scope. The `transitions` and `groups` dicts in `NfaState`/`NfaDict`
 - [x] Stdlib functions that benefit — `transitions` and `groups` in regex NFA are the primary cases; `stat`/`tls-peer-cert`/`list-dir` are structural Records, not Maps
 - [x] Write proposal — see `doc/whatif/parameterized-dict.md`
 
+### ci-regressions-2026-05-26: Fix pre-existing CI failures found during profiling-sigint-flush sprint
+
+Found during `just ci` run on 2026-05-26. Fixed in this session:
+
+- [x] `serde` moved from `[dev-dependencies]` to `[dependencies]` in `Cargo.toml` (`profiling.rs` uses `serde::Serialize` in production code)
+- [x] Added `clippy::disallowed_types` to two `#[allow]` annotations in `src/main.rs` profiling code
+- [x] Fixed 7 markdown errors in `doc/whatif/data-streaming.md` (MD031/MD040/MD032)
+- [x] Fixed stale build cache `lint-clippy` error by touching `src/typecheck.rs`
+- [x] Completed `json-delete-to-json` sprint: added `to-json`, `proxy?`, and helper functions to prelude; added `builtin-proxy?` Rust builtin; updated `cli/out/json.llt` and `cli/out/json-pretty.llt` to use `[call $to-json %]`; 59 CLI tests that were failing now pass (144 of 144 CLI tests pass)
+- [x] Fixed `standard_builtins_count` and `standard_builtins_contains_all`: adjusted count to 242 (after json-delete-to-json deleted builtin-to-json, then added builtin-proxy?)
+
+Pre-existing failures still open (tracked below in ci-regressions-2026-05-26-remaining):
+
+- [x] `expr_flag_simple`, `eval_stdin_json_injection` — lazy pipeline evaluation issue with `%.x` thunk in `-e` flag
+- [x] `cap_fs_read_only_write_fails` — cap-fs enforcement regression (`src/main.rs`)
+- [x] `cap_file_no_fs_suppresses_injection` — `--cap-file` + `--no-fs` interaction (`src/main.rs`)
+- [x] `no_fs_flag_blocks_include` — `--no-fs` should block include (`src/main.rs`)
+- [x] `no_fs_flag_and_timeout_flag_conjunctive_enforcement` — conjunctive enforcement (`src/main.rs`)
+- [x] `type_warning_explicit_unknown_emitted_on_stderr` — T011 warning not emitted (`src/typecheck.rs`)
+
 ## Macros
 
 ### `macros-v2-nits`: Fix accumulated macro system nits
