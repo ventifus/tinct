@@ -378,9 +378,56 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 
 ---
 
-## Codebase Audit Findings (2026-05-25)
+## Codebase Audit Findings (Health Review #306, 2026-05-25)
 
 Hardcoded behavior, stubs, and dead code found during systematic audit. Root causes documented inline.
+
+### error-code-corpus-tests: Add missing error code corpus tests [Critical]
+
+**test-crafter C1-C6.** Several error codes have no corpus test coverage and one has the wrong code:
+
+- [ ] Add `tests/corpus/eval/errors/named_arg_rejected.llt-eval` for E023 (NamedArgRejected) — e.g., `[floor n: 3.7]` → `[E023]`
+- [ ] Add `tests/corpus/eval/errors/float_not_finite_floor.llt-eval` for E033 (FloatNotFinite) — e.g., `[floor [/ 1.0 0.0]]` → `[E033]`
+- [ ] Add `tests/corpus/eval/errors/value_not_serializable_function.llt-eval` for E035 (ValueNotSerializable) — e.g., `[to-json [fn [] 42]]` → `[E035]`
+- [ ] Add `tests/corpus/eval/errors/json_depth_exceeded.llt-eval` for E041 (JsonDepthExceeded) — 128+ levels nested JSON → `[E041]`
+- [ ] Fix `tests/corpus/eval/errors/to_float_nan_input.llt-eval` — asserts `[E099]` but actual error is `[E033]` FloatNotFinite
+- [ ] Investigate E062 (JsonRange), E063 (UriParseError), E091 (KindMismatch) — grep for callers, add corpus tests if raised or mark dead code for removal
+- [ ] Fix stale `include_forbidden.llt-eval` and `include_path_not_allowed.llt-eval` — both assert `[E002]`; clarify if testing removed include builtin or should test `load` with E053/E055/E056
+- [ ] Fix `tests/corpus/valid/edge_cases/empty.llt-eval` — missing `=== out` section
+- [ ] Update `doc/10-errors.md` error code table — missing E012 (MacroExpansionError), E013 (TypeClassConstraint), E044 (CapabilityRequired), E071 (MatchExhaustion), E082 (BuilderFinished)
+
+### stale-comment-sequential-step: Delete misleading SequentialStep bug comment [Major]
+
+**eval-engine C1.** `src/eval.rs:1432-1434` has a comment claiming SequentialStep has a correctness bug with lazy dict bindings. The bug was FIXED by Cont::ForceAndBind in a prior sprint. The comment is now actively misleading.
+
+- [ ] Delete stale comment at `src/eval.rs:1432-1434` — ForceAndBind (eval_materialize.rs:2988-2994) already fixes the described issue
+
+### typecheck-eval-annotation-wire: Wire TypeAnnotationTable from typecheck to eval [Major]
+
+**integration-verifier M1.** `eval_source_with_config` and `eval_source_with_cap_net` in `src/lib.rs` discard the `TypeAnnotationTable` after typecheck, passing an empty table to eval. The lowerer thus has no statically-resolved type information, causing all `TypeAssert` nodes to fall back to `RuntimeTypeCheck` (runtime validation) instead of using static types. Performance and precision gap — not a correctness bug.
+
+- [ ] Capture `types` from `typecheck_surface_program` in `eval_source_with_config` (`src/lib.rs`) and pass to `eval_surface_file` instead of `Arc::new(TypeAnnotationTable::new())`
+- [ ] Same fix in `eval_source_with_cap_net` (`src/lib.rs`)
+- [ ] Verify `lower.rs` uses the table to populate `TypeAssert.resolved_type`
+
+### doc-stdlib-builtin-count: Fix wrong builtin count in doc/11-stdlib.md [Major]
+
+**stdlib-author M1.** `doc/11-stdlib.md:358,360` claims "301 Rust-native builtins" and "~418 total functions" but actual figures are ~191 unique primary-name builtins and ~308 total (191 Rust + 117 LLT). The 301 count double-counts builtins that have both primary and `builtin-*` alias names.
+
+- [ ] Fix `doc/11-stdlib.md:358` — change "301 Rust-native builtins" to "~191 Rust-native builtins (with stable `builtin-*` aliases for each)"
+- [ ] Fix `doc/11-stdlib.md:360` — change "~418 functions" to "~308 functions (191 Rust + 117 prelude LLT)"
+
+### doc-05-unknown-top-clarification: Clarify Unknown vs Top in type doc [Minor]
+
+**type-theorist M1.** `doc/05-type-annotations.md:73-79` conflates `Unknown` (gradual `?`, consistency-based) with legacy "Any" terminology, and doesn't distinguish `Top` (⊤, subtyping-based supertype).
+
+- [ ] Update `doc/05-type-annotations.md:73-79` — clarify `Unknown` is gradual `?` (not `Any`), `Top` is ⊤, and explain the difference in practical terms
+
+### eval-module-docstring-fix: Fix stale module docstrings [Minor]
+
+**eval-engine m2.** `src/eval.rs:1-3` module docstring says "document pipelines, and function evaluation" — these moved to eval_pipeline.rs and eval_call.rs.
+
+- [ ] Update `src/eval.rs:1-3` module docstring — remove "document pipelines" (in eval_pipeline.rs) and "function evaluation" (in eval_call.rs); add references to those modules
 
 ### async-shutdown-primitives: Implement exit, graceful-exit, cancel-root, drain
 
@@ -1652,6 +1699,19 @@ Both `Symlinkable` and `PosixPermissions` DirPerms flags exist and are correctly
 - [x] Fix line 1007 Sequential routing note (no eval_recursive; references cek-match-sequential-rust-stack)
 - [x] Fix line 1468 deep_materialize → eval_materialize.rs (eval_deep.rs deleted)
 - [x] Fix line 1419 assertion line number → src/eval_materialize.rs:349
+
+**Round 2 staleness (2026-05-25, computer-scientist):** The fixes above partially applied but the doc has drifted again:
+- [ ] Line 1408-1419: Cont enum listing shows 6 variants — actual is **11**: add SequentialStep, ForceAndBind, MatchDispatch, MatchGuardCheck, PredicateCheck
+- [ ] Line 1477: "6 variants" count claim → update to "11 variants"
+- [ ] Lines 1247-1272: §Deep Materialization section describes `deep_materialize` as an active function — **deleted entirely** (no references in src/). Replace with §Output Serialization describing `visit_value` visitor pattern in `src/lib.rs:657`
+- [ ] Line 1471: "deep_materialize: Implemented as a separate recursive function in eval_materialize.rs" — deleted; replace with note about visit_value
+- [ ] Line 1597: Recursive call table row "deep_materialize() → ... Cont::DeepEntries / Cont::DeepSeqTail" — neither implemented. Remove row.
+- [ ] Line 1467: References `Cont::DictBuildValue` and `Cont::BindArgDefault` — do not exist. Remove.
+- [ ] Line 1475: References `Cont::CallForceFunc` — does not exist (actual: PendingCallDispatch). Fix.
+- [ ] Line 1596: References `Cont::PendingCallForceFunc → Cont::PendingCallForceResult` — neither exists. Fix.
+- [ ] Line 1422: Compile-time assertion cited at "src/eval_materialize.rs:349" — actual line is **443**. Fix.
+- [ ] Line 429: References "MAX_COLLECT_SIZE in deep_materialize" — deep_materialize deleted. Fix.
+- [ ] Lines 1488-1494: FnAnnotation struct shows return_ann, constraints, source_span — actual struct (value.rs:29-34) has only doc and source_file. Update pseudocode.
 - **File:** `doc/08-evaluation.md`
 
 ### doc-16-rv2-stale-refs: doc/16-architecture.md still has stale post-rv2 references [Major]
