@@ -10050,3 +10050,9 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] Fix doc/11-stdlib.md builtin count: 301→~191, ~418→~308
 - [x] Fix doc/05-type-annotations.md Unknown vs Top clarification
 - [x] Fix eval.rs module docstring
+
+### dead-code-cleanup-typecheck: Delete unused bridge functions
+
+- [x] Delete `resolve_surface_annotation` from `src/typecheck_annot.rs` — zero callers
+- [x] Delete `RestoreState::AstNodeField` variant from `src/eval_materialize.rs` — zero callers, unreachable
+- [x] Remove corresponding `#[allow(dead_code)]` attributes

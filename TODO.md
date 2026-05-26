@@ -449,15 +449,7 @@ Root cause: Binary encoding requires `str-bytes` or a proper binary serializatio
 - [ ] Decide what `to-bytes` should produce: UTF-8 bytes of string representation, or a binary integer encoding? Add to `/rnd` if non-obvious.
 - [ ] Track: if this is waiting for a binary/bytes type, reference that sprint here.
 
-### dead-code-cleanup-typecheck: Delete unused bridge functions
 
-Two dead-code items discovered in production Rust:
-1. `resolve_surface_annotation` (`src/typecheck_annot.rs:3329`) — `#[allow(dead_code)]`, delegates to `resolve_type_expr`, never called after bridge cleanup
-2. `RestoreState::AstNodeField` variant (`src/eval_materialize.rs:118-127`) — `#[allow(dead_code)]`, "retained for structural completeness"; async/recursive AstNodeField evaluation never materialised
-
-- [ ] Delete `resolve_surface_annotation` from `src/typecheck_annot.rs` — zero callers (`src/typecheck_annot.rs:3329`)
-- [ ] Delete `RestoreState::AstNodeField` variant from `src/eval_materialize.rs` — zero callers, the path is unreachable (`src/eval_materialize.rs:118-127`)
-- [ ] Remove corresponding `#[allow(dead_code)]` attributes
 
 ### arena-phase3: Wire FlatEnv slot-based variable lookup
 

@@ -113,16 +113,6 @@ pub(crate) enum RestoreState {
         env: Arc<RwLock<Environment>>,
         ctx: Arc<EvalContext>,
     },
-    /// Restore an AstNodeField thunk for non-cacheable errors.
-    /// Not yet constructed: AstNodeField evaluation is synchronous and infallible,
-    /// so DepthExceeded cannot occur on that path. Retained for structural completeness
-    /// and in case AstNodeField evaluation gains async/recursive work in the future.
-    #[allow(dead_code)]
-    AstNodeField {
-        node: std::sync::Arc<crate::ast::SurfaceNode>,
-        field: &'static str,
-        ctx: Arc<EvalContext>,
-    },
     /// Restore a CoreExpr thunk for non-cacheable errors (e.g., DepthExceeded).
     /// Stores the Arc<Spanned<CoreExpr>> directly — no re-lowering on retry.
     CoreExpr {
@@ -193,9 +183,6 @@ impl RestoreState {
                 env,
                 ctx,
             },
-            RestoreState::AstNodeField { node, field, ctx } => {
-                UnevaluatedState::AstNodeField { node, field, ctx }
-            }
             RestoreState::CoreExpr { expr, env, ctx } => {
                 UnevaluatedState::CoreExpr { expr, env, ctx }
             }
@@ -3385,10 +3372,10 @@ pub(crate) async fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<V
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::rc::Rc;
     use crate::ast::CoreExpr;
     use crate::test_util::{sp, test_span};
     use crate::value::{Environment, Key, Thunk};
+    use std::rc::Rc;
 
     fn empty_env() -> Arc<RwLock<Environment>> {
         Arc::new(RwLock::new(Environment::new()))

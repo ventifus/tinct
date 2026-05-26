@@ -3319,20 +3319,3 @@ fn try_resolve_fn_type_expr(
         variadic: false,
     }))
 }
-
-/// Resolve a Surface-native type expression node.
-///
-/// Delegates directly to [`resolve_type_expr`] — no bridge conversion needed since
-/// `resolve_type_expr` now takes `&Arc<SurfaceNode>` natively.
-///
-/// `ann_mapping` and `row_ann_mapping` work identically to `resolve_type_expr`.
-#[allow(dead_code)]
-pub(crate) fn resolve_surface_annotation(
-    node: &Arc<SurfaceNode>,
-    env: &TypeEnv,
-    state: &mut InferState,
-    ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-) -> Result<Type, TypeError> {
-    resolve_type_expr(node, env, state, ann_mapping, row_ann_mapping)
-}
