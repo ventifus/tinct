@@ -1651,14 +1651,12 @@ pub(crate) fn builtin_exit_now(
         }
 
         let code_thunk = &args[0];
-        let code_val = materialize(code_thunk, Some(&call_span), &ctx).await?;
+        let code_val = materialize(code_thunk, Some(&call_span), &ctx).await?; // H1: exit code must be known to terminate process
 
         let exit_code = match code_val {
             Value::Int(n) => n.clamp(0, 255) as i32,
             _ => {
-                return Err(
-                    EvalError::type_mismatch("Int", code_val.type_name(), call_span).into(),
-                )
+                return Err(EvalError::type_mismatch("Int", code_val.type_name(), call_span).into())
             }
         };
 

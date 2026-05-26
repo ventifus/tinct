@@ -66,7 +66,6 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [Program Profiling and Call Tracing](profiling.md) | `--profile` (hotspot table) and `--trace` (Perfetto JSON) modes; span model spanning Rust/tinct boundary; `origin_builtin` attribution for Rust→tinct re-entry; `debug_name` propagation through `Value::Function`; Criterion benchmark suite; unblocks `string-interning` and `union-find-substitution` gating decisions |
 | [String Interning for Dict Keys](string-interning.md) | `Key::String(Spur)` via `string-interner` crate; O(1) comparison; profile-gated |
 | [Union-Find for Type Substitution](union-find-substitution.md) | Path-compressed union-find for `Substitution::apply()`; worthwhile only if chain depth ≥4; profile-gated |
 | [Float Dict Keys](float-dict-keys.md) | Decimal (exact base-10) keys alongside a `Decimal` type |
@@ -132,6 +131,7 @@ Accepted proposals with sprints in TODO.md. Not yet fully implemented.
 |----------|---------|----------|
 | [Runtime v2 — AST Redesign, Native Value Types, Async Parallel Evaluation](runtime-v2.md) | `SurfaceExpression`/`CoreExpr` split; `NodeId` side tables; `ResolutionTable`/`TypeAnnotationTable`; `Value::Program`/`Document`/`Expression`; `async fn` eval; `Rc`→`Arc`; `OnceCell` thunk; parallel dict eval; `task`/`await`/`channel`/`select-once`; context/cancellation | 2026-05-20 |
 | [Unified Binding Declarations](unified-bindings.md) | `[let ...]` universal binding form; `[case ...]` match arms; `...` placeholder; constructor payload registry; `Expr::LetDecl`/`CaseArm`/`Placeholder` | 2026-05-17 |
+| [Program Profiling and Call Tracing](profiling.md) | `--profile spans.json` collects raw span data; `scripts/profile/` analysis scripts; dual attribution (`materialize-parent`/`create-parent`); stall attribution; Criterion benchmarks; unblocks `string-interning` and `union-find-substitution` | 2026-05-25 |
 
 ### Completed
 

@@ -10098,3 +10098,13 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 ### doc-ast-type-migration: Purge stale Expr::/File:: references from doc/*.md
 
 - [x] Updated main spec chapters: doc/08-evaluation.md, doc/15-ast.md, doc/16-architecture.md, doc/feature/ast-schema.md, doc/feature/macros.md — stale Expr::/File:: type names → SurfaceExpression::/CoreExpr::, ast_dict.rs → surface_convert.rs
+
+## Codebase Audit Findings (Health Review #311, 2026-05-25)
+
+### serialization-span-threading: Thread definition spans through ValueVisitor [Major]
+
+**integration-verifier M1.** `src/lib.rs:825,876,883,888,896` — All ValueVisitor error constructors use `Span::origin()` (no source location). Users see `[E035] cannot serialize Function to JSON (defined at 1:1-1:1)`. Requires threading spans through `visit_value` recursion or adding span parameter to ValueVisitor trait methods.
+
+- [x] Design approach: span parameter on ValueVisitor methods vs threading through visit_value recursion
+- [x] Implement chosen approach in `src/lib.rs:621-706` (ValueVisitor trait + implementations)
+- [x] Update `visit_function`, `visit_builtin`, `visit_seq_head`, `visit_proxy`, `visit_float` to use real spans

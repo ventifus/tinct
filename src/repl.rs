@@ -266,7 +266,7 @@ impl ReplSession {
             }
             error_str
         })?;
-        let display = value_to_display_string(&val, &self.ctx).map_err(|e| {
+        let display = value_to_display_string(&val, &self.ctx, result_thunk.span).map_err(|e| {
             let mut error_str = format!("{e}");
             if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
                 error_str.push('\n');

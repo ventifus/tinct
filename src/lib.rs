@@ -352,7 +352,8 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     .map_err(|e| attach_and_format_error(e, &provenance))?;
     let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
         .map_err(|e| attach_and_format_error(e, &provenance))?;
-    value_to_display_string(&val, &ctx).map_err(|e| attach_and_format_error(e, &provenance))
+    value_to_display_string(&val, &ctx, thunk.span)
+        .map_err(|e| attach_and_format_error(e, &provenance))
 }
 
 /// Parse, eval, and materialize LLT source with optional NetCap injections.
@@ -479,7 +480,8 @@ pub fn eval_source_with_cap_net(
     .map_err(|e| attach_and_format_error(e, &provenance))?;
     let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
         .map_err(|e| attach_and_format_error(e, &provenance))?;
-    value_to_display_string(&val, &ctx).map_err(|e| attach_and_format_error(e, &provenance))
+    value_to_display_string(&val, &ctx, thunk.span)
+        .map_err(|e| attach_and_format_error(e, &provenance))
 }
 
 /// Parse a NetCap allowlist entry string (same logic as CLI `--cap-net NAME=ENTRY`).
@@ -623,27 +625,43 @@ pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
 ///
 /// Dict entries are pre-converted to `Self::Output` before `visit_dict` is called,
 /// so the visitor need not recurse manually.
-pub trait ValueVisitor {
+pub(crate) trait ValueVisitor {
     type Output;
 
     fn visit_int(&self, v: i64) -> Self::Output;
-    fn visit_float(&self, v: f64) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_float(&self, v: f64, span: ast::Span) -> Result<Self::Output, Box<error::EvalError>>;
     fn visit_bool(&self, v: bool) -> Self::Output;
     fn visit_str(&self, v: &str) -> Self::Output;
     fn visit_bytes(&self, v: &[u8]) -> Self::Output;
     fn visit_null(&self) -> Self::Output;
     fn visit_dict(&self, entries: Vec<(value::Key, Self::Output)>) -> Self::Output;
-    fn visit_seq_head(&self, head: Self::Output) -> Result<Self::Output, Box<error::EvalError>>;
-    fn visit_function(&self, params: &[ast::Param]) -> Result<Self::Output, Box<error::EvalError>>;
-    fn visit_builtin(&self, name: &str) -> Result<Self::Output, Box<error::EvalError>>;
-    fn visit_proxy(&self) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_seq_head(
+        &self,
+        head: Self::Output,
+        span: ast::Span,
+    ) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_function(
+        &self,
+        params: &[ast::Param],
+        span: ast::Span,
+    ) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_builtin(
+        &self,
+        name: &str,
+        span: ast::Span,
+    ) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_proxy(&self, span: ast::Span) -> Result<Self::Output, Box<error::EvalError>>;
     fn visit_variant(&self, tag: String, payload: Self::Output) -> Self::Output;
     fn visit_decimal(&self, v: rust_decimal::Decimal) -> Self::Output;
     fn visit_bigint(&self, v: &num_bigint::BigInt) -> Self::Output;
-    fn visit_timestamp(&self, nanos: i64) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_timestamp(
+        &self,
+        nanos: i64,
+        span: ast::Span,
+    ) -> Result<Self::Output, Box<error::EvalError>>;
     fn visit_duration(&self, nanos: i64) -> Self::Output;
-    fn visit_clock_cap(&self) -> Result<Self::Output, Box<error::EvalError>>;
-    fn visit_timezone(&self) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_clock_cap(&self, span: ast::Span) -> Result<Self::Output, Box<error::EvalError>>;
+    fn visit_timezone(&self, span: ast::Span) -> Result<Self::Output, Box<error::EvalError>>;
     /// Return `Some(output)` if the depth limit has been reached, `None` to continue.
     fn depth_limit_output(
         &self,
@@ -659,18 +677,19 @@ pub trait ValueVisitor {
 /// # Panics
 ///
 /// Does not panic. All errors are propagated via `Result`.
-pub fn visit_value<V: ValueVisitor>(
+pub(crate) fn visit_value<V: ValueVisitor>(
     val: &value::Value,
     ctx: &Arc<eval::EvalContext>,
     depth: usize,
     visitor: &V,
+    span: ast::Span,
 ) -> Result<V::Output, Box<error::EvalError>> {
     if let Some(limit_result) = visitor.depth_limit_output(depth) {
         return limit_result;
     }
     match val {
         value::Value::Int(n) => Ok(visitor.visit_int(*n)),
-        value::Value::Float(f) => visitor.visit_float(*f),
+        value::Value::Float(f) => visitor.visit_float(*f, span),
         value::Value::String {
             ref source,
             start,
@@ -693,46 +712,47 @@ pub fn visit_value<V: ValueVisitor>(
             for (key, thunk_id) in map {
                 let thunk = ctx.get_thunk(*thunk_id);
                 let v = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, ctx))?;
-                entries.push((key.clone(), visit_value(&v, ctx, depth + 1, visitor)?));
+                let child_span = thunk.span;
+                entries.push((
+                    key.clone(),
+                    visit_value(&v, ctx, depth + 1, visitor, child_span)?,
+                ));
             }
             Ok(visitor.visit_dict(entries))
         }
         value::Value::Overlay(l, r) => {
             // Flatten overlay to a concrete dict, then visit it.
-            let map =
-                builtins::flatten_overlay(l, r, "value serialization", ctx, ast::Span::origin())?;
-            visit_value(&value::Value::Dict(map), ctx, depth, visitor)
+            let map = builtins::flatten_overlay(l, r, "value serialization", ctx, span)?;
+            visit_value(&value::Value::Dict(map), ctx, depth, visitor, span)
         }
         value::Value::Seq { head, .. } => {
             let head_thunk = ctx.get_thunk(*head);
             let head_val =
                 crate::async_rt::block_on_anywhere(eval::materialize(&head_thunk, None, ctx))?;
-            let head_out = visit_value(&head_val, ctx, depth + 1, visitor)?;
-            visitor.visit_seq_head(head_out)
+            let head_span = head_thunk.span;
+            let head_out = visit_value(&head_val, ctx, depth + 1, visitor, head_span)?;
+            visitor.visit_seq_head(head_out, span)
         }
-        value::Value::Function { params, .. } => visitor.visit_function(params),
-        value::Value::Builtin(def) => visitor.visit_builtin(def.name),
-        value::Value::Proxy { .. } => visitor.visit_proxy(),
+        value::Value::Function { params, .. } => visitor.visit_function(params, span),
+        value::Value::Builtin(def) => visitor.visit_builtin(def.name, span),
+        value::Value::Proxy { .. } => visitor.visit_proxy(span),
         value::Value::DirCap { .. } => Err(Box::new(error::EvalError::value_not_serializable(
             "DirCap".to_string(),
-            ast::Span::origin(),
+            span,
         ))),
         value::Value::NetCap(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "NetCap".to_string(),
-            ast::Span::origin(),
+            span,
         ))),
         value::Value::Handle { .. } => Err(Box::new(error::EvalError::value_not_serializable(
             "Handle".to_string(),
-            ast::Span::origin(),
+            span,
         ))),
-        value::Value::WriteHandle { .. } => {
-            Err(Box::new(error::EvalError::value_not_serializable(
-                "WriteHandle".to_string(),
-                ast::Span::origin(),
-            )))
-        }
+        value::Value::WriteHandle { .. } => Err(Box::new(
+            error::EvalError::value_not_serializable("WriteHandle".to_string(), span),
+        )),
         value::Value::RevocableDirCap { .. } => Err(Box::new(
-            error::EvalError::value_not_serializable("DirCap".to_string(), ast::Span::origin()),
+            error::EvalError::value_not_serializable("RevocableDirCap".to_string(), span),
         )),
         value::Value::Variant { tag, payload } => {
             let payload_output = match payload {
@@ -740,7 +760,8 @@ pub fn visit_value<V: ValueVisitor>(
                     let thunk = ctx.get_thunk(*thunk_id);
                     let v =
                         crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, ctx))?;
-                    visit_value(&v, ctx, depth + 1, visitor)?
+                    let payload_span = thunk.span;
+                    visit_value(&v, ctx, depth + 1, visitor, payload_span)?
                 }
                 None => visitor.visit_null(),
             };
@@ -750,65 +771,56 @@ pub fn visit_value<V: ValueVisitor>(
         value::Value::BigInt(n) => Ok(visitor.visit_bigint(n)),
         value::Value::Uri { .. } => Err(Box::new(error::EvalError::value_not_serializable(
             "Uri".to_string(),
-            ast::Span::origin(),
+            span,
         ))),
-        value::Value::Timestamp(nanos) => visitor.visit_timestamp(*nanos),
+        value::Value::Timestamp(nanos) => visitor.visit_timestamp(*nanos, span),
         value::Value::Duration(nanos) => Ok(visitor.visit_duration(*nanos)),
-        value::Value::ClockCap(_) => visitor.visit_clock_cap(),
-        value::Value::Timezone(_) => visitor.visit_timezone(),
+        value::Value::ClockCap(_) => visitor.visit_clock_cap(span),
+        value::Value::Timezone(_) => visitor.visit_timezone(span),
         value::Value::QuicSession(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "QuicSession".to_string(),
-            ast::Span::origin(),
+            span,
         ))),
-        value::Value::Http2Session { .. } => {
-            Err(Box::new(error::EvalError::value_not_serializable(
-                "Http2Session".to_string(),
-                ast::Span::origin(),
-            )))
-        }
+        value::Value::Http2Session { .. } => Err(Box::new(
+            error::EvalError::value_not_serializable("Http2Session".to_string(), span),
+        )),
         value::Value::Http3Session(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "Http3Session".to_string(),
-            ast::Span::origin(),
+            span,
         ))),
-        value::Value::QuicDatagramHandle(_) => {
-            Err(Box::new(error::EvalError::value_not_serializable(
-                "QuicDatagramHandle".to_string(),
-                ast::Span::origin(),
-            )))
-        }
-        value::Value::DatagramHandle { .. } => {
-            Err(Box::new(error::EvalError::value_not_serializable(
-                "DatagramHandle".to_string(),
-                ast::Span::origin(),
-            )))
-        }
+        value::Value::QuicDatagramHandle(_) => Err(Box::new(
+            error::EvalError::value_not_serializable("QuicDatagramHandle".to_string(), span),
+        )),
+        value::Value::DatagramHandle { .. } => Err(Box::new(
+            error::EvalError::value_not_serializable("DatagramHandle".to_string(), span),
+        )),
         value::Value::Program { .. } => Err(Box::new(error::EvalError::value_not_serializable(
             "Program".to_string(),
-            ast::Span::origin(),
+            span,
         ))),
         value::Value::Document(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "Document".to_string(),
-            ast::Span::origin(),
+            span,
         ))),
         value::Value::Expression(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "Expression".to_string(),
-            ast::Span::origin(),
+            span,
         ))),
         value::Value::Task(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "Task".to_string(),
-            ast::Span::origin(),
+            span,
         ))),
         value::Value::Channel(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "Channel".to_string(),
-            ast::Span::origin(),
+            span,
         ))),
         value::Value::Context(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "Context".to_string(),
-            ast::Span::origin(),
+            span,
         ))),
         value::Value::Builder(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "Builder".to_string(),
-            ast::Span::origin(),
+            span,
         ))),
     }
 }
@@ -823,12 +835,15 @@ impl ValueVisitor for JsonVisitor {
     fn visit_int(&self, v: i64) -> serde_json::Value {
         serde_json::Value::Number(v.into())
     }
-    fn visit_float(&self, v: f64) -> Result<serde_json::Value, Box<error::EvalError>> {
+    fn visit_float(
+        &self,
+        v: f64,
+        span: ast::Span,
+    ) -> Result<serde_json::Value, Box<error::EvalError>> {
         serde_json::Number::from_f64(v)
             .map(serde_json::Value::Number)
             .ok_or_else(|| {
-                error::EvalError::float_not_finite("to-json".to_string(), v, ast::Span::origin())
-                    .into()
+                error::EvalError::float_not_finite("to-json".to_string(), v, span).into()
             })
     }
     fn visit_bool(&self, v: bool) -> serde_json::Value {
@@ -876,31 +891,27 @@ impl ValueVisitor for JsonVisitor {
     fn visit_seq_head(
         &self,
         _head: serde_json::Value,
+        span: ast::Span,
     ) -> Result<serde_json::Value, Box<error::EvalError>> {
         // Seq is not representable in JSON; must be collected to a Dict first via $collect.
-        Err(error::EvalError::value_not_serializable("Seq".to_string(), ast::Span::origin()).into())
+        Err(error::EvalError::value_not_serializable("Seq".to_string(), span).into())
     }
     fn visit_function(
         &self,
         _params: &[ast::Param],
+        span: ast::Span,
     ) -> Result<serde_json::Value, Box<error::EvalError>> {
-        Err(
-            error::EvalError::value_not_serializable("Function".to_string(), ast::Span::origin())
-                .into(),
-        )
+        Err(error::EvalError::value_not_serializable("Function".to_string(), span).into())
     }
-    fn visit_builtin(&self, name: &str) -> Result<serde_json::Value, Box<error::EvalError>> {
-        Err(error::EvalError::value_not_serializable(
-            format!("Builtin ({name})"),
-            ast::Span::origin(),
-        )
-        .into())
+    fn visit_builtin(
+        &self,
+        name: &str,
+        span: ast::Span,
+    ) -> Result<serde_json::Value, Box<error::EvalError>> {
+        Err(error::EvalError::value_not_serializable(format!("Builtin ({name})"), span).into())
     }
-    fn visit_proxy(&self) -> Result<serde_json::Value, Box<error::EvalError>> {
-        Err(
-            error::EvalError::value_not_serializable("Proxy".to_string(), ast::Span::origin())
-                .into(),
-        )
+    fn visit_proxy(&self, span: ast::Span) -> Result<serde_json::Value, Box<error::EvalError>> {
+        Err(error::EvalError::value_not_serializable("Proxy".to_string(), span).into())
     }
     fn visit_variant(&self, tag: String, payload: serde_json::Value) -> serde_json::Value {
         let mut obj = serde_json::Map::new();
@@ -923,10 +934,14 @@ impl ValueVisitor for JsonVisitor {
                 .unwrap_or_else(|_| serde_json::Number::from(0)),
         )
     }
-    fn visit_timestamp(&self, nanos: i64) -> Result<serde_json::Value, Box<error::EvalError>> {
+    fn visit_timestamp(
+        &self,
+        nanos: i64,
+        span: ast::Span,
+    ) -> Result<serde_json::Value, Box<error::EvalError>> {
         // Convert nanoseconds to jiff::Timestamp and format as RFC 3339
         let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
-            error::EvalError::internal(format!("invalid timestamp value: {e}"), ast::Span::origin())
+            error::EvalError::internal(format!("invalid timestamp value: {e}"), span)
         })?;
         Ok(serde_json::Value::String(ts.to_string()))
     }
@@ -935,17 +950,11 @@ impl ValueVisitor for JsonVisitor {
         // For simplicity, use nanoseconds as a number
         serde_json::Value::Number(nanos.into())
     }
-    fn visit_clock_cap(&self) -> Result<serde_json::Value, Box<error::EvalError>> {
-        Err(
-            error::EvalError::value_not_serializable("ClockCap".to_string(), ast::Span::origin())
-                .into(),
-        )
+    fn visit_clock_cap(&self, span: ast::Span) -> Result<serde_json::Value, Box<error::EvalError>> {
+        Err(error::EvalError::value_not_serializable("ClockCap".to_string(), span).into())
     }
-    fn visit_timezone(&self) -> Result<serde_json::Value, Box<error::EvalError>> {
-        Err(
-            error::EvalError::value_not_serializable("Timezone".to_string(), ast::Span::origin())
-                .into(),
-        )
+    fn visit_timezone(&self, span: ast::Span) -> Result<serde_json::Value, Box<error::EvalError>> {
+        Err(error::EvalError::value_not_serializable("Timezone".to_string(), span).into())
     }
     fn depth_limit_output(
         &self,
@@ -981,7 +990,7 @@ impl ValueVisitor for DisplayVisitor {
     fn visit_int(&self, v: i64) -> String {
         format!("Int({v})")
     }
-    fn visit_float(&self, v: f64) -> Result<String, Box<error::EvalError>> {
+    fn visit_float(&self, v: f64, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
         Ok(format!("Float({v})"))
     }
     fn visit_bool(&self, v: bool) -> String {
@@ -1013,17 +1022,25 @@ impl ValueVisitor for DisplayVisitor {
         result.push_str("})");
         result
     }
-    fn visit_seq_head(&self, head: String) -> Result<String, Box<error::EvalError>> {
+    fn visit_seq_head(
+        &self,
+        head: String,
+        _span: ast::Span,
+    ) -> Result<String, Box<error::EvalError>> {
         Ok(format!("Seq({head}, ...)"))
     }
-    fn visit_function(&self, params: &[ast::Param]) -> Result<String, Box<error::EvalError>> {
+    fn visit_function(
+        &self,
+        params: &[ast::Param],
+        _span: ast::Span,
+    ) -> Result<String, Box<error::EvalError>> {
         let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
         Ok(format!("Function({})", names.join(", ")))
     }
-    fn visit_builtin(&self, name: &str) -> Result<String, Box<error::EvalError>> {
+    fn visit_builtin(&self, name: &str, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
         Ok(format!("Builtin({name})"))
     }
-    fn visit_proxy(&self) -> Result<String, Box<error::EvalError>> {
+    fn visit_proxy(&self, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
         Ok("Proxy".to_string())
     }
     fn visit_variant(&self, tag: String, payload: String) -> String {
@@ -1035,7 +1052,11 @@ impl ValueVisitor for DisplayVisitor {
     fn visit_bigint(&self, v: &num_bigint::BigInt) -> String {
         format!("BigInt({v})")
     }
-    fn visit_timestamp(&self, nanos: i64) -> Result<String, Box<error::EvalError>> {
+    fn visit_timestamp(
+        &self,
+        nanos: i64,
+        _span: ast::Span,
+    ) -> Result<String, Box<error::EvalError>> {
         // Format as RFC 3339 for readability
         match jiff::Timestamp::from_nanosecond(nanos as i128) {
             Ok(ts) => Ok(format!("Timestamp({})", ts)),
@@ -1045,10 +1066,10 @@ impl ValueVisitor for DisplayVisitor {
     fn visit_duration(&self, nanos: i64) -> String {
         format!("Duration({} ns)", nanos)
     }
-    fn visit_clock_cap(&self) -> Result<String, Box<error::EvalError>> {
+    fn visit_clock_cap(&self, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
         Ok("ClockCap".to_string())
     }
-    fn visit_timezone(&self) -> Result<String, Box<error::EvalError>> {
+    fn visit_timezone(&self, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
         Ok("Timezone".to_string())
     }
     fn depth_limit_output(&self, depth: usize) -> Option<Result<String, Box<error::EvalError>>> {
@@ -1073,10 +1094,11 @@ impl ValueVisitor for DisplayVisitor {
 /// - `Function` / `Builtin` values (no JSON representation)
 /// - `Float` values that are NaN or infinite (not representable in JSON)
 /// - `Seq` values (must be collected to a Dict first via `$collect`)
-/// - Exceeding the maximum recursion depth ([`eval::MAX_EVAL_DEPTH`])
+/// - Exceeding the maximum serialization depth (256 levels, `MAX_JSON_OUTPUT_DEPTH` in `JsonVisitor`)
 pub fn value_to_json(
     val: &value::Value,
     ctx: &Arc<eval::EvalContext>,
+    span: ast::Span,
 ) -> Result<serde_json::Value, Box<error::EvalError>> {
     let depth = 0;
     // Seq has a span-bearing error; handle before the generic visitor.
@@ -1086,7 +1108,7 @@ pub fn value_to_json(
             error::EvalError::value_not_serializable("Seq".to_string(), head_thunk.span).into(),
         );
     }
-    visit_value(val, ctx, depth, &JsonVisitor)
+    visit_value(val, ctx, depth, &JsonVisitor, span)
 }
 
 /// Convert a Value into a displayable string (LLT format, not JSON).
@@ -1101,13 +1123,14 @@ pub fn value_to_json(
 /// Unlike [`value_to_json`], this accepts NaN/Infinity floats (renders as `Float(NaN)`, `Float(inf)`).
 ///
 /// `depth` tracks recursion depth to prevent stack overflow from deeply nested
-/// dict-of-dicts structures. Uses the same limit as `eval::MAX_EVAL_DEPTH`.
+/// dict-of-dicts structures. Uses `MAX_DISPLAY_DEPTH` (5 levels); truncates deeper nesting with `...`.
 pub fn value_to_display_string(
     val: &value::Value,
     ctx: &Arc<eval::EvalContext>,
+    span: ast::Span,
 ) -> Result<String, Box<error::EvalError>> {
     let depth = 0;
-    visit_value(val, ctx, depth, &DisplayVisitor)
+    visit_value(val, ctx, depth, &DisplayVisitor, span)
 }
 
 #[allow(clippy::items_after_test_module)]
@@ -1144,19 +1167,19 @@ mod tests {
 
     #[test]
     fn test_json_int() {
-        let result = value_to_json(&Value::Int(42), &test_ctx()).unwrap();
+        let result = value_to_json(&Value::Int(42), &test_ctx(), ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!(42));
     }
 
     #[test]
     fn test_json_int_negative() {
-        let result = value_to_json(&Value::Int(-100), &test_ctx()).unwrap();
+        let result = value_to_json(&Value::Int(-100), &test_ctx(), ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!(-100));
     }
 
     #[test]
     fn test_json_int_zero() {
-        let result = value_to_json(&Value::Int(0), &test_ctx()).unwrap();
+        let result = value_to_json(&Value::Int(0), &test_ctx(), ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!(0));
     }
 
@@ -1164,7 +1187,7 @@ mod tests {
     fn test_json_float() {
         // 3.14 tests float serialization, not π.
         #[allow(clippy::approx_constant)]
-        let result = value_to_json(&Value::Float(3.14), &test_ctx()).unwrap();
+        let result = value_to_json(&Value::Float(3.14), &test_ctx(), ast::Span::origin()).unwrap();
         #[allow(clippy::approx_constant)]
         {
             assert_eq!(result, serde_json::json!(3.14));
@@ -1173,61 +1196,77 @@ mod tests {
 
     #[test]
     fn test_json_float_negative() {
-        let result = value_to_json(&Value::Float(-2.5), &test_ctx()).unwrap();
+        let result = value_to_json(&Value::Float(-2.5), &test_ctx(), ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!(-2.5));
     }
 
     #[test]
     fn test_json_float_zero() {
-        let result = value_to_json(&Value::Float(0.0), &test_ctx()).unwrap();
+        let result = value_to_json(&Value::Float(0.0), &test_ctx(), ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!(0.0));
     }
 
     #[test]
     fn test_json_float_nan_error() {
-        let err = value_to_json(&Value::Float(f64::NAN), &test_ctx()).unwrap_err();
+        let err =
+            value_to_json(&Value::Float(f64::NAN), &test_ctx(), ast::Span::origin()).unwrap_err();
         assert!(err.kind.to_string().contains("NaN"));
     }
 
     #[test]
     fn test_json_float_infinity_error() {
-        let err = value_to_json(&Value::Float(f64::INFINITY), &test_ctx()).unwrap_err();
+        let err = value_to_json(
+            &Value::Float(f64::INFINITY),
+            &test_ctx(),
+            ast::Span::origin(),
+        )
+        .unwrap_err();
         assert!(err.kind.to_string().contains("is not a finite number"));
     }
 
     #[test]
     fn test_json_float_neg_infinity_error() {
-        let err = value_to_json(&Value::Float(f64::NEG_INFINITY), &test_ctx()).unwrap_err();
+        let err = value_to_json(
+            &Value::Float(f64::NEG_INFINITY),
+            &test_ctx(),
+            ast::Span::origin(),
+        )
+        .unwrap_err();
         assert!(err.kind.to_string().contains("is not a finite number"));
     }
 
     #[test]
     fn test_json_string() {
-        let result = value_to_json(&string_val("hello"), &test_ctx()).unwrap();
+        let result = value_to_json(&string_val("hello"), &test_ctx(), ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!("hello"));
     }
 
     #[test]
     fn test_json_string_empty() {
-        let result = value_to_json(&string_val(""), &test_ctx()).unwrap();
+        let result = value_to_json(&string_val(""), &test_ctx(), ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!(""));
     }
 
     #[test]
     fn test_json_string_with_special_chars() {
-        let result = value_to_json(&string_val("line\nnewline"), &test_ctx()).unwrap();
+        let result = value_to_json(
+            &string_val("line\nnewline"),
+            &test_ctx(),
+            ast::Span::origin(),
+        )
+        .unwrap();
         assert_eq!(result, serde_json::json!("line\nnewline"));
     }
 
     #[test]
     fn test_json_bool_true() {
-        let result = value_to_json(&Value::Bool(true), &test_ctx()).unwrap();
+        let result = value_to_json(&Value::Bool(true), &test_ctx(), ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!(true));
     }
 
     #[test]
     fn test_json_bool_false() {
-        let result = value_to_json(&Value::Bool(false), &test_ctx()).unwrap();
+        let result = value_to_json(&Value::Bool(false), &test_ctx(), ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!(false));
     }
 
@@ -1236,7 +1275,7 @@ mod tests {
         // Empty dict [] is LLT's null value; value_to_json serializes it as JSON null
         // to match builtin-to-json and the LLT null compatibility convention.
         let dict = Value::Dict(IndexMap::new());
-        let result = value_to_json(&dict, &test_ctx()).unwrap();
+        let result = value_to_json(&dict, &test_ctx(), ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::Value::Null);
     }
 
@@ -1247,7 +1286,7 @@ mod tests {
         map.insert(Key::String("name".into()), thunk(string_val("Alice")));
         map.insert(Key::String("age".into()), thunk(Value::Int(30)));
         let val = make_dict(map, &ctx);
-        let result = value_to_json(&val, &ctx).unwrap();
+        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!({"name": "Alice", "age": 30}));
     }
 
@@ -1259,7 +1298,7 @@ mod tests {
         map.insert(Key::Int(5), thunk(string_val("five")));
         map.insert(Key::Int(10), thunk(string_val("ten")));
         let val = make_dict(map, &ctx);
-        let result = value_to_json(&val, &ctx).unwrap();
+        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!({"5": "five", "10": "ten"}));
     }
 
@@ -1270,7 +1309,7 @@ mod tests {
         map.insert(Key::Int(0), thunk(string_val("zero")));
         map.insert(Key::String("x".into()), thunk(Value::Int(1)));
         let val = make_dict(map, &ctx);
-        let result = value_to_json(&val, &ctx).unwrap();
+        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!({"0": "zero", "x": 1}));
     }
 
@@ -1283,7 +1322,7 @@ mod tests {
         map.insert(Key::Int(1), thunk(string_val("b")));
         map.insert(Key::Int(2), thunk(string_val("c")));
         let val = make_dict(map, &ctx);
-        let result = value_to_json(&val, &ctx).unwrap();
+        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!(["a", "b", "c"]));
     }
 
@@ -1293,7 +1332,7 @@ mod tests {
         let mut map = IndexMap::new();
         map.insert(Key::Int(0), thunk(Value::Bool(true)));
         let val = make_dict(map, &ctx);
-        let result = value_to_json(&val, &ctx).unwrap();
+        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!([true]));
     }
 
@@ -1306,7 +1345,7 @@ mod tests {
         map.insert(Key::Int(0), thunk(string_val("a")));
         // First key is 1 at index 0 -> not array-like
         let val = make_dict(map, &ctx);
-        let result = value_to_json(&val, &ctx).unwrap();
+        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!({"1": "b", "0": "a"}));
     }
 
@@ -1318,7 +1357,7 @@ mod tests {
         map.insert(Key::Int(1), thunk(Value::Int(10)));
         map.insert(Key::Int(2), thunk(Value::Int(20)));
         let val = make_dict(map, &ctx);
-        let result = value_to_json(&val, &ctx).unwrap();
+        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!({"1": 10, "2": 20}));
     }
 
@@ -1332,7 +1371,7 @@ mod tests {
         outer.insert(Key::String("inner".into()), thunk(inner_val));
         outer.insert(Key::String("y".into()), thunk(Value::Int(2)));
         let val = make_dict(outer, &ctx);
-        let result = value_to_json(&val, &ctx).unwrap();
+        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!({"inner": {"x": 1}, "y": 2}));
     }
 
@@ -1350,7 +1389,7 @@ mod tests {
         arr.insert(Key::Int(0), thunk(obj1_val));
         arr.insert(Key::Int(1), thunk(obj2_val));
         let val = make_dict(arr, &ctx);
-        let result = value_to_json(&val, &ctx).unwrap();
+        let result = value_to_json(&val, &ctx, ast::Span::origin()).unwrap();
         assert_eq!(
             result,
             serde_json::json!([{"name": "Alice"}, {"name": "Bob"}])
@@ -1365,7 +1404,7 @@ mod tests {
             env: Arc::new(RwLock::new(Environment::new())),
             annotation: None,
         };
-        let err = value_to_json(&f, &test_ctx()).unwrap_err();
+        let err = value_to_json(&f, &test_ctx(), ast::Span::origin()).unwrap_err();
         assert!(
             err.kind
                 .to_string()
@@ -1393,7 +1432,7 @@ mod tests {
                 tail: ctx.alloc_thunk(tail_thunk),
             }
         };
-        let err = value_to_json(&seq, &ctx).unwrap_err();
+        let err = value_to_json(&seq, &ctx, ast::Span::origin()).unwrap_err();
         assert!(
             err.kind
                 .to_string()
@@ -1425,7 +1464,7 @@ mod tests {
             pos_strictness: &[],
             force_count: 0,
         });
-        let err = value_to_json(&b, &test_ctx()).unwrap_err();
+        let err = value_to_json(&b, &test_ctx(), ast::Span::origin()).unwrap_err();
         assert!(
             err.kind
                 .to_string()
@@ -1443,7 +1482,7 @@ mod tests {
         let proxy = Value::Proxy {
             handler: ctx.alloc_thunk(handler_thunk),
         };
-        let err = value_to_json(&proxy, &ctx).unwrap_err();
+        let err = value_to_json(&proxy, &ctx, ast::Span::origin()).unwrap_err();
         assert!(
             err.kind
                 .to_string()
@@ -1456,13 +1495,15 @@ mod tests {
 
     #[test]
     fn test_json_int_max() {
-        let result = value_to_json(&Value::Int(i64::MAX), &test_ctx()).unwrap();
+        let result =
+            value_to_json(&Value::Int(i64::MAX), &test_ctx(), ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!(i64::MAX));
     }
 
     #[test]
     fn test_json_int_min() {
-        let result = value_to_json(&Value::Int(i64::MIN), &test_ctx()).unwrap();
+        let result =
+            value_to_json(&Value::Int(i64::MIN), &test_ctx(), ast::Span::origin()).unwrap();
         assert_eq!(result, serde_json::json!(i64::MIN));
     }
 
@@ -1502,7 +1543,7 @@ mod tests {
         .expect("eval failed");
         let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
             .expect("materialize failed");
-        value_to_json(&val, &ctx).expect("value_to_json failed")
+        value_to_json(&val, &ctx, ast::Span::origin()).expect("value_to_json failed")
     }
 
     #[test]
@@ -1549,9 +1590,10 @@ mod tests {
 
     #[test]
     fn test_pipeline_no_stdin_default_empty_dict() {
-        // Without stdin input, % defaults to empty dict
+        // Without stdin input, % defaults to empty dict.
+        // By design, LLT empty dict [] serializes to JSON null (see JsonVisitor::visit_dict).
         let result = eval_to_json("%");
-        assert_eq!(result, serde_json::json!({}));
+        assert_eq!(result, serde_json::Value::Null);
     }
 
     #[test]
@@ -1586,7 +1628,7 @@ mod tests {
         let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
             .expect("materialize failed");
         // value_to_json materializes nested values on demand via visit_value
-        let json = value_to_json(&val, &ctx).expect("value_to_json failed");
+        let json = value_to_json(&val, &ctx, ast::Span::origin()).expect("value_to_json failed");
         assert_eq!(json, serde_json::json!({"a": {"b": {"c": 42}}}));
     }
 
@@ -1613,7 +1655,8 @@ mod tests {
         let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
             .expect("materialize failed");
         // value_to_display_string materializes nested values on demand via visit_value
-        let display = value_to_display_string(&val, &ctx).expect("display failed");
+        let display =
+            value_to_display_string(&val, &ctx, ast::Span::origin()).expect("display failed");
         assert_eq!(display, "Dict({\"x\": Int(42)})");
     }
 
@@ -1634,7 +1677,8 @@ mod tests {
                 tail: ctx.alloc_thunk(tail_thunk),
             }
         };
-        let display = value_to_display_string(&seq, &ctx).expect("display failed");
+        let display =
+            value_to_display_string(&seq, &ctx, ast::Span::origin()).expect("display failed");
         assert_eq!(display, "Seq(Int(1), ...)");
     }
 
@@ -1648,7 +1692,8 @@ mod tests {
         let proxy = Value::Proxy {
             handler: ctx.alloc_thunk(handler_thunk),
         };
-        let display = value_to_display_string(&proxy, &ctx).expect("display failed");
+        let display =
+            value_to_display_string(&proxy, &ctx, ast::Span::origin()).expect("display failed");
         assert_eq!(display, "Proxy");
     }
 

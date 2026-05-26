@@ -1441,6 +1441,11 @@ impl Thunk {
         self
     }
 
+    /// Return the source span where this thunk was created.
+    pub fn definition_span(&self) -> Span {
+        self.span
+    }
+
     /// Restore unevaluated state after a non-cacheable error.
     /// Used only for error recovery in eval.rs and eval_materialize.rs.
     pub(crate) fn restore_unevaluated(&self, state: UnevaluatedState) {

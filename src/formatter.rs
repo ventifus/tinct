@@ -160,8 +160,9 @@ pub fn format_source_tinct_with_dir(
                     end,
                 } => Ok(source[start..end].to_string()),
                 _ => {
-                    let display_str = crate::value_to_display_string(&ok_val, &ctx)
-                        .unwrap_or_else(|_| "<error displaying value>".to_string());
+                    let display_str =
+                        crate::value_to_display_string(&ok_val, &ctx, payload_thunk.span)
+                            .unwrap_or_else(|_| "<error displaying value>".to_string());
                     Err(format!("formatter Ok value is not a string: {display_str}"))
                 }
             }
@@ -171,7 +172,7 @@ pub fn format_source_tinct_with_dir(
                 let err_thunk = ctx.get_thunk(err_id);
                 let err_val = eval::materialize_sync(&err_thunk, None, &ctx)
                     .map_err(|e| format!("formatter Error materialize error: {e}"))?;
-                crate::value_to_display_string(&err_val, &ctx)
+                crate::value_to_display_string(&err_val, &ctx, err_thunk.span)
                     .unwrap_or_else(|_| "<error displaying value>".to_string())
             } else {
                 "(no message)".to_string()
@@ -179,8 +180,9 @@ pub fn format_source_tinct_with_dir(
             Err(format!("formatter error: {msg}"))
         }
         _ => {
-            let display_str = crate::value_to_display_string(&result_val, &ctx)
-                .unwrap_or_else(|_| "<error displaying value>".to_string());
+            let display_str =
+                crate::value_to_display_string(&result_val, &ctx, formatter_thunk.span)
+                    .unwrap_or_else(|_| "<error displaying value>".to_string());
             Err(format!(
                 "formatter returned non-Result value: {display_str}"
             ))

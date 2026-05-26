@@ -2657,7 +2657,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     })?;
 
     // Always serialize to JSON (emit is purely additive)
-    let json = value_to_json(&val, &eval_ctx).map_err(|e| {
+    let json = value_to_json(&val, &eval_ctx, thunk.definition_span()).map_err(|e| {
         let mut msg = format!("{e}");
         if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
             msg.push('\n');
@@ -3010,7 +3010,7 @@ fn run_literate_weave(
         };
 
         // Always serialize the result to JSON (emit is additive)
-        let json = value_to_json(&val, &eval_ctx)
+        let json = value_to_json(&val, &eval_ctx, thunk.definition_span())
             .map_err(|e| format!("error serializing code block {} result: {e}", i + 1))?;
         let output_str = serde_json::to_string(&json)
             .map_err(|e| format!("JSON serialization error in block {}: {e}", i + 1))?;

@@ -240,6 +240,67 @@ tinct run -o json-pretty config.llt  # indented JSON to stdout
 ]
 ```
 
+## Profiling (`--profile`)
+
+`--profile <file.json>` collects span-level timing data during evaluation and writes it to a JSON file. Each thunk materialization produces a span record with source location, timing, parent attribution, and stall breakdown. The span file is the lossless archive — all downstream analysis reads from it.
+
+```bash
+tinct run --profile spans.json program.llt
+```
+
+Analysis scripts in `scripts/profile/` consume the span file via the standard pipeline:
+
+```bash
+tinct run -i json          scripts/profile/materialize.llt < spans.json        # hotspot table
+tinct run -i json          scripts/profile/create.llt      < spans.json        # creation-context table
+tinct run -i json -o json  scripts/profile/trace.llt       < spans.json > trace.json  # Perfetto trace
+```
+
+### Span Record Schema
+
+Each span dict carries 14 fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | Int | Unique span ID |
+| `materialize-parent` | Int \| [] | Span that materialized this thunk |
+| `create-parent` | Int \| [] | Span active when this thunk was created |
+| `create-time-us` | Int | Wall-clock microseconds when thunk was created |
+| `source-file` | Str | Source file path; `""` for Rust builtins |
+| `source-start` | Int | Byte offset into source file |
+| `source-end` | Int | Byte offset into source file |
+| `source-text` | Str | Leading characters of source at this span |
+| `builtin` | Str \| [] | Builtin name (e.g., `"builtin-map"`) if Rust builtin |
+| `origin-builtin` | Str \| [] | Originating Rust builtin for cross-boundary calls |
+| `start-us` | Int | Wall-clock microseconds at materialization start |
+| `end-us` | Int | Wall-clock microseconds at materialization end |
+| `stall-us` | Int | Microseconds blocked in I/O or async wait |
+| `stall-kind` | Str \| [] | `"io"`, `"net"`, `"channel"`, or `"timer"` |
+
+### Dual Attribution
+
+`materialize-parent` and `create-parent` track independent relationships. A thunk created in one context may be materialized by a completely different context later — the gap between them is the lazy evaluation decoupling.
+
+- **Materialization-context** (`scripts/profile/materialize.llt`): "what demanded this work?" Groups by the span that triggered materialization.
+- **Creation-context** (`scripts/profile/create.llt`): "what allocated this work?" Groups by the span that constructed the thunk.
+
+### Stall Attribution
+
+`stall-us` separates CPU work from I/O wait. `stall-kind` records the cause:
+
+| `stall-kind` | Cause |
+|---|---|
+| `"io"` | OS filesystem syscall |
+| `"net"` | Network wait |
+| `"channel"` | Async channel wait |
+| `"timer"` | Deliberate sleep or deadline |
+
+The profile table shows `cpu_ms` (self time minus stall) and `wait_ms` (stall time) separately.
+
+### Perfetto Trace
+
+`scripts/profile/trace.llt` produces Chrome Trace Event Format JSON. Load in `chrome://tracing` or Perfetto UI (`ui.perfetto.dev`). Flow events connect each span's creation site (`create-time-us`) to its materialization site (`start-us`), making the lazy decoupling visible as arrows.
+
 ## VS Code Extension (`just ext`)
 
 A VS Code extension that provides Tinct language support: live diagnostics and hover types via the `tinct lsp` language server.

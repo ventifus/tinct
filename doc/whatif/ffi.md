@@ -182,90 +182,240 @@ This keeps `extern` blocks out of user code and provides the right abstraction l
 
 ---
 
-## Option 2: In-Tree Native Modules (Builtin Registry)
+## Option 2: In-Tree Native Modules (`--- uses:`)
 
 This option addresses a different problem: tinct's own Rust builtins that are already compiled into the binary but should only enter scope when the corresponding stdlib library is included. No external library loading — the code is already there, it just shouldn't be globally pre-injected.
 
 ### The Problem in More Detail
 
-`stdlib/sql.llt` needs `sql-open`, `sql-exec`, and `proxy` to exist in the environment. Currently, these are pre-injected by `create_root_env()` at startup. If `sql.llt` is never included, those builtins were loaded for nothing. More importantly, there is no explicit link in the source between `stdlib/sql.llt` and its Rust dependencies — the dependency is implicit and invisible.
+`stdlib/sql.llt` needs `sql-open`, `sql-exec`, and `proxy` to exist in the environment. Currently, ~306 builtins are pre-injected by `create_root_env()` at startup via `standard_builtins()`. If `sql.llt` is never included, those builtins were loaded for nothing. More importantly, there is no explicit link in the source between `stdlib/sql.llt` and its Rust dependencies — the dependency is implicit and invisible.
+
+### The Evaluator Has No Builtin Dependencies
+
+The key insight behind this design: **the evaluator itself needs zero pre-loaded builtins.** It takes a value and an environment. `+` is just a `Value::Builtin` it finds when looking up `+` in the env. No specific builtins need to exist globally; what gets pre-injected is entirely a policy choice, not a technical requirement. This means `standard_builtins()` and `create_root_env()` — which currently inject all ~306 builtins globally — can be eliminated entirely. Every document becomes self-describing about its Rust dependencies.
+
+### The `--- uses:` Declaration
+
+A stdlib file declares its Rust builtin dependencies in its document header alongside `--- caps:`:
+
+```tinct
+--- uses: ["sql"]
+---
+[
+  # sql-open, sql-exec, proxy are now in scope
+  sql-open: [fn@Handle [path@String] ...]
+  sql-exec: [fn@Int32  [db@Handle  sql@String] ...]
+]
+```
+
+`prelude.llt` declares only what it owns — the core language builtins:
+
+```tinct
+--- uses: ["prelude"]
+---
+[
+  map:   [fn ...]
+  split: [fn ...]
+  ...
+]
+```
+
+`--- uses:` is document metadata — not a tinct function call. It avoids any circular dependency with `include`, which is itself defined in prelude.
+
+### Design Intent: Self-Contained Feature Libraries
+
+`--- uses:` is not just about startup cost — it makes feature libraries self-contained. Under the previous builtin-privacy design, all Rust builtins had to be wrapped and exported by `prelude.llt`, making prelude the sole gateway. `--- uses:` partially reverses this: `lib-net-v3.llt` can declare its own Rust deps directly rather than requiring networking builtins to clutter prelude first. Each feature library becomes its own authority over the Rust layer it depends on.
+
+This is what enables `lib-net-v3.md` to be implemented cleanly: the networking library declares `--- uses: ["net" "async"]` and is self-contained. User code that never includes `lib-net-v3` never sees those builtins.
 
 ### The Builtin Module Registry
 
-Rust code in `src/builtins.rs` (or split into separate files per feature) declares named groups of builtins:
+`standard_builtins()` is deleted. Groups are defined per feature library, with granularity matching the natural self-containment boundary of each stdlib file:
 
 ```rust
-// In builtins.rs (or src/builtins_sql.rs, included via mod)
-fn sql_builtins() -> Vec<BuiltinDef> {
-    vec![
-        builtin!("sql-open",  builtin_sql_open,  [Strictness::Seq, Strictness::Seq], 2),
-        builtin!("sql-exec",  builtin_sql_exec,  [Strictness::Seq, Strictness::Seq, Strictness::Seq], 3),
-        builtin!("proxy",     builtin_proxy,     [Strictness::Seq], 1),
-    ]
-}
-
 pub fn builtin_module(name: &str) -> Option<Vec<BuiltinDef>> {
     match name {
-        "core"       => Some(core_builtins()),
-        "collection" => Some(collection_builtins()),
-        "string"     => Some(string_builtins()),
-        "math"       => Some(math_builtins()),
-        "io"         => Some(io_builtins()),
-        "net"        => Some(net_builtins()),
-        "sql"        => Some(sql_builtins()),
-        "datetime"   => Some(datetime_builtins()),
-        _            => None,
+        // Core language — used by prelude.llt only.
+        // Arithmetic, comparison, string ops, collection ops, sequences,
+        // type checking, basic I/O (open/slurp/write/emit), meta (load/eval/ast-of),
+        // blake3/include-cache-get/include-cache-put (used by prelude's include pipeline).
+        // ~120-140 builtins.
+        "prelude"  => Some(prelude_builtins()),
+
+        // Concurrency primitives — used by async.llt and lib-net-v3.llt.
+        // task, await, channel, send, recv, select-once, par, par-map, par-filter,
+        // signal-channel, timer-channel, watch-channel, context, with-cancel,
+        // with-timeout, cancel-task, drain, exit-now + stable builtin-* aliases.
+        // ~32 builtins.
+        "async"    => Some(async_builtins()),
+
+        // Date/time — used by datetime.llt.
+        // now, parse-timestamp, format-timestamp, timestamp-*, duration-*, load-tz.
+        // ~23 builtins.
+        "datetime" => Some(datetime_builtins()),
+
+        // Networking — used by lib-net-v3.llt.
+        // http2-session, http3-session, quic-session, quic-open-stream,
+        // quic-open-datagram, icmp-ping, tls-layer, tls-peer-cert.
+        // ~18 builtins.
+        "net"      => Some(net_builtins()),
+
+        // SQL — used by sql.llt.
+        // sql-open, sql-exec, proxy.
+        "sql"      => Some(sql_builtins()),
+
+        // Regex — used by regex.llt.
+        "regex"    => Some(regex_builtins()),
+
+        // Crypto — used by crypto.llt (hmac, etc.).
+        // Note: blake3 is in "prelude" because prelude's include pipeline calls it directly.
+        "crypto"   => Some(crypto_builtins()),
+
+        // Type-stage modules (dispatched separately via type_builtin_module)
+        // "type-resolvers", "type-classes", etc.
+
+        _          => None,
     }
 }
 ```
 
-`standard_builtins()` is replaced by `core_builtins()` — only the language core (arithmetic, comparison, control, strings, collections). Feature builtins are never pre-injected.
+No `core_builtins()`. No global pre-injection. Every builtin enters scope only through an explicit `--- uses:` declaration on a document that needs it.
 
-### The `native-module` Builtin
+**One group per feature library.** Most stdlib .llt files are pure tinct (datetime.llt, io.llt, path.llt, async.llt tinct wrappers, codecs/json.llt, protocols/*.llt) and call only the `builtin-*` stable aliases already in the "prelude" group. They require no special group of their own. The feature-specific Rust groups (`"async"`, `"datetime"`, `"net"`, `"sql"`) exist precisely for the libraries that OWN those Rust builtins and provide the user-facing interface to them.
 
-A new Rust builtin `native-module` takes a module name string, looks it up in `builtin_module()`, and returns a dict of `Value::Builtin` entries:
+### macros.llt Merged into prelude.llt
+
+`stdlib/macros.llt` is merged into `stdlib/prelude.llt` and deleted. The separation provided no benefit: macros.llt was always loaded unconditionally by the bootstrap (never opt-in), and macro transformer registration (`register_stdlib_macros_from_env`) works by name lookup from `stdlib_env` regardless of which source file defined them. Merging eliminates a second `load_stdlib_module` call, a second `include_str!`, and a conceptual boundary that existed only for organization.
+
+The macro definitions (`[defmacro tmpl ...]`, `[defmacro do ...]`, `[defmacro begin ...]`, etc.) move into `prelude.llt` after the prelude functions they depend on.
+
+### Processing — Evaluation Time Only
+
+`--- uses:` is processed at **evaluation time only** (`eval_surface_document`): before evaluating any expressions, inject builtins from declared modules into the document environment. This mirrors how `--- caps:` injects `DirCap` values.
+
+`--- uses:` does NOT need to be processed at expansion time, because macro transformer bodies already have full prelude access through their captured closure environments (see §Theoretically-Complete Expansion Environment below).
+
+**Cross-document scoping (doc-local only):** `--- uses:` injections are scoped to the declaring document's evaluation env and must NOT accumulate forward to subsequent pipeline documents. Regular tinct dict bindings (exported values like `db: [sql-open ...]`) continue to propagate forward as always — this is how pipeline documents share context. The split is:
+
+```
+Doc N evaluation:
+  doc_env  = parent_env + --- uses: injections   ← doc-local, not forwarded
+  evaluate N's expressions in doc_env
+  forwarded_env = parent_env + N's exported dict bindings
+  Doc N+1 baseline = forwarded_env               ← no raw builtins from --- uses:
+```
+
+This is correct because a value like `db` already carries its builtins in its closure (`[sql-open "/tmp/test.db"]` closed over `sql-open` when it was evaluated in doc N's env). Doc N+1 can use `db` without needing `sql-open` in scope. If doc N+1 needs raw access to `sql-exec` directly, it must declare `--- uses: ["sql"]` — making the dependency explicit and preventing accidental cross-document builtin leakage.
+
+The TypeEnv follows the same split: `doc_typeenv = parent_typeenv + type_env_module(name)` for type-checking the current document; only the document's exported type bindings propagate to subsequent documents' `parent_typeenv`. This ensures T002 fires correctly if a later document uses a raw builtin without declaring it.
+
+`standard_builtins()` is deleted. `create_root_env()` is made private/internal — it remains used by the bootstrap functions (`create_stdlib_env_inner`, `create_type_stage_env`) that ARE the initial bootstrap and cannot themselves be `--- uses:`-driven. User-facing code never calls it.
+
+Unknown module names produce an error: `unknown native module: "typo"`.
+
+### Theoretically-Complete Expansion Environment
+
+The expander uses `EXPAND_MACROS_DEPTH` to prevent infinite recursion: at `depth == 0` it loads the full stdlib env; at `depth > 0` (re-entrant, triggered when `builtin_expand` is called from a macro body) it currently falls back to `create_root_env()` — raw builtins only, no prelude tinct functions.
+
+This depth > 0 degradation is fixed by caching the `stdlib_env` after the depth == 0 bootstrap completes, then reusing it at depth > 0:
 
 ```rust
-fn builtin_native_module(args: Vec<Value>, _state: &mut EvalState) -> EvalResult {
-    let name = args[0].as_string()?;
-    let defs = builtin_module(&name)
-        .ok_or_else(|| EvalError::runtime(format!("unknown native module: {name}"), ...))?;
-    let mut dict = IndexMap::new();
-    for def in defs {
-        dict.insert(def.name.to_string(), Value::Builtin(def));
-    }
-    Ok(Value::Dict(dict))
+thread_local! {
+    static CACHED_STDLIB_ENV: RefCell<Option<Arc<RwLock<Environment>>>> =
+        RefCell::new(None);
 }
+
+// In expand_surface_program, depth == 0 branch:
+let (env, arena) = create_stdlib_env_with_arena()?;
+CACHED_STDLIB_ENV.with(|c| *c.borrow_mut() = Some(Arc::clone(&env)));
+
+// In depth > 0 branch (replacing create_root_env() fallback):
+let env = CACHED_STDLIB_ENV.with(|c| c.borrow().clone())
+    .unwrap_or_else(|| builtins::create_root_env()); // fallback: pre-bootstrap edge case
 ```
 
-Because it returns a plain dict, it composes naturally with `include`:
+**`expand_surface_program` is made async** as part of this sprint — the natural completion of the runtime-v2 migration for the expander. Currently the expander bridges into the async eval engine via `invoke_function_sync` and `materialize_sync`; these become `.await` calls. Once the expander is async:
 
-```tinct
-# stdlib/sql.llt — declares its own Rust dependencies explicitly
-[include [native-module "sql"]]
+- `builtin_expand` (already async) calling `expand_surface_program` (now async) is natural heap-allocated async mutual recursion — no call stack frames consumed
+- The `em_depth > 10` guard is no longer needed for stack overflow prevention
+- It is replaced by a simple logical depth counter in `EvalContext` (no thread-local, no RAII guard) that provides a clean error for pathological infinite macro expansion rather than an OOM
 
-# Now sql-open, sql-exec, proxy are in scope for the rest of this file
-sql-open: [fn@Handle [path@String]
-    [let [db [call $sql-open-raw path]]
-    ...]]
+This sprint's change to expand.rs: `pub fn expand_surface_program` → `pub async fn expand_surface_program`; all `invoke_function_sync` → `.await`; all `materialize_sync` → `.await`; all callers updated.
+
+### The Clean Bootstrap Sequence
+
+```
+1. Parse prelude.llt           → SurfaceProgram (doc.uses = ["prelude"])
+2. create_stdlib_env_inner:
+     create_root_env()         → minimal bootstrap env (private)
+     load prelude.llt          → evaluates all prelude + macro definitions
+     cache stdlib_env          → CACHED_STDLIB_ENV for depth > 0 reuse
+3. eval_surface_document (prelude):
+     inject doc.uses builtins  → builtin_module("prelude") into document env
+     evaluate prelude body     → map, filter, split, tmpl, do, ... defined here
+4. User code evaluates         → inherits prelude env
+     eval_surface_document:    → inject user's --- uses: builtins
+     macro expansion:          → uses CACHED_STDLIB_ENV (full prelude always available)
 ```
 
-`prelude.llt` similarly declares its own:
-
-```tinct
-[include [native-module "core"]]
-[include [native-module "collection"]]
-[include [native-module "string"]]
-[include [native-module "math"]]
-```
+No circular dependency. Each document is fully self-describing at evaluation time.
 
 ### Scoping
 
-Builtins loaded via `[include [native-module "sql"]]` enter scope exactly like any other `include` result — they are visible to the including file and any code that includes it, but not globally. A tinct script that never includes `stdlib/sql.llt` never sees `sql-open` in its environment.
+Builtins injected via `--- uses:` are visible to the declaring file and any code that includes it, but not globally. A tinct script that never includes `stdlib/sql.llt` never sees `sql-open` in its environment. The scope rules are identical to any other name binding.
+
+### Type-Stage Documents
+
+The same `--- uses:` mechanism applies to `--- stage: Type` documents, which run under a separate type-stage evaluator. Type-stage modules use distinct names prefixed with `"type-"`:
+
+```tinct
+--- stage: Type
+--- uses: ["type-resolvers" "type-classes"]
+---
+[
+  AddResult: [fn ...]
+  SubResult: [fn ...]
+]
+```
+
+The evaluator dispatches based on document stage: runtime documents call `builtin_module(name)`, type-stage documents call `type_builtin_module(name)`. Same syntax, different registries. The `"type-"` prefix makes the distinction unambiguous in source.
+
+### TypeEnv Must Follow `--- uses:`
+
+The type checker currently loads all builtin type signatures unconditionally from `TypeEnv::with_builtins()` (~3500 lines in `src/type_env.rs`). If `--- uses:` is implemented only at the runtime level without matching TypeEnv changes, the type checker would know about `sql-open` even when sql.llt is never included — a program using `sql-open` without `--- uses: ["sql"]` would pass type checking but fail at runtime. This violates the core correctness invariant: if the type checker approves a program, the runtime should not fail with an undefined-variable error for a builtin.
+
+`type_env.rs` must be split into parallel group functions matching `builtin_module()`:
+
+```rust
+pub fn type_env_module(name: &str) -> Option<TypeEnv> {
+    match name {
+        "prelude"  => Some(prelude_type_env()),
+        "async"    => Some(async_type_env()),
+        "datetime" => Some(datetime_type_env()),
+        "net"      => Some(net_type_env()),
+        "sql"      => Some(sql_type_env()),
+        "regex"    => Some(regex_type_env()),
+        "crypto"   => Some(crypto_type_env()),
+        _          => None,
+    }
+}
+```
+
+The type checker processes `--- uses:` from each document and extends the TypeEnv with the declared modules' type signatures before type-checking that document's expressions. This is the same mechanical split as `builtins.rs` — tedious in volume (~3500 lines) but not architecturally complex, and must be done in the same sprint as the runtime changes to preserve the correctness invariant.
+
+**Cross-document scoping constraint:** `--- uses:` TypeEnv extensions are doc-local — they must NOT propagate forward via the `env = new_env` accumulation. Only the document's exported type bindings propagate. The implementation creates a per-document `doc_typeenv = parent_typeenv + type_env_module(name)` for checking that document, then discards the `--- uses:` extensions when computing the next document's `parent_typeenv`. This matches the runtime scoping exactly: doc-local builtin injection, forwarded tinct bindings.
+
+**T002 heuristic update required:** `builtin_primary_names()` in `src/builtins.rs:2134` iterates `standard_builtins()`. Deleting `standard_builtins()` silently disables T002 detection for all builtins. Replace with aggregation across all `type_env_module()` groups, or a static `HashMap<&str, &str>` mapping builtin name → module name. This also enables a better T002 hint: `"builtin sql-open requires --- uses: [\"sql\"] in this document's header"` rather than the current suggestion to use `[include %libdir ...]`.
+
+**Note on T002 severity:** T002 currently fires at `DiagnosticLevel::Warn` — evaluation proceeds regardless. The correctness invariant is advisory, not blocking. Hardening to a type error is a separate policy decision.
+
+**`typecheck_surface_program_annotation_table` must respect `doc.uses`:** Called from `builtin_load` at `src/builtins_meta.rs:1763`, this function hardcodes `build_prelude_env()` at `src/typecheck.rs:74`, ignoring the loaded file's `--- uses:` header. It must be updated to build the TypeEnv per-document from `doc.uses`, or accept an externally-constructed TypeEnv from the caller.
+
+**TypeEnv call sites (~10):** `TypeEnv::with_builtins()` is called at `src/lib.rs`, `src/imports.rs`, `src/typecheck.rs`, `src/lsp/analysis.rs`, `src/formatter.rs`, and `src/repl.rs`. All must be migrated when `with_builtins()` is deleted. The LSP completion functions at `src/lsp/analysis.rs:3530,3558` call `standard_builtins()` directly and must be updated to use `builtin_module()` groups filtered by the current document's `--- uses:` context. Capability type aliases (`Handle`, `NetCap`, `DirCap`, `Url`) registered in `with_builtins()` must move to `prelude_type_env()`.
 
 ### Relationship to Option 1
 
-Options 1 and 2 are complementary: Option 1 loads code from outside the binary; Option 2 lazily activates code already inside the binary. A tinct stdlib library might use both — `stdlib/sqlite.llt` does `[include [native-module "sql"]]` to get tinct's built-in SQL layer, and `[extern "libsqlite3.so" ...]` to reach the system library underneath.
+Options 1 and 2 are complementary: Option 1 loads code from outside the binary; Option 2 lazily activates code already inside the binary. A tinct stdlib library might use both — `stdlib/sqlite.llt` uses `--- uses: ["sql"]` to get tinct's built-in SQL layer, and `[extern "libsqlite3.so" ...]` to reach the system library underneath.
 
 ---
 
@@ -382,7 +532,7 @@ The current monolithic `src/builtins.rs` (~10k lines) splits naturally:
 | `crates/tinct-sql/src/lib.rs` | `sql-open`, `sql-exec`, `proxy` |
 | `crates/tinct-datetime/src/lib.rs` | `now`, `timestamp`, `duration`, `format-date` |
 
-`standard_builtins()` in `tinct-core` becomes `core_builtins()` and returns only the language-core entries. The feature crates are never referenced from `tinct-core` — the dependency flows one way (feature → core), not the other.
+`tinct-core` exposes `builtin_module(name)` — the same registry function used by `--- uses:` processing. Feature crates register their groups into this registry. The feature crates are never referenced from `tinct-core` — the dependency flows one way (feature → core), not the other.
 
 ---
 
@@ -393,7 +543,7 @@ The current monolithic `src/builtins.rs` (~10k lines) splits naturally:
 | **Purpose** | Call code outside the binary | Lazily activate code inside the binary | Organize source; enable slim builds |
 | **Requires rebuild?** | No | No | Yes (compile-time choice in 3A; no in 3B) |
 | **ABI concern?** | C ABI only | None — same crate, same toolchain | None (3A); significant (3B) |
-| **tinct-side syntax** | `[extern "lib.so" ...]` | `[include [native-module "sql"]]` | No new syntax |
+| **tinct-side syntax** | `[extern "lib.so" ...]` | `--- uses: ["sql"]` header | No new syntax |
 | **Scope of adoption** | User scripts + stdlib | stdlib files | Source organization |
 | **Dependencies** | `libloading`, optionally `libffi` | None | Cargo workspace restructure |
 | **Risk** | Medium (unsafe marshalling) | Low (pure Rust, same binary) | Low (3A) / High (3B) |
@@ -447,40 +597,108 @@ Preferred: `[extern "path" name: sig ...]` desugars at parse time to `[call $ffi
 
 ### Option 2 Changes
 
-#### `src/builtins.rs` — Registry function + `native-module` builtin
+#### `src/builtins.rs` — Delete `standard_builtins()`, add registry
 
-**`builtin_module(name: &str) -> Option<Vec<BuiltinDef>>`** — static match mapping module names to builtin groups. `standard_builtins()` is narrowed to `core_builtins()` (language primitives only). Feature groups (`net_builtins()`, `sql_builtins()`, etc.) move to separate `fn`s or separate files within the same crate.
+**Delete:** `standard_builtins()` — no global pre-injection.
 
-**`native-module`** — new Rust builtin: takes a name string, returns a dict of `Value::Builtin` entries from the registry. Errors on unknown module names.
+**Make private:** `create_root_env()` — retained as a private bootstrap function used only by `create_stdlib_env_inner()` and `create_type_stage_env()`, which are the initial stdlib load entry points and cannot themselves be `--- uses:`-driven. Not called from user-facing code.
 
-**Impact:** Moderate — restructures how builtins are registered; `standard_builtins()` shrinks; `create_root_env()` injects only core builtins.
+**Add:** `builtin_module(name: &str) -> Option<Vec<BuiltinDef>>` — static match across all named groups. Each group is a `fn` returning `Vec<BuiltinDef>`: `arithmetic_builtins()`, `string_builtins()`, `collection_builtins()`, `io_builtins()`, `math_builtins()`, `meta_builtins()`, `net_builtins()`, `async_builtins()`, `sql_builtins()`, `datetime_builtins()`, `crypto_builtins()`, `regex_builtins()`. These `fn`s can remain in the same file or be split into separate files (the latter pairs naturally with Option 3A workspace split).
+
+**Impact:** Moderate — `standard_builtins()` deleted; all call sites of `create_root_env()` updated.
+
+#### `src/expand.rs` — Expander environment from `--- uses:`
+
+**Replace:** the `depth > 0` fallback to `create_root_env()` with the cached `CACHED_STDLIB_ENV` (see §Theoretically-Complete Expansion Environment). The `EXPAND_MACROS_DEPTH` thread-local and `DepthGuard` are retained; only the env constructed in the `depth > 0` branch changes. The `em_depth > 10` guard is also retained.
+
+**No expansion-time `--- uses:` processing needed:** macro transformer bodies close over the full `stdlib_env` at registration time, so they always have prelude available regardless of the document's `--- uses:` declaration. `--- uses:` is evaluation-time only.
+
+**Impact:** Moderate — removes the re-entrant special case; simplifies the expander significantly.
+
+#### `src/ast.rs` — `SurfaceDocument.uses` field
+
+New field: `pub uses: Option<Spanned<Vec<String>>>` alongside the existing `expects`, `caps`, `name`, `stage` fields.
+
+**Impact:** Minor — one new field; parser and all `SurfaceDocument` construction sites updated.
+
+#### `src/parser.rs` — `--- uses:` header parsing
+
+Parse `uses: ["sql" "net"]` in the document header block (same pass as `caps:` and `expects:`). The value is a list of string literals.
+
+**Impact:** Minor — one new header key.
+
+#### `src/eval_pipeline.rs` — `--- uses:` injection at evaluation time
+
+`eval_surface_document` reads `doc.uses` before evaluating any expressions. For each module name, calls `builtin_module(name)` and injects resulting `BuiltinDef` entries into the document environment. Unknown names error immediately. Timing mirrors `--- caps:` processing.
+
+**Impact:** Minor — a few lines in the document evaluation path.
+
+#### `stdlib/macros.llt` — deleted
+
+Merged into `prelude.llt`. Remove from `src/builtins.rs`: the `load_stdlib_module(macros_source, "macros", ...)` call and its `include_str!`. Update `src/expand.rs`: `register_stdlib_macros_from_env` removes the `include_str!("../stdlib/macros.llt")` scan — it already works by looking up macro names from `stdlib_env` by name.
+
+**Impact:** Minor cleanup — one fewer stdlib file, one fewer `load_stdlib_module` call.
 
 #### `stdlib/prelude.llt` and feature stdlib files
 
-`prelude.llt` adds explicit native module includes at the top:
+`prelude.llt` absorbs macros.llt content and adds `--- uses:` header:
 
 ```tinct
-[include [native-module "core"]]
-[include [native-module "collection"]]
-[include [native-module "string"]]
-[include [native-module "math"]]
-[include [native-module "io"]]
+--- uses: ["prelude"]
+---
+[
+  map:   [fn ...]
+  ...
+  # macro definitions (formerly macros.llt)
+  tmpl:  [defmacro ...]
+  do:    [defmacro ...]
+]
 ```
 
-Feature stdlib files declare their own:
+Feature libraries declare only their own Rust deps — no prelude builtins needed since those arrive via `[include prelude]`:
 
 ```tinct
-# stdlib/net.llt
-[include [native-module "net"]]
+# lib-net-v3.llt — owns its networking and concurrency Rust builtins directly
+--- uses: ["net" "async"]
+---
+[
+  http-get:     [fn ...]
+  tcp-connect:  [fn ...]
+  make-serve-layer: [fn ...]
+]
+
+# datetime.llt — owns its date/time Rust builtins
+--- uses: ["datetime"]
+---
+[
+  now:             [fn ...]
+  parse-timestamp: [fn ...]
+]
+
+# sql.llt — owns its SQL Rust builtins
+--- uses: ["sql"]
+---
+[
+  sql-open: [fn ...]
+  sql-exec: [fn ...]
+]
 ```
 
-**Impact:** Minor — additive changes to stdlib files; makes Rust dependencies explicit and visible.
+Pure tinct libraries (path.llt, codecs/json.llt, protocols/dns.llt, etc.) need no `--- uses:` at all — they are implemented entirely in tinct using prelude functions.
+
+**Impact:** Minor — additive header change to each stdlib file; makes Rust dependencies explicit and visible in source.
+
+#### `src/type_env.rs` — TypeEnv split (same sprint)
+
+`TypeEnv::with_builtins()` is split into per-group functions mirroring `builtin_module()`: `prelude_type_env()`, `async_type_env()`, `datetime_type_env()`, `net_type_env()`, `sql_type_env()`, etc. The type checker extends the TypeEnv with declared modules' type signatures when processing each document's `--- uses:` header — same phase as the runtime injection. `TypeEnv::with_builtins()` is deleted alongside `standard_builtins()`.
+
+**Impact:** Major in volume (~3500 lines reorganized), moderate in code — mechanical split, same groups as `builtins.rs`. Must be done in the same sprint as the runtime changes to preserve the correctness invariant (type checker approval implies runtime availability).
 
 #### Test suite
 
-Tests asserting the count or names of `standard_builtins()` will need updating. Tests for feature builtins need to bootstrap via `native-module` if they no longer live in `standard_builtins()`.
+Tests asserting the count or names of `standard_builtins()` need updating. Tests for feature builtins that no longer live in `standard_builtins()` must ensure their test environment loads the relevant module via `--- uses:` or direct `builtin_module()` injection.
 
-**Impact:** Minor — mechanical updates to builtin count assertions.
+**Impact:** Minor — mechanical updates to builtin count assertions and test environment setup.
 
 ---
 
@@ -513,7 +731,7 @@ Each feature crate:
 - Each feature crate compiles as `cdylib` (`[lib] crate-type = ["cdylib"]`)
 - Exports `#[no_mangle] pub extern "C" fn tinct_register(registry: *mut BuiltinRegistry)`
 - `BuiltinRegistry` must be `#[repr(C)]` and ABI-stable; consider `abi_stable` crate
-- `native-module` in the runtime calls `dlopen` + symbol lookup + `tinct_register` on first access
+- `--- uses:` processing in the runtime calls `dlopen` + symbol lookup + `tinct_register` on first access for dynamically-linked modules
 - **Hard constraint:** host and plugin compiled with identical Rust toolchain version
 
 **Impact:** Major — ABI stability concerns, `abi_stable` dependency, significantly more complex CI (each feature crate has its own artifact).

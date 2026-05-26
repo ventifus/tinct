@@ -351,11 +351,14 @@ fn register_stdlib_macro_by_name(
 }
 
 // Reentrance depth guard for expand_surface_program → create_stdlib_env calls.
-// When depth > 0, we're in a re-entrant call and must use create_root_env
-// to avoid infinite recursion through the stdlib loading path.
+// When depth > 0, we're in a re-entrant call and must reuse the cached stdlib
+// env from the depth == 0 call rather than falling back to a degraded create_root_env.
 std::thread_local! {
     static EXPAND_MACROS_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static EXPAND_EXPR_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Cached stdlib env from the depth == 0 bootstrap. Reused at depth > 0 so that
+    /// macro bodies in re-entrant calls can access prelude functions (split, reduce, etc.).
+    static CACHED_STDLIB_ENV: RefCell<Option<Arc<RwLock<Environment>>>> = const { RefCell::new(None) };
 }
 
 /// RAII guard for EXPAND_MACROS_DEPTH. Restores depth on drop, even if the guarded scope panics.
@@ -435,6 +438,8 @@ pub fn expand_surface_program(
                     HashMap::new(), // macro_injects_map — will be populated during expansion
                 );
                 register_stdlib_macros_from_env(&mut env_macro, &env, &ctx);
+                // Cache for re-entrant calls (depth > 0) so they get the full prelude env.
+                CACHED_STDLIB_ENV.with(|c| *c.borrow_mut() = Some(Arc::clone(&env)));
                 (env, ctx)
             }
             Err(e) => return Err(e),

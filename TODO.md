@@ -273,6 +273,25 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 **Pre-existing regression newly surfaced:**
 - 3 boundary guard tests (`test_boundary_guard_passes_on_matching_type`, `test_boundary_guard_fires_on_type_mismatch`, `test_boundary_guard_is_lazy`) — these were previously hidden because the eval.rs test module didn't compile (Expr dependency). Now they compile but fail because boundary guard application is not yet implemented in `eval_core_expr`. Marked `#[ignore]` with pre-existing note. Should be tracked separately: boundary guard check must be added to `eval_core_expr` to apply the guard when a thunk's span matches `ctx.boundary_guards`.
 
+### rv2-expander-async: Make expand_surface_program and internal helpers async
+
+Discovered 2026-05-25: the macro expander (`src/expand.rs`) is still using sync bridges into the async eval engine despite runtime-v2 making eval async. These bridges (`invoke_function_sync`, `materialize_sync`, `block_on_anywhere`) were explicitly marked as temporary in their doc comments ("New async code should call `.await` directly"). Making the expander async: (1) eliminates the sync bridge overhead, (2) removes the call-stack-based recursion for macro expansion (heap-allocated async state machines instead), allowing the `em_depth > 10` depth guard to be replaced by a simple logical counter in EvalContext.
+
+- [ ] Make `expand_macro_call_surface()` async — replace `invoke_function_sync` → `.await` and `materialize_sync` → `.await` (`src/expand.rs:1317,1334,1366`)
+- [ ] Make `force_dict_tree_impl()` and `force_dict_tree()` async — replace `block_on_anywhere(eval::materialize(...))` → `.await` (`src/expand.rs:1123,1141,1167,1181`)
+- [ ] Make `expand_surface_program()` async — propagate async through the call chain (`src/expand.rs:394`)
+- [ ] Replace `EXPAND_MACROS_DEPTH` thread-local + `DepthGuard` RAII with a simple `expand_depth: u32` counter in `EvalContext` — no longer needed for stack safety, only as a logical recursion limit (`src/expand.rs:356-413`)
+- [ ] Tests: verify macro expansion still works correctly for tmpl, do, begin, syntax-fn; verify depth limit error fires for pathological infinite expansion
+
+### rv2-async-remaining: Migrate remaining sync bridges into async eval engine
+
+Discovered 2026-05-25: three additional subsystems are still using sync bridges. All explicitly marked as incomplete in their doc comments.
+
+- [ ] `src/repl.rs:244,261` — `eval_input()` is sync but calls `block_on_anywhere(eval_surface_file_with_input(...))` and `materialize_sync`. Make `eval_input` async; update the REPL event loop caller. [Critical for REPL latency and correctness]
+- [ ] `src/formatter.rs:132,143` — `apply_formatter()` is sync but calls `block_on_anywhere(eval::eval_surface_file_with_input(...))` and `materialize_sync`. Make async or spawn a task. [Affects formatter correctness under async runtime]
+- [ ] `src/type_normalize.rs:406` — `resolve_type()` is sync but calls `block_on_anywhere(invoke_function(...))`. Make async; update type checker callers. [Type normalization runs during compilation — should not block async runtime]
+- [ ] Tests: `just ci` passes after each migration; no regressions in REPL, formatter, or type checker behavior
+
 ---
 
 ## Linear Accumulators (`doc/whatif/completed/linear-accumulators.md`)
@@ -378,21 +397,6 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 
 ---
 
-## Codebase Audit Findings (Health Review #311, 2026-05-25)
-
-
-
-
-### serialization-span-threading: Thread definition spans through ValueVisitor [Major]
-
-**integration-verifier M1.** `src/lib.rs:825,876,883,888,896` — All ValueVisitor error constructors use `Span::origin()` (no source location). Users see `[E035] cannot serialize Function to JSON (defined at 1:1-1:1)`. Requires threading spans through `visit_value` recursion or adding span parameter to ValueVisitor trait methods.
-
-- [ ] Design approach: span parameter on ValueVisitor methods vs threading through visit_value recursion
-- [ ] Implement chosen approach in `src/lib.rs:621-706` (ValueVisitor trait + implementations)
-- [ ] Update `visit_function`, `visit_builtin`, `visit_seq_head`, `visit_proxy`, `visit_float` to use real spans
-
-
-
 ## Codebase Audit Findings (Health Review #306, 2026-05-25)
 
 Hardcoded behavior, stubs, and dead code found during systematic audit. Root causes documented inline.
@@ -412,9 +416,9 @@ Hardcoded behavior, stubs, and dead code found during systematic audit. Root cau
 - [x] Update `doc/10-errors.md` error code table — added E012, E013, E044, E071, E072, E081, E082 (7 entries)
 
 
-### async-completions: Complete async shutdown + safety features
+### eval-runtime-fixes: Fix async shutdown and TCO bugs in CEK machine
 
-Combined: async-cleanup-safety + async-drain-joinset (5 tasks, related async builtins)
+#### Async shutdown (from async-completions)
 
 - [ ] Implement `non-cancellable` and `with-context` builtins (`src/builtins_async.rs`)
 - [ ] Update `finally` to run cleanup in non-cancellable context (`stdlib/async.llt`)
@@ -422,13 +426,9 @@ Combined: async-cleanup-safety + async-drain-joinset (5 tasks, related async bui
 - [ ] Register all spawn_local calls in task registry (`src/builtins_async.rs`, ~10 sites)
 - [ ] Implement drain by awaiting all registered handles (`src/builtins_async.rs`)
 
-### tco-implement: Fix TCO bugs in the CEK machine
+#### TCO bugs (from tco-implement)
 
-TCO has landed in the CEK machine (iterative-eval sprints) but has known bugs. Tail-recursive stdlib functions are the correct, idiomatic pattern and must work without depth limits. No workarounds in stdlib — fix the bugs here.
-
-Known stale comment to clean up: `loop-select-impl` in `stdlib/async.llt` has "hits the LLT recursion limit at ~230 iterations; use explicit task-based loop" — written before TCO. Remove it.
-
-Known tail-recursive functions that must work for unlimited iterations: `loop-select-impl` (async.llt), `retry-impl` (async.llt), `parse-header-fields-impl` (net.llt).
+TCO has landed in the CEK machine but has known bugs. Tail-recursive stdlib functions must work without depth limits. Known tail-recursive functions: `loop-select-impl` (async.llt), `retry-impl` (async.llt), `parse-header-fields-impl` (net.llt).
 
 - [ ] Investigate and fix TCO bugs in `force_step`/`apply_cont` — tail calls (where a function body's final expression is a call) must reuse the existing Memoize continuation rather than pushing a new one (`src/eval_materialize.rs`)
 - [ ] Remove stale comment from `loop-select-impl`: delete "hits the LLT recursion limit at ~230 iterations; use explicit task-based loop" (`stdlib/async.llt`)
@@ -437,27 +437,25 @@ Known tail-recursive functions that must work for unlimited iterations: `loop-se
 - [ ] Add corpus test: `retry` survives 10,000 retries (`tests/corpus/eval/retry_depth.llt-eval`)
 - [ ] Add corpus test: `parse-header-fields-impl` handles 10,000+ headers (`tests/corpus/eval/net_many_headers.llt-eval`)
 
-### websocket-extended-payload: WebSocket >65535 byte frames not supported
+### stdlib-additions: WebSocket extended payload, str-substr, numeric to-bytes
 
-`stdlib/protocols/websocket.llt` raises an error for payloads over 65535 bytes: `"build-ws-frame: payload > 65535 bytes not supported"`. The extended-64 (8-byte length) encoding is missing.
+#### WebSocket extended payload (from websocket-extended-payload)
 
-Root cause: Initial implementation deferred 64-bit length encoding.
+`stdlib/protocols/websocket.llt` raises an error for payloads over 65535 bytes. The extended-64 (8-byte length) encoding is missing.
 
 - [ ] Implement extended-64 payload encoding in `build-ws-frame` for payloads > 65535 bytes (`stdlib/protocols/websocket.llt`)
 - [ ] Add corpus test for large payload frame encoding
 
-### str-substr: Length-based string slice deferred
+#### str-substr (from str-substr)
 
-`strings.llt` comment: `"length-based form is ever needed, it will be named str-substr (deferred)"`. Only position-based `str-slice(string, start, end)` exists.
+Only position-based `str-slice(string, start, end)` exists; length-based form deferred.
 
 - [ ] Add `str-substr` to `stdlib/strings.llt`: `[fn@String [s@String start@Int len@Int] [str-slice s start [+ start len]]]`
 - [ ] Add corpus test
 
-### numeric-to-bytes: to-bytes is a stub returning string
+#### numeric to-bytes (from numeric-to-bytes)
 
-`stdlib/numeric.llt` comment: `"stub returns the string form"`. `to-bytes` does `[str v]` instead of binary encoding.
-
-Root cause: Binary encoding requires `str-bytes` or a proper binary serialization format; design not yet specified.
+`stdlib/numeric.llt` `to-bytes` is a stub returning `[str v]` instead of binary encoding.
 
 - [ ] Decide what `to-bytes` should produce: UTF-8 bytes of string representation, or a binary integer encoding? Add to `/rnd` if non-obvious.
 - [ ] Track: if this is waiting for a binary/bytes type, reference that sprint here.
@@ -477,7 +475,9 @@ Root cause: Arena phase-3 (slot-based lookup wiring into evaluator) not yet star
 
 ## Builtin CPS Debt
 
-### h2-h3-cleanup: Clean up H2/H3 annotated builtins (no-ops and improvable registrations)
+### builtin-force-cleanup: Clean up H2/H3 annotations and migrate H1 builtins to pos_strictness
+
+#### H2/H3 cleanup (from h2-h3-cleanup)
 
 Assumption-skeptic verified all H2/H3 annotations are **correct** — no hidden bugs. Six are genuine no-ops (pos_strictness already covers them); two real materializations can be eliminated by extending registrations.
 
@@ -491,11 +491,9 @@ Assumption-skeptic verified all H2/H3 annotations are **correct** — no hidden 
 - [ ] `builtin_gensym`: extend registration to `[Strictness::Seq]`; engine skips pos_strictness[0] when args.len()==0 (variadic 0-or-1) (`src/builtins.rs` registration + `src/builtins_meta.rs`)
 - [ ] `builtin_connect`: extend registration from `[Seq,Seq,Seq]` to `[Seq,Seq,Seq,Seq]`; engine skips pos_strictness[3] when args.len()==3 (UnixStream/Datagram); eliminates `materialize(&args[3])` in Tcp and Udp arms (`src/builtins.rs` registration + `src/builtins_io.rs`)
 
-**Leave as-is** (no framework support): `builtin_load` named args, `builtin_bytes` variadic loop.
+#### H1 migration (from h1-force-count-migration)
 
-### h1-force-count-migration: Migrate H1-annotated builtins to use pos_strictness/force_count
-
-The `lint-builtins-cps` lint ensures builtins don't call `materialize()` directly on args without annotation. `// H1:` marks unconditional force — args that are always materialized and should be declared via `pos_strictness: [Strictness::Seq, ...]` or `force_count` instead, so the CEK machine pre-materializes them before the builtin runs.
+`// H1:` marks unconditional force — args that should be declared via `pos_strictness` or `force_count` so the CEK machine pre-materializes them.
 
 **`src/builtins_meta.rs`** — 2 H1s:
 - [ ] `builtin_variant` (~line 1164): tag arg always materialized to get String — add `pos_strictness: [Strictness::Seq]` (`src/builtins_meta.rs`)
@@ -503,6 +501,8 @@ The `lint-builtins-cps` lint ensures builtins don't call `materialize()` directl
 
 **`src/builtins_datetime.rs`** — ~30 H1s across all datetime builtins:
 - [ ] Add `pos_strictness` or `force_count` to all datetime builtins that unconditionally materialize their args (Timestamp, Duration, Int, String, DirCap, ClockCap args are all always strict) — removes all inline `materialize()` H1 calls (`src/builtins_datetime.rs`)
+
+**Leave as-is** (no framework support): `builtin_load` named args, `builtin_bytes` variadic loop.
 
 ## Known Bugs + Nits
 
@@ -696,42 +696,50 @@ nested resolution always has a cap dir.
 - [x] Verify `just lint-clippy` passes
 - [x] `just test-lib` passes
 
-### typecheck-mixed-annotation-regression: `fn@[return: Int 42]` no longer produces type error
+### typecheck-regression-fixes: Fix typecheck regressions, warnings, and type system gaps
 
-Pre-existing regression discovered during sprint `rv2-output-formatter-contract` (2026-05-25). `[fn@[return: Int 42] [] 0]` (function annotation that mixes named `return:` key with positional entry `42`) previously produced a typecheck error "mixed keys in annotation" but now typechecks cleanly. Test file deleted. Root cause: annotation validation in typecheck.rs or typecheck_annot.rs stopped checking for mixed named+positional entries in `fn@[...]` annotations.
+#### Mixed annotation regression (from typecheck-mixed-annotation-regression)
+
+Pre-existing regression: `[fn@[return: Int 42] [] 0]` (function annotation that mixes named `return:` key with positional entry `42`) previously produced a typecheck error "mixed keys in annotation" but now typechecks cleanly.
 
 - [ ] Re-add validation that `fn@[...]` annotation body must have only named keys (return:, constraint:, doc:, bind:, kinds:) — positional entries in the annotation should be a type error
 - [ ] Re-add corpus test `tests/corpus/eval/type_errors/fn_annotation_mixed_keys_error.llt-eval` once the validation is restored
 
-### typecheck-corpus-regressions: 2 typecheck corpus tests fail due to type_class.rs regressions
+#### Corpus test regressions (from typecheck-corpus-regressions)
 
-Pre-existing regressions discovered during sprint `rv2-output-formatter-contract` (2026-05-25). Two tests in `tests/corpus/eval/typecheck/` that should pass typecheck are now producing errors. Excluded from `test_typecheck_corpus` as workaround (tracked in TODO).
-
-1. `constraint_resolution_dispatch.llt-eval`: "instance pattern for class 'Describable' contains Unknown types — all pattern positions must have concrete type annotations". The `[pattern [Str]]` instance syntax is not recognized — needs `[pattern [x@Str]]` or the instance pattern resolver changed. Related to CHR constraint resolution changes in `src/type_class.rs`.
-
-2. `nominal_variant_exhaustive_match.llt-eval`: "arithmetic operand has non-numeric type []: expected Number, Int, or Float". Match pattern `[Circle r]` is extracting `r` as `[]` instead of `Int`. Nominal variant match pattern field type propagation is broken in `src/typecheck.rs`.
+Two tests in `tests/corpus/eval/typecheck/` producing errors instead of passing. Excluded from `test_typecheck_corpus` as workaround.
 
 - [ ] Fix `constraint_resolution_dispatch`: investigate instance pattern validation in `type_class.rs`; fix `[pattern [Str]]` to be recognized as a concrete pattern; or update the test to use `[pattern [x@Str]]` form if the syntax changed
 - [ ] Fix `nominal_variant_exhaustive_match`: fix match pattern extraction to propagate field types from the variant definition; `[Circle r]` should give `r: Int` scope in the arm body
 - [ ] Remove the exclusion from `test_typecheck_corpus` once both are fixed
 
-### typecheck-warnings-vs-errors: 7 `typecheck/warnings/` tests produce type ERRORS instead of WARNINGS
+#### Warnings promoted to errors (from typecheck-warnings-vs-errors)
 
-Pre-existing regression discovered during sprint `rv2-output-formatter-contract` (2026-05-25). The 7 failing tests produce type ERRORS where they should produce type WARNINGS only:
-
-- `warnings/constraint_key_not_bareword.llt-eval` — "constraint key must be a bare word"
-- `warnings/constraint_not_dict.llt-eval` — "constraint: value must be a dict"
-- `warnings/constraint_positional_entry.llt-eval` — "constraint: value must be a dict"
-- `warnings/constraint_value_invalid.llt-eval` — "constraint value must be a class name"
-- `warnings/doc_not_string.llt-eval` — "doc: value must be a string literal"
-- `warnings/help_suggestion_arity.llt-eval` — "arity mismatch: expected 2 arguments, got 1"
-- `warnings/unknown_fn_annotation_key.llt-eval` — "unknown function annotation key 'foo'"
-
-Root cause: changes to `src/typecheck.rs` or `src/type_class.rs` in an earlier sprint promoted some annotation diagnostics from warnings to errors. These tests were always expected to be warning-only (they have `=== warn` sections). `test_typecheck_corpus` now excludes `warnings/` to avoid CI breakage, but these tests are also failing in `test_typecheck_warnings_corpus`.
+7 `typecheck/warnings/` tests produce type ERRORS instead of WARNINGS: constraint_key_not_bareword, constraint_not_dict, constraint_positional_entry, constraint_value_invalid, doc_not_string, help_suggestion_arity, unknown_fn_annotation_key.
 
 - [ ] Identify which typecheck.rs / type_class.rs change promoted these diagnostics from warning to error severity
 - [ ] Restore warning severity for: malformed constraint keys, constraint-not-dict, doc-not-string, unknown annotation key, arity mismatch in annotation context
 - [ ] Re-include `warnings/` in `test_typecheck_corpus` (remove the exclusion added as workaround)
+
+#### T013 duplicate emission (from t013-duplicate-diagnostic-emission)
+
+The constraint solver emits T013 each time it tries and fails to discharge an ambiguous constraint, rather than deduplicating per (type-variable, span) pair.
+
+- [ ] Deduplicate T013 diagnostics by (type-variable, span) before emitting — each unique (typevar, span) pair should produce at most one T013 warning. (`src/typecheck.rs` constraint discharge path)
+
+#### MPTC membership check (from chr-mptc-membership)
+
+`src/type_unify.rs:389-396`: when a TypeVar constrained by Addable/Subtractable/Multipliable/Divisible is bound to a non-arithmetic type (e.g., Str), no error fires at binding time.
+
+- [ ] Add partial membership check (can we find `Add Str β γ` for any β, γ?) at TypeVar binding time (`src/type_unify.rs:389-396`)
+
+#### Indexable FD in SCC inference (from indexable-fd-scc-fix)
+
+SCC constraint generalization drops Indexable FD constraints as ambiguous (T013) because TypeVars' concrete bindings are in `state.subst` but `is_discharged` returns false at generalization time.
+
+- [ ] Fix the SCC constraint generalization: ensure `is_discharged` returns true for TypeVars whose concrete bindings are in `state.subst` at generalization time
+- [ ] Remove `check_get` special case from typecheck.rs after fix
+- [ ] Remove `check_arithmetic` special cases (`+`/`-`/`*`/`/`) from typecheck.rs after fix
 
 ### lib-test-oom: lib tests OOM/crash when run without --test-threads=1
 
@@ -740,7 +748,9 @@ Pre-existing issue discovered during sprint `rv2-output-formatter-contract` (202
 - [ ] Fix `just test-lib` recipe: add `-- --test-threads=1` to serialize lib test execution
 - [ ] Or: add `tinct::clear_stdlib_cache()` to global test setup for memory-intensive lib tests
 
-### formatter-fn-error: compact formatter produces `<error>` for fn/call nodes — non-idempotent
+### formatter-fixes: Fix compact formatter errors and stack overflow
+
+#### Compact formatter `<error>` nodes (from formatter-fn-error)
 
 Pre-existing bug discovered during sprint `rv2-output-formatter-contract` (2026-05-25). Tests `test_tinct_formatter_compact_function` and `test_tinct_formatter_compact_call` fail because the compact formatter produces `<error>` AST nodes for function definitions and call expressions:
 
@@ -759,13 +769,9 @@ Root cause: `surface_program_to_dict` (in `src/ast_dict.rs`) doesn't correctly c
 - [ ] Fix `dot_key_to_value` — add payload: `Ident(name)` → `Variant("Ident", {name: name})`, `Index(i)` → `Variant("Index", {index: i})` so DotAccess field names are accessible from tinct (`src/surface_fields.rs:433-443`)
 - [ ] Tests: `[load source]` returns unexpanded AST; `[ast-of [x.foo]].field.name` returns `"foo"` (`tests/corpus/eval/`)
 
-### formatter-stack-overflow: formatter tests crashed with stack overflow — FIXED in CI
+#### Stack overflow (from formatter-stack-overflow)
 
-Pre-existing failure discovered during sprint `rv2-output-formatter-contract` (2026-05-25). All `tests/formatter_tinct_roundtrip.rs` tests crashed with `stack overflow` / `SIGABRT` because `format_source_tinct_with_dir` triggers deep recursion (macro expansion + AST dict conversion) that exceeds the 2MB default test-thread stack.
-
-**Immediate fix (2026-05-25):** All tests now use `run_with_large_stack(|| { ... })` which spawns a 32MB thread. Tests pass; CI unblocked.
-
-**Root cause still open:** `format_source_tinct_with_dir` uses deep recursion in `surface_program_to_dict` and/or `expand_surface_program`. For large inputs this will eventually overflow even a 32MB stack.
+Pre-existing failure discovered during sprint `rv2-output-formatter-contract` (2026-05-25). `format_source_tinct_with_dir` uses deep recursion in `surface_program_to_dict` and/or `expand_surface_program`. For large inputs this will eventually overflow even a 32MB stack.
 
 - [ ] Investigate root cause: profile with `RUST_MIN_STACK=8388608`; identify which recursive function dominates the stack; convert to iterative or add explicit stack depth limit
 - [ ] Target: formatter should handle inputs up to 10,000 nodes without stack growth
@@ -833,13 +839,6 @@ Discovered via `samples/versions.llt` (2026-05-23). Writing `rust-version: [@Str
 
 - [x] When a dict entry has a TypeAssert annotation `[@T expr]`, the entry's inferred type for callers should be `T` (the asserted type), not the underlying expression type. Fix the type annotation propagation in dict entry type inference. (`src/typecheck_dict.rs` or `src/typecheck.rs`)
 
-### t013-duplicate-diagnostic-emission: T013 fires multiple times for the same expression
-
-Discovered via `samples/versions.llt` (2026-05-25). The expression `[ver-line: [trim [get 1 [split "\n" after]]]]` at line 63 emits 12 identical T013 warnings for two type variables (`_t30`, `_t31`), each appearing 6 times. The same ambiguous constraint is reported once per constraint solver attempt rather than once per expression.
-
-Root cause: The constraint solver checks and emits T013 each time it tries and fails to discharge an ambiguous constraint, rather than deduplicating per (type-variable, span) pair before emitting.
-
-- [ ] Deduplicate T013 diagnostics by (type-variable, span) before emitting — each unique (typevar, span) pair should produce at most one T013 warning. (`src/typecheck.rs` constraint discharge path)
 
 ### fmt-panic-seq-materialized: `just fmt-llt-check` panics with "seq should be materialized"
 
@@ -864,6 +863,45 @@ are already tracked in `runtime-v2-fix-regressions`. These 4 are not yet tracked
 - [x] `test_await_error_twice_returns_error_both_times` — fixed: Pending path now caches real result; test rewritten with correct [t: ...] syntax
 - [x] `test_circular_dependency_cycle_path` — relaxed assertion for iterative CEK machine (cycle_path empty is expected)
 - [x] `test_instance_fd_consistency_violation` — re-ignored with updated reason
+
+### serialization-span-followup: Span threading completeness follow-ups
+
+Post-panel findings from `serialization-span-threading` sprint. All minor.
+
+- [x] Fix `Value::RevocableDirCap` error string in `visit_value` at `src/lib.rs:755` — `"DirCap"` → `"RevocableDirCap"` (DONE in sprint)
+- [x] Remove span clobber in `builtins_meta.rs` `builtin-to-json` error handler (`src/builtins_meta.rs:89-94`) — replaced `map_err` with plain `?` (DONE in sprint)
+- [ ] Fix `visitor.visit_seq_head(head_out, span)` at `src/lib.rs:734` — should pass `head_span` (computed at line 732 from `head_thunk.span`) not the outer container span. Currently unobservable (JsonVisitor pre-check catches top-level Seq; DisplayVisitor ignores span) but will be wrong for any new visitor that uses the span in `visit_seq_head`.
+- [ ] Add `span: ast::Span` parameter to `depth_limit_output()` in `ValueVisitor` trait and pass it from `visit_value`'s depth check at `src/lib.rs:687` — so depth-exceeded JSON errors point at the deepest-nested value's definition site instead of `Span::origin()` (`src/lib.rs:969`)
+- [ ] Add span-assertion unit tests for `value_to_json` span threading — construct a `Value::Function` at a known non-origin span, call `value_to_json`, assert `err.definition_span == that span`. Same for Builtin, Proxy, and a nested dict-entry case. (`src/lib.rs` tests)
+- [ ] Document `ValueVisitor` and `visit_value` in `doc/08-evaluation.md` — the visitor pattern is the output serialization architecture but is undocumented in the evaluation chapter
+
+### ci-test-regressions: Fix 16 pre-existing unit test failures (2026-05-25)
+
+`just ci` reports 16 failing unit tests across multiple subsystems. All pre-existing (not caused by any single sprint). Grouped by root cause:
+
+**Builtin count mismatch (1 test):**
+- [x] Fix `standard_builtins_contains_all` — updated expected count from 301 to 306. (`src/builtins.rs`)
+
+**to-float rejection tests (4 tests):**
+- [ ] Fix `to_float_rejects_inf`, `to_float_rejects_infinity`, `to_float_rejects_nan`, `to_float_rejects_negative_inf` — error message format mismatch. Also: `to-float "NaN"` produces E099 instead of E033 (referenced as "to-float-nan-error-code" in error-code-corpus-tests but never tracked as a sprint). (`src/builtins_math.rs` or `src/builtins.rs`)
+
+**do macro re-regression (6 tests):**
+- [ ] Fix `test_do_macro_*` (6 tests): `err_propagation`, `inferred_form_binding`, `inferred_form_expr`, `no_steps_calls_pure`, `one_binding_step`, `three_steps` — all fail with `[E080] macro 'do' expansion result failed to evaluate: variant 'Call'/'VarRef': failed to convert payload to AST node`. Previously fixed in `macro-runtime-v2-regression` sprint but re-regressed. (`src/expand.rs`, `stdlib/macros.llt`)
+
+**wrap-fn macro tests (2 tests):**
+- [ ] Fix `test_syntax_llt_fn_macro_triggered`, `test_syntax_llt_fn_single_param` — fail with `[E080] macro 'wrap-fn' returned invalid AST: expected Variant or Dict`. Previously tracked in `runtime-v2-fix-regressions` (DONE.md) but still failing. (`src/expand.rs`, `stdlib/macros.llt`)
+
+**Pipeline default stdin (1 test):**
+- [ ] Fix `test_pipeline_no_stdin_default_empty_dict` — assertion fails: got `Null` instead of `Object {}`. Empty dict `[]` now serializes as JSON null (LLT null compat), but this test expects `{}`. Update test expectation or fix the serialization path. (`src/lib.rs`)
+
+**Pattern matching (1 test):**
+- [ ] Fix `test_pm3_match_expr_duplicate_dict_field_errors` — `unwrap_err()` on `Ok` value: a match expression with duplicate dict fields is succeeding when it should error. (`src/eval.rs`)
+
+**empty.llt-eval corpus failure (1 test):**
+- [ ] Fix `tests/corpus/valid/edge_cases/empty.llt-eval` — fails with `1:1: no items in first document`. The empty corpus test triggers an eval error saying the first document has no items. (`src/eval.rs` or corpus test runner)
+
+**tmpl macro regression (2 tests):**
+- [ ] Fix `tests/corpus/valid/literals/interpolated_strings.llt-eval` and `tests/corpus/valid/literals/triple_quoted_interpolated.llt-eval` — both fail with `[E080] macro 'tmpl' expansion result failed to evaluate: variant 'Call': failed to convert payload to AST node (at field type): field 'fn' is not materialized`. The `tmpl` string interpolation macro is broken by the runtime-v2 merge; same root cause as the `do` macro regression. (`src/expand.rs`, `stdlib/macros.llt`)
 
 ### known-bugs-fix: Fix LSP expansion, docgen arity, eval_corpus OOM
 
@@ -996,6 +1034,52 @@ Follow-up from builtin-privacy Phase 3. Three issues discovered when making `sam
 - [ ] `just lint-file samples/basic.llt` — same
 
 **Note:** This sprint is a prerequisite for `stdlib-conformance-builtin-privacy`. That sprint migrates non-prelude files from `builtin-reduce` → `reduce`, which only makes sense once `reduce` IS a tinct wrapper (not the Rust function itself). Run this sprint first.
+
+---
+
+## Profiling and Call Tracing (`doc/whatif/profiling.md`)
+
+Span-level profiling with dual attribution (materialization-context and creation-context), stall breakdown (I/O, network, channel, timer), and Perfetto trace output. Collection via `--profile spans.json`; analysis via `scripts/profile/` tinct programs against the span file. See `doc/12-tooling.md §Profiling`.
+
+### profiling-collector: Rust span collection infrastructure
+
+**Whatif:** `profiling`
+**Spec chapters:** `doc/12-tooling.md §Profiling`
+
+- [ ] Create `src/profiling.rs` with `SpanRecord` struct (14 fields: id, materialize_parent, create_parent, create_time_us, source_file, source_start, source_end, source_text, builtin_name, origin_builtin, start_us, end_us, stall_us, stall_kind) (`src/profiling.rs`)
+- [ ] Implement `ProfilingCollector` with open-span stack, `open_span()` / `close_span()`, and `current_span_id()` for create-parent recording (`src/profiling.rs`)
+- [ ] Implement `ProfilingCollector::into_value()` — converts `Vec<SpanRecord>` to `Value::Seq` of plain dicts with kebab-case keys matching the schema in `doc/12-tooling.md §Span Record Schema` (`src/profiling.rs`)
+- [ ] Add `profiling: Option<Arc<Mutex<ProfilingCollector>>>` to `EvalContext` (`src/eval.rs`)
+- [ ] Instrument `force_step` in `eval_materialize.rs` — bracket thunk materialization with `open_span` / `close_span` when `ctx.profiling.is_some()` (`src/eval_materialize.rs`)
+- [ ] Record `create_parent` and `create_time_us` at thunk construction — read `ProfilingCollector::current_span_id()` in `Thunk::new_pending_call`, `Thunk::new_pending_builtin`, `Thunk::new_unevaluated` when profiling is active (`src/value.rs`, `src/eval.rs`)
+- [ ] Add stall recording — `ProfilingCollector::record_stall(stall_us, stall_kind)` updates the current span's `stall_us` and `stall_kind` fields (`src/profiling.rs`)
+- [ ] Instrument I/O builtins with stall recording: `builtin_slurp`, `builtin_write_handle`, `builtin_open` → `stall_kind: "io"`; `builtin_connect`, `builtin_http_request` → `"net"`; `builtin_select_once`, `builtin_recv` → `"channel"` (`src/builtins_io.rs`)
+- [ ] Add `--profile <file.json>` CLI flag to `tinct run` — initialize `ProfilingCollector`, retrieve span `Value::Seq` after eval, serialize to named file via `-o json` output path (`src/main.rs`)
+- [ ] Tests: corpus test `tests/corpus/eval/profiling/basic.llt` — run with `--profile`, verify span file is valid JSON containing expected fields (id, materialize-parent, create-parent, source-file, start-us, end-us)
+- [ ] Tests: corpus test `tests/corpus/eval/profiling/stall.llt` — run a program that calls `builtin-slurp` on a file, verify span file contains a span with `stall-us > 0` and `stall-kind: "io"`
+- [ ] Tests: unit tests in `src/profiling.rs` — `SpanRecord` round-trip through `into_value()`, verify dict key names and types
+
+### profiling-scripts: Analysis scripts and benchmarks
+
+**Whatif:** `profiling`
+**Spec chapters:** `doc/12-tooling.md §Profiling`
+**Depends on:** `profiling-collector`, `stdlib-conformance-cleanup` (>=i fix)
+
+- [ ] Create `scripts/profile/materialize.llt` — materialization-context hotspot table; two-pass self-time algorithm using `collect`, `group-by`, `build-dict`, `get-or`; `emit` output (`scripts/profile/materialize.llt`)
+- [ ] Create `scripts/profile/create.llt` — creation-context hotspot table; groups spans by `create-parent` span location; `emit` output (`scripts/profile/create.llt`)
+- [ ] Create `scripts/profile/trace.llt` — Perfetto Chrome Trace Event Format; returns dict with `traceEvents` key; uses `cname` for stall-kind color; flow events from `create-time-us` to `start-us` via explicit int-keyed dicts `[0: flow-start  1: flow-end]` (`scripts/profile/trace.llt`)
+- [ ] Add `criterion = "0.5"` to `[dev-dependencies]` and `[[bench]] name = "eval"` to `Cargo.toml` (`Cargo.toml`)
+- [ ] Create `benches/eval.rs` with `bench_map_10k`, `bench_dict_1k`, `bench_deep_scope` benchmarks (`benches/eval.rs`)
+- [ ] Add justfile targets: `just bench` (criterion suite), `just profile <file>` (--profile + materialize.llt), `just profile-trace <file>` (--profile + trace.llt) (`justfile`)
+- [ ] Tests: end-to-end `--profile spans.json` + `tinct run -i json scripts/profile/materialize.llt < spans.json` produces valid table output
+- [ ] Tests: end-to-end `--profile spans.json` + `tinct run -i json -o json scripts/profile/trace.llt < spans.json` produces valid Perfetto JSON with `traceEvents` array
+
+### profiling-review: Post-implementation review
+
+**Whatif:** `profiling`
+**Depends on:** `profiling-scripts`
+
+- [ ] Run `/review-whatif profiling` — verify all sprints complete, implementation matches spec, docs consistent; address findings before closing
 
 ---
 
@@ -1864,12 +1948,6 @@ The code is authoritative: `src/typecheck.rs:5501` confirms `None => Ok(Type::Un
 - [x] Changed `tinct::parse_expression(s)` to `tinct::parse_surface_expression(s)` in fuzz target
 - **File:** `fuzz/fuzz_targets/parse.rs`
 
-### chr-mptc-membership: MPTC constraint binding doesn't check class membership [Minor]
-
-**type-theorist Minor 1.** `src/type_unify.rs:389-396` (KNOWN ISSUE T3): when a TypeVar constrained by Addable/Subtractable/Multipliable/Divisible is bound to a non-arithmetic type (e.g., Str), no error fires at binding time. The MPTC arm calls `improve_functional_dependency` without checking membership. Error only surfaces if both determining positions are simultaneously ground.
-
-- [ ] Sprint: `chr-mptc-membership` — add partial membership check (can we find `Add Str β γ` for any β, γ?) at TypeVar binding time
-- **Files:** `src/type_unify.rs:389-396`
 
 ### chr-new-by-name-audit: Constraint::new_by_name creates empty determines vec [Minor]
 
@@ -1946,24 +2024,6 @@ Alternatively: use `materialize_sync` in force_step's inline Sequential handler 
 - [x] Design and implement `Cont::ForceAndBind` for eager sequential dict binding (commit 3e31884)
 - [x] Test with `just versions` to confirm E070 is fixed — VERIFIED exit 0
 - **Files:** `src/eval_materialize.rs` (SequentialStep handler + new ForceAndBind Cont), `samples/versions.llt` (verification)
-
-### indexable-fd-scc-fix: Fix Indexable FD firing in SCC-based dict inference [Major]
-
-Root cause (identified 2026-05-24): the `improve_functional_dependency_inner` machinery for the Indexable class IS correct, and the constraint IS correctly placed in the scheme for the prelude's `get` wrapper. However, at user call sites inside large SCC-based letrec groups (like versions.llt's second document dict), the constraint is generated across multiple SCC iterations. When `generalize_with_doc` runs for the outer binding, early-iteration TypeVars (e.g., `_t30`, `_t31`) are in `entry_constraints[entry_name]` but `is_discharged("_t30")` returns false because those vars are not in `state.subst` at generalization time (only the LOCAL dict `subst`, not `state.subst`, has them via the SCC-merge path). The constraint is dropped as ambiguous (T013) and the return type stays as an unresolved TypeVar.
-
-Current workaround: `check_get` special case in typecheck.rs + authoritative scheme restoration in imports.rs (both must stay until this is fixed). The arithmetic operators (`+`/`-`/`*`/`/`) also use special cases (`check_arithmetic`) for the same reason — fixing this would enable removing all of them.
-
-Investigation notes:
-- SCC merge (typecheck_dict.rs:625-665) copies `state.subst` → local `subst` but NOT vice versa during the loop
-- `check_call_with_scheme` merges its local subst → `state.subst` (4916-4922), so `_t30 → Int` IS in `state.subst` after `get` call
-- `generalize_with_doc` uses `state.subst` for `subst_snapshot` → `is_discharged("_t30")` SHOULD be true
-- Yet T013 fires 14× suggesting 7 SCC iterations × 2 vars, and `is_discharged` returns false
-- Possible cause: `state.subst` is reset or the pre-iteration snapshot is used instead of the accumulated one
-
-- [ ] Fix the SCC constraint generalization: ensure `is_discharged` returns true for TypeVars whose concrete bindings are in `state.subst` at generalization time
-- [ ] Remove `check_get` special case from typecheck.rs after fix
-- [ ] Remove `check_arithmetic` special cases (`+`/`-`/`*`/`/`) from typecheck.rs after fix
-- **Files:** `src/typecheck_dict.rs` (SCC loop), `src/type_env.rs` (generalize_with_doc), `src/typecheck.rs` (special cases)
 
 ---
 
@@ -2114,7 +2174,9 @@ Per the builtin-privacy design, only `prelude.llt` is allowed to use `builtin-*`
 
 ---
 
-### stdlib-conformance-bugs: Fix correctness bugs found during audit
+### stdlib-conformance-cleanup: Fix stdlib correctness bugs and encapsulation violations
+
+#### Correctness bugs (from stdlib-conformance-bugs)
 
 **Bug — `stdlib/codecs/json.llt:227` — `>=i` identifier typo crashes number scanning:**
 - [ ] `[builtin-if [or [>=i [str-length s]] [not [json-num-char? [str-at i s]]]]` — `>=i` concatenates `>=` and `i` into a single unknown identifier. Should be `[>= i [str-length s]]`. This crashes `json-scan-num` on any numeric token, making `from-json` unable to parse any JSON number. (`stdlib/codecs/json.llt:227`)
@@ -2122,9 +2184,7 @@ Per the builtin-privacy design, only `prelude.llt` is allowed to use `builtin-*`
 **Stale comment — `stdlib/async.llt:178-181` — "hits ~230 iteration depth limit" is likely wrong post-CEK:**
 - [ ] `loop-select`'s doc comment says "Tail-recursive; hits ~230 iteration depth limit. For long-running servers, use an explicit `[task [loop ...]]` pattern instead." Verify whether this limit still applies now that the CEK machine (cek-match-sequential-rust-stack sprint) handles iterative evaluation. If the CEK machine correctly handles tail calls into `loop-select-impl`, remove the warning; if it still recurses on the Rust stack, the warning stands. (`stdlib/async.llt:178-181`)
 
----
-
-### stdlib-conformance-encapsulation: Fix encapsulation pattern violations
+#### Encapsulation violations (from stdlib-conformance-encapsulation)
 
 **`stdlib/encoding.llt`** — all functions (public and private) in a single flat dict, violating two-dict encapsulation:
 - [ ] Split `stdlib/encoding.llt` into two-dict document pattern. Move all private helpers (`hex-encode-impl`, `hex-encode-step`, `int-to-hex`, `hex-digit`, `hex-decode-impl`, `hex-decode-step`, `hex-digit-to-int`, `hex-digit-to-int-impl`, `base64-encode-impl`, `base64-encode-group`, `base64-encode-3bytes`, `base64-encode-2bytes`, `base64-encode-1byte`, `base64-char`, `base64-char-to-int`, `base64-char-to-int-search`, `mask-apply-impl`, `mask-apply-step`) into a private first dict. Keep only `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode`, `mask-apply` in the public second dict. `base64-alphabet` may stay in the private dict since it is an internal constant. (`stdlib/encoding.llt`)

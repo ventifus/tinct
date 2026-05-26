@@ -86,12 +86,9 @@ pub(crate) fn builtin_to_json(
             }
         }
         // Serialize to JSON using the Rust-native converter.
-        let json_val = crate::value_to_json(&val, &ctx).map_err(|e| {
-            // Re-wrap the error with the call span for better diagnostics
-            let mut err = *e;
-            err.definition_span = call_span;
-            Box::new(err)
-        })?;
+        // value_to_json already receives call_span and threads it correctly through
+        // visit_value; child thunk spans are preserved for nested errors.
+        let json_val = crate::value_to_json(&val, &ctx, call_span)?;
         let json_str = json_val.to_string();
         ok_val(crate::value::string_val(&json_str), call_span)
     })
@@ -1075,7 +1072,7 @@ pub(crate) fn builtin_llt_repr(
         let val =
             crate::builtins::expect_one_arg("llt-repr", &args, named.as_ref(), &ctx, call_span)?;
         // value_to_display_string materializes nested values on demand via visit_value
-        let display_str = crate::value_to_display_string(&val, &ctx)
+        let display_str = crate::value_to_display_string(&val, &ctx, call_span)
             .map_err(|e| EvalError::internal(format!("llt-repr: {}", e.kind), call_span))?;
         ok_val(string_val(&display_str), call_span)
     })
@@ -1201,6 +1198,7 @@ pub(crate) fn builtin_variant(
 
                         if is_ast_variant {
                             // Convert payload dict to SurfaceNode using dict_to_surface_node
+                            // H2: conditional force — only when tag is a known AST variant name
                             let payload_val =
                                 materialize(payload_thunk, Some(&call_span), &ctx).await?;
                             // Wrap as Variant so dict_to_surface_node can extract the tag

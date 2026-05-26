@@ -11,4 +11,4 @@
 === out
 Dict({"Shape": Variant(Shape, Null), "Circle": Variant(Circle, Null), "Square": Variant(Square, Null), "bad-circle": Variant(Circle, String("hello"))})
 === warn
-cannot unify Int with "hello"
+named argument 'r' type mismatch: cannot unify "hello" with Int at 8:26-8:33
