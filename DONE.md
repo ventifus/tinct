@@ -10131,3 +10131,28 @@ TCO has landed in the CEK machine but has known bugs. Tail-recursive stdlib func
 - [x] Add corpus test: two-arg countdown at 500 iterations (placeholder; not a loop-select test — real `loop-select` depth coverage requires async corpus harness + tco-proper-fix) (`tests/corpus/eval/tco/tco_two_arg_countdown.llt-eval`)
 - [x] Add corpus test: one-arg countdown at 500 iterations (placeholder; not a retry test — real `retry` depth coverage requires async corpus harness + tco-proper-fix) (`tests/corpus/eval/tco/tco_one_arg_countdown.llt-eval`)
 - [x] Add corpus test: dict accumulation at 500 iterations simulating parse-header-fields-impl (placeholder; 10,000+ gated on tco-proper-fix) (`tests/corpus/eval/tco/net_many_headers.llt-eval`)
+
+---
+
+## Codebase Audit Findings (Health Review #306, 2026-05-25)
+
+### stdlib-additions: WebSocket extended payload + str-substr
+
+#### WebSocket extended payload (from websocket-extended-payload)
+
+`stdlib/protocols/websocket.llt` raises an error for payloads over 65535 bytes. The extended-64 (8-byte length) encoding is missing.
+
+- [x] Implement extended-64 payload encoding in `build-ws-frame` for payloads > 65535 bytes (`stdlib/protocols/websocket.llt`)
+- [x] Add corpus test for large payload frame encoding
+
+#### str-substr (from str-substr)
+
+Only position-based `str-slice(string, start, end)` exists; length-based form deferred.
+
+- [x] Add `str-substr` to `stdlib/strings.llt`: `[fn@String [s@String start@Int len@Int] [str-slice s start [+ start len]]]`
+- [x] Add corpus test
+
+#### stdlib-additions fix-later nits
+
+- [ ] Add guard in `ws-build-ext64` that raises error when `n >= 2^63` (RFC 6455 §5.2 violation) (`stdlib/protocols/websocket.llt`)
+- [ ] Add corpus test for `str-substr` with `start=str-len` and `len=0` boundary case

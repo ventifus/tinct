@@ -417,24 +417,7 @@ Hardcoded behavior, stubs, and dead code found during systematic audit. Root cau
 - [x] Fix `tests/corpus/valid/edge_cases/empty.llt-eval` — added `=== out` section
 - [x] Update `doc/10-errors.md` error code table — added E012, E013, E044, E071, E072, E081, E082 (7 entries)
 
-
-### stdlib-additions: WebSocket extended payload, str-substr, numeric to-bytes
-
-#### WebSocket extended payload (from websocket-extended-payload)
-
-`stdlib/protocols/websocket.llt` raises an error for payloads over 65535 bytes. The extended-64 (8-byte length) encoding is missing.
-
-- [ ] Implement extended-64 payload encoding in `build-ws-frame` for payloads > 65535 bytes (`stdlib/protocols/websocket.llt`)
-- [ ] Add corpus test for large payload frame encoding
-
-#### str-substr (from str-substr)
-
-Only position-based `str-slice(string, start, end)` exists; length-based form deferred.
-
-- [ ] Add `str-substr` to `stdlib/strings.llt`: `[fn@String [s@String start@Int len@Int] [str-slice s start [+ start len]]]`
-- [ ] Add corpus test
-
-#### numeric to-bytes (from numeric-to-bytes)
+### numeric-to-bytes: NEEDS_DESIGN — decide to-bytes semantics
 
 `stdlib/numeric.llt` `to-bytes` is a stub returning `[str v]` instead of binary encoding.
 
@@ -487,25 +470,18 @@ Assumption-skeptic verified all H2/H3 annotations are **correct** — no hidden 
 
 ## Known Bugs + Nits
 
-### drain-graceful-cancel: Background task loops should check cancel token for graceful drain
+### eval-runtime-followup: Graceful drain + proper TCO (deferred from eval-runtime-fixes)
 
-`drain` now calls `handle.abort()` before awaiting each registered background task, so drain
-completes quickly even when signal-channel, timer-channel, or watch-channel loops are running.
-However, `abort()` terminates tasks abruptly via panic. A future enhancement would make each
-background loop `select!` against the evaluation context's cancellation token so that
-`[cancel-root]` causes them to exit gracefully before `[drain]` is called.
+#### Graceful drain (from drain-graceful-cancel)
 
-Affected sites:
-- `builtin_signal_channel` signal listener loop (`src/builtins_async.rs`)
-- `builtin_timer_channel` interval ticker loop (`src/builtins_async.rs`)
-- `builtin_watch_channel` forward and bridge tasks (`src/builtins_async.rs`)
+`drain` uses `handle.abort()` for immediate completion, but this terminates tasks abruptly. A future enhancement: each background loop `select!` against the cancellation token so `[cancel-root]` causes graceful exit before `[drain]`.
 
 - [ ] Add `select!` against the CancellationToken in each infinite background task loop so that `[cancel-root]` causes graceful exit before `[drain]` (`src/builtins_async.rs`)
 - [ ] REPL creates a fresh `task_registry` per eval iteration (`new_sharing_arena` called each line) — tasks from earlier REPL lines are invisible to `[drain]` called in later lines (`src/repl.rs`)
 
-### tco-proper-fix: Proper tail-call optimization in CEK machine
+#### Proper TCO (from tco-proper-fix)
 
-Investigation in eval-runtime-fixes sprint found the Memoize-reuse approach violates eval_stack_guard invariants. Root cause: when apply_cont(PendingCallDispatch) pops outer Memoize and calls eval_stack_guard.disarm(), the outer Memoize inherits a second pop obligation. A correct fix requires careful coordination with EvalStackGuard or a different TCO strategy.
+Memoize-reuse approach violates eval_stack_guard invariants. Root cause: when apply_cont(PendingCallDispatch) pops outer Memoize and calls eval_stack_guard.disarm(), the outer Memoize inherits a second pop obligation.
 
 - [ ] Design and implement correct TCO: either (a) integrate with EvalStackGuard so the disarmed guard correctly tracks the reused Memoize, or (b) use a different approach (trampoline or depth reset) that avoids the invariant violation
 - [ ] Test: tail-recursive function with 10,000+ iterations completes without error

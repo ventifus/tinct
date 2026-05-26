@@ -1,0 +1,6 @@
+# str-substr: start+len past end raises a descriptive error
+[include %libdir "strings.llt"]
+---
+[call %.str-substr 3 5 "hello"]
+=== error
+[E080] str-substr: end position 8 exceeds string length 5

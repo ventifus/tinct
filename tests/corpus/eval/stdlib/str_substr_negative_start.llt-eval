@@ -1,0 +1,6 @@
+# str-substr: negative start raises a descriptive error
+[include %libdir "strings.llt"]
+---
+[call %.str-substr -1 2 "hello"]
+=== error
+[E080] str-substr: start -1 must be >= 0

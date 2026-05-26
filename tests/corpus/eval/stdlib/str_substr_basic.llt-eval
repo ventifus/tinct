@@ -1,0 +1,6 @@
+# str-substr: extract substring with length
+[include %libdir "strings.llt"]
+---
+[call %.str-substr 6 5 "hello world"]
+=== out
+String("world")

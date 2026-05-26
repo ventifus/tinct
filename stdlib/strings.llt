@@ -22,8 +22,8 @@
 #   pad-*     Padding operations (left/right)
 #
 # str-slice is NOT exported from strings.llt. The prelude exports str-slice as
-# an alias for builtin-str-slice with (string, start, end) semantics. If a
-# length-based form is ever needed, it will be named str-substr (deferred).
+# an alias for builtin-str-slice with (string, start, end) semantics. The
+# length-based form is str-substr (implemented in the public dict below).
 #
 # Structure: two-expression document.  The first dict holds private -impl/-check
 # helpers; the second dict holds the public API.  eval_document materialises the
@@ -75,6 +75,23 @@ str-at@[doc: "Character at position n (0-based; negative counts from end). Raise
     [if [or [< idx 0] [>= idx len]]
         [raise [str "str-at: index " n " out of bounds for string of length " len]]
         [str-at-impl s idx]]]
+
+# str-substr: extract a substring of length len starting at position start.
+# Type: (Int -> Int -> String -> String)
+# Example: [str-substr 6 5 "hello world"] => "world"
+# Example: [str-substr 0 3 "hello"] => "hel"
+# Example: [str-substr 2 0 "hello"] => ""
+# Raises an error if start or len is negative, or if start+len exceeds string length.
+str-substr@[doc: "Extract substring starting at start with length len. Raises error if bounds are invalid."]: [fn@String [let start@Int len@Int s@String]
+    [str-len: [str-length s]]
+    [end: [+ start len]]
+    [if [< start 0]
+        [raise [str "str-substr: start " start " must be >= 0"]]
+        [if [< len 0]
+            [raise [str "str-substr: len " len " must be >= 0"]]
+            [if [> end str-len]
+                [raise [str "str-substr: end position " end " exceeds string length " str-len]]
+                [builtin-str-slice s start end]]]]]
 
 # str-length: number of Unicode codepoints in a string.
 # Re-exported here for callers that include strings.llt (prelude also exports it).

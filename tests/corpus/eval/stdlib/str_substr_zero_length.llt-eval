@@ -1,0 +1,6 @@
+# str-substr: zero length returns empty string
+[include %libdir "strings.llt"]
+---
+[call %.str-substr 2 0 "hello"]
+=== out
+String("")

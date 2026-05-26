@@ -1,0 +1,6 @@
+# str-substr: substring at the last character
+[include %libdir "strings.llt"]
+---
+[call %.str-substr 4 1 "hello"]
+=== out
+String("o")
