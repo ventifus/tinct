@@ -1862,9 +1862,12 @@ mod tests {
     /// poll_future_sync for current_thread runtimes, which never drove the LocalSet,
     /// so the spawned task's JoinHandle would never resolve. The fix wraps the future
     /// in LOCAL_SET.run_until() so spawn_local tasks are driven concurrently.
+    ///
+    /// Uses builtin-task/builtin-await (bare names removed in builtin-privacy-primary-names sprint).
     #[tokio::test]
     async fn test_task_await_basic() {
-        let result = crate::eval_source_with_config("[await [task [fn [let] 42]]]", false);
+        let result =
+            crate::eval_source_with_config("[builtin-await [builtin-task [fn [let] 42]]]", false);
         // Output is the Value Display format; Int(42) renders as "Int(42)" via eval_source.
         // Just confirm it succeeded and contains 42.
         let output = result.unwrap();
@@ -1874,11 +1877,14 @@ mod tests {
         );
     }
 
-    /// Verify that `[context]` creates a fresh uncancelled Context value.
+    /// Verify that `[builtin-context]` creates a fresh uncancelled Context value.
+    ///
+    /// Uses builtin-context/builtin-cancelled-q (bare names removed in builtin-privacy-primary-names sprint).
     #[tokio::test]
     async fn test_context_creates_fresh_token() {
-        // [cancelled? [context]] returns false — a fresh token is not cancelled.
-        let result = crate::eval_source_with_config("[cancelled? [context]]", false);
+        // [builtin-cancelled-q [builtin-context]] returns false — a fresh token is not cancelled.
+        let result =
+            crate::eval_source_with_config("[builtin-cancelled-q [builtin-context]]", false);
         let output = result.unwrap();
         assert!(
             output.contains("false"),
@@ -1886,11 +1892,14 @@ mod tests {
         );
     }
 
-    /// Verify that `[cancel-task ctx]` returns null (empty dict) when given a Context.
+    /// Verify that `[builtin-cancel-task ctx]` returns null (empty dict) when given a Context.
+    ///
+    /// Uses builtin-cancel-task/builtin-context (bare names removed in builtin-privacy-primary-names sprint).
     #[tokio::test]
     async fn test_cancel_task_returns_null() {
-        // [cancel-task [context]] should return {} (null) — the empty dict.
-        let result = crate::eval_source_with_config("[cancel-task [context]]", false);
+        // [builtin-cancel-task [builtin-context]] should return {} (null) — the empty dict.
+        let result =
+            crate::eval_source_with_config("[builtin-cancel-task [builtin-context]]", false);
         let output = result.unwrap();
         // null serializes as {} in JSON output
         assert!(
@@ -1911,16 +1920,20 @@ mod tests {
         );
     }
 
-    /// Verify that `[with-cancel ctx]` returns a dict with child-ctx and cancel fields,
+    /// Verify that `[builtin-with-cancel ctx]` returns a dict with child-ctx and cancel fields,
     /// and that calling cancel-task on the cancel token cancels the child.
     ///
     /// We test this in two parts:
-    /// 1. The child starts uncancelled: [cancelled? [with-cancel [context]].child-ctx] == false
-    /// 2. After cancelling a freshly created context, [cancelled? ...] == true
+    /// 1. The child starts uncancelled: [builtin-cancelled-q [builtin-with-cancel [builtin-context]].child-ctx] == false
+    /// 2. After cancelling a freshly created context, [builtin-cancelled-q ...] == true
+    ///
+    /// Uses builtin-with-cancel/builtin-cancelled-q/builtin-context (bare names removed in builtin-privacy-primary-names sprint).
     #[tokio::test]
     async fn test_with_cancel_child_starts_uncancelled() {
-        let result =
-            crate::eval_source_with_config("[cancelled? [with-cancel [context]].child-ctx]", false);
+        let result = crate::eval_source_with_config(
+            "[builtin-cancelled-q [builtin-with-cancel [builtin-context]].child-ctx]",
+            false,
+        );
         let output = result.unwrap();
         assert!(
             output.contains("false"),
@@ -1928,13 +1941,17 @@ mod tests {
         );
     }
 
-    /// Verify that `[with-timeout ctx 0]` produces a child context.
-    /// (We cannot reliably test it's cancelled in 0ms without yielding to the LocalSet,
+    /// Verify that `[builtin-with-timeout ctx 100]` produces a child context.
+    /// (We cannot reliably test it's cancelled in 100ms without yielding to the LocalSet,
     /// but we verify it returns a Context without error.)
+    ///
+    /// Uses builtin-with-timeout/builtin-cancelled-q/builtin-context (bare names removed in builtin-privacy-primary-names sprint).
     #[tokio::test]
     async fn test_with_timeout_returns_context() {
-        let result =
-            crate::eval_source_with_config("[cancelled? [with-timeout [context] 100]]", false);
+        let result = crate::eval_source_with_config(
+            "[builtin-cancelled-q [builtin-with-timeout [builtin-context] 100]]",
+            false,
+        );
         // The child starts uncancelled (100ms hasn't elapsed).
         let output = result.unwrap();
         assert!(
@@ -1943,13 +1960,17 @@ mod tests {
         );
     }
 
-    /// Verify that `[with-deadline ctx ts]` returns a Context without error.
+    /// Verify that `[builtin-with-deadline ctx ts]` returns a Context without error.
+    ///
+    /// Uses builtin-with-deadline/builtin-cancelled-q/builtin-context (bare names removed in builtin-privacy-primary-names sprint).
     #[tokio::test]
     async fn test_with_deadline_returns_context() {
         // Deadline in the past (1 = 1970-01-01 UTC in ms) → child should be cancelled immediately.
         // sleep(0) spawned, yields. We just check it doesn't error.
-        let result =
-            crate::eval_source_with_config("[cancelled? [with-deadline [context] 1]]", false);
+        let result = crate::eval_source_with_config(
+            "[builtin-cancelled-q [builtin-with-deadline [builtin-context] 1]]",
+            false,
+        );
         let output = result.unwrap();
         // Either true (past deadline) or false (hasn't yielded yet); either is valid — just no error.
         assert!(
@@ -1990,13 +2011,15 @@ mod tests {
     // Required audit tests
     // -------------------------------------------------------------------------
 
-    /// [channel 0] must return an error: capacity must be ≥ 1.
+    /// [builtin-channel 0] must return an error: capacity must be ≥ 1.
+    ///
+    /// Uses builtin-channel (bare name removed in builtin-privacy-primary-names sprint).
     #[tokio::test]
     async fn test_channel_capacity_zero_returns_error() {
-        let result = crate::eval_source_with_config("[channel 0]", false);
+        let result = crate::eval_source_with_config("[builtin-channel 0]", false);
         assert!(
             result.is_err(),
-            "expected [channel 0] to return an error, got: {result:?}"
+            "expected [builtin-channel 0] to return an error, got: {result:?}"
         );
         let msg = result.unwrap_err();
         assert!(
@@ -2018,16 +2041,18 @@ mod tests {
         );
     }
 
-    /// [select-once {}] must return an error: at least one source is required.
+    /// [builtin-select-once {}] must return an error: at least one source is required.
     ///
     /// The empty dict `{}` is the Seq terminator, so collect_seq_to_vec returns an
     /// empty Vec, triggering the "select-once requires at least one source" guard.
+    ///
+    /// Uses builtin-select-once (bare name removed in builtin-privacy-primary-names sprint).
     #[tokio::test]
     async fn test_select_once_empty_sources_returns_error() {
-        let result = crate::eval_source_with_config("[select-once {}]", false);
+        let result = crate::eval_source_with_config("[builtin-select-once {}]", false);
         assert!(
             result.is_err(),
-            "expected [select-once {{}}] to return an error, got: {result:?}"
+            "expected [builtin-select-once {{}}] to return an error, got: {result:?}"
         );
         let msg = result.unwrap_err();
         assert!(
@@ -2042,14 +2067,18 @@ mod tests {
     /// Regression test for the bug where `result?` moved the error out of Done without
     /// restoring it to the guard, leaving the sentinel `Done(Ok({}))` in place. The
     /// second await would then read `Ok({})` and return `{}` instead of the error.
+    ///
+    /// Uses builtin-task/builtin-await (bare names removed in builtin-privacy-primary-names sprint).
+    /// `try` stays as the prelude wrapper; `+` stays as the prelude wrapper (2-arg, so [+ 1 2 3] gives arity mismatch).
     #[tokio::test]
     async fn test_await_error_twice_returns_error_both_times() {
-        // Create a task that errors. [try [fn [] ...]] catches the error as [Error "msg"].
-        // We await the same task twice — both should return [Error ...], not [Ok {}].
+        // Create a task that errors ([+ 1 2 3] fails: + is 2-arg). [try [fn [] ...]] catches
+        // the error as [Error "msg"]. We await the same task twice — both should return
+        // [Error ...], not [Ok {}].
         // The bug: before the fix, Done stored Ok({}) after first await and second
         // await would return {} instead of the original error.
         let result = crate::eval_source_with_config(
-            "[t: [task [fn [let] [+ 1 2 3]]]] [first-err: [try [fn [let] [await t]]]] [second-err: [try [fn [let] [await t]]]] [first-result: first-err  second-result: second-err]",
+            "[t: [builtin-task [fn [let] [+ 1 2 3]]]] [first-err: [try [fn [let] [builtin-await t]]]] [second-err: [try [fn [let] [builtin-await t]]]] [first-result: first-err  second-result: second-err]",
             false,
         );
         let output = result.expect("eval should succeed (try catches errors)");
