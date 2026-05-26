@@ -1750,6 +1750,22 @@ Alternatively: use `materialize_sync` in force_step's inline Sequential handler 
 - [x] Test with `just versions` to confirm E070 is fixed — VERIFIED exit 0
 - **Files:** `src/eval_materialize.rs` (SequentialStep handler + new ForceAndBind Cont), `samples/versions.llt` (verification)
 
+### error-source-file: Add source file to error `(defined at ...)` messages [Major]
+
+**Root cause (found 2026-05-26):** `[E030] duplicate key: raise (defined at 2132:1-2132:66)` shows only `line:col` with no filename. The `Span` struct (`src/ast.rs:36`) carries only `start: Position` and `end: Position` — no source file. `EvalError` (`src/error.rs:1031`) has no `source_file` field. The `Display` impl at `src/error.rs:1858` formats `"[{}] {} (defined at {})"` where `{}` is the `Span`, which can only render `line:col-line:col`. `EvalContext` (`src/eval.rs:123`) does carry `config.source_file: Option<String>`, but `eval_dict_core` (`src/eval_dict.rs:201`) creates `EvalError::duplicate_key(&key_str, entry.span)` without consulting it.
+
+**Fix:**
+- Add `source_file: Option<Arc<str>>` to `EvalError` (`src/error.rs`)
+- Update `EvalError::duplicate_key` (and other common constructors) to accept an optional source file; populate from `ctx.config.source_file.as_deref()` at call sites in `eval_dict.rs`
+- Update `EvalError::Display` to render `"file:line:col-line:col"` when `source_file` is `Some`, falling back to `"line:col-line:col"` when `None`
+- Propagate source file through error-enrichment paths in `lib.rs` (`attach_macro_provenance`, `run_pipeline`) so include-site errors carry the included file's name
+
+- [ ] Add `source_file: Option<Arc<str>>` field to `EvalError` (`src/error.rs`)
+- [ ] Update `EvalError::duplicate_key` to accept `source_file: Option<&str>`; set from `ctx.config.source_file.as_deref()` in `eval_dict.rs:201`
+- [ ] Update `EvalError::Display` to prefix span with `"<file>:"` when source file is known (`src/error.rs:1858`)
+- [ ] Audit other high-frequency `EvalError` constructors that run inside `eval_dict_core`/`eval_core_expr` and populate source file there
+- [ ] Add corpus test: `tests/corpus/errors/e030_source_file.llt` — verifies filename appears in `[E030]` output
+
 ---
 
 ---

@@ -2129,20 +2129,9 @@ to-float@[doc: "Parse String to Float"]: builtin-to-float
 # Evaluation control
 try@[doc: "Catch errors from a zero-arg function"]: builtin-try
 apply@[doc: "Apply function to a dict of arguments"]: builtin-apply
-raise@[doc: "Raise an error with the given value"]: builtin-raise
 
 # Type introspection
 type-of@[doc: "Return the type name of a value as a String"]: builtin-type-of
-
-# Type predicates
-int?@[doc: "Check if value is an Int"]: builtin-int?
-float?@[doc: "Check if value is a Float"]: builtin-float?
-str?@[doc: "Check if value is a String"]: builtin-str?
-bool?@[doc: "Check if value is a Bool"]: builtin-bool?
-null?@[doc: "Check if value is null (empty dict [])"]: builtin-null?
-dict?@[doc: "Check if value is a Dict"]: builtin-dict?
-fn?@[doc: "Check if value is a function"]: builtin-fn?
-seq?@[doc: "Check if value is a Seq (lazy sequence node)"]: builtin-seq?
 
 # Capability operations
 narrow@[doc: "Narrow a capability to a subset of operations"]: builtin-narrow

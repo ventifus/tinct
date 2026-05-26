@@ -7787,6 +7787,20 @@ All tasks already implemented in prior sprint. Added 3 verification tests:
 - [x] doc/15-ast.md: Fn.body Rc, DefMacro fields, Annotated variant, TypeApp/Error rows
 - [x] stage: pragma in doc/02-syntax.md + doc/09-documents.md
 
+### prelude-duplicate-wrappers: Remove 9 duplicate definitions introduced by builtin-privacy sprints ✅ DONE (2026-05-25)
+
+**Root cause:** The `builtin-privacy-primary-names` and `builtin-privacy-operators-and-io` sprints added a new wrappers block to `stdlib/prelude.llt` without checking for pre-existing definitions. 9 symbols were defined twice, causing `[E030] duplicate key` at runtime.
+
+**Duplicates removed:**
+- `raise` — direct alias `builtin-raise` at line 2132 (duplicate of typed wrapper at line 2005)
+- `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` — aliases at lines 2138–2145 (duplicates of canonical definitions at lines 1383–1390)
+
+**Fix applied:** Removed the duplicate `raise` and all 8 predicate entries from the new wrappers block. The earlier definitions are canonical — they already delegate to `builtin-*` aliases. The typed `raise` wrapper at line 2005 enforces `@String` and carries the authoritative doc string.
+
+- [x] Remove duplicate `raise` at `stdlib/prelude.llt:2132`
+- [x] Remove duplicate `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` at `stdlib/prelude.llt:2138–2145`
+- [x] Verify `just versions` exits 0 after the fix
+
 ## Codebase Health (Review #6, 2026-05-15)
 
 ### health-review6: GuardedValidate branches 2+3, LSP path traversal, ambiguous TypeVar
