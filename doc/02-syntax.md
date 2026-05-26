@@ -711,15 +711,19 @@ Patterns include wildcards, variable bindings, literals, type tags, pins, and di
 
 ### Quasiquoting
 
-`quote`, `unquote`, and `unquote-splice` treat code as data. `[quote expr]` produces an AST dict.
+`quote`, `unquote`, and `unquote-splice` treat code as data. `[quote expr]` returns a `Value::Expression` — a native AST node that can be inspected via `tag-of` and field access.
 
 ```tinct
-[ast: [quote [+ 1 2]]]    # → [type: "call"  fn: "+"  args: [1 2]]
-ast.fn                     # → "+"
+[ast: [quote [+ 1 2]]]
+[tag-of ast]               # → "Call"
+ast.fn                     # → "+" (field access on Expression values)
+
+# Variables quote to VarRef nodes
+[tag-of [quote x]]         # → "Var"
 
 # Splice a runtime value into a quoted expression
 [op: "+"]
-[quote [[unquote op] 1 2]] # → [type: "call"  fn: "+"  args: [1 2]]
+[quote [[unquote op] 1 2]] # evaluates op, splices into quoted form
 
 # Round-trip: quote then evaluate using eval builtin
 [eval [seq [quote [+ 1 2]]]] # → 3

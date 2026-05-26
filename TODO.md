@@ -362,15 +362,6 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 - [x] Corpus test: `macro_error_span.llt-eval`
 - Note: `just test` corpus tests have pre-existing CHR failures (tracked separately)
 
-### macros-v2-doc-fix: Fix stale quote semantics in main docs
-
-**Whatif:** `macros-v2`
-
-`[quote expr]` now returns `Value::Expression` (typed Expr variant), but two doc locations still describe the old string-`type:` dict schema:
-
-- [ ] Update `doc/02-syntax.md:717,722` — quasiquoting examples show `type: "call"` / `type: "var"` string fields; rewrite to show typed Expr variant output (e.g., `Variant("Call", ...)`) or replace with a prose note that quote produces an `Expr` variant value (`doc/02-syntax.md`)
-- [ ] Update `doc/08-evaluation.md:1522` — "The result is an ordinary `Value::Dict`" should be "The result is a `Value::Expression` (a typed `Expr` variant value)" (`doc/08-evaluation.md`)
-
 ---
 
 ## Continuation-Based Builtins

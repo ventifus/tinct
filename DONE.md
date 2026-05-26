@@ -10036,3 +10036,8 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] Remove `deep_materialize` from `pub` exports in lib.rs and eval.rs re-export
 - [x] Delete all deep_materialize tests: 20 in eval.rs, 10 in builtins.rs, 3 in eval_materialize.rs, 1 corpus test
 - [x] Update all doc comments referencing deep_materialize across src/
+
+### macros-v2-doc-fix: Fix stale quote semantics in main docs
+
+- [x] Update `doc/02-syntax.md:717,722` — rewritten quasiquoting examples to show Value::Expression output with tag-of and field access
+- [x] Update `doc/08-evaluation.md:1522` — changed "Value::Dict" to "Value::Expression" with tag-of and field access description

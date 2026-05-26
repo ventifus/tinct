@@ -1519,11 +1519,11 @@ The round-trip paths are: in-memory (`[eval [seq [ast-of f]]]`, works for pure/s
 
 ## Quote Semantics
 
-`[quote expr]` converts the syntactic form of `expr` into an AST dict (per `doc/15-ast.md` §AST Dict Schema) without evaluating it. The conversion happens when the `Expr::Quote` node is materialized by the normal evaluator — this is runtime evaluation, not a compile-time operation. The result is an ordinary `Value::Dict`.
+`[quote expr]` converts the syntactic form of `expr` into a `Value::Expression` — a native AST node wrapped in the Expression value type — without evaluating `expr`. The conversion happens when the `Expr::Quote` node is materialized by the normal evaluator — this is runtime evaluation, not a compile-time operation. The result can be inspected via `tag-of` (which returns the SurfaceExpression variant name, e.g., "Call", "Var") and field access (e.g., `.fn`, `.args` on a Call node).
 
-`[unquote expr]` inside a `[quote ...]` evaluates `expr` in the current runtime environment when the surrounding `[quote]` is materialized, then splices the result into the dict structure. `[unquote-splice expr]` evaluates to a `Value::Seq` and splices each element into the enclosing list position. Nesting depth follows Bawden (1999): nested `[quote [quote [unquote x]]]` preserves the inner `unquote` as AST (not evaluated, since depth > 1).
+`[unquote expr]` inside a `[quote ...]` evaluates `expr` in the current runtime environment when the surrounding `[quote]` is materialized, then splices the result into the AST structure. `[unquote-splice expr]` evaluates to a `Value::Seq` and splices each element into the enclosing list position. Nesting depth follows Bawden (1999): nested `[quote [quote [unquote x]]]` preserves the inner `unquote` as AST (not evaluated, since depth > 1).
 
-Quoted expressions have type `Dict`. No special type rules — `quote` is transparent to the type system.
+Quoted expressions have type `Expression`. No special type rules — `quote` is transparent to the type system.
 
 ## Macro Expansion Pipeline
 
