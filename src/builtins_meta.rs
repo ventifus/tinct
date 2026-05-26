@@ -1208,9 +1208,8 @@ pub(crate) fn builtin_variant(
 
                         if is_ast_variant {
                             // Convert payload dict to SurfaceNode using dict_to_surface_node
-                            // H2: conditional force — only when tag is a known AST variant name
                             let payload_val =
-                                materialize(payload_thunk, Some(&call_span), &ctx).await?;
+                                materialize(payload_thunk, Some(&call_span), &ctx).await?; // H2: conditional force — only when tag is a known AST variant name
                             // Deep-materialize all nested dict values so dict_to_surface_node can access them
                             // dict_to_surface_node uses try_get_materialized on all field thunks
                             let deep_payload = force_dict_tree(&payload_val, &ctx).await?;

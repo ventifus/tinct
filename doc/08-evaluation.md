@@ -1288,6 +1288,7 @@ The `ValueVisitor` trait (in `src/lib.rs`) provides a visitor pattern for struct
 **Depth limiting:** The `depth_limit_output(depth, span)` method allows visitors to implement recursion depth limits. `JsonVisitor` enforces a 256-level depth limit to prevent stack overflow on deeply nested structures, returning an error with the span of the depth-exceeded value. `DisplayVisitor` enforces a 5-level depth limit (used for error messages) and truncates with `"..."`.
 
 **Implementations:**
+
 - **JsonVisitor** (`src/lib.rs:846-992`) — produces `serde_json::Value`, used by `value_to_json` and the `$builtin-to-json` formatter. Rejects values that cannot be represented in JSON (NaN, Infinity, Function, Builtin, Seq). Detects array-like dicts (sequential integer keys 0..n) and serializes them as JSON arrays.
 - **DisplayVisitor** (`src/lib.rs:1000-1100`) — produces LLT display strings, used for error messages and debug output. Accepts all value types, rendering functions as `Function([params])` and sequences as `Seq`.
 

@@ -2204,49 +2204,6 @@ shr@[doc: "Logical right shift (zero-fill): value shr bits"]: builtin-shr
 float@[doc: "Explicit Int to Float conversion (or Float pass-through). Allows precision loss."]: builtin-float
 
 # ============================================================================
-# Sequence Operations (builtin-privacy-primary-names sprint)
-# ============================================================================
-#
-# map, filter, take, drop, reduce were previously accessible directly via the
-# Rust builtin registry. Now they are prelude wrappers around the builtin-*
-# stable aliases, making them overridable and properly namespaced.
-
-map@[doc: """Apply f to each element of a collection.
-
-Example: [map [fn [x] [* x 2]] [1 2 3]] => [2 4 6]
-
-Note: Dual-dispatch: on Dict preserves string keys, on Seq returns lazy Seq.
-"""]: [fn [let f@Fn xs] [builtin-map f xs]]
-
-filter@[doc: """Keep elements satisfying predicate.
-
-Example: [filter [fn [x] [> x 2]] [1 2 3 4]] => [3 4]
-
-Note: Dual-dispatch: on Dict preserves string keys, on Seq returns lazy Seq.
-"""]: [fn [let f@Fn xs] [builtin-filter f xs]]
-
-take@[doc: """Take first n elements from a collection.
-
-Example: [take 2 [1 2 3 4]] => [1 2]
-
-Note: Dual-dispatch: on Dict preserves string keys, on Seq returns lazy Seq.
-"""]: [fn [let n@Int xs] [builtin-take n xs]]
-
-drop@[doc: """Drop first n elements from a collection.
-
-Example: [drop 2 [1 2 3 4]] => [3 4]
-
-Note: Dual-dispatch: on Dict preserves string keys, on Seq returns lazy Seq.
-"""]: [fn [let n@Int xs] [builtin-drop n xs]]
-
-reduce@[doc: """Left fold over a collection.
-
-Example: [reduce [fn [acc x] [+ acc x]] 0 [1 2 3]] => 6
-
-Note: Dual-dispatch: on Dict folds over values (preserving insertion order), on Seq folds lazily.
-"""]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
-
-# ============================================================================
 # Numeric Range Predicates
 # ============================================================================
 

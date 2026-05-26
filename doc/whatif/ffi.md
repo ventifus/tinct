@@ -9,7 +9,7 @@ This whatif covers three related but distinct approaches to the same underlying 
 | Approach | Scope | Mechanism | Binary impact |
 |---|---|---|---|
 | [Option 1: External C/Rust FFI](#option-1-external-crust-ffi-extern-block) | Call any C ABI library | `extern` block + `libloading` | None — loaded at runtime |
-| [Option 2: In-Tree Native Modules](#option-2-in-tree-native-modules----uses) | Lazy activation of compiled-in builtins | `native-module` builtin + registry | Code already in binary |
+| [Option 2: In-Tree Native Modules](#option-2-in-tree-native-modules-----uses) | Lazy activation of compiled-in builtins | `native-module` builtin + registry | Code already in binary |
 | [Option 3: Cargo Workspace Split](#option-3-cargo-workspace-split) | Separate Rust crates per feature | Workspace crates, static or dynamic link | Structurally separate |
 
 ## Current State
