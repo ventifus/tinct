@@ -1084,6 +1084,54 @@ impl Drop for ExpansionGuard<'_> {
 /// Expand a macro call with SurfaceNode arguments.
 ///
 /// Native-surface version of `expand_macro_call`. Args are `Arc<SurfaceNode>` — no
+/// Recursively materialize a value and all nested thunk references.
+///
+/// This simple version does NOT handle:
+/// - Cycle detection (assumes acyclic macro output)
+/// - Sharing preservation (may duplicate shared structures)
+///
+/// This is sufficient for the macro expansion fallback path since macro-generated
+/// AST dicts are typically small and acyclic.
+fn force_dict_tree(val: &Value, ctx: &Arc<EvalContext>) -> EvalResult<Value> {
+    match val {
+        Value::Dict(map) => {
+            let mut new_map = indexmap::IndexMap::new();
+            for (key, thunk_id) in map {
+                let thunk = ctx.get_thunk(*thunk_id);
+                let forced_val =
+                    crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, ctx))?;
+                let deep_val = force_dict_tree(&forced_val, ctx)?;
+                let deep_thunk = Arc::new(Thunk::new_materialized(deep_val, thunk.span));
+                let deep_id = ctx.alloc_thunk(deep_thunk);
+                new_map.insert(key.clone(), deep_id);
+            }
+            Ok(Value::Dict(new_map))
+        }
+        Value::Variant { tag, payload } => {
+            if let Some(payload_id) = payload {
+                let payload_thunk = ctx.get_thunk(*payload_id);
+                let forced_payload = crate::async_rt::block_on_anywhere(eval::materialize(
+                    &payload_thunk,
+                    None,
+                    ctx,
+                ))?;
+                let deep_payload = force_dict_tree(&forced_payload, ctx)?;
+                let deep_thunk =
+                    Arc::new(Thunk::new_materialized(deep_payload, payload_thunk.span));
+                let deep_id = ctx.alloc_thunk(deep_thunk);
+                Ok(Value::Variant {
+                    tag: tag.clone(),
+                    payload: Some(deep_id),
+                })
+            } else {
+                Ok(val.clone())
+            }
+        }
+        // Primitives and other types are already fully materialized
+        _ => Ok(val.clone()),
+    }
+}
+
 /// `expr_to_surface_node` conversion needed before quoting. The result is returned
 /// as `Arc<SurfaceNode>` — no `surface_node_to_expr` → `expr_to_surface_node` round-trip.
 ///
@@ -1263,7 +1311,8 @@ fn expand_macro_call_surface(
         }
         Value::Dict(_) | Value::Variant { .. } => {
             // Fallback path: macro returned Dict/Variant, need deep materialization + conversion
-            let deep_result = eval::deep_materialize(&result_val, ctx, None).map_err(|mut e| {
+            // dict_to_surface_node expects all nested values to be pre-materialized (uses try_get_materialized)
+            let deep_result = force_dict_tree(&result_val, ctx).map_err(|mut e| {
                 e.push_frame(format!("in expansion of `{}`", macro_name), call_span);
                 e
             })?;

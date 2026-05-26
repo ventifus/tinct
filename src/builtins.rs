@@ -92,7 +92,7 @@ pub const MAX_COLLECT_SIZE: usize = 1_000_000;
 /// Maximum JSON nesting depth for `from-json`.
 /// Separate from MAX_EVAL_DEPTH: JSON nesting is a data-model limit (128),
 /// not a recursive evaluation limit (256). Prevents deeply nested JSON from
-/// producing value trees that cause stack overflow during deep_materialize.
+/// producing value trees that could cause stack overflow.
 pub(crate) const JSON_DEPTH_LIMIT: usize = 128;
 
 /// Maximum string output size for string output builtins (`$replace`, `$str-map-chars`, `$join`) (64 MB).
@@ -406,19 +406,18 @@ pub(crate) use crate::builtins_io::{
     builtin_write_handle,
 };
 
-// Type/eval/meta builtins: type-of, deep-materialize, include, error, try, apply, validate.
+// Type/eval/meta builtins: type-of, include, error, try, apply, validate.
 // Implementations live in builtins_meta.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub use crate::builtins_meta::json_to_value;
 pub(crate) use crate::builtins_meta::{
     builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_bool_check,
-    builtin_bytes_check, builtin_cap_identity, builtin_decimal, builtin_deep_materialize,
-    builtin_dict_check, builtin_eval, builtin_eval_types, builtin_expand, builtin_float_check,
-    builtin_fn_check, builtin_force, builtin_from_json, builtin_gensym, builtin_include_cache_get,
-    builtin_include_cache_put, builtin_int_check, builtin_llt_repr, builtin_load,
-    builtin_macro_error, builtin_macro_injects, builtin_null_check, builtin_raise,
-    builtin_str_check, builtin_tag_of, builtin_to_json, builtin_try, builtin_type_of,
-    builtin_until, builtin_validate, builtin_variant,
+    builtin_bytes_check, builtin_cap_identity, builtin_decimal, builtin_dict_check, builtin_eval,
+    builtin_eval_types, builtin_expand, builtin_float_check, builtin_fn_check, builtin_force,
+    builtin_from_json, builtin_gensym, builtin_include_cache_get, builtin_include_cache_put,
+    builtin_int_check, builtin_llt_repr, builtin_load, builtin_macro_error, builtin_macro_injects,
+    builtin_null_check, builtin_raise, builtin_str_check, builtin_tag_of, builtin_to_json,
+    builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -1510,11 +1509,6 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("to-float", builtin_to_float, [Strictness::Seq]),
         builtin!("builtin-to-float", builtin_to_float, [Strictness::Seq]), // Stable alias
         // Evaluation control
-        builtin!(
-            "deep-materialize",
-            builtin_deep_materialize,
-            [Strictness::Seq]
-        ),
         builtin!("materialize", builtin_force, [Strictness::Seq]),
         builtin!("raise", builtin_raise, [Strictness::Seq]),
         builtin!("builtin-raise", builtin_raise, [Strictness::Seq]), // Stable alias
@@ -1747,7 +1741,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("recv-datagram", builtin_recv_datagram, [Strictness::Seq]),
         builtin!("from-json", builtin_from_json, [Strictness::Seq]),
         builtin!("builtin-from-json", builtin_from_json, [Strictness::Seq]), // Stable alias
-        // Native JSON serializer: deep-materializes and converts to compact JSON string.
+        // Native JSON serializer: recursively materializes and converts to compact JSON string.
         // Replaces the LLT-based codecs/json.llt include approach for the CLI output pipeline.
         builtin!("builtin-to-json", builtin_to_json, [Strictness::Seq]),
         // DELETED: builtin!("include", builtin_include, [Strictness::Seq])
@@ -3706,194 +3700,6 @@ mod tests {
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("cannot parse"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[test]
-    fn deep_materialize_primitive_int() {
-        let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: vec![thunk(Value::Int(42))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, Value::Int(42));
-    }
-
-    #[test]
-    fn deep_materialize_primitive_string() {
-        let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: vec![thunk(string_val("hello".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, string_val("hello".into()));
-    }
-
-    #[test]
-    fn deep_materialize_primitive_float() {
-        let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: vec![thunk(Value::Float(3.14))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, Value::Float(3.14));
-    }
-
-    #[test]
-    fn deep_materialize_primitive_bool() {
-        let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: vec![thunk(Value::Bool(true))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, Value::Bool(true));
-    }
-
-    #[test]
-    fn deep_materialize_empty_dict() {
-        let dict = Value::Dict(IndexMap::new());
-        let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: vec![thunk(dict)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        match result {
-            Value::Dict(map) => assert!(map.is_empty()),
-            _ => panic!("expected Dict"),
-        }
-    }
-
-    #[test]
-    fn deep_materialize_flat_dict() {
-        let ctx = test_ctx();
-        let dict = thunk_dict(
-            {
-                let mut map = IndexMap::new();
-                map.insert(Key::String("a".into()), thunk(Value::Int(1)));
-                map.insert(Key::String("b".into()), thunk(Value::Int(2)));
-                map
-            },
-            &ctx,
-        );
-        let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: vec![dict],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }));
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 2);
-                let a = mat_id(map[&Key::String("a".into())], &ctx);
-                assert_eq!(a, Value::Int(1));
-                let b = mat_id(map[&Key::String("b".into())], &ctx);
-                assert_eq!(b, Value::Int(2));
-            }
-            _ => panic!("expected Dict"),
-        }
-    }
-
-    #[test]
-    fn deep_materialize_nested_dict() {
-        // Build [x: [y: 42]]
-        let ctx = test_ctx();
-        let inner_dict = thunk_dict(
-            {
-                let mut m = IndexMap::new();
-                m.insert(Key::String("y".into()), thunk(Value::Int(42)));
-                m
-            },
-            &ctx,
-        );
-        let outer_dict = thunk_dict(
-            {
-                let mut m = IndexMap::new();
-                m.insert(Key::String("x".into()), inner_dict);
-                m
-            },
-            &ctx,
-        );
-
-        let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: vec![outer_dict],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }));
-        match result {
-            Value::Dict(outer_map) => {
-                let x_val = mat_id(outer_map[&Key::String("x".into())], &ctx);
-                match x_val {
-                    Value::Dict(inner_map) => {
-                        let y_val = mat_id(inner_map[&Key::String("y".into())], &ctx);
-                        assert_eq!(y_val, Value::Int(42));
-                    }
-                    _ => panic!("expected inner Dict"),
-                }
-            }
-            _ => panic!("expected outer Dict"),
-        }
-    }
-
-    #[test]
-    fn deep_materialize_with_unevaluated_thunk() {
-        // Create a Surface thunk wrapping a literal -- deep-materialize should force it
-        let ctx = test_ctx();
-        let node = Arc::new(crate::ast::SurfaceNode {
-            expr: crate::ast::SurfaceExpression::Int(99),
-            span: test_span(1, 1, 1, 5),
-        });
-        let unevaluated = Arc::new(Thunk::new_surface(
-            node,
-            Arc::new(crate::ast::ResolutionTable::new()),
-            Arc::new(crate::ast::TypeAnnotationTable::new()),
-            Arc::new(RwLock::new(Environment::new())),
-            Arc::clone(&ctx),
-            test_span(1, 1, 1, 5),
-        ));
-
-        let dict = thunk_dict(
-            {
-                let mut m = IndexMap::new();
-                m.insert(Key::String("val".into()), unevaluated);
-                m
-            },
-            &ctx,
-        );
-
-        let result = mat(builtin_deep_materialize(BuiltinArgs {
-            args: vec![dict],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }));
-        match result {
-            Value::Dict(map) => {
-                let v = mat_id(map[&Key::String("val".into())], &ctx);
-                assert_eq!(v, Value::Int(99));
-            }
-            _ => panic!("expected Dict"),
-        }
-    }
-
-    #[test]
-    fn deep_materialize_arity_error() {
-        let err = run(builtin_deep_materialize(BuiltinArgs {
-            args: vec![],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
             "got: {}",
             err.kind
         );
@@ -6462,24 +6268,6 @@ mod tests {
     }
 
     #[test]
-    fn deep_materialize_rejects_named_args() {
-        let mut named = IndexMap::new();
-        named.insert("x".into(), thunk(Value::Int(1)));
-        let err = run(builtin_deep_materialize(BuiltinArgs {
-            args: vec![thunk(Value::Int(42))],
-            named: Some(named),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[test]
     fn error_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
@@ -6971,10 +6759,6 @@ mod tests {
         assert!(names.contains(&"to-int"), "missing to-int");
         assert!(names.contains(&"to-float"), "missing to-float");
         // Evaluation control
-        assert!(
-            names.contains(&"deep-materialize"),
-            "missing deep-materialize"
-        );
         assert!(names.contains(&"materialize"), "missing materialize");
         assert!(names.contains(&"raise"), "missing raise");
         assert!(names.contains(&"try"), "missing try");

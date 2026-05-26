@@ -7,7 +7,7 @@
 //! Additional public API:
 //! - [`eval_surface_file`] / [`eval_surface_file_with_input`] -- evaluate a `SurfaceProgram` with optional stdin input (requires prior `expand` + `desugar` + `resolve` passes)
 //! - [`typecheck_source`] -- parse and typecheck only (no evaluation)
-//! - [`materialize`] / [`deep_materialize`] -- force thunks (shallow or recursive)
+//! - [`materialize`] -- force thunks (shallow)
 //! - [`create_stdlib_env`] -- create the standard library environment (Rust builtins + LLT prelude)
 //! - [`EvalContext`] -- evaluation context with base directory and stdlib environment; include_cache memoizes `include` results (same file = same cached thunk)
 //! - [`json_to_value`] -- convert `serde_json::Value` to LLT `Value`
@@ -60,7 +60,7 @@ pub(crate) mod builtins_dict;
 pub(crate) mod builtins_io;
 // Arithmetic, comparison, and control-flow builtins: +, -, *, /, =, <, if.
 pub(crate) mod builtins_math;
-// Type/eval/meta builtins: type-of, deep-materialize, include, error, try, apply, validate.
+// Type/eval/meta builtins: type-of, include, error, try, apply, validate.
 pub(crate) mod builtins_meta;
 // Seq primitive builtins: seq, head, tail, collect, seq?.
 pub(crate) mod builtins_seq_prim;
@@ -111,7 +111,6 @@ pub use ast::{
 /// Parser entry points and error type.
 pub use parser::{format_parse_error, parse, parse_surface_expression, ParseError, ParseOutput};
 
-pub use eval::deep_materialize;
 /// Evaluation functions.
 pub use eval::{
     eval_surface_file, eval_surface_file_with_input, materialize, materialize_sync, EvalConfig,
@@ -345,8 +344,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     .map_err(&attach_provenance)?;
     let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
         .map_err(&attach_provenance)?;
-    let forced = eval::deep_materialize(&val, &ctx, None).map_err(&attach_provenance)?;
-    value_to_display_string(&forced, &ctx).map_err(&attach_provenance)
+    value_to_display_string(&val, &ctx).map_err(&attach_provenance)
 }
 
 /// Parse, eval, and materialize LLT source with optional NetCap injections.
@@ -476,8 +474,7 @@ pub fn eval_source_with_cap_net(
     .map_err(&attach_provenance)?;
     let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
         .map_err(&attach_provenance)?;
-    let forced = eval::deep_materialize(&val, &ctx, None).map_err(&attach_provenance)?;
-    value_to_display_string(&forced, &ctx).map_err(&attach_provenance)
+    value_to_display_string(&val, &ctx).map_err(&attach_provenance)
 }
 
 /// Parse a NetCap allowlist entry string (same logic as CLI `--cap-net NAME=ENTRY`).
@@ -1562,7 +1559,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pipeline_deep_materialize() {
+    fn test_pipeline_json_visitor_materializes_lazily() {
         let source = "[a: [b: [c: 42]]]";
         let parsed = parse(source).expect("parse failed");
         let mut program = parsed.program.clone();
@@ -1583,8 +1580,8 @@ mod tests {
         .expect("eval failed");
         let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
             .expect("materialize failed");
-        let forced = eval::deep_materialize(&val, &ctx, None).expect("deep_materialize failed");
-        let json = value_to_json(&forced, &ctx).expect("value_to_json failed");
+        // value_to_json materializes nested values on demand via visit_value
+        let json = value_to_json(&val, &ctx).expect("value_to_json failed");
         assert_eq!(json, serde_json::json!({"a": {"b": {"c": 42}}}));
     }
 
@@ -1610,8 +1607,8 @@ mod tests {
         .expect("eval failed");
         let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
             .expect("materialize failed");
-        let forced = eval::deep_materialize(&val, &ctx, None).expect("deep_materialize failed");
-        let display = value_to_display_string(&forced, &ctx).expect("display failed");
+        // value_to_display_string materializes nested values on demand via visit_value
+        let display = value_to_display_string(&val, &ctx).expect("display failed");
         assert_eq!(display, "Dict({\"x\": Int(42)})");
     }
 

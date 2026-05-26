@@ -171,23 +171,6 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 
 
 
-### rv2-deep-materialize-delete: Delete `deep_materialize` after output and macro migration
-
-**Status update (2026-05-25):** `deep_materialize` still has multiple callers beyond repl.rs:
-- `src/builtins_meta.rs`: `builtin_deep_materialize` ($deep-materialize builtin), `builtin_to_json`, new AST variant error path
-- `src/expand.rs`: Dict/Variant fallback path in macro result handling
-- `src/lib.rs`: `eval_source_with_input`, `eval_source_with_config`; public export
-- Multiple tests in `src/builtins.rs` and `src/lib.rs`
-
-All callers must be migrated before deletion.
-
-- [ ] Remove `deep_materialize` from `eval_source_with_input` and `eval_source_with_config` in lib.rs — use `materialize_sync` instead
-- [ ] Remove `deep_materialize` from expand.rs fallback path — require macro results to be Expression
-- [ ] Remove `deep_materialize` from `builtin_to_json` — use `materialize` per-entry instead
-- [ ] Review `$deep-materialize` builtin — decide whether to keep as user-facing API or delete
-- [ ] Delete `pub fn deep_materialize` from `src/eval_materialize.rs` — zero callers remaining
-- [ ] Remove `deep_materialize` from `pub` exports in `src/lib.rs`
-- [ ] Update whatif runtime-v2.md Implementation Notes to record `deep_materialize` as deleted
 
 ### rv2-migrate-typecheck-api: Delete old `typecheck_file_*` wrappers
 
@@ -482,6 +465,22 @@ Root cause: Arena phase-3 (slot-based lookup wiring into evaluator) not yet star
 - [ ] Delete `#[allow(dead_code)]` attributes once wired
 
 ## Builtin CPS Debt
+
+### h2-h3-cleanup: Clean up H2/H3 annotated builtins (no-ops and improvable registrations)
+
+Assumption-skeptic verified all H2/H3 annotations are **correct** — no hidden bugs. Six are genuine no-ops (pos_strictness already covers them); two real materializations can be eliminated by extending registrations.
+
+**No-op materializations** — replace with `try_get_materialized().expect("pre-materialized by pos_strictness[N]")`
+- [ ] `builtin_macro_error` args[0]+args[1] (`src/builtins_meta.rs:163,178`) — covered by force_count=2
+- [ ] `builtin_connect` args[2] in Tcp/UnixStream/Udp/UnixDatagram arms (`src/builtins_io.rs:971,1077,1169,1247`) — covered by pos_strictness[2]=Seq; update comment from "discriminant-dispatched" to "pre-materialized by pos_strictness[2]=Seq"
+- [ ] `builtin_range` args[1] (`src/builtins_seq_gen.rs:93`) — covered by pos_strictness[1]=Seq
+- [ ] `builtin_reduce_seq_step` args[2] (`src/builtins_seq_reduce.rs:217`) — covered by pos_strictness[2]=Spine
+
+**Registration extensions** — add Strictness to eliminate real materialize() calls
+- [ ] `builtin_gensym`: extend registration to `[Strictness::Seq]`; engine skips pos_strictness[0] when args.len()==0 (variadic 0-or-1) (`src/builtins.rs` registration + `src/builtins_meta.rs`)
+- [ ] `builtin_connect`: extend registration from `[Seq,Seq,Seq]` to `[Seq,Seq,Seq,Seq]`; engine skips pos_strictness[3] when args.len()==3 (UnixStream/Datagram); eliminates `materialize(&args[3])` in Tcp and Udp arms (`src/builtins.rs` registration + `src/builtins_io.rs`)
+
+**Leave as-is** (no framework support): `builtin_load` named args, `builtin_bytes` variadic loop.
 
 ### h1-force-count-migration: Migrate H1-annotated builtins to use pos_strictness/force_count
 

@@ -644,7 +644,6 @@ impl ErrorKind {
                 | "round"
                 | "to-int"
                 | "to-float"
-                | "deep-materialize"
                 | "error"
                 | "try"
                 | "apply"

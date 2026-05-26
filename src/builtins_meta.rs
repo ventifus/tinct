@@ -4,7 +4,6 @@
 //! JSON conversion, file inclusion, and schema validation.
 //!
 //! **Evaluation control:**
-//! - `deep-materialize`: Deep-materialize a value recursively
 //! - `error`: Raise a user error with a custom message
 //! - `builtin-macro-error`: Raise a macro error with precise span information
 //! - `try`: Catch errors from a zero-arg function
@@ -53,32 +52,7 @@ use crate::eval::{materialize, materialize_sync};
 use crate::eval_call::{invoke_function, CallContext};
 use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
 
-/// `deep-materialize`: takes 1 arg, deep-forces all thunks recursively.
-/// Delegates to [`crate::eval_materialize::deep_materialize`].
-/// Inherently materializing: deep-forces all thunks by definition.
-pub(crate) fn builtin_deep_materialize(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "deep-materialize",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span,
-        )?;
-        let deep = crate::eval_materialize::deep_materialize(&val, &ctx, Some(&call_span))?;
-        ok_val(deep, call_span)
-    })
-}
-
-/// `builtin-to-json`: takes 1 arg, deep-materializes it and serializes to a JSON string.
+/// `builtin-to-json`: takes 1 arg and serializes to a JSON string.
 ///
 /// This is the Rust-native JSON serializer used by the CLI output pipeline as a replacement
 /// for the LLT-based codecs/json.llt approach. Avoids the `[include %libdir ...]` dependency
@@ -103,17 +77,16 @@ pub(crate) fn builtin_to_json(
             &ctx,
             call_span,
         )?;
-        // Deep-materialize first so value_to_json can traverse the full structure.
-        let deep = crate::eval_materialize::deep_materialize(&val, &ctx, Some(&call_span))?;
+        // value_to_json materializes nested values on demand via visit_value
         // LLT null compatibility: [] (empty dict) serializes as JSON null,
         // matching the behavior of the old codecs/json.llt `null?` check.
-        if let crate::value::Value::Dict(ref map) = deep {
+        if let crate::value::Value::Dict(ref map) = val {
             if map.is_empty() {
                 return ok_val(crate::value::string_val("null"), call_span);
             }
         }
         // Serialize to JSON using the Rust-native converter.
-        let json_val = crate::value_to_json(&deep, &ctx).map_err(|e| {
+        let json_val = crate::value_to_json(&val, &ctx).map_err(|e| {
             // Re-wrap the error with the call span for better diagnostics
             let mut err = *e;
             err.definition_span = call_span;
@@ -126,9 +99,8 @@ pub(crate) fn builtin_to_json(
 
 /// `materialize`: takes 1 arg, forces it to WHNF and returns it.
 ///
-/// Gives users explicit control over evaluation order. Equivalent to `$deep-materialize` for
-/// flat values, but only forces to weak head normal form (WHNF) — dicts remain
-/// dicts with unforced entries, not deep-forced. Use `$deep-materialize` for deep forcing.
+/// Gives users explicit control over evaluation order. Only forces to weak head normal form
+/// (WHNF) — dicts remain dicts with unforced entries, not deep-forced.
 pub(crate) fn builtin_force(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -1087,7 +1059,7 @@ pub(crate) fn builtin_ast_of(
     })
 }
 
-/// `llt-repr`: takes 1 arg, deep-materializes it, returns its LLT display string representation.
+/// `llt-repr`: takes 1 arg, materializes it recursively, returns its LLT display string representation.
 /// This is the programmatic equivalent of the LLT display format (Int(42), Dict({...}), etc.).
 /// Used by the `-o llt` output formatter.
 pub(crate) fn builtin_llt_repr(
@@ -1102,10 +1074,8 @@ pub(crate) fn builtin_llt_repr(
         } = ctx_arg;
         let val =
             crate::builtins::expect_one_arg("llt-repr", &args, named.as_ref(), &ctx, call_span)?;
-        // Deep-materialize the value first (value_to_display_string requires it)
-        let deep_val = crate::eval_materialize::deep_materialize(&val, &ctx, Some(&call_span))?;
-        // Convert to display string
-        let display_str = crate::value_to_display_string(&deep_val, &ctx)
+        // value_to_display_string materializes nested values on demand via visit_value
+        let display_str = crate::value_to_display_string(&val, &ctx)
             .map_err(|e| EvalError::internal(format!("llt-repr: {}", e.kind), call_span))?;
         ok_val(string_val(&display_str), call_span)
     })

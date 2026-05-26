@@ -10025,3 +10025,14 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] Update all `crate::ast_dict::dict_to_surface_node` imports to `crate::surface_convert::dict_to_surface_node`
 - [x] Move `surface_program_to_dict`, `AstToDictOpts`, `CommentMaps`, and all helpers to `src/surface_convert.rs`
 - [x] Delete `src/ast_dict.rs` — all content moved to surface_convert.rs; module removed from lib.rs
+
+### rv2-deep-materialize-delete: Delete `deep_materialize` after output and macro migration
+
+- [x] Remove `deep_materialize` from `eval_source_with_input` and `eval_source_with_config` in lib.rs — replaced with `value_to_display_string` (materializes on demand)
+- [x] Remove `deep_materialize` from expand.rs fallback path — replaced with local `force_dict_tree` helper
+- [x] Remove `deep_materialize` from `builtin_to_json` — `value_to_json` materializes on demand
+- [x] Delete `$deep-materialize` builtin — removed from builtins_meta.rs, builtins.rs registration, type_env.rs
+- [x] Delete `pub fn deep_materialize` and helpers from eval_materialize.rs (~400 lines)
+- [x] Remove `deep_materialize` from `pub` exports in lib.rs and eval.rs re-export
+- [x] Delete all deep_materialize tests: 20 in eval.rs, 10 in builtins.rs, 3 in eval_materialize.rs, 1 corpus test
+- [x] Update all doc comments referencing deep_materialize across src/
