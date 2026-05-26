@@ -70,12 +70,12 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 **Type conventions:**
 
-- Uppercase first letter: concrete types (`Int`, `String`, `Bool`, `Null`, `Any`)
+- Uppercase first letter: concrete types (`Int`, `String`, `Bool`, `Null`, `Top`)
 - Lowercase first letter: type variables (`a`, `b`, `k`, `v`)
 - `String` / `Str`: `String` is the user-facing annotation name; `Str` is the internal `Type::Str` variant. Use `String` in annotations; `Str` appears in error messages.
 - `Null`: the empty record `[]` — closed record with no fields. Use `fn@Null` for functions returning no meaningful value.
-- `Any`: dynamic escape hatch — accepts any value, no static checking.
-- `Unknown`: gradual type (`?`) — like `Any` for inference but propagates through type checking. Unconstrained inference positions resolve to `Unknown`.
+- `Top`: universal supertype (`⊤`) — every type is a subtype of `Top`. Accepts any value in the subtyping sense.
+- `Unknown`: gradual type (`?`) — any type is consistent with `Unknown` for gradual typing, but it does NOT imply "accepts any value" in the subtyping sense. Unconstrained inference positions resolve to `Unknown`.
 
 ### 3. Type Assertions
 

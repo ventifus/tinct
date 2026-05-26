@@ -574,10 +574,9 @@ fn builtin_to_float(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalRes
         let s = require_string("to-float", val, arg0_span)?;
         match s.parse::<f64>() {
             Ok(f) if f.is_finite() => ok_val(Value::Float(f), call_span),
-            Ok(_f) => Err(EvalError::internal(
-                format!(
-                    "to-float: \"{s}\" parses to a non-finite value (NaN/Infinity not allowed)"
-                ),
+            Ok(f) => Err(EvalError::float_not_finite(
+                "to-float".to_string(),
+                f,
                 call_span,
             )
             .into()),

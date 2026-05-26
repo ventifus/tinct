@@ -10041,3 +10041,12 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 
 - [x] Update `doc/02-syntax.md:717,722` — rewritten quasiquoting examples to show Value::Expression output with tag-of and field access
 - [x] Update `doc/08-evaluation.md:1522` — changed "Value::Dict" to "Value::Expression" with tag-of and field access description
+
+### health-review-306-fixes: Fix small findings from Health Review #306
+
+- [x] Fix `to-float` NaN/Infinity error code: E099→E033 (float_not_finite)
+- [x] Delete stale SequentialStep bug comment (eval.rs — already fixed by ForceAndBind)
+- [x] Wire TypeAnnotationTable: VERIFIED ALREADY DONE
+- [x] Fix doc/11-stdlib.md builtin count: 301→~191, ~418→~308
+- [x] Fix doc/05-type-annotations.md Unknown vs Top clarification
+- [x] Fix eval.rs module docstring

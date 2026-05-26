@@ -396,44 +396,6 @@ Hardcoded behavior, stubs, and dead code found during systematic audit. Root cau
 - [x] Fix `tests/corpus/valid/edge_cases/empty.llt-eval` — added `=== out` section
 - [x] Update `doc/10-errors.md` error code table — added E012, E013, E044, E071, E072, E081, E082 (7 entries)
 
-### to-float-nan-error-code: Fix to-float "NaN" producing E099 instead of E033
-
-`src/builtins.rs` around line 577: `to-float "NaN"` produces `EvalError::internal()` (E099) but should use `EvalError::float_not_finite()` (E033). The corpus test `to_float_nan_input.llt-eval` now expects E033 which will fail until the code is fixed.
-
-- [ ] Change `to-float` NaN/Infinity rejection from `EvalError::internal()` to `EvalError::float_not_finite()` in `src/builtins.rs`
-
-### stale-comment-sequential-step: Delete misleading SequentialStep bug comment [Major]
-
-**eval-engine C1.** `src/eval.rs:1432-1434` has a comment claiming SequentialStep has a correctness bug with lazy dict bindings. The bug was FIXED by Cont::ForceAndBind in a prior sprint. The comment is now actively misleading.
-
-- [ ] Delete stale comment at `src/eval.rs:1432-1434` — ForceAndBind (eval_materialize.rs:2988-2994) already fixes the described issue
-
-### typecheck-eval-annotation-wire: Wire TypeAnnotationTable from typecheck to eval [Major]
-
-**integration-verifier M1.** `eval_source_with_config` and `eval_source_with_cap_net` in `src/lib.rs` discard the `TypeAnnotationTable` after typecheck, passing an empty table to eval. The lowerer thus has no statically-resolved type information, causing all `TypeAssert` nodes to fall back to `RuntimeTypeCheck` (runtime validation) instead of using static types. Performance and precision gap — not a correctness bug.
-
-- [ ] Capture `types` from `typecheck_surface_program` in `eval_source_with_config` (`src/lib.rs`) and pass to `eval_surface_file` instead of `Arc::new(TypeAnnotationTable::new())`
-- [ ] Same fix in `eval_source_with_cap_net` (`src/lib.rs`)
-- [ ] Verify `lower.rs` uses the table to populate `TypeAssert.resolved_type`
-
-### doc-stdlib-builtin-count: Fix wrong builtin count in doc/11-stdlib.md [Major]
-
-**stdlib-author M1.** `doc/11-stdlib.md:358,360` claims "301 Rust-native builtins" and "~418 total functions" but actual figures are ~191 unique primary-name builtins and ~308 total (191 Rust + 117 LLT). The 301 count double-counts builtins that have both primary and `builtin-*` alias names.
-
-- [ ] Fix `doc/11-stdlib.md:358` — change "301 Rust-native builtins" to "~191 Rust-native builtins (with stable `builtin-*` aliases for each)"
-- [ ] Fix `doc/11-stdlib.md:360` — change "~418 functions" to "~308 functions (191 Rust + 117 prelude LLT)"
-
-### doc-05-unknown-top-clarification: Clarify Unknown vs Top in type doc [Minor]
-
-**type-theorist M1.** `doc/05-type-annotations.md:73-79` conflates `Unknown` (gradual `?`, consistency-based) with legacy "Any" terminology, and doesn't distinguish `Top` (⊤, subtyping-based supertype).
-
-- [ ] Update `doc/05-type-annotations.md:73-79` — clarify `Unknown` is gradual `?` (not `Any`), `Top` is ⊤, and explain the difference in practical terms
-
-### eval-module-docstring-fix: Fix stale module docstrings [Minor]
-
-**eval-engine m2.** `src/eval.rs:1-3` module docstring says "document pipelines, and function evaluation" — these moved to eval_pipeline.rs and eval_call.rs.
-
-- [ ] Update `src/eval.rs:1-3` module docstring — remove "document pipelines" (in eval_pipeline.rs) and "function evaluation" (in eval_call.rs); add references to those modules
 
 ### async-shutdown-primitives: Implement exit, graceful-exit, cancel-root, drain
 
