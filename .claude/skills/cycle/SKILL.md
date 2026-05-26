@@ -30,23 +30,15 @@ When running: invoke the `/analyze` skill to run the full codebase health check 
 
 ### Phase 2: TODO Grooming
 
-After the review may have added new findings to TODO.md, groom the backlog before sprinting:
+Invoke the `/groom` skill to right-size the sprint backlog before running the next sprint.
 
-1. Read `TODO.md` in full
-2. **Categorize**: ensure every item is in the correct phase. Move misplaced items
-3. **Dependency order**: verify milestones and sprints are ordered so foundational work comes before dependent work
-4. **Dedup**: merge duplicate or overlapping items that may have been added by different review agents
-5. **Right-size sprints**: target approximately 25 non-nit, non-doc (implementation) items per sprint.
-   - **Split** any sprint exceeding 30 non-nit items into smaller sprints (use new kebab-case slugs)
-   - **Combine** adjacent sprints of compatible concern when individually under 10 non-nit items — merge them into one sprint. **You MUST walk ALL pending sprints and actively look for grouping opportunities every cycle, not just check adjacent pairs.** Exception: do NOT merge sprints that have explicit `**Depends on:**` links — these phase boundaries are intentional. Do not merge a sprint with its dependency or its dependent.
-   - **Mandatory batch check**: Before sprinting, count all small sprints (< 10 tasks). If there are 3 or more small sprints that could be combined, merge them NOW before proceeding. A single 15-task sprint is always better than three 5-task sprints — it amortizes the agent review overhead.
-   - **Tack** nit and doc items onto the first available impl sprint rather than creating separate nit-only or doc-only sprints
-   - **Heading level convention**: `##` headings are design/feature sections — they hold design, decide, and research items. `###` headings are implementation sprints. When splitting, creating, or combining, always produce `###` sprint headings nested under the appropriate `##` design section. If no matching `##` section exists, create one. Never place implementation tasks directly under a `##` heading — if you find any, wrap them in a new `###` sub-sprint.
-   - **Migration and deletion sprints are exempt from size splitting**: sprints whose tasks are "Delete X", "Migrate callers of Y", "Remove Z", "Update N call sites" may touch many files but have a clear, bounded end result. Do not split them — `/sprint` decomposes the call sites internally via Step 5 (Decompose hard tasks).
+The `/groom` skill:
+- Walks ALL pending sprints
+- Finds small sprints (< 10 tasks) and groups them by concern
+- Merges compatible groups into properly-sized sprints (~25 tasks)
+- Reports what it merged and what the next sprint will be
 
-6. **Never insert NEEDS_DESIGN during grooming.** That flag belongs to `/rnd` (open design questions) and `/sprint` (discovered during implementation). Grooming's job is ordering, sizing, and deduplication — not design evaluation. If you see a sprint with coarse tasks but a clear end goal, leave it alone. `/sprint` reads the spec, surveys the code, and decomposes internally. A sprint only needs `/rnd` when its **end result** is genuinely undefined — when we haven't decided *what* to build. If the sprint says what to build (even coarsely), it's ready to sprint.
-
-Only edit TODO.md — do not create other files. If no changes are needed, move on.
+After `/groom` completes, the backlog is ready for Phase 3.
 
 ### Phase 3: Sprint
 

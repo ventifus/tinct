@@ -412,22 +412,15 @@ Hardcoded behavior, stubs, and dead code found during systematic audit. Root cau
 - [x] Update `doc/10-errors.md` error code table — added E012, E013, E044, E071, E072, E081, E082 (7 entries)
 
 
-### async-cleanup-safety: Fix finally to run cleanup in non-cancellable context
+### async-completions: Complete async shutdown + safety features
 
-**Deferred from async-shutdown-primitives (2026-05-25).** cancel-root/drain/exit-now implemented; exit/graceful-exit unwrapped. Only finally remains.
-
-`stdlib/async.llt:225-253` — `finally` runs cleanup in the caller's context, which can be interrupted by cancellation. Requires `with-context` + non-cancellable token.
+Combined: async-cleanup-safety + async-drain-joinset (5 tasks, related async builtins)
 
 - [ ] Implement `non-cancellable` and `with-context` builtins (`src/builtins_async.rs`)
-- [ ] Update `finally` to run cleanup block in a non-cancellable sub-context (`stdlib/async.llt`)
-
-### async-drain-joinset: Replace drain MVP with JoinSet-based task registry
-
-`drain` currently sleeps 100ms (MVP). Proper implementation requires tracking all spawned JoinHandles in a task registry.
-
-- [ ] Add task registry to EvalContext (Arc&lt;Mutex&lt;Vec&lt;JoinHandle&lt;_&gt;&gt;&gt;&gt;) (`src/eval.rs`)
-- [ ] Register all spawn_local calls in task registry (`src/builtins_async.rs`, ~10 spawn sites)
-- [ ] Implement drain by awaiting all registered handles (`src/builtins_async.rs:1586`)
+- [ ] Update `finally` to run cleanup in non-cancellable context (`stdlib/async.llt`)
+- [ ] Add task registry to EvalContext (`src/eval.rs`)
+- [ ] Register all spawn_local calls in task registry (`src/builtins_async.rs`, ~10 sites)
+- [ ] Implement drain by awaiting all registered handles (`src/builtins_async.rs`)
 
 ### tco-implement: Fix TCO bugs in the CEK machine
 
