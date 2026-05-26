@@ -720,6 +720,22 @@ pub(crate) fn infer_dict(
             }
         }
 
+        // Merge local subst into state.subst BEFORE generalization.
+        // This ensures generalize_with_doc's subst_snapshot (type_env.rs:561) includes
+        // bindings created during this SCC's inference, fixing is_discharged for FD constraints.
+        // Previously this merge happened after all SCCs (line 807), causing is_discharged to
+        // return false for TypeVars bound in earlier SCCs, triggering spurious T013 warnings.
+        for (k, v) in subst.type_map.borrow().iter() {
+            state
+                .subst
+                .type_map
+                .borrow_mut()
+                .insert(k.clone(), v.clone());
+        }
+        if let Err(e) = state.subst.check_size(span) {
+            errors.push(e);
+        }
+
         // Pass 4_i: Generalize this SCC's entries before processing the next SCC
         for &idx in &scc.indices {
             let entry = &entries[idx];
@@ -802,18 +818,6 @@ pub(crate) fn infer_dict(
                 }
             }
         }
-    }
-
-    // Merge local subst back into state.subst
-    for (k, v) in subst.type_map.borrow().iter() {
-        state
-            .subst
-            .type_map
-            .borrow_mut()
-            .insert(k.clone(), v.clone());
-    }
-    if let Err(e) = state.subst.check_size(span) {
-        errors.push(e);
     }
 
     // Build final schemes map from dict_env

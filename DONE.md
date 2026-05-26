@@ -10227,3 +10227,50 @@ Discovered 2026-05-25: three additional subsystems are still using sync bridges.
 - [x] `src/formatter.rs:132,143` — `apply_formatter()` is sync but calls `block_on_anywhere(eval::eval_surface_file_with_input(...))` and `materialize_sync`. Make async or spawn a task. [Affects formatter correctness under async runtime]
 - [x] `src/type_normalize.rs:406` — `resolve_type()` is sync but calls `block_on_anywhere(invoke_function(...))`. Make async; update type checker callers. [Type normalization runs during compilation — should not block async runtime]
 - [x] Tests: `just ci` passes after each migration; no regressions in REPL, formatter, or type checker behavior
+
+### typecheck-regression-fixes: Fix typecheck regressions, warnings, and type system gaps
+
+#### Mixed annotation regression (from typecheck-mixed-annotation-regression)
+
+Pre-existing regression: `[fn@[return: Int 42] [] 0]` (function annotation that mixes named `return:` key with positional entry `42`) previously produced a typecheck error "mixed keys in annotation" but now typechecks cleanly.
+
+- [x] Re-add validation that `fn@[...]` annotation body must have only named keys (return:, constraint:, doc:, bind:, kinds:) — positional entries in the annotation should be a type error
+- [x] Re-add corpus test `tests/corpus/eval/type_errors/fn_annotation_mixed_keys_error.llt-eval` once the validation is restored
+
+#### Corpus test regressions (from typecheck-corpus-regressions)
+
+Two tests in `tests/corpus/eval/typecheck/` producing errors instead of passing. Excluded from `test_typecheck_corpus` as workaround.
+
+- [x] Fix `constraint_resolution_dispatch`: investigate instance pattern validation in `type_class.rs`; fix `[pattern [Str]]` to be recognized as a concrete pattern; or update the test to use `[pattern [x@Str]]` form if the syntax changed
+- [x] Fix `nominal_variant_exhaustive_match`: fix match pattern extraction to propagate field types from the variant definition; `[Circle r]` should give `r: Int` scope in the arm body
+- [x] Remove the exclusion from `test_typecheck_corpus` once both are fixed
+
+#### Warnings promoted to errors (from typecheck-warnings-vs-errors)
+
+7 `typecheck/warnings/` tests produce type ERRORS instead of WARNINGS: constraint_key_not_bareword, constraint_not_dict, constraint_positional_entry, constraint_value_invalid, doc_not_string, help_suggestion_arity, unknown_fn_annotation_key.
+
+- [x] Identify which typecheck.rs / type_class.rs change promoted these diagnostics from warning to error severity
+- [x] Restore warning severity for: malformed constraint keys, constraint-not-dict, doc-not-string, unknown annotation key, arity mismatch in annotation context
+- [x] Re-include `warnings/` in `test_typecheck_corpus` (remove the exclusion added as workaround)
+
+#### T013 duplicate emission (from t013-duplicate-diagnostic-emission)
+
+The constraint solver emits T013 each time it tries and fails to discharge an ambiguous constraint, rather than deduplicating per (type-variable, span) pair.
+
+- [x] Deduplicate T013 diagnostics by (type-variable, span) before emitting — each unique (typevar, span) pair should produce at most one T013 warning. (`src/typecheck.rs` constraint discharge path)
+
+#### MPTC membership check (from chr-mptc-membership)
+
+`src/type_unify.rs:389-396`: when a TypeVar constrained by Addable/Subtractable/Multipliable/Divisible is bound to a non-arithmetic type (e.g., Str), no error fires at binding time.
+
+- [x] Add partial membership check (can we find `Add Str β γ` for any β, γ?) at TypeVar binding time (`src/type_unify.rs:389-396`)
+
+#### Indexable FD in SCC inference (from indexable-fd-scc-fix) [DONE 2026-05-25]
+
+SCC constraint generalization drops Indexable FD constraints as ambiguous (T013) because TypeVars' concrete bindings are in `state.subst` but `is_discharged` returns false at generalization time.
+
+- [x] Fix the SCC constraint generalization: ensure `is_discharged` returns true for TypeVars whose concrete bindings are in `state.subst` at generalization time
+- [x] Remove `check_get` special case from typecheck.rs after fix
+- [x] Remove `check_arithmetic` special cases (`+`/`-`/`*`/`/`) from typecheck.rs after fix
+
+**FIX:** Moved local→state subst merge in `typecheck_dict.rs` to happen before generalization (lines 723-732) instead of after (was 807-814). This ensures `generalize_with_doc`'s subst_snapshot includes all bindings from the current SCC, so `is_discharged` correctly returns true for bound TypeVars. Removed 250 lines of workarounds: `check_get`, `check_arithmetic`, `check_div`, and helpers.

@@ -1388,8 +1388,21 @@ fn collect_pattern_bindings(pat: &Pattern, scrutinee_ty: &Type, out: &mut Vec<(S
                         tag: variant_tag,
                         fields,
                     } if variant_tag == tag => {
-                        // Direct NominalVariant match — use the fields row as payload type
-                        Type::Record(fields.clone())
+                        // Direct NominalVariant match — extract payload type from fields.
+                        // For single-field variants (e.g., [Circle r: Int]), the runtime value has
+                        // the field value as the payload (Int(5)), not a record. So the type should
+                        // be just Int, not Record({r: Int}).
+                        // Multi-field variants (or zero-field) have a Record payload.
+                        if fields.fields.len() == 1 {
+                            fields
+                                .fields
+                                .values()
+                                .next()
+                                .cloned()
+                                .unwrap_or(Type::Unknown)
+                        } else {
+                            Type::Record(fields.clone())
+                        }
                     }
                     Type::Union(members) => {
                         // Union: find the NominalVariant member with matching tag
@@ -1407,7 +1420,16 @@ fn collect_pattern_bindings(pat: &Pattern, scrutinee_ty: &Type, out: &mut Vec<(S
                             }
                         }
                         // Gradual: constructor tag not found in Union — payload type unknown
-                        matching_fields.map(Type::Record).unwrap_or(Type::Unknown)
+                        // For single-field variants, extract the field type; otherwise use Record.
+                        matching_fields
+                            .map(|f| {
+                                if f.fields.len() == 1 {
+                                    f.fields.values().next().cloned().unwrap_or(Type::Unknown)
+                                } else {
+                                    Type::Record(f)
+                                }
+                            })
+                            .unwrap_or(Type::Unknown)
                     }
                     Type::Intersection(members) => {
                         // Intersection: produced by I-Case3 narrowing when arm_scrutinee_ty is
@@ -1428,7 +1450,16 @@ fn collect_pattern_bindings(pat: &Pattern, scrutinee_ty: &Type, out: &mut Vec<(S
                             } = member
                             {
                                 if variant_tag == tag {
-                                    payload = Type::Record(fields.clone());
+                                    payload = if fields.fields.len() == 1 {
+                                        fields
+                                            .fields
+                                            .values()
+                                            .next()
+                                            .cloned()
+                                            .unwrap_or(Type::Unknown)
+                                    } else {
+                                        Type::Record(fields.clone())
+                                    };
                                     break 'outer;
                                 }
                             }
@@ -1441,7 +1472,16 @@ fn collect_pattern_bindings(pat: &Pattern, scrutinee_ty: &Type, out: &mut Vec<(S
                                     } = um
                                     {
                                         if variant_tag == tag {
-                                            payload = Type::Record(fields.clone());
+                                            payload = if fields.fields.len() == 1 {
+                                                fields
+                                                    .fields
+                                                    .values()
+                                                    .next()
+                                                    .cloned()
+                                                    .unwrap_or(Type::Unknown)
+                                            } else {
+                                                Type::Record(fields.clone())
+                                            };
                                             break 'outer;
                                         }
                                     }
@@ -2007,57 +2047,37 @@ pub(crate) fn infer_surface_expr(
                     return check_tls_layer(args, env, node.span, state, type_map);
                 }
 
-                // Special case: `+` / `builtin-add` refines return type when both args are known.
-                if (name == "+" || name == "builtin-add")
-                    && named_args.is_empty()
-                    && args.len() == 2
-                {
-                    return check_arithmetic(args, env, node.span, state, type_map);
-                }
-
-                // Special case: `-` / `builtin-sub` — same refinement as `+`.
-                if (name == "-" || name == "builtin-sub")
-                    && named_args.is_empty()
-                    && args.len() == 2
-                {
-                    return check_arithmetic(args, env, node.span, state, type_map);
-                }
-
-                // Special case: `*` / `builtin-mul` — same refinement as `+`.
-                if (name == "*" || name == "builtin-mul")
-                    && named_args.is_empty()
-                    && args.len() == 2
-                {
-                    return check_arithmetic(args, env, node.span, state, type_map);
-                }
-
-                // Special case: `/` / `builtin-div` — always returns Float in IEEE arithmetic.
-                if (name == "/" || name == "builtin-div")
-                    && named_args.is_empty()
-                    && args.len() == 2
-                {
-                    return check_div(args, env, node.span, state, type_map);
-                }
-
-                // Special case: `get` / `builtin-get` — precise return type via Indexable FD.
-                //
-                // Root cause: even with the authoritative Indexable scheme restored in the user
-                // TypeEnv (imports.rs), the Indexable FD fails to fire at call sites because of
-                // a bug in how SCC-based constraint generalization interacts with the
-                // `is_discharged` check in `generalize_with_doc` (type_env.rs). Specifically,
-                // in multi-SCC dicts, the early-iteration TypeVars (_t30/_t31) are not found in
-                // `subst_snapshot` at generalization time, so `is_discharged` returns false and
-                // the Indexable constraint is dropped as ambiguous (T013). The FD never fires.
-                //
-                // This special case bypasses the broken FD path and synthesizes the return type
-                // eagerly from the collection's static type. It should be removed once the SCC
-                // constraint generalization is fixed to correctly track discharged vars across
-                // iterations. Track: indexable-fd-scc-fix in TODO.md.
+                // Special case: `get` / `builtin-get` — precise return type via Indexable FD
+                // emulation. The prelude `get` scheme loses FD precision through annotation
+                // wrapping; `check_get` restores it for the common Seq/Map/Record cases.
                 if (name == "get" || name == "builtin-get")
                     && named_args.is_empty()
                     && args.len() == 2
                 {
+                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
                     return check_get(args, env, node.span, state, type_map);
+                }
+
+                // Special case: `+`/`-`/`*` (and builtin-* aliases) — refine return type from
+                // Number to Int/Float based on operand types. The prelude scheme returns Number
+                // for all arithmetic which loses precision for Int-only code.
+                if matches!(
+                    name.as_str(),
+                    "+" | "-" | "*" | "builtin-add" | "builtin-sub" | "builtin-mul"
+                ) && named_args.is_empty()
+                    && args.len() == 2
+                {
+                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_arithmetic(args, env, node.span, state, type_map);
+                }
+
+                // Special case: `/` / `builtin-div` — always returns Float (IEEE division).
+                if (name == "/" || name == "builtin-div")
+                    && named_args.is_empty()
+                    && args.len() == 2
+                {
+                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
+                    return check_div(args, env, node.span, state, type_map);
                 }
             }
 
@@ -3861,257 +3881,6 @@ fn check_tls_layer(
     }
 }
 
-/// Type check binary arithmetic (`+`, `-`, `*`, `builtin-add`, `builtin-sub`, `builtin-mul`).
-///
-/// The prelude wrapper gives these operators a scheme of `Fn Number [Number Number]`, so
-/// CALL-MONO always returns `Number`. This function inspects the actual argument types after
-/// substitution and refines the return type:
-///
-/// - `Int op Int` → `Int`
-/// - `Float op _` or `_ op Float` → `Float`
-/// - `Number op Number` → `Number` (no further precision)
-/// - `Unknown`, `TypeVar`, or other → `Number` (gradual fallback)
-///
-/// Division is handled separately by `check_div` because IEEE arithmetic always produces
-/// `Float` regardless of operand types.
-/// Type check `get` / `builtin-get` — precise return type via Indexable FD.
-///
-/// The Indexable FD fails to fire at user call sites due to a bug in SCC-based constraint
-/// generalization (`is_discharged` doesn't find early-iteration TypeVars in the subst
-/// snapshot). This function synthesizes the return type directly from the collection's
-/// static type, bypassing the broken FD path. Track: indexable-fd-scc-fix in TODO.md.
-fn check_get(
-    args: &[Arc<SurfaceNode>],
-    env: &Rc<TypeEnv>,
-    span: Span,
-    state: &mut InferState,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Result<Type, Vec<TypeError>> {
-    if args.len() != 2 {
-        return Err(vec![TypeError::new(
-            format!(
-                "arity mismatch: `get` requires exactly 2 arguments, got {}",
-                args.len()
-            ),
-            span,
-        )]);
-    }
-    let key_ty = infer_surface_expr(&args[0], env, state, type_map)?;
-    let key_ty = state.subst.apply(&key_ty);
-    let coll_ty = infer_surface_expr(&args[1], env, state, type_map)?;
-    let coll_ty = state.subst.apply(&coll_ty);
-    let result = match &coll_ty {
-        Type::Seq(elem_ty) => *elem_ty.clone(),
-        Type::Map(_, val_ty) => *val_ty.clone(),
-        Type::Record(row) => match &key_ty {
-            Type::StringLiteral(field_name) => {
-                row.fields.get(field_name).cloned().unwrap_or(Type::Unknown)
-            }
-            Type::Str => Type::Unknown,
-            _ => Type::Unknown,
-        },
-        Type::Union(members) => match &key_ty {
-            Type::StringLiteral(field_name) => {
-                let field_types: Vec<Type> = members
-                    .iter()
-                    .map(|member| match member {
-                        Type::Record(row) => {
-                            row.fields.get(field_name).cloned().unwrap_or(Type::Unknown)
-                        }
-                        _ => Type::Unknown,
-                    })
-                    .collect();
-                Type::normalize_union(field_types)
-            }
-            _ => Type::Unknown,
-        },
-        Type::Unknown | Type::Top | Type::Error => Type::Unknown,
-        Type::TypeVar(_, _) => Type::Unknown,
-        _ => Type::Unknown,
-    };
-    Ok(result)
-}
-
-fn check_arithmetic(
-    args: &[Arc<SurfaceNode>],
-    env: &Rc<TypeEnv>,
-    span: Span,
-    state: &mut InferState,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Result<Type, Vec<TypeError>> {
-    // Arity guard (dispatch already checked, but be defensive)
-    if args.len() != 2 {
-        return Err(vec![TypeError::new(
-            format!(
-                "arity mismatch: arithmetic operator requires exactly 2 arguments, got {}",
-                args.len()
-            ),
-            span,
-        )]);
-    }
-
-    // Infer both argument types and apply substitution
-    let arg0_ty = infer_surface_expr(&args[0], env, state, type_map)?;
-    let arg0_ty = state.subst.apply(&arg0_ty);
-
-    let arg1_ty = infer_surface_expr(&args[1], env, state, type_map)?;
-    let arg1_ty = state.subst.apply(&arg1_ty);
-
-    // Validate that arguments are not concretely non-numeric types.
-    // TypeVar and Unknown are allowed (gradual / polymorphic — may resolve to numeric at runtime).
-    // Str, Bool, Record, Seq, etc. are definitely wrong.
-    let mut type_errors: Vec<TypeError> = Vec::new();
-    if is_definitely_non_numeric(&arg0_ty) {
-        type_errors.push(TypeError::new(
-            format!(
-                "arithmetic operand has non-numeric type {}: expected Number, Int, or Float",
-                arg0_ty
-            ),
-            args[0].span,
-        ));
-    }
-    if is_definitely_non_numeric(&arg1_ty) {
-        type_errors.push(TypeError::new(
-            format!(
-                "arithmetic operand has non-numeric type {}: expected Number, Int, or Float",
-                arg1_ty
-            ),
-            args[1].span,
-        ));
-    }
-    if !type_errors.is_empty() {
-        return Err(type_errors);
-    }
-
-    // Numeric literal types promote: IntLiteral ≡ Int, StringLiteral is not numeric
-    let arg0_num = normalize_numeric(&arg0_ty);
-    let arg1_num = normalize_numeric(&arg1_ty);
-
-    let result = match (arg0_num, arg1_num) {
-        // Both Int (or IntLiteral) → Int
-        (NumericKind::Int, NumericKind::Int) => Type::Int,
-        // Either Float → Float
-        (NumericKind::Float, _) | (_, NumericKind::Float) => Type::Float,
-        // Both Number (or one Number, one Int) → Number
-        (NumericKind::Number, NumericKind::Int)
-        | (NumericKind::Int, NumericKind::Number)
-        | (NumericKind::Number, NumericKind::Number) => Type::Number,
-        // Unknown / TypeVar / other → Number (gradual fallback, not Unknown)
-        _ => Type::Number,
-    };
-
-    Ok(result)
-}
-
-/// Type check `/` / `builtin-div` — division always returns `Float` in IEEE arithmetic.
-///
-/// Unlike `+`, `-`, `*` where `Int op Int → Int`, division of two integers yields a
-/// float in LLT (e.g., `[/ 7 2]` is `3.5`, not `3`). So the return type is always
-/// at least `Float`; we never refine to `Int`.
-///
-/// - `Int / Int` → `Float` (integer division yields fractional result)
-/// - `Float / _` or `_ / Float` → `Float`
-/// - `Number / Number` → `Float`
-/// - Unknown / TypeVar / other → `Float` (gradual fallback)
-fn check_div(
-    args: &[Arc<SurfaceNode>],
-    env: &Rc<TypeEnv>,
-    span: Span,
-    state: &mut InferState,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Result<Type, Vec<TypeError>> {
-    // Arity guard
-    if args.len() != 2 {
-        return Err(vec![TypeError::new(
-            format!(
-                "arity mismatch: `/` requires exactly 2 arguments, got {}",
-                args.len()
-            ),
-            span,
-        )]);
-    }
-
-    // Infer args and validate they are not concretely non-numeric.
-    let arg0_ty = infer_surface_expr(&args[0], env, state, type_map)?;
-    let arg0_ty = state.subst.apply(&arg0_ty);
-    let arg1_ty = infer_surface_expr(&args[1], env, state, type_map)?;
-    let arg1_ty = state.subst.apply(&arg1_ty);
-
-    let mut type_errors: Vec<TypeError> = Vec::new();
-    if is_definitely_non_numeric(&arg0_ty) {
-        type_errors.push(TypeError::new(
-            format!(
-                "arithmetic operand has non-numeric type {}: expected Number, Int, or Float",
-                arg0_ty
-            ),
-            args[0].span,
-        ));
-    }
-    if is_definitely_non_numeric(&arg1_ty) {
-        type_errors.push(TypeError::new(
-            format!(
-                "arithmetic operand has non-numeric type {}: expected Number, Int, or Float",
-                arg1_ty
-            ),
-            args[1].span,
-        ));
-    }
-    if !type_errors.is_empty() {
-        return Err(type_errors);
-    }
-
-    // Division always produces Float
-    Ok(Type::Float)
-}
-
-/// Numeric kind used for arithmetic return-type refinement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NumericKind {
-    Int,
-    Float,
-    Number,
-    Other,
-}
-
-/// Normalize a type to its `NumericKind` for arithmetic refinement.
-///
-/// - `Int` and `IntLiteral(_)` → `Int`
-/// - `Float` → `Float`
-/// - `Number` → `Number`
-/// - Anything else (Unknown, TypeVar, Str, …) → `Other`
-fn normalize_numeric(ty: &Type) -> NumericKind {
-    match ty {
-        Type::Int | Type::IntLiteral(_) => NumericKind::Int,
-        Type::Float => NumericKind::Float,
-        Type::Number => NumericKind::Number,
-        _ => NumericKind::Other,
-    }
-}
-
-/// Return `true` if `ty` is a concrete type that cannot be numeric.
-///
-/// Used by `check_arithmetic` and `check_div` to emit type errors for calls like
-/// `[+ "hello" 1]` where the argument type is statically known to be non-numeric.
-///
-/// Passes through `Unknown`, `TypeVar`, `Top`, and `Error` silently:
-/// - `Unknown`: gradual typing escape hatch — may resolve at runtime.
-/// - `TypeVar`: unconstrained polymorphic variable — may unify to a numeric type.
-/// - `Top`: ⊤ is the lattice ceiling, not a concrete value — leave to runtime.
-/// - `Error`: cascade sentinel — the sub-expression already failed; don't double-report.
-///
-/// Also passes through `Number`, `Int`, `Float`, `IntLiteral`, because those ARE numeric.
-fn is_definitely_non_numeric(ty: &Type) -> bool {
-    match ty {
-        // Numeric types — pass
-        Type::Number | Type::Int | Type::Float | Type::IntLiteral(_) => false,
-        // Escape hatches — pass (cannot statically rule out numeric)
-        Type::Unknown | Type::Top | Type::Error => false,
-        Type::TypeVar(_, _) => false,
-        // Everything else is concretely non-numeric
-        _ => true,
-    }
-}
-
 /// Type check `get-in` — chained field access.
 /// [GET-IN-NIL]: empty path returns dict unchanged
 /// [GET-IN-CONS]: unfold via repeated field access
@@ -4214,6 +3983,239 @@ fn check_get_in(
             Ok(Type::Unknown)
         }
     }
+}
+
+/// Type check `get` / `builtin-get` — precise return type via Indexable-like dispatch.
+///
+/// The prelude `get` is annotated `[fn@[return: a] [k@Label xs] ...]` which loses the
+/// `Indexable c k v` functional dependency precision when the prelude scheme is instantiated.
+/// This special case restores precision for the common collection types:
+///
+/// - `Seq(T)` → `T`  (integer index into a sequence)
+/// - `Map(K, V)` → `V`  (any key into a map)
+/// - `Record(row)` + `StringLiteral(field)` → `row[field]`  (known field access)
+/// - `Record(row)` + non-literal key → `Unknown`  (gradual fallback)
+/// - `Unknown`, `TypeVar`, `Top`, `Error` → `Unknown`  (gradual fallback)
+fn check_get(
+    args: &[Arc<SurfaceNode>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    // Arity: exactly 2 positional args (key, collection)
+    if args.len() != 2 {
+        return Err(vec![TypeError::new(
+            format!(
+                "arity mismatch: `get` requires exactly 2 arguments, got {}",
+                args.len()
+            ),
+            span,
+        )]);
+    }
+
+    // Infer key type
+    let key_ty = infer_surface_expr(&args[0], env, state, type_map)?;
+    let key_ty = state.subst.apply(&key_ty);
+
+    // Infer collection type
+    let coll_ty = infer_surface_expr(&args[1], env, state, type_map)?;
+    let coll_ty = state.subst.apply(&coll_ty);
+
+    match &coll_ty {
+        // Seq(T): integer index → element type T
+        Type::Seq(elem_ty) => Ok((**elem_ty).clone()),
+
+        // Map(K, V): any key → value type V
+        Type::Map(_, val_ty) => Ok((**val_ty).clone()),
+
+        // Record: field access — only precise when key is a StringLiteral
+        Type::Record(row) => {
+            match &key_ty {
+                Type::StringLiteral(field) => {
+                    if let Some(field_ty) = row.fields.get(field.as_str()) {
+                        Ok(field_ty.clone())
+                    } else {
+                        // Field not present in closed row — gradual fallback
+                        Ok(Type::Unknown)
+                    }
+                }
+                // Non-literal string key or integer key into record — gradual fallback
+                _ => Ok(Type::Unknown),
+            }
+        }
+
+        // Union: try to extract a common field type across all union members
+        Type::Union(members) => {
+            if let Type::StringLiteral(field) = &key_ty {
+                let field = field.clone();
+                let mut field_types = Vec::new();
+                for member in members {
+                    if let Type::Record(row) = member {
+                        if let Some(ft) = row.fields.get(field.as_str()) {
+                            field_types.push(ft.clone());
+                        } else {
+                            // One member is missing the field — unknown
+                            return Ok(Type::Unknown);
+                        }
+                    } else {
+                        return Ok(Type::Unknown);
+                    }
+                }
+                if field_types.len() == 1 {
+                    Ok(field_types.remove(0))
+                } else if field_types.is_empty() {
+                    Ok(Type::Unknown)
+                } else {
+                    Ok(Type::Union(field_types))
+                }
+            } else {
+                Ok(Type::Unknown)
+            }
+        }
+
+        // Gradual fallback for Unknown/TypeVar/Top/Error
+        Type::Unknown | Type::TypeVar(_, _) | Type::Top | Type::Error => Ok(Type::Unknown),
+
+        // Any other type — gradual fallback (not a known collection type)
+        _ => Ok(Type::Unknown),
+    }
+}
+
+/// Type check `+` / `-` / `*` and their `builtin-add`/`builtin-sub`/`builtin-mul` aliases.
+///
+/// The prelude wraps these operators with a scheme that returns `Number` for all inputs,
+/// which loses precision when both operands are `Int`. This special case refines the
+/// return type based on the operand types:
+///
+/// - `Int op Int` → `Int`
+/// - `Float op _` or `_ op Float` → `Float`
+/// - `Number op Number` → `Number`  (no further refinement possible)
+/// - `TypeVar`, `Unknown`, `Top` → pass through (may resolve to numeric at runtime)
+/// - `Str`, `Bool`, `Record`, etc. → `TypeError` (provably non-numeric)
+fn check_arithmetic(
+    args: &[Arc<SurfaceNode>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    if args.len() != 2 {
+        return Err(vec![TypeError::new(
+            format!(
+                "arity mismatch: arithmetic operator requires exactly 2 arguments, got {}",
+                args.len()
+            ),
+            span,
+        )]);
+    }
+
+    let lhs_ty = infer_surface_expr(&args[0], env, state, type_map)?;
+    let lhs_ty = state.subst.apply(&lhs_ty);
+
+    let rhs_ty = infer_surface_expr(&args[1], env, state, type_map)?;
+    let rhs_ty = state.subst.apply(&rhs_ty);
+
+    // Validate operands are not provably non-numeric
+    fn is_definitely_non_numeric(ty: &Type) -> bool {
+        !matches!(
+            ty,
+            Type::Unknown
+                | Type::TypeVar(_, _)
+                | Type::Top
+                | Type::Error
+                | Type::Never
+                | Type::Number
+                | Type::Int
+                | Type::Float
+                | Type::IntLiteral(_)
+        )
+    }
+
+    if is_definitely_non_numeric(&lhs_ty) {
+        return Err(vec![TypeError::new(
+            format!("arithmetic operator applied to non-numeric type `{lhs_ty}`"),
+            span,
+        )]);
+    }
+    if is_definitely_non_numeric(&rhs_ty) {
+        return Err(vec![TypeError::new(
+            format!("arithmetic operator applied to non-numeric type `{rhs_ty}`"),
+            span,
+        )]);
+    }
+
+    // Refine return type: Float beats Int beats Number
+    let result_ty = match (&lhs_ty, &rhs_ty) {
+        // Any Float operand → Float
+        (Type::Float, _) | (_, Type::Float) => Type::Float,
+        // Both Int or IntLiteral → Int
+        (Type::Int | Type::IntLiteral(_), Type::Int | Type::IntLiteral(_)) => Type::Int,
+        // Otherwise (Number, TypeVar, Unknown mix) → Number
+        _ => Type::Number,
+    };
+
+    Ok(result_ty)
+}
+
+/// Type check `/` / `builtin-div` — always returns `Float` (IEEE division semantics).
+///
+/// Integer division in LLT always produces a Float (unlike integer-truncating `/` in some
+/// languages). This matches the runtime behavior of `builtin-div`.
+fn check_div(
+    args: &[Arc<SurfaceNode>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    type_map: &mut Option<&mut TypeMap>,
+) -> Result<Type, Vec<TypeError>> {
+    if args.len() != 2 {
+        return Err(vec![TypeError::new(
+            format!(
+                "arity mismatch: `/` requires exactly 2 arguments, got {}",
+                args.len()
+            ),
+            span,
+        )]);
+    }
+
+    let lhs_ty = infer_surface_expr(&args[0], env, state, type_map)?;
+    let lhs_ty = state.subst.apply(&lhs_ty);
+
+    let rhs_ty = infer_surface_expr(&args[1], env, state, type_map)?;
+    let rhs_ty = state.subst.apply(&rhs_ty);
+
+    // Validate operands are not provably non-numeric
+    fn is_definitely_non_numeric(ty: &Type) -> bool {
+        !matches!(
+            ty,
+            Type::Unknown
+                | Type::TypeVar(_, _)
+                | Type::Top
+                | Type::Error
+                | Type::Never
+                | Type::Number
+                | Type::Int
+                | Type::Float
+                | Type::IntLiteral(_)
+        )
+    }
+
+    if is_definitely_non_numeric(&lhs_ty) {
+        return Err(vec![TypeError::new(
+            format!("division operator applied to non-numeric type `{lhs_ty}`"),
+            span,
+        )]);
+    }
+    if is_definitely_non_numeric(&rhs_ty) {
+        return Err(vec![TypeError::new(
+            format!("division operator applied to non-numeric type `{rhs_ty}`"),
+            span,
+        )]);
+    }
+
+    // Division always yields Float (IEEE semantics)
+    Ok(Type::Float)
 }
 
 /// Type check an inferred `[do]` form — the do-infer sentinel (e.g., `:do-infer:0.bind`).

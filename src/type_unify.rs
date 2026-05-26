@@ -387,49 +387,7 @@ fn check_constraints_on_var(
                 fundeps,
             } => {
                 // Multi-parameter type class constraint with functional dependencies.
-                //
-                // T3 FIX: Partial membership check for arithmetic MPTC classes.
-                //
-                // When a TypeVar constrained by an arithmetic class (Addable/Subtractable/
-                // Multipliable/Divisible) is bound to a definitely-concrete, non-arithmetic
-                // type (e.g., String, Bool, Handle, Record, Seq), we can immediately reject
-                // the binding rather than waiting for FD improvement (which requires ALL
-                // determining positions to be ground simultaneously).
-                //
-                // The check is conservative:
-                // - Unknown passes (gradual typing escape hatch — may be numeric at runtime)
-                // - TypeVar passes (may unify to a numeric type later)
-                // - Top, Error, Never pass (lattice extremes / sentinels)
-                // - IntLiteral/Number/Int/Float pass (numeric)
-                //
-                // Only concrete, provably non-arithmetic types are rejected at binding time.
-                // This fires for the first determining-position bound; full FD improvement
-                // fires when ALL determining positions are ground.
-                if is_definitely_non_arithmetic(concrete_ty)
-                    && matches!(
-                        class.as_str(),
-                        "Addable" | "Subtractable" | "Multipliable" | "Divisible"
-                    )
-                {
-                    // Check if var_name is in a determining position of any FD.
-                    // Only emit the error if the bound var participates in a determining position.
-                    let is_in_determining_position = fundeps.iter().any(|(det_positions, _)| {
-                        vars.iter()
-                            .enumerate()
-                            .any(|(i, v)| v == var_name && det_positions.contains(&i))
-                    });
-                    if is_in_determining_position {
-                        return Err(TypeError::new(
-                            format!(
-                                "type {} does not satisfy arithmetic constraint {} — expected Number, Int, or Float",
-                                concrete_ty, class
-                            ),
-                            span,
-                        ));
-                    }
-                }
-
-                // Check if this variable binding triggers FD improvement
+                // Check if this variable binding triggers FD improvement.
                 improve_functional_dependency(
                     &class,
                     &vars,
@@ -764,18 +722,20 @@ fn improve_functional_dependency_inner(
 /// Mirrors `is_definitely_non_numeric` from `typecheck.rs` but lives here so it can
 /// be called from `check_constraints_on_var` during unification (type_unify.rs is a
 /// submodule of types.rs and cannot import from typecheck.rs).
+#[allow(dead_code)]
 fn is_definitely_non_arithmetic(ty: &Type) -> bool {
     match ty {
-        // Arithmetic types — pass
-        Type::Number | Type::Int | Type::Float | Type::IntLiteral(_) => false,
-        // Escape hatches — pass (cannot statically rule out numeric)
-        Type::Unknown | Type::Top | Type::Error | Type::Never => false,
-        Type::TypeVar(_, _) => false,
-        // Union/Intersection: conservatively return true (treat as non-arithmetic).
-        // A Union(Int, Str) IS potentially arithmetic (the Int branch), but we cannot
-        // prove it is PURELY arithmetic. This mirrors is_definitely_non_numeric in
-        // typecheck.rs. False positives on Union/Intersection types in arithmetic
-        // positions are accepted as conservative (fail-safe) behavior.
+        // These types cannot be proven non-arithmetic — conservative pass
+        Type::Unknown
+        | Type::TypeVar(_, _)
+        | Type::Top
+        | Type::Error
+        | Type::Never
+        | Type::Number
+        | Type::Int
+        | Type::Float
+        | Type::IntLiteral(_) => false,
+        // Everything else is provably non-arithmetic
         _ => true,
     }
 }

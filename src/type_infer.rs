@@ -139,6 +139,10 @@ pub struct InferState {
     /// of just "_t42", improving readability for users who don't care about internal names.
     /// Only populated for parameters and let-bindings where a source name exists.
     pub type_var_source_names: HashMap<String, String>,
+    /// Deduplication set for T013 ambiguous constraint warnings: (TypeVar name, Span) pairs.
+    /// Prevents emitting duplicate T013 warnings when the same ambiguous TypeVar is encountered
+    /// multiple times during constraint discharge. Each unique (var, span) pair is emitted once.
+    pub t013_emitted: std::collections::HashSet<(String, crate::ast::Span)>,
     /// Registry of nominal tag names seen so far, mapping tag name → the span of the
     /// `[type ...]` declaration that introduced it. Used to detect duplicate nominal tag
     /// names across separate type alias declarations (W042). A tag name appearing in two
@@ -373,6 +377,7 @@ impl InferState {
             in_prelude_load: false,
             do_infer_resolutions: HashMap::new(),
             type_var_source_names: HashMap::new(),
+            t013_emitted: std::collections::HashSet::new(),
             registered_nominal_tags: HashMap::new(),
             type_annotation_table: crate::ast::TypeAnnotationTable::new(),
         }

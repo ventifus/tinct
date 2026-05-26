@@ -363,13 +363,6 @@ fn test_typecheck_corpus() {
     // Exclude warnings/ — those are owned by test_typecheck_warnings_corpus and are
     // explicitly intended to produce warnings (not held to the zero-errors standard).
     let warnings_dir = corpus_dir.join("warnings");
-    // Exclude tests with pre-existing type_class.rs regressions (tracked in TODO):
-    // - constraint_resolution_dispatch: "instance pattern contains Unknown types" (type_class regression)
-    // - nominal_variant_exhaustive_match: match pattern extraction infers [] instead of Int
-    let typecheck_regressions: &[&str] = &[
-        "constraint_resolution_dispatch.llt-eval",
-        "nominal_variant_exhaustive_match.llt-eval",
-    ];
 
     let test_files = find_test_files(&corpus_dir);
     if test_files.is_empty() {
@@ -381,11 +374,6 @@ fn test_typecheck_corpus() {
     for test_file in &test_files {
         if test_file.starts_with(&warnings_dir) {
             continue;
-        }
-        if let Some(name) = test_file.file_name().and_then(|n| n.to_str()) {
-            if typecheck_regressions.contains(&name) {
-                continue;
-            }
         }
         let content = fs::read_to_string(test_file)
             .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));

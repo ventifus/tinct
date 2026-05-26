@@ -607,51 +607,6 @@ nested resolution always has a cap dir.
 - [x] Verify `just lint-clippy` passes
 - [x] `just test-lib` passes
 
-### typecheck-regression-fixes: Fix typecheck regressions, warnings, and type system gaps
-
-#### Mixed annotation regression (from typecheck-mixed-annotation-regression)
-
-Pre-existing regression: `[fn@[return: Int 42] [] 0]` (function annotation that mixes named `return:` key with positional entry `42`) previously produced a typecheck error "mixed keys in annotation" but now typechecks cleanly.
-
-- [ ] Re-add validation that `fn@[...]` annotation body must have only named keys (return:, constraint:, doc:, bind:, kinds:) — positional entries in the annotation should be a type error
-- [ ] Re-add corpus test `tests/corpus/eval/type_errors/fn_annotation_mixed_keys_error.llt-eval` once the validation is restored
-
-#### Corpus test regressions (from typecheck-corpus-regressions)
-
-Two tests in `tests/corpus/eval/typecheck/` producing errors instead of passing. Excluded from `test_typecheck_corpus` as workaround.
-
-- [ ] Fix `constraint_resolution_dispatch`: investigate instance pattern validation in `type_class.rs`; fix `[pattern [Str]]` to be recognized as a concrete pattern; or update the test to use `[pattern [x@Str]]` form if the syntax changed
-- [ ] Fix `nominal_variant_exhaustive_match`: fix match pattern extraction to propagate field types from the variant definition; `[Circle r]` should give `r: Int` scope in the arm body
-- [ ] Remove the exclusion from `test_typecheck_corpus` once both are fixed
-
-#### Warnings promoted to errors (from typecheck-warnings-vs-errors)
-
-7 `typecheck/warnings/` tests produce type ERRORS instead of WARNINGS: constraint_key_not_bareword, constraint_not_dict, constraint_positional_entry, constraint_value_invalid, doc_not_string, help_suggestion_arity, unknown_fn_annotation_key.
-
-- [ ] Identify which typecheck.rs / type_class.rs change promoted these diagnostics from warning to error severity
-- [ ] Restore warning severity for: malformed constraint keys, constraint-not-dict, doc-not-string, unknown annotation key, arity mismatch in annotation context
-- [ ] Re-include `warnings/` in `test_typecheck_corpus` (remove the exclusion added as workaround)
-
-#### T013 duplicate emission (from t013-duplicate-diagnostic-emission)
-
-The constraint solver emits T013 each time it tries and fails to discharge an ambiguous constraint, rather than deduplicating per (type-variable, span) pair.
-
-- [ ] Deduplicate T013 diagnostics by (type-variable, span) before emitting — each unique (typevar, span) pair should produce at most one T013 warning. (`src/typecheck.rs` constraint discharge path)
-
-#### MPTC membership check (from chr-mptc-membership)
-
-`src/type_unify.rs:389-396`: when a TypeVar constrained by Addable/Subtractable/Multipliable/Divisible is bound to a non-arithmetic type (e.g., Str), no error fires at binding time.
-
-- [ ] Add partial membership check (can we find `Add Str β γ` for any β, γ?) at TypeVar binding time (`src/type_unify.rs:389-396`)
-
-#### Indexable FD in SCC inference (from indexable-fd-scc-fix)
-
-SCC constraint generalization drops Indexable FD constraints as ambiguous (T013) because TypeVars' concrete bindings are in `state.subst` but `is_discharged` returns false at generalization time.
-
-- [ ] Fix the SCC constraint generalization: ensure `is_discharged` returns true for TypeVars whose concrete bindings are in `state.subst` at generalization time
-- [ ] Remove `check_get` special case from typecheck.rs after fix
-- [ ] Remove `check_arithmetic` special cases (`+`/`-`/`*`/`/`) from typecheck.rs after fix
-
 ### async-watch-channel-test: Add corpus test for watch-channel construction [Minor]
 
 **test-crafter fix-later.** `watch-channel` has zero corpus tests — not even a type-check or construction test — yet two of its background task loops were modified in `drain-safety-fixes`. Add a baseline regression guard.
@@ -694,6 +649,15 @@ Pre-existing issue discovered during sprint `rv2-output-formatter-contract` (202
 
 **tmpl macro regression (2 tests):**
 - [ ] Fix `tests/corpus/valid/literals/interpolated_strings.llt-eval` and `tests/corpus/valid/literals/triple_quoted_interpolated.llt-eval` — both fail with `[E080] macro 'tmpl' expansion result failed to evaluate: variant 'Call': failed to convert payload to AST node (at field type): field 'fn' is not materialized`. The `tmpl` string interpolation macro is broken by the runtime-v2 merge; same root cause as the `do` macro regression. (`src/expand.rs`, `stdlib/macros.llt`)
+
+**Typecheck regressions — NEW (discovered 2026-05-25):**
+- [ ] Fix `typecheck::tests::test_no_false_positive_warning_for_discharged_constraints` — regression from `rv2-async-migration` or related sprint; test was passing per builtin-privacy-arithmetic-fd sprint checklist (TODO.md line 883) but now fails. (`src/typecheck.rs`)
+- [ ] Fix `lsp::analysis::tests::test_diagnostics_markdown_type_error` — no type error diagnostics reported when expected. (`src/lsp/analysis.rs`)
+- [ ] Fix `lsp::document::tests::test_document_state_type_error` — same root cause as analysis test. (`src/lsp/document.rs`)
+
+**CLI test failures — NEW (discovered 2026-05-25, 5 tests):**
+- [ ] Fix `cap_fs_read_only_write_fails`, `cap_file_no_fs_suppresses_injection`, `no_fs_flag_blocks_include`, `no_fs_flag_and_timeout_flag_conjunctive_enforcement` — filesystem capability enforcement tests failing; likely regressed by async runtime changes (`rv2-async-migration`) or runtime-v2 merge affecting cap-fs enforcement path. (`tests/cli_tests.rs`, `src/eval_pipeline.rs`)
+- [ ] Fix `type_warning_explicit_unknown_emitted_on_stderr` — T011 diagnostic for `@Unknown` annotation not appearing on stderr; regression likely from typecheck pipeline changes. (`tests/cli_tests.rs`, `src/typecheck.rs`)
 
 ### formatter-fixes: Fix compact formatter errors and stack overflow
 

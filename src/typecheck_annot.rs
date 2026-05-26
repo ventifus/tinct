@@ -114,11 +114,11 @@ pub(crate) fn resolve_type_assert(
     // Use checking mode for TypeAssert inner expression (doc/06 §Bidirectional Typing).
     let check_result = check_surface_expr(inner, &expected, env, state, type_map);
 
-    // If checking fails and there's a default, suppress the error (ASSERT-DEFAULT rule)
-    if check_result.is_err() {
+    // If checking fails, propagate errors (TypeAssert failures are hard type errors).
+    if let Err(type_errors) = check_result {
         let has_default = annotation.node.get_property("default").is_some();
         if !has_default {
-            return check_result.map(|_| expected);
+            return Err(type_errors);
         }
     }
 
@@ -581,18 +581,19 @@ pub(crate) fn resolve_fn_metadata(
                                     continue;
                                 }
 
-                                let typevar_name =
-                                    match &c_entry.node.key {
-                                        Some(k) => match &k.expr {
-                                            SurfaceExpression::Str(s) => s.clone(),
-                                            SurfaceExpression::VarRef { name, .. } => name.clone(),
-                                            _ => return Err(TypeError::new(
+                                let typevar_name = match &c_entry.node.key {
+                                    Some(k) => match &k.expr {
+                                        SurfaceExpression::Str(s) => s.clone(),
+                                        SurfaceExpression::VarRef { name, .. } => name.clone(),
+                                        _ => {
+                                            return Err(TypeError::new(
                                                 "constraint key must be a bare word (TypeVar name)",
                                                 c_entry.span,
-                                            )),
-                                        },
-                                        None => unreachable!(), // already checked above
-                                    };
+                                            ));
+                                        }
+                                    },
+                                    None => unreachable!(), // already checked above
+                                };
 
                                 // Create or get the TypeVar for this name
                                 let type_var = if let Some(ref mut mapping) = ann_mapping {
@@ -779,7 +780,7 @@ pub(crate) fn resolve_fn_metadata(
                             return Err(TypeError::new(
                                 "constraint: value must be a dict [a: Comparable]",
                                 entry.node.value.span,
-                            ))
+                            ));
                         }
                     }
                 }
@@ -956,7 +957,7 @@ pub(crate) fn resolve_fn_metadata(
                             return Err(TypeError::new(
                                 "doc: value must be a string literal",
                                 entry.node.value.span,
-                            ))
+                            ));
                         }
                     }
                 }
@@ -1019,7 +1020,17 @@ fn resolve_fn_type(
                     false
                 }
             });
+            // Check if all entries are keyed (no positional entries)
+            let all_keyed = surface_entries.iter().all(|e| e.node.key.is_some());
+
             if has_fn_key {
+                // Mixed keys validation: if we have fn annotation keys, all entries must be keyed
+                if !all_keyed {
+                    return Err(TypeError::new(
+                        "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both",
+                        span,
+                    ));
+                }
                 let (ret, _doc) = resolve_fn_metadata(
                     surface_entries,
                     env,
@@ -1716,7 +1727,7 @@ pub(crate) fn resolve_type_name(
     match name {
         "Int" => Ok(Type::Int),
         "Float" => Ok(Type::Float),
-        "String" => Ok(Type::Str),
+        "String" | "Str" => Ok(Type::Str),
         "Bool" => Ok(Type::Bool),
         "Number" => Ok(Type::Number),
         "Any" => Ok(Type::Top),

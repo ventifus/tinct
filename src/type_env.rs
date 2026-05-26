@@ -363,12 +363,15 @@ pub fn generalize(level: u32, ty: &Type, state: &mut InferState) -> TypeScheme {
 ///
 /// `source_names` maps internal TypeVar names to user-visible source names (e.g., `"_t42"` → `"x"`).
 /// When present, diagnostics report "ambiguous type variable 'x' (internal: _t42)" for better readability.
+///
+/// `emitted` deduplicates warnings: tracks (TypeVar name, Span) pairs already warned about.
 fn emit_ambiguous_constraint_diagnostics(
     constraints: &[Constraint],
     subst_snapshot: &HashMap<String, Type>,
     source_names: &HashMap<String, String>,
     diagnostics: &mut Vec<crate::error::TypeDiagnostic>,
     span: crate::ast::Span,
+    emitted: &mut std::collections::HashSet<(String, crate::ast::Span)>,
 ) {
     let is_discharged = |var_name: &str| -> bool {
         subst_snapshot
@@ -390,15 +393,18 @@ fn emit_ambiguous_constraint_diagnostics(
             Constraint::Class { class, vars, .. } => {
                 for var in vars {
                     if !is_discharged(var) {
-                        diagnostics.push(crate::error::TypeDiagnostic {
-                            message: format!(
-                                "ambiguous type variable {} in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
-                                format_var_name(var), class
-                            ),
-                            span,
-                            code: "T013",
-                            level: crate::error::DiagnosticLevel::Warn,
-                        });
+                        // Deduplicate: only emit if this (var, span) pair hasn't been seen
+                        if emitted.insert((var.clone(), span)) {
+                            diagnostics.push(crate::error::TypeDiagnostic {
+                                message: format!(
+                                    "ambiguous type variable {} in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
+                                    format_var_name(var), class
+                                ),
+                                span,
+                                code: "T013",
+                                level: crate::error::DiagnosticLevel::Warn,
+                            });
+                        }
                     }
                 }
             }
@@ -408,26 +414,12 @@ fn emit_ambiguous_constraint_diagnostics(
                 field_var,
             } => {
                 if !is_discharged(dict_var) {
-                    diagnostics.push(crate::error::TypeDiagnostic {
-                        message: format!(
-                            "ambiguous type variable {} (dict) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
-                            format_var_name(dict_var)
-                        ),
-                        span,
-                        code: "T013",
-                        level: crate::error::DiagnosticLevel::Warn,
-                    });
-                }
-                // Only Label::Var positions can be ambiguous. Label::Concrete strings
-                // are never present in the substitution map, so checking them would
-                // unconditionally fire a spurious T013 for every HasField with a
-                // literal label (false-positive).
-                if let Label::Var(label_var) = label {
-                    if !is_discharged(label_var) {
+                    // Deduplicate: only emit if this (var, span) pair hasn't been seen
+                    if emitted.insert((dict_var.clone(), span)) {
                         diagnostics.push(crate::error::TypeDiagnostic {
                             message: format!(
-                                "ambiguous label variable {} in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
-                                format_var_name(label_var)
+                                "ambiguous type variable {} (dict) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
+                                format_var_name(dict_var)
                             ),
                             span,
                             code: "T013",
@@ -435,16 +427,39 @@ fn emit_ambiguous_constraint_diagnostics(
                         });
                     }
                 }
+                // Only Label::Var positions can be ambiguous. Label::Concrete strings
+                // are never present in the substitution map, so checking them would
+                // unconditionally fire a spurious T013 for every HasField with a
+                // literal label (false-positive).
+                if let Label::Var(label_var) = label {
+                    if !is_discharged(label_var) {
+                        // Deduplicate: only emit if this (var, span) pair hasn't been seen
+                        if emitted.insert((label_var.clone(), span)) {
+                            diagnostics.push(crate::error::TypeDiagnostic {
+                                message: format!(
+                                    "ambiguous label variable {} in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
+                                    format_var_name(label_var)
+                                ),
+                                span,
+                                code: "T013",
+                                level: crate::error::DiagnosticLevel::Warn,
+                            });
+                        }
+                    }
+                }
                 if !is_discharged(field_var) {
-                    diagnostics.push(crate::error::TypeDiagnostic {
-                        message: format!(
-                            "ambiguous type variable {} (field) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
-                            format_var_name(field_var)
-                        ),
-                        span,
-                        code: "T013",
-                        level: crate::error::DiagnosticLevel::Warn,
-                    });
+                    // Deduplicate: only emit if this (var, span) pair hasn't been seen
+                    if emitted.insert((field_var.clone(), span)) {
+                        diagnostics.push(crate::error::TypeDiagnostic {
+                            message: format!(
+                                "ambiguous type variable {} (field) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
+                                format_var_name(field_var)
+                            ),
+                            span,
+                            code: "T013",
+                            level: crate::error::DiagnosticLevel::Warn,
+                        });
+                    }
                 }
             }
         }
@@ -494,6 +509,7 @@ pub fn generalize_with_doc(
                 &state.type_var_source_names,
                 &mut state.diagnostics,
                 span,
+                &mut state.t013_emitted,
             );
         }
         return TypeScheme {
@@ -535,6 +551,7 @@ pub fn generalize_with_doc(
                 &state.type_var_source_names,
                 &mut state.diagnostics,
                 span,
+                &mut state.t013_emitted,
             );
         }
 
@@ -644,16 +661,19 @@ pub fn generalize_with_doc(
                                 );
 
                                 if !is_fd_covered {
-                                    state.diagnostics.push(crate::error::TypeDiagnostic {
-                                        message: format!(
-                                            "ambiguous type variable {} in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
-                                            format_var_name(var),
-                                            class.name
-                                        ),
-                                        span,
-                                        code: "T013",
-                                        level: crate::error::DiagnosticLevel::Warn,
-                                    });
+                                    // Deduplicate: only emit if this (var, span) pair hasn't been seen
+                                    if state.t013_emitted.insert((var.clone(), span)) {
+                                        state.diagnostics.push(crate::error::TypeDiagnostic {
+                                            message: format!(
+                                                "ambiguous type variable {} in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
+                                                format_var_name(var),
+                                                class.name
+                                            ),
+                                            span,
+                                            code: "T013",
+                                            level: crate::error::DiagnosticLevel::Warn,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -675,15 +695,18 @@ pub fn generalize_with_doc(
                             } else {
                                 // Diagnostic: ambiguous label variable
                                 if !is_discharged(&resolved) {
-                                    state.diagnostics.push(crate::error::TypeDiagnostic {
-                                        message: format!(
-                                            "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
-                                            format_var_name(&resolved)
-                                        ),
-                                        span,
-                                        code: "T013",
-                                        level: crate::error::DiagnosticLevel::Warn,
-                                    });
+                                    // Deduplicate: only emit if this (var, span) pair hasn't been seen
+                                    if state.t013_emitted.insert((resolved.clone(), span)) {
+                                        state.diagnostics.push(crate::error::TypeDiagnostic {
+                                            message: format!(
+                                                "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
+                                                format_var_name(&resolved)
+                                            ),
+                                            span,
+                                            code: "T013",
+                                            level: crate::error::DiagnosticLevel::Warn,
+                                        });
+                                    }
                                 }
                                 None // label not generalizable
                             }
@@ -709,10 +732,39 @@ pub fn generalize_with_doc(
                                 let field_discharged = is_discharged(&effective_field);
 
                                 if !dict_discharged || !field_discharged {
+                                    // For aggregated warnings, deduplicate on dict (the first var mentioned)
+                                    if state.t013_emitted.insert((effective_dict.clone(), span)) {
+                                        state.diagnostics.push(crate::error::TypeDiagnostic {
+                                            message: format!(
+                                                "ambiguous type variables {}, {} in constraint HasField: appear in constraint but not in the type — constraint will be silently dropped",
+                                                format_var_name(&effective_dict),
+                                                format_var_name(&effective_field)
+                                            ),
+                                            span,
+                                            code: "T013",
+                                            level: crate::error::DiagnosticLevel::Warn,
+                                        });
+                                    }
+                                }
+                            } else if dict_ambiguous && !is_discharged(&effective_dict) {
+                                // Deduplicate: only emit if this (var, span) pair hasn't been seen
+                                if state.t013_emitted.insert((effective_dict.clone(), span)) {
                                     state.diagnostics.push(crate::error::TypeDiagnostic {
                                         message: format!(
-                                            "ambiguous type variables {}, {} in constraint HasField: appear in constraint but not in the type — constraint will be silently dropped",
-                                            format_var_name(&effective_dict),
+                                            "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
+                                            format_var_name(&effective_dict)
+                                        ),
+                                        span,
+                                        code: "T013",
+                                        level: crate::error::DiagnosticLevel::Warn,
+                                    });
+                                }
+                            } else if field_ambiguous && !is_discharged(&effective_field) {
+                                // Deduplicate: only emit if this (var, span) pair hasn't been seen
+                                if state.t013_emitted.insert((effective_field.clone(), span)) {
+                                    state.diagnostics.push(crate::error::TypeDiagnostic {
+                                        message: format!(
+                                            "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
                                             format_var_name(&effective_field)
                                         ),
                                         span,
@@ -720,26 +772,6 @@ pub fn generalize_with_doc(
                                         level: crate::error::DiagnosticLevel::Warn,
                                     });
                                 }
-                            } else if dict_ambiguous && !is_discharged(&effective_dict) {
-                                state.diagnostics.push(crate::error::TypeDiagnostic {
-                                    message: format!(
-                                        "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
-                                        format_var_name(&effective_dict)
-                                    ),
-                                    span,
-                                    code: "T013",
-                                    level: crate::error::DiagnosticLevel::Warn,
-                                });
-                            } else if field_ambiguous && !is_discharged(&effective_field) {
-                                state.diagnostics.push(crate::error::TypeDiagnostic {
-                                    message: format!(
-                                        "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
-                                        format_var_name(&effective_field)
-                                    ),
-                                    span,
-                                    code: "T013",
-                                    level: crate::error::DiagnosticLevel::Warn,
-                                });
                             }
                         }
                     }

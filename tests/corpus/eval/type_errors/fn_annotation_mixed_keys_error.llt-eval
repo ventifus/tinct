@@ -1,0 +1,4 @@
+# Error: fn@[...] annotation mixes named keys and positional entries
+[fn@[return: Int 42] [let] 0]
+=== error
+mixed keys

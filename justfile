@@ -57,6 +57,23 @@ test-one TEST:
 test-lib:
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1
 
+# Run lib tests and show only failures + summary lines
+test-lib-summary:
+    -{{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --lib -- --test-threads=1 2>&1 | grep -E 'FAILED|test result:|failures:'"
+
+# Run corpus tests and show only failures + summary lines
+test-corpus-summary:
+    -{{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --test corpus_tests -- --test-threads=1 2>&1 | grep -E 'FAILED|test result:|failures:'"
+
+# Run CLI tests and show only failures + summary lines
+test-cli-summary:
+    -{{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --test cli_tests 2>&1 | grep -E 'FAILED|test result:|failures:'"
+
+# Run LSP corpus tests and show only failures + summary lines
+test-lsp-summary:
+    -{{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1 2>&1 | grep -E 'FAILED|test result:|failures:'"
+
+
 # Run only corpus tests (NOTE: does not include LSP corpus tests — use `just test-lsp` for those)
 test-corpus:
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests

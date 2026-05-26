@@ -684,7 +684,7 @@ mod tests {
     #[test]
     fn test_session_simple_bool() {
         let mut session = ReplSession::new().unwrap();
-        assert_eq!(session.eval_input("true").unwrap(), "Bool(true)");
+        assert_eq!(eval_input_sync(&mut session, "true").unwrap(), "Bool(true)");
     }
 
     #[test]
@@ -704,7 +704,7 @@ mod tests {
         eval_input_sync(&mut session, "[x: 42]").unwrap();
 
         // Second input: reference the binding from the previous dict.
-        assert_eq!(session.eval_input("x").unwrap(), "Int(42)");
+        assert_eq!(eval_input_sync(&mut session, "x").unwrap(), "Int(42)");
     }
 
     #[test]
@@ -718,7 +718,7 @@ mod tests {
         eval_input_sync(&mut session, "[x: 99]").unwrap();
 
         // x should be the new value.
-        assert_eq!(session.eval_input("x").unwrap(), "Int(99)");
+        assert_eq!(eval_input_sync(&mut session, "x").unwrap(), "Int(99)");
     }
 
     #[test]
@@ -729,7 +729,7 @@ mod tests {
         eval_input_sync(&mut session, "42").unwrap();
 
         // % should be the previous result.
-        assert_eq!(session.eval_input("%").unwrap(), "Int(42)");
+        assert_eq!(eval_input_sync(&mut session, "%").unwrap(), "Int(42)");
     }
 
     #[test]
@@ -740,7 +740,10 @@ mod tests {
         eval_input_sync(&mut session, "[name: \"Alice\" age: 30]").unwrap();
 
         // Access a field through %.
-        assert_eq!(session.eval_input("%.name").unwrap(), "String(\"Alice\")");
+        assert_eq!(
+            eval_input_sync(&mut session, "%.name").unwrap(),
+            "String(\"Alice\")"
+        );
     }
 
     #[test]
@@ -748,7 +751,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // % should initially be an empty dict.
-        assert_eq!(session.eval_input("%").unwrap(), "Dict({})");
+        assert_eq!(eval_input_sync(&mut session, "%").unwrap(), "Dict({})");
     }
 
     #[test]
@@ -759,10 +762,10 @@ mod tests {
         eval_input_sync(&mut session, "[x: 42]").unwrap();
 
         // Second: cause an error (undefined variable).
-        assert!(session.eval_input("nonexistent").is_err());
+        assert!(eval_input_sync(&mut session, "nonexistent").is_err());
 
         // Third: session should still work; previous bindings intact.
-        assert_eq!(session.eval_input("x").unwrap(), "Int(42)");
+        assert_eq!(eval_input_sync(&mut session, "x").unwrap(), "Int(42)");
     }
 
     #[test]
@@ -773,16 +776,16 @@ mod tests {
         eval_input_sync(&mut session, "42").unwrap();
 
         // Cause an error.
-        assert!(session.eval_input("nonexistent").is_err());
+        assert!(eval_input_sync(&mut session, "nonexistent").is_err());
 
         // % should still be 42 (error did not update it).
-        assert_eq!(session.eval_input("%").unwrap(), "Int(42)");
+        assert_eq!(eval_input_sync(&mut session, "%").unwrap(), "Int(42)");
     }
 
     #[test]
     fn test_session_parse_error() {
         let mut session = ReplSession::new().unwrap();
-        assert!(session.eval_input("[unterminated").is_err());
+        assert!(eval_input_sync(&mut session, "[unterminated").is_err());
     }
 
     #[test]
@@ -791,7 +794,10 @@ mod tests {
 
         // Multiple expressions in a single input form a scope chain.
         // First expression is a Dict (creates bindings), second uses them.
-        assert_eq!(session.eval_input("[x: 10]\n[+ x 5]").unwrap(), "Int(15)");
+        assert_eq!(
+            eval_input_sync(&mut session, "[x: 10]\n[+ x 5]").unwrap(),
+            "Int(15)"
+        );
     }
 
     #[test]
@@ -799,7 +805,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Builtins should be accessible.
-        assert_eq!(session.eval_input("[+ 1 2]").unwrap(), "Int(3)");
+        assert_eq!(eval_input_sync(&mut session, "[+ 1 2]").unwrap(), "Int(3)");
     }
 
     #[test]
@@ -810,9 +816,7 @@ mod tests {
         // inside the prelude/strings modules — it is NOT directly available in user-facing REPL scope.
         // Test a prelude-exported string function instead: join (wrapper over builtin-join).
         assert_eq!(
-            session
-                .eval_input("[join \", \" [\"a\" \"b\" \"c\"]]")
-                .unwrap(),
+            eval_input_sync(&mut session, "[join \", \" [\"a\" \"b\" \"c\"]]").unwrap(),
             "String(\"a, b, c\")"
         );
     }
@@ -822,12 +826,13 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Define a function (use [let ...] param form, not bare-param form).
-        session
-            .eval_input("[double: [fn [let x] [* x 2]]]")
-            .unwrap();
+        eval_input_sync(&mut session, "[double: [fn [let x] [* x 2]]]").unwrap();
 
         // Call the function.
-        assert_eq!(session.eval_input("[double 21]").unwrap(), "Int(42)");
+        assert_eq!(
+            eval_input_sync(&mut session, "[double 21]").unwrap(),
+            "Int(42)"
+        );
     }
 
     #[test]
@@ -839,7 +844,7 @@ mod tests {
 
         // There should be no new bindings (only % and builtins).
         // Trying to access a non-existent var should still fail.
-        assert!(session.eval_input("x").is_err());
+        assert!(eval_input_sync(&mut session, "x").is_err());
     }
 
     #[test]
@@ -853,7 +858,7 @@ mod tests {
         eval_input_sync(&mut session, "[y: 2]").unwrap();
 
         // Both bindings should be accessible (y from current env, x from parent).
-        assert_eq!(session.eval_input("[+ x y]").unwrap(), "Int(3)");
+        assert_eq!(eval_input_sync(&mut session, "[+ x y]").unwrap(), "Int(3)");
     }
 
     #[test]
@@ -863,14 +868,17 @@ mod tests {
         // First eval.
         eval_input_sync(&mut session, "1").unwrap();
 
-        assert_eq!(session.eval_input("%").unwrap(), "Int(1)");
+        assert_eq!(eval_input_sync(&mut session, "%").unwrap(), "Int(1)");
 
         // % itself becomes the new %, so % should still be 1 (now it was
         // just the result of evaluating %, which was 1).
-        assert_eq!(session.eval_input("[+ % 10]").unwrap(), "Int(11)");
+        assert_eq!(
+            eval_input_sync(&mut session, "[+ % 10]").unwrap(),
+            "Int(11)"
+        );
 
         // Now % is 11.
-        assert_eq!(session.eval_input("%").unwrap(), "Int(11)");
+        assert_eq!(eval_input_sync(&mut session, "%").unwrap(), "Int(11)");
     }
 
     #[test]
@@ -901,30 +909,42 @@ mod tests {
         // Two documents where the first is not a Dict.
         // The pipeline passes the first result as % to the second document.
         // Non-Dict intermediates are allowed (they just don't expose named bindings).
-        let result = session.eval_input("42\n[+ 1 2]").unwrap();
+        let result = eval_input_sync(&mut session, "42\n[+ 1 2]").unwrap();
         assert_eq!(result, "Int(3)");
     }
 
     #[test]
     fn test_session_float() {
         let mut session = ReplSession::new().unwrap();
-        assert_eq!(session.eval_input("3.14").unwrap(), "Float(3.14)");
+        assert_eq!(
+            eval_input_sync(&mut session, "3.14").unwrap(),
+            "Float(3.14)"
+        );
     }
 
     #[test]
     fn test_session_arithmetic_chain() {
         let mut session = ReplSession::new().unwrap();
 
-        assert_eq!(session.eval_input("[* [+ 2 3] 4]").unwrap(), "Int(20)");
+        assert_eq!(
+            eval_input_sync(&mut session, "[* [+ 2 3] 4]").unwrap(),
+            "Int(20)"
+        );
     }
 
     #[test]
     fn test_session_if_builtin() {
         let mut session = ReplSession::new().unwrap();
 
-        assert_eq!(session.eval_input("[if true 1 0]").unwrap(), "Int(1)");
+        assert_eq!(
+            eval_input_sync(&mut session, "[if true 1 0]").unwrap(),
+            "Int(1)"
+        );
 
-        assert_eq!(session.eval_input("[if false 1 0]").unwrap(), "Int(0)");
+        assert_eq!(
+            eval_input_sync(&mut session, "[if false 1 0]").unwrap(),
+            "Int(0)"
+        );
     }
 
     #[test]
@@ -932,7 +952,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
         // Create an input that exceeds MAX_FILE_SIZE (10 MB).
         let oversized = "x".repeat(MAX_FILE_SIZE as usize + 1);
-        let err = session.eval_input(&oversized).unwrap_err();
+        let err = eval_input_sync(&mut session, &oversized).unwrap_err();
         assert!(
             err.contains("10 MB limit"),
             "expected size limit error, got: {err}"
@@ -947,7 +967,7 @@ mod tests {
 
         // Multi-document input: first document produces [x: 1], second accesses %.x.
         // Documents are separated by `---`.
-        let display = session.eval_input("[x: 1]\n---\n%.x").unwrap();
+        let display = eval_input_sync(&mut session, "[x: 1]\n---\n%.x").unwrap();
         assert_eq!(display, "Int(1)");
     }
 
@@ -957,7 +977,7 @@ mod tests {
 
         // Create a dict with a circular dependency: x references y, y references x.
         // value_to_display_string will detect the cycle when forcing nested values.
-        let msg = session.eval_input("[x: y  y: x]").unwrap_err();
+        let msg = eval_input_sync(&mut session, "[x: y  y: x]").unwrap_err();
         assert!(
             msg.contains("circular"),
             "expected circular dependency error, got: {msg}"
@@ -989,8 +1009,8 @@ mod tests {
 
         // Whitespace-only input: parser produces a document with 0 expressions,
         // which eval_surface_document returns as an empty Dict (graceful, not an error).
-        assert_eq!(session.eval_input("   ").unwrap(), "Dict({})");
-        assert_eq!(session.eval_input("\n\n").unwrap(), "Dict({})");
+        assert_eq!(eval_input_sync(&mut session, "   ").unwrap(), "Dict({})");
+        assert_eq!(eval_input_sync(&mut session, "\n\n").unwrap(), "Dict({})");
     }
 
     #[test]
@@ -1017,7 +1037,7 @@ mod tests {
         let multiline_input = "[add:\n  [fn [let x y]\n    [+ x y]]]";
         eval_input_sync(&mut session, multiline_input).unwrap();
 
-        let result = session.eval_input("[add 10 32]").unwrap();
+        let result = eval_input_sync(&mut session, "[add 10 32]").unwrap();
         assert_eq!(result, "Int(42)");
     }
 
@@ -1032,12 +1052,12 @@ mod tests {
 
         // Submit a syntax error (unclosed bracket — parse returns Err for unbalanced input).
         // The session should return Err, but state must be preserved.
-        let err = session.eval_input("[broken syntax !!!@#$");
+        let err = eval_input_sync(&mut session, "[broken syntax !!!@#$");
         // May or may not be a parse error depending on recovery — just ensure session survives.
         drop(err);
 
         // The session is still alive: previous binding is accessible.
-        assert_eq!(session.eval_input("x").unwrap(), "Int(100)");
+        assert_eq!(eval_input_sync(&mut session, "x").unwrap(), "Int(100)");
     }
 
     /// Function definition in one eval_input followed by a call in a separate
@@ -1048,12 +1068,10 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Step 1: define a function (use [let ...] param form).
-        session
-            .eval_input("[square: [fn [let n] [* n n]]]")
-            .unwrap();
+        eval_input_sync(&mut session, "[square: [fn [let n] [* n n]]]").unwrap();
 
         // Step 2: call the function in a separate eval.
-        let result = session.eval_input("[square 9]").unwrap();
+        let result = eval_input_sync(&mut session, "[square 9]").unwrap();
         assert_eq!(result, "Int(81)");
     }
 
@@ -1110,7 +1128,7 @@ mod tests {
         // If the type env were reset, the type checker would warn "undefined variable x",
         // though evaluation still succeeds (type errors are advisory). We verify that
         // the binding is visible and that evaluation succeeds without error.
-        let result = session.eval_input("x").unwrap();
+        let result = eval_input_sync(&mut session, "x").unwrap();
         assert_eq!(result, "Int(42)");
     }
 
@@ -1125,7 +1143,7 @@ mod tests {
         eval_input_sync(&mut session, "[add: [fn [let a b] [+ a b]]]").unwrap();
 
         // Turn 2: call the function — type checker must know about `add`.
-        let result = session.eval_input("[add 3 4]").unwrap();
+        let result = eval_input_sync(&mut session, "[add 3 4]").unwrap();
         assert_eq!(result, "Int(7)");
     }
 
@@ -1140,10 +1158,10 @@ mod tests {
 
         // Turn 2: fail (runtime error — circular dependency).
         // The type env must remain at the state after Turn 1.
-        let _ = session.eval_input("[a: b  b: a]").unwrap_err();
+        let _ = eval_input_sync(&mut session, "[a: b  b: a]").unwrap_err();
 
         // Turn 3: x from Turn 1 is still accessible.
-        let result = session.eval_input("x").unwrap();
+        let result = eval_input_sync(&mut session, "x").unwrap();
         assert_eq!(result, "Int(10)");
     }
 }
