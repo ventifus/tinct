@@ -10610,3 +10610,10 @@ null?:  [fn [let x] [match x []: true  _: false]]
 **Root cause (found 2026-05-26):** `lines` is missing from the prelude. It existed as a raw Rust builtin, but it's just `[split "\n" s]` — no Rust code needed. `stdlib/cli/in/ndjson.llt` was broken because it called the raw `lines` builtin directly (fixed by switching to `[split "\n" [slurp %stdin]]`), but user code cannot call `lines` at all.
 
 - [x] Add `lines@[doc: "Split a string into a Seq of lines (splits on newline)"]: [fn [let s@String] [split "\n" s]]` → `stdlib/prelude.llt`
+
+### profiling-span-key-inconsistency: `snapshot_to_json_string` produces `"builtin-name"` but spec/scripts use `"builtin"` ✅ DONE (2026-05-25)
+
+**Root cause (found 2026-05-26):** `SpanRecord.builtin_name` field is serialized by serde (with `#[serde(rename_all = "kebab-case")]`) as `"builtin-name"`. But `spans_to_value` inserts the key `"builtin"`, and the whatif spec (`doc/whatif/profiling.md` line 116) also documents it as `"builtin"`. When the `profiling-sigint-flush` sprint lands and uses `snapshot_to_json_string`, all analysis scripts (`trace.llt`, `materialize.llt`, `create.llt`) will silently fail to read the builtin name.
+
+- [x] Fix serde name to match the spec: add `#[serde(rename = "builtin")]` to `SpanRecord.builtin_name` field in `src/profiling.rs`
+- [x] Verify `snapshot_to_json_string` output matches `spans_to_value` key schema for all 14 fields — only `builtin_name` was mismatched; all other 13 fields produce correct kebab-case keys

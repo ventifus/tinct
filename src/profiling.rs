@@ -56,6 +56,7 @@ pub struct SpanRecord {
     /// Leading characters of source at this span (for display in traces).
     pub source_text: Option<String>,
     /// Builtin name (e.g., "builtin-map") if this is a Rust builtin.
+    #[serde(rename = "builtin")]
     pub builtin_name: Option<String>,
     /// Originating Rust builtin for cross-boundary calls (e.g., tinct function called by builtin-map).
     pub origin_builtin: Option<String>,

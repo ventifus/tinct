@@ -800,19 +800,6 @@ Follow-up from builtin-privacy Phase 3. Three issues discovered when making `sam
 - [x] Update `doc/11a-builtins.md` to document `builtin-trim`, `builtin-emit`, `builtin-env`
 - [x] Update builtin count in `standard_builtins_contains_all` test (was 284, now +3 = 301; already correct)
 
-### profiling-span-key-inconsistency: `snapshot_to_json_string` produces `"builtin-name"` but spec/scripts use `"builtin"`
-
-**Root cause (found 2026-05-26):** `SpanRecord.builtin_name` field is serialized by serde (with `#[serde(rename_all = "kebab-case")]`) as `"builtin-name"`. But `spans_to_value` inserts the key `"builtin"`, and the whatif spec (`doc/whatif/profiling.md` line 116) also documents it as `"builtin"`. When the `profiling-sigint-flush` sprint lands and uses `snapshot_to_json_string`, all analysis scripts (`trace.llt`, `materialize.llt`, `create.llt`) will silently fail to read the builtin name.
-
-- [ ] Fix serde name to match the spec: add `#[serde(rename = "builtin")]` to `SpanRecord.builtin_name` field in `src/profiling.rs`
-- [ ] Verify `snapshot_to_json_string` output matches `spans_to_value` key schema for all 14 fields
-
-**Also update `just lint-file` test for all samples:**
-- [x] `just lint-file samples/versions.llt` — T010 span bug fixed: `scan_type_quality` now uses real line/column from SurfaceProgram span walk instead of synthetic 0:0
-- [x] `just lint-file samples/basic.llt` — verified: T002/T003 clean; T010 is pre-existing span bug (not a regression)
-- [x] `just versions` — VERIFIED 2026-05-25: all errors fixed (E099→unified-bindings, T003→check_get, E040→reduce-loop, E070→str-length self-ref); exit 0
-- [x] Update `standard_builtins_contains_all` test count (+3: builtin-trim, builtin-emit, builtin-env) — already 301 ✓
-
 ## Profiling and Call Tracing (`doc/whatif/profiling.md`)
 
 Span-level profiling with dual attribution (materialization-context and creation-context), stall breakdown (I/O, network, channel, timer), and Perfetto trace output. Collection via `--profile spans.json`; analysis via `scripts/profile/` tinct programs against the span file. See `doc/12-tooling.md §Profiling`.
@@ -1763,34 +1750,85 @@ Alternatively: use `materialize_sync` in force_step's inline Sequential handler 
 - [ ] Audit other high-frequency `EvalError` constructors that run inside `eval_dict_core`/`eval_core_expr` and populate source file there
 - [ ] Add corpus test: `tests/corpus/errors/e030_source_file.llt` — verifies filename appears in `[E030]` output
 
-### lazy-file-io: Replace `slurp` with fundamental lazy I/O primitives
+### lazy-file-io: Replace `slurp`/`lines` Rust builtins with `builtin-read-line`/`builtin-read-chunk` primitives
 
-**Found:** 2026-05-26, while running `scripts/profile/trace.llt` against a large profiling NDJSON file. `slurp` hits the 10 MB cap; even removing the cap it buffers the entire file.
+**Decision:** Guide programmers toward lazy I/O. The only Rust read primitives are two minimal building blocks; everything else is LLT composition. `collect` is the explicit materialization step. No backwards compatibility — `slurp` and `lines` Rust builtins are deleted.
 
-**Root cause:** `slurp` returns `String` — a fully-materialized value that must be entirely in memory when forced. There is no way to make it content-lazy. `builtin_lines` (coinductive `PendingBuiltin` at `src/builtins_io.rs:1501`) already exists and solves the problem — but isn't exposed in prelude and isn't used by `ndjson.llt`.
+**Rust primitives:**
+- `builtin-read-line: Handle → String | []` — `BufRead::read_line()`, strips `\n`/`\r\n`, `[]` on EOF
+- `builtin-read-chunk: Handle × Int → Bytes | []` — `Read::read()`, `[]` on EOF
 
-**Design direction:** `slurp` should not be a Rust builtin. Provide two fundamental Rust I/O primitives (per cap-std/BufRead capabilities the Handle already has) and compose everything else in LLT prelude:
-
+**LLT prelude compositions (private dict, using `builtin-*` stable aliases):**
+```llt
+lines:  [fn [let h]   [let l [builtin-read-line h]]    [builtin-if [builtin-eq l []] [] [builtin-seq l [lines h]]]]
+chunks: [fn [let h n] [let c [builtin-read-chunk h n]] [builtin-if [builtin-eq c []] [] [builtin-seq c [chunks h n]]]]
+slurp:  [fn [let h]   [join "\n" [builtin-collect [lines h]]]]
 ```
-Rust primitives:
-  read-line:  Handle → String | []         (BufRead::read_line — advances handle)
-  read-chunk: Handle × Int → Bytes | []    (Read::read — reads up to N bytes)
+`slurp` via `join "\n"` reproduces exact text content: a file ending in `\n` produces a final empty element, so `join "\n" ["line1" "line2" ""]` = `"line1\nline2\n"`.
 
-LLT prelude:
-  lines:  [fn [let h]   [let l [read-line h]]  [if [= [] l] [] [seq l [lines h]]]]
-  chunks: [fn [let h n] [let c [read-chunk h n]] [if [= [] c] [] [seq c [chunks h n]]]]
-  slurp:  [fn [let h]   [join "\n" [collect [lines h]]]]   # convenience; still eager
-```
+**Naming conflict:** `stdlib/prelude.llt:754` defines `lines: [fn [let s@String] [split "\n" s]]` (String → Seq). This is deleted; users write `[split "\n" s]` directly.
 
-- [ ] Add `builtin-read-line: Handle → String | []` — wraps `BufRead::read_line()`, strips trailing `\n`/`\r\n`, returns `[]` on EOF (`src/builtins_io.rs`)
-- [ ] Add `builtin-read-chunk: Handle × Int → Bytes | []` — wraps `Read::read()`, returns `[]` on EOF (`src/builtins_io.rs`)
-- [ ] Remove `builtin_slurp` from Rust; add `slurp` to prelude as LLT composition via `lines`
-- [ ] Add `lines`, `chunks`, `slurp` to prelude using the new primitives (existing `builtin_lines` can be kept or replaced — decide at sprint time based on perf needs)
-- [ ] Update `stdlib/cli/in/ndjson.llt` to use `[lines %stdin]` instead of `[split "\n" [slurp %stdin]]`
-- [ ] Update 2 prelude `slurp` call sites (lines 2784, 2812 — load/include path) to use new `slurp`
-- [ ] Remove or update `check_slurp` in `typecheck.rs` if `slurp` becomes a prelude function
-- [ ] Corpus test: `ndjson` codec with multi-MB input processes all lines without E043
-- **Files:** `src/builtins_io.rs`, `stdlib/prelude.llt`, `stdlib/cli/in/ndjson.llt`, `src/typecheck.rs`
+#### Rust (src/builtins_io.rs, src/builtins.rs, src/type_env.rs, src/typecheck.rs)
+
+- [ ] Add `builtin_read_line` — `expect_one_arg`; extract Handle; reject Binary cap; `BufRead::read_line()`; strip `\n`/`\r\n`; return string or `[]` on EOF
+- [ ] Add `builtin_read_chunk` — 2 pre-materialized args (Handle, Int); `Read::read(&mut buf[..n])`; return Bytes or `[]` on EOF; error on non-positive n
+- [ ] Delete `builtin_slurp` from `src/builtins_io.rs`
+- [ ] Delete `builtin_lines` + `builtin_lines_step` from `src/builtins_io.rs`
+- [ ] Update `src/builtins_io.rs` module doc comment
+- [ ] Remove `builtin_slurp`, `builtin_lines` imports from `src/builtins.rs`
+- [ ] Remove `"slurp"` and `"lines"` registrations from `src/builtins.rs`; add `builtin!("builtin-read-line", ..., [Strictness::Seq])` and `builtin!("builtin-read-chunk", ..., [Strictness::Seq, Strictness::Seq], 2)`
+- [ ] Update `src/builtins.rs` test assertions (remove `"slurp"`, add `"builtin-read-line"` / `"builtin-read-chunk"`)
+- [ ] Remove `"slurp"` and `"lines"` type entries from `src/type_env.rs`; add `"builtin-read-line"` (`Handle[Readable] → Str | []`) and `"builtin-read-chunk"` (`Handle[Readable] × Int → Bytes | []`) entries
+- [ ] Remove `check_slurp` function from `src/typecheck.rs`
+- [ ] Remove `if name == "slurp"` dispatch from `src/typecheck.rs`
+
+#### stdlib/prelude.llt
+
+- [ ] Delete string-splitting `lines` at line 754 (`lines@[...]: [fn [let s@String] [split "\n" s]]`) — write `[split "\n" s]` inline wherever needed
+- [ ] Add `lines`, `chunks`, `slurp` LLT definitions near the include/load section (before `fixed-clock`)
+- [ ] `include` (line ~2790): `[slurp [open cap path Readable]]` — no change needed (new LLT `slurp` has same API)
+- [ ] `cli-pipeline` (line ~2818): `[slurp [open pwd file-path Readable]]` — no change needed
+
+#### stdlib/cli/in/ndjson.llt — use lazy `lines` directly
+
+- [ ] Change `[split "\n" [slurp %stdin]]` → `[lines %stdin]`; remove the empty-string filter (empty lines are `""` from `read-line`, filter on `[not [= "" line]]` unchanged)
+
+#### stdlib/cli/in/json.llt — no change
+
+- [ ] `[from-json [slurp %stdin]]` — `slurp` still returns String via LLT, no change needed
+
+#### stdlib/cli/in/toml-lite.llt — no change
+
+- [ ] `[call %.parse-toml-lite [slurp %stdin]]` — `slurp` still returns String, no change needed
+
+#### stdlib/io.llt
+
+- [ ] `read-file` (line 9): `[slurp [open cap path Readable]]` — no change needed
+- [ ] `read-lines` (line 15): `[lines [open cap path Readable]]` — now calls LLT `lines` (Handle → lazy Seq); update doc comment to drop the 10 MB caveat, now truly lazy
+- [ ] `copy` (line 72): `[slurp [open cap src Readable Text]]` — no change needed
+
+#### stdlib/net.llt — binary socket requires chunks
+
+- [ ] Line 73: `[bytes-str [slurp [write-handle [connect ...] ...]]]` — `slurp` (text-only via `lines`) errors on Binary handles. Determine if `connect` produces Binary cap; if so, replace with `[bytes-str [bytes-concat [collect [chunks h 65536]]]]` where `h = [write-handle [connect ...] ...]`
+
+#### samples/versions.llt — no change
+
+- [ ] Lines 16-17: `[slurp [open %cwd "Cargo.toml" Readable]]` ×2 — text files, new `slurp` works
+
+#### samples/tls_test2.llt — binary socket, needs chunks
+
+- [ ] Line 2: `[slurp [write-handle [tls-connect ...]]]` — TLS socket. If Binary cap, text `slurp` errors. Replace with `chunks` pattern (same fix as net.llt above).
+
+#### scripts/docgen.llt — no change
+
+- [ ] Line 228: `[slurp [open %libdir full-path Readable]]` — text file, no change needed
+
+#### Tests
+
+- [ ] Corpus test: `ndjson` codec with multi-MB synthetic NDJSON input processes all lines without error
+- [ ] Unit tests: `builtin-read-line` EOF → `[]`, newline strip, Binary cap error; `builtin-read-chunk` EOF → `[]`, partial read
+
+**Files:** `src/builtins_io.rs`, `src/builtins.rs`, `src/type_env.rs`, `src/typecheck.rs`, `stdlib/prelude.llt`, `stdlib/cli/in/ndjson.llt`, `stdlib/io.llt`, `stdlib/net.llt`, `samples/tls_test2.llt`
 
 ### t013-unknown-constraint-discharge: T013 fires spuriously for constrained builtins called with Unknown-typed args [Minor]
 
