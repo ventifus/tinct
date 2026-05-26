@@ -10199,3 +10199,10 @@ Assumption-skeptic verified all H2/H3 annotations are **correct** — no hidden 
 
 **Follow-up nit (builtin-force-cleanup):**
 - [x] Add `force_count=1` to `exit-now`/`builtin_exit_now` registration in `src/builtins.rs`; replace `materialize()` in `src/builtins_async.rs:1683` with `try_get_materialized().expect("pre-materialized by force_count=1")` (`src/builtins.rs`, `src/builtins_async.rs`)
+
+### drain-safety-fixes: Graceful drain + REPL task registry isolation
+
+Background loops now `select!` against their CancellationToken with `biased;` so cancellation is always checked first. `[cancel-root] [drain] [exit-now]` is the recommended graceful shutdown sequence.
+
+- [x] Add `select!` against the CancellationToken in each infinite background task loop so that `[cancel-root]` causes graceful exit before `[drain]` (`src/builtins_async.rs`)
+- [x] REPL task_registry isolation — verified NOT A BUG: `ReplSession` creates `EvalContext` once in constructor (`repl.rs:161`) and reuses `self.ctx` for all evaluations; `task_registry` is shared via `Arc::clone` so all REPL lines share the same registry

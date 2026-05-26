@@ -1036,15 +1036,24 @@ pub(crate) fn builtin_signal_channel(
             // Channel capacity 1: additional signals before recv are dropped gracefully.
             let (tx, rx) = tokio::sync::mpsc::channel::<Value>(1);
             let tx_clone = tx.clone();
+            let cancel_token = ctx.cancel.clone();
 
             let handle = crate::async_rt::spawn_local(async move {
                 loop {
-                    // recv() returns None when the signal stream is closed (process shutdown)
-                    if sig_stream.recv().await.is_none() {
-                        break;
+                    tokio::select! {
+                        biased;
+                        _ = cancel_token.cancelled() => {
+                            break;
+                        }
+                        signal = sig_stream.recv() => {
+                            // recv() returns None when the signal stream is closed (process shutdown)
+                            if signal.is_none() {
+                                break;
+                            }
+                            // Ignore send errors (receiver dropped)
+                            let _ = tx_clone.try_send(Value::Dict(IndexMap::new()));
+                        }
                     }
-                    // Ignore send errors (receiver dropped)
-                    let _ = tx_clone.try_send(Value::Dict(IndexMap::new()));
                 }
             });
 
@@ -1106,15 +1115,23 @@ pub(crate) fn builtin_timer_channel(
         // Capacity 1: non-blocking try_send drops ticks if the receiver is slow.
         let (tx, rx) = tokio::sync::mpsc::channel::<Value>(1);
         let tx_clone = tx.clone();
+        let cancel_token = ctx.cancel.clone();
 
         let handle = crate::async_rt::spawn_local(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
             // Skip the first immediate tick so interval_ms elapses before the first send.
             interval.tick().await;
             loop {
-                interval.tick().await;
-                // Non-blocking: if the receiver hasn't consumed the previous tick, drop this one.
-                let _ = tx_clone.try_send(Value::Dict(IndexMap::new()));
+                tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => {
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        // Non-blocking: if the receiver hasn't consumed the previous tick, drop this one.
+                        let _ = tx_clone.try_send(Value::Dict(IndexMap::new()));
+                    }
+                }
             }
         });
 
@@ -1163,6 +1180,7 @@ pub(crate) fn builtin_watch_channel(
         let (read_tx, read_rx) = tokio::sync::mpsc::channel::<Value>(1);
         let read_tx_clone = read_tx.clone();
         let mut watch_rx_reader = watch_rx.clone();
+        let cancel_token_forward = ctx.cancel.clone();
 
         // Forward task: watch → mpsc read channel.
         // Sends the initial value immediately, then forwards each subsequent change.
@@ -1177,14 +1195,22 @@ pub(crate) fn builtin_watch_channel(
             let _ = read_tx_clone.try_send(initial);
 
             loop {
-                if watch_rx_reader.changed().await.is_err() {
-                    // Watch sender dropped — stop forwarding.
-                    break;
+                tokio::select! {
+                    biased;
+                    _ = cancel_token_forward.cancelled() => {
+                        break;
+                    }
+                    result = watch_rx_reader.changed() => {
+                        if result.is_err() {
+                            // Watch sender dropped — stop forwarding.
+                            break;
+                        }
+                        let val = watch_rx_reader.borrow().clone();
+                        // Non-blocking: if the consumer is slow, the old value is dropped (last-value-wins).
+                        // Ignore send errors (consumer dropped — stop forwarding on next changed() call).
+                        let _ = read_tx_clone.try_send(val);
+                    }
                 }
-                let val = watch_rx_reader.borrow().clone();
-                // Non-blocking: if the consumer is slow, the old value is dropped (last-value-wins).
-                // Ignore send errors (consumer dropped — stop forwarding on next changed() call).
-                let _ = read_tx_clone.try_send(val);
             }
         });
 
@@ -1203,10 +1229,27 @@ pub(crate) fn builtin_watch_channel(
 
         // Bridge task: mpsc update channel → watch sender.
         let mut update_rx_bridge = update_rx_bridge;
+        let cancel_token_bridge = ctx.cancel.clone();
         let handle2 = crate::async_rt::spawn_local(async move {
-            while let Some(val) = update_rx_bridge.recv().await {
-                // Ignore errors (all readers dropped).
-                let _ = watch_tx.send(val);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = cancel_token_bridge.cancelled() => {
+                        break;
+                    }
+                    result = update_rx_bridge.recv() => {
+                        match result {
+                            Some(val) => {
+                                // Ignore errors (all readers dropped).
+                                let _ = watch_tx.send(val);
+                            }
+                            None => {
+                                // Channel closed
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         });
 
@@ -1597,6 +1640,14 @@ pub(crate) fn builtin_cancel_root(
 /// with-timeout, with-deadline) to complete. Does NOT wait for user-spawned tasks created
 /// via `task` or `par` — those must be explicitly awaited by the caller before calling drain.
 ///
+/// **Graceful shutdown:** Background tasks check `ctx.cancel.cancelled()` on every loop
+/// iteration via `tokio::select!`. The recommended shutdown sequence is
+/// `[cancel-root] [drain] [exit-now code]`: `[cancel-root]` signals all loops to exit cleanly,
+/// then `[drain]` awaits their `JoinHandle`s (which complete promptly), then `[exit-now]`
+/// terminates the process. Without a prior `[cancel-root]`, `drain` calls `handle.abort()` on
+/// each registered handle as a fallback — tasks are terminated abruptly at the next `.await`
+/// point, which may leave resources in an inconsistent state.
+///
 /// Design note: user-spawned tasks (via `task`) store their JoinHandle<EvalResult<Value>>
 /// inside Value::Task so that `await` can retrieve the typed result. Background tasks store
 /// JoinHandle<()> in task_registry. These are different types, so task registry cannot hold
@@ -1636,8 +1687,13 @@ pub(crate) fn builtin_drain(
         };
 
         for handle in handles {
+            // Always abort before awaiting: abort() on an already-finished task is a no-op,
+            // and abort() on a one-shot sleep task (with-timeout, with-deadline) prevents
+            // drain from blocking for the full sleep duration even after cancel-root. Infinite
+            // background loops (signal/timer/watch) will have already exited cleanly via their
+            // select! branch when cancel-root fired, so their abort() is also a no-op.
             handle.abort();
-            let _ = handle.await; // Returns Err(JoinError::Cancelled) for aborted tasks; ignored
+            let _ = handle.await; // Ok(()) for clean exit, Err(JoinError::Cancelled) for aborted
         }
 
         // Return null (empty dict)

@@ -266,8 +266,9 @@ pub struct EvalContext {
     pub cancel: tokio_util::sync::CancellationToken,
     /// Background task handles registered here directly (signal-channel, timer-channel,
     /// watch-channel ×2, with-timeout, with-deadline, `with_timeout_ms`). Tasks either
-    /// run indefinitely (loop until aborted) or complete with `()`. The `drain` builtin
-    /// calls `abort()` on each handle then awaits it to allow clean shutdown.
+    /// run indefinitely (loop until cancelled) or complete with `()`. The `drain` builtin
+    /// calls `abort()` on each handle — a no-op on completed handles, prevents one-shot
+    /// sleep tasks from blocking drain — then awaits each handle to allow clean shutdown.
     pub task_registry: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 

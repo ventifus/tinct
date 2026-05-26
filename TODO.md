@@ -430,18 +430,9 @@ Hardcoded behavior, stubs, and dead code found during systematic audit. Root cau
 
 ## Known Bugs + Nits
 
-### eval-runtime-followup: Graceful drain + proper TCO (deferred from eval-runtime-fixes)
+### tco-proper-fix: NEEDS_DESIGN — proper tail-call optimization in CEK machine
 
-#### Graceful drain (from drain-graceful-cancel)
-
-`drain` uses `handle.abort()` for immediate completion, but this terminates tasks abruptly. A future enhancement: each background loop `select!` against the cancellation token so `[cancel-root]` causes graceful exit before `[drain]`.
-
-- [ ] Add `select!` against the CancellationToken in each infinite background task loop so that `[cancel-root]` causes graceful exit before `[drain]` (`src/builtins_async.rs`)
-- [ ] REPL creates a fresh `task_registry` per eval iteration (`new_sharing_arena` called each line) — tasks from earlier REPL lines are invisible to `[drain]` called in later lines (`src/repl.rs`)
-
-#### Proper TCO (from tco-proper-fix)
-
-Memoize-reuse approach violates eval_stack_guard invariants. Root cause: when apply_cont(PendingCallDispatch) pops outer Memoize and calls eval_stack_guard.disarm(), the outer Memoize inherits a second pop obligation.
+Memoize-reuse approach violates eval_stack_guard invariants. Root cause: when apply_cont(PendingCallDispatch) pops outer Memoize and calls eval_stack_guard.disarm(), the outer Memoize inherits a second pop obligation. A correct fix requires careful coordination with EvalStackGuard or a different TCO strategy. Requires /rnd before implementing.
 
 - [ ] Design and implement correct TCO: either (a) integrate with EvalStackGuard so the disarmed guard correctly tracks the reused Memoize, or (b) use a different approach (trampoline or depth reset) that avoids the invariant violation
 - [ ] Test: tail-recursive function with 10,000+ iterations completes without error
@@ -681,6 +672,12 @@ SCC constraint generalization drops Indexable FD constraints as ambiguous (T013)
 - [ ] Fix the SCC constraint generalization: ensure `is_discharged` returns true for TypeVars whose concrete bindings are in `state.subst` at generalization time
 - [ ] Remove `check_get` special case from typecheck.rs after fix
 - [ ] Remove `check_arithmetic` special cases (`+`/`-`/`*`/`/`) from typecheck.rs after fix
+
+### async-watch-channel-test: Add corpus test for watch-channel construction [Minor]
+
+**test-crafter fix-later.** `watch-channel` has zero corpus tests — not even a type-check or construction test — yet two of its background task loops were modified in `drain-safety-fixes`. Add a baseline regression guard.
+
+- [ ] Add `tests/corpus/eval/builtins/async_watch_channel_type.llt-eval` — verify `watch-channel` constructs a Channel value (type-of check), similar to existing `async_signal_channel_type.llt-eval` and `async_timer_channel_type.llt-eval` tests
 
 ### test-regression-fixes: Fix pre-existing test infrastructure and regression failures
 
