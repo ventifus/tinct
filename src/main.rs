@@ -413,7 +413,7 @@ fn main() {
             output,
             strict,
             file,
-        } => run_fmt(&file, check, in_place, &output, strict),
+        } => tinct::async_rt::block_on_anywhere(run_fmt(&file, check, in_place, &output, strict)),
         #[cfg(feature = "repl")]
         Commands::Repl => tinct::repl::run_repl(),
         #[cfg(feature = "lsp")]
@@ -1847,8 +1847,12 @@ fn run_eval(
         // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
         // See also: src/lib.rs (eval_source_with_config pipeline), src/expand.rs module comment.
         let mut program = output.program;
-        tinct::expand::expand_surface_program(&mut program, no_fs, &base_dir)
-            .map_err(|e| format!("{e}"))?;
+        tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
+            &mut program,
+            no_fs,
+            &base_dir,
+        ))
+        .map_err(|e| format!("{e}"))?;
         // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         tinct::desugar::desugar_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
@@ -2055,7 +2059,7 @@ fn run_eval(
 
 // AMBIENT-OK: CLI bootstrap — opens file parent dir for type-checking
 #[allow(clippy::disallowed_methods)]
-fn run_fmt(
+async fn run_fmt(
     file_path: &str,
     check: bool,
     in_place: bool,
@@ -2084,8 +2088,12 @@ fn run_fmt(
         let fmt_base_dir = open_file_base_dir(file_path, "fmt")?;
         // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
         let mut program = output.program;
-        tinct::expand::expand_surface_program(&mut program, false, &fmt_base_dir)
-            .map_err(|e| format!("{e}"))?;
+        tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
+            &mut program,
+            false,
+            &fmt_base_dir,
+        ))
+        .map_err(|e| format!("{e}"))?;
         // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         tinct::desugar::desugar_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
@@ -2142,7 +2150,8 @@ fn run_fmt(
     // Pass the file's directory as an already-open Dir to avoid re-acquiring ambient authority.
     let fmt_base_dir_for_formatter = open_file_base_dir(file_path, "fmt").ok();
     let formatted =
-        tinct::format_source_tinct_with_dir(&source, &script_path, fmt_base_dir_for_formatter)?;
+        tinct::format_source_tinct_with_dir(&source, &script_path, fmt_base_dir_for_formatter)
+            .await?;
 
     if check {
         if source != formatted {
@@ -2207,8 +2216,12 @@ fn run_lint(
     };
     // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
     let mut program = output.program;
-    tinct::expand::expand_surface_program(&mut program, false, &lint_base_dir)
-        .map_err(|e| format!("{e}"))?;
+    tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
+        &mut program,
+        false,
+        &lint_base_dir,
+    ))
+    .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
@@ -2480,8 +2493,12 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     let weave_base_dir = open_file_base_dir(markdown_path, "weave")?;
     // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
     let mut program = output.program;
-    tinct::expand::expand_surface_program(&mut program, false, &weave_base_dir)
-        .map_err(|e| format!("{e}"))?;
+    tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
+        &mut program,
+        false,
+        &weave_base_dir,
+    ))
+    .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
@@ -2895,11 +2912,11 @@ fn run_literate_weave(
         // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
         // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
         let mut program = parsed.program;
-        match tinct::expand::expand_surface_program(
+        match tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
             &mut program,
             false,
             &base_eval_ctx.config.base_dir,
-        ) {
+        )) {
             Ok(_) => {}
             Err(e) => {
                 let msg = format!("{e}");
@@ -3406,8 +3423,12 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     };
     // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
     let mut program = output.program;
-    tinct::expand::expand_surface_program(&mut program, false, &describe_base_dir)
-        .map_err(|e| format!("{e}"))?;
+    tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
+        &mut program,
+        false,
+        &describe_base_dir,
+    ))
+    .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).

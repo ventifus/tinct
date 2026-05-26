@@ -1751,6 +1751,7 @@ pub(crate) fn builtin_load(
         // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
         let mut program = parsed.program;
         crate::expand::expand_surface_program(&mut program, ctx.config.no_fs, &ctx.config.base_dir)
+            .await
             .map_err(|e| {
                 EvalError::include_parse_failed(
                     display_name.to_string(),
@@ -1815,6 +1816,7 @@ pub(crate) fn builtin_expand(
                     ctx.config.no_fs,
                     &ctx.config.base_dir,
                 )
+                .await
                 .map_err(|e| {
                     EvalError::user_error(
                         format!("expand: macro expansion error: {}", e.kind),

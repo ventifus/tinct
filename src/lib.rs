@@ -245,8 +245,12 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let mut program = parsed.program;
-    let expand_result = expand::expand_surface_program(&mut program, no_fs, &expand_base_dir)
-        .map_err(|e| format!("{e}"))?;
+    let expand_result = crate::async_rt::block_on_anywhere(expand::expand_surface_program(
+        &mut program,
+        no_fs,
+        &expand_base_dir,
+    ))
+    .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
     // ADT constructor injection: add `CtorName: [variant "CtorName"]` entries to dicts that
@@ -389,8 +393,12 @@ pub fn eval_source_with_cap_net(
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let mut program = parsed.program;
-    let expand_result = expand::expand_surface_program(&mut program, no_fs, &expand_base_dir)
-        .map_err(|e| format!("{e}"))?;
+    let expand_result = crate::async_rt::block_on_anywhere(expand::expand_surface_program(
+        &mut program,
+        no_fs,
+        &expand_base_dir,
+    ))
+    .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
     // ADT constructor injection: add `CtorName: [variant "CtorName"]` entries to dicts that
@@ -538,8 +546,12 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let mut program = parsed.program;
-    expand::expand_surface_program(&mut program, false, &expand_base_dir)
-        .map_err(|e| format!("{e}"))?;
+    crate::async_rt::block_on_anywhere(expand::expand_surface_program(
+        &mut program,
+        false,
+        &expand_base_dir,
+    ))
+    .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
     // Note: inject_adt_constructors_surface_program is NOT called here.
@@ -584,8 +596,12 @@ pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let mut program = parsed.program;
-    expand::expand_surface_program(&mut program, false, &expand_base_dir)
-        .map_err(|e| format!("{e}"))?;
+    crate::async_rt::block_on_anywhere(expand::expand_surface_program(
+        &mut program,
+        false,
+        &expand_base_dir,
+    ))
+    .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
     // Note: inject_adt_constructors_surface_program is NOT called here.
@@ -1904,8 +1920,12 @@ mod tests {
         let expand_base_dir = Arc::clone(&test_util::test_caps().root);
         // Use expand_surface_program so SurfaceItem::Decl macros are seen.
         let mut program = parsed.program;
-        expand::expand_surface_program(&mut program, false, &expand_base_dir)
-            .expect("macro expansion failed");
+        crate::async_rt::block_on_anywhere(expand::expand_surface_program(
+            &mut program,
+            false,
+            &expand_base_dir,
+        ))
+        .expect("macro expansion failed");
         // Desugar after expansion so macros can introduce $_ patterns.
         desugar::desugar_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).

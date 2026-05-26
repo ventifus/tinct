@@ -100,11 +100,11 @@ impl DocumentState {
             Ok(mut program) => {
                 // Expand macros on SurfaceProgram (Surface-based API, consistent with all other
                 // production entry points).
-                match crate::expand::expand_surface_program(
+                match crate::async_rt::block_on_anywhere(crate::expand::expand_surface_program(
                     &mut program,
                     eval_ctx.config.no_fs,
                     &eval_ctx.config.base_dir,
-                ) {
+                )) {
                     Ok(_) => {}
                     Err(e) => {
                         // Macro expansion error — convert to parse error and return early

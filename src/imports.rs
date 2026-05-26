@@ -878,7 +878,13 @@ fn resolve_includes(
         // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
         // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
         let mut program = parsed.program;
-        if expand::expand_surface_program(&mut program, true, expand_dir).is_err() {
+        if crate::async_rt::block_on_anywhere(expand::expand_surface_program(
+            &mut program,
+            true,
+            expand_dir,
+        ))
+        .is_err()
+        {
             continue;
         }
         // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).

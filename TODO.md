@@ -273,27 +273,6 @@ Part A done in rebase. Parts C (`src/lower.rs`), D (`src/surface_fields.rs`) alr
 **Pre-existing regression newly surfaced:**
 - 3 boundary guard tests (`test_boundary_guard_passes_on_matching_type`, `test_boundary_guard_fires_on_type_mismatch`, `test_boundary_guard_is_lazy`) — these were previously hidden because the eval.rs test module didn't compile (Expr dependency). Now they compile but fail because boundary guard application is not yet implemented in `eval_core_expr`. Marked `#[ignore]` with pre-existing note. Should be tracked separately: boundary guard check must be added to `eval_core_expr` to apply the guard when a thunk's span matches `ctx.boundary_guards`.
 
-### rv2-async-migration: Make expander + REPL + formatter + type-normalizer async
-
-#### Expander async (from rv2-expander-async)
-
-Discovered 2026-05-25: the macro expander (`src/expand.rs`) is still using sync bridges into the async eval engine despite runtime-v2 making eval async. These bridges (`invoke_function_sync`, `materialize_sync`, `block_on_anywhere`) were explicitly marked as temporary in their doc comments ("New async code should call `.await` directly"). Making the expander async: (1) eliminates the sync bridge overhead, (2) removes the call-stack-based recursion for macro expansion (heap-allocated async state machines instead), allowing the `em_depth > 10` depth guard to be replaced by a simple logical counter in EvalContext.
-
-- [ ] Make `expand_macro_call_surface()` async — replace `invoke_function_sync` → `.await` and `materialize_sync` → `.await` (`src/expand.rs:1317,1334,1366`)
-- [ ] Make `force_dict_tree_impl()` and `force_dict_tree()` async — replace `block_on_anywhere(eval::materialize(...))` → `.await` (`src/expand.rs:1123,1141,1167,1181`)
-- [ ] Make `expand_surface_program()` async — propagate async through the call chain (`src/expand.rs:394`)
-- [ ] Replace `EXPAND_MACROS_DEPTH` thread-local + `DepthGuard` RAII with a simple `expand_depth: u32` counter in `EvalContext` — no longer needed for stack safety, only as a logical recursion limit (`src/expand.rs:356-413`)
-- [ ] Tests: verify macro expansion still works correctly for tmpl, do, begin, syntax-fn; verify depth limit error fires for pathological infinite expansion
-
-#### Remaining sync bridges (from rv2-async-remaining)
-
-Discovered 2026-05-25: three additional subsystems are still using sync bridges. All explicitly marked as incomplete in their doc comments.
-
-- [ ] `src/repl.rs:244,261` — `eval_input()` is sync but calls `block_on_anywhere(eval_surface_file_with_input(...))` and `materialize_sync`. Make `eval_input` async; update the REPL event loop caller. [Critical for REPL latency and correctness]
-- [ ] `src/formatter.rs:132,143` — `apply_formatter()` is sync but calls `block_on_anywhere(eval::eval_surface_file_with_input(...))` and `materialize_sync`. Make async or spawn a task. [Affects formatter correctness under async runtime]
-- [ ] `src/type_normalize.rs:406` — `resolve_type()` is sync but calls `block_on_anywhere(invoke_function(...))`. Make async; update type checker callers. [Type normalization runs during compilation — should not block async runtime]
-- [ ] Tests: `just ci` passes after each migration; no regressions in REPL, formatter, or type checker behavior
-
 ---
 
 ## Linear Accumulators (`doc/whatif/completed/linear-accumulators.md`)

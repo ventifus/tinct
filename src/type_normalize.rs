@@ -125,7 +125,10 @@ pub fn normalize(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
                     // allow_eval is true — try evaluating resolver from type-stage env
                     if let Some(env) = ctx.type_stage_env.clone() {
                         // Cache miss — try evaluating user-defined resolver from type-stage env
-                        if let Some(resolved) = evaluate_resolver(fn_name, &normalized_args, &env) {
+                        // sync bridge — tracked for async migration
+                        if let Some(resolved) = crate::async_rt::block_on_anywhere(
+                            evaluate_resolver(fn_name, &normalized_args, &env),
+                        ) {
                             // Insert into resolver_cache so subsequent calls are fast
                             ctx.resolver_cache.insert(cache_key, resolved.clone());
                             resolved
@@ -353,7 +356,7 @@ pub(crate) fn dict_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> 
 /// - Argument type cannot be represented as a type-dict
 /// - Runtime error during evaluation
 /// - Result cannot be converted back to a `Type`
-pub(crate) fn evaluate_resolver(
+pub(crate) async fn evaluate_resolver(
     fn_name: &str,
     args: &[Type],
     env: &Arc<RwLock<Environment>>,
@@ -370,7 +373,7 @@ pub(crate) fn evaluate_resolver(
     let ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(env), false);
 
     // Materialize the function value
-    let fn_val = crate::eval::materialize_sync(&fn_thunk, None, &ctx).ok()?;
+    let fn_val = crate::eval::materialize(&fn_thunk, None, &ctx).await.ok()?;
 
     // Convert each Type arg to a type-dict Value
     let arg_thunks: Vec<Arc<Thunk>> = args
@@ -403,14 +406,16 @@ pub(crate) fn evaluate_resolver(
                 origin: None,
                 ctx: &ctx,
             };
-            crate::async_rt::block_on_anywhere(crate::eval_call::invoke_function(&call_ctx)).ok()?
+            crate::eval_call::invoke_function(&call_ctx).await.ok()?
         }
         // Builtin resolvers are not expected — all resolvers are LLT-defined functions.
         _ => return None,
     };
 
     // Force evaluation (materialize the lazy result)
-    let result_val = crate::eval::materialize_sync(&result_thunk, None, &ctx).ok()?;
+    let result_val = crate::eval::materialize(&result_thunk, None, &ctx)
+        .await
+        .ok()?;
 
     // Convert result dict back to Type
     dict_to_type(&result_val, &ctx)

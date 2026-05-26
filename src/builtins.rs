@@ -2597,8 +2597,12 @@ mod tests {
             .unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
         let mut program = parsed.program;
         let base_dir = Arc::clone(&crate::test_util::test_caps().root);
-        crate::expand::expand_surface_program(&mut program, false, &base_dir)
-            .unwrap_or_else(|e| panic!("parse_eval: expand failed for {:?}: {}", llt_src, e));
+        crate::async_rt::block_on_anywhere(crate::expand::expand_surface_program(
+            &mut program,
+            false,
+            &base_dir,
+        ))
+        .unwrap_or_else(|e| panic!("parse_eval: expand failed for {:?}: {}", llt_src, e));
         crate::desugar::desugar_surface_program(&mut program);
         let res = std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));
         let types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());

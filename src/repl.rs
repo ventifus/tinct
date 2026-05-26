@@ -189,7 +189,7 @@ impl ReplSession {
     ///
     /// On error, the session state is unchanged (the environment and `%` are not
     /// modified), so the user can fix and retry.
-    pub fn eval_input(&mut self, input: &str) -> StepResult {
+    pub async fn eval_input(&mut self, input: &str) -> StepResult {
         if input.len() as u64 > MAX_FILE_SIZE {
             return Err(format!(
                 "input exceeds the 10 MB limit ({} bytes)",
@@ -241,14 +241,15 @@ impl ReplSession {
         if program.documents.is_empty() {
             return Err("empty input".to_string());
         }
-        let result_thunk = crate::async_rt::block_on_anywhere(eval_surface_file_with_input(
+        let result_thunk = eval_surface_file_with_input(
             &program,
             Arc::clone(&self.env),
             &self.ctx,
             &resolution_table,
             &type_annotation_table,
             Some(Arc::clone(&self.prev_result)),
-        ))
+        )
+        .await
         .map_err(|e| {
             let mut error_str = format!("{e}");
             if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
@@ -495,7 +496,7 @@ pub fn run_repl() -> Result<(), String> {
                         continue;
                     }
 
-                    match session.eval_input(&buffer) {
+                    match crate::async_rt::block_on_anywhere(session.eval_input(&buffer)) {
                         Ok(display) => {
                             println!("{display}");
                         }
@@ -660,17 +661,22 @@ mod tests {
 
     // ── ReplSession tests ───────────────────────────────────────────────
 
+    // Helper to run async eval_input in sync tests
+    fn eval_input_sync(session: &mut ReplSession, input: &str) -> StepResult {
+        crate::async_rt::block_on_anywhere(session.eval_input(input))
+    }
+
     #[test]
     fn test_session_simple_int() {
         let mut session = ReplSession::new().unwrap();
-        assert_eq!(session.eval_input("42").unwrap(), "Int(42)");
+        assert_eq!(eval_input_sync(&mut session, "42").unwrap(), "Int(42)");
     }
 
     #[test]
     fn test_session_simple_string() {
         let mut session = ReplSession::new().unwrap();
         assert_eq!(
-            session.eval_input("\"hello\"").unwrap(),
+            eval_input_sync(&mut session, "\"hello\"").unwrap(),
             "String(\"hello\")"
         );
     }
@@ -685,7 +691,7 @@ mod tests {
     fn test_session_simple_dict() {
         let mut session = ReplSession::new().unwrap();
         assert_eq!(
-            session.eval_input("[x: 1 y: 2]").unwrap(),
+            eval_input_sync(&mut session, "[x: 1 y: 2]").unwrap(),
             "Dict({\"x\": Int(1), \"y\": Int(2)})"
         );
     }
@@ -695,7 +701,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // First input: a dict that should extend the environment.
-        session.eval_input("[x: 42]").unwrap();
+        eval_input_sync(&mut session, "[x: 42]").unwrap();
 
         // Second input: reference the binding from the previous dict.
         assert_eq!(session.eval_input("x").unwrap(), "Int(42)");
@@ -706,10 +712,10 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // First dict sets x.
-        session.eval_input("[x: 1]").unwrap();
+        eval_input_sync(&mut session, "[x: 1]").unwrap();
 
         // Second dict overwrites x.
-        session.eval_input("[x: 99]").unwrap();
+        eval_input_sync(&mut session, "[x: 99]").unwrap();
 
         // x should be the new value.
         assert_eq!(session.eval_input("x").unwrap(), "Int(99)");
@@ -720,7 +726,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Evaluate a value.
-        session.eval_input("42").unwrap();
+        eval_input_sync(&mut session, "42").unwrap();
 
         // % should be the previous result.
         assert_eq!(session.eval_input("%").unwrap(), "Int(42)");
@@ -731,7 +737,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Evaluate a dict.
-        session.eval_input("[name: \"Alice\" age: 30]").unwrap();
+        eval_input_sync(&mut session, "[name: \"Alice\" age: 30]").unwrap();
 
         // Access a field through %.
         assert_eq!(session.eval_input("%.name").unwrap(), "String(\"Alice\")");
@@ -750,7 +756,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // First: set a value.
-        session.eval_input("[x: 42]").unwrap();
+        eval_input_sync(&mut session, "[x: 42]").unwrap();
 
         // Second: cause an error (undefined variable).
         assert!(session.eval_input("nonexistent").is_err());
@@ -764,7 +770,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Set % to 42.
-        session.eval_input("42").unwrap();
+        eval_input_sync(&mut session, "42").unwrap();
 
         // Cause an error.
         assert!(session.eval_input("nonexistent").is_err());
@@ -829,7 +835,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Evaluate a scalar; it shouldn't add any bindings.
-        session.eval_input("42").unwrap();
+        eval_input_sync(&mut session, "42").unwrap();
 
         // There should be no new bindings (only % and builtins).
         // Trying to access a non-existent var should still fail.
@@ -841,10 +847,10 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // First dict.
-        session.eval_input("[x: 1]").unwrap();
+        eval_input_sync(&mut session, "[x: 1]").unwrap();
 
         // Second dict with different key.
-        session.eval_input("[y: 2]").unwrap();
+        eval_input_sync(&mut session, "[y: 2]").unwrap();
 
         // Both bindings should be accessible (y from current env, x from parent).
         assert_eq!(session.eval_input("[+ x y]").unwrap(), "Int(3)");
@@ -855,7 +861,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // First eval.
-        session.eval_input("1").unwrap();
+        eval_input_sync(&mut session, "1").unwrap();
 
         assert_eq!(session.eval_input("%").unwrap(), "Int(1)");
 
@@ -873,7 +879,7 @@ mod tests {
 
         // MAX_DISPLAY_DEPTH=5, so 4-level nesting is fully displayed
         assert_eq!(
-            session.eval_input("[a: [b: [c: 42]]]").unwrap(),
+            eval_input_sync(&mut session, "[a: [b: [c: 42]]]").unwrap(),
             "Dict({\"a\": Dict({\"b\": Dict({\"c\": Int(42)})})})"
         );
     }
@@ -883,7 +889,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         assert_eq!(
-            session.eval_input("[10 20 30]").unwrap(),
+            eval_input_sync(&mut session, "[10 20 30]").unwrap(),
             "Dict({0: Int(10), 1: Int(20), 2: Int(30)})"
         );
     }
@@ -965,8 +971,8 @@ mod tests {
             .stack_size(128 * 1024 * 1024) // 128MB — debug-mode materialize() needs ~100MB at 256 levels
             .spawn(|| {
                 let mut session = ReplSession::new().unwrap();
-                session.eval_input("[f: [fn [let x] [f [+ x 1]]]]").unwrap();
-                session.eval_input("[f 0]").unwrap_err()
+                eval_input_sync(&mut session, "[f: [fn [let x] [f [+ x 1]]]]").unwrap();
+                eval_input_sync(&mut session, "[f 0]").unwrap_err()
             })
             .unwrap()
             .join()
@@ -1009,7 +1015,7 @@ mod tests {
         // and submitted together once the brackets are balanced.
         // Use [let ...] param form (bare param form is no longer supported).
         let multiline_input = "[add:\n  [fn [let x y]\n    [+ x y]]]";
-        session.eval_input(multiline_input).unwrap();
+        eval_input_sync(&mut session, multiline_input).unwrap();
 
         let result = session.eval_input("[add 10 32]").unwrap();
         assert_eq!(result, "Int(42)");
@@ -1022,7 +1028,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Establish a binding.
-        session.eval_input("[x: 100]").unwrap();
+        eval_input_sync(&mut session, "[x: 100]").unwrap();
 
         // Submit a syntax error (unclosed bracket — parse returns Err for unbalanced input).
         // The session should return Err, but state must be preserved.
@@ -1098,7 +1104,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Turn 1: define a binding.
-        session.eval_input("[x: 42]").unwrap();
+        eval_input_sync(&mut session, "[x: 42]").unwrap();
 
         // Turn 2: reference x — should evaluate successfully (no false T002).
         // If the type env were reset, the type checker would warn "undefined variable x",
@@ -1116,7 +1122,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Turn 1: define a function.
-        session.eval_input("[add: [fn [let a b] [+ a b]]]").unwrap();
+        eval_input_sync(&mut session, "[add: [fn [let a b] [+ a b]]]").unwrap();
 
         // Turn 2: call the function — type checker must know about `add`.
         let result = session.eval_input("[add 3 4]").unwrap();
@@ -1130,7 +1136,7 @@ mod tests {
         let mut session = ReplSession::new().unwrap();
 
         // Turn 1: define x.
-        session.eval_input("[x: 10]").unwrap();
+        eval_input_sync(&mut session, "[x: 10]").unwrap();
 
         // Turn 2: fail (runtime error — circular dependency).
         // The type env must remain at the state after Turn 1.

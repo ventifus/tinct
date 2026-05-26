@@ -383,29 +383,32 @@ fn handle_request(
                 // If the script cannot be found, return None (no edits — silently no-op).
                 let script_path = crate::find_libdir_path()
                     .map(|p| p.join("cli").join("fmt").join("pretty.llt"))?;
-                crate::formatter::format_source_tinct(&text, &script_path)
-                    .ok()
-                    .map(|formatted| {
-                        // Single whole-document replace-all edit: start at (0,0), end past last char.
-                        // Count newlines to find the last line number and last-line length.
-                        let newline_count = text.bytes().filter(|&b| b == b'\n').count() as u32;
-                        let last_line_start = text.rfind('\n').map_or(0, |i| i + 1);
-                        let last_line_len = text[last_line_start..].len() as u32;
-                        let end = Position {
-                            line: newline_count,
-                            character: last_line_len,
-                        };
-                        vec![TextEdit {
-                            range: Range {
-                                start: Position {
-                                    line: 0,
-                                    character: 0,
-                                },
-                                end,
+                crate::async_rt::block_on_anywhere(crate::formatter::format_source_tinct(
+                    &text,
+                    &script_path,
+                ))
+                .ok()
+                .map(|formatted| {
+                    // Single whole-document replace-all edit: start at (0,0), end past last char.
+                    // Count newlines to find the last line number and last-line length.
+                    let newline_count = text.bytes().filter(|&b| b == b'\n').count() as u32;
+                    let last_line_start = text.rfind('\n').map_or(0, |i| i + 1);
+                    let last_line_len = text[last_line_start..].len() as u32;
+                    let end = Position {
+                        line: newline_count,
+                        character: last_line_len,
+                    };
+                    vec![TextEdit {
+                        range: Range {
+                            start: Position {
+                                line: 0,
+                                character: 0,
                             },
-                            new_text: formatted,
-                        }]
-                    })
+                            end,
+                        },
+                        new_text: formatted,
+                    }]
+                })
             });
 
             let result = serde_json::to_value(edits)?;

@@ -48,11 +48,11 @@ pub fn hover_at(
         // Expand macros on SurfaceProgram, matching the
         // pipeline invariant (expand → desugar → resolve → typecheck).
         let mut program = block_parsed.program.clone();
-        crate::expand::expand_surface_program(
+        crate::async_rt::block_on_anywhere(crate::expand::expand_surface_program(
             &mut program,
             eval_ctx.config.no_fs,
             &eval_ctx.config.base_dir,
-        )
+        ))
         .ok()?;
         // Desugar $_ implicit lambdas on SurfaceProgram
         crate::desugar::desugar_surface_program(&mut program);
@@ -1368,11 +1368,13 @@ pub fn diagnostics_for(
                     // Expand macros on SurfaceProgram, matching the
                     // pipeline invariant (expand → desugar → resolve → typecheck).
                     let mut program = output.program.clone();
-                    if let Err(e) = crate::expand::expand_surface_program(
-                        &mut program,
-                        eval_ctx.config.no_fs,
-                        &eval_ctx.config.base_dir,
-                    ) {
+                    if let Err(e) =
+                        crate::async_rt::block_on_anywhere(crate::expand::expand_surface_program(
+                            &mut program,
+                            eval_ctx.config.no_fs,
+                            &eval_ctx.config.base_dir,
+                        ))
+                    {
                         // Macro expansion error — convert to diagnostic
                         let mut diag = Diagnostic {
                             range: llt_span_to_lsp_range(&e.definition_span, &block.code),
