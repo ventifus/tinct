@@ -607,12 +607,6 @@ nested resolution always has a cap dir.
 - [x] Verify `just lint-clippy` passes
 - [x] `just test-lib` passes
 
-### async-watch-channel-test: Add corpus test for watch-channel construction [Minor]
-
-**test-crafter fix-later.** `watch-channel` has zero corpus tests — not even a type-check or construction test — yet two of its background task loops were modified in `drain-safety-fixes`. Add a baseline regression guard.
-
-- [ ] Add `tests/corpus/eval/builtins/async_watch_channel_type.llt-eval` — verify `watch-channel` constructs a Channel value (type-of check), similar to existing `async_signal_channel_type.llt-eval` and `async_timer_channel_type.llt-eval` tests
-
 ### test-regression-fixes: Fix pre-existing test infrastructure and regression failures
 
 #### Test infrastructure (from lib-test-oom)

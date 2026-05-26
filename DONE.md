@@ -10305,3 +10305,9 @@ SCC constraint generalization drops Indexable FD constraints as ambiguous (T013)
 #### Arena sharing invariant undocumented (from arena-coupling-doc, Health Review #326)
 
 - [x] Add §Arena Sharing Invariant to `doc/16-architecture.md` §EvalContext: "All eval contexts that access stdlib dict fields must share the stdlib's ThunkArena"
+
+### async-watch-channel-test: Add corpus test for watch-channel construction [Minor]
+
+**test-crafter fix-later.** `watch-channel` has zero corpus tests — not even a type-check or construction test — yet two of its background task loops were modified in `drain-safety-fixes`. Add a baseline regression guard.
+
+- [x] Add `tests/corpus/eval/builtins/async_watch_channel_type.llt-eval` — verify `watch-channel` constructs a Channel value (type-of check), similar to existing `async_signal_channel_type.llt-eval` and `async_timer_channel_type.llt-eval` tests
