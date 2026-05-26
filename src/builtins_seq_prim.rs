@@ -204,20 +204,6 @@ pub(crate) fn builtin_collect(
     })
 }
 
-/// `seq?`: Type predicate for sequences.
-///
-/// Returns true if the argument materializes to a Seq, false otherwise.
-pub(crate) fn builtin_seq_check(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    Box::pin(async move {
-        let val = expect_one_arg("seq?", &args, named.as_ref(), &ctx, call_span)?;
-        ok_val(Value::Bool(matches!(val, Value::Seq { .. })), call_span)
-    })
-}
+// seq? was removed from builtins_seq_prim.rs in the type-predicates-to-tinct sprint.
+// It is now implemented in stdlib/prelude.llt as:
+//   seq?: [fn [let x] [match x Seq: true _: false]]

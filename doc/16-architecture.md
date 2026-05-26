@@ -45,7 +45,7 @@
 **Key contracts:**
 
 - `BuiltinFn` signature: `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>>` (no `+ Send` — futures are `!Send`); `BuiltinArgs` carries owned `args: Vec<Arc<Thunk>>`, `named: Option<IndexMap<String, Arc<Thunk>>>`, `call_span: Span`, `ctx: Arc<EvalContext>`
-- `Value` serialization: every `Value` variant must have handlers in both `value_to_json()` and `value_to_display_string()` (src/lib.rs)
+- `Value` serialization: every `Value` variant must have handlers in both `JsonVisitor` (via `visit_value`) and `value_to_display_string()` (src/lib.rs)
 - Type checker role: advisory only — type errors are warnings, evaluation proceeds regardless
 - AST coverage: every `SurfaceExpression` variant requires both a `lower` handler (src/lower.rs producing `CoreExpr`) and a `typecheck` handler (src/typecheck.rs); every `CoreExpr` variant requires an `eval_core_expr` handler (src/eval.rs)
 - Builtin registration: all builtins must appear in `standard_builtins()` (src/builtins.rs) — this is the authoritative list

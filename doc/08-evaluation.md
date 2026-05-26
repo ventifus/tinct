@@ -1252,7 +1252,7 @@ Event-source builtins (`signal-channel`, `timer-channel`, `watch-channel`) spawn
 
 The `$eval` builtin uses `deep_materialize` to recursively materialize all thunks in a value tree. This is distinct from selective materialization (which materializes only what's needed for computation) — deep materialization materializes *everything*, producing a fully-evaluated value tree suitable for serialization or comparison.
 
-The CLI `--eval` flag was changed in sprint rv2-output-formatter-contract to perform only shallow (WHNF) materialization. When combined with `-o <formatter>`, deep materialization is handled internally by the formatter (e.g., `$builtin-to-json`); without `-o`, only top-level forcing is performed. The `$eval` builtin itself continues to use `deep_materialize`.
+The CLI `--eval` flag was changed in sprint rv2-output-formatter-contract to perform only shallow (WHNF) materialization. When combined with `-o <formatter>`, deep materialization is handled internally by the formatter (e.g., `to-json` from `codecs/json.llt`); without `-o`, only top-level forcing is performed. The `$eval` builtin itself continues to use `deep_materialize`.
 
 **Cache data structure:** `deep_materialize` uses a stack-local `HashMap<*const Thunk, Option<Arc<Thunk>>>` created at the `deep_materialize` entry point and passed through the recursion. The cache has a dual-purpose design (in `deep_materialize_impl`):
 
@@ -1289,7 +1289,7 @@ The `ValueVisitor` trait (in `src/lib.rs`) provides a visitor pattern for struct
 
 **Implementations:**
 
-- **JsonVisitor** (`src/lib.rs:846-992`) — produces `serde_json::Value`, used by `value_to_json` and the `$builtin-to-json` formatter. Rejects values that cannot be represented in JSON (NaN, Infinity, Function, Builtin, Seq). Detects array-like dicts (sequential integer keys 0..n) and serializes them as JSON arrays.
+- **JsonVisitor** (`src/lib.rs`) — produces `serde_json::Value`, used by `visit_value` for JSON output. Rejects values that cannot be represented in JSON (NaN, Infinity, Function, Builtin, Seq). Detects array-like dicts (sequential integer keys 0..n) and serializes them as JSON arrays. Used by `run_literate_eval`/`run_literate_weave`; the CLI `-o json` formatter calls the tinct `to-json` function from `stdlib/codecs/json.llt` instead.
 - **DisplayVisitor** (`src/lib.rs:1000-1100`) — produces LLT display strings, used for error messages and debug output. Accepts all value types, rendering functions as `Function([params])` and sequences as `Seq`.
 
 **Integration with deep materialization:** Visitors assume the input `Value` is already shallow-materialized (WHNF). The `visit_value` function calls `materialize()` on each dict entry and sequence head thunk before recursing. This is a safety check — the primary forcing mechanism is `deep_materialize()`, which should be called before serialization (§Deep Materialization).

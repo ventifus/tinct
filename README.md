@@ -342,7 +342,7 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 | `src/literate.rs` | Literate mode support |
 | `src/coverage.rs` | Coverage instrumentation |
 | `src/test_util.rs` | Shared test helpers: `test_span()`, `sp()` (test-only, `#[cfg(test)]`) |
-| `src/lib.rs` | Public API: `parse()`, `eval_source()`, `eval_file()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `json_to_value()`, `value_to_json()`, `value_to_display_string()`; `EvalContext`, `EvalConfig`, `EvalState` |
+| `src/lib.rs` | Public API: `parse()`, `eval_source()`, `eval_file()`, `materialize()`, `deep_materialize()`, `create_stdlib_env()`, `json_to_value()`, `visit_value()`, `JsonVisitor`, `value_to_display_string()`; `EvalContext`, `EvalConfig`, `EvalState` |
 | `src/repl.rs` | REPL session: scope chains, bracket matching, `:describe`/`:type`/`:help` meta-commands, error recovery |
 | `src/lsp/` | LSP server: `tinct lsp` with `textDocument/didOpen`, `didChange`, `publishDiagnostics`, and hover |
 | `src/main.rs` | CLI (`tinct` binary): `eval`, `fmt`, `repl`, `lsp`, `explain` subcommands; `--cap-fs`/`--cap-net`/`--cap-file` cap injection |

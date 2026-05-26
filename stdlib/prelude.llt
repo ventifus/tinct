@@ -162,8 +162,8 @@
 #   builtin-if chains  instead of and/or
 #   builtin-length     instead of length (prelude wrapper not yet in scope)
 #   builtin-keys       instead of keys
-#   builtin-seq?       instead of seq?
-#   builtin-dict?      instead of dict?
+#   [match x Seq: ...]  instead of seq? (seq? not yet in scope in private dict)
+#   [match x Dict: ...] instead of dict? (dict? not yet in scope in private dict)
 #   builtin-build-dict instead of build-dict
 
 [
@@ -260,14 +260,14 @@ reindex-seq-impl: values-seq-impl
 # Universal collection helpers (only depend on builtins + siblings)
 # ============================================================================
 
-# zip-seq-impl: uses builtin-if chain instead of and
+# zip-seq-impl: uses match instead of seq? (not yet in scope in private dict)
 zip-seq-impl: [fn@Any [let xs ys]
-    [builtin-if [builtin-seq? xs]
-        [builtin-if [builtin-seq? ys]
-            [builtin-seq [[builtin-head xs] [builtin-head ys]]
-                [zip-seq-impl [builtin-tail xs] [builtin-tail ys]]]
-            []]
-        []]]
+    [match xs
+        Seq: [match ys
+            Seq: [builtin-seq [[builtin-head xs] [builtin-head ys]]
+                    [zip-seq-impl [builtin-tail xs] [builtin-tail ys]]]
+            _:   []]
+        _:   []]]
 
 # zip-dict-impl: Build lazy Seq of pairs, then collect. O(n) via cons pattern.
 zip-dict-impl: [fn@Dict [let xs@Dict ys@Dict]
@@ -327,24 +327,24 @@ try-or-impl: [fn [let try-result default]
 # take-while-seq: Build a lazy Seq of entries while predicate holds.
 # Used by take-while (public). Entries are [key: k value: v] dicts from each-kv.
 take-while-seq: [fn [let pred@Fn entries]
-    [builtin-if [builtin-seq? entries]
-        [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
+    [match entries
+        Seq: [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
             [builtin-seq
                 [builtin-head entries]
                 [take-while-seq pred [builtin-tail entries]]]
             []]
-        []]]
+        _:   []]]
 
 # drop-while-seq: Build a lazy Seq of entries after dropping while predicate holds.
 # Used by drop-while (public). Entries are [key: k value: v] dicts from each-kv.
 drop-while-seq: [fn [let pred@Fn entries dropping@Bool]
-    [builtin-if [builtin-seq? entries]
-        [builtin-if dropping
+    [match entries
+        Seq: [builtin-if dropping
             [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
                 [drop-while-seq pred [builtin-tail entries] true]
                 [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
             [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
-        []]]
+        _:   []]]
 
 # Flatten nested lists one level deep via Seq cons pattern. O(n) total.
 # flatten-seq-impl: recursively builds a Seq by appending sublists or single elements.
@@ -356,11 +356,11 @@ flatten-seq-impl: [fn [let xs@Dict ks i@Int len@Int]
         [flatten-seq-step xs ks i len [builtin-get i ks]]]]
 
 flatten-seq-step: [fn [let xs@Dict ks i@Int len@Int k]
-    [builtin-if [builtin-dict? [builtin-get k xs]]
+    [match [builtin-get k xs]
         # Dict element: prepend all its values as a Seq, then continue with rest
-        [flatten-seq-append-dict [builtin-get k xs] [flatten-seq-impl xs ks [builtin-add i 1] len]]
+        Dict: [flatten-seq-append-dict [builtin-get k xs] [flatten-seq-impl xs ks [builtin-add i 1] len]]
         # Non-dict element: cons it onto the rest
-        [builtin-seq [builtin-get k xs] [flatten-seq-impl xs ks [builtin-add i 1] len]]]]
+        _:    [builtin-seq [builtin-get k xs] [flatten-seq-impl xs ks [builtin-add i 1] len]]]]
 
 # flatten-seq-append-dict: Convert dict to Seq of values, then append rest.
 # This uses flatten-seq-concat-values to iterate the dict's values.
@@ -379,11 +379,11 @@ flatten-seq-concat-values: [fn [let d@Dict ks i@Int len@Int rest]
 # contains-seq?: Check if a Seq contains val (O(n) linear scan).
 # Used by uniq-seq-step to check the seen set.
 contains-seq?: [fn@Bool [let seq val]
-    [builtin-if [builtin-seq? seq]
-        [builtin-if [builtin-eq [builtin-head seq] val]
+    [match seq
+        Seq: [builtin-if [builtin-eq [builtin-head seq] val]
             true
             [contains-seq? [builtin-tail seq] val]]
-        false]]  # Empty Seq (terminal []) — not found
+        _:   false]]  # Empty Seq (terminal []) — not found
 
 # uniq-seq-impl/uniq-seq-step: Build a reversed Seq of unique elements.
 # O(n) per element * O(n) contains-seq? check = still O(n²), but O(1) cons per step.
@@ -411,9 +411,9 @@ reverse-seq: [fn [let seq]
     [reverse-seq-impl seq []]]
 
 reverse-seq-impl: [fn [let seq acc]
-    [builtin-if [builtin-seq? seq]
-        [reverse-seq-impl [builtin-tail seq] [builtin-seq [builtin-head seq] acc]]
-        acc]]
+    [match seq
+        Seq: [reverse-seq-impl [builtin-tail seq] [builtin-seq [builtin-head seq] acc]]
+        _:   acc]]
 
 ]
 
@@ -1374,20 +1374,21 @@ Note: Threads initial value x through each function in sequence. Each function r
 # Type Predicates
 # ============================================================================
 
-# Rust-native type predicate builtins — re-exported here so they are available
-# in user scope. Each materializes its argument and checks the Value variant.
+# Type predicates — implemented in LLT via match pattern dispatch.
+# Each materializes its argument and dispatches on the Value variant.
 # fn? returns true for both Function and Builtin values.
-# Uses builtin-* aliases (stable names from [include %rust "core"]) to avoid
-# circular self-references in letrec dicts.
-# See src/builtins.rs for implementations.
-int?@[doc: "Check if value is Int"]: builtin-int?
-float?@[doc: "Check if value is Float"]: builtin-float?
-str?@[doc: "Check if value is String"]: builtin-str?
-bool?@[doc: "Check if value is Bool"]: builtin-bool?
-null?@[doc: "Check if value is null (empty dict [])"]: builtin-null?
-dict?@[doc: "Check if value is Dict"]: builtin-dict?
-fn?@[doc: "Check if value is a function (Function or Builtin)"]: builtin-fn?
-seq?@[doc: "Check if value is a Seq"]: builtin-seq?
+# null? uses an empty closed Dict pattern [] since all dicts return "Dict" from type_name().
+# Str is the TypeTag alias for String; Bool, Int, Float, Seq, Dict, Bytes, Proxy are direct.
+int?@[doc: "Check if value is Int"]:   [fn [let x] [match x Int:      true  _: false]]
+float?@[doc: "Check if value is Float"]: [fn [let x] [match x Float:    true  _: false]]
+str?@[doc: "Check if value is String"]: [fn [let x] [match x Str:      true  _: false]]
+bool?@[doc: "Check if value is Bool"]:  [fn [let x] [match x Bool:     true  _: false]]
+null?@[doc: "Check if value is null (empty dict [])"]: [fn [let x] [match x []:       true  _: false]]
+dict?@[doc: "Check if value is Dict"]:  [fn [let x] [match x Dict:     true  _: false]]
+fn?@[doc: "Check if value is a function (Function or Builtin)"]: [fn [let x] [match x Function: true  Builtin: true  _: false]]
+proxy?@[doc: "Check if value is a Proxy"]: [fn [let x] [match x Proxy:    true  _: false]]
+seq?@[doc: "Check if value is a Seq"]:  [fn [let x] [match x Seq:      true  _: false]]
+bytes?@[doc: "Check if value is Bytes"]: [fn [let x] [match x Bytes:    true  _: false]]
 
 # num?: true if the argument is numeric (Int or Float).
 # Implemented in LLT as the disjunction of int? and float?.
@@ -2156,25 +2157,54 @@ to-json-escape: [fn [let s@String]
 to-json-string: [fn [let s@String]
   [str "\"" [to-json-escape s] "\""]]
 
-# Helper: serialize a dict to {"key":value,...}
+# Helper: check if a dict is array-like (all keys are consecutive integers 0..n-1).
+# Array-like dicts are serialized as JSON arrays. Named dicts are serialized as objects.
+# keys returns an integer-keyed dict (not a Seq), so pass directly to all?.
+to-json-array-like?: [fn [let d]
+  [all? [fn [let k] [int? k]] [keys d]]]
+
+# Helper: serialize an array-like dict to [v0, v1, ...] preserving insertion order.
+# values returns an integer-keyed dict of the values; map to-json serializes each.
+to-json-array-from-dict: [fn [let d]
+  [str "[" [join "," [map to-json [values d]]] "]"]]
+
+# Helper: serialize a named dict to {"key":value,...}
 # entries returns a Seq of [key: k  value: v] dicts.
-to-json-dict-impl: [fn [let d]
+to-json-named-dict: [fn [let d]
   [str "{"
     [join ","
-      [map [fn [let entry] [str [to-json-string entry.key] ":" [to-json entry.value]]]
+      [map [fn [let entry]
+             [str [to-json-string [str entry.key]] ":" [to-json entry.value]]]
            [entries d]]]
     "}"]]
 
-# Helper: serialize a seq/list to [value,...]
+# Helper: serialize a dict — array-like dicts become JSON arrays.
+to-json-dict-impl: [fn [let d]
+  [if [to-json-array-like? d]
+    [to-json-array-from-dict d]
+    [to-json-named-dict d]]]
+
+# Helper: accumulate Seq elements into a list for JSON serialization.
+# Handles malformed Seqs (non-Seq tails) by stopping at the last valid element.
+to-json-seq-elems: [fn [let s acc]
+  [cond [
+    [[= s []]      acc]
+    [[seq? s]      [to-json-seq-elems [tail s] [append acc [to-json [head s]]]]]
+    [true          [append acc [to-json s]]]]]]
+
+# Helper: serialize a Seq to [v0, v1, ...]
+# Handles both proper Seqs (tail is always Seq or []) and malformed ones
+# (where tail is a non-Seq non-null value — included as the last element).
 to-json-seq-impl: [fn [let s]
-  [str "[" [join "," [map to-json [collect s]]] "]"]]
+  [str "[" [join "," [to-json-seq-elems s []]] "]"]]
 
 # Public: serialize any tinct value to compact JSON string.
 # Handles: Int, Float, Bool, String, Null ([]), Dict, Seq.
 # Unknown/unserializable types produce "null".
 to-json@[doc: "Serialize a tinct value to a compact JSON string.
 Handles Int, Float, Bool, String, Null ([]), Dict, and Seq values.
-Returns a String. Unserializable values (Fn, Handle, Task, etc.) produce null."]:
+Proxy values raise an error (cannot serialize to JSON).
+Other unserializable values (Fn, Handle, Task, etc.) produce null."]:
   [fn [let v]
     [cond [
       [[= v []]     "null"]
@@ -2184,6 +2214,7 @@ Returns a String. Unserializable values (Fn, Handle, Task, etc.) produce null."]
       [[str? v]     [to-json-string v]]
       [[seq? v]     [to-json-seq-impl v]]
       [[dict? v]    [to-json-dict-impl v]]
+      [[proxy? v]   [error "cannot serialize Proxy to JSON"]]
       [true         "null"]]]]
 
 # String trimming

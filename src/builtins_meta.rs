@@ -14,7 +14,9 @@
 //! - `type-of`: Return the runtime type name
 //! - `tag-of`: Extract tag from a Variant
 //! - `variant`: Create a unit variant
-//! - `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`: Type predicates (plus `num?`, `record?`, `map?` in LLT stdlib)
+//! - All type predicates (`int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`,
+//!   `bytes?`, `proxy?`, `num?`, `record?`, `map?`) are implemented in stdlib/prelude.llt
+//!   via `[match x TypeTag: true _: false]` — no Rust implementations remain.
 //!
 //! **AST and evaluation:**
 //! - `eval-ast`: Reconstruct and evaluate AST from dict representation
@@ -1222,153 +1224,9 @@ pub(crate) fn builtin_variant(
     })
 }
 
-/// `int?`: Return true if the argument is an Int.
-pub(crate) fn builtin_int_check(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-        let val = crate::builtins::expect_one_arg("int?", &args, named.as_ref(), &ctx, call_span)?;
-        ok_val(Value::Bool(matches!(val, Value::Int(_))), call_span)
-    })
-}
-
-/// `float?`: Return true if the argument is a Float.
-pub(crate) fn builtin_float_check(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-        let val =
-            crate::builtins::expect_one_arg("float?", &args, named.as_ref(), &ctx, call_span)?;
-        ok_val(Value::Bool(matches!(val, Value::Float(_))), call_span)
-    })
-}
-
-// num? is implemented in LLT as [or [int? x] [float? x]] — see stdlib/prelude.llt
-
-/// `str?`: Return true if the argument is a String.
-pub(crate) fn builtin_str_check(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-        let val = crate::builtins::expect_one_arg("str?", &args, named.as_ref(), &ctx, call_span)?;
-        ok_val(Value::Bool(matches!(val, Value::String { .. })), call_span)
-    })
-}
-
-/// `bool?`: Return true if the argument is a Bool.
-pub(crate) fn builtin_bool_check(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-        let val = crate::builtins::expect_one_arg("bool?", &args, named.as_ref(), &ctx, call_span)?;
-        ok_val(Value::Bool(matches!(val, Value::Bool(_))), call_span)
-    })
-}
-
-/// `bytes?`: Return true if the argument is Bytes.
-pub(crate) fn builtin_bytes_check(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-        let val =
-            crate::builtins::expect_one_arg("bytes?", &args, named.as_ref(), &ctx, call_span)?;
-        ok_val(Value::Bool(matches!(val, Value::Bytes { .. })), call_span)
-    })
-}
-
-/// `null?`: Return true if the argument is Null (represented as an empty Dict).
-pub(crate) fn builtin_null_check(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-        let val = crate::builtins::expect_one_arg("null?", &args, named.as_ref(), &ctx, call_span)?;
-        let is_null = match val {
-            Value::Dict(map) => map.is_empty(),
-            Value::Overlay(l, r) => {
-                let map = crate::builtins::flatten_overlay(&l, &r, "null?", &ctx, call_span)?;
-                map.is_empty()
-            }
-            _ => false,
-        };
-        ok_val(Value::Bool(is_null), call_span)
-    })
-}
-
-/// `dict?`: Return true if the argument is a Dict (including lists and null).
-pub(crate) fn builtin_dict_check(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-        let val = crate::builtins::expect_one_arg("dict?", &args, named.as_ref(), &ctx, call_span)?;
-        ok_val(
-            Value::Bool(matches!(val, Value::Dict(_) | Value::Overlay(..))),
-            call_span,
-        )
-    })
-}
-
-// record? and map? are implemented in LLT as aliases of dict? — see stdlib/prelude.llt
-
-/// `fn?`: Return true if the argument is callable (Function or Builtin).
-pub(crate) fn builtin_fn_check(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-        let val = crate::builtins::expect_one_arg("fn?", &args, named.as_ref(), &ctx, call_span)?;
-        ok_val(
-            Value::Bool(matches!(val, Value::Function { .. } | Value::Builtin(_))),
-            call_span,
-        )
-    })
-}
+// All type predicates (int?, float?, str?, bool?, null?, dict?, fn?, seq?, bytes?, proxy?)
+// are implemented in stdlib/prelude.llt via [match x TypeTag: true _: false].
+// The Rust implementations were removed in the type-predicates-to-tinct sprint.
 
 /// Helper for runtime type name extraction.
 fn type_name(val: &Value) -> String {

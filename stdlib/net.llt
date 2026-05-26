@@ -2,7 +2,9 @@
 # Requires: net-cap, connect, http2-session, http-request (io-phase2)
 # Requires: write-handle, slurp, str-bytes, bytes-str (io-phase1)
 # Requires prelude: make-entry, set (prelude functions, not raw builtins)
-# Uses builtin-* stable aliases for all Rust primitives (defense in depth).
+# Uses builtin-* stable aliases for Rust primitives (defense in depth).
+# Uses [match x []: true _: false] for null checks — builtin-null? was removed in
+# the type-predicates-to-tinct sprint; prelude null? is not reachable in this dict.
 #
 # Provides:
 #   build-http-request    — method + path + host -> raw HTTP/1.0 request String
@@ -63,7 +65,7 @@
       [http-request
         [http2-session cap [uri-origin url] []]
         "GET"
-        [builtin-str url.path [builtin-if [builtin-null? url.query] "" [builtin-str "?" url.query]]]
+        [builtin-str url.path [builtin-if [match url.query []: true _: false] "" [builtin-str "?" url.query]]]
         []
         ""]
       [builtin-if [builtin-eq url.scheme "http"]
@@ -81,7 +83,7 @@
   # Parse query string into a Dict of key-value pairs.
   # Returns empty dict if query is null.
   uri-params: [fn@Dict [let u@Url]
-    [builtin-if [builtin-null? u.query]
+    [builtin-if [match u.query []: true _: false]
       []
       [pairs: [builtin-split u.query "&"]
       [builtin-reduce [fn [let acc pair]
@@ -98,16 +100,16 @@
   # Return "scheme://host:port" (origin).
   # Port is omitted if null.
   uri-origin: [fn@String [let u@Url]
-    [builtin-if [builtin-null? u.port]
+    [builtin-if [match u.port []: true _: false]
       [builtin-str u.scheme "://" u.host]
       [builtin-str u.scheme "://" u.host ":" u.port]]]
 
   # Reconstruct full URI string from components.
   uri->string: [fn@String [let u@Url]
     [builtin-str u.scheme "://"
-      [builtin-if [builtin-null? u.host] "" u.host]
-      [builtin-if [builtin-null? u.port] "" [builtin-str ":" u.port]]
+      [builtin-if [match u.host []: true _: false] "" u.host]
+      [builtin-if [match u.port []: true _: false] "" [builtin-str ":" u.port]]
       u.path
-      [builtin-if [builtin-null? u.query] "" [builtin-str "?" u.query]]
-      [builtin-if [builtin-null? u.fragment] "" [builtin-str "#" u.fragment]]]]
+      [builtin-if [match u.query []: true _: false] "" [builtin-str "?" u.query]]
+      [builtin-if [match u.fragment []: true _: false] "" [builtin-str "#" u.fragment]]]]
 ]

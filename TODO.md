@@ -695,6 +695,26 @@ are already tracked in `runtime-v2-fix-regressions`. These 4 are not yet tracked
 - [x] `test_circular_dependency_cycle_path` — relaxed assertion for iterative CEK machine (cycle_path empty is expected)
 - [x] `test_instance_fd_consistency_violation` — re-ignored with updated reason
 
+### ci-regressions-2026-05-26: Fix pre-existing CI failures found during profiling-sigint-flush sprint
+
+Found during `just ci` run on 2026-05-26. Fixed in this session:
+
+- [x] `serde` moved from `[dev-dependencies]` to `[dependencies]` in `Cargo.toml` (`profiling.rs` uses `serde::Serialize` in production code)
+- [x] Added `clippy::disallowed_types` to two `#[allow]` annotations in `src/main.rs` profiling code
+- [x] Fixed 7 markdown errors in `doc/whatif/data-streaming.md` (MD031/MD040/MD032)
+- [x] Fixed stale build cache `lint-clippy` error by touching `src/typecheck.rs`
+- [x] Completed `json-delete-to-json` sprint: added `to-json`, `proxy?`, and helper functions to prelude; added `builtin-proxy?` Rust builtin; updated `cli/out/json.llt` and `cli/out/json-pretty.llt` to use `[call $to-json %]`; 59 CLI tests that were failing now pass (144 of 144 CLI tests pass)
+- [x] Fixed `standard_builtins_count` and `standard_builtins_contains_all`: adjusted count to 242 (after json-delete-to-json deleted builtin-to-json, then added builtin-proxy?)
+
+Pre-existing failures still open (tracked below in ci-regressions-2026-05-26-remaining):
+
+- [ ] `expr_flag_simple`, `eval_stdin_json_injection` — lazy pipeline evaluation issue with `%.x` thunk in `-e` flag
+- [ ] `cap_fs_read_only_write_fails` — cap-fs enforcement regression (`src/main.rs`)
+- [ ] `cap_file_no_fs_suppresses_injection` — `--cap-file` + `--no-fs` interaction (`src/main.rs`)
+- [ ] `no_fs_flag_blocks_include` — `--no-fs` should block include (`src/main.rs`)
+- [ ] `no_fs_flag_and_timeout_flag_conjunctive_enforcement` — conjunctive enforcement (`src/main.rs`)
+- [ ] `type_warning_explicit_unknown_emitted_on_stderr` — T011 warning not emitted (`src/typecheck.rs`)
+
 ### known-bugs-fix: Fix LSP expansion, docgen arity, eval_corpus OOM
 
 - [x] **`just docgen` fails with `[E020] arity mismatch`:** removed dead-code `[strings: [include %libdir "strings.llt"] path: [include %libdir "path.llt"]]` intermediate dict from `scripts/docgen.llt` — those bindings were never used downstream; the arity mismatch root cause in the multi-document pipeline remains uninvestigated (static analysis could not reproduce it) (`scripts/docgen.llt`)
@@ -799,31 +819,6 @@ Follow-up from builtin-privacy Phase 3. Three issues discovered when making `sam
 - [x] Run `tinct lint --strict` on any user-facing example scripts to verify full coverage — samples/basic.llt clean (T002/T003 only; T010 is span bug)
 - [x] Update `doc/11a-builtins.md` to document `builtin-trim`, `builtin-emit`, `builtin-env`
 - [x] Update builtin count in `standard_builtins_contains_all` test (was 284, now +3 = 301; already correct)
-
-### type-predicates-to-tinct: Replace Rust type-predicate builtins with tinct pattern matching
-
-**Motivation:** Minimum Rust builtin surface. Type predicates belong in tinct using `Pattern::TypeTag` match arms — the language's own type dispatch mechanism, which already soft-skips (`Ok(None)`) on mismatch. `type-of` is a stringly-typed escape hatch for dynamic user-facing introspection only.
-
-**Verified implementations** (from `src/eval.rs:match_pattern` + `src/value.rs:type_name()`):
-
-```llt
-int?:   [fn [let x] [match x Int:      true  _: false]]
-float?: [fn [let x] [match x Float:    true  _: false]]
-str?:   [fn [let x] [match x Str:      true  _: false]]  # Str is alias for String in TypeTag
-bool?:  [fn [let x] [match x Bool:     true  _: false]]
-dict?:  [fn [let x] [match x Dict:     true  _: false]]  # Overlay also returns "Dict" from type_name()
-seq?:   [fn [let x] [match x Seq:      true  _: false]]
-bytes?: [fn [let x] [match x Bytes:    true  _: false]]
-proxy?: [fn [let x] [match x Proxy:    true  _: false]]
-fn?:    [fn [let x] [match x Function: true  Builtin: true  _: false]]  # Value::Builtin → type_name() = "Builtin", NOT "Function"; needs two arms
-null?:  [fn [let x] [match x []:       true  _: false]]  # empty closed Dict pattern; TypeTag won't work — all dicts return "Dict" from type_name()
-```
-
-- [ ] Replace all type predicate prelude entries with the verified implementations above (`stdlib/prelude.llt`)
-- [ ] Update prelude hot-path code that calls `builtin-seq?` etc. directly to use the tinct match form (`stdlib/prelude.llt`)
-- [ ] Remove `builtin-int?`, `builtin-float?`, `builtin-str?`, `builtin-bool?`, `builtin-null?`, `builtin-dict?`, `builtin-fn?`, `builtin-seq?`, `builtin-proxy?`, `builtin-bytes?` from `standard_builtins()` (`src/builtins.rs`) and `src/builtins_meta.rs`
-- [ ] Remove corresponding `inject_builtin_aliases` entries from `src/type_env.rs`
-- [ ] Update `standard_builtins_contains_all` test count (`src/builtins.rs`)
 
 ### prelude-lines: Add `lines` as a tinct prelude function
 
@@ -1794,19 +1789,34 @@ Alternatively: use `materialize_sync` in force_step's inline Sequential handler 
 - [ ] Audit other high-frequency `EvalError` constructors that run inside `eval_dict_core`/`eval_core_expr` and populate source file there
 - [ ] Add corpus test: `tests/corpus/errors/e030_source_file.llt` — verifies filename appears in `[E030]` output
 
-### ndjson-lines-builtin: Add `lines` builtin for lazy line-by-line reading from a Handle
+### lazy-file-io: Replace `slurp` with fundamental lazy I/O primitives
 
-**Found:** 2026-05-26, while running `scripts/profile/trace.llt` against a large profiling NDJSON file.
+**Found:** 2026-05-26, while running `scripts/profile/trace.llt` against a large profiling NDJSON file. `slurp` hits the 10 MB cap; even removing the cap it buffers the entire file.
 
-`stdlib/cli/in/ndjson.llt` uses `[slurp %stdin]` to read all of stdin, then `[split "\n" ...]` to split into lines. `slurp` is inherently eager — it reads the entire file into a `String`, and has a 10 MB safety cap (E043 error). For profiling NDJSON output (which easily exceeds 10 MB), this approach fails.
+**Root cause:** `slurp` returns `String` — a fully-materialized value that must be entirely in memory when forced. There is no way to make it content-lazy. `builtin_lines` (coinductive `PendingBuiltin` at `src/builtins_io.rs:1501`) already exists and solves the problem — but isn't exposed in prelude and isn't used by `ndjson.llt`.
 
-`slurp` is correctly designed as an "all at once" operation and the 10 MB limit is a reasonable guard. The real fix is a `lines` builtin that lazily reads one line at a time from a Handle (the inner is already `Box<dyn BufRead>`, so `read_line` is available). The `ndjson.llt` codec should use `[lines %stdin]` instead of `[split "\n" [slurp %stdin]]`.
+**Design direction:** `slurp` should not be a Rust builtin. Provide two fundamental Rust I/O primitives (per cap-std/BufRead capabilities the Handle already has) and compose everything else in LLT prelude:
 
-- [ ] Add `builtin-lines: Handle → Seq<String>` — wraps `BufRead::lines()`, returns a lazy Seq where each element is a line (without trailing newline). Empty lines are included. EOF → empty Seq. (`src/builtins_io.rs`)
-- [ ] Add `lines` prelude wrapper (or register as public builtin)
-- [ ] Update `stdlib/cli/in/ndjson.llt` to use `[lines %stdin]` instead of `[split "\n" [slurp %stdin]]` — filter empty strings unchanged
-- [ ] Corpus test: feed multi-MB NDJSON to codec and verify all lines are parsed
-- **Files:** `src/builtins_io.rs`, `stdlib/cli/in/ndjson.llt`
+```
+Rust primitives:
+  read-line:  Handle → String | []         (BufRead::read_line — advances handle)
+  read-chunk: Handle × Int → Bytes | []    (Read::read — reads up to N bytes)
+
+LLT prelude:
+  lines:  [fn [let h]   [let l [read-line h]]  [if [= [] l] [] [seq l [lines h]]]]
+  chunks: [fn [let h n] [let c [read-chunk h n]] [if [= [] c] [] [seq c [chunks h n]]]]
+  slurp:  [fn [let h]   [join "\n" [collect [lines h]]]]   # convenience; still eager
+```
+
+- [ ] Add `builtin-read-line: Handle → String | []` — wraps `BufRead::read_line()`, strips trailing `\n`/`\r\n`, returns `[]` on EOF (`src/builtins_io.rs`)
+- [ ] Add `builtin-read-chunk: Handle × Int → Bytes | []` — wraps `Read::read()`, returns `[]` on EOF (`src/builtins_io.rs`)
+- [ ] Remove `builtin_slurp` from Rust; add `slurp` to prelude as LLT composition via `lines`
+- [ ] Add `lines`, `chunks`, `slurp` to prelude using the new primitives (existing `builtin_lines` can be kept or replaced — decide at sprint time based on perf needs)
+- [ ] Update `stdlib/cli/in/ndjson.llt` to use `[lines %stdin]` instead of `[split "\n" [slurp %stdin]]`
+- [ ] Update 2 prelude `slurp` call sites (lines 2784, 2812 — load/include path) to use new `slurp`
+- [ ] Remove or update `check_slurp` in `typecheck.rs` if `slurp` becomes a prelude function
+- [ ] Corpus test: `ndjson` codec with multi-MB input processes all lines without E043
+- **Files:** `src/builtins_io.rs`, `stdlib/prelude.llt`, `stdlib/cli/in/ndjson.llt`, `src/typecheck.rs`
 
 ### t013-unknown-constraint-discharge: T013 fires spuriously for constrained builtins called with Unknown-typed args [Minor]
 

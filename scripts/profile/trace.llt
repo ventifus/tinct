@@ -1,15 +1,16 @@
 # Perfetto Chrome Trace Event Format output
-# Input: %  — Seq of span dicts (tinct run -i json -o json scripts/profile/trace.llt < spans.json)
+# Input: %  — Seq of span dicts
+# Usage: tinct run -i ndjson -o json scripts/profile/trace.llt < spans.ndjson
 # Output: tinct dict — serialized to JSON by -o json flag; no codecs import needed
 
 [
   # Span name: builtin name if present, else source-file:start-end
   span-name: [fn [let s]
-    [if [= [] s.builtin]
-      [if [= s.source-file ""]
+    [if [= [] s.builtin-name]
+      [if [= [] s.source-file]
         [str "span-" s.id]
         [str s.source-file ":" s.source-start "-" s.source-end]]
-      s.builtin]]
+      s.builtin-name]]
 
   # Stall color coding for chrome://tracing (cname field)
   # green=normal, yellow=io, red=net, blue=channel, olive=timer

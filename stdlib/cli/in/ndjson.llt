@@ -2,4 +2,4 @@
 # Reads %stdin line-by-line, parses each non-empty line as JSON,
 # and produces a Seq of the parsed tinct values as %
 
-[map [fn [let line] [from-json line]] [filter [fn [let line] [not [= "" line]]] [lines %stdin]]]
+[map [fn [let line] [from-json line]] [filter [fn [let line] [not [= "" line]]] [split "\n" [slurp %stdin]]]]

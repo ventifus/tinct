@@ -10554,3 +10554,33 @@ If `-i` is not specified on the command line, there is no stdin input — period
 - [x] Remove `"to-json"` and `"builtin-to-json"` registrations from `standard_builtins()` in `src/builtins.rs`
 - [x] Delete `value_to_json` from `src/lib.rs` — zero callers after formatter change (`src/lib.rs`)
 - [x] Remove `value_to_json` from `pub` exports in `src/lib.rs`
+
+### type-predicates-to-tinct: Replace Rust type-predicate builtins with tinct pattern matching
+
+**Motivation:** Minimum Rust builtin surface. Type predicates belong in tinct using `Pattern::TypeTag` match arms — the language's own type dispatch mechanism, which already soft-skips (`Ok(None)`) on mismatch. `type-of` is a stringly-typed escape hatch for dynamic user-facing introspection only.
+
+**Verified implementations** (from `src/eval.rs:match_pattern` + `src/value.rs:type_name()`):
+
+```llt
+# Nominal — there is a distinct runtime type for each:
+int?:   [fn [let x] [match x Int:      true  _: false]]
+float?: [fn [let x] [match x Float:    true  _: false]]
+str?:   [fn [let x] [match x Str:      true  _: false]]  # Str is alias for String in TypeTag
+bool?:  [fn [let x] [match x Bool:     true  _: false]]
+dict?:  [fn [let x] [match x Dict:     true  _: false]]  # Overlay also returns "Dict" from type_name()
+seq?:   [fn [let x] [match x Seq:      true  _: false]]
+bytes?: [fn [let x] [match x Bytes:    true  _: false]]
+proxy?: [fn [let x] [match x Proxy:    true  _: false]]
+fn?:    [fn [let x] [match x Function: true  Builtin: true  _: false]]  # Value::Builtin → type_name() = "Builtin" not "Function"; needs two arms
+
+# Structural — null is not a nominal type; ANY empty dict is null, any non-empty dict is not.
+# The empty closed Dict pattern []: expresses this precisely. No Null TypeTag alias wanted —
+# it would misrepresent null as nominal when it is structural.
+null?:  [fn [let x] [match x []: true  _: false]]
+```
+
+- [x] Replace all type predicate prelude entries with the verified implementations above (`stdlib/prelude.llt`)
+- [x] Update prelude hot-path code that calls `builtin-seq?` etc. directly to use the tinct match form (`stdlib/prelude.llt`)
+- [x] Remove `builtin-int?`, `builtin-float?`, `builtin-str?`, `builtin-bool?`, `builtin-null?`, `builtin-dict?`, `builtin-fn?`, `builtin-seq?`, `builtin-proxy?`, `builtin-bytes?` from `standard_builtins()` (`src/builtins.rs`) and `src/builtins_meta.rs`
+- [x] Remove corresponding `inject_builtin_aliases` entries from `src/type_env.rs`
+- [x] Update `standard_builtins_contains_all` test count (`src/builtins.rs`)

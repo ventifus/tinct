@@ -1,8 +1,8 @@
-# What If: Tinct Streaming Mode (`-i stream` and `-o stream`)
+# What If: Tinct Stream Format — Stdlib-Closed Normal Form
 
 **State:** Proposal
 
-What would it take to give tinct composable streaming pipelines — programs chained together with lazy record-by-record data flow — without requiring JSON or external tools?
+What would it take to give tinct a native streaming format where records carry computational structure — not just ground values — so that two tinct programs connected by a pipe remain as lazy and composable as a single program?
 
 ## Current State
 
@@ -12,32 +12,29 @@ tinct uses JSON as the intermediary format for structured data moving between Ru
 # Collect
 tinct run --profile spans.json program.llt
 
-# Analyze — requires jq to convert NDJSON before tinct can read it
+# Analyze — requires jq to collect the stream before tinct can read it
 jq -s '.' spans.json | tinct run -i json scripts/profile/materialize.llt
 ```
 
-`src/profiling.rs` uses `#[derive(serde::Serialize)]` on `SpanRecord` and `serde_json::to_string_pretty` to write the span file. `src/main.rs` uses `serde_json::json!()` macros in the `describe` command. Wherever Rust needs to hand structured data to a tinct program, `serde_json` appears.
-
-Between tinct programs, there is no streaming mode at all. The output of one tinct program can be piped to another only via `-o json | -i json`, which requires the full output to be collected before the next program sees any of it.
+`src/profiling.rs` uses `#[derive(serde::Serialize)]` on `SpanRecord` and `serde_json::to_string_pretty`. The `describe` command uses `serde_json::json!()` macros. Between tinct programs, there is no streaming mode at all: connecting two programs requires full serialization to JSON and full deserialization back, buffering the entire dataset before the downstream program sees any of it.
 
 ### What's Missing
 
-1. **A streaming input mode.** `-i json` requires the entire input to be a single JSON value. Reading from a long-running process, pipe, or TCP connection requires `jq -s '.'` to collect the full stream before tinct sees any of it.
-2. **Lazy record-by-record consumption.** An analysis script that needs only the first ten spans buffers the entire file. There is no input mode that delivers a lazy Seq driven by the source.
-3. **A streaming output mode.** `emit` writes raw strings; there is no way to emit structured records lazily. `-o json` collects and serializes the entire return value; it does not produce NDJSON line-by-line as records arrive.
-4. **Composable tinct pipelines.** Two tinct programs cannot be connected with a streaming handoff: `tinct run filter.llt | tinct run analyze.llt` has no efficient mode that keeps both sides lazy.
-5. **A Rust-side serializer with zero dependencies.** Writing structured data from Rust requires `serde` + `serde_json`; redesigning the profiling flush path to avoid it has required multiple iterations.
+1. **A streaming input mode.** `-i json` requires the full input to be a single JSON value. Long-running processes, pipes, and TCP connections require `jq -s '.'` to collect the full stream first.
+2. **A streaming output mode.** There is no way to emit records lazily as they are produced for downstream consumption.
+3. **Preservation of computational structure.** JSON serialization forces every value to a ground scalar. A filter predicate, a partially applied function, a range expression — all are reduced to their output values. The downstream program cannot see or exploit the structure of how those values were produced.
+4. **Composable tinct pipelines.** `tinct run filter.llt | tinct run analyze.llt` has no efficient mode that keeps both sides lazy.
+5. **A Rust-side serializer with zero dependencies.** Writing structured data from Rust currently requires `serde` + `serde_json`.
 
-## Why Streaming Mode Matters for tinct
+## Why Stream Format Matters for tinct
 
-**tinct programs compose lazily.** `-i stream | -o stream` connects two tinct programs with a lazy channel: the upstream program emits one record at a time; the downstream program processes each as it arrives. Neither side buffers the full dataset.
+**Records carry structure, not just values.** A stream record is a tinct expression — potentially containing stdlib function calls, lazy sequences, reconstructed closures — that the consumer evaluates in their own context. Two programs connected by a stream pipe are as composable as a single program.
 
-```sh
-tinct run -i stream -o stream filter.llt < raw.llt \
-  | tinct run -i stream summarize.llt
-```
+**Computational structure survives the pipe.** A filter predicate with an inlined threshold arrives at the consumer as `[filter [fn [let x] [> x 42]] items]` — a call they can compose lazily. JSON collapses this to a pre-computed list.
 
-**serde_json disappears from the profiling path.** The background flush thread writes span records with `format_span_tinct(&span, &mut buf)` — fixed-schema string formatting with no derive macros and no dependencies. `Arc<EvalContext>` does not need to be shared with the thread.
+**Output formatters are just tinct programs.** `-o stream` is `stdlib/cli/out/stream.llt` — a concurrent tinct task that drains the emit channel, forces the lazy return value, and serializes both. Users write their own output formatters following the same three-step contract. No hardcoded magic in `emit` or the evaluator.
+
+**serde_json disappears from the profiling path.** The background flush thread writes span records with `format_span_tinct` — fixed-schema string formatting with no derive macros and no dependencies. `Arc<EvalContext>` does not need to be shared with the thread.
 
 **External tools are not required.** The profiling pipeline becomes:
 
@@ -46,49 +43,254 @@ tinct run --profile spans.llt program.llt
 tinct run -i stream scripts/profile/materialize.llt < spans.llt
 ```
 
-No jq. No intermediate format conversion.
-
-**Streaming input is truly lazy.** `%` in `-i stream` mode is a lazy Seq: each `tail` force reads the next expression from the source. `take 10` from a million-record file reads exactly ten records. A live analysis script running against `tail -f spans.llt` consumes spans as they arrive.
-
-**Analysis scripts are already prepared.** Scripts requiring two passes already call `collect` explicitly — `materialize.llt` opens with `spans: [collect %]`. Single-pass scripts stay fully lazy with no changes.
-
 **Any readable or writable source works.** `BufRead`/`Write` are the only requirements: stdin, a file, a named pipe, or a TCP connection.
 
 ## Design
 
-### Streaming Input Mode (`-i stream`)
+### Stdlib-Closed Normal Form
 
-When `--input stream` (or `-i stream`) is specified, `%` is bound to a lazy Seq backed by a `StreamReader`. The Seq is not pre-collected: each `tail` force reads and evaluates the next tinct expression from the source.
+The central concept of the stream format is the **stdlib-closed normal form** (SCN) of a value.
 
-The input is **full tinct** — any valid tinct expression is accepted, evaluated in the standard library environment with the same capability sandboxing as any tinct program. There is no restricted subset. A stream record can call stdlib functions, use `include`, or perform any operation the surrounding capability grants permit.
+An expression is *stdlib-closed* if every free variable in it refers to a stdlib definition — a name bound in prelude or any stdlib module. The SCN of a value V is the minimal stdlib-closed tinct expression that evaluates (in any tinct environment with the standard library) to the same value as V.
 
-```llt
-# spans.llt — written by profiling; each line is a plain tinct dict literal
-[id: 0  source-file: "foo.llt"  start-us: 100  end-us: 200  stall-us: 0  stall-kind: []]
-[id: 1  source-file: "foo.llt"  start-us: 210  end-us: 350  stall-us: 0  stall-kind: []]
-[id: 2  builtin: "builtin-map"  start-us: 355  end-us: 900  stall-us: 0  stall-kind: []]
+The SCN algorithm is defined by cases:
+
+| Value | SCN |
+|-------|-----|
+| `Int(n)` | `n` |
+| `Float(f)` | `f` |
+| `Bool(b)` | `true` / `false` |
+| `String(s)` | `"s"` with standard escapes (`\\` `\"` `\n` `\t`) |
+| `Dict([])` | `[]` |
+| `Dict(entries)` | `[k: SCN(v)  ...]` for each entry |
+| `Seq { head, tail }` | `[SCN(head) \| SCN(tail)]` |
+| `Builtin(name)` | `name` — builtins are always stdlib |
+| `Function(params, body, env)` | `[fn [let params] body']` where body' substitutes each non-stdlib free variable `x` with `SCN(env.lookup(x))` |
+| `Handle` / `*Cap` | `[]` with stderr warning |
+
+For an unevaluated thunk with expression E and environment env: substitute each non-stdlib free variable in E with `SCN(env.lookup(var))`. Stdlib references are left as-is; non-stdlib function calls are rewritten by inlining, not by forcing.
+
+**Example — the filter case:**
+
+```tinct
+[
+  threshold: 42
+  items:     [0: 1  1: 2  2: 3  3: 4  4: 5]
+]
+[filter [fn [let x] [> x threshold]] items]
 ```
 
-This produces a lazy Seq of three dicts, indistinguishable from the Seq produced by `-i json` reading the equivalent JSON array. Existing analysis scripts require no changes.
+SCN computation:
 
-`---` document separators are a no-op in stream mode. All expressions across all documents are collected into one flat Seq. `---` may be used as a visual section separator without affecting evaluation.
+- `filter` → stdlib, left as reference
+- `[fn [let x] [> x threshold]]` → user closure, env has `threshold = 42`:
+  - body `[> x threshold]`: `>` is stdlib (left), `x` is param (left), `threshold` → inline `42`
+  - SCN: `[fn [let x] [> x 42]]`
+- `items` → non-stdlib → `[0: 1  1: 2  2: 3  3: 4  4: 5]`
 
-EOF produces `Value::Dict(IndexMap::new())` — the tinct nil sentinel — terminating the Seq.
+Result:
 
-### Streaming Output Mode (`-o stream`)
+```tinct
+[filter [fn [let x] [> x 42]] [0: 1  1: 2  2: 3  3: 4  4: 5]]
+```
 
-`emit` is the primitive for streaming output. When `-o stream` is active, each call to `emit value` serializes `value` as a tinct expression and writes it as one line to stdout — instead of writing `value` as a raw string. This extends `emit`'s existing role as the side-effect output mechanism:
+The consumer receives a call to `filter` they can compose, `take 10`, or pass to further analysis. `-o json` would have forced this to a pre-computed list.
 
-| flag | `emit value` behaviour |
-|------|------------------------|
-| `-o raw` (default) | writes `value` as a string (current behaviour) |
-| `-o stream` | writes `value_to_tinct(value)` as one expression per line |
-| `-o json` | writes `value_to_json(value)` as one JSON object per line (NDJSON) |
+### `emit` — the new prelude implementation
 
-A program emits records as it produces them — lazily, one at a time. No Seq required.
+`emit` currently aliases `builtin-emit` directly (a Rust function that writes a String to stdout). The new implementation replaces this with a channel send:
 
-```llt
-# filter.llt — emit only stalled spans; consumer sees records as they arrive
+```tinct
+# stdlib/prelude.llt (replacing line 2147)
+emit@[doc: "Emit a value to the output channel"]:
+  [fn@Null [let v@Any] [send %emit v]]
+```
+
+`%emit` is injected by the CLI into every program's environment before evaluation. `emit v` sends `v` to that channel; the formatter on the other end decides how to serialize it. Call sites are agnostic to the serializer — they just `emit`.
+
+The CLI wires the user program's `%emit` to the output program's `%emit`, and injects `%stdout` (a writable handle) into the output program:
+
+```text
+user program  ──%emit──▶  output program  ──%stdout──▶  actual stdout
+  (producer)                (consumer)
+```
+
+- User program calls `emit v` = `[send %emit v]`. It is an **emit producer**.
+- Output program calls `[recv %emit ...]` to consume values. It is an **emit consumer**.
+- Output program writes to `%stdout` (a writable handle). It never calls `emit`.
+
+The CLI injects `%stdout` as a writable handle into every output program. Output programs are **emit consumers** — they receive from `%emit` and write to `%stdout`. They never call `emit` themselves.
+
+When no `-o` flag is given, the default output program is `stdlib/cli/out/none.llt`: it drains `%emit` discarding all values, and forces `%` discarding all elements. Programs evaluate fully (side effects and `emit` calls fire normally) but nothing is printed. Output requires an explicit `-o` flag.
+
+### `to-tinct` — the SCN function
+
+`to-tinct` is a new prelude function backed by a Rust implementation (`value_to_tinct` in `src/stream.rs`). It takes any tinct value and returns its SCN as a String:
+
+```tinct
+[to-tinct [filter [fn [let x] [> x 42]] items]]
+# → "[filter [fn [let x] [> x 42]] [0: 1  1: 2  2: 3  3: 4  4: 5]]"
+```
+
+`to-tinct` is a regular stdlib function. Any tinct program or output formatter can call it directly. It is not magic — it is the serializer, exposed.
+
+### Streaming Input — `stdlib/codecs/stream.llt`
+
+The stream codec is implemented entirely in tinct, composing three existing primitives:
+
+- `str-chars s` — already in prelude; returns a lazy Seq of single-character strings
+- `lines handle` — already in prelude; returns a lazy Seq of line strings from a readable handle
+- `eval string` — already a builtin; evaluates a tinct string in the stdlib environment
+
+The codec provides two functions:
+
+**`bracket-count`** — net open bracket depth in a string, accounting for string literals and comments:
+
+```tinct
+bracket-count: [fn@Int [let s@String]
+  [reduce
+    [fn [let st ch]
+      [if st.done  st
+        [if st.escape  [st | [escape: false]]
+          [if st.in-string
+            [if [= ch "\\"]  [st | [escape: true]]
+            [if [= ch "\""]  [st | [in-string: false]]
+                             st]]
+            [if [= ch "#"]   [st | [done: true]]
+            [if [= ch "["]   [st | [depth: [+ st.depth 1]]]
+            [if [= ch "]"]   [st | [depth: [- st.depth 1]]]
+            [if [= ch "\""]  [st | [in-string: true]]
+                             st]]]]]]]]
+    [depth: 0  in-string: false  escape: false  done: false]
+    [str-chars s]].depth]
+```
+
+**`balanced-exprs`** — groups a Seq of strings into complete balanced tinct expressions, skipping blank lines, comment lines, and `---` separators:
+
+```tinct
+balanced-exprs: [fn [let lines]
+  [letrec [
+    scan: [fn [let ls acc depth]
+      [if [= [] ls]
+        [if [= "" [trim acc]] []
+          [cons acc []]]
+        [let line [head ls]
+        [let rest [tail ls]
+        [let t    [trim line]
+        [if [or [= "" t] [starts-with? "#" t] [= "---" t]]
+          [scan rest acc depth]
+          [let d [+ depth [bracket-count line]]
+          [let a [str acc line "\n"]
+          [if [and [<= d 0] [not [= "" [trim a]]]]
+            [cons a [scan rest "" 0]]
+            [scan rest a d]]]]]]]]]
+  ]
+  [scan lines "" 0]]]
+```
+
+The complete `stdlib/codecs/stream.llt` exports both:
+
+```tinct
+[
+  bracket-count: ...   # as above
+  balanced-exprs: ...  # as above
+]
+```
+
+### Streaming Input Formatter — `stdlib/cli/in/stream.llt`
+
+```tinct
+# Stream input formatter
+# Reads %stdin as a lazy Seq of tinct expressions, evaluated in stdlib env.
+[
+  stream: [include %libdir "codecs/stream.llt"]
+  [map eval [stream.balanced-exprs [lines %stdin]]]
+]
+```
+
+`---` separators are skipped by `balanced-exprs`. EOF terminates the Seq. Each element is evaluated by `eval` in the stdlib environment — full tinct, no restricted subset.
+
+### Streaming Output: `emit`, `%emit`, and the Output Program Contract
+
+The CLI runs the user program and the output program as **concurrent tasks**. The user program's `%emit` is wired to the output program's `%emit`. The CLI injects `%stdout` into the output program and passes the user program's lazy return value as the output program's `%`.
+
+```text
+user program  ──%emit──▶  output program  ──%stdout──▶  actual stdout
+ (emit producer)           (emit consumer)
+```
+
+`emit v` in user code sends `v` to `%emit`. Call sites are agnostic to the serializer — the output program decides how to write each received value to `%stdout`.
+
+#### Output Program Contract
+
+Every output program receives two inputs:
+
+- **`%`** — the lazy return value of the previous pipeline stage. Forcing this kicks off the lazy evaluation cascade, driving any `map`/`filter`/`each` computation. The output program is responsible for this forcing — without it, a program that returns a filtered Seq never evaluates.
+- **`%emit`** — the emit channel. Values arrive here as the user program evaluates and calls `emit`.
+
+These must be handled **concurrently**: forcing `%` may itself trigger `emit` calls (e.g., `each` with `emit` inside), so the channel drain must run simultaneously or deadlock.
+
+The three responsibilities:
+
+1. **Drain `%emit`** — receive emitted values as they arrive; serialize each to stdout.
+2. **Force `%`** — materialize the lazy return value to drive the evaluation cascade; serialize any non-nil Seq elements or scalar return value.
+3. **Await both** before exiting.
+
+#### `stdlib/cli/out/stream.llt`
+
+```tinct
+[
+  # 1. Drain the emit channel concurrently.
+  #    Values arrive here as the user program evaluates and calls [emit v].
+  drain: [task
+    [loop-select
+      [recv %emit [fn [let v]
+        [write %stdout [to-tinct v]]]]]]
+
+  # 2. Force the return value to drive the lazy evaluation cascade.
+  #    Non-nil elements of a Seq return value are also serialized.
+  [if [seq? %]
+    [each [fn [let x]
+      [if [not [= [] x]]
+        [write %stdout [to-tinct x]]
+        []]] %]
+    [if [not [= [] %]]
+      [write %stdout [to-tinct %]]
+      []]]
+
+  # 3. Wait for drain to finish consuming any emits triggered during forcing.
+  [await drain]
+]
+```
+
+#### `stdlib/cli/out/json.llt` (updated for NDJSON)
+
+```tinct
+[
+  drain: [task
+    [loop-select
+      [recv %emit [fn [let v]
+        [write %stdout [to-json v]]]]]]
+
+  [if [seq? %]
+    [each [fn [let x]
+      [if [not [= [] x]]
+        [write %stdout [to-json x]]
+        []]] %]
+    [if [not [= [] %]]
+      [write %stdout [to-json %]]
+      []]]
+
+  [await drain]
+]
+```
+
+A user writing a custom output formatter follows the same contract: start a `drain` task on `%emit`, force `%`, await the task. Only the serializer changes.
+
+#### Programs emit records lazily
+
+```tinct
+# filter.llt — emit matching spans; forcing % drives the each+emit cascade
 [each [fn [let s]
   [if [> s.stall-us 0]
     [emit s]
@@ -96,77 +298,37 @@ A program emits records as it produces them — lazily, one at a time. No Seq re
 ```
 
 ```sh
-# Lazy pipeline: filter feeds analyze record-by-record
 tinct run -i stream -o stream filter.llt < spans.llt \
-  | tinct run -i stream scripts/profile/materialize.llt
+  | tinct run -i stream analyze.llt
+```
 
-# NDJSON output: compatible with jq downstream
+### Pipeline Composition
+
+```sh
+# Lazy tinct → tinct pipeline
+tinct run -i stream -o stream filter.llt < spans.llt \
+  | tinct run -i stream analyze.llt
+
+# Stream → jq: use -o json for NDJSON-compatible output
 tinct run -i stream -o json filter.llt < spans.llt | jq .stall-us
+
+# Custom output formatter: user writes their own
+tinct run -i stream -o my-formatter filter.llt < spans.llt
+
+# Profiling: Rust writer → tinct reader
+tinct run --profile spans.llt program.llt
+tinct run -i stream scripts/profile/materialize.llt < spans.llt
 ```
 
-`-o stream` is the exact complement of `-i stream`: a stream written by one tinct program can be read by another unchanged.
+Each `-o stream | -i stream` stage receives stdlib-closed expressions, evaluates them, and returns a new Seq for the next formatter to process. Structure flows through the pipeline rather than being collapsed at each boundary.
 
-For programs that return a value rather than using `emit`, `-o stream` treats the return value as the only record and writes it as a single expression (same as `-o json` writes a single JSON object for non-emit programs). If the return value is a Seq, each element is written as a separate record.
+### Rust-Side Serializer
 
-If a value is not serializable (a function, handle, or capability), that record is skipped with a warning to stderr.
-
-### StreamReader
-
-`StreamReader<R: BufRead>` wraps any `BufRead` source and parses one balanced tinct expression at a time. It reuses `bracket_count` from `src/repl.rs` — the same bracket-depth counter the REPL uses to detect complete input:
+For Rust programs writing stream records (profiling, describe), `format_span_tinct` is the degenerate case of SCN: a dict of scalar values has no free variables and is trivially stdlib-closed.
 
 ```rust
-struct StreamReader<R: BufRead> { inner: R }
+// src/stream.rs
 
-impl<R: BufRead> StreamReader<R> {
-    fn next_expr(&mut self) -> Option<Result<Value, EvalError>> {
-        let mut buf = String::new();
-        let mut depth: i32 = 0;
-        loop {
-            let mut line = String::new();
-            match self.inner.read_line(&mut line) {
-                Ok(0) if buf.trim().is_empty() => return None,   // clean EOF
-                Ok(0) => return Some(Err(/* incomplete expression */)),
-                Ok(_) => {}
-                Err(e) => return Some(Err(e.into())),
-            }
-            let trimmed = line.trim();
-            if trimmed.starts_with('#') || trimmed == "---" {
-                continue;
-            }
-            depth += bracket_count(&line);
-            buf.push_str(&line);
-            if depth <= 0 && !buf.trim().is_empty() {
-                return Some(eval_stream_expr(&buf, &stdlib_env, &ctx));
-            }
-        }
-    }
-}
-```
-
-`eval_stream_expr` runs the full tinct evaluation pipeline on `buf` — parse, expand, desugar, resolve, eval — using the shared `EvalContext` and stdlib environment. Each stream record is evaluated within the same context, so records accumulate into the thunk arena and can reference stdlib bindings.
-
-The reader is wrapped in `Arc<Mutex<StreamReader<R>>>` so it can be shared across the lazy Seq spine.
-
-### Value-to-Tinct Serializer (`value_to_tinct`)
-
-`-o stream` requires serializing a `Value` back to tinct source syntax. This is a new Rust function, not covered by the existing `value_to_json` or `value_to_display_string`:
-
-| Value | Output |
-|-------|--------|
-| `Int(42)` | `42` |
-| `Float(3.14)` | `3.14` |
-| `Bool(true)` | `true` |
-| `String("hello\nworld")` | `"hello\nworld"` |
-| `Dict([])` | `[]` |
-| `Dict([k: v, ...])` | `[k: v  k2: v2]` with string keys; int keys as `0: v` |
-| `Seq { head, tail }` | not valid in element position — error |
-| `Function`, `Handle`, `*Cap` | skipped with stderr warning |
-
-String values use the same four escape sequences as the input (`\\`, `\"`, `\n`, `\t`). The serializer is depth-limited (matching the existing `value_to_json` limit) to prevent runaway output for deeply nested structures.
-
-`value_to_tinct` is the generic form. For Rust-side writing (profiling, describe), schema-specific formatters like `format_span_tinct` are more efficient — ~40 lines of `buf.push_str` calls with no `Value` allocation:
-
-```rust
 fn write_tinct_str(s: &str, buf: &mut String) {
     buf.push('"');
     for ch in s.chars() {
@@ -180,37 +342,169 @@ fn write_tinct_str(s: &str, buf: &mut String) {
     }
     buf.push('"');
 }
+
+fn write_tinct_opt(val: Option<impl Display>, none: &str, buf: &mut String) {
+    match val {
+        Some(v) => buf.push_str(&v.to_string()),
+        None    => buf.push_str(none),
+    }
+}
+
+// General SCN serializer for Value — used by `to-tinct` builtin.
+// Closure reconstruction (Value::Function) is handled by walking the body
+// expression and substituting non-stdlib env bindings.
+pub fn value_to_tinct(val: &Value, ctx: &Arc<EvalContext>) -> String { ... }
+
+// Schema-specific fast path for profiling — no Value allocation.
+pub fn format_span_tinct(s: &SpanRecord) -> String {
+    let mut buf = String::new();
+    buf.push_str("[id: ");
+    buf.push_str(&s.id.to_string());
+    buf.push_str("  materialize-parent: ");
+    write_tinct_opt(s.materialize_parent, "[]", &mut buf);
+    // ... all 14 fields ...
+    buf.push(']');
+    buf
+}
 ```
+
+`format_span_tinct` requires no `EvalContext` — the background flush thread calls it directly and appends to the open file handle.
 
 ## What Would Change
 
-### `src/main.rs`
+### `stdlib/codecs/stream.llt` (new)
 
-**Current:** `-i json` reads stdin as a JSON value and binds to `%`. `-o json` serializes the result to JSON. No streaming modes.
+**Current:** Nothing.
 
-**Proposed:** `-i stream` creates a `StreamReader` wrapping the source, builds the initial lazy Seq, and binds to `%`. `-o stream` and `-o json` make `emit value` write structured records (`value_to_tinct` and `value_to_json` respectively) rather than raw strings. For programs that return a value without using `emit`, `-o stream` serializes the return value as a tinct expression; `-o json` behaviour is unchanged. The `--profile` output path writes tinct dict literals via `format_span_tinct` rather than `serde_json::to_string_pretty`.
+**Proposed:** `bracket-count` and `balanced-exprs` as defined above. Pure tinct — no new Rust builtins. Both functions are independently useful for REPL-like tools, syntax highlighters, and custom stream parsers.
 
-**Impact:** Minor — ~50 lines for the two new modes; existing `-i json` / `-o json` paths unchanged.
+**Impact:** New file, ~40 lines.
 
-### `src/profiling.rs`
+### `stdlib/cli/in/stream.llt` (new)
 
-**Current:** `#[derive(serde::Serialize)]` on `SpanRecord`; `snapshot_to_json_string` calls `serde_json::to_string_pretty`; the background flush thread requires `Arc<EvalContext>` to reach tinct's JSON serializer.
+**Current:** Nothing.
 
-**Proposed:** Remove `#[derive(serde::Serialize)]`. Replace `snapshot_to_json_string` with `format_span_tinct(s: &SpanRecord) -> String`. Background flush thread needs no `Arc<EvalContext>`. The `profiling-sigint-flush` sprint simplifies substantially.
+**Proposed:** `[map eval [stream.balanced-exprs [lines %stdin]]]` — one expression, no new builtins. Activated by `-i stream`.
 
-**Impact:** Minor — contained to `src/profiling.rs` and the flush thread in `src/main.rs`.
+**Impact:** New file, ~4 lines.
+
+### `stdlib/cli/out/` — all formatters rewritten
+
+Every existing output formatter follows the old contract: receive `%`, compute a String, return it; the CLI materializes and prints. All must be rewritten to the new contract: drain `%emit`, force `%`, emit each serialized value, await.
+
+The shared rewrite pattern — substituting only the serializer. Output programs are emit consumers: they receive from `%emit` and write to `%stdout`. They never call `emit`:
+
+```tinct
+[
+  drain: [task
+    [loop-select
+      [recv %emit [fn [let v]
+        [write %stdout [SERIALIZER v]]]]]]
+
+  [if [seq? %]
+    [each [fn [let x]
+      [if [not [= [] x]]
+        [write %stdout [SERIALIZER x]]
+        []]] %]
+    [if [not [= [] %]]
+      [write %stdout [SERIALIZER %]]
+      []]]
+
+  [await drain]
+]
+```
+
+**`stdlib/cli/out/stream.llt` (new)** — `SERIALIZER = to-tinct`. One new file, ~15 lines.
+
+**`stdlib/cli/out/json.llt` (rewrite)** — `SERIALIZER = to-json`. Currently `[call $builtin-to-json %]`, returning a String. Rewritten to the concurrent contract. Produces NDJSON: one JSON value per emit, one JSON value per Seq element from the return value.
+
+**`stdlib/cli/out/json-pretty.llt` (rewrite)** — same as json but with `to-json-pretty`. Produces pretty-printed NDJSON.
+
+**`stdlib/cli/out/raw.llt` (rewrite)** — currently: if String return → write it; if Seq → `[join "\n" %]`; else error. New: `SERIALIZER = [fn [let v] [if [str? v] v [str v]]]` — emit each received value as its string representation. The explicit Seq-error is removed; Seq elements arrive naturally through the drain loop.
+
+**`stdlib/cli/out/llt.llt` (rewrite)** — `SERIALIZER = llt-repr`. Currently `[call $llt-repr %]`. Rewritten to emit `[llt-repr v]` for each record.
+
+**`stdlib/cli/out/yaml.llt` (rewrite)** — currently inline formatter returning `[yaml %]` string. Rewritten: inline `yaml` function definition remains; `SERIALIZER = yaml`. Each emitted/returned value is formatted as YAML and written.
+
+**`stdlib/cli/out/csv.llt` (rewrite)** — currently `[csv %]`. Note: CSV has no natural per-record form (the header depends on knowing all rows). The rewrite emits a header line from the first received record, then data lines for all subsequent records — enabling true streaming CSV from a Seq. SERIALIZER is replaced by a stateful header-tracking approach.
+
+**`stdlib/cli/out/toml.llt` (rewrite)** — currently `[toml %]`. Rewritten to `SERIALIZER = toml`.
+
+**`stdlib/cli/out/env.llt` (rewrite)** — currently `[env %]`. Rewritten to `SERIALIZER = env`.
+
+**`stdlib/cli/out/none.llt` (rewrite)** — currently returns `""` and is only invoked by explicit `-o none`. New role: **the default output program** when no `-o` flag is given. Drains `%emit` discarding all values, forces `%` discarding all elements (driving the lazy evaluation cascade for side effects), writes nothing to `%stdout`.
+
+```tinct
+# stdlib/cli/out/none.llt
+[
+  drain: [task
+    [loop-select
+      [recv %emit [fn [let v] []]]]]
+
+  [each [fn [let x] []] %]   # force % to drive evaluation cascade
+
+  [await drain]
+]
+```
+
+**Impact:** All ten formatters rewritten. Old "return a String" contract deleted entirely.
+
+### `to-tinct` in prelude
+
+**Current:** No `to-tinct` function.
+
+**Proposed:** `to-tinct: builtin-to-tinct` — prelude wrapper over `value_to_tinct` Rust function in `src/stream.rs`. Returns the SCN of any value as a String. No mode magic — it is a plain function callable anywhere.
+
+**Impact:** New builtin registration + prelude entry.
 
 ### `src/stream.rs` (new)
 
-**Current:** `bracket_count` and `is_balanced` are private to `src/repl.rs`.
+**Current:** Nothing.
 
-**Proposed:** New `src/stream.rs` containing `StreamReader<R: BufRead>`, `value_to_tinct`, `write_tinct_str`, and related helpers. `bracket_count` in `src/repl.rs` becomes `pub(crate)`.
+**Proposed:** `value_to_tinct(val: &Value, ctx: &Arc<EvalContext>) -> String` (the general SCN serializer), `format_span_tinct(s: &SpanRecord) -> String` (the profiling fast path), and string helper functions (`write_tinct_str`, `write_tinct_opt`). `bracket_count` in `src/repl.rs` becomes `pub(crate)` for reference but is not used by this module — `bracket-count` is implemented in tinct.
 
-**Impact:** Minor — new file, no behavioral change to REPL.
+**Impact:** New file, ~150 lines.
+
+### `src/main.rs` — emit channel wiring and deletion of special-case output paths
+
+**Current:** Three separate code paths all do materialization and serialization in Rust:
+
+1. **`run_eval` output path (~line 2252):** When `-o` is present, materializes the formatter's return value, asserts it is a `Value::String`, and prints it directly. Comment: *"the pipeline's last expression is an output formatter that returns a String."* The formatter is expected to return a fully-rendered String.
+
+2. **`run_literate_eval` (~line 2941):** Always materializes the return value, calls `visit_value(&val, &eval_ctx, 0, &JsonVisitor, ...)`, then `serde_json::to_string_pretty`. Comment: *"Always serialize to JSON (emit is purely additive)."*
+
+3. **`run_literate_weave` per-block (~line 3305):** Same `visit_value` + `JsonVisitor` + `serde_json::to_string` per block. Comment: *"Always serialize the result to JSON (emit is additive)."*
+
+All three embed the assumption that the CLI is responsible for output serialization and that `emit` is a side-effect bolted on top. All three must be deleted.
+
+**Proposed:** The CLI creates `%emit` and `%emit` channels, injects them into both the user program and the output formatter, and spawns both as concurrent tasks. The CLI's job after launching is to wait for both tasks to complete — nothing more. No materialization, no serialization, no String assertion.
+
+Specifically deleted:
+
+- The `--eval` flag and its handling (`force_eval` branch in `run_eval`) — redundant with the default `none.llt` output program
+- The `Value::String` match + `print!` in `run_eval` (and the associated error for non-String formatter return)
+- The `materialize` + `visit_value` + `serde_json::to_string_pretty` block in `run_literate_eval`
+- The `visit_value` + `serde_json::to_string` block in `run_literate_weave`
+- The `JsonVisitor` and `visit_value` imports in `main.rs` (no longer needed in CLI paths)
+- The `serde_json::to_string_pretty` / `serde_json::to_string` calls in all output paths
+
+`run_literate_eval` and `run_literate_weave` gain the same channel-wiring treatment as `run_eval`.
+
+**Impact:** Moderate — replaces the sequential "eval → materialize → print" model with "eval + formatter as concurrent tasks". The output formatters (`cli/out/*.llt`) become the sole owners of serialization and stdout writing.
+
+**Note on `--eval`:** The `--eval` flag is made redundant by this model — running without `-o` already uses `none.llt`, which drains `%emit` and forces `%` without writing anything. `--eval` must be removed from the CLI and all documentation.
+
+### `src/profiling.rs`
+
+**Current:** `#[derive(serde::Serialize)]` on `SpanRecord`; `snapshot_to_json_string` calls `serde_json::to_string_pretty`.
+
+**Proposed:** Remove `#[derive(serde::Serialize)]`. Replace `snapshot_to_json_string` with `format_span_tinct`. Background flush thread is self-contained.
+
+**Impact:** Minor — contained to `src/profiling.rs` and the flush thread in `src/main.rs`.
 
 ### `scripts/profile/` and `justfile`
 
-**Current:** Profile targets pipe through `jq -s '.'` before `tinct run -i json`. Analysis script headers reference `-i json`.
+**Current:** Profile targets pipe through `jq -s '.'` before `tinct run -i json`.
 
 **Proposed:**
 
@@ -219,26 +513,26 @@ tinct run --profile spans.llt program.llt
 tinct run -i stream scripts/profile/materialize.llt < spans.llt
 ```
 
-Analysis script headers updated to reference `-i stream`. `jq` dependency removed from all profile targets.
+`jq` dependency removed. Analysis script headers updated.
 
-**Impact:** Minor — justfile target changes only; script logic is unchanged.
+**Impact:** Minor — justfile only; script logic unchanged.
 
 ### `doc/12-tooling.md`
 
-**Current:** Profiling section references `spans.json` and the `jq -s '.'` pipeline.
+**Current:** References `spans.json` and `jq -s '.'`.
 
-**Proposed:** Updated to use `.llt` extension and `-i stream` directly. NDJSON/jq workaround removed.
+**Proposed:** Updated to `.llt` extension and `-i stream`. NDJSON/jq workaround removed.
 
 **Impact:** Minor — documentation update.
 
 ## Prerequisites
 
-None. The full tinct evaluation pipeline already handles any expression that would appear in a stream record. `bracket_count` already exists in `src/repl.rs`. `StreamReader` and `value_to_tinct` are new Rust code with no new dependencies beyond `std`.
+Every primitive used by the input formatter (`str-chars`, `lines`, `eval`, `map`, `filter`, `starts-with?`, `trim`, `str`, `reduce`) already exists. The stream codec is pure tinct. The output formatter uses `loop-select`, `recv`, and channel primitives from the async concurrency layer; `send` and `channel` are already registered builtins.
 
 The `json-remove-serde-dep` sprint depends on this: `src/profiling.rs` is the last significant serde_json user after the other json-* sprints complete.
 
 ## References
 
-- Peyton Jones, S. (1987). *The Implementation of Functional Programming Languages.* Prentice Hall. — Lazy I/O: a Seq whose spine is driven by the consumer, not the producer; the model for the lazy `tail` thunk backing `-i stream`.
-- ndjson.org (2014). *Newline Delimited JSON.* — The streaming JSON convention this replaces for tinct data handoffs; one record per line, readable incrementally.
-- The Rust standard library. `BufRead::read_line`. — The primitive used by `StreamReader::next_expr` to accumulate lines until bracket balance is achieved.
+- Peyton Jones, S. (1987). *The Implementation of Functional Programming Languages.* Prentice Hall. — Lazy I/O: a Seq whose spine is driven by the consumer; the model for the lazy `tail` thunk in the stream reader. Partial evaluation by specialization: the formal model for the SCN closure case.
+- Jones, N.D., Gomard, C.K., and Sestoft, P. (1993). *Partial Evaluation and Automatic Program Generation.* Prentice Hall. — Binding-time analysis; the formal basis for the SCN algorithm's treatment of closures and free variable substitution.
+- ndjson.org (2014). *Newline Delimited JSON.* — The streaming JSON convention; `-o json` with `[emit [to-json v]]` produces NDJSON as a bridge to JSON-aware downstream tools.

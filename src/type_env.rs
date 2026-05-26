@@ -2048,27 +2048,9 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        // builtin-*? aliases — stable names used by prelude to re-export type predicates
-        // without creating circular self-references in letrec dicts.
-        for alias in &[
-            "builtin-int?",
-            "builtin-float?",
-            "builtin-str?",
-            "builtin-bool?",
-            "builtin-null?",
-            "builtin-dict?",
-            "builtin-fn?",
-            "builtin-seq?",
-        ] {
-            env.insert(
-                alias.to_string(),
-                Type::Function {
-                    params: vec![(None, Type::Top)],
-                    ret: Box::new(Type::Bool),
-                    variadic: false,
-                },
-            );
-        }
+        // builtin-*? type-predicate aliases were removed in the type-predicates-to-tinct sprint.
+        // All type predicates (int?, float?, str?, bool?, null?, dict?, fn?, seq?, bytes?, proxy?)
+        // are now implemented in stdlib/prelude.llt via match pattern dispatch.
 
         // Helper: create Handle capability flag type (Readable, Writable, etc.)
         fn cap_flag(flag_name: &str) -> Type {

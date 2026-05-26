@@ -168,7 +168,7 @@ to-json-primitive: [fn [let v]
     [[bool? v]    [builtin-if v "true" "false"]]
     [[int?  v]    [builtin-str v]]
     [[float? v]   [builtin-str v]]
-    [[builtin-str?   v]   [json-string v]]
+    [[str?   v]   [json-string v]]
     [[seq?   v]   [to-json-seq v]]
     [[dict?  v]   [to-json-dict v]]
     # Variant values (Program/Document/Expression) are handled by the match dispatch in

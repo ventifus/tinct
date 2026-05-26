@@ -5,7 +5,7 @@
 
 # Define a macro that validates its argument and errors with span if invalid
 [macro expect-int [let arg]
-  [if [builtin-int? arg]
+  [if [int? arg]
     arg
     [macro-error [span-of arg] "expected an integer literal"]]]
 

@@ -13,7 +13,7 @@
 //! **Numeric:** `floor`, `round`
 //! **Parsing:** `to-int`, `to-float`
 //! **Evaluation control:** `eval`, `error`, `try`, `apply`
-//! **Type introspection:** `type-of`, `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` (plus `num?`, `record?`, `map?` in LLT stdlib)
+//! **Type introspection:** `type-of`, `ast-of` (plus all type predicates `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`, `bytes?`, `num?`, `record?`, `map?` implemented in LLT stdlib via `match` pattern dispatch)
 //! **Schema validation:** `validate` (runtime structural validation with constraint checking)
 //! **I/O:** `from-json`, `include`
 //! **Sequences:** `seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join`, `concat`
@@ -411,13 +411,11 @@ pub(crate) use crate::builtins_io::{
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub use crate::builtins_meta::json_to_value;
 pub(crate) use crate::builtins_meta::{
-    builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_bool_check,
-    builtin_bytes_check, builtin_cap_identity, builtin_decimal, builtin_dict_check, builtin_eval,
-    builtin_eval_types, builtin_expand, builtin_float_check, builtin_fn_check, builtin_force,
+    builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_cap_identity,
+    builtin_decimal, builtin_eval, builtin_eval_types, builtin_expand, builtin_force,
     builtin_from_json, builtin_gensym, builtin_include_cache_get, builtin_include_cache_put,
-    builtin_int_check, builtin_llt_repr, builtin_load, builtin_macro_error, builtin_macro_injects,
-    builtin_null_check, builtin_raise, builtin_str_check, builtin_tag_of, builtin_try,
-    builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_llt_repr, builtin_load, builtin_macro_error, builtin_macro_injects, builtin_raise,
+    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -586,11 +584,12 @@ fn builtin_to_float(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalRes
     })
 }
 
-// Seq primitive builtins: seq, head, tail, collect, seq?.
+// Seq primitive builtins: seq, head, tail, collect.
 // Implementations live in builtins_seq_prim.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
+// Note: seq? (builtin_seq_check) was removed — type predicate now in LLT stdlib via match.
 pub(crate) use crate::builtins_seq_prim::{
-    builtin_collect, builtin_head, builtin_seq, builtin_seq_check, builtin_tail,
+    builtin_collect, builtin_head, builtin_seq, builtin_tail,
 };
 
 // Sequence generator builtins: range, repeat, cycle, iterate, unfold.
@@ -1524,17 +1523,9 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         // Type introspection (registered under builtin-NAME; prelude exports the bare names)
         builtin!("builtin-type-of", builtin_type_of, [Strictness::Seq]),
         builtin!("ast-of", builtin_ast_of, [Strictness::Id]),
-        builtin!("builtin-int?", builtin_int_check, [Strictness::Seq]),
-        builtin!("builtin-float?", builtin_float_check, [Strictness::Seq]),
-        // num? is implemented in LLT as [or [int? x] [float? x]] — see stdlib/prelude.llt
-        builtin!("builtin-str?", builtin_str_check, [Strictness::Seq]),
-        builtin!("builtin-bool?", builtin_bool_check, [Strictness::Seq]),
-        builtin!("bytes?", builtin_bytes_check, [Strictness::Seq]),
-        builtin!("builtin-null?", builtin_null_check, [Strictness::Seq]),
-        builtin!("builtin-dict?", builtin_dict_check, [Strictness::Seq]),
-        // record? and map? are implemented in LLT as aliases of dict? — see stdlib/prelude.llt
-        builtin!("builtin-fn?", builtin_fn_check, [Strictness::Seq]),
-        builtin!("builtin-seq?", builtin_seq_check, [Strictness::Seq]),
+        // All type predicates (int?, float?, str?, bool?, null?, dict?, fn?, seq?, bytes?, proxy?)
+        // are implemented in LLT stdlib/prelude.llt via match pattern dispatch.
+        // num?, record?, map? are also LLT-implemented. No Rust builtin-*? predicates remain.
         // Schema validation
         builtin!(
             "validate",
@@ -2107,7 +2098,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
 /// registered under `builtin-*` form and re-exported from prelude (or math.llt/strings.llt)
 /// as bare-name wrappers. T002 fires when user code references:
 /// - A `builtin-*` name directly (bypassing the prelude wrapper)
-/// - A bare builtin name that lacks a prelude wrapper (capability-gated I/O, `get?`, `bytes?`)
+/// - A bare builtin name that lacks a prelude wrapper (capability-gated I/O, `get?`)
 ///
 /// The set excludes stable non-warning cases:
 /// - `reduce_dict_step` / `reduce_seq_step` (internal continuation helpers)
@@ -2115,6 +2106,8 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
 /// - Operator symbols: `+`, `-`, `*`, `/`, `=`, `<`, `if` (syntax-level, always accessible)
 /// - `get?` (user-facing optional-get, not yet wrapped in prelude)
 /// - Builder ops: `make-builder`, `builder-*` (internal transient API, rarely user-facing)
+/// Note: `bytes?` was previously excluded here (lacked a prelude wrapper). It is now implemented
+/// in stdlib/prelude.llt and removed from standard_builtins() entirely.
 pub fn builtin_primary_names() -> std::collections::HashSet<&'static str> {
     standard_builtins()
         .into_iter()
@@ -2127,7 +2120,7 @@ pub fn builtin_primary_names() -> std::collections::HashSet<&'static str> {
                 // Internal helpers not needing T002
                 | "reduce_dict_step" | "reduce_seq_step" | "proxy"
                 // Intentionally-exposed primitives without prelude wrappers yet
-                | "get?" | "bytes?"
+                | "get?"
                 // Internal builder ops (transient API, not user-facing)
                 | "make-builder" | "builder-set" | "builder-delete"
                 | "builder-finish" | "builder-snapshot" | "builder-keys"
@@ -6732,8 +6725,15 @@ mod tests {
         // json-delete-to-json sprint (242 → 241):
         //   Removed builtin-to-json: CLI output formatter now calls tinct to-json instead.
         //   Net: 242 - 1 = 241.
+        // Added builtin-proxy? for Proxy type check in tinct to-json (241 → 242).
+        // type-predicates-to-tinct sprint (242 → 232):
+        //   Removed 10 type-predicate builtins replaced by LLT match patterns:
+        //   builtin-int?, builtin-float?, builtin-str?, builtin-bool?, builtin-null?,
+        //   builtin-dict?, builtin-fn?, builtin-proxy?, builtin-seq?, bytes? (bare).
+        //   All are now implemented in stdlib/prelude.llt via [match x TypeTag: true _: false].
+        //   Net: 242 - 10 = 232.
         assert_eq!(
-            count, 241,
+            count, 232,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6801,15 +6801,49 @@ mod tests {
             "missing builtin-type-of"
         );
         // llt-repr moved to builtin-llt-repr (prelude wrapper only)
-        assert!(names.contains(&"builtin-int?"), "missing builtin-int?");
-        assert!(names.contains(&"builtin-float?"), "missing builtin-float?");
-        // num?, record?, map? are now LLT-implemented in stdlib/prelude.llt (not builtins)
-        assert!(names.contains(&"builtin-str?"), "missing builtin-str?");
-        assert!(names.contains(&"builtin-bool?"), "missing builtin-bool?");
-        assert!(names.contains(&"builtin-null?"), "missing builtin-null?");
-        assert!(names.contains(&"builtin-dict?"), "missing builtin-dict?");
-        assert!(names.contains(&"builtin-fn?"), "missing builtin-fn?");
-        assert!(names.contains(&"builtin-seq?"), "missing builtin-seq?");
+        // type-predicates-to-tinct sprint: all type-predicate builtins removed;
+        // now implemented in stdlib/prelude.llt via [match x TypeTag: true _: false].
+        // num?, record?, map? were already LLT-implemented.
+        assert!(
+            !names.contains(&"builtin-int?"),
+            "builtin-int? should be removed (now in LLT stdlib)"
+        );
+        assert!(
+            !names.contains(&"builtin-float?"),
+            "builtin-float? should be removed (now in LLT stdlib)"
+        );
+        assert!(
+            !names.contains(&"builtin-str?"),
+            "builtin-str? should be removed (now in LLT stdlib)"
+        );
+        assert!(
+            !names.contains(&"builtin-bool?"),
+            "builtin-bool? should be removed (now in LLT stdlib)"
+        );
+        assert!(
+            !names.contains(&"builtin-null?"),
+            "builtin-null? should be removed (now in LLT stdlib)"
+        );
+        assert!(
+            !names.contains(&"builtin-dict?"),
+            "builtin-dict? should be removed (now in LLT stdlib)"
+        );
+        assert!(
+            !names.contains(&"builtin-fn?"),
+            "builtin-fn? should be removed (now in LLT stdlib)"
+        );
+        assert!(
+            !names.contains(&"builtin-proxy?"),
+            "builtin-proxy? should be removed (now in LLT stdlib)"
+        );
+        assert!(
+            !names.contains(&"builtin-seq?"),
+            "builtin-seq? should be removed (now in LLT stdlib)"
+        );
+        assert!(
+            !names.contains(&"bytes?"),
+            "bytes? (bare) should be removed (now in LLT stdlib)"
+        );
         // I/O (emit/env now under builtin-NAME; bare names are prelude wrappers)
         assert!(names.contains(&"builtin-emit"), "missing builtin-emit");
         assert!(names.contains(&"builtin-env"), "missing builtin-env");
@@ -6979,7 +7013,11 @@ mod tests {
         assert!(names.contains(&"bytes-of"), "missing bytes-of");
         assert!(names.contains(&"bytes-equal?"), "missing bytes-equal?");
         assert!(names.contains(&"ct-equal?"), "missing ct-equal?");
-        assert!(names.contains(&"bytes?"), "missing bytes?");
+        // bytes? was removed from builtins; now implemented in stdlib/prelude.llt
+        assert!(
+            !names.contains(&"bytes?"),
+            "bytes? should be removed (now in LLT stdlib)"
+        );
         // TLS builtins
         assert!(names.contains(&"tls-layer"), "missing tls-layer");
         assert!(names.contains(&"tls-peer-cert"), "missing tls-peer-cert");
@@ -7058,11 +7096,15 @@ mod tests {
         // Actual net: 310 - 68 + 1 = 243, but actual count is 242 (one registration was
         // double-counted in the arithmetic; the actual list has 242 unique entries).
         // builtin-privacy-operators-and-io sprint: renamed 35 bare names to builtin-* (no count change).
-        // Net: 242 (renames only).
+        // json-delete-to-json sprint: removed builtin-to-json (242 → 241).
+        // Added builtin-proxy? for Proxy type check in tinct to-json (241 → 242).
+        // type-predicates-to-tinct sprint: removed 10 type-predicate builtins (242 → 232):
+        //   builtin-int?, builtin-float?, builtin-str?, builtin-bool?, builtin-null?,
+        //   builtin-dict?, builtin-fn?, builtin-proxy?, builtin-seq?, bytes? (bare).
         assert_eq!(
             names.len(),
-            242,
-            "expected 242 builtins, got {} — update this assertion if adding/removing builtins",
+            232,
+            "expected 232 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }
@@ -8772,41 +8814,6 @@ mod tests {
 
         // Propagate any panic from the spawned thread
         result.unwrap();
-    }
-
-    #[test]
-    fn seq_check_true() {
-        let ctx = test_ctx();
-        let seq_val = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
-        let result = mat(builtin_seq_check(BuiltinArgs {
-            args: vec![seq_val],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }));
-        assert_eq!(result, Value::Bool(true));
-    }
-
-    #[test]
-    fn seq_check_false() {
-        let result = mat(builtin_seq_check(BuiltinArgs {
-            args: vec![thunk(string_val("not a seq".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, Value::Bool(false));
-    }
-
-    #[test]
-    fn seq_check_dict() {
-        let result = mat(builtin_seq_check(BuiltinArgs {
-            args: vec![thunk(Value::Dict(IndexMap::new()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, Value::Bool(false));
     }
 
     // === range builtin tests ===

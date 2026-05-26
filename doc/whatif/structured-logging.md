@@ -1,5 +1,7 @@
 # What If: Structured Logging for tinct
 
+TODO: use async channels for this. Perhaps injected arbitrary channel handlers ("channel programs"?), like we do with output programs?
+
 **State:** Proposal
 
 What would it take to give tinct programs a structured diagnostic output channel — distinct from `emit` (final result) and from type-checker warnings — with well-defined semantics for literate documentation, application tracing, and log redirection?
