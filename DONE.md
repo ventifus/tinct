@@ -10056,3 +10056,11 @@ Resolver assigns `$x` → slot 0. Runtime child_env gets `z`@0, `x`@1. `get_by_s
 - [x] Delete `resolve_surface_annotation` from `src/typecheck_annot.rs` — zero callers
 - [x] Delete `RestoreState::AstNodeField` variant from `src/eval_materialize.rs` — zero callers, unreachable
 - [x] Remove corresponding `#[allow(dead_code)]` attributes
+
+### async-shutdown-primitives: Implement exit, graceful-exit, cancel-root, drain
+
+- [x] Implement `cancel-root` builtin — cancels root CancellationToken (`src/builtins_async.rs:1541`)
+- [x] Implement `drain` builtin — MVP 100ms sleep; proper JoinSet impl tracked as async-drain-joinset (`src/builtins_async.rs:1586`)
+- [x] Implement `exit-now` builtin — `process::exit(code)` with Int arg (`src/builtins_async.rs:1629`)
+- [x] Unwrap `exit` and `graceful-exit` in `stdlib/async.llt` to call cancel-root+drain+exit-now
+- [ ] Fix `finally` non-cancellable cleanup — DEFERRED: tracked as async-cleanup-safety (requires with-context builtin)

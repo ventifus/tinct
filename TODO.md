@@ -378,6 +378,58 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 
 ---
 
+## Codebase Audit Findings (Health Review #311, 2026-05-25)
+
+### doc-ast-type-migration: Purge stale Expr::/File:: references from doc/*.md [Major]
+
+**grammar-architect M1.** 342 occurrences of deleted AST type names (`Expr::`, `File::`, `Document::`) across 54 doc/*.md files. These types were deleted in runtime-v2. Requires per-file review to change to `SurfaceExpression::` or `CoreExpr::` depending on context.
+
+- [ ] Systematic purge of `Expr::`, `File::`, `Document::` references across doc/*.md files — 342 occurrences in 54 files; change each to correct SurfaceExpression:: or CoreExpr:: equivalent
+
+### force-dict-tree-soundness: Add cycle detection and Seq/Overlay handling to force_dict_tree [Major]
+
+**computer-scientist F1 + eval-engine M1.** `src/expand.rs:1095-1133` — `force_dict_tree` lacks cycle detection (can stack-overflow on cyclic macro output) and silently ignores `Value::Seq` and `Value::Overlay` (passes through unmaterialized ThunkIds to dict_to_surface_node, causing incorrect AST).
+
+- [ ] Add `visited: &mut HashSet<*const Thunk>` cycle detection to `force_dict_tree` (`src/expand.rs:1095`)
+- [ ] Add `Value::Seq` arm to force head and tail thunks (`src/expand.rs`)
+- [ ] Add `Value::Overlay` arm calling `flatten_overlay` (`src/expand.rs`)
+- [ ] Make `Value::Expression` passthrough explicit rather than wildcard (`src/expand.rs`)
+
+### nominal-variant-constructor-types: Implement precise types for ADT constructors [Major]
+
+**type-theorist M1.** `src/typecheck_dict.rs:44-56` — `inject_single_constructor` uses `Type::Unknown` for all constructor types. This disables type checking for ALL constructor calls. Unit constructors should get `NominalVariant{tag, fields}`, record constructors should get `Function { params: fields_as_params, ret: NominalVariant{...} }`.
+
+- [ ] Implement precise unit constructor types: `NominalVariant{tag, fields}` (`src/typecheck_dict.rs:44`)
+- [ ] Implement precise record constructor types: `Function { params, ret: NominalVariant{...} }` (`src/typecheck_dict.rs:44`)
+- [ ] Add corpus tests for constructor type checking
+
+### serialization-span-threading: Thread definition spans through ValueVisitor [Major]
+
+**integration-verifier M1.** `src/lib.rs:825,876,883,888,896` — All ValueVisitor error constructors use `Span::origin()` (no source location). Users see `[E035] cannot serialize Function to JSON (defined at 1:1-1:1)`. Requires threading spans through `visit_value` recursion or adding span parameter to ValueVisitor trait methods.
+
+- [ ] Design approach: span parameter on ValueVisitor methods vs threading through visit_value recursion
+- [ ] Implement chosen approach in `src/lib.rs:621-706` (ValueVisitor trait + implementations)
+- [ ] Update `visit_function`, `visit_builtin`, `visit_seq_head`, `visit_proxy`, `visit_float` to use real spans
+
+### attach-provenance-dedup: Extract shared attach_macro_provenance_comprehensive helper [Major]
+
+**integration-verifier M2.** `src/lib.rs:250-252` vs `src/lib.rs:392-405` — `attach_provenance` closure duplicated between `eval_source_with_config` and `eval_source_with_cap_net`. The second version omits stack-frame span search, losing provenance for errors only in stack frames.
+
+- [ ] Extract `attach_macro_provenance_comprehensive(err, provenance)` shared helper (`src/lib.rs:174`)
+- [ ] Update both call sites to use the shared helper
+- [ ] Verify stack-frame span search and secondary_span search are both present
+
+### error-code-corpus-missing: Add missing corpus tests for E044/E071/E072 [Critical]
+
+**test-crafter C1.** Several error codes have zero corpus coverage:
+- E044 (CapabilityRequired) — needs cap_net directive
+- E071 (MatchExhaustion) — non-exhaustive pattern match
+- E072 (DuplicateVariable) — duplicate pattern binding
+
+- [ ] Add `tests/corpus/eval/errors/capability_required.llt-eval` for E044
+- [ ] Add `tests/corpus/eval/errors/match_exhaustion.llt-eval` for E071
+- [ ] Add `tests/corpus/eval/errors/duplicate_pattern_variable.llt-eval` for E072
+
 ## Codebase Audit Findings (Health Review #306, 2026-05-25)
 
 Hardcoded behavior, stubs, and dead code found during systematic audit. Root causes documented inline.
@@ -397,17 +449,22 @@ Hardcoded behavior, stubs, and dead code found during systematic audit. Root cau
 - [x] Update `doc/10-errors.md` error code table — added E012, E013, E044, E071, E072, E081, E082 (7 entries)
 
 
-### async-shutdown-primitives: Implement exit, graceful-exit, cancel-root, drain
+### async-cleanup-safety: Fix finally to run cleanup in non-cancellable context
 
-`stdlib/async.llt` has `exit` and `graceful-exit` unconditionally raising errors: `"exit: cancel-root/drain/exit-now not yet implemented (runtime-v2 Sprint 3)"`. The `finally` function also has a documented limitation: cleanup runs in the caller's context, not a non-cancellable context, so it can be interrupted by cancellation.
+**Deferred from async-shutdown-primitives (2026-05-25).** cancel-root/drain/exit-now implemented; exit/graceful-exit unwrapped. Only finally remains.
 
-Root cause: `cancel-root`, `drain`, and `exit-now` builtins were deferred from runtime-v2 Sprint 3 async implementation.
+`stdlib/async.llt:225-253` — `finally` runs cleanup in the caller's context, which can be interrupted by cancellation. Requires `with-context` + non-cancellable token.
 
-- [ ] Implement `cancel-root` builtin — signal all tasks to stop via root CancellationToken (`src/builtins_async.rs`)
-- [ ] Implement `drain` builtin — await all in-flight tasks before returning (`src/builtins_async.rs`)
-- [ ] Implement `exit-now` builtin — `process::exit` immediately (`src/builtins_async.rs`)
-- [ ] Unwrap `exit` and `graceful-exit` in `stdlib/async.llt` to call the new builtins
-- [ ] Fix `finally` to run cleanup in a non-cancellable sub-context (requires `with-context` + non-cancellable token) (`stdlib/async.llt`)
+- [ ] Implement `non-cancellable` and `with-context` builtins (`src/builtins_async.rs`)
+- [ ] Update `finally` to run cleanup block in a non-cancellable sub-context (`stdlib/async.llt`)
+
+### async-drain-joinset: Replace drain MVP with JoinSet-based task registry
+
+`drain` currently sleeps 100ms (MVP). Proper implementation requires tracking all spawned JoinHandles in a task registry.
+
+- [ ] Add task registry to EvalContext (Arc&lt;Mutex&lt;Vec&lt;JoinHandle&lt;_&gt;&gt;&gt;&gt;) (`src/eval.rs`)
+- [ ] Register all spawn_local calls in task registry (`src/builtins_async.rs`, ~10 spawn sites)
+- [ ] Implement drain by awaiting all registered handles (`src/builtins_async.rs:1586`)
 
 ### tco-implement: Fix TCO bugs in the CEK machine
 
@@ -492,6 +549,34 @@ The `lint-builtins-cps` lint ensures builtins don't call `materialize()` directl
 - [ ] Add `pos_strictness` or `force_count` to all datetime builtins that unconditionally materialize their args (Timestamp, Duration, Int, String, DirCap, ClockCap args are all always strict) — removes all inline `materialize()` H1 calls (`src/builtins_datetime.rs`)
 
 ## Known Bugs + Nits
+
+### load-expand-separation: `builtin_load` does expand+desugar+resolve+typecheck — include-decomp separation is broken
+
+Discovered 2026-05-25. The include-decomposition design intended `load` to return the raw parsed (unexpanded) `SurfaceProgram` so tools like formatters can inspect the user's original source form. Instead, `builtin_load` currently runs `expand_surface_program` + `desugar_surface_program` + `resolve_surface_program` + `typecheck_surface_program_annotation_table` before returning (`src/builtins_meta.rs:1742-1768`). `builtin_expand` then re-does the same passes on the already-expanded program — a redundant no-op.
+
+Consequences:
+- Formatters calling `[load source]` see the expanded AST, not the user's original macro call forms
+- `[expand [load ...]]` runs all passes twice
+- The raw unexpanded `Value::Program` is inaccessible from tinct
+
+Correct split per include-decomp design:
+- `load` → parse only → raw unexpanded `Value::Program` (no macro expansion)
+- `expand` → expand + desugar + resolve + typecheck → ready-to-eval `Value::Program`
+- Normal pipeline: `[eval [expand [load source name: n]] ...]`
+
+Note: docgen works despite this bug because stdlib files' public API uses no macros for their exported `fn` definitions — the expanded AST is identical to the unexpanded AST for those bindings.
+
+- [ ] Fix `builtin_load` to run parse only: remove `expand_surface_program`, `desugar_surface_program`, `resolve_surface_program`, `typecheck_surface_program_annotation_table` calls; return the raw parsed `SurfaceProgram` with empty `ResolutionTable` and `TypeAnnotationTable` (`src/builtins_meta.rs:1742-1768`)
+- [ ] Update tinct prelude's `include` function to explicitly call `[expand [load ...]]` rather than `[load ...]` alone — the explicit expand step is now required (`stdlib/prelude.llt`)
+- [ ] Verify `builtin_expand` is not redundant after fix — it should be the sole location of expand+desugar+resolve+typecheck (`src/builtins_meta.rs:1780-1838`)
+- [ ] Tests: verify `[load source]` returns unexpanded AST — a macro call form should appear as `[Call ...]` not as its expanded body (`tests/corpus/eval/`)
+
+### dot-key-to-value-payload: `dot_key_to_value` exposes no content — DotAccess field names inaccessible from tinct
+
+Discovered during docgen.llt AST introspection rewrite (2026-05-25). `dot_key_to_value` in `src/surface_fields.rs` returns `Value::Variant { tag: "Ident", payload: None }` and `Value::Variant { tag: "Index", payload: None }`. The actual field name (for `Ident`) and integer index (for `Index`) are dropped, making them inaccessible to tinct code accessing `expr.field` on a `DotAccess` expression's `field` field.
+
+- [ ] Add payload to `dot_key_to_value`: `Ident(name)` → `Variant("Ident", {name: name})`, `Index(i)` → `Variant("Index", {index: i})` (`src/surface_fields.rs:433-443`)
+- [ ] Add corpus test: `[ast-of [x.foo]].field.name` should return `"foo"` (`tests/corpus/eval/`)
 
 ### rc-arc-complete: Complete Rc→Arc migration — make `Thunk` fully Send+Sync
 
