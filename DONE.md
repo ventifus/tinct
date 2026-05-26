@@ -10167,3 +10167,35 @@ Root cause: Arena phase-3 (slot-based lookup wiring into evaluator) not yet star
 - [x] Wire display-vector lookup in `eval_core_expr` `Var` arm — `ctx.env_arena.lookup_slot(env_id, level, slot)` replaces `env.get(name)` chain walk (`src/eval.rs`)
 - [x] Wire `FlatEnv.overflow` for computed keys (non-string dict keys not assignable to slots) (`src/arena.rs`)
 - [x] Delete `#[allow(dead_code)]` attributes once wired
+
+### builtin-force-cleanup: Clean up H2/H3 annotations and migrate H1 builtins to pos_strictness
+
+#### H2/H3 cleanup (from h2-h3-cleanup)
+
+Assumption-skeptic verified all H2/H3 annotations are **correct** — no hidden bugs. Six are genuine no-ops (pos_strictness already covers them); two real materializations can be eliminated by extending registrations.
+
+**No-op materializations** — replace with `try_get_materialized().expect("pre-materialized by pos_strictness[N]")`
+- [x] `builtin_macro_error` args[0]+args[1] (`src/builtins_meta.rs:163,178`) — covered by force_count=2
+- [x] `builtin_connect` args[2] in Tcp/UnixStream/Udp/UnixDatagram arms (`src/builtins_io.rs:971,1077,1169,1247`) — covered by pos_strictness[2]=Seq; update comment from "discriminant-dispatched" to "pre-materialized by pos_strictness[2]=Seq"
+- [x] `builtin_range` args[1] (`src/builtins_seq_gen.rs:93`) — covered by pos_strictness[1]=Seq
+- [x] `builtin_reduce_seq_step` args[2] (`src/builtins_seq_reduce.rs:217`) — covered by pos_strictness[2]=Spine
+
+**Registration extensions** — add Strictness to eliminate real materialize() calls
+- [x] `builtin_gensym`: extend registration to `[Strictness::Seq]`; engine skips pos_strictness[0] when args.len()==0 (variadic 0-or-1) (`src/builtins.rs` registration + `src/builtins_meta.rs`)
+- [x] `builtin_connect`: extend registration from `[Seq,Seq,Seq]` to `[Seq,Seq,Seq,Seq]`; engine skips pos_strictness[3] when args.len()==3 (UnixStream/Datagram); eliminates `materialize(&args[3])` in Tcp and Udp arms (`src/builtins.rs` registration + `src/builtins_io.rs`)
+
+#### H1 migration (from h1-force-count-migration)
+
+`// H1:` marks unconditional force — args that should be declared via `pos_strictness` or `force_count` so the CEK machine pre-materializes them.
+
+**`src/builtins_meta.rs`** — 2 H1s:
+- [x] `builtin_variant` (~line 1164): tag arg always materialized to get String — add `pos_strictness: [Strictness::Seq]` (`src/builtins_meta.rs`)
+- [x] `builtin_variant_with_payload` (~line 1191): tag arg always materialized — add `pos_strictness: [Strictness::Seq, Strictness::Id]` (`src/builtins_meta.rs`)
+
+**`src/builtins_datetime.rs`** — ~30 H1s across all datetime builtins:
+- [x] Add `pos_strictness` or `force_count` to all datetime builtins that unconditionally materialize their args (Timestamp, Duration, Int, String, DirCap, ClockCap args are all always strict) — removes all inline `materialize()` H1 calls (`src/builtins_datetime.rs`)
+
+**Leave as-is** (no framework support): `builtin_load` named args, `builtin_bytes` variadic loop.
+
+**Follow-up nit (builtin-force-cleanup):**
+- [x] Add `force_count=1` to `exit-now`/`builtin_exit_now` registration in `src/builtins.rs`; replace `materialize()` in `src/builtins_async.rs:1683` with `try_get_materialized().expect("pre-materialized by force_count=1")` (`src/builtins.rs`, `src/builtins_async.rs`)

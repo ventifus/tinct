@@ -155,7 +155,9 @@ pub(crate) fn builtin_macro_error(
         }
 
         // Extract span dict (first argument)
-        let span_val = materialize(&args[0], Some(&call_span), &ctx).await?; // H2: arity-guarded (args.len()==2 check above), force_count=2 registered
+        let span_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count=2");
         let span_dict = match span_val {
             Value::Dict(ref map) => map,
             other => {
@@ -170,7 +172,9 @@ pub(crate) fn builtin_macro_error(
         };
 
         // Extract message (second argument)
-        let msg_val = materialize(&args[1], Some(&call_span), &ctx).await?; // H2: arity-guarded (args.len()==2 check above), force_count=2 registered
+        let msg_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count=2");
         let message = require_string("builtin-macro-error", msg_val, args[1].span)?;
 
         // Helper to extract a dict field and materialize it
@@ -624,7 +628,7 @@ pub(crate) fn builtin_gensym(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
         } = ctx_arg;
 
         reject_named("gensym", named.as_ref(), call_span)?;
@@ -633,8 +637,9 @@ pub(crate) fn builtin_gensym(
         let prefix = if args.is_empty() {
             "gensym".to_string()
         } else if args.len() == 1 {
-            // Safe conditional: args.len() check doesn't force thunks
-            let prefix_val = materialize(&args[0], Some(&call_span), &ctx).await?; // H2: conditioned on args.len()==1 check
+            let prefix_val = args[0]
+                .try_get_materialized()
+                .expect("pre-materialized by pos_strictness[0]=Seq");
             match prefix_val {
                 Value::String { source, start, end } => source[start..end].to_string(),
                 _ => {
@@ -1134,7 +1139,9 @@ pub(crate) fn builtin_variant(
             1 => {
                 // Unit variant: [variant "Tag"]
                 let tag_thunk = &args[0];
-                let tag_val = materialize(tag_thunk, Some(&call_span), &ctx).await?; // H1: inherently strict (needs String tag)
+                let tag_val = tag_thunk
+                    .try_get_materialized()
+                    .expect("pre-materialized by pos_strictness[0]=Seq");
                 match tag_val {
                     Value::String {
                         ref source,
@@ -1161,7 +1168,9 @@ pub(crate) fn builtin_variant(
                 // Variant with payload: [variant "Tag" payload]
                 let tag_thunk = &args[0];
                 let payload_thunk = &args[1];
-                let tag_val = materialize(tag_thunk, Some(&call_span), &ctx).await?; // H1: inherently strict (needs String tag)
+                let tag_val = tag_thunk
+                    .try_get_materialized()
+                    .expect("pre-materialized by pos_strictness[0]=Seq");
                 match tag_val {
                     Value::String {
                         ref source,

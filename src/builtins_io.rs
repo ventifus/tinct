@@ -838,7 +838,7 @@ pub(crate) fn builtin_connect(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
     Box::pin(async move {
         reject_named("connect", named.as_ref(), call_span)?;
@@ -968,8 +968,12 @@ pub(crate) fn builtin_connect(
                 // TCP path
                 // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
                 // arity validated above (structural check, no forcing)
-                let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: no-op — pre-materialized by pos_strictness[2]=Seq
-                let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: real materialize — args[3] not in pos_strictness (only 3 entries); safe because arity check above guarantees args.len()==4
+                let host_val = args[2]
+                    .try_get_materialized()
+                    .expect("pre-materialized by pos_strictness[2]=Seq");
+                let port_val = args[3]
+                    .try_get_materialized()
+                    .expect("pre-materialized by pos_strictness[3]=Seq");
 
                 // Extract NetCap
                 let entries = match cap_val {
@@ -1074,7 +1078,9 @@ pub(crate) fn builtin_connect(
                 {
                     // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
                     // arity validated above (structural check, no forcing)
-                    let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: no-op — pre-materialized by pos_strictness[2]=Seq
+                    let path_val = args[2]
+                        .try_get_materialized()
+                        .expect("pre-materialized by pos_strictness[2]=Seq");
 
                     // Extract DirCap for path validation (Unix socket)
                     let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;
@@ -1166,8 +1172,12 @@ pub(crate) fn builtin_connect(
                 // UDP datagram socket path
                 // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
                 // arity validated above (structural check, no forcing)
-                let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: no-op — pre-materialized by pos_strictness[2]=Seq
-                let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: real materialize — args[3] not in pos_strictness (only 3 entries); safe because arity check above guarantees args.len()==4
+                let host_val = args[2]
+                    .try_get_materialized()
+                    .expect("pre-materialized by pos_strictness[2]=Seq");
+                let port_val = args[3]
+                    .try_get_materialized()
+                    .expect("pre-materialized by pos_strictness[3]=Seq");
 
                 // Extract NetCap
                 let entries = match cap_val {
@@ -1244,7 +1254,9 @@ pub(crate) fn builtin_connect(
                 {
                     // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
                     // arity validated above (structural check, no forcing)
-                    let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: no-op — pre-materialized by pos_strictness[2]=Seq
+                    let path_val = args[2]
+                        .try_get_materialized()
+                        .expect("pre-materialized by pos_strictness[2]=Seq");
 
                     // Extract DirCap for path validation (Unix socket)
                     let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;

@@ -428,35 +428,6 @@ Hardcoded behavior, stubs, and dead code found during systematic audit. Root cau
 
 ## Builtin CPS Debt
 
-### builtin-force-cleanup: Clean up H2/H3 annotations and migrate H1 builtins to pos_strictness
-
-#### H2/H3 cleanup (from h2-h3-cleanup)
-
-Assumption-skeptic verified all H2/H3 annotations are **correct** — no hidden bugs. Six are genuine no-ops (pos_strictness already covers them); two real materializations can be eliminated by extending registrations.
-
-**No-op materializations** — replace with `try_get_materialized().expect("pre-materialized by pos_strictness[N]")`
-- [ ] `builtin_macro_error` args[0]+args[1] (`src/builtins_meta.rs:163,178`) — covered by force_count=2
-- [ ] `builtin_connect` args[2] in Tcp/UnixStream/Udp/UnixDatagram arms (`src/builtins_io.rs:971,1077,1169,1247`) — covered by pos_strictness[2]=Seq; update comment from "discriminant-dispatched" to "pre-materialized by pos_strictness[2]=Seq"
-- [ ] `builtin_range` args[1] (`src/builtins_seq_gen.rs:93`) — covered by pos_strictness[1]=Seq
-- [ ] `builtin_reduce_seq_step` args[2] (`src/builtins_seq_reduce.rs:217`) — covered by pos_strictness[2]=Spine
-
-**Registration extensions** — add Strictness to eliminate real materialize() calls
-- [ ] `builtin_gensym`: extend registration to `[Strictness::Seq]`; engine skips pos_strictness[0] when args.len()==0 (variadic 0-or-1) (`src/builtins.rs` registration + `src/builtins_meta.rs`)
-- [ ] `builtin_connect`: extend registration from `[Seq,Seq,Seq]` to `[Seq,Seq,Seq,Seq]`; engine skips pos_strictness[3] when args.len()==3 (UnixStream/Datagram); eliminates `materialize(&args[3])` in Tcp and Udp arms (`src/builtins.rs` registration + `src/builtins_io.rs`)
-
-#### H1 migration (from h1-force-count-migration)
-
-`// H1:` marks unconditional force — args that should be declared via `pos_strictness` or `force_count` so the CEK machine pre-materializes them.
-
-**`src/builtins_meta.rs`** — 2 H1s:
-- [ ] `builtin_variant` (~line 1164): tag arg always materialized to get String — add `pos_strictness: [Strictness::Seq]` (`src/builtins_meta.rs`)
-- [ ] `builtin_variant_with_payload` (~line 1191): tag arg always materialized — add `pos_strictness: [Strictness::Seq, Strictness::Id]` (`src/builtins_meta.rs`)
-
-**`src/builtins_datetime.rs`** — ~30 H1s across all datetime builtins:
-- [ ] Add `pos_strictness` or `force_count` to all datetime builtins that unconditionally materialize their args (Timestamp, Duration, Int, String, DirCap, ClockCap args are all always strict) — removes all inline `materialize()` H1 calls (`src/builtins_datetime.rs`)
-
-**Leave as-is** (no framework support): `builtin_load` named args, `builtin_bytes` variadic loop.
-
 ## Known Bugs + Nits
 
 ### eval-runtime-followup: Graceful drain + proper TCO (deferred from eval-runtime-fixes)

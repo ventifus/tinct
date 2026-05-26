@@ -90,7 +90,13 @@ pub(crate) fn builtin_range(
         } else {
             // Finite range: [start, start+1, ..., end-1]
             // Safe conditional: args.len() check (line 66) doesn't force thunks
-            let end = materialize(&args[1], None, &ctx).await?; // H2: conditioned on args.len()!=1 (else branch of len==1 check at line 66)
+            // SAFE: args[1] is always materialized in both dispatch paths:
+            //   (1) CEK dispatch: pre-materialized by pos_strictness[1]=Seq
+            //   (2) Inline recursive thunk (builtin!("range", builtin_range) below):
+            //       tail_args are constructed via ok_val() → Thunk::new_materialized
+            let end = args[1]
+                .try_get_materialized()
+                .expect("pre-materialized: pos_strictness[1]=Seq (CEK) or ok_val (inline thunk)");
             let end_int = match end {
                 Value::Int(n) => n,
                 other => {

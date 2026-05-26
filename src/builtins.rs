@@ -1580,7 +1580,12 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!(
             "connect",
             builtin_connect,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
+            [
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq,
+                Strictness::Seq
+            ]
         ),
         builtin!(
             "tls-layer",
@@ -1906,108 +1911,147 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!(
             "parse-timestamp",
             builtin_parse_timestamp,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
         builtin!(
             "format-timestamp",
             builtin_format_timestamp,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
         builtin!(
             "timestamp->unix",
             builtin_timestamp_to_unix,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
         builtin!(
             "unix->timestamp",
             builtin_unix_to_timestamp,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
-        builtin!("now", builtin_now, [Strictness::Seq]),
-        builtin!("fixed-clock", builtin_fixed_clock, [Strictness::Seq]),
+        builtin!("now", builtin_now, [Strictness::Seq], 1),
+        builtin!("fixed-clock", builtin_fixed_clock, [Strictness::Seq], 1),
         builtin!(
             "timestamp-add",
             builtin_timestamp_add,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!(
             "timestamp-diff",
             builtin_timestamp_diff,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!(
             "timestamp<?",
             builtin_timestamp_lt,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!(
             "timestamp>?",
             builtin_timestamp_gt,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!(
             "timestamp=?",
             builtin_timestamp_eq,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
-        builtin!("timestamp-year", builtin_timestamp_year, [Strictness::Seq]),
+        builtin!(
+            "timestamp-year",
+            builtin_timestamp_year,
+            [Strictness::Seq],
+            1
+        ),
         builtin!(
             "timestamp-month",
             builtin_timestamp_month,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
-        builtin!("timestamp-day", builtin_timestamp_day, [Strictness::Seq]),
-        builtin!("timestamp-hour", builtin_timestamp_hour, [Strictness::Seq]),
+        builtin!("timestamp-day", builtin_timestamp_day, [Strictness::Seq], 1),
+        builtin!(
+            "timestamp-hour",
+            builtin_timestamp_hour,
+            [Strictness::Seq],
+            1
+        ),
         builtin!(
             "timestamp-minute",
             builtin_timestamp_minute,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
         builtin!(
             "timestamp-second",
             builtin_timestamp_second,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
         builtin!(
             "timestamp-parts",
             builtin_timestamp_parts,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
-        builtin!("duration-nanos", builtin_duration_nanos, [Strictness::Seq]),
+        builtin!(
+            "duration-nanos",
+            builtin_duration_nanos,
+            [Strictness::Seq],
+            1
+        ),
         builtin!(
             "duration-seconds",
             builtin_duration_seconds,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
         builtin!(
             "duration-minutes",
             builtin_duration_minutes,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
-        builtin!("duration-hours", builtin_duration_hours, [Strictness::Seq]),
-        builtin!("duration-days", builtin_duration_days, [Strictness::Seq]),
+        builtin!(
+            "duration-hours",
+            builtin_duration_hours,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!("duration-days", builtin_duration_days, [Strictness::Seq], 1),
         builtin!(
             "duration->seconds",
             builtin_duration_to_seconds,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
         builtin!(
             "duration->nanos",
             builtin_duration_to_nanos,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            1
         ),
         builtin!(
             "load-tz",
             builtin_load_tz,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!(
             "timestamp-in-tz",
             builtin_timestamp_in_tz,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!("local->timestamp", builtin_local_to_timestamp, [], 7),
-        builtin!("local-tz-name", builtin_local_tz_name, [Strictness::Seq]),
+        builtin!("local-tz-name", builtin_local_tz_name, [Strictness::Seq], 1),
         // URI parsing
         builtin!("uri", builtin_uri, [Strictness::Seq]),
         builtin!("url", builtin_url, [Strictness::Seq]),
@@ -2064,19 +2108,27 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         // Meta primitives
         // DELETED: builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq])
         // eval-ast was the old single-expression eval interface, superseded by the new eval builtin
-        builtin!("gensym", builtin_gensym),
+        builtin!("gensym", builtin_gensym, [Strictness::Seq]),
         builtin!("llt-repr", builtin_llt_repr, [Strictness::Seq]),
         builtin!("tag-of", builtin_tag_of, [Strictness::Seq]),
-        builtin!("variant", builtin_variant), // Variadic: 1 arg (unit) or 2 args (tag + payload)
+        builtin!(
+            "variant",
+            builtin_variant,
+            [Strictness::Seq, Strictness::Id]
+        ), // Variadic: 1 arg (unit) or 2 args (tag + payload)
         builtin!("decimal", builtin_decimal, [Strictness::Seq]),
         builtin!("big-int", builtin_big_int, [Strictness::Seq]),
         builtin!("proxy", builtin_proxy),
         builtin!("macro-injects", builtin_macro_injects, [Strictness::Seq]),
         // Meta builtin stable aliases (used internally by prelude to allow shadowing)
-        builtin!("builtin-gensym", builtin_gensym),
+        builtin!("builtin-gensym", builtin_gensym, [Strictness::Seq]),
         builtin!("builtin-llt-repr", builtin_llt_repr, [Strictness::Seq]),
         builtin!("builtin-tag-of", builtin_tag_of, [Strictness::Seq]),
-        builtin!("builtin-variant", builtin_variant),
+        builtin!(
+            "builtin-variant",
+            builtin_variant,
+            [Strictness::Seq, Strictness::Id]
+        ),
         builtin!("builtin-decimal", builtin_decimal, [Strictness::Seq]),
         builtin!("builtin-big-int", builtin_big_int, [Strictness::Seq]),
         builtin!("builtin-proxy", builtin_proxy),

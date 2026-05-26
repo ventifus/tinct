@@ -198,9 +198,8 @@ pub(crate) fn builtin_reduce_dict_step(
 ///
 /// Args: (f, acc, seq)
 ///
-/// NOTE: `args[2]` (the seq) may be a lazy thunk — the tail of a Seq is a ThunkId that
-/// may not have been evaluated yet. We must `materialize` it rather than using
-/// `try_get_materialized`. Processes all elements in a loop to avoid O(N) continuation depth.
+/// `args[2]` is pre-materialized by `pos_strictness[2]=Spine` via the CEK machine.
+/// Processes all elements in a loop to avoid O(N) continuation depth.
 pub(crate) fn builtin_reduce_seq_step(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -214,7 +213,9 @@ pub(crate) fn builtin_reduce_seq_step(
 
         let f_thunk = Arc::clone(&args[0]);
         let mut acc_thunk = Arc::clone(&args[1]);
-        let mut seq_val = materialize(&args[2], None, &ctx).await?; // H2: structural check — must know if head/tail or empty
+        let mut seq_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[2]=Spine");
 
         // Loop over all elements — no recursive thunk chain.
         loop {
