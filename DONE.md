@@ -10448,6 +10448,19 @@ Post-panel findings from `serialization-span-threading` sprint. All minor.
 
 **Note:** This sprint is a prerequisite for `stdlib-conformance-builtin-privacy`. That sprint migrates non-prelude files from `builtin-reduce` → `reduce`, which only makes sense once `reduce` IS a tinct wrapper (not the Rust function itself). Run this sprint first.
 
+## JSON in Tinct — Remove serde_json from Rust
+
+### json-no-stdin: No stdin input without -i flag ✅ DONE (2026-05-25)
+
+If `-i` is not specified on the command line, there is no stdin input — period. No auto-detection of piped stdin, no implicit JSON parsing. Previously `read_stdin_json` read stdin automatically when it was a non-terminal (piped), which was the source of all Rust JSON parsing in the input path.
+
+- [x] Delete `read_stdin_json()` from `src/main.rs` entirely (`src/main.rs`)
+- [x] Delete `json_to_value()` from `src/main.rs` — used only by `read_stdin_json` (`src/main.rs`)
+- [x] Remove all implicit stdin detection and JSON parsing at startup (`src/main.rs`)
+- [x] Require `-i json` (or `-i` with any formatter) for stdin input — document this as the intended behavior
+- [x] Remove `serde_json` from `src/main.rs` stdin path
+- [x] Update CLI help text to reflect that `-i` is required for stdin input (`src/main.rs`)
+
 ### builtin-privacy-operators-and-io: Rename remaining bare builtins to `builtin-*` form ✅ DONE (2026-05-25)
 
 **Problem:** The `builtin-privacy-primary-names` sprint deferred operator symbols, I/O primitives, math, datetime, network, bytes, and URI builtins. These remain registered under bare names without prelude wrappers.

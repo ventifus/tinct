@@ -6,15 +6,15 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
 use clap::{Parser, Subcommand, ValueEnum};
-use std::io::{self, IsTerminal, Read};
+use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process;
 use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
-    create_stdlib_env, json_to_value, literate, materialize_sync as materialize, parse,
-    value_to_json, EvalContext, Span, Thunk, MAX_FILE_SIZE,
+    create_stdlib_env, literate, materialize_sync as materialize, parse, value_to_json,
+    EvalContext, Thunk, MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -160,7 +160,7 @@ enum Commands {
         expr: Vec<String>,
 
         /// Prepend an input formatter from stdlib/cli/in/<format>.llt as the first pipeline stage.
-        /// Suppresses stdin JSON auto-detection. Error if the formatter file does not exist.
+        /// Required to read from stdin. Error if the formatter file does not exist.
         #[arg(short = 'i', long = "input", value_name = "FORMAT")]
         input: Option<String>,
 
@@ -1265,20 +1265,6 @@ fn run_eval(
         let _ = max_fds;
     }
 
-    // Check for piped stdin JSON.
-    // Suppressed when -i/--input is present (the input formatter reads from stdin Handle).
-    // Also suppressed when the first pipeline stage is stdin itself ("-").
-    // Returns raw serde_json::Value; conversion to LLT happens after the first
-    // EvalContext is created so ThunkIds are allocated in the shared arena.
-    let stdin_json = if input.is_none()
-        && !pipeline_stages.is_empty()
-        && !matches!(pipeline_stages[0], PipelineStage::File(ref p) if p == "-")
-    {
-        read_stdin_json()?
-    } else {
-        None
-    };
-
     // Create stdlib environment
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
     // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
@@ -1378,7 +1364,7 @@ fn run_eval(
     }
 
     // Inject `%stdin` Handle for fd 0 into the root environment only when `-i` is present.
-    // When `-i` is not present, stdin is read for JSON auto-detection instead.
+    // When `-i` is not specified, there is no stdin input.
     if input.is_some() {
         use std::cell::RefCell;
         use std::collections::HashMap;
@@ -1956,12 +1942,6 @@ fn run_eval(
             if let Some(ref libdir_rc) = libdir_rc_for_ctx {
                 ctx.set_libdir_dir(Arc::clone(libdir_rc));
             }
-            // Convert stdin JSON using this context so ThunkIds go into the shared arena.
-            if let Some(ref json) = stdin_json {
-                let thunk_val =
-                    json_to_value(json, 0, Span::origin(), &ctx).map_err(|e| format!("{e}"))?;
-                pipeline_input = Some(thunk_val);
-            }
             base_eval_ctx = Some(Arc::clone(&ctx));
             ctx
         };
@@ -2406,39 +2386,6 @@ fn read_source(file_path: &str) -> Result<String, String> {
         }
         Ok(buf)
     }
-}
-
-/// If stdin is not a terminal (i.e., data is piped), read it as JSON and convert
-/// to an LLT Value for injection as `%` in the first document.
-/// Read and parse stdin JSON. Returns the raw JSON value (not yet converted to LLT).
-/// The caller must convert it using `json_to_value` with the evaluation context so
-/// ThunkIds are allocated in the correct arena.
-fn read_stdin_json() -> Result<Option<serde_json::Value>, String> {
-    if io::stdin().is_terminal() {
-        return Ok(None);
-    }
-
-    let mut buf = String::new();
-    io::stdin()
-        .take(MAX_FILE_SIZE + 1)
-        .read_to_string(&mut buf)
-        .map_err(|e| format!("error reading stdin: {e}"))?;
-
-    if buf.len() as u64 > MAX_FILE_SIZE {
-        return Err(format!(
-            "stdin JSON input exceeds the 10 MB limit ({} bytes)",
-            MAX_FILE_SIZE
-        ));
-    }
-
-    if buf.trim().is_empty() {
-        return Ok(None);
-    }
-
-    let json: serde_json::Value =
-        serde_json::from_str(&buf).map_err(|e| format!("error parsing stdin JSON: {e}"))?;
-
-    Ok(Some(json))
 }
 
 /// Configuration for literate mode operations.

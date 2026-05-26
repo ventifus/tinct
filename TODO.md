@@ -825,17 +825,6 @@ Goal: all JSON handling in tinct stdlib; `serde_json` removed from `Cargo.toml`.
 
 **Sprint order:** json-no-stdin → json-delete-to-json → json-describe-tinct → json-pretty-indent → json-native-from-json → json-remove-serde-dep
 
-### json-no-stdin: No stdin input without -i flag
-
-If `-i` is not specified on the command line, there is no stdin input — period. No auto-detection of piped stdin, no implicit JSON parsing. Currently `read_stdin_json` reads stdin automatically when it's a non-terminal (piped), which is the source of all Rust JSON parsing in the input path.
-
-- [ ] Delete `read_stdin_json()` from `src/main.rs` entirely (`src/main.rs`)
-- [ ] Delete `json_to_value()` from `src/main.rs` — used only by `read_stdin_json` (`src/main.rs`)
-- [ ] Remove all implicit stdin detection and JSON parsing at startup (`src/main.rs`)
-- [ ] Require `-i json` (or `-i` with any formatter) for stdin input — document this as the intended behavior
-- [ ] Remove `serde_json` from `src/main.rs` stdin path
-- [ ] Update CLI help text to reflect that `-i` is required for stdin input (`src/main.rs`)
-
 ### json-delete-to-json: Delete builtin_to_json and value_to_json; json.llt uses codecs/json.llt
 
 `$builtin-to-json` (builtins_meta.rs) and `value_to_json` (lib.rs) are Rust JSON serializers. `stdlib/codecs/json.llt` has a complete tinct `to-json`. The `cli/out/json.llt` formatter should call the tinct version, not the Rust primitive.

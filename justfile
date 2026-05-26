@@ -278,11 +278,11 @@ version:
 
 # Show current vs latest versions of Rust toolchain and all direct dependencies.
 # Reads Cargo.lock for locked versions; queries crates.io and rust-lang.org via HTTPS.
-# Runs on host (no container overhead) — requires tinct in PATH (just install).
+# Writes samples/versions-spans.json (raw profile) and samples/versions-trace.json (Perfetto).
 versions:
     {{container}} run {{run_flags}} --network=host \
         -e RUST_VERSION={{rust_version}} \
-        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --quiet --bin tinct -- run --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 samples/versions.llt"
+        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --quiet --bin tinct -- run --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 --profile samples/versions-spans.json samples/versions.llt && cargo run --quiet --bin tinct -- run -i json -o json scripts/profile/trace.llt < samples/versions-spans.json > samples/versions-trace.json"
 
 # Generate stdlib API reference from @[doc: "..."] annotations.
 # Writes one file per module to doc/lib/<module>.md.
