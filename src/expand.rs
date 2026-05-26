@@ -1086,21 +1086,37 @@ impl Drop for ExpansionGuard<'_> {
 /// Native-surface version of `expand_macro_call`. Args are `Arc<SurfaceNode>` — no
 /// Recursively materialize a value and all nested thunk references.
 ///
-/// This simple version does NOT handle:
-/// - Cycle detection (assumes acyclic macro output)
-/// - Sharing preservation (may duplicate shared structures)
+/// Includes cycle detection to prevent infinite recursion on self-referential
+/// structures. Uses a visited set to track thunk pointers — if a cycle is detected,
+/// the value is returned as-is without further recursion.
 ///
-/// This is sufficient for the macro expansion fallback path since macro-generated
-/// AST dicts are typically small and acyclic.
+/// Sharing preservation is not guaranteed (may duplicate shared structures).
 fn force_dict_tree(val: &Value, ctx: &Arc<EvalContext>) -> EvalResult<Value> {
+    force_dict_tree_impl(val, ctx, &mut HashSet::new())
+}
+
+fn force_dict_tree_impl(
+    val: &Value,
+    ctx: &Arc<EvalContext>,
+    visited: &mut HashSet<*const Thunk>,
+) -> EvalResult<Value> {
     match val {
         Value::Dict(map) => {
             let mut new_map = indexmap::IndexMap::new();
             for (key, thunk_id) in map {
                 let thunk = ctx.get_thunk(*thunk_id);
+                let thunk_ptr = Arc::as_ptr(&thunk);
+
+                // Cycle detection: if we've already visited this thunk, return it as-is
+                if !visited.insert(thunk_ptr) {
+                    // Cycle detected — stop recursing
+                    new_map.insert(key.clone(), *thunk_id);
+                    continue;
+                }
+
                 let forced_val =
                     crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, ctx))?;
-                let deep_val = force_dict_tree(&forced_val, ctx)?;
+                let deep_val = force_dict_tree_impl(&forced_val, ctx, visited)?;
                 let deep_thunk = Arc::new(Thunk::new_materialized(deep_val, thunk.span));
                 let deep_id = ctx.alloc_thunk(deep_thunk);
                 new_map.insert(key.clone(), deep_id);
@@ -1110,12 +1126,19 @@ fn force_dict_tree(val: &Value, ctx: &Arc<EvalContext>) -> EvalResult<Value> {
         Value::Variant { tag, payload } => {
             if let Some(payload_id) = payload {
                 let payload_thunk = ctx.get_thunk(*payload_id);
+                let thunk_ptr = Arc::as_ptr(&payload_thunk);
+
+                // Cycle detection: if we've already visited this thunk, return variant as-is
+                if !visited.insert(thunk_ptr) {
+                    return Ok(val.clone());
+                }
+
                 let forced_payload = crate::async_rt::block_on_anywhere(eval::materialize(
                     &payload_thunk,
                     None,
                     ctx,
                 ))?;
-                let deep_payload = force_dict_tree(&forced_payload, ctx)?;
+                let deep_payload = force_dict_tree_impl(&forced_payload, ctx, visited)?;
                 let deep_thunk =
                     Arc::new(Thunk::new_materialized(deep_payload, payload_thunk.span));
                 let deep_id = ctx.alloc_thunk(deep_thunk);
@@ -1127,7 +1150,54 @@ fn force_dict_tree(val: &Value, ctx: &Arc<EvalContext>) -> EvalResult<Value> {
                 Ok(val.clone())
             }
         }
+        Value::Seq { head, tail } => {
+            let head_thunk = ctx.get_thunk(*head);
+            let head_ptr = Arc::as_ptr(&head_thunk);
+
+            let new_head = if !visited.insert(head_ptr) {
+                // Cycle in head — keep original thunk
+                *head
+            } else {
+                let forced_head =
+                    crate::async_rt::block_on_anywhere(eval::materialize(&head_thunk, None, ctx))?;
+                let deep_head = force_dict_tree_impl(&forced_head, ctx, visited)?;
+                let deep_thunk = Arc::new(Thunk::new_materialized(deep_head, head_thunk.span));
+                ctx.alloc_thunk(deep_thunk)
+            };
+
+            let tail_thunk = ctx.get_thunk(*tail);
+            let tail_ptr = Arc::as_ptr(&tail_thunk);
+
+            let new_tail = if !visited.insert(tail_ptr) {
+                // Cycle in tail — keep original thunk
+                *tail
+            } else {
+                let forced_tail =
+                    crate::async_rt::block_on_anywhere(eval::materialize(&tail_thunk, None, ctx))?;
+                let deep_tail = force_dict_tree_impl(&forced_tail, ctx, visited)?;
+                let deep_thunk = Arc::new(Thunk::new_materialized(deep_tail, tail_thunk.span));
+                ctx.alloc_thunk(deep_thunk)
+            };
+
+            Ok(Value::Seq {
+                head: new_head,
+                tail: new_tail,
+            })
+        }
+        Value::Overlay(left, right) => {
+            // Flatten the overlay to a dict, then recurse on the result
+            let flattened_map =
+                builtins::flatten_overlay(left, right, "force_dict_tree", ctx, Span::origin())?;
+            let dict_val = Value::Dict(flattened_map);
+            force_dict_tree_impl(&dict_val, ctx, visited)
+        }
+        // Explicit passthrough for Expression values — these are already fully formed AST nodes
+        Value::Expression(_) => Ok(val.clone()),
         // Primitives and other types are already fully materialized
+        // Includes: Int, Float, Bool, String, Function, Builtin, DirCap, NetCap, Handle,
+        // WriteHandle, RevocableDirCap, Decimal, BigInt, Bytes, Uri, Timestamp, Duration,
+        // ClockCap, Timezone, QuicSession, Http2Session, Http3Session, QuicDatagramHandle,
+        // DatagramHandle, Program, Document, Builder, Proxy
         _ => Ok(val.clone()),
     }
 }

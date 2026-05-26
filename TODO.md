@@ -381,14 +381,6 @@ Core sprints complete: `macros-v2-ast`, `macros-v2-expand`, `macros-v2-inject`, 
 ## Codebase Audit Findings (Health Review #311, 2026-05-25)
 
 
-### force-dict-tree-soundness: Add cycle detection and Seq/Overlay handling to force_dict_tree [Major]
-
-**computer-scientist F1 + eval-engine M1.** `src/expand.rs:1095-1133` — `force_dict_tree` lacks cycle detection (can stack-overflow on cyclic macro output) and silently ignores `Value::Seq` and `Value::Overlay` (passes through unmaterialized ThunkIds to dict_to_surface_node, causing incorrect AST).
-
-- [ ] Add `visited: &mut HashSet<*const Thunk>` cycle detection to `force_dict_tree` (`src/expand.rs:1095`)
-- [ ] Add `Value::Seq` arm to force head and tail thunks (`src/expand.rs`)
-- [ ] Add `Value::Overlay` arm calling `flatten_overlay` (`src/expand.rs`)
-- [ ] Make `Value::Expression` passthrough explicit rather than wildcard (`src/expand.rs`)
 
 ### nominal-variant-constructor-types: Implement precise types for ADT constructors [Major]
 
