@@ -270,6 +270,12 @@ pub struct EvalContext {
     /// calls `abort()` on each handle — a no-op on completed handles, prevents one-shot
     /// sleep tasks from blocking drain — then awaits each handle to allow clean shutdown.
     pub task_registry: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    /// Profiling collector: records span-level timing data during evaluation.
+    /// None when profiling is disabled (the common case). When Some, every thunk materialization
+    /// opens and closes a span. Shared via Arc<Mutex<>> so child contexts created by `with_base_dir`
+    /// write to the same collector.
+    /// Public for CLI initialization (main.rs --profile flag).
+    pub profiling: Option<Arc<Mutex<crate::profiling::ProfilingCollector>>>,
 }
 
 impl EvalContext {
@@ -329,6 +335,7 @@ impl EvalContext {
             libdir_dir: Mutex::new(None),
             cancel: tokio_util::sync::CancellationToken::new(),
             task_registry: Arc::new(Mutex::new(Vec::new())),
+            profiling: None,
         })
     }
 
@@ -372,6 +379,7 @@ impl EvalContext {
             libdir_dir: Mutex::new(None),
             cancel: tokio_util::sync::CancellationToken::new(),
             task_registry: Arc::new(Mutex::new(Vec::new())),
+            profiling: None,
         })
     }
 
@@ -424,6 +432,7 @@ impl EvalContext {
             libdir_dir: Mutex::new(None),
             cancel: tokio_util::sync::CancellationToken::new(),
             task_registry: Arc::new(Mutex::new(Vec::new())),
+            profiling: None,
         })
     }
 
@@ -460,6 +469,7 @@ impl EvalContext {
             libdir_dir: Mutex::new(self.libdir_dir.lock().unwrap().clone()),
             cancel: self.cancel.clone(),
             task_registry: Arc::clone(&self.task_registry),
+            profiling: self.profiling.as_ref().map(Arc::clone),
         })
     }
 
@@ -496,6 +506,7 @@ impl EvalContext {
             libdir_dir: Mutex::new(self.libdir_dir.lock().unwrap().clone()),
             cancel: child_token.clone(),
             task_registry: Arc::clone(&self.task_registry),
+            profiling: self.profiling.as_ref().map(Arc::clone),
         });
         (child_ctx, child_token)
     }
@@ -526,6 +537,7 @@ impl EvalContext {
             libdir_dir: Mutex::new(self.libdir_dir.lock().unwrap().clone()),
             cancel,
             task_registry: Arc::clone(&self.task_registry),
+            profiling: self.profiling.as_ref().map(Arc::clone),
         })
     }
 
@@ -557,6 +569,7 @@ impl EvalContext {
             libdir_dir: Mutex::new(self.libdir_dir.lock().unwrap().clone()),
             cancel: child_token,
             task_registry: Arc::clone(&self.task_registry),
+            profiling: self.profiling.as_ref().map(Arc::clone),
         })
     }
 

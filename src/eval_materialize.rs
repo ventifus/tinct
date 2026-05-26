@@ -25,6 +25,65 @@ use crate::eval_call::{invoke_function, CallContext};
 use crate::types::Type;
 use crate::value::{string_val, Environment, Key, Thunk, Value};
 
+/// RAII guard for profiling spans. Automatically closes the span on drop.
+struct ProfilingSpanGuard {
+    profiling: Option<Arc<Mutex<crate::profiling::ProfilingCollector>>>,
+    span_id: Option<u64>,
+}
+
+impl ProfilingSpanGuard {
+    fn new(ctx: &Arc<EvalContext>, thunk: &Thunk) -> Self {
+        let (profiling, span_id) = if let Some(ref prof) = ctx.profiling {
+            // Extract span source information.
+            // Span has no file field; source_file is not available from the span alone.
+            // The include cache (not yet plumbed here) would provide it in a future sprint.
+            let source_file: Option<String> = None;
+            let (source_start, source_end) = if thunk.span != crate::ast::Span::origin() {
+                (
+                    Some((thunk.span.start.line, thunk.span.start.column)),
+                    Some((thunk.span.end.line, thunk.span.end.column)),
+                )
+            } else {
+                (None, None)
+            };
+
+            // Extract source text snippet (TODO: from include cache)
+            let source_text = None;
+
+            // Extract builtin name from origin if it looks like a builtin
+            let (builtin_name, origin_builtin) = match &thunk.origin {
+                Some(origin) if origin.starts_with("builtin-") => (Some(origin.to_string()), None),
+                Some(origin) => (None, Some(origin.to_string())),
+                None => (None, None),
+            };
+
+            let id = prof.lock().unwrap().open_span(
+                source_file,
+                source_start,
+                source_end,
+                source_text,
+                builtin_name,
+                origin_builtin,
+                thunk.create_parent,
+                thunk.create_time_us,
+            );
+            (Some(Arc::clone(prof)), Some(id))
+        } else {
+            (None, None)
+        };
+
+        Self { profiling, span_id }
+    }
+}
+
+impl Drop for ProfilingSpanGuard {
+    fn drop(&mut self) {
+        if let (Some(ref profiling), Some(span_id)) = (&self.profiling, self.span_id) {
+            profiling.lock().unwrap().close_span(span_id);
+        }
+    }
+}
+
 /// Type alias for the optional default expression + environment pair carried by guarded thunks.
 /// Reduces type_complexity in RestoreState and GuardedValidateData.
 type GuardDefault = (
@@ -539,6 +598,9 @@ pub(crate) async fn force_step(
     ctx: &Arc<EvalContext>,
 ) -> Action {
     let thunk_span = thunk.span;
+
+    // Open profiling span if profiling is enabled. The guard closes the span on drop.
+    let _profile_guard = ProfilingSpanGuard::new(ctx, thunk);
 
     // Check continuation stack depth before processing. This prevents resource exhaustion
     // from deeply nested evaluation chains. Checked here (before any continuations are

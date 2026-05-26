@@ -96,6 +96,8 @@ pub mod repl;
 // LSP (Language Server Protocol).
 #[cfg(feature = "lsp")]
 pub mod lsp;
+// Profiling infrastructure: span collection, timing, and conversion to Value format.
+pub mod profiling;
 
 use std::rc::Rc;
 use std::sync::Arc;

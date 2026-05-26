@@ -1188,6 +1188,12 @@ pub struct Thunk {
     /// `None` for anonymous thunks (the common case); eliminates per-thunk String allocation.
     /// Used for stack trace construction when materialization fails.
     pub(crate) origin: Option<Arc<str>>,
+    /// Profiling: ID of the span that was active when this thunk was created (allocation context).
+    /// None when profiling is disabled or for bootstrap thunks created before profiling starts.
+    pub(crate) create_parent: Option<u64>,
+    /// Profiling: wall-clock microseconds when this thunk was created (for flow arrows in traces).
+    /// 0 when profiling is disabled.
+    pub(crate) create_time_us: u64,
 }
 
 /// Return type of `Thunk::take_pending_builtin`.
@@ -1236,6 +1242,20 @@ pub type SurfaceParts = (
 );
 
 impl Thunk {
+    /// Helper: extract profiling data (create_parent, create_time_us) from context.
+    fn profiling_data(ctx: &Arc<crate::eval::EvalContext>) -> (Option<u64>, u64) {
+        if let Some(ref profiling) = ctx.profiling {
+            let guard = profiling.lock().unwrap();
+            let baseline = guard.baseline_instant();
+            (
+                guard.current_span_id(),
+                baseline.elapsed().as_micros() as u64,
+            )
+        } else {
+            (None, 0)
+        }
+    }
+
     /// Create a placeholder thunk for letrec pre-allocation. Must be filled via
     /// `set_state()` before use. Panics at materialization if still in Placeholder state.
     pub fn new_placeholder(span: Span) -> Self {
@@ -1246,6 +1266,8 @@ impl Thunk {
             },
             span,
             origin: None,
+            create_parent: None,
+            create_time_us: 0,
         }
     }
 
@@ -1259,6 +1281,7 @@ impl Thunk {
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
+        let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new(Some(UnevaluatedState::CoreExpr { expr, env, ctx })),
@@ -1266,6 +1289,8 @@ impl Thunk {
             },
             span,
             origin: None,
+            create_parent,
+            create_time_us,
         }
     }
 
@@ -1280,6 +1305,8 @@ impl Thunk {
             inner,
             span,
             origin: None,
+            create_parent: None,
+            create_time_us: 0,
         }
     }
 
@@ -1296,6 +1323,7 @@ impl Thunk {
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
+        let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new(Some(UnevaluatedState::Surface {
@@ -1309,6 +1337,8 @@ impl Thunk {
             },
             span,
             origin: None,
+            create_parent,
+            create_time_us,
         }
     }
 
@@ -1322,6 +1352,7 @@ impl Thunk {
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
+        let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new(Some(UnevaluatedState::AstNodeField { node, field, ctx })),
@@ -1329,6 +1360,8 @@ impl Thunk {
             },
             span,
             origin: None,
+            create_parent,
+            create_time_us,
         }
     }
 
@@ -1342,6 +1375,7 @@ impl Thunk {
         origin: Option<Arc<str>>,
         ctx: Arc<crate::eval::EvalContext>,
     ) -> Self {
+        let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new(Some(UnevaluatedState::Builtin {
@@ -1355,6 +1389,8 @@ impl Thunk {
             },
             span,
             origin,
+            create_parent,
+            create_time_us,
         }
     }
 
@@ -1374,6 +1410,7 @@ impl Thunk {
         } else {
             Some(Box::new(named))
         };
+        let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new(Some(UnevaluatedState::Call {
@@ -1388,6 +1425,8 @@ impl Thunk {
             },
             span,
             origin,
+            create_parent,
+            create_time_us,
         }
     }
 
@@ -1418,6 +1457,8 @@ impl Thunk {
         blame_label: Option<crate::error::BlameLabel>,
         default: Option<GuardDefault>,
     ) -> Self {
+        // Guarded thunks don't have a ctx to extract profiling data from
+        // (they wrap an existing thunk). Use no profiling data.
         Self {
             inner: ThunkInner {
                 unevaluated: Mutex::new(Some(UnevaluatedState::Guarded {
@@ -1432,6 +1473,8 @@ impl Thunk {
             },
             span: guard_span,
             origin: Some(Arc::from("type guard")),
+            create_parent: None,
+            create_time_us: 0,
         }
     }
 
@@ -1563,6 +1606,8 @@ impl Thunk {
             },
             span: self.span,
             origin: self.origin.clone(),
+            create_parent: self.create_parent,
+            create_time_us: self.create_time_us,
         }))
     }
 

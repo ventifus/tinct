@@ -169,6 +169,12 @@ enum Commands {
         #[arg(short = 'o', long = "output", value_name = "FORMAT")]
         output: Option<String>,
 
+        /// Write profiling data to a JSON file. Collects span-level timing data during evaluation.
+        /// Each thunk materialization produces a span record with source location, timing, parent
+        /// attribution, and stall breakdown. Use tinct scripts in scripts/profile/ to analyze.
+        #[arg(long, value_name = "FILE")]
+        profile: Option<String>,
+
         /// Input LLT files. Use `-` to read LLT source from stdin.
         /// Multiple files form a pipeline: each file's output becomes % for the next.
         files: Vec<String>,
@@ -380,6 +386,7 @@ fn main() {
             expr,
             input,
             output,
+            profile,
             files,
         } => run_eval(
             &files,
@@ -405,6 +412,7 @@ fn main() {
             expr,
             input,
             output,
+            profile.as_deref(),
         ),
         Commands::Hash { file } => run_hash(&file),
         Commands::Fmt {
@@ -1149,6 +1157,7 @@ fn run_eval(
     expr: Vec<String>,
     input: Option<String>,
     output: Option<String>,
+    profile: Option<&str>,
 ) -> Result<(), String> {
     // Build the complete pipeline: [input formatter] + [files/exprs interleaved] + [output formatter]
     let mut pipeline_stages: Vec<PipelineStage> = Vec::new();
@@ -1775,6 +1784,13 @@ fn run_eval(
     // (different base_dir) while sharing the same arena, state, and stdlib_env.
     let mut pipeline_input: Option<Arc<Thunk>> = None;
 
+    // Initialize profiling collector if --profile is set
+    let profiling_collector = profile.map(|_| {
+        Arc::new(std::sync::Mutex::new(
+            tinct::profiling::ProfilingCollector::new(),
+        ))
+    });
+
     let mut thunk = None;
     let mut last_source = String::new();
     let mut last_eval_ctx: Option<Arc<EvalContext>> = None;
@@ -1923,7 +1939,7 @@ fn run_eval(
         let eval_ctx = if let Some(ref base) = base_eval_ctx {
             base.with_base_dir_and_path(base_dir, Some(file_base_dir_path.clone()))
         } else {
-            let ctx = EvalContext::new_with_options(
+            let mut ctx = EvalContext::new_with_options(
                 base_dir,
                 Arc::clone(&env),
                 Arc::clone(&type_stage_env),
@@ -1931,6 +1947,10 @@ fn run_eval(
                 require_integrity,
                 env_allowed.clone(),
             );
+            // Set profiling collector if --profile was specified
+            if let Some(ref collector) = profiling_collector {
+                Arc::get_mut(&mut ctx).unwrap().profiling = Some(Arc::clone(collector));
+            }
             // Share the already-open libdir Dir with the evaluator so that the self-hosted
             // `include` (prelude.llt) can inject %libdir into nested includes without re-acquiring ambient authority.
             if let Some(ref libdir_rc) = libdir_rc_for_ctx {
@@ -2005,7 +2025,9 @@ fn run_eval(
     }
 
     let thunk = thunk.ok_or_else(|| "internal error: no files processed".to_string())?;
-    let eval_ctx = last_eval_ctx.ok_or_else(|| "internal error: no eval context".to_string())?;
+    let eval_ctx = last_eval_ctx
+        .clone()
+        .ok_or_else(|| "internal error: no eval context".to_string())?;
 
     // When -o flag is present, the pipeline's last expression is an output formatter
     // that returns a String. Materialize it and write to stdout.
@@ -2045,6 +2067,31 @@ fn run_eval(
         // Shallow materialization only — no deep forcing, no output
     }
     // Else: neither -o nor --eval specified — lazy evaluation, no output
+
+    // Write profiling data if --profile was specified
+    if let (Some(profile_path), Some(collector)) = (profile, profiling_collector) {
+        // Extract the profiling data from the base context (last_eval_ctx is the last evaluated context)
+        if let Some(ref ctx) = last_eval_ctx {
+            // Extract spans from the collector
+            let spans = {
+                let mut prof_guard = collector.lock().unwrap();
+                prof_guard.extract_spans()
+            };
+
+            // Convert to tinct Value
+            let spans_value = tinct::profiling::ProfilingCollector::spans_to_value(spans, ctx);
+
+            // Serialize to JSON
+            let json = tinct::value_to_json(&spans_value, ctx, tinct::Span::origin())
+                .map_err(|e| format!("profiling: JSON serialization error: {e}"))?;
+            let json_str = serde_json::to_string_pretty(&json)
+                .map_err(|e| format!("profiling: JSON serialization error: {e}"))?;
+
+            // Write to file
+            std::fs::write(profile_path, json_str)
+                .map_err(|e| format!("profiling: error writing {}: {e}", profile_path))?;
+        }
+    }
 
     // Cancel any pending alarm before returning success
     #[cfg(unix)]

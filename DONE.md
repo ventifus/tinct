@@ -10396,3 +10396,23 @@ Post-panel findings from `serialization-span-threading` sprint. All minor.
 - [x] Add `span: ast::Span` parameter to `depth_limit_output()` in `ValueVisitor` trait and pass it from `visit_value`'s depth check at `src/lib.rs:687` — so depth-exceeded JSON errors point at the deepest-nested value's definition site instead of `Span::origin()` (`src/lib.rs:969`)
 - [x] Add span-assertion unit tests for `value_to_json` span threading — construct a `Value::Function` at a known non-origin span, call `value_to_json`, assert `err.definition_span == that span`. Same for Builtin, Proxy, and a nested dict-entry case. (`src/lib.rs` tests)
 - [x] Document `ValueVisitor` and `visit_value` in `doc/08-evaluation.md` — the visitor pattern is the output serialization architecture but is undocumented in the evaluation chapter
+
+## Profiling and Call Tracing
+
+### profiling-collector: Rust span collection infrastructure ✅ DONE (2026-05-25)
+
+**Whatif:** `profiling`
+**Spec chapters:** `doc/12-tooling.md §Profiling`
+
+- [x] Create `src/profiling.rs` with `SpanRecord` struct (14 fields: id, materialize_parent, create_parent, create_time_us, source_file, source_start, source_end, source_text, builtin_name, origin_builtin, start_us, end_us, stall_us, stall_kind) (`src/profiling.rs`)
+- [x] Implement `ProfilingCollector` with open-span stack, `open_span()` / `close_span()`, and `current_span_id()` for create-parent recording (`src/profiling.rs`)
+- [x] Implement `ProfilingCollector::into_value()` — converts `Vec<SpanRecord>` to `Value::Seq` of plain dicts with kebab-case keys matching the schema in `doc/12-tooling.md §Span Record Schema` (`src/profiling.rs`)
+- [x] Add `profiling: Option<Arc<Mutex<ProfilingCollector>>>` to `EvalContext` (`src/eval.rs`)
+- [x] Instrument `force_step` in `eval_materialize.rs` — bracket thunk materialization with `open_span` / `close_span` when `ctx.profiling.is_some()` (`src/eval_materialize.rs`)
+- [x] Record `create_parent` and `create_time_us` at thunk construction — read `ProfilingCollector::current_span_id()` in `Thunk::new_pending_call`, `Thunk::new_pending_builtin`, `Thunk::new_unevaluated` when profiling is active (`src/value.rs`, `src/eval.rs`)
+- [x] Add stall recording — `ProfilingCollector::record_stall(stall_us, stall_kind)` updates the current span's `stall_us` and `stall_kind` fields (`src/profiling.rs`)
+- [x] Instrument I/O builtins with stall recording: `builtin_slurp`, `builtin_write_handle`, `builtin_open` → `stall_kind: "io"`; `builtin_connect`, `builtin_http_request` → `"net"`; `builtin_select_once`, `builtin_recv` → `"channel"` (`src/builtins_io.rs`)
+- [x] Add `--profile <file.json>` CLI flag to `tinct run` — initialize `ProfilingCollector`, retrieve span `Value::Seq` after eval, serialize to named file via `-o json` output path (`src/main.rs`)
+- [x] Tests: corpus test `tests/corpus/eval/profiling/basic.llt` — run with `--profile`, verify span file is valid JSON containing expected fields (id, materialize-parent, create-parent, source-file, start-us, end-us)
+- [x] Tests: corpus test `tests/corpus/eval/profiling/stall.llt` — run a program that calls `builtin-slurp` on a file, verify span file contains a span with `stall-us > 0` and `stall-kind: "io"`
+- [x] Tests: unit tests in `src/profiling.rs` — `SpanRecord` round-trip through `into_value()`, verify dict key names and types

@@ -833,24 +833,6 @@ Follow-up from builtin-privacy Phase 3. Three issues discovered when making `sam
 
 Span-level profiling with dual attribution (materialization-context and creation-context), stall breakdown (I/O, network, channel, timer), and Perfetto trace output. Collection via `--profile spans.json`; analysis via `scripts/profile/` tinct programs against the span file. See `doc/12-tooling.md §Profiling`.
 
-### profiling-collector: Rust span collection infrastructure
-
-**Whatif:** `profiling`
-**Spec chapters:** `doc/12-tooling.md §Profiling`
-
-- [ ] Create `src/profiling.rs` with `SpanRecord` struct (14 fields: id, materialize_parent, create_parent, create_time_us, source_file, source_start, source_end, source_text, builtin_name, origin_builtin, start_us, end_us, stall_us, stall_kind) (`src/profiling.rs`)
-- [ ] Implement `ProfilingCollector` with open-span stack, `open_span()` / `close_span()`, and `current_span_id()` for create-parent recording (`src/profiling.rs`)
-- [ ] Implement `ProfilingCollector::into_value()` — converts `Vec<SpanRecord>` to `Value::Seq` of plain dicts with kebab-case keys matching the schema in `doc/12-tooling.md §Span Record Schema` (`src/profiling.rs`)
-- [ ] Add `profiling: Option<Arc<Mutex<ProfilingCollector>>>` to `EvalContext` (`src/eval.rs`)
-- [ ] Instrument `force_step` in `eval_materialize.rs` — bracket thunk materialization with `open_span` / `close_span` when `ctx.profiling.is_some()` (`src/eval_materialize.rs`)
-- [ ] Record `create_parent` and `create_time_us` at thunk construction — read `ProfilingCollector::current_span_id()` in `Thunk::new_pending_call`, `Thunk::new_pending_builtin`, `Thunk::new_unevaluated` when profiling is active (`src/value.rs`, `src/eval.rs`)
-- [ ] Add stall recording — `ProfilingCollector::record_stall(stall_us, stall_kind)` updates the current span's `stall_us` and `stall_kind` fields (`src/profiling.rs`)
-- [ ] Instrument I/O builtins with stall recording: `builtin_slurp`, `builtin_write_handle`, `builtin_open` → `stall_kind: "io"`; `builtin_connect`, `builtin_http_request` → `"net"`; `builtin_select_once`, `builtin_recv` → `"channel"` (`src/builtins_io.rs`)
-- [ ] Add `--profile <file.json>` CLI flag to `tinct run` — initialize `ProfilingCollector`, retrieve span `Value::Seq` after eval, serialize to named file via `-o json` output path (`src/main.rs`)
-- [ ] Tests: corpus test `tests/corpus/eval/profiling/basic.llt` — run with `--profile`, verify span file is valid JSON containing expected fields (id, materialize-parent, create-parent, source-file, start-us, end-us)
-- [ ] Tests: corpus test `tests/corpus/eval/profiling/stall.llt` — run a program that calls `builtin-slurp` on a file, verify span file contains a span with `stall-us > 0` and `stall-kind: "io"`
-- [ ] Tests: unit tests in `src/profiling.rs` — `SpanRecord` round-trip through `into_value()`, verify dict key names and types
-
 ### profiling-scripts: Analysis scripts and benchmarks
 
 **Whatif:** `profiling`
