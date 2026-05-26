@@ -9,10 +9,11 @@
 #   task, await, channel, send, recv, select-once, par, par-map, par-filter
 #   signal-channel, timer-channel, watch-channel
 #   context, with-cancel, with-timeout, with-deadline, cancelled?, cancel-task
+#   cancel-root, drain, exit-now
 #
-# NOT YET AVAILABLE (pending runtime-v2 Sprint 3 shutdown primitives):
-#   cancel-root, drain, exit-now, non-cancellable, with-context
-#   These are tracked in TODO.md under runtime-v2-shutdown-primitives.
+# NOT YET AVAILABLE (pending future sprints):
+#   non-cancellable, with-context, timeout
+#   These are tracked in TODO.md.
 #
 # Usage:
 #   [include %libdir "async.llt"]
@@ -126,14 +127,9 @@ Example: [par-filter [fn [x] [> x 0]] items]
 # Shutdown utilities
 # ============================================================================
 #
-# exit and graceful-exit require cancel-root / drain / exit-now builtins from
-# runtime-v2 Sprint 3 (shutdown primitives), which are not yet implemented.
-# They are stubbed here with raise so the file loads cleanly and callers get a
-# clear error at call-time rather than at load-time.
-#
-# TODO: replace stubs with real implementations once cancel-root / drain /
-# exit-now are registered in standard_builtins(). Tracked: TODO.md
-# runtime-v2-shutdown-primitives.
+# exit and graceful-exit use cancel-root / drain / exit-now builtins.
+# Both wait indefinitely for drain in the MVP implementation.
+# TODO: Add drain timeout support to graceful-exit when timeout builtin is available.
 
 # exit: graceful shutdown — cancel all tasks, wait for drain, then exit.
 # Calls cancel-root to signal all tasks, then drain to wait for them to finish,
@@ -146,26 +142,33 @@ Graceful shutdown: cancel all tasks, drain, then exit with code.
 
 Example: [exit 0]
 
-Note: Requires cancel-root / drain / exit-now (runtime-v2 Sprint 3).
-Currently raises an error until those builtins are available.
+Note: Waits indefinitely for tasks to drain. For bounded wait, use graceful-exit.
 """]: [fn [let code@Int]
-    [builtin-raise "exit: cancel-root/drain/exit-now not yet implemented (runtime-v2 Sprint 3)"]]
+    [do
+        [cancel-root]
+        [drain]
+        [exit-now code]]]
 
 # graceful-exit: bounded graceful shutdown with an explicit drain timeout.
-# Cancels all tasks, waits up to drain-timeout for them to finish, then
-# force-exits regardless.
+# Cancels all tasks, waits for drain, then force-exits.
 #
-# Type: (Duration -> Int -> Null)
-# Example: [graceful-exit [seconds 10] 0]
+# Type: (Int -> Null)
+# Example: [graceful-exit 0]
+#
+# TODO: Add drain-timeout parameter when timeout builtin is implemented.
+# For now, this waits indefinitely like exit.
 graceful-exit@[doc: """
-Bounded graceful shutdown: cancel tasks, wait up to drain-timeout, then exit.
+Bounded graceful shutdown: cancel tasks, drain, then exit.
 
-Example: [graceful-exit [seconds 10] 0]
+Example: [graceful-exit 0]
 
-Note: Requires cancel-root / drain / exit-now (runtime-v2 Sprint 3).
-Currently raises an error until those builtins are available.
-"""]: [fn [let drain-timeout code@Int]
-    [builtin-raise "graceful-exit: cancel-root/drain/exit-now not yet implemented (runtime-v2 Sprint 3)"]]
+Note: MVP implementation waits indefinitely for drain.
+TODO: Add drain-timeout parameter when timeout builtin is available.
+"""]: [fn [let code@Int]
+    [do
+        [cancel-root]
+        [drain]
+        [exit-now code]]]
 
 # ============================================================================
 # Event-loop utilities

@@ -968,8 +968,8 @@ pub(crate) fn builtin_connect(
                 // TCP path
                 // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
                 // arity validated above (structural check, no forcing)
-                let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: discriminant-dispatched (transport_tag match arm)
-                let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: discriminant-dispatched (transport_tag match arm)
+                let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: no-op — pre-materialized by pos_strictness[2]=Seq
+                let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: real materialize — args[3] not in pos_strictness (only 3 entries); safe because arity check above guarantees args.len()==4
 
                 // Extract NetCap
                 let entries = match cap_val {
@@ -1074,7 +1074,7 @@ pub(crate) fn builtin_connect(
                 {
                     // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
                     // arity validated above (structural check, no forcing)
-                    let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: discriminant-dispatched (transport_tag match arm)
+                    let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: no-op — pre-materialized by pos_strictness[2]=Seq
 
                     // Extract DirCap for path validation (Unix socket)
                     let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;
@@ -1166,8 +1166,8 @@ pub(crate) fn builtin_connect(
                 // UDP datagram socket path
                 // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
                 // arity validated above (structural check, no forcing)
-                let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: discriminant-dispatched (transport_tag match arm)
-                let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: discriminant-dispatched (transport_tag match arm)
+                let host_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: no-op — pre-materialized by pos_strictness[2]=Seq
+                let port_val = materialize(&args[3], Some(&call_span), &ctx)?; // H2: real materialize — args[3] not in pos_strictness (only 3 entries); safe because arity check above guarantees args.len()==4
 
                 // Extract NetCap
                 let entries = match cap_val {
@@ -1244,7 +1244,7 @@ pub(crate) fn builtin_connect(
                 {
                     // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
                     // arity validated above (structural check, no forcing)
-                    let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: discriminant-dispatched (transport_tag match arm)
+                    let path_val = materialize(&args[2], Some(&call_span), &ctx)?; // H2: no-op — pre-materialized by pos_strictness[2]=Seq
 
                     // Extract DirCap for path validation (Unix socket)
                     let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;

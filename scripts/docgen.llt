@@ -1,186 +1,215 @@
 # docgen.llt — Generate per-module Markdown docs for all stdlib modules.
 #
-# Walks every .llt file under stdlib/, extracts exported bindings that carry
-# doc annotations, and writes one .md file per module into %docdir.
-# Emits an index to stdout (redirected to doc/11b-reference.md by the justfile).
+# Walks every .llt file under stdlib/, traverses the parsed AST to extract
+# exported bindings that carry doc annotations, and writes one .md file per
+# module into %docdir.
+#
+# Uses native AST introspection via `load` (runtime-v2 Part F/G):
+#   1. `load` source text → Program (macro-expanded, desugared)
+#   2. program.documents → [Seq Document] (skip Type-stage docs)
+#   3. Each doc's expressions → [Seq Expression]; take the last Dict expression
+#   4. Dict.entries → [Seq Entry] where Entry has key: Expression, value: Expression
+#   5. key: Var{name} or Annotated{name, annotation} → binding name + old-style doc
+#   6. value: Fn{return-ann, params} → new-style doc + return type + param signatures
+#
+# The Annotation Variants exposed by load/surface_fields.rs now carry text content:
+#   Simple     → payload {text: "TypeName" name: "TypeName"}
+#   PropertyDict → payload {text: "..." doc: "..." return: "..."}  (doc/return when present)
+#   Annotated  → payload {text: "Name@Inner" name: "Name" inner: "Inner"}
+#
+# This eliminates all text-parsing that the old docgen relied on.
 #
 # Usage (from project root via justfile):
 #   just docgen
 
 --- caps: [%docdir: @[[all DirCap Writable]]]
 
+# ============================================================================
+# Private helpers (not exported)
+# ============================================================================
+
 [
 
 # ── File Discovery ────────────────────────────────────────────────────────────
 
-scan-dir: [fn@[return: Dict  doc: """
-  Collect all .llt paths under a directory prefix (relative to %root).
-  Returns a positional dict of path strings like "stdlib/strings.llt".
-"""] [let prefix@String acc@Dict]
-  [call [fn@Dict [let entries]
+# Collect all .llt paths under a directory prefix (relative to %libdir).
+# Returns a Seq of path strings like "strings.llt" or "codecs/json.llt".
+scan-dir: [fn [let prefix@String acc]
+  [call [fn [let entries]
     [reduce
-      [fn@Dict [let files entry]
-        [call [fn@Dict [let full@String]
-          [builtin-if [= entry.type "dir"]
-            [scan-dir full files]
-            [builtin-if [ends-with? entry.name ".llt"]
-              [append files full]
-              files]]]
-          [if [= prefix ""] [str entry.name] [str prefix "/" entry.name]]]]
+      [fn [let files entry]
+        [full: [if [= prefix ""] [str entry.name] [str prefix "/" entry.name]]]
+        [if [= entry.type "dir"]
+          [scan-dir full files]
+          [if [ends-with? entry.name ".llt"]
+            [append files full]
+            files]]]
       acc
       entries]]
     [collect [list-dir %libdir [if [= prefix ""] "." prefix]]]]]
 
-llt-files: [sorted [scan-dir "" []]]
+llt-files: [sort [scan-dir "" []]]
 
-# ── Bracket Matching ──────────────────────────────────────────────────────────
+# ── Annotation accessors ──────────────────────────────────────────────────────
+#
+# Annotation Variants (from surface_fields.rs) now expose a payload Dict with:
+#   Simple:       {text: "Name"  name: "Name"}
+#   PropertyDict: {text: "..."   doc: "..."  return: "..."}  (doc/return optional)
+#   Annotated:    {text: "A@B"   name: "A"   inner: "B"}
+#
+# Dot-access on a Variant auto-unpacks through the payload, so ann.text works.
+# We use try-or for safe access when the annotation may be null (no annotation).
 
-find-close: [fn@[return: Int  doc: """
-  Find the index of the ']' that closes the '[' at position 0 of s.
-  Call with depth=1, i=1 (already stepped past the opening '[').
-  Returns -1 if unmatched or s is exhausted.
-"""] [let s@String depth@Int i@Int]
-  [call [fn@Int [let i1@Int c@String]
-    [builtin-if [>= i [length s]]
-      -1
-      [builtin-if [= c "["]
-        [find-close s [+ depth 1] i1]
-        [builtin-if [= c "]"]
-          [builtin-if [= depth 1] i [find-close s [- depth 1] i1]]
-          [find-close s depth i1]]]]]
-    [+ i 1]
-    [str-slice s i [+ i 1]]]]
+# Get the display text of an Annotation Variant (or "" if null/absent).
+ann-text: [fn@String [let ann]
+  [try-or [fn [let] ann.text] ""]]
 
-# ── String Helpers ────────────────────────────────────────────────────────────
+# Get the doc: property from a PropertyDict Annotation (or "" if absent).
+ann-doc: [fn@String [let ann]
+  [try-or [fn [let] ann.doc] ""]]
 
-before-first: [fn@[return: String  doc: """Text before the first occurrence of needle (returns full s if absent)."""] [let needle@String s@String]
-  [get 0 [split needle s]]]
+# Get the return: property from a PropertyDict Annotation (or "" if absent).
+ann-return-prop: [fn@String [let ann]
+  [try-or [fn [let] ann.return] ""]]
 
-after-first: [fn@[return: String  doc: """Text after the first occurrence of needle (returns "" if absent)."""] [let needle@String s@String]
-  [idx: [str-index-of needle s]]
-  [if [= idx -1]
+# Determine the return type text from a return-ann Annotation Variant.
+#   Simple      → use ann.text directly (e.g. "String", "Bool")
+#   PropertyDict with return: → use ann.return (the explicit return type)
+#   PropertyDict without return: → use ann.text (the full display, e.g. "[return: X]")
+#   null/absent → "Any"
+return-type-text: [fn@String [let return-ann]
+  [tag: [try-or [fn [let] [tag-of return-ann]] ""]]
+  [if [= tag ""]
+    "Any"
+    [if [= tag "PropertyDict"]
+      [call [fn@String [let ret]
+        [if [= ret ""] [ann-text return-ann] ret]]
+       [ann-return-prop return-ann]]
+      # Simple or Annotated — use display text directly
+      [ann-text return-ann]]]]
+
+# ── Parameter signature ───────────────────────────────────────────────────────
+
+# Build a parameter signature string from a Parameter Variant.
+# Parameter payload: {name: String  variadic: Bool  annotation: Annotation Variant}
+# Returns: "name@Type" if typed, "...name" if variadic, "name" if untyped.
+param-sig: [fn@String [let p]
+  [name:     p.name]
+  [variadic: p.variadic]
+  [ann-t:    [ann-text p.annotation]]
+  [prefix:   [if variadic "..." ""]]
+  [if [= ann-t ""]
+    [str prefix name]
+    [str prefix name "@" ann-t]]]
+
+# Build the full signature string for a Fn expression.
+# fn-expr is a Value::Expression with tag "Fn".
+# Dot-access via surface_node_get_field returns:
+#   .return-ann → Annotation Variant (or null [] if no annotation)
+#   .params     → positional Dict of Parameter Variants
+build-sig: [fn@String [let fn-expr]
+  [ret-text:   [return-type-text fn-expr.return-ann]]
+  [params:     fn-expr.params]
+  [param-part: [if [empty? params]
     ""
-    [str-slice s [+ idx [str-length needle]] [str-length s]]]]
+    [str " [let " [join " " [map param-sig params]] "]"]]]
+  [str "fn@" ret-text param-part]]
 
-# ── Doc Entry Parsing ─────────────────────────────────────────────────────────
+# ── Doc string extraction ─────────────────────────────────────────────────────
 
-parse-new-fn: [fn@[return: Dict  doc: """
-  Parse NEW fn@[return: T doc: "..."] pattern (single-line only).
-  Returns [name: String sig: String doc: String] or [].
-  Skips OLD-style name@[doc: "..."] lines even when they also contain fn@[.
-"""] [let line@String]
-  [if [not [str-contains? line "fn@["]]
+# Extract doc string from a Fn expression's return-ann (new-style: fn@[doc: "..."]).
+fn-ann-doc: [fn@String [let fn-expr]
+  [ann-doc fn-expr.return-ann]]
+
+# Extract doc string from an Annotated key expression (old-style: name@[doc: "..."]).
+key-ann-doc: [fn@String [let key-expr]
+  [try-or [fn [let] [ann-doc key-expr.annotation]] ""]]
+
+# ── Entry parsing ─────────────────────────────────────────────────────────────
+
+# Extract the binding name from a dict entry key Expression.
+# Key can be Var{name} or Annotated{name, annotation}. Returns "" for anything else.
+entry-name: [fn@String [let key-expr]
+  [tag: [try-or [fn [let] [tag-of key-expr]] ""]]
+  [if [= tag "Var"]
+    [try-or [fn [let] key-expr.name] ""]
+    [if [= tag "Annotated"]
+      [try-or [fn [let] key-expr.name] ""]
+      ""]]]
+
+# Parse one dict Entry Variant into a doc record [name: String sig: String doc: String],
+# or [] if the entry has no doc annotation or is not a documented function.
+# Entry Variant: [Entry key: Expression value: Expression]
+parse-entry: [fn@Dict [let entry]
+  [key:   entry.key]
+  [value: entry.value]
+  [name:  [entry-name key]]
+  [if [= name ""]
     []
-    [if [str-contains? line "@[doc:"]
-      []
-      [if [not [str-contains? line "doc:"]]
-        []
-        [call [fn@Dict [let]
-          [key-part: [trim [before-first ":" line]]]
-        [after-fn: [after-first "fn@[" line]]
-        [return-type: [extract-return-from-metadata after-fn]]
-        [params: [extract-params-from-line line]]
-        [doc-text: [extract-doc-from-metadata after-fn]]
-        [sig-text: [if [= params ""]
-                [str "fn@" return-type]
-                [str "fn@" return-type " [" params "]"]]]
-        [name: key-part doc: doc-text sig: sig-text]]]]]]]
+    [call [fn@Dict [let value-tag]
+      [if [= value-tag "Fn"]
+        # value is a Fn expression. Check for new-style doc (fn@[doc: "..."]).
+        [call [fn@Dict [let doc]
+          [if [= doc ""]
+            # No new-style doc — fall back to old-style key annotation: name@[doc: "..."]
+            [call [fn@Dict [let key-tag]
+              [if [= key-tag "Annotated"]
+                [call [fn@Dict [let kdoc]
+                  [if [= kdoc ""]
+                    []  # no doc found anywhere — skip this entry
+                    [name: name  doc: kdoc  sig: [build-sig value]]]]
+                 [key-ann-doc key]]
+                []]]  # plain Var key with no fn doc — not a documented entry
+             [try-or [fn [let] [tag-of key]] "Var"]]
+            # Found new-style doc
+            [name: name  doc: doc  sig: [build-sig value]]]]
+         [fn-ann-doc value]]
+        []]]  # not a Fn — skip
+     [try-or [fn [let] [tag-of value]] ""]]]]
 
-extract-return-from-metadata: [fn@[return: String  doc: """Extract return type from fn@[return: T ...] metadata."""] [let metadata@String]
-  [if [starts-with? [trim metadata] "return:"]
-    [call [fn@String [let]
-      [after-return: [trim [after-first "return:" metadata]]]
-      [trim [before-first " " after-return]]]]
-    "Unknown"]]
-
-extract-doc-from-metadata: [fn@[return: String  doc: """
-  Extract doc string from fn@[... doc: "..."] metadata (first line only).
-  Multi-line doc strings (triple-quoted) return just the first line.
-"""] [let metadata@String]
-  [if [not [str-contains? metadata "doc:"]]
-    ""
-    [call [fn@String [let]
-      [after-doc: [trim [after-first "doc:" metadata]]]
-      [if [not [starts-with? after-doc "\""]]
-        ""
-        [call [fn@String [let]
-          [after-quote: [str-slice after-doc 1 [length after-doc]]]
-          [if [starts-with? after-quote "\"\""]
-            [call [fn@String [let]
-              [content: [trim [str-slice after-quote 2 [length after-quote]]]]
-              [if [= content ""]
-                "(multi-line doc string - see source)"
-                [before-first "\"" content]]]]
-            [before-first "\"" after-quote]]]]]]]]]
-
-extract-params-from-line: [fn@[return: String  doc: """Extract parameters from [let ...] portion of line."""] [let line@String]
-  [if [not [str-contains? line "[let "]]
-    ""
-    [call [fn@String [let]
-      [after-let: [after-first "[let " line]]
-      [trim [before-first "]" after-let]]]]]]
-
-parse-old-doc: [fn@[return: Dict  doc: """Parse OLD name@[doc: "..."] pattern (for backwards compatibility)."""] [let line@String]
-  [if [not [str-contains? line "@[doc:"]]
+# Extract all documented entries from one document's last Dict expression.
+extract-from-doc: [fn [let doc]
+  [exprs: [collect doc.expressions]]
+  # Find the last Dict expression — that is the public API dict.
+  [last-dict: [reduce
+    [fn [let acc expr]
+      [t: [try-or [fn [let] [tag-of expr]] ""]]
+      [if [= t "Dict"] expr acc]]
     []
-    [call [fn@Dict [let]
-      [raw-key: [trim [before-first "@[doc:" line]]]
-      [key-name: [if [starts-with? raw-key "["]
-                   [str-slice raw-key 1 [length raw-key]]
-                   raw-key]]
-      [after-doc: [after-first "doc: \"" line]]
-      [doc-text: [before-first "\"" after-doc]]
-      [sig-text: [sig-from-old-line line]]
-      [name: key-name doc: doc-text sig: sig-text]]]]]
+    exprs]]
+  [if [null? last-dict]
+    []
+    [collect [filter
+      [fn@Bool [let e] [has? e "name"]]  # filter out [] (skipped entries)
+      [map parse-entry last-dict.entries]]]]]
 
-sig-from-old-line: [fn@[return: String  doc: """Build signature from OLD fn@Type [params] pattern."""] [let line@String]
-  [if [not [str-contains? line "fn@"]]
-    "(value)"
-    [call [fn@String [let]
-      [after-fn: [after-first "fn@" line]]
-      [ret: [extract-return-old after-fn]]
-      [params: [extract-params-old after-fn ret]]
-      [if [= params ""]
-        [str "fn@" ret]
-        [str "fn@" ret " [" params "]"]]]]]]
-
-extract-return-old: [fn@String [let s@String]
-  [call [fn@String [let t@String close@Int]
-    [if [starts-with? t "["]
-      [if [= close -1] t [str-slice t 0 [+ close 1]]]
-      [before-first " [" t]]]
-    [trim s]
-    [find-close [trim s] 1 1]]]
-
-extract-params-old: [fn@String [let s@String ret@String]
-  [after-ret: [trim [str-slice s [length ret] [length s]]]]
-  [close: [find-close after-ret 1 1]]
-  [if [starts-with? after-ret "["]
-    [if [= close -1] "" [str-slice after-ret 1 close]]
-    ""]]
-
-parse-doc-line: [fn@[return: Dict  doc: """Try both NEW and OLD patterns on each line."""] [let line@String]
-  [new: [parse-new-fn line]]
-  [if [not [empty? new]]
-    new
-    [parse-old-doc line]]]
-
-extract-docs: [fn@[return: Dict  doc: """Extract all annotated bindings from file text (line-by-line)."""] [let text@String]
-  [collect [filter
-    [fn@Bool [let e@Dict] [has? e "name"]]
-    [map parse-doc-line [split "\n" text]]]]]
+# Extract documented bindings from a Program.
+# Skips Type-stage documents. Concatenates entries from all Runtime documents.
+extract-from-program: [fn [let program]
+  [docs: [collect program.documents]]
+  [reduce
+    [fn [let acc doc]
+      [stage-tag: [try-or [fn [let] [tag-of doc.stage]] "Runtime"]]
+      [if [= stage-tag "Type"]
+        acc
+        [reduce [fn [let a e] [append a e]] acc [extract-from-doc doc]]]]
+    []
+    docs]]
 
 # ── Markdown Rendering ────────────────────────────────────────────────────────
 
-mod-name: [fn@[return: String  doc: """Strip the ".llt" suffix to get the module name."""] [let full-path@String]
-  [before-first ".llt" full-path]]
+# Strip the ".llt" suffix to get the module name.
+mod-name: [fn@String [let full-path@String]
+  [get 0 [split ".llt" full-path]]]
 
-mod-filename: [fn@[return: String  doc: """Convert a module name to a flat filename-safe string (replace "/" with "-")."""] [let name@String]
+# Convert a module name to a flat filename-safe string (replace "/" with "-").
+mod-filename: [fn@String [let name@String]
   [join "-" [split "/" name]]]
 
-render-entry: [fn@[return: String  doc: """Render one doc entry as a Markdown subsection."""] [let e@Dict]
+# Render one doc entry as a Markdown subsection.
+render-entry: [fn@String [let e]
   [str
-    "\n## `" e.name "`\n\n"
+    "\n### `" e.name "`\n\n"
     e.doc "\n\n"
     "```tinct\n"
     e.sig "\n"
@@ -188,17 +217,18 @@ render-entry: [fn@[return: String  doc: """Render one doc entry as a Markdown su
 
 # ── Per-Module File Writing ───────────────────────────────────────────────────
 
-write-module-file: [fn@[return: String  doc: """Write content to %docdir/<filename>.md and return name."""] [let name@String content@String]
+# Write content to %docdir/<filename>.md and return the module name.
+write-module-file: [fn@String [let name@String content@String]
   [w: [write %docdir [str [mod-filename name] ".md"] content]]
   [if [= w w] name name]]
 
-write-module: [fn@[return: String  doc: """
-  Write documentation for one stdlib file to %docdir and return the module name,
-  or "" if the file has no annotated bindings.
-"""] [let full-path@String]
-  [text: [str [slurp [open %libdir full-path Readable]]]]
-  [docs: [extract-docs text]]
-  [name: [mod-name full-path]]
+# Load, parse, and write documentation for one stdlib file.
+# Returns the module name, or "" if the file has no documented bindings.
+write-module: [fn@String [let full-path@String]
+  [source:  [str [slurp [open %libdir full-path Readable]]]]
+  [program: [load source name: full-path]]
+  [docs:    [extract-from-program program]]
+  [name:    [mod-name full-path]]
   [if [empty? docs]
     ""
     [write-module-file name
@@ -208,9 +238,11 @@ write-module: [fn@[return: String  doc: """
 
 ]
 
+# ── Index emission ────────────────────────────────────────────────────────────
+
 [emit [str
   "# tinct stdlib Reference\n\n"
-  "Auto-generated from `@[doc: \"...\"]` annotations in `stdlib/`.\n\n"
+  "Auto-generated by AST introspection via `load` in `scripts/docgen.llt`.\n\n"
   "## Modules\n\n"
   [join ""
     [map

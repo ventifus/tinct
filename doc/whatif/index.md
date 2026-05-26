@@ -66,6 +66,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
+| [Program Profiling and Call Tracing](profiling.md) | `--profile` (hotspot table) and `--trace` (Perfetto JSON) modes; span model spanning Rust/tinct boundary; `origin_builtin` attribution for Rust→tinct re-entry; `debug_name` propagation through `Value::Function`; Criterion benchmark suite; unblocks `string-interning` and `union-find-substitution` gating decisions |
 | [String Interning for Dict Keys](string-interning.md) | `Key::String(Spur)` via `string-interner` crate; O(1) comparison; profile-gated |
 | [Union-Find for Type Substitution](union-find-substitution.md) | Path-compressed union-find for `Substitution::apply()`; worthwhile only if chain depth ≥4; profile-gated |
 | [Float Dict Keys](float-dict-keys.md) | Decimal (exact base-10) keys alongside a `Decimal` type |
@@ -199,8 +200,8 @@ These proposals have accepted designs but explicit gating conditions not yet met
 
 | Proposal | Gating Condition |
 |----------|-----------------|
-| [String Interning](string-interning.md) | Profiling confirms `String` allocation/comparison is top-5 hotspot on real workloads |
-| [Union-Find for Type Substitution](union-find-substitution.md) | Profiling confirms average TypeVar chain depth ≥4 on real programs |
+| [String Interning](string-interning.md) | `profiling.md` Criterion `bench_deep_scope` confirms `String` allocation/comparison is top-5 hotspot on real workloads |
+| [Union-Find for Type Substitution](union-find-substitution.md) | `profiling.md` Criterion `bench_deep_scope` confirms average TypeVar chain depth ≥4 on real programs |
 | [Value Serializer Visitor](value-serializer-visitor.md) | A third output format (YAML, TOML) is implemented and traversal duplication becomes maintenance burden |
 | [Template-Polarity Embedding](template-polarity.md) | A real 90%+ static foreign-format file (nginx.conf, Dockerfile, Makefile) with ≤10 tinct substitutions where data-first is unreasonably awkward |
 | [Macro System v2](macros-v2.md) | **Accepted 2026-05-17** — see Syntax and Ergonomics table above |
@@ -262,7 +263,7 @@ async-eval (async fn + Arc + OnceLock + multi-thread + task/channel/context/par/
 async-eval ─── lib-net-v2 ✓ (tcp-listen/quic-listen/tls-layer serve/connect layers)
 
 ### Profile-gated (no deps, waiting for profiling data)
-string-interning, union-find-substitution
+profiling ─── string-interning, union-find-substitution
 
 ### No deps, can adopt now
 float-dict-keys (Phase 1 Decimal ✓ — Phase 2 Key::Decimal open)

@@ -574,12 +574,7 @@ fn builtin_to_float(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalRes
         let s = require_string("to-float", val, arg0_span)?;
         match s.parse::<f64>() {
             Ok(f) if f.is_finite() => ok_val(Value::Float(f), call_span),
-            Ok(f) => Err(EvalError::float_not_finite(
-                "to-float".to_string(),
-                f,
-                call_span,
-            )
-            .into()),
+            Ok(f) => Err(EvalError::float_not_finite("to-float".to_string(), f, call_span).into()),
             Err(_) => Err(EvalError::parse_conversion(
                 "to-float".to_string(),
                 s.clone(),
@@ -637,10 +632,11 @@ pub(crate) use crate::builtins_datetime::{
 // Async concurrency primitives: task, await, channel, send, recv, select-once, par, par-map,
 // par-filter, signal-channel, timer-channel, watch-channel, and cancellation context primitives.
 pub(crate) use crate::builtins_async::{
-    builtin_await, builtin_cancel_task, builtin_cancelled_q, builtin_channel, builtin_context,
-    builtin_par, builtin_par_filter, builtin_par_map, builtin_recv, builtin_select_once,
-    builtin_send, builtin_signal_channel, builtin_task, builtin_timer_channel,
-    builtin_watch_channel, builtin_with_cancel, builtin_with_deadline, builtin_with_timeout,
+    builtin_await, builtin_cancel_root, builtin_cancel_task, builtin_cancelled_q, builtin_channel,
+    builtin_context, builtin_drain, builtin_exit_now, builtin_par, builtin_par_filter,
+    builtin_par_map, builtin_recv, builtin_select_once, builtin_send, builtin_signal_channel,
+    builtin_task, builtin_timer_channel, builtin_watch_channel, builtin_with_cancel,
+    builtin_with_deadline, builtin_with_timeout,
 };
 
 /// `first`: Return the first element of a Dict, the first character of a String,
@@ -2118,6 +2114,13 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         ),
         builtin!("cancelled?", builtin_cancelled_q, [Strictness::Seq]),
         builtin!("cancel-task", builtin_cancel_task, [Strictness::Seq]),
+        // Shutdown primitives (async-shutdown-primitives)
+        builtin!("cancel-root", builtin_cancel_root),
+        builtin!("builtin-cancel-root", builtin_cancel_root),
+        builtin!("drain", builtin_drain),
+        builtin!("builtin-drain", builtin_drain),
+        builtin!("exit-now", builtin_exit_now, [Strictness::Seq]),
+        builtin!("builtin-exit-now", builtin_exit_now, [Strictness::Seq]),
     ]
 }
 
@@ -6711,8 +6714,10 @@ mod tests {
         //   builtin-apply, builtin-type-of, builtin-narrow, builtin-from-json
         // Added 3 stable aliases for annotation-migration sprint (298 → 301):
         //   builtin-trim, builtin-emit, builtin-env
+        // Added 6 shutdown primitives in async-shutdown-primitives sprint (301 → 307):
+        //   cancel-root, builtin-cancel-root, drain, builtin-drain, exit-now, builtin-exit-now
         assert_eq!(
-            count, 301,
+            count, 307,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }

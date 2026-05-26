@@ -1526,6 +1526,147 @@ pub(crate) fn builtin_cancel_task(
     })
 }
 
+// =============================================================================
+// Shutdown primitives
+// =============================================================================
+
+/// `cancel-root`: Cancel the root CancellationToken.
+///
+/// Signature: `→ Null`
+///
+/// Cancels the root context (EvalContext.cancel), signaling all tasks to stop.
+/// Returns null (empty dict).
+///
+/// Per async-eval.md: NOT capability-gated. Security = OS process isolation (tinct run boundary).
+pub(crate) fn builtin_cancel_root(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        if !args.is_empty() {
+            return Err(EvalError::user_error(
+                format!("cancel-root expects 0 arguments, got {}", args.len()),
+                call_span,
+            )
+            .into());
+        }
+        if !named.as_ref().is_none_or(|n| n.is_empty()) {
+            return Err(EvalError::user_error(
+                "cancel-root does not accept named arguments".to_string(),
+                call_span,
+            )
+            .into());
+        }
+
+        // Cancel the root context
+        ctx.cancel.cancel();
+
+        // Return null (empty dict)
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
+}
+
+/// `drain`: Wait for in-flight tasks to complete.
+///
+/// Signature: `→ Null`
+///
+/// MVP implementation: sleeps briefly (100ms) to allow tasks to complete after cancel-root.
+///
+/// TODO: Replace with proper JoinSet-based task registry. Current implementation is a
+/// simple time-based delay to give cooperative tasks a chance to finish after cancellation.
+/// A production implementation would track all spawned tasks in a JoinSet and await them
+/// here (see doc/whatif/async-eval.md §Shutdown Primitives).
+///
+/// Per async-eval.md: includes cluster-local workers (Tokio tasks), excludes remote workers.
+pub(crate) fn builtin_drain(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx: _ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        if !args.is_empty() {
+            return Err(EvalError::user_error(
+                format!("drain expects 0 arguments, got {}", args.len()),
+                call_span,
+            )
+            .into());
+        }
+        if !named.as_ref().is_none_or(|n| n.is_empty()) {
+            return Err(EvalError::user_error(
+                "drain does not accept named arguments".to_string(),
+                call_span,
+            )
+            .into());
+        }
+
+        // MVP: sleep briefly to allow in-flight tasks to complete
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Return null (empty dict)
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
+}
+
+/// `exit-now`: Immediately terminate the process.
+///
+/// Signature: `Int → Null`
+///
+/// Calls `std::process::exit(code)` to terminate the process immediately.
+/// The code argument defaults to 0 if not provided (though the signature requires it).
+///
+/// Per async-eval.md: used by stdlib/async.llt `exit` and `graceful-exit` after
+/// cancel-root and drain.
+pub(crate) fn builtin_exit_now(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        if args.len() != 1 {
+            return Err(EvalError::user_error(
+                format!("exit-now expects 1 argument, got {}", args.len()),
+                call_span,
+            )
+            .into());
+        }
+        if !named.as_ref().is_none_or(|n| n.is_empty()) {
+            return Err(EvalError::user_error(
+                "exit-now does not accept named arguments".to_string(),
+                call_span,
+            )
+            .into());
+        }
+
+        let code_thunk = &args[0];
+        let code_val = materialize(code_thunk, Some(&call_span), &ctx).await?;
+
+        let exit_code = match code_val {
+            Value::Int(n) => n.clamp(0, 255) as i32,
+            _ => {
+                return Err(
+                    EvalError::type_mismatch("Int", code_val.type_name(), call_span).into(),
+                )
+            }
+        };
+
+        // Terminate the process immediately
+        std::process::exit(exit_code);
+    })
+}
+
 #[cfg(test)]
 mod tests {
     /// Verify that task+await works: spawn a zero-arg function and await its result.
