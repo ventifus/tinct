@@ -638,3 +638,65 @@ After restructuring codecs/json.llt to single-dict (for closure scoping), all 18
 - [x] Restructure codecs/json.llt back to two-dict pattern but fix the closure issue correctly: use the bare-include-scope sprint (TODO.md) to make bare includes promote bindings into scope, which will allow the private dict's bindings to be in scope for the public dict's functions
 - [x] OR: accept the current single-dict structure and document that codecs/json.llt is intentionally a flat namespace (only accessible via named include `[json: [include ...]]` which namespaces all symbols anyway)
 
+---
+
+## Codebase Health Audit (Final Session Review, 2026-05-27)
+
+### fn-annotation-any-callable: @Fn annotation erases callability to Type::Unknown [Critical]
+
+`src/typecheck_annot.rs:1790-1800` resolve for "Fn" returns `Type::Unknown`, disabling all type checking at annotation sites and allowing non-functions through TypeAssert. Should use `Function{params:[], ret:Top, variadic:true}` to preserve callability enforcement.
+
+- [ ] Change @Fn resolve from `Type::Unknown` to `Type::Function{params:vec![], ret:Box::new(Type::Top), variadic:true}` in `src/typecheck_annot.rs:1790-1800`
+- [ ] Audit prelude @Fn annotations and replace with precise `Fn@ReturnType [Params]` signatures
+- [ ] Add corpus test: @Fn accepts any function but rejects non-functions
+
+### type-system-audit-final: Type system correctness gaps [Major]
+
+Multiple type system gaps found in final review:
+
+**Map annotation key-type defaults to Unknown:**
+- [ ] Change `@Map@[value: V]` resolution to use fresh TypeVar for key, not Unknown (`src/typecheck_annot.rs:1160,1221,2601,2793`)
+
+**is_consistent_subtype missing Union-in-sub arm:**
+- [ ] Add explicit `(Type::Union(members), _) => members.iter().all(|m| Self::is_consistent_subtype(m, sup))` arm in `src/type_def.rs` before fallthrough to `is_subtype` (eliminates dependence on ground_type_of domain invariant)
+
+**Sequential let-generalization only for Dict-form intermediates:**
+- [ ] For non-Dict fallback in sequential handler (`src/typecheck.rs:2008`), extract schemes from record type by generalizing each field at current level (currently inserts monomorphic entries)
+
+**Stale merge return-type TODO:**
+- [ ] Remove stale TODO comment at `src/type_env.rs:2982-2983` (return type is already polymorphic TypeVar with Appendable constraint)
+
+### eval-merge-laziness: builtin_merge eagerly materializes both dicts [Major]
+
+`src/builtins.rs:232-265` flattens dicts eagerly, violating lazy Overlay design. Should return `Value::Overlay(left_id, right_id)` directly.
+
+- [ ] Replace eager flattening loop in `builtin_merge` with `Value::Overlay(left_id, right_id)` construction
+- [ ] Add corpus test: repeated $merge constructs O(N)-deep chain lazily, flattens only on first access
+
+### doc-index-filenames: doc/index.md references wrong filenames [Major]
+
+`doc/index.md` references non-existent chapters `doc/05-types.md` and `doc/07-type-system.md`. Actual filenames are `doc/05-type-annotations.md` and `doc/07-type-extensions.md`.
+
+- [ ] Fix `doc/index.md` to use correct filenames for all chapter references
+- [ ] Audit all internal doc/*.md cross-references for broken links
+
+### builtin-eval-materialization: builtin_eval materializes last expression contradicting eval_document_exprs contract [Major]
+
+`src/builtins_meta.rs:~545` wraps `eval_document_exprs` result in additional `materialize()` call. The `eval_document_exprs` contract says "last expression returned lazily". Either remove the extra materialize() or document why builtin_eval intentionally materializes.
+
+- [ ] Determine intended semantics: should builtin_eval return lazily (matching eval_document_exprs) or eagerly (current behavior)?
+- [ ] Make code and DONE.md description consistent
+
+### tco-multithread-caveat: TCO strong_count check TOCTOU under multi-threaded evaluation [Major]
+
+`eval_materialize.rs:829-836` TCO eligibility check `Arc::strong_count(thunk) == 1` is race-free only on single-threaded LocalSet. If runtime migrates to multi-threaded spawn, this becomes TOCTOU.
+
+- [ ] Add comment in `doc/whatif/runtime-v2.md` or `src/eval_materialize.rs` documenting that TCO eligibility must use `Arc::try_unwrap` or atomic flag protocol under multi-threaded evaluation
+- [ ] Document as known limitation: current TCO depends on cooperative single-threaded scheduler invariant
+
+### doc-16-elaboration-stale: doc/16-architecture.md describes old RefCell elaboration design [Major]
+
+`doc/16-architecture.md:58` still describes old `RefCell<Option<Type>>` elaboration invariant. Current design uses `TypeAnnotationTable` side-table. Update to reflect current design.
+
+- [ ] Update doc/16-architecture.md elaboration section to describe TypeAnnotationTable side-table design
+
