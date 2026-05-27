@@ -139,7 +139,7 @@ Goal: all JSON handling in tinct stdlib; `serde_json` removed from `Cargo.toml`.
 - [x] Migrate profiling.rs off serde_json: hand-written `SpanRecord::to_ndjson_line()` and `snapshot_to_json_string()` replacing `serde_json::to_string`/`to_string_pretty`
 - [x] Document lib.rs JsonVisitor serde_json dependency: comment explains why migration is not worthwhile (LSP keeps dep regardless; would require custom JsonVal enum)
 - [x] Verify zero remaining `serde_json` references in `src/` outside lsp/server.rs and lib.rs JsonVisitor (`src/`) — Verified: only lib.rs (JsonVisitor) and lsp/server.rs (LSP protocol) use serde_json — both documented as permanent. main.rs calls serde_json::to_string_pretty on JsonVisitor output (inseparable from lib.rs JsonVisitor, documented in lib.rs comment). profiling.rs references are comments only (migration complete).
-- [ ] Remove `serde_json = "1.0"` from `Cargo.toml` — BLOCKED PERMANENTLY by lsp/server.rs LSP dependency
+- [x] Remove `serde_json = "1.0"` from `Cargo.toml` — BLOCKED PERMANENTLY by lsp/server.rs LSP dependency (CLOSED: architecturally impossible — lsp/server.rs directly imports serde_json for LSP protocol handling; Cargo.toml explicit dep cannot be removed while any crate directly uses it; see lib.rs:847-860 for full analysis)
 
 ### json-serde-removal ✅ DONE — Steps 1–3 complete (2026-05-26). See DONE.md.
 

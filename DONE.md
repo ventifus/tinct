@@ -11791,3 +11791,18 @@ Added variant?/payload-of/unindent to doc/11-stdlib.md. Fixed type predicate cla
 - [x] Fix num?/record?/map? classification to LLT stdlib
 - [x] Update builtin-* alias list with gte/lte/gt
 - [x] Update LLT function count ~117 → ~140
+
+### json-remove-serde-dep: Final serde_json cleanup ✅ DONE (2026-05-27)
+
+Completed all feasible serde_json cleanup:
+- Deleted E041/E061/E062 dead error variants
+- Removed stale explain text from main.rs  
+- Fixed from-json doc table placement
+- Added surrogate pair error to json.llt
+- Verified strings.llt include already removed
+- Migrated profiling.rs to hand-written JSON formatter
+- Documented lib.rs JsonVisitor as permanent (LSP dep)
+- Verified serde_json refs outside lsp/server.rs and lib.rs
+
+Cargo.toml dep: CLOSED as architecturally impossible. lsp/server.rs directly
+imports serde_json for LSP protocol; explicit dep cannot be removed.
