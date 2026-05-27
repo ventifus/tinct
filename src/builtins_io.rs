@@ -1458,6 +1458,18 @@ pub(crate) fn builtin_string_handle(
 /// Takes a Handle and returns String on success, [] (null) on EOF.
 /// Strips trailing `\n` and `\r\n` from the result.
 /// Rejects Binary-mode handles (error: "builtin-read-line requires a text-mode Handle, not Binary").
+///
+/// # EOF Behavior
+///
+/// When the handle is positioned at EOF, returns `Value::Dict(IndexMap::new())` — the tinct
+/// null value (`[]`). Callers must distinguish EOF from an empty-line read: an empty line
+/// returns `String("")`, while EOF returns `[]`. Use `[null? result]` or `[= result []]`
+/// to test for EOF.
+///
+/// # Corpus Tests
+///
+/// - `tests/corpus/eval/builtins/read_line_file.llt-eval` — successive reads, newline stripping, EOF detection
+/// - `tests/corpus/eval/builtins/read_line_eof.llt-eval` — empty handle returns [] immediately
 pub(crate) fn builtin_read_line(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {

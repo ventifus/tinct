@@ -279,20 +279,28 @@ Recursive case:
   ∀i ∈ 1..n-1:                                (intermediate expressions)
     θᵢ = eval(eᵢ, ρᵢ₋₁, d)
     vᵢ = materialize(θᵢ, d)                   (intermediate results are materialized)
-    vᵢ = Dict(mapᵢ)                           (intermediate must be Dict — type error otherwise)
-    static_keys(eᵢ) ≠ ∅  ⟹  ρᵢ = ({}, Some(ρᵢ₋₁))       (fresh child env only when there are static keys)
-                              ∀(k, θ) ∈ mapᵢ:
-                                k = String(s) ∧ s ∈ static_keys(eᵢ) ⟹ ρᵢ.B[s] ← θ
-                                k = String(s) ∧ s ∉ static_keys(eᵢ) ⟹ no binding
-                                k = Int(_)                             ⟹ no binding
-    static_keys(eᵢ) = ∅  ⟹  ρᵢ = ρᵢ₋₁                   (no scope extension; no new de Bruijn level)
+
+    vᵢ = Dict(mapᵢ) ∧ mapᵢ ≠ {}  ⟹          (non-empty Dict: promote all String-keyed entries)
+      ρᵢ = ({}, Some(ρᵢ₋₁))
+      ∀(k, thunk_id) ∈ mapᵢ:
+        k = String(s) ⟹ ρᵢ.B[s] ← Materialized(materialize(get_thunk(thunk_id), d))
+        k = Int(_)    ⟹ no binding
+
+    vᵢ = Overlay(l, r)  ⟹                    (Overlay: flatten to Dict, then promote as above)
+      mapᵢ = flatten_overlay(l, r)
+      ρᵢ = ({}, Some(ρᵢ₋₁))
+      ∀(k, thunk_id) ∈ mapᵢ:
+        k = String(s) ⟹ ρᵢ.B[s] ← Materialized(materialize(get_thunk(thunk_id), d))
+        k = Int(_)    ⟹ no binding
+
+    otherwise  ⟹  ρᵢ = ρᵢ₋₁                 (non-dict result: silently skip, no scope extension)
 
   θₙ = eval(eₙ, ρₙ₋₁, d)                     (last expression: lazy, any type)
   ────────────────────────────────────────────
   eval_document(exprs, ρ_input, d) ⇒ θₙ
 ```
 
-**`static_keys(e)`** denotes the set of string names whose keys are syntactically static in expression `e` — specifically, dict entries with a bare-word key (`x:`) or an annotated bare-word key (`x@T:`). Keys computed at runtime (e.g., `[$k: v]` where `$k` is a variable) are excluded even if they happen to evaluate to strings. This restriction is necessary for slot-based variable resolution: the resolver assigns de Bruijn slot indices at compile time counting only static keys, so only those entries may occupy positional slots in the runtime environment. A computed-key entry (e.g., `[$k: 1]` where `k = "z"`) does not receive a slot assignment; the name `"z"` is therefore not resolvable by sibling entries via `$z`, and inserting it into the scope chain would shift the indices of all subsequent static-key entries, causing silent wrong-value bugs.
+The "otherwise" case — when `static_keys(eᵢ) = ∅` and the runtime value is not a non-empty Dict or Overlay — means the expression is treated as a side-effect expression contributing no bindings. This covers bare string literals, integer expressions, and any expression whose runtime type is not a structured mapping.
 
 When `n = 1`, the `∀i ∈ 1..0` range is empty and the rule reduces to `eval_document([e₁], ρ_input, d) ⇒ eval(e₁, ρ_input, d)` — a single expression is evaluated lazily with no scope chain construction.
 
@@ -306,7 +314,16 @@ When `n = 1`, the `∀i ∈ 1..0` range is empty and the rule reduces to `eval_d
 
 The last expression `eₙ` is returned as a lazy thunk, preserving tinct's call-by-need semantics.
 
-**Dict-type constraint:** Intermediate expressions must evaluate to `Dict`. This is not a type system constraint (the type checker does not enforce it) but a runtime invariant. If `vᵢ` is not a `Dict`, evaluation fails with a type mismatch error.
+**Dynamic binding (bare Call/include semantics):** An intermediate expression need not be a dict literal to promote bindings. Any expression — including `[include ...]`, `[call f]`, or a bare function call — that evaluates to a non-empty `Dict` or `Overlay` at runtime promotes ALL its string-keyed entries into the child scope. This enables module-import patterns:
+
+```tinct
+[include %libdir "strings.llt"]   # promotes str-split, str-join, etc. into scope
+[x: [str-at 0 "hello"]]          # str-at is now in scope
+```
+
+The resolver does not statically model this dynamic scope extension (Call-result dicts have no static key information). Subsequent references to dynamically-bound names are emitted as `FreeVar` by the resolver and rescued at runtime by the tier-2 parent-chain-walk fallback in `eval_core_expr` (`eval.rs`). Slot-based fast-path lookup still succeeds for names the resolver DOES know about; only truly dynamic names incur name-based lookup.
+
+**Slot alignment:** For dict literals with only static string keys, `all_string_keys(mapᵢ) = static_keys(eᵢ)` — promoting all string keys is equivalent to filtering to static keys. For dict literals with computed keys (e.g., `[$k: v]`), the runtime map may contain string keys unknown to the resolver. Inserting them adds extra names to the child env but does not shift the slot indices of static-keyed names: the slot-based `get_by_slot` fast path detects a key mismatch via name verification and falls back to name-based lookup (correct, slightly slower) rather than returning the wrong thunk. No wrong-value bugs can result.
 
 **[DOC-PIPELINE]** — Document isolation via `%` and named sections
 
@@ -398,7 +415,9 @@ The formal rules map directly to the implementation:
 | Formal rule | Implementation | Source |
 |------------|----------------|--------|
 | DICT-SCOPE | `eval_dict()` | `eval.rs:309-352` |
-| SEQ-SCOPE | `eval_surface_document()` | `eval_pipeline.rs` |
+| SEQ-SCOPE | `eval_document_exprs()` (canonical loop) | `eval_pipeline.rs` |
+| SEQ-SCOPE (document) | `eval_surface_document()` (caps validation + delegate to `eval_document_exprs`) | `eval_pipeline.rs` |
+| SEQ-SCOPE (eval builtin) | `builtin_eval()` (extracts nodes from Seq, delegates to `eval_document_exprs`) | `builtins_meta.rs` |
 | DOC-PIPELINE | `eval_surface_file_with_input()` (binds `%` + `%name`) | `eval_pipeline.rs` |
 | DOC-PIPELINE Σ accumulation | Named-section map `named: IndexMap<String, Rc<Thunk>>` | `eval.rs:830, 842-846, 851-853` |
 | LOOKUP | `Environment::get()` | `value.rs:445-460` |
@@ -887,7 +906,7 @@ This matches the document isolation property of DOC-PIPELINE (§Scope Chain Sema
 | Guard pop + base_dir restore | `builtins.rs:1323` (`cleanup` closure) |
 | Cache store | `builtins.rs:1345-1348` |
 | DOC-PIPELINE (cross-ref) | `eval_surface_file_with_input` (`eval_pipeline.rs`) |
-| SEQ-SCOPE (cross-ref) | `eval_surface_document` (`eval_pipeline.rs`) |
+| SEQ-SCOPE (cross-ref) | `eval_document_exprs` (canonical loop, `eval_pipeline.rs`); `eval_surface_document` delegates to it |
 
 ## Pure Language, CLI Handles I/O
 

@@ -1,16 +1,19 @@
-//! Document and pipeline evaluation: `eval_surface_document`, `eval_surface_file`, `eval_surface_file_with_input`.
+//! Document and pipeline evaluation: `eval_document_exprs`, `eval_surface_document`, `eval_surface_file`, `eval_surface_file_with_input`.
 //!
 //! Documents are scope chains (each intermediate dict extends the environment for the next
 //! expression). Files are sequences of documents separated by `---`, with `%` threading
 //! the previous document's output into the next.
+//!
+//! The canonical scope-chaining loop is [`eval_document_exprs`]. Both
+//! [`eval_surface_document`] and `builtin_eval` (in `builtins_meta.rs`) delegate to it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
 use crate::ast::{
-    ResolutionTable, Span, Spanned, SurfaceExpression, SurfaceProgram, TypeAnnotationTable,
+    ResolutionTable, Span, Spanned, SurfaceNode, SurfaceProgram, TypeAnnotationTable,
 };
 use crate::error::{EvalError, EvalResult};
 use crate::value::{Environment, Key, Thunk, Value};
@@ -84,16 +87,113 @@ fn wrap_with_nominal_validation(
 // - TypeAnnotationTable: from typecheck::typecheck_surface_program (TypeAssert resolution)
 //   An empty table is valid — TypeAssert nodes use Type::Unknown (accepts all values).
 
+/// Evaluate a sequence of surface expression nodes as a scope chain, returning the
+/// last expression's thunk lazily.
+///
+/// This is the canonical scope-chaining loop shared by [`eval_surface_document`] and
+/// `builtin_eval` (in `builtins_meta.rs`). Both callers implement identical semantics:
+///
+/// - **Intermediate expressions** (all but the last): lower → eval → materialize.
+///   If the result is a non-empty `Dict` or `Overlay`, ALL `Key::String` entries are
+///   materialized strictly and inserted into a child environment for subsequent
+///   expressions. Non-dict/overlay results are silently ignored (no error, no scope
+///   extension). This is the `bare-include-scope` behavior.
+/// - **Last expression**: lower → eval (lazy). The resulting thunk is returned
+///   without forcing — callers decide when (and whether) to materialize it.
+/// - **Empty slice**: returns a materialized empty-dict thunk (same as an empty doc).
+///
+/// # Slot alignment note
+///
+/// Dict literals with only static string keys produce a `Value::Dict` whose keys are
+/// exactly the static keys, so promoting all string keys is equivalent to filtering.
+/// Dicts with computed keys (e.g., `[$k: v]`) may produce runtime string keys unknown
+/// to the resolver; inserting them adds extra names to the child env. The slot-based
+/// `get_by_slot` fast path detects the mismatch via name verification and falls back to
+/// name-based lookup (correct, slightly slower). No wrong-value bugs can result.
+pub(crate) async fn eval_document_exprs(
+    expr_nodes: &[Arc<SurfaceNode>],
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+    res: &Arc<ResolutionTable>,
+    types: &Arc<TypeAnnotationTable>,
+) -> EvalResult<Arc<Thunk>> {
+    if expr_nodes.is_empty() {
+        return Ok(Arc::new(Thunk::new_materialized(
+            Value::Dict(IndexMap::new()),
+            Span::origin(),
+        )));
+    }
+
+    let mut current_env = env;
+    let last_idx = expr_nodes.len() - 1;
+
+    for (i, node) in expr_nodes.iter().enumerate() {
+        let core_spanned = crate::lower::lower(node, res, types);
+        let node_span = node.span;
+
+        if i == last_idx {
+            // Last expression: return its thunk lazily (no materialization).
+            return super::eval_core_expr_pub(&core_spanned, &current_env, ctx).await;
+        }
+
+        // Intermediate expression: eval and materialize to extract potential bindings.
+        let thunk =
+            super::eval_core_expr_pub(&core_spanned, &Arc::clone(&current_env), ctx).await?;
+        let value = materialize(&thunk, Some(&node_span), ctx).await?;
+
+        // If the result is a non-empty Dict or Overlay, promote ALL Key::String entries
+        // into a child environment. Non-dict results are silently skipped — they act as
+        // side-effect expressions that contribute no bindings to the scope chain.
+        let map = match value {
+            Value::Dict(ref m) if !m.is_empty() => Some(m.clone()),
+            Value::Overlay(ref l, ref r) => Some(crate::builtins::flatten_overlay(
+                l,
+                r,
+                "document pipeline",
+                ctx,
+                node_span,
+            )?),
+            _ => None,
+        };
+
+        if let Some(entries) = map {
+            let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
+                &current_env,
+            ))));
+            for (key, val_thunk_id) in entries.iter() {
+                if let Key::String(name) = key {
+                    let val_thunk = ctx.get_thunk(*val_thunk_id);
+                    // Strictly materialize each value before binding (shallow let* semantics).
+                    let forced_value = materialize(&val_thunk, Some(&node_span), ctx).await?;
+                    let strict_thunk = Arc::new(Thunk::new_materialized(forced_value, node_span));
+                    child_env
+                        .write()
+                        .unwrap()
+                        .insert(name.to_string(), strict_thunk);
+                }
+            }
+            current_env = child_env;
+        }
+        // Non-dict/overlay: silently skip — no scope extension, no error.
+    }
+
+    unreachable!(
+        "eval_document_exprs: loop did not return — expr_nodes was non-empty but last_idx was never reached"
+    )
+}
+
 /// Evaluate a SurfaceDocument: a sequence of expression items forming a scope chain.
 ///
 /// Each `SurfaceItem::Expr` is lowered to `CoreExpr` via `lower.rs` and evaluated via
 /// `eval_core_expr_pub`. `SurfaceItem::Decl` items are skipped (processed at expand time).
 ///
-/// Scope-chain semantics:
-/// - Intermediate expressions are materialized and must produce `Value::Dict`.
-/// - Dict entries become bindings in a child environment for subsequent expressions.
+/// Scope-chain semantics are delegated to [`eval_document_exprs`]:
+/// - Intermediate expressions are materialized; Dict/Overlay results promote bindings into scope.
 /// - The last expression is returned as-is (lazy, any type).
 /// - An empty document returns an empty dict.
+///
+/// This function retains only the document-level concerns: caps validation and
+/// collecting the expression nodes before delegating to the shared loop.
 pub async fn eval_surface_document(
     doc: &Spanned<crate::ast::SurfaceDocument>,
     env: Arc<RwLock<Environment>>,
@@ -101,16 +201,6 @@ pub async fn eval_surface_document(
     res: &Arc<ResolutionTable>,
     types: &Arc<TypeAnnotationTable>,
 ) -> EvalResult<Arc<Thunk>> {
-    // Collect expression nodes (skip Decl items — processed by expander)
-    let expr_nodes: Vec<&Arc<crate::ast::SurfaceNode>> = doc.node.expressions().collect();
-
-    if expr_nodes.is_empty() {
-        return Ok(Arc::new(Thunk::new_materialized(
-            Value::Dict(IndexMap::new()),
-            doc.span,
-        )));
-    }
-
     // Validate capabilities declared in the document header
     if let Some(ref caps_ann) = doc.node.caps {
         for (cap_name, annotation) in &caps_ann.node {
@@ -165,131 +255,10 @@ pub async fn eval_surface_document(
         }
     }
 
-    let mut current_env = env;
-
-    // TODO: Extract this scope-chaining loop into a shared eval_document_exprs() function
-    // and reuse it in builtin_eval (src/builtins_meta.rs). The logic is duplicated.
-    for (i, node) in expr_nodes.iter().enumerate() {
-        let is_last = i == expr_nodes.len() - 1;
-
-        // Extract static keys from the expression BEFORE lowering.
-        // Only SurfaceExpression::Dict with static keys creates a new scope (mirrors resolve.rs).
-        let static_keys: Option<HashSet<String>> = match &node.expr {
-            SurfaceExpression::Dict(entries) => {
-                let keys: Vec<String> = entries
-                    .iter()
-                    .filter_map(|entry| {
-                        entry.node.key.as_ref().and_then(|k| match &k.expr {
-                            SurfaceExpression::Str(s) => Some(s.clone()),
-                            SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
-                            _ => None,
-                        })
-                    })
-                    .collect();
-                if keys.is_empty() {
-                    None
-                } else {
-                    Some(keys.into_iter().collect())
-                }
-            }
-            _ => None,
-        };
-
-        // Lower the SurfaceNode to CoreExpr
-        let core_spanned = crate::lower::lower(node, res, types);
-        let node_span = node.span;
-
-        if is_last {
-            // Last expression: return its thunk as-is (lazy, any type)
-            return super::eval_core_expr_pub(&core_spanned, &current_env, ctx).await;
-        }
-
-        // Intermediate expression: materialize and extract dict bindings
-        let thunk =
-            super::eval_core_expr_pub(&core_spanned, &Arc::clone(&current_env), ctx).await?;
-        let value = materialize(&thunk, Some(&node_span), ctx).await?;
-
-        // Create child environment with bindings from intermediate expression.
-        // CRITICAL: Only insert static-key entries to preserve slot alignment with the resolver.
-        // If static_keys is None (non-Dict expression or Dict with no static keys), no scope is created.
-        if let Some(ref static_key_set) = static_keys {
-            // Flatten Overlay to Dict for scope chain binding.
-            // Only computed when static_keys is Some — avoids wasted work when no scope is created.
-            let map = match value {
-                Value::Dict(map) => map,
-                Value::Overlay(l, r) => {
-                    crate::builtins::flatten_overlay(&l, &r, "document pipeline", ctx, node_span)?
-                }
-                _ => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "document pipeline".to_string(),
-                        "Dict",
-                        value.type_name(),
-                        node_span,
-                    )
-                    .into());
-                }
-            };
-
-            let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
-                &current_env,
-            ))));
-            for (key, val_thunk_id) in map {
-                if let Key::String(name) = key {
-                    if static_key_set.contains(name.as_ref()) {
-                        let val_thunk = ctx.get_thunk(val_thunk_id);
-                        let forced_value = materialize(&val_thunk, Some(&node_span), ctx).await?;
-                        let strict_thunk =
-                            Arc::new(Thunk::new_materialized(forced_value, node_span));
-                        child_env
-                            .write()
-                            .unwrap()
-                            .insert(name.to_string(), strict_thunk);
-                    }
-                }
-            }
-            current_env = child_env;
-        } else {
-            // No static keys (non-Dict literal or Call/other expression returning Dict/Overlay).
-            // If the runtime value is Dict or Overlay, promote ALL entries into scope.
-            // This handles bare [include ...], [fn ...], etc. that return dicts.
-            let map = match value {
-                Value::Dict(ref m) if !m.is_empty() => Some(m.clone()),
-                Value::Overlay(ref l, ref r) => Some(crate::builtins::flatten_overlay(
-                    l,
-                    r,
-                    "document pipeline",
-                    ctx,
-                    node_span,
-                )?),
-                _ => None,
-            };
-
-            if let Some(entries) = map {
-                let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
-                    &current_env,
-                ))));
-                for (key, val_thunk_id) in entries.iter() {
-                    if let Key::String(name) = key {
-                        let val_thunk = ctx.get_thunk(*val_thunk_id);
-                        let forced_value = materialize(&val_thunk, Some(&node_span), ctx).await?;
-                        let strict_thunk =
-                            Arc::new(Thunk::new_materialized(forced_value, node_span));
-                        child_env
-                            .write()
-                            .unwrap()
-                            .insert(name.to_string(), strict_thunk);
-                    }
-                }
-                current_env = child_env;
-            }
-            // Non-dict/overlay results: silently skip (no error, no scope change)
-        }
-    }
-
-    unreachable!(
-        "eval_surface_document: loop did not return — expr_nodes was non-empty but is_last never triggered"
-    )
+    // Collect expression nodes (skip Decl items — processed by expander) and
+    // delegate the scope-chaining loop to the shared eval_document_exprs function.
+    let expr_nodes: Vec<Arc<SurfaceNode>> = doc.node.expressions().cloned().collect();
+    eval_document_exprs(&expr_nodes, env, ctx, res, types).await
 }
 
 /// Evaluate a SurfaceProgram: one or more documents separated by `---`.

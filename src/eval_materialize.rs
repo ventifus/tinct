@@ -15,9 +15,9 @@ use crate::ast::{Annotation, CoreExpr, Span, Spanned};
 use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
-    as_record_row_merged, eval_core_expr_pub, format_field_path,
-    format_type_for_assert, match_pattern, materialize, maybe_wrap_guard, validate_and_wrap_record,
-    value_matches_type, EvalContext, DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
+    as_record_row_merged, eval_core_expr_pub, format_field_path, format_type_for_assert,
+    match_pattern, materialize, maybe_wrap_guard, validate_and_wrap_record, value_matches_type,
+    EvalContext, DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
 };
 use crate::eval_access::invoke_proxy_handler;
 use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
@@ -1422,6 +1422,17 @@ pub(crate) async fn apply_cont(
                         params, body, env, ..
                     } => {
                         // TCO path: when tail_hint=true, skip Memoize and return EvalCore directly.
+                        //
+                        // Profiling span note: the non-TCO path pushes a Memoize continuation that
+                        // holds a ProfilingSpanGuard, so each call frame gets a distinct span in
+                        // profiling output. In the TCO path we skip Memoize entirely — no
+                        // ProfilingSpanGuard is created for the tail call, and the parent frame's
+                        // guard (if any) stays alive through the tail call body. This means tail
+                        // calls appear as part of the parent span in profiling output rather than
+                        // as separate child spans. This is a known limitation of O(1) TCO with the
+                        // current profiling infrastructure: adding a guard here would require either
+                        // a synthetic Memoize-like continuation solely to drop it, or a span-handoff
+                        // protocol between the abandoned thunk and the new EvalCore frame.
                         if tail_hint {
                             let invoke_result = {
                                 let call_ctx = CallContext {

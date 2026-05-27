@@ -1748,73 +1748,17 @@ pub(crate) fn builtin_eval(
             )
         };
 
-        // Create Surface thunks and force each one in sequence, returning the last value.
-        // Intermediate expressions: if they produce Dict or Overlay, promote bindings into scope.
-        // Last expression: return as thunk (lazy, any type).
-        //
-        // TODO: Extract this scope-chaining loop into eval_document_exprs() in eval_pipeline.rs
-        // and reuse it here. The logic is duplicated between builtin_eval and eval_surface_document.
-        if expression_nodes.is_empty() {
-            return ok_val(Value::Dict(IndexMap::new()), call_span);
-        }
-
-        let mut current_env = Arc::clone(&final_env);
-
-        let node_count = expression_nodes.len();
-        for (i, node) in expression_nodes.into_iter().enumerate() {
-            let is_last = i == node_count - 1;
-
-            let surface_thunk = Arc::new(Thunk::new_surface(
-                node,
-                Arc::clone(&res_table),
-                Arc::clone(&types_table),
-                Arc::clone(&current_env),
-                Arc::clone(&ctx),
-                call_span,
-            ));
-
-            if is_last {
-                // Last expression: return as lazy thunk, forcing it to a value
-                let val = materialize(&surface_thunk, Some(&call_span), &ctx).await?;
-                return ok_val(val, call_span);
-            }
-
-            // Intermediate expression: materialize and check if it's Dict or Overlay
-            let val = materialize(&surface_thunk, Some(&call_span), &ctx).await?;
-
-            // If the result is Dict or Overlay, promote bindings into a child env
-            let map = match val {
-                Value::Dict(ref m) if !m.is_empty() => Some(m.clone()),
-                Value::Overlay(ref l, ref r) => Some(crate::builtins::flatten_overlay(
-                    l, r, "eval", &ctx, call_span,
-                )?),
-                _ => None,
-            };
-
-            if let Some(entries) = map {
-                // Create child environment with all Key::String entries
-                let child_env = Arc::new(std::sync::RwLock::new(
-                    crate::value::Environment::with_parent(Arc::clone(&current_env)),
-                ));
-                for (key, thunk_id) in entries.iter() {
-                    if let Key::String(name) = key {
-                        // Materialize each entry thunk strictly (same pattern as eval_pipeline.rs:242)
-                        let val_thunk = ctx.get_thunk(*thunk_id);
-                        let forced_value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
-                        let strict_thunk =
-                            Arc::new(Thunk::new_materialized(forced_value, call_span));
-                        child_env
-                            .write()
-                            .unwrap()
-                            .insert(name.to_string(), strict_thunk);
-                    }
-                }
-                current_env = child_env;
-            }
-            // Non-dict/overlay results: silently skip (no error, no scope change)
-        }
-
-        unreachable!("builtin_eval: loop did not return — expression_nodes was non-empty but is_last never triggered")
+        // Delegate the scope-chaining loop to the shared eval_document_exprs function.
+        // It handles empty slices, intermediate Dict/Overlay binding promotion, and lazy
+        // last-expression return — eliminating the duplication that existed here before.
+        crate::eval::eval_document_exprs(
+            &expression_nodes,
+            final_env,
+            &ctx,
+            &res_table,
+            &types_table,
+        )
+        .await
     })
 }
 

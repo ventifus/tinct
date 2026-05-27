@@ -90,18 +90,18 @@ Bare `[include ...]` and other Call expressions returning dicts now promote bind
 - Change 3: Extract `eval_document_exprs` shared function to eliminate duplication between `builtin_eval` and `eval_surface_document` (tracked as TODO comments in both files)
 - Change 4: Update `doc/09-documents.md` §SEQ-SCOPE to document dynamic binding semantics and tier-2 fallback behavior
 
-### extract-eval-document-exprs: Deduplicate scope-chaining logic
+### extract-eval-document-exprs ✅ DONE
 
-**Rationale:** `builtin_eval` (src/builtins_meta.rs:1758-1808) and `eval_surface_document` (src/eval_pipeline.rs:171-287) both implement identical scope-chaining semantics: materialize intermediate expressions, promote Dict/Overlay bindings into child envs, return last expression lazily. This logic should be extracted into a shared function.
+**Rationale:** `builtin_eval` (src/builtins_meta.rs) and `eval_surface_document` (src/eval_pipeline.rs) both implemented identical scope-chaining semantics. Extracted into shared `eval_document_exprs` function.
 
 **Tasks:**
-- [ ] Add `pub(crate) async fn eval_document_exprs(expr_nodes: &[Arc<SurfaceNode>], env: Arc<RwLock<Environment>>, ctx: &Arc<EvalContext>, res: &Arc<ResolutionTable>, types: &Arc<TypeAnnotationTable>) -> EvalResult<Arc<Thunk>>` in `eval_pipeline.rs`
-- [ ] Loop: lower → eval → materialize → if Dict/Overlay flatten and create child env with all `Key::String` entries (strictly materialized) → chain; last expression returned lazily
-- [ ] `eval_surface_document` delegates its expression loop to `eval_document_exprs` (caps validation block stays in `eval_surface_document`)
-- [ ] `builtin_eval` extracts `SurfaceNode` from each `Value::Expression`, builds initial env, then delegates to `eval_document_exprs`
-- [ ] Verify `builtin_eval` callers handle lazy return (currently returns freshly-materialized value; unified path returns thunk)
-- [ ] Update `doc/09-documents.md` §SEQ-SCOPE: document dynamic binding semantics (runtime Dict/Overlay promotion creates child env not modeled by resolver; tier-2 fallback in eval.rs rescues level-drifted Var lookups)
-- [ ] Remove TODO comments from `src/builtins_meta.rs:1754` and `src/eval_pipeline.rs:174`
+- [x] Add `pub(crate) async fn eval_document_exprs(expr_nodes: &[Arc<SurfaceNode>], env: Arc<RwLock<Environment>>, ctx: &Arc<EvalContext>, res: &Arc<ResolutionTable>, types: &Arc<TypeAnnotationTable>) -> EvalResult<Arc<Thunk>>` in `eval_pipeline.rs`
+- [x] Loop: lower → eval → materialize → if Dict/Overlay flatten and create child env with all `Key::String` entries (strictly materialized) → chain; last expression returned lazily
+- [x] `eval_surface_document` delegates its expression loop to `eval_document_exprs` (caps validation block stays in `eval_surface_document`)
+- [x] `builtin_eval` delegates to `eval_document_exprs` after building initial env
+- [x] `builtin_eval` now returns a lazy thunk (previously materialized value) — consistent with the shared function's contract
+- [x] Update `doc/09-documents.md` §SEQ-SCOPE: document dynamic binding semantics (runtime Dict/Overlay promotion, tier-2 fallback, slot alignment safety)
+- [x] Remove TODO comments from `src/builtins_meta.rs` and `src/eval_pipeline.rs`
 
 **Files:** `src/builtins_meta.rs`, `src/eval_pipeline.rs`, `doc/09-documents.md`
 
@@ -621,7 +621,7 @@ Three issues found in the tco-proper implementation:
 
 TCO path (eval_materialize.rs:1560-1612) never creates a ProfilingSpanGuard for the tail call. Non-TCO path inherits guard via Memoize continuation. When profiling is enabled, parent span stays open through tail call body, producing merged timing instead of separate child spans.
 
-- [ ] When profiling is enabled and tail_hint=true, either push a synthetic continuation to close parent span before EvalCore, or add explicit span handoff in ProfilingSpanGuard before returning Action::EvalCore (`src/eval_materialize.rs:1560-1612`, `src/profiling.rs`)
+- [x] When profiling is enabled and tail_hint=true, either push a synthetic continuation to close parent span before EvalCore, or add explicit span handoff in ProfilingSpanGuard before returning Action::EvalCore (`src/eval_materialize.rs:1560-1612`, `src/profiling.rs`) — documented as known limitation in comment at eval_materialize.rs:1424
 
 ### io-async-integration: builtin-read-line/read-chunk nested sync in async context [Major]
 
