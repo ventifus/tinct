@@ -612,3 +612,40 @@ Combines: pattern-linearity-doc (2), letrec-self-ref-silent (2), sequential-let-
 - [ ] `doc/02-syntax.md:798-799`: Audit StackFrame::DocumentHeader for section header component order
 - [ ] `doc/02-syntax.md:549,575` + `doc/15-ast.md:393-432`: Clarify annotation bracket restriction classification
 
+---
+
+## Codebase Health Audit (Cycle #346, 2026-05-27) — TCO + Integration Review
+
+### tco-fixups: TCO correctness fixes found in Cycle #346 analysis [Major]
+
+Three issues found in the tco-proper implementation:
+
+**Misleading comment about thunk result [Major]:** eval_materialize.rs:1579-1581 says "The outer thunk's result will be set by whatever the body evaluates to" — this is FALSE. In TCO mode, the thunk stays InProgress and is dropped (count==1 means no other references). Result flows via Action::EvalCore, not by setting the thunk.
+- [x] Fix misleading TCO comment at `src/eval_materialize.rs:1579-1581` — replace with accurate abandonment explanation: "TCO abandonment: this thunk stays InProgress and will be dropped (strong_count==1). Result flows via Action::EvalCore → run loop → new thunk."
+
+**Variant constructor arms ignore tail_hint [Major]:** When tail_hint=true, Value::Variant arms in apply_cont unconditionally call thunk.set_materialized() on a thunk about to be dropped (count→0). Writes to a OnceCell nobody will read. Value::Builtin arm correctly checks tail_hint; Variant arms do not.
+- [x] Guard `set_materialized` behind `if !tail_hint` in Value::Variant arms of apply_cont(PendingCallDispatch) at `src/eval_materialize.rs:1825,1853`
+
+**invoke_function_tco variant constructor dead code [Major]:** The `__variant_tag__` marker in eval_call.rs:237-253 is never inserted anywhere. The variant constructor check in invoke_function_tco is dead code. If reachable, the Err(internal(...)) would propagate incorrectly on the TCO error path.
+- [x] Remove dead variant constructor check from `invoke_function_tco` in `src/eval_call.rs:237-253`, or handle variant construction inline in the Value::Function TCO arm
+
+### tco-profiling-spans: TCO collapses profiling spans [Major]
+
+TCO path (eval_materialize.rs:1560-1612) never creates a ProfilingSpanGuard for the tail call. Non-TCO path inherits guard via Memoize continuation. When profiling is enabled, parent span stays open through tail call body, producing merged timing instead of separate child spans.
+
+- [ ] When profiling is enabled and tail_hint=true, either push a synthetic continuation to close parent span before EvalCore, or add explicit span handoff in ProfilingSpanGuard before returning Action::EvalCore (`src/eval_materialize.rs:1560-1612`, `src/profiling.rs`)
+
+### io-async-integration: builtin-read-line/read-chunk nested sync in async context [Major]
+
+stdlib/prelude.llt lines/chunks use builtin-read-line/builtin-read-chunk which call materialize_sync (aliased as materialize in builtins_io.rs). materialize_sync calls async_rt::block_on_anywhere() internally. When the outer context is already async, this nests runtimes. For large files via [collect [lines handle]], creates O(n) nested block_on calls.
+
+- [ ] Document that file I/O builtins (builtin-read-line, builtin-read-chunk) are synchronous-only in `src/builtins_io.rs` module doc and `doc/11-stdlib.md`
+- [ ] OR: make builtin_read_line/builtin_read_chunk proper async builtins that don't need materialize_sync
+
+### json-codec-namespace-leak: codecs/json.llt single-dict leaks helpers into json.* namespace [Major]
+
+After restructuring codecs/json.llt to single-dict (for closure scoping), all 180+ helper functions (json-escape, json-string, json-char-at, json-parse-value, etc.) are visible via `[json: [include %libdir "codecs/json.llt"]]` as `json.json-escape`, `json.json-char-at`, etc. This violates the two-dict encapsulation pattern.
+
+- [ ] Restructure codecs/json.llt back to two-dict pattern but fix the closure issue correctly: use the bare-include-scope sprint (TODO.md) to make bare includes promote bindings into scope, which will allow the private dict's bindings to be in scope for the public dict's functions
+- [ ] OR: accept the current single-dict structure and document that codecs/json.llt is intentionally a flat namespace (only accessible via named include `[json: [include ...]]` which namespaces all symbols anyway)
+

@@ -1576,9 +1576,11 @@ pub(crate) async fn apply_cont(
 
                             match invoke_result.map_err(&decorate) {
                                 Ok((body_expr, new_env)) => {
-                                    // TCO: No Memoize push. The outer thunk's result will be
-                                    // set by whatever the body evaluates to. The eval_stack
-                                    // guard drops naturally (armed), maintaining the stack frame.
+                                    // TCO abandonment: this thunk stays InProgress and will be dropped
+                                    // when this continuation is consumed (strong_count==1 guarantees no
+                                    // other references exist). The result flows directly to the caller's
+                                    // continuation via Action::EvalCore → run loop → new thunk
+                                    // materialization.
                                     Action::EvalCore {
                                         expr: body_expr,
                                         env: new_env,
@@ -1822,7 +1824,9 @@ pub(crate) async fn apply_cont(
                         };
                         // Fast path: the result is immediately materialized — no need to
                         // push a Memoize continuation. eval_stack_guard pops on drop (armed).
-                        thunk.set_materialized(result_val.clone());
+                        if !tail_hint {
+                            thunk.set_materialized(result_val.clone());
+                        }
                         Action::Continue(Ok(result_val))
                     }
                     // ADT constructor called with a single named arg: [Circle r: 5] where Circle = [variant "Circle"].
@@ -1850,7 +1854,9 @@ pub(crate) async fn apply_cont(
                             tag,
                             payload: Some(payload_id),
                         };
-                        thunk.set_materialized(result_val.clone());
+                        if !tail_hint {
+                            thunk.set_materialized(result_val.clone());
+                        }
                         Action::Continue(Ok(result_val))
                     }
                     other => {

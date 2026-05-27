@@ -11614,3 +11614,9 @@ Added tail_hint to PendingCallDispatchData. In force_step, set tail_hint=true wh
 - [x] Corpus test: 10,000+ tail-recursive iterations
 - [x] Corpus test: loop 10,000+ iterations
 - [x] Corpus test: mutual recursion 10,000+ iterations
+
+### tco-fixups: TCO correctness fixes ✅ DONE (2026-05-27)
+
+- [x] Fix misleading TCO comment about thunk result being "set" — replaced with accurate abandonment explanation
+- [x] Guard set_materialized behind tail_hint in Value::Variant arms of apply_cont(PendingCallDispatch)
+- [x] Remove dead variant constructor check (__variant_tag__) from invoke_function_tco in eval_call.rs

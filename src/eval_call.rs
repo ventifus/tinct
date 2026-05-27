@@ -231,29 +231,6 @@ pub fn invoke_function_sync(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
 pub(crate) async fn invoke_function_tco(
     ctx: &CallContext<'_>,
 ) -> EvalResult<(Arc<Spanned<CoreExpr>>, Arc<RwLock<Environment>>)> {
-    // Marker for variant constructor functions (defined in eval.rs)
-    const VARIANT_TAG_MARKER: &str = "__variant_tag__";
-
-    // Check if this is a variant constructor
-    // Clone the thunk before releasing the lock — holding a RwLockReadGuard across an await
-    // point is unsound when using tokio::task::LocalSet with its cooperative scheduling model.
-    let variant_tag_thunk = ctx
-        .closure_env
-        .read()
-        .unwrap()
-        .get(VARIANT_TAG_MARKER)
-        .map(|t| Arc::clone(&t));
-    if variant_tag_thunk.is_some() {
-        // Variant constructors cannot use TCO — they return a materialized value, not a thunk.
-        // Fall back to an error. The caller should use invoke_function() instead.
-        return Err(EvalError::internal(
-            "invoke_function_tco called on variant constructor".to_string(),
-            ctx.call_span,
-        )
-        .into());
-    }
-
-    // Normal function invocation
     let call_env = bind_args_thunks(
         ctx.params,
         ctx.positional,
