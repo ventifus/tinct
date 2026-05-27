@@ -1772,7 +1772,7 @@ fn surface_decl_to_thunk_id(
         SurfaceDeclaration::ClassDecl {
             name,
             params,
-            superclasses: _, // TODO (grammar-doc-polish): ClassDecl.superclasses silently dropped — design decision needed on schema representation
+            superclasses,
             methods,
             determines,
             resolver,
@@ -1801,6 +1801,41 @@ fn surface_decl_to_thunk_id(
                     span,
                 ))),
             );
+            // superclasses: Seq of 2-element Seqs [[class-name, var-name] ...]
+            // Only emitted when non-empty (e.g. [class Ord a where Eq a] → [[Eq a]])
+            if !superclasses.is_empty() {
+                let pair_thunk_ids: Vec<ThunkId> = superclasses
+                    .iter()
+                    .map(|(class_name, var_name)| {
+                        let inner: IndexMap<Key, ThunkId> = [
+                            (
+                                Key::Int(0),
+                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                    string_val(class_name),
+                                    span,
+                                ))),
+                            ),
+                            (
+                                Key::Int(1),
+                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                    string_val(var_name),
+                                    span,
+                                ))),
+                            ),
+                        ]
+                        .into_iter()
+                        .collect();
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                            Value::Dict(inner),
+                            span,
+                        )))
+                    })
+                    .collect();
+                dict.insert(
+                    Key::String("superclasses".into()),
+                    list_to_thunk_id(pair_thunk_ids.into_iter(), span, ctx)?,
+                );
+            }
             // methods: string-keyed dict of method expression dicts
             // Keys are SurfaceExpression::Str bare words; values are the full entry value nodes.
             let methods_dict: IndexMap<Key, ThunkId> = methods

@@ -233,7 +233,7 @@ Delete RuntimeTypeCheck entirely and remove all special-case code smells identif
 
 - [ ] Write `doc/whatif/filterable.md` proposal for `Filterable f` class (`doc/whatif/filterable.md`)
 - [ ] Accept `doc/whatif/schema-directed-from-json.md` via `/rnd` and create implementation sprint (`doc/whatif/schema-directed-from-json.md`)
-- [ ] (grammar-doc-polish): `ClassDecl.superclasses` is silently dropped in `surface_convert.rs:1740` (`superclasses: _`). Add `superclasses: [[class-name var-name] ...]` key to the ClassDecl dict schema. Format is directly `Vec<(String, String)>` — serialize as a Seq of 2-element Seqs. (`src/surface_convert.rs:1740`)
+- [x] (grammar-doc-polish): `ClassDecl.superclasses` is silently dropped in `surface_convert.rs:1740` (`superclasses: _`). Add `superclasses: [[class-name var-name] ...]` key to the ClassDecl dict schema. Format is directly `Vec<(String, String)>` — serialize as a Seq of 2-element Seqs. (`src/surface_convert.rs:1740`)
 
 ---
 
