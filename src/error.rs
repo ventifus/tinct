@@ -1033,6 +1033,9 @@ pub struct EvalError {
     pub definition_span: Span,
     pub materialization_span: Option<Span>,
     pub stack: SmallVec<[StackFrame; 8]>,
+    /// Optional source file name where the error originated.
+    /// When present, displayed as a prefix to the span (e.g., "file.llt:10:5-10:20").
+    pub source_file: Option<Arc<str>>,
     /// Optional secondary span with a label, e.g. "evaluated to Bool" pointing at a value site.
     /// Displayed after the primary error line when present.
     pub secondary_span: Option<(Span, String)>,
@@ -1058,6 +1061,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1073,6 +1077,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1140,6 +1145,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1157,6 +1163,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1173,6 +1180,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1186,6 +1194,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1206,6 +1215,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1221,6 +1231,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1236,6 +1247,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1249,6 +1261,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1262,6 +1275,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1275,6 +1289,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1288,6 +1303,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1301,6 +1317,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1314,6 +1331,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1330,6 +1348,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1343,6 +1362,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1356,6 +1376,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1378,6 +1399,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1391,6 +1413,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1404,6 +1427,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1417,6 +1441,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1430,6 +1455,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1443,6 +1469,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1450,12 +1477,17 @@ impl EvalError {
         }
     }
 
-    pub fn undefined_variable(name: String, definition_span: Span) -> Self {
+    pub fn undefined_variable(
+        name: String,
+        source_file: Option<&str>,
+        definition_span: Span,
+    ) -> Self {
         Self {
             kind: ErrorKind::UndefinedVariable { name },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: source_file.map(Arc::from),
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1472,6 +1504,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1488,6 +1521,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1501,6 +1535,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1518,6 +1553,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1525,7 +1561,7 @@ impl EvalError {
         }
     }
 
-    pub fn duplicate_key(key: &str, definition_span: Span) -> Self {
+    pub fn duplicate_key(key: &str, source_file: Option<&str>, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::DuplicateKey {
                 key: key.to_string(),
@@ -1533,6 +1569,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: source_file.map(Arc::from),
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1546,6 +1583,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1559,6 +1597,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1574,6 +1613,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1587,6 +1627,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1600,6 +1641,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1613,6 +1655,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1626,6 +1669,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1644,6 +1688,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1666,6 +1711,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1679,6 +1725,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1692,6 +1739,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1714,6 +1762,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1727,6 +1776,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1740,6 +1790,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1753,6 +1804,7 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1768,6 +1820,7 @@ impl EvalError {
             definition_span: span,
             materialization_span: None,
             stack: SmallVec::new(),
+            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1853,13 +1906,25 @@ fn detect_repeating_period(frames: &[&StackFrame]) -> Option<(usize, usize)> {
 
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[{}] {} (defined at {})",
-            self.kind.code(),
-            self.kind,
-            self.definition_span
-        )?;
+        // Format definition span with optional source file prefix
+        if let Some(ref file) = self.source_file {
+            write!(
+                f,
+                "[{}] {} (defined at {}:{})",
+                self.kind.code(),
+                self.kind,
+                file,
+                self.definition_span
+            )?;
+        } else {
+            write!(
+                f,
+                "[{}] {} (defined at {})",
+                self.kind.code(),
+                self.kind,
+                self.definition_span
+            )?;
+        }
         // Only show materialization span if it differs from definition span (doc/10-errors.md:820)
         if let Some(ref mat_span) = self.materialization_span {
             if mat_span != &self.definition_span {
@@ -4180,7 +4245,7 @@ mod tests {
     #[test]
     fn test_eval_error_undefined_variable_constructor() {
         let span = test_span(1, 1, 1, 5);
-        let err = EvalError::undefined_variable("myvar".to_string(), span);
+        let err = EvalError::undefined_variable("myvar".to_string(), None, span);
         assert!(matches!(err.kind, ErrorKind::UndefinedVariable { .. }));
         assert_eq!(err.kind.code(), "E002");
         // "myvar" is all lowercase/alphanumeric and not a builtin, so triggers hint
@@ -4243,7 +4308,7 @@ mod tests {
     #[test]
     fn test_eval_error_duplicate_key_constructor() {
         let span = test_span(1, 1, 1, 5);
-        let err = EvalError::duplicate_key("host", span);
+        let err = EvalError::duplicate_key("host", None, span);
         assert!(matches!(err.kind, ErrorKind::DuplicateKey { .. }));
         assert_eq!(err.kind.code(), "E030");
         assert_eq!(err.kind.to_string(), "duplicate key: host");

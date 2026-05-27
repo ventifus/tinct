@@ -1437,9 +1437,14 @@ fn eval_core_expr<'a>(
                 } else {
                     // Fallback to name-based lookup (for stale slot references)
                     let name_owned = name.clone();
-                    env_lock
-                        .get(name)
-                        .ok_or_else(|| EvalError::undefined_variable(name_owned, expr.span).into())
+                    env_lock.get(name).ok_or_else(|| {
+                        EvalError::undefined_variable(
+                            name_owned,
+                            ctx.config.source_file.as_deref(),
+                            expr.span,
+                        )
+                        .into()
+                    })
                 }
             }
 
@@ -1460,15 +1465,25 @@ fn eval_core_expr<'a>(
                     if let Some(monad_name) = monad_name {
                         let env_lock = env.read().unwrap();
                         return env_lock.get(&monad_name).ok_or_else(|| {
-                            EvalError::undefined_variable(monad_name, expr.span).into()
+                            EvalError::undefined_variable(
+                                monad_name,
+                                ctx.config.source_file.as_deref(),
+                                expr.span,
+                            )
+                            .into()
                         });
                     }
                 }
                 let name_owned = name.clone();
                 let env_lock = env.read().unwrap();
-                env_lock
-                    .get(name)
-                    .ok_or_else(|| EvalError::undefined_variable(name_owned, expr.span).into())
+                env_lock.get(name).ok_or_else(|| {
+                    EvalError::undefined_variable(
+                        name_owned,
+                        ctx.config.source_file.as_deref(),
+                        expr.span,
+                    )
+                    .into()
+                })
             }
 
             // DotAccess: wrap as a CoreExpr thunk directly.
@@ -2875,11 +2890,13 @@ pub(crate) fn match_pattern<'a>(
             }
             Pattern::Pin(name) => {
                 // Pin matches if the variable's value equals the scrutinee value
-                let var_thunk = env
-                    .read()
-                    .unwrap()
-                    .get(name)
-                    .ok_or_else(|| EvalError::undefined_variable(name.clone(), *value_span))?;
+                let var_thunk = env.read().unwrap().get(name).ok_or_else(|| {
+                    EvalError::undefined_variable(
+                        name.clone(),
+                        ctx.config.source_file.as_deref(),
+                        *value_span,
+                    )
+                })?;
                 let var_value = materialize(&var_thunk, Some(value_span), ctx).await?;
 
                 // Compare values for equality. Dict and Seq require materialization of

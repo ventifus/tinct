@@ -1171,6 +1171,31 @@ pub enum UnevaluatedState {
 /// - result: set exactly once when evaluation completes
 ///
 /// This is ADDITIVE — Thunk still uses Mutex<ThunkState> during the transition.
+///
+/// ## Three-state lifecycle
+///
+/// A thunk transitions through three states during evaluation:
+///
+/// 1. **Unevaluated**: `unevaluated` is `Some(state)`, `result` is empty.
+///    The thunk has not yet been forced. The `state` variant determines
+///    what needs to be evaluated (CoreExpr, Call, Guarded, etc.).
+///
+/// 2. **InProgress**: `unevaluated` is `None`, `result` is empty.
+///    The thunk is currently being evaluated. Re-entering an InProgress
+///    thunk indicates a circular dependency and triggers a cycle error.
+///    Note: Placeholder thunks (created via `new_placeholder`) are also
+///    represented as (unevaluated=None, result=empty) and are thus
+///    indistinguishable from InProgress. Forcing a Placeholder produces
+///    a circular dependency error, which is acceptable — it indicates
+///    a letrec construction bug.
+///
+/// 3. **Materialized/Failed**: `unevaluated` is `None`, `result` is set.
+///    Evaluation has completed. The result is either `Ok(Value)` for
+///    success or `Err(Arc<EvalError>)` for cached errors.
+///
+/// The transition from Unevaluated → InProgress is atomic via `take_*`
+/// methods that use `Mutex::lock().unwrap().take()`. The transition from
+/// InProgress → Materialized/Failed is atomic via `OnceCell::set()`.
 #[derive(Debug)]
 pub struct ThunkInner {
     /// Pre-evaluation state. Set to Some initially, taken (set to None) when evaluation starts.

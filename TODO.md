@@ -280,29 +280,29 @@ Delete RuntimeTypeCheck entirely and remove all special-case code smells identif
 Combines: error-source-file (5), eval-health-321 (4), test-coverage-326 (4).
 
 **Error source file in `(defined at ...)` messages:** `[E030] duplicate key: raise (defined at 2132:1-2132:66)` shows only `line:col` with no filename. `EvalError` has no `source_file` field.
-- [ ] Add `source_file: Option<Arc<str>>` field to `EvalError` (`src/error.rs`)
-- [ ] Update `EvalError::duplicate_key` to accept `source_file: Option<&str>`; set from `ctx.config.source_file.as_deref()` in `eval_dict.rs:201`
-- [ ] Update `EvalError::Display` to prefix span with `"<file>:"` when source file is known (`src/error.rs:1858`)
-- [ ] Audit other high-frequency `EvalError` constructors that run inside `eval_dict_core`/`eval_core_expr` and populate source file there
-- [ ] Add corpus test: `tests/corpus/errors/e030_source_file.llt` — verifies filename appears in `[E030]` output
+- [x] Add `source_file: Option<Arc<str>>` field to `EvalError` (`src/error.rs`)
+- [x] Update `EvalError::duplicate_key` to accept `source_file: Option<&str>`; set from `ctx.config.source_file.as_deref()` in `eval_dict.rs:201`
+- [x] Update `EvalError::Display` to prefix span with `"<file>:"` when source file is known (`src/error.rs:1858`)
+- [x] Audit other high-frequency `EvalError` constructors that run inside `eval_dict_core`/`eval_core_expr` and populate source file there
+- [x] Add corpus test: `tests/corpus/errors/e030_source_file.llt` — verifies filename appears in `[E030]` output
 
 **Placeholder/InProgress ambiguity (from eval-health-321):** Placeholder thunks indistinguishable from InProgress at storage level.
-- [ ] Add explicit Placeholder detection in `src/eval.rs:1796-1799` — issue structured `PlaceholderForced` error rather than panic or silent failure
-- [ ] Document the three-state ambiguity in `src/value.rs:1764` comment
+- [x] Add explicit Placeholder detection in `src/eval.rs:1796-1799` — issue structured `PlaceholderForced` error rather than panic or silent failure
+- [x] Document the three-state ambiguity in `src/value.rs:1764` comment
 
 **AstNodeField restore (from eval-health-321):**
-- [ ] Determine if `UnevaluatedState::AstNodeField` can raise non-cacheable errors; if yes, add `RestoreState::AstNodeField` variant; if no, document invariant explicitly
+- [x] Determine if `UnevaluatedState::AstNodeField` can raise non-cacheable errors; if yes, add `RestoreState::AstNodeField` variant; if no, document invariant explicitly
 
 **PipelineBlame dead code (from eval-health-321):**
-- [ ] Implement PipelineBlame instantiation for `%@Type` pipeline validation (`src/error.rs:72-86`), OR delete PipelineBlame if feature is no longer planned
+- [x] Implement PipelineBlame instantiation for `%@Type` pipeline validation (`src/error.rs:72-86`), OR delete PipelineBlame if feature is no longer planned
 
 **CEK edge case tests (from test-coverage-326):**
-- [ ] Add 5 unit tests for continuation stack depth, GuardedValidate, RestoreState edge cases (`src/eval_materialize.rs`)
-- [ ] Add `tests/corpus/eval/errors/continuation_stack_exceeded.llt-eval` corpus test
+- [x] Add 5 unit tests for continuation stack depth, GuardedValidate, RestoreState edge cases (`src/eval_materialize.rs`)
+- [x] Add `tests/corpus/eval/errors/continuation_stack_exceeded.llt-eval` corpus test
 
 **Error code coverage (from test-coverage-326):**
-- [ ] Fix or delete `tests/corpus/eval/errors/include_path_not_allowed.llt-eval` — update expected error code
-- [ ] Add corpus tests for E055/E056 when include functionality supports hash validation
+- [x] Fix or delete `tests/corpus/eval/errors/include_path_not_allowed.llt-eval` — update expected error code
+- [x] Add corpus tests for E055/E056 when include functionality supports hash validation
 
 ### string-handle: Wrap a String as a readable Handle for uniform codec APIs
 

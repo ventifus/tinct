@@ -1136,6 +1136,10 @@ pub(crate) async fn force_step(
         // AstNodeField thunk: evaluate a single named field from a SurfaceNode.
         // This is a fast synchronous computation (no async, no eval recursion).
         // surface_node_get_field returns a Value directly — no thunk to force.
+        //
+        // No RestoreState needed: field extraction is pure/deterministic and cannot
+        // raise non-cacheable errors (no DepthExceeded, no I/O). All errors would be
+        // cacheable, so no state restoration is required on error paths.
         let value = crate::surface_fields::surface_node_get_field(&node, field, &thunk_ctx);
         thunk.set_materialized(value.clone());
         Action::Continue(Ok(value))
@@ -3691,7 +3695,7 @@ mod tests {
     #[test]
     fn test_attach_materialization_context_adds_frame() {
         let thunk_span = test_span(1, 1, 1, 10);
-        let err = EvalError::undefined_variable("x".to_string(), thunk_span);
+        let err = EvalError::undefined_variable("x".to_string(), None, thunk_span);
         let mat_span = test_span(10, 5, 10, 6);
         let origin = "test_origin";
 
@@ -4541,7 +4545,7 @@ mod deep_tests {
         // (the "if err.materialization_span.is_none()" branch).
 
         let thunk_span = test_span(1, 1, 1, 10);
-        let err = EvalError::undefined_variable("x".to_string(), thunk_span);
+        let err = EvalError::undefined_variable("x".to_string(), None, thunk_span);
         let mat_span = test_span(10, 5, 10, 6);
         let origin = "test_origin";
 
@@ -4615,6 +4619,84 @@ mod deep_tests {
             "TypeAssert with record should succeed: {:?}",
             result_record
         );
+    }
+
+    #[test]
+    fn test_guarded_validate_type_mismatch() {
+        // Test that Guarded thunks with type mismatches produce correct E011 errors.
+        // This tests the GuardedValidate continuation in apply_cont.
+
+        // Create a Guarded thunk that expects Int but wraps a String value.
+        let input = r#"[@Int "not-an-int"]"#;
+        let result = crate::eval_source(input);
+
+        assert!(result.is_err(), "Guarded type check should fail");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("E011") || err.contains("type assertion failed"),
+            "Expected E011 error, got: {}",
+            err
+        );
+        assert!(
+            err.contains("Int"),
+            "Error should mention expected type Int: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_nested_continuations_resolve_correctly() {
+        // Test that multiple nested continuations (Memoize, TypeAssertCheck, BuiltinForceArg)
+        // resolve in the correct LIFO order during CEK evaluation.
+        //
+        // Construct: `$+ [@Int 1] [@Int 2]`
+        // This creates:
+        // 1. Cont::Memoize for the $+ call
+        // 2. Cont::BuiltinForceArg for arg 0 ([@Int 1])
+        // 3. Cont::TypeAssertCheck for [@Int 1]
+        // 4. Cont::BuiltinForceArg for arg 1 ([@Int 2])
+        // 5. Cont::TypeAssertCheck for [@Int 2]
+        //
+        // The continuations must resolve in reverse: TypeAssertCheck (arg 2) →
+        // BuiltinForceArg (arg 2) → TypeAssertCheck (arg 1) → BuiltinForceArg (arg 1) → Memoize.
+
+        let input = r#"[$+ [@Int 1] [@Int 2]]"#;
+        let result = crate::eval_source(input);
+
+        assert!(
+            result.is_ok(),
+            "Nested continuations should resolve: {:?}",
+            result
+        );
+        assert_eq!(result.unwrap(), "Int(3)");
+    }
+
+    #[test]
+    fn test_empty_continuation_stack_works() {
+        // Test that evaluation with no continuations (already-materialized value)
+        // works correctly. This exercises the base case of the CEK loop.
+
+        // A simple literal has no continuations — it's immediately materialized.
+        let input = "42";
+        let result = crate::eval_source(input);
+
+        assert!(
+            result.is_ok(),
+            "Empty continuation stack should work: {:?}",
+            result
+        );
+        assert_eq!(result.unwrap(), "Int(42)");
+
+        // Test with a pre-materialized string
+        let input_str = r#""hello""#;
+        let result_str = crate::eval_source(input_str);
+
+        assert!(
+            result_str.is_ok(),
+            "String literal should work: {:?}",
+            result_str
+        );
+        assert!(result_str.unwrap().contains("hello"));
     }
 }
 

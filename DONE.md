@@ -8615,6 +8615,24 @@ correct, consistent architecture.
 `test_eq_int_no_infinite_recursion_with_prelude`, `test_lt_int_no_infinite_recursion_with_prelude`,
 `test_sort_no_infinite_recursion_with_prelude`. All pass. `just build` clean with `-D warnings`.
 
+### eval-error-test-health: Eval health items, error source file, test coverage gaps ✅ DONE (2026-05-27)
+
+Added source_file to EvalError for filename-prefixed error spans. Updated duplicate_key and undefined_variable constructors. Documented ThunkInner three-state lifecycle. Documented AstNodeField invariant (no RestoreState needed). Verified PipelineBlame has callers (kept). Added 3 unit tests for eval_materialize edge cases.
+
+- [x] Add source_file: Option<Arc<str>> field to EvalError
+- [x] Update EvalError::duplicate_key to accept source_file
+- [x] Update EvalError::Display to prefix span with filename
+- [x] Audit other EvalError constructors (updated undefined_variable)
+- [x] Document source_file testing strategy
+- [x] Placeholder detection verified (cycle detection handles it)
+- [x] Document three-state ThunkInner lifecycle
+- [x] Document AstNodeField invariant (pure/deterministic)
+- [x] Verify PipelineBlame has callers (kept)
+- [x] Add 3 CEK edge case unit tests
+- [x] Document continuation_stack_exceeded testing constraint
+- [x] Verify include_path_not_allowed test is correct
+- [x] Document E055/E056 testing strategy
+
 - [x] Investigate why instances were commented out: root cause was runtime infinite recursion via alias `builtin-eq = =` which re-dispatched to the Equatable instance (`src/builtins_math.rs:builtin_eq`, `src/builtins_string.rs:builtin_str`)
 - [x] Root cause identified: removed `try_dispatch_method` from `builtin_eq`, `builtin_lt`; removed Showable dispatch block from `builtin_str`; instances left active as type-checker annotations (`src/builtins_math.rs`, `src/builtins_string.rs`)
 - [x] Verify `just test-lib` passes with fix applied (`tests/`)

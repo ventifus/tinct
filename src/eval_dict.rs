@@ -198,7 +198,11 @@ pub(crate) async fn eval_dict_core(
                 },
                 None => (auto_index - 1).to_string(),
             };
-            return Err(Box::new(EvalError::duplicate_key(&key_str, entry.span)));
+            return Err(Box::new(EvalError::duplicate_key(
+                &key_str,
+                ctx.config.source_file.as_deref(),
+                entry.span,
+            )));
         }
 
         if is_static_key && env_id.is_some() {
