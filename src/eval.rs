@@ -619,111 +619,99 @@ impl EvalContext {
     }
 }
 
+/// Extract the ground type of a runtime value for consistent subtyping validation.
+///
+/// Maps runtime `Value` variants to their ground `Type`. Erased positions (Seq elements,
+/// Map values, Dict field values, Function params/returns) become `Type::Unknown`.
+/// The consistent subtyping relation (`is_consistent_subtype`) then accepts `Unknown`
+/// against any annotation, implementing AGT gradual typing semantics.
+///
+/// **Laziness preservation:** This function MUST NOT force any thunks. Field types in Dict
+/// values are erased to `Unknown` without materializing the values. Element types in Seq
+/// values are erased to `Unknown` without consuming the sequence. This is the same tradeoff
+/// as `value_matches_type` tag-only validation: forcing all elements/fields would break
+/// lazy evaluation guarantees.
+pub fn ground_type_of(v: &Value) -> Type {
+    match v {
+        Value::Int(_) => Type::Int,
+        Value::Float(_) => Type::Float,
+        Value::Bool(_) => Type::Bool,
+        Value::String { .. } => Type::Str,
+        Value::Bytes { .. } => Type::Bytes,
+        Value::Dict(map) => Type::Record(extract_row(map)),
+        // Overlay is a lazy right-biased merge: key set cannot be read without forcing.
+        // Return a closed empty record — required-field checks correctly fail,
+        // consistent with Overlay field validation being static-only.
+        Value::Overlay(..) => Type::Record(Row {
+            fields: HashMap::new(),
+        }),
+        // Element type erased (lazy Seq — forcing all elements would break laziness).
+        // is_consistent_subtype accepts Seq(Unknown) ~<: Seq(T) for any T.
+        Value::Seq { .. } => Type::Seq(Box::new(Type::Unknown)),
+        // Param/return types erased — consistent subtyping accepts Function([Unknown..], Unknown)
+        // against any function annotation with matching arity.
+        Value::Function { params, .. } => Type::Function {
+            params: params.iter().map(|_| (None, Type::Unknown)).collect(),
+            ret: Box::new(Type::Unknown),
+            variadic: false,
+        },
+        // Capability types: Unknown → is_consistent_subtype accepts against any annotation.
+        // Preserves current accept-all behavior while capability-runtime-validation sprint is pending.
+        Value::Handle { .. } | Value::WriteHandle { .. } => Type::Unknown,
+        Value::DirCap { .. } | Value::RevocableDirCap { .. } => Type::Unknown,
+        Value::NetCap(_) => Type::Unknown,
+        // Variant payload types erased (payload ThunkId has no static type without the schema).
+        Value::Variant { tag, .. } => Type::NominalVariant {
+            tag: tag.clone(),
+            fields: Row {
+                fields: HashMap::new(),
+            },
+        },
+        // Decimal/BigInt: no Type::Decimal/Type::BigInt in the type system yet.
+        // Unknown preserves current behavior (matches @Number) until those variants are added.
+        Value::Decimal(_) | Value::BigInt(_) => Type::Unknown,
+        // Builtin functions and Proxy values: Unknown accepts any function/type annotation.
+        Value::Builtin(..) | Value::Proxy { .. } => Type::Unknown,
+        // Builder is a transient construction artifact — produce Top (type mismatch error)
+        // rather than panicking; Builder can reach TypeAssert via e.g. [@Int [make-builder]].
+        Value::Builder(..) => Type::Top,
+        // All other runtime-only types (URI, async, crypto, etc.) → Top
+        _ => Type::Top,
+    }
+}
+
+/// Extract the ground record type from a Dict: key names only, field types erased to Unknown.
+///
+/// MUST NOT force any ThunkId — field types are static-only (same tradeoff as Seq elements).
+/// `is_consistent_subtype` then handles width subtyping: `{a: Unknown} ~<: {a: Int}` holds
+/// because `Unknown ~<: Int`. Field presence is checked structurally; field types are not.
+///
+/// Integer-keyed entries (`Key::Int`) are skipped — they are explicit positional entries
+/// like `[0: x 1: y]`, not record fields.
+fn extract_row(map: &IndexMap<Key, ThunkId>) -> Row {
+    let fields = map
+        .keys()
+        .filter_map(|k| match k {
+            Key::String(name) => Some((name.to_string(), Type::Unknown)),
+            // Integer-keyed entries are explicit [0: x 1: y] dict constructs, not record fields.
+            Key::Int(_) => None,
+        })
+        .collect::<HashMap<String, Type>>();
+    Row { fields }
+}
+
 /// Check if a materialized value matches a type for structural TypeAssert validation.
 /// Returns true if the value conforms to the expected type.
 ///
-/// This performs immediate type checking per doc/07-type-extensions.md §Validation depth table:
-/// - Primitives (Int, Float, Str, Bool): exact match
-/// - Literals (IntLiteral, StringLiteral): value equality
-/// - Seq, Function: tag-only validation (element/param types opaque per spec doc/07:108-113)
-/// - TypeVar: treated as Any (residual polymorphic instantiation)
-/// - Record: always true (structural validation deferred to proxy contract wrapping)
+/// **Component 3 unified path:** Delegates to `is_consistent_subtype(ground_type_of(v), T)`.
+/// The consistent subtyping relation handles Unknown at erased positions (Seq elements,
+/// Dict field values, Function params/returns), implementing AGT gradual typing semantics.
+///
+/// No fast-path bypasses — the consistent subtyping relation handles everything uniformly.
+/// If primitive checks prove slow in profiling, optimize `is_consistent_subtype` itself,
+/// which benefits every call site across the codebase.
 pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
-    match expected {
-        Type::Unknown | Type::Top => true,
-        Type::Int => matches!(value, Value::Int(_)),
-        Type::Float => matches!(value, Value::Float(_)),
-        Type::Number => matches!(
-            value,
-            Value::Int(_) | Value::Float(_) | Value::Decimal(_) | Value::BigInt(_)
-        ),
-        Type::Str => matches!(value, Value::String { .. }),
-        Type::Bool => matches!(value, Value::Bool(_)),
-        Type::Bytes => matches!(value, Value::Bytes { .. }),
-        Type::IntLiteral(n) => matches!(value, Value::Int(v) if v == n),
-        Type::StringLiteral(s) => value.as_str().is_some_and(|v| v == s),
-        Type::Function { .. } => matches!(value, Value::Function { .. } | Value::Builtin(_)),
-        Type::Seq(_) => matches!(value, Value::Seq { .. }),
-        Type::Map(_, _) => matches!(value, Value::Dict(_) | Value::Overlay(..)), // Map matches any Dict for now
-        Type::TypeVar(_, _) => true,
-        Type::Record(_) => true, // Records handled separately via proxy wrapping
-        Type::Proxy => matches!(value, Value::Proxy { .. }),
-        Type::DirCap => matches!(value, Value::DirCap { .. } | Value::RevocableDirCap { .. }),
-        Type::NetCap => matches!(value, Value::NetCap(_)),
-        Type::Handle(cap_row) => {
-            // KNOWN ISSUE: Runtime Handle capability validation not implemented
-            //
-            // Runtime Handle capability validation strategy (gradual typing):
-            // - If cap_row is Unknown → accept any handle (gradual escape hatch)
-            // - If cap_row is concrete → STILL accept any handle for now
-            //
-            // Rationale for always accepting when concrete:
-            // The type checker already validated capabilities at compile time. Runtime
-            // validation in value_matches_type is only invoked for:
-            // 1. TypeAssert ([@Handle[R] expr]) — type checker already warned if mismatch
-            // 2. Proxy contract validation — deferred to future capability-aware proxies
-            //
-            // Rejecting at runtime what the type checker already allowed would break
-            // gradual typing semantics: static types are upper bounds, not runtime guards.
-            // A proper fix requires bidirectional subtyping with the handle value's actual
-            // runtime capabilities, which isn't available here (Handle values don't carry
-            // their type-level capability row at runtime — they carry a HashMap<String,Value>
-            // for cap-data, which is orthogonal to the type system's capability flags).
-            //
-            // Future work: When Handle values gain a type-level capability descriptor at
-            // runtime (e.g., Value::Handle { caps: Type, ... }), implement subtyping check:
-            //   Type::is_subtype(&handle.caps, cap_row)
-            // Until then, accept all handles when cap_row is non-Unknown (preserve gradual
-            // typing consistency).
-            // TODO(capability-runtime-validation): Implement structural row subtyping
-            // when Handle values carry runtime capability descriptors. Currently, BOTH
-            // Unknown and concrete cap_row cases accept any handle — see rationale above.
-            // The _ suppresses unused-variable warnings since cap_row drives only future
-            // validation, not current behavior.
-            let _ = cap_row;
-            matches!(value, Value::Handle { .. } | Value::WriteHandle { .. })
-        }
-        Type::Uri => matches!(value, Value::Uri { .. }),
-        Type::Timestamp => matches!(value, Value::Timestamp(_)),
-        Type::Duration => matches!(value, Value::Duration(_)),
-        Type::ClockCap => matches!(value, Value::ClockCap(_)),
-        Type::Timezone => matches!(value, Value::Timezone(_)),
-        Type::QuicSession => matches!(value, Value::QuicSession(_)),
-        Type::Http2Session => matches!(value, Value::Http2Session { .. }),
-        Type::Http3Session => matches!(value, Value::Http3Session(_)),
-        Type::QuicDatagramHandle => matches!(value, Value::QuicDatagramHandle(_)),
-        Type::DatagramHandle => matches!(value, Value::DatagramHandle { .. }),
-        Type::Union(members) => {
-            // Value matches union if it matches ANY member type
-            members
-                .iter()
-                .any(|member| value_matches_type(value, member))
-        }
-        Type::Intersection(members) => {
-            // Value matches intersection if it matches ALL member types
-            members
-                .iter()
-                .all(|member| value_matches_type(value, member))
-        }
-        // Never: no value can match the bottom type
-        Type::Never => false,
-        // Negation: a value matches ~T iff it does NOT match T.
-        // This is sound for ground types; RDNF normalization handles compound cases later.
-        Type::Negation(inner) => !value_matches_type(value, inner),
-        // NominalVariant: check if value is a Variant with matching tag
-        Type::NominalVariant { tag, .. } => {
-            matches!(value, Value::Variant { tag: v_tag, .. } if v_tag == tag)
-        }
-        // Type constructor application and variables: treat like TypeVar (accept any value)
-        // The type checker validates these; at runtime they're polymorphic.
-        Type::App(_, _) | Type::Operator(_) | Type::TypeStageApp { .. } => true,
-        // Error is a type-inference sentinel that should never reach runtime validation.
-        // Type::Error indicates type inference failed; treating it as a match would mask bugs.
-        Type::Error => {
-            debug_assert!(false, "Error sentinel should not reach runtime validation");
-            false
-        }
-    }
+    Type::is_consistent_subtype(&ground_type_of(value), expected)
 }
 
 /// Format a Type for error messages in TypeAssert.

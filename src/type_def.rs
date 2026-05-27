@@ -618,6 +618,94 @@ impl Type {
         }
     }
 
+    /// The AGT consistent subtyping relation (Garcia et al. 2016, Proposition 22): `A ~<: B`.
+    ///
+    /// Used for `value_matches_type`: ground types carry `Unknown` at erased positions
+    /// (Seq elements, Map values, Dict field values, Function params/returns).
+    /// Plain `is_subtype` rejects `Unknown`; this relation treats `Unknown` as consistent
+    /// with all types at any depth.
+    ///
+    /// **Structural recursion for compound types:** Every type constructor that `ground_type_of`
+    /// can produce with `Unknown` at structural depth has an explicit arm here. The fallthrough
+    /// to `is_subtype` is safe because it only handles types without structural sub-components
+    /// or types that `ground_type_of` never produces.
+    pub fn is_consistent_subtype(sub: &Type, sup: &Type) -> bool {
+        // Unknown on either side: consistent (? ~<: T and T ~<: ? for all T)
+        if matches!(sub, Type::Unknown) || matches!(sup, Type::Unknown) {
+            return true;
+        }
+        // Unresolved TypeVar in annotation position: treat as Unknown (gradual)
+        if matches!(sup, Type::TypeVar(_, _)) {
+            return true;
+        }
+        // Error is never a consistent subtype of anything
+        if matches!(sub, Type::Error) || matches!(sup, Type::Error) {
+            return false;
+        }
+        match (sub, sup) {
+            // Primitives: exact match
+            (Type::Int, Type::Int)
+            | (Type::Str, Type::Str)
+            | (Type::Bool, Type::Bool)
+            | (Type::Float, Type::Float)
+            | (Type::Bytes, Type::Bytes) => true,
+            // Top accepts everything
+            (_, Type::Top) => true,
+            // Structural recursion — consistent subtyping throughout all composite types.
+            // Every type that can structurally contain Unknown gets its own arm here.
+            (Type::Seq(a), Type::Seq(b)) => Self::is_consistent_subtype(a, b),
+            (Type::Map(k1, v1), Type::Map(k2, v2)) => {
+                Self::is_consistent_subtype(k1, k2) && Self::is_consistent_subtype(v1, v2)
+            }
+            (Type::Record(sub_row), Type::Record(sup_row)) => {
+                // Width subtyping: sub must supply every field sup requires.
+                // Field types use consistent subtyping: Unknown field ~<: any annotation.
+                sup_row.fields.iter().all(|(field, sup_ty)| {
+                    sub_row
+                        .fields
+                        .get(field)
+                        .map(|sub_ty| Self::is_consistent_subtype(sub_ty, sup_ty))
+                        .unwrap_or(false) // field absent in sub → fails
+                })
+            }
+            // Function: contravariant params, covariant return.
+            // ground_type_of erases param/return types to Unknown; consistent subtyping
+            // accepts Function([Unknown..], Unknown) against any concrete function annotation.
+            (
+                Type::Function {
+                    params: sub_p,
+                    ret: sub_r,
+                    ..
+                },
+                Type::Function {
+                    params: sup_p,
+                    ret: sup_r,
+                    ..
+                },
+            ) => {
+                sub_p.len() == sup_p.len()
+                    && sub_p.iter().zip(sup_p.iter()).all(
+                        |((_sub_name, sub_ty), (_sup_name, sup_ty))| {
+                            Self::is_consistent_subtype(sup_ty, sub_ty) // contravariant
+                        },
+                    )
+                    && Self::is_consistent_subtype(sub_r, sup_r)
+            }
+            // Union in sup: value is c.s. subtype of union if c.s. subtype of any member
+            (_, Type::Union(members)) => {
+                members.iter().any(|m| Self::is_consistent_subtype(sub, m))
+            }
+            // Intersection in sup: value must be c.s. subtype of all members
+            (_, Type::Intersection(members)) => {
+                members.iter().all(|m| Self::is_consistent_subtype(sub, m))
+            }
+            // Remaining cases (NominalVariant, Handle at static level, etc.): fall to is_subtype.
+            // Safe because ground_type_of never produces these with Unknown at structural depth
+            // (Handle → Unknown, Variant fields → empty row).
+            _ => Self::is_subtype(sub, sup),
+        }
+    }
+
     /// Check if two types are disjoint (have no values in common).
     ///
     /// Used for Negation subtyping: `A <: ~B` iff `types_are_disjoint(A, B)`.

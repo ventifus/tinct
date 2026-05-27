@@ -1168,7 +1168,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | **Internal (eval.rs)** | | |
 | `eval_key` (dict construction) | Materializes all dict keys | Keys must be known for dict insertion |
 | `builtin_keys` | Materializes dict | Keys are never thunks |
-| `TypeAssert` body (`[@Type expr]`) | Shape checked immediately (required keys present, cardinality for closed records); field type validation via Guarded thunks — each field's type constraint is checked lazily at first access | Known partial strictness: shape check cannot be deferred, but individual field types are validated lazily via `Cont::TypeAssertCheck` continuation. See [Type System Extensions](07-type-extensions.md) §TypeAssert Runtime Validation. |
+| `TypeAssert` body (`[@Type expr]`) | Shape checked immediately (required keys present, cardinality for closed records); field type validation via Guarded thunks — each field's type constraint is checked lazily at first access | Known partial strictness: shape check cannot be deferred, but individual field types are validated lazily via `Cont::TypeAssertCheck` continuation. See [Type System Extensions](07-type-extensions.md) §TypeAssert Runtime Validation and §Consistent Subtyping. |
 
 **Force-side-effect idiom.** Tinct has no `!` or `seq` operator. To force a side-effectful binding before returning a result, use the equality-check pattern:
 

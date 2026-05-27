@@ -8618,6 +8618,19 @@ Changed failed_bindings entries from Type::Unknown to Type::Error at 3 sites. Ad
 - [x] Corpus test for E099 cascade fix
 - [x] Document T010 interaction with Type::Error
 
+### consistent-subtype: Component 3 — unified runtime type check ✅ DONE (2026-05-27)
+
+Implemented AGT consistent subtyping (Garcia et al. 2016). Added is_consistent_subtype to type_def.rs, ground_type_of and extract_row to eval.rs. Replaced 100+ line value_matches_type with single-line delegation. Added corpus tests and doc sections.
+
+- [x] Implement is_consistent_subtype (AGT ~<: relation)
+- [x] Implement ground_type_of (Value → Type)
+- [x] Implement extract_row (Dict → Row, key-only)
+- [x] Replace value_matches_type body
+- [x] Update lower.rs Type::Error guard (TODO added)
+- [x] Corpus tests (4): seq, record, fail, function
+- [x] Doc: §Consistent Subtyping in doc/07-type-extensions.md
+- [x] Doc: update §TypeAssert in doc/08-evaluation.md
+
 **Consistent with arithmetic:** `+`, `-`, `*`, `/` do NOT dispatch through Addable/Subtractable/
 Multipliable/Divisible at runtime either — those instances are type-checker only. This is the
 correct, consistent architecture.

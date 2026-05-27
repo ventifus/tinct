@@ -1,0 +1,3 @@
+[@Fn [fn [let x] x]]
+=== out
+Function([Param { name: Some("x"), destructure: None, annotation: None }])

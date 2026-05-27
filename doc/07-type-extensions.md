@@ -256,6 +256,46 @@ For guard failures (detected on field access), the error includes the field path
 
 **References.** Findler, R. & Felleisen, M. (2002). "Contracts for Higher-Order Functions." Strickland, T.S., Tobin-Hochstadt, S., Findler, R. & Felleisen, M. (2012). "Chaperones and Impersonators: Run-time Support for Reasonable Interposition." Wadler, P. & Findler, R. (2009). "Well-Typed Programs Can't Be Blamed." Siek, J. & Taha, W. (2006). "Gradual Typing for Functional Languages." Dunfield, J. & Krishnaswami, N. (2021). "Bidirectional Typing."
 
+## Consistent Subtyping
+
+Runtime TypeAssert validation uses **consistent subtyping** (`~<:`), the AGT (Abstracting Gradual Typing) relation that extends structural subtyping to handle `Unknown` at erased positions.
+
+**Definition:** `value_matches_type(v, T)` is defined as `is_consistent_subtype(ground_type_of(v), T)`, where:
+
+- `ground_type_of(v)` extracts the ground type of runtime value `v`, producing `Type::Unknown` at erased positions (Seq elements, Map values, Dict field values, Function params/returns)
+- `is_consistent_subtype(A, B)` implements the AGT `~<:` relation (Garcia et al. 2016, Proposition 22)
+
+**Key rules:**
+
+```text
+────────────────────────  [CS-UNKNOWN-L]
+Unknown ~<: T
+
+────────────────────────  [CS-UNKNOWN-R]
+T ~<: Unknown
+
+A <: B
+────────────────────────  [CS-SUBTYPE]
+A ~<: B
+```
+
+For compound types, consistent subtyping recurses structurally:
+
+- **Seq:** `Seq(A) ~<: Seq(B)` iff `A ~<: B`
+- **Map:** `Map[K1 V1] ~<: Map[K2 V2]` iff `K1 ~<: K2` and `V1 ~<: V2`
+- **Record:** `{f₁: T₁, ...} ~<: {g₁: U₁, ...}` iff all required fields `gᵢ` exist in the first record with `Tᵢ ~<: Uᵢ` (width subtyping)
+- **Function:** contravariant params, covariant return (same as `<:`)
+- **Union/Intersection:** same as `<:` with recursive `~<:` checks
+
+**Laziness preservation caveat:** Because `ground_type_of` must not force thunks, element types in Seq values and field types in Dict values are erased to `Unknown`. This means:
+
+- `[@Seq[Int] [seq 1 "hello" 3]]` passes at runtime — element types are not checked
+- `[@[name: String] [name: 42]]` passes shape validation (field `name` exists), but the field type is checked lazily via proxy contract wrapping when accessed
+
+TypeAssert **Seq element validation is static-only**. The "lint passes = safe to run" guarantee applies to tag-level checks (is the value a Seq?) but not element type checks. The same applies to Dict field types — field presence is checked eagerly, field types are checked lazily.
+
+**References.** Garcia, R., Clark, A.M. & Tanter, É. (2016). "Abstracting Gradual Typing." *POPL '16*, pp. 429-442. — Proposition 22 (Type Safety): the runtime check is the restriction of the static consistent subtyping relation to ground types.
+
 ## Numeric Representation Constraints (`repr:`)
 
 The `repr:` annotation property enforces numeric bit width and signedness constraints at type-checking time. It accepts eight string literals corresponding to Rust's integer types: `"u8"`, `"i8"`, `"u16"`, `"i16"`, `"u32"`, `"i32"`, `"u64"`, `"i64"`.

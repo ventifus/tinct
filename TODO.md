@@ -169,17 +169,17 @@ The `failed_bindings → Type::Error` change is independent of Component 2 and c
 
 Implement the AGT consistent subtyping relation and ground_type_of; replace value_matches_type with the unified path.
 
-- [ ] Implement `is_consistent_subtype(sub, sup) -> bool` in `src/type_def.rs` — AGT `~<:` relation per whatif sketch: Unknown/TypeVar guards, then structural recursion for Seq/Map/Record/Function/Union/Intersection, with `is_subtype` fallthrough for remaining cases (`src/type_def.rs`)
-- [ ] Implement `ground_type_of(v: &Value) -> Type` in `src/eval.rs` — per whatif sketch: primitives → concrete type, Dict → `Record(extract_row)`, Overlay → closed empty record, Seq → `Seq(Unknown)`, Function → erased params/ret, capability types → `Unknown`, Decimal/BigInt → `Unknown`, Builder → `Top`, catch-all → `Top` (`src/eval.rs`)
-- [ ] Implement `extract_row(map: &IndexMap<Key, ThunkId>) -> Row` in `src/eval.rs` — key-only extraction, all field types `Unknown`, `Key::Int` entries skipped (`src/eval.rs`)
-- [ ] Replace `value_matches_type` body with `is_consistent_subtype(ground_type_of(v), T)` — single-line delegation, no fast-path bypass (`src/eval.rs:572-668`)
-- [ ] Update `lower.rs` Type::Error guard for post-Component-3: emit `CoreExpr::TypeAssert { resolved_type: Type::Unknown }` instead of `CoreExpr::RuntimeTypeCheck` (Unknown passes via consistent subtyping) (`src/lower.rs`)
-- [ ] Tests: corpus tests for `is_consistent_subtype` — `Seq(Unknown) ~<: Seq(Int)` passes, `Record({a: Unknown}) ~<: Record({a: Int})` passes, `Int ~<: Str` fails, `Record({}) ~<: Record({a: Int})` fails (missing field), `Function([Unknown], Unknown) ~<: Function([Int], String)` passes (`tests/corpus/typecheck/`)
-- [ ] Tests: `ground_type_of` unit tests for each Value variant — verify correct Type mapping and no thunk forcing (`src/eval.rs`)
-- [ ] Tests: `extract_row` unit tests — empty dict, string-keyed dict, mixed int/string keys, verify no ThunkId access (`src/eval.rs`)
-- [ ] Tests: end-to-end TypeAssert — `[@Int 42]` passes, `[@Seq[Int] [seq 1 2 3]]` passes (tag-only), `[@[a: Int] {a: 1}]` passes (field presence), `[@String 42]` fails (`tests/corpus/eval/`)
-- [ ] Doc: add §Consistent Subtyping to `doc/07-type-extensions.md` — `is_consistent_subtype` definition, AGT Proposition 22, Seq/Dict element erasure caveat (`doc/07-type-extensions.md`)
-- [ ] Doc: update §TypeAssert Runtime Validation in `doc/08-evaluation.md` — `value_matches_type = is_consistent_subtype(ground_type_of(v), T)`, no fast-path, no dual-path (`doc/08-evaluation.md`)
+- [x] Implement `is_consistent_subtype(sub, sup) -> bool` in `src/type_def.rs` — AGT `~<:` relation per whatif sketch: Unknown/TypeVar guards, then structural recursion for Seq/Map/Record/Function/Union/Intersection, with `is_subtype` fallthrough for remaining cases (`src/type_def.rs`)
+- [x] Implement `ground_type_of(v: &Value) -> Type` in `src/eval.rs` — per whatif sketch: primitives → concrete type, Dict → `Record(extract_row)`, Overlay → closed empty record, Seq → `Seq(Unknown)`, Function → erased params/ret, capability types → `Unknown`, Decimal/BigInt → `Unknown`, Builder → `Top`, catch-all → `Top` (`src/eval.rs`)
+- [x] Implement `extract_row(map: &IndexMap<Key, ThunkId>) -> Row` in `src/eval.rs` — key-only extraction, all field types `Unknown`, `Key::Int` entries skipped (`src/eval.rs`)
+- [x] Replace `value_matches_type` body with `is_consistent_subtype(ground_type_of(v), T)` — single-line delegation, no fast-path bypass (`src/eval.rs:572-668`)
+- [x] Update `lower.rs` Type::Error guard for post-Component-3: emit `CoreExpr::TypeAssert { resolved_type: Type::Unknown }` instead of `CoreExpr::RuntimeTypeCheck` (Unknown passes via consistent subtyping) (`src/lower.rs`)
+- [x] Tests: corpus tests for `is_consistent_subtype` — `Seq(Unknown) ~<: Seq(Int)` passes, `Record({a: Unknown}) ~<: Record({a: Int})` passes, `Int ~<: Str` fails, `Record({}) ~<: Record({a: Int})` fails (missing field), `Function([Unknown], Unknown) ~<: Function([Int], String)` passes (`tests/corpus/typecheck/`)
+- [x] Tests: `ground_type_of` unit tests for each Value variant — verify correct Type mapping and no thunk forcing (`src/eval.rs`)
+- [x] Tests: `extract_row` unit tests — empty dict, string-keyed dict, mixed int/string keys, verify no ThunkId access (`src/eval.rs`)
+- [x] Tests: end-to-end TypeAssert — `[@Int 42]` passes, `[@Seq[Int] [seq 1 2 3]]` passes (tag-only), `[@[a: Int] {a: 1}]` passes (field presence), `[@String 42]` fails (`tests/corpus/eval/`)
+- [x] Doc: add §Consistent Subtyping to `doc/07-type-extensions.md` — `is_consistent_subtype` definition, AGT Proposition 22, Seq/Dict element erasure caveat (`doc/07-type-extensions.md`)
+- [x] Doc: update §TypeAssert Runtime Validation in `doc/08-evaluation.md` — `value_matches_type = is_consistent_subtype(ground_type_of(v), T)`, no fast-path, no dual-path (`doc/08-evaluation.md`)
 
 ### pipeline-expects-restructure: Pipeline expects: contract restructure
 

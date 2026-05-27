@@ -1,0 +1,7 @@
+[@String 42]
+=== error
+error: type assertion failed: expected String, got Int
+ --> block 1:1:1
+  |
+  1 | [@String 42]
+    | ^^^^^^^^^^^^
