@@ -170,6 +170,8 @@ pub async fn eval_surface_document(
 
     let mut current_env = env;
 
+    // TODO: Extract this scope-chaining loop into a shared eval_document_exprs() function
+    // and reuse it in builtin_eval (src/builtins_meta.rs). The logic is duplicated.
     for (i, node) in expr_nodes.iter().enumerate() {
         let is_last = i == expr_nodes.len() - 1;
 
@@ -250,6 +252,41 @@ pub async fn eval_surface_document(
                 }
             }
             current_env = child_env;
+        } else {
+            // No static keys (non-Dict literal or Call/other expression returning Dict/Overlay).
+            // If the runtime value is Dict or Overlay, promote ALL entries into scope.
+            // This handles bare [include ...], [fn ...], etc. that return dicts.
+            let map = match value {
+                Value::Dict(ref m) if !m.is_empty() => Some(m.clone()),
+                Value::Overlay(ref l, ref r) => Some(crate::builtins::flatten_overlay(
+                    l,
+                    r,
+                    "document pipeline",
+                    ctx,
+                    node_span,
+                )?),
+                _ => None,
+            };
+
+            if let Some(entries) = map {
+                let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
+                    &current_env,
+                ))));
+                for (key, val_thunk_id) in entries.iter() {
+                    if let Key::String(name) = key {
+                        let val_thunk = ctx.get_thunk(*val_thunk_id);
+                        let forced_value = materialize(&val_thunk, Some(&node_span), ctx).await?;
+                        let strict_thunk =
+                            Arc::new(Thunk::new_materialized(forced_value, node_span));
+                        child_env
+                            .write()
+                            .unwrap()
+                            .insert(name.to_string(), strict_thunk);
+                    }
+                }
+                current_env = child_env;
+            }
+            // Non-dict/overlay results: silently skip (no error, no scope change)
         }
     }
 

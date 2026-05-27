@@ -1,0 +1,5 @@
+# Bare include promotes bindings: str-at from strings.llt
+[include %libdir "strings.llt"]
+[str-at 0 "hello"]
+=== out
+String("h")

@@ -1,0 +1,5 @@
+# Intermediate non-dict expression doesn't error
+"hello"
+42
+=== out
+Int(42)

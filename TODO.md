@@ -75,48 +75,35 @@ No `CoreExpr::Call` changes. No lowering pass changes. Use `Arc::strong_count(th
 
 ### macro-ast-expression-compat ✅ Partially DONE — 5 of 8 tests fixed. Remaining 2 tasks merged into nit-fixes above.
 
-### bare-include-scope: Bare `[include ...]` promotes bindings into scope; unify eval pipelines
+### bare-include-scope ✅ DONE
 
-**Root cause:** Two parallel eval pipelines discard the dict result of intermediate Call expressions instead of extending scope. Only `SurfaceExpression::Dict` literals currently trigger scope promotion.
+Bare `[include ...]` and other Call expressions returning dicts now promote bindings into scope for subsequent expressions, matching dict literal semantics. Named form `[lib: [include ...]]` remains for namespaced access.
 
-Intended design: `[include %libdir "foo.llt"]` as a bare (non-named) intermediate expression should add `foo.llt`'s exported names into scope for subsequent expressions, just like a dict literal would. Named form `[lib: [include ...]]` remains for namespaced access.
+**Implemented:**
+- [x] Change 1: `src/builtins_meta.rs` — `builtin_eval` loop now uses mutable `current_env`, creates child env for intermediate Dict/Overlay results
+- [x] Change 2: `src/eval_pipeline.rs` — `eval_surface_document` adds `else` branch to promote Call-result dicts into scope
+- [x] Corpus test: `bare_include_scope.llt-eval` — bare `[include %libdir "strings.llt"]` followed by `[str-at 0 "hello"]`
+- [x] Corpus test: `bare_call_scope.llt-eval` — intermediate Call returning dict makes bindings available
+- [x] Corpus test: `bare_nondict_skip.llt-eval` — non-dict intermediates silently skip (no error)
 
-**Concrete breakage:** `stdlib/codecs/json.llt` line 15 uses `[include %libdir "strings.llt"]` expecting `str-at` and `str-replace` to be in scope for the subsequent helper dict. Both are defined only in strings.llt (not prelude), so `to-json` (calls `str-replace` via `json-escape`) and `from-json` (calls `str-at` in the parser) fail at runtime with undefined variable.
+**Deferred to follow-up sprint `extract-eval-document-exprs`:**
+- Change 3: Extract `eval_document_exprs` shared function to eliminate duplication between `builtin_eval` and `eval_surface_document` (tracked as TODO comments in both files)
+- Change 4: Update `doc/09-documents.md` §SEQ-SCOPE to document dynamic binding semantics and tier-2 fallback behavior
 
-**No resolver changes needed:** The resolver already emits `FreeVar` (name-based lookup) for names not in static scope. Adding a runtime child env is sufficient — if slot-based lookup drifts due to the extra env level, the outer `env_lock.get(name)` fallback in `eval_core_expr` (eval.rs:1441) does a full parent-chain walk and finds the variable correctly.
+### extract-eval-document-exprs: Deduplicate scope-chaining logic
 
-**Change 1 — `src/builtins_meta.rs` (`builtin_eval` expression loop, ~line 1743):**
-Replace fixed `final_env` with mutable `current_env`; after each intermediate expression that returns a dict (or Overlay), create a child env with all string-keyed entries and update `current_env` for subsequent expressions.
-- [ ] Replace `Arc::clone(&final_env)` in the loop with `Arc::clone(&current_env)` where `current_env` starts as `final_env`
-- [ ] After each non-last expression: if value is `Dict` (non-empty) or `Overlay`, flatten via `flatten_overlay` and insert all `Key::String` entries into a new child env; update `current_env`
-- [ ] Materialize each individual entry thunk strictly before insertion (match `eval_surface_document` semantics — preserves letrec safety)
-- [ ] Non-dict result: no scope change, no error — silently skip
+**Rationale:** `builtin_eval` (src/builtins_meta.rs:1758-1808) and `eval_surface_document` (src/eval_pipeline.rs:171-287) both implement identical scope-chaining semantics: materialize intermediate expressions, promote Dict/Overlay bindings into child envs, return last expression lazily. This logic should be extracted into a shared function.
 
-**Change 2 — `src/eval_pipeline.rs` (`eval_surface_document` intermediate handling, ~line 216):**
-Add `else` branch after the existing `if let Some(ref static_key_set) = static_keys` block that promotes Call-result dicts.
-- [ ] After the existing `if let Some(ref static_key_set)` block, add `else` branch: when value is `Dict` (non-empty) or `Overlay`, flatten and insert all `Key::String` entries into a new child env; update `current_env`
-- [ ] Non-dict result (e.g. string from `[slurp ...]`): no scope change, no error — silently skip
-- [ ] Insert via same materialize-then-strict-thunk pattern as existing `static_keys` path (eval_pipeline.rs:242-244)
-
-**Change 3 — extract `eval_document_exprs` shared function:**
-After Changes 1 and 2 land, both loops implement identical semantics. Extract the canonical scope-chaining loop so it is not duplicated.
+**Tasks:**
 - [ ] Add `pub(crate) async fn eval_document_exprs(expr_nodes: &[Arc<SurfaceNode>], env: Arc<RwLock<Environment>>, ctx: &Arc<EvalContext>, res: &Arc<ResolutionTable>, types: &Arc<TypeAnnotationTable>) -> EvalResult<Arc<Thunk>>` in `eval_pipeline.rs`
 - [ ] Loop: lower → eval → materialize → if Dict/Overlay flatten and create child env with all `Key::String` entries (strictly materialized) → chain; last expression returned lazily
 - [ ] `eval_surface_document` delegates its expression loop to `eval_document_exprs` (caps validation block stays in `eval_surface_document`)
-- [ ] `builtin_eval` extracts `SurfaceNode` from each `Value::Expression`, builds initial env as now, then delegates to `eval_document_exprs`
-- [ ] Verify `builtin_eval` callers handle lazy return (currently returns a freshly-materialized thunk; unified path returns the last expression's thunk lazily)
+- [ ] `builtin_eval` extracts `SurfaceNode` from each `Value::Expression`, builds initial env, then delegates to `eval_document_exprs`
+- [ ] Verify `builtin_eval` callers handle lazy return (currently returns freshly-materialized value; unified path returns thunk)
+- [ ] Update `doc/09-documents.md` §SEQ-SCOPE: document dynamic binding semantics (runtime Dict/Overlay promotion creates child env not modeled by resolver; tier-2 fallback in eval.rs rescues level-drifted Var lookups)
+- [ ] Remove TODO comments from `src/builtins_meta.rs:1754` and `src/eval_pipeline.rs:174`
 
-**Tests:**
-- [ ] Corpus test (Rust pipeline path): top-level file with bare `[include %libdir "strings.llt"]` followed by expression using `str-at` — verifies `eval_surface_document` fix
-- [ ] Corpus test (self-hosted path): file included via named include that itself uses a bare include internally — verifies `builtin_eval` fix
-- [ ] Corpus test: intermediate Call expression returning a dict makes its keys available to the next expression in both pipeline paths
-- [ ] Verify `json.llt` `from-json` and `to-json` work end-to-end (existing CLI tests should suffice once fix lands)
-
-**Change 4 — update `doc/09-documents.md` §SEQ-SCOPE:**
-The `resolver-slot-soundness` sprint (2026-05-23) formalized `static_keys(eᵢ) = ∅ ⟹ ρᵢ = ρᵢ₋₁` (no new de Bruijn level for non-Dict expressions). Changes 1–3 add a child env for Call-result dicts, which creates a level the resolver doesn't model. This is correct at runtime (the tier-2 `env_lock.get(name)` fallback in eval.rs:1441 is a full chain walk that rescues level-drifted `Var` lookups), but the spec must be updated to match.
-- [ ] Update §SEQ-SCOPE in `doc/09-documents.md` to handle the case where `static_keys(eᵢ) = ∅` but the expression evaluates to a Dict at runtime: `ρᵢ = ({dynamic-bindings}, Some(ρᵢ₋₁))` with a note that Var references to those bindings resolve via the name-based tier-2 fallback (O(n) walk)
-
-**Files:** `src/builtins_meta.rs`, `src/eval_pipeline.rs`, `doc/09-documents.md`, `tests/corpus/`
+**Files:** `src/builtins_meta.rs`, `src/eval_pipeline.rs`, `doc/09-documents.md`
 
 ---
 

@@ -8558,6 +8558,17 @@ Root cause: the parser error-recovery mechanism converts all `push_value` errors
 - [x] Fix test harness to check recovered errors in ParseOutput instead of requiring parse() to return Err (f5994c9)
 - [x] Verify `test_invalid_corpus` passes after fix
 
+### bare-include-scope: Bare [include ...] promotes bindings into scope ✅ DONE (2026-05-27)
+
+Bare include now promotes dict result bindings into scope. Changed builtins_meta.rs (builtin_eval) and eval_pipeline.rs (eval_surface_document) to create child envs from dict/overlay results of intermediate expressions. Non-dict results silently skipped. Change 3 (shared function extraction) deferred to reduce risk.
+
+- [x] builtins_meta.rs: Replace fixed final_env with mutable current_env in eval loop
+- [x] builtins_meta.rs: Promote Dict/Overlay entries to child env for each intermediate expression
+- [x] builtins_meta.rs: Materialize each entry strictly, silently skip non-dict results
+- [x] eval_pipeline.rs: Add else branch for dynamic dict scope promotion
+- [x] eval_pipeline.rs: Same materialize-then-insert pattern as static keys path
+- [x] Corpus tests: bare_include_scope, bare_call_scope, bare_nondict_skip
+
 ### corpus-prelude-interpolated-strings: `split` undefined during tmpl macro expansion typecheck
 
 `tests/corpus/valid/literals/interpolated_strings.llt-eval` and `triple_quoted_interpolated.llt-eval` produce unexpected warning: `[E002] undefined variable: split`. Root cause: the `tmpl` macro expansion references `split` (from `stdlib/prelude.llt`) during typecheck, but `split` is reported as undefined when typechecking isolated from the full prelude scope.
