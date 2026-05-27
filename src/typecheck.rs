@@ -2006,14 +2006,22 @@ pub(crate) fn infer_surface_expr(
                         )]);
                     }
                 } else {
+                    let enclosing_level = state.level;
                     let expr_ty = infer_surface_expr(seq_expr, &current_env, state, type_map)?;
 
-                    // Extract record fields to extend the type environment
+                    // Extract record fields to extend the type environment.
+                    // Generalize each field type at the enclosing level so that
+                    // a call expression returning a polymorphic record (e.g. a
+                    // function that returns `[id: fn [x@a] $x]`) preserves
+                    // let-polymorphism for downstream bindings.  Without
+                    // generalization, `id` would be inserted as a monomorphic
+                    // entry and could only be used at a single type.
                     if let Type::Record(row) = expr_ty {
                         let mut child_env = TypeEnv::with_parent(&current_env);
 
                         for (field_name, field_ty) in &row.fields {
-                            child_env.insert(field_name.clone(), field_ty.clone());
+                            let scheme = generalize(enclosing_level, field_ty, state);
+                            child_env.insert_scheme(field_name.clone(), scheme);
                         }
 
                         current_env = Rc::new(child_env);
@@ -3121,10 +3129,18 @@ fn check_surface_expr(
             if let Type::Function {
                 params: ref expected_params,
                 ret: ref expected_ret,
-                variadic: _,
+                variadic: ref expected_variadic,
             } = resolved_expected
             {
-                if !resolved_expected.has_inference_vars() {
+                // Skip lambda checking mode for the "any function" top type
+                // (Function{params:[], ret:Top, variadic:true}).  That type is the top
+                // of the function lattice and accepts any lambda — applying the arity
+                // check (params.len() != 0) would incorrectly reject non-zero-param
+                // lambdas like `fn [let x] x`.  Instead, fall through to the
+                // synthesize+subsume path, which uses is_consistent_subtype to verify
+                // that the concrete lambda type is ~<: any-function (always true).
+                let is_any_function_expected = expected_params.is_empty() && *expected_variadic;
+                if !resolved_expected.has_inference_vars() && !is_any_function_expected {
                     // Create a fresh annotation mapping for this lambda to prevent
                     // cross-contamination of type variables.
                     // Only allocate if any param has an annotation or there's a return annotation.

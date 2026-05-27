@@ -646,9 +646,9 @@ After restructuring codecs/json.llt to single-dict (for closure scoping), all 18
 
 `src/typecheck_annot.rs:1790-1800` resolve for "Fn" returns `Type::Unknown`, disabling all type checking at annotation sites and allowing non-functions through TypeAssert. Should use `Function{params:[], ret:Top, variadic:true}` to preserve callability enforcement.
 
-- [ ] Change @Fn resolve from `Type::Unknown` to `Type::Function{params:vec![], ret:Box::new(Type::Top), variadic:true}` in `src/typecheck_annot.rs:1790-1800`
-- [ ] Audit prelude @Fn annotations and replace with precise `Fn@ReturnType [Params]` signatures
-- [ ] Add corpus test: @Fn accepts any function but rejects non-functions
+- [x] Change @Fn resolve from `Type::Unknown` to `Type::Function{params:vec![], ret:Box::new(Type::Top), variadic:true}` in `src/typecheck_annot.rs:1790-1800`
+- [x] Audit prelude @Fn annotations and replace with precise `Fn@ReturnType [Params]` signatures
+- [x] Add corpus test: @Fn accepts any function but rejects non-functions
 
 ### type-system-audit-final: Type system correctness gaps [Major]
 
@@ -661,7 +661,7 @@ Multiple type system gaps found in final review:
 - [x] Add explicit `(Type::Union(members), _) => members.iter().all(|m| Self::is_consistent_subtype(m, sup))` arm in `src/type_def.rs` before fallthrough to `is_subtype` (eliminates dependence on ground_type_of domain invariant)
 
 **Sequential let-generalization only for Dict-form intermediates:**
-- [ ] For non-Dict fallback in sequential handler (`src/typecheck.rs:2008`), extract schemes from record type by generalizing each field at current level (currently inserts monomorphic entries)
+- [x] For non-Dict fallback in sequential handler (`src/typecheck.rs:2008`), extract schemes from record type by generalizing each field at current level (currently inserts monomorphic entries)
 
 **Stale merge return-type TODO:**
 - [x] Remove stale TODO comment at `src/type_env.rs:2982-2983` (return type is already polymorphic TypeVar with Appendable constraint)

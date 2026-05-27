@@ -1,0 +1,4 @@
+# @Fn accepts any function regardless of arity (fn-annotation-any-callable sprint)
+[@Fn [fn [let x] x]]
+=== out
+Function([Param { name: Some("x"), destructure: None, annotation: None }])

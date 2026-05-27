@@ -1,0 +1,6 @@
+# @Fn annotation rejects non-callable values.
+# @Fn resolves to Function{params:[], ret:Top, variadic:true}.
+# Int is not a subtype of the any-function type, so this is a type error.
+[@Fn 42]
+=== out
+cannot unify

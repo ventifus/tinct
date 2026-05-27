@@ -675,14 +675,29 @@ impl Type {
                 Type::Function {
                     params: sub_p,
                     ret: sub_r,
-                    ..
+                    variadic: sub_v,
                 },
                 Type::Function {
                     params: sup_p,
                     ret: sup_r,
-                    ..
+                    variadic: sup_v,
                 },
             ) => {
+                // Mirror the is_subtype "any function" special case: a zero-param variadic
+                // function is the top of the function lattice (matches any callable).
+                // This ensures `[@Fn f]` accepts lambdas of any arity at runtime, where
+                // ground_type_of produces Function{params:[Unknown..], ret:Unknown} with
+                // concrete param count that would otherwise fail the length equality check.
+                let sup_is_any_fn = sup_p.is_empty() && *sup_v;
+                if sup_is_any_fn {
+                    // sub is any function → any function is consistent with top-of-fn-lattice
+                    let sub_is_any_fn = sub_p.is_empty() && *sub_v;
+                    if sub_is_any_fn {
+                        return Self::is_consistent_subtype(sub_r, sup_r);
+                    }
+                    // Concrete-arity function ~<: any-function: always consistent
+                    return true;
+                }
                 sub_p.len() == sup_p.len()
                     && sub_p.iter().zip(sup_p.iter()).all(
                         |((_sub_name, sub_ty), (_sup_name, sup_ty))| {

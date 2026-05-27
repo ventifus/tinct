@@ -1798,16 +1798,26 @@ pub(crate) fn resolve_type_name(
             }))
         }
         "Fn" => {
-            // Return Type::Unknown to represent "any callable". The previous encoding
-            // (Function { params: vec![], ret: Any, variadic: true }) could not unify
-            // with ANY concrete function type because unification requires exact param
-            // count and variadic flag match, producing false type errors for ~50 prelude
-            // functions annotated with @Fn. Type::Unknown accepts all values at both
-            // type-check time and runtime TypeAssert — no callability check is performed
-            // at the annotation site. Callability is enforced at the call site
-            // (NotAFunction error), not here. This trades static @Fn enforcement for
-            // eliminating false type errors in prelude functions.
-            Ok(Type::Unknown)
+            // `@Fn` means "any callable".  Encode as a variadic function with zero
+            // required parameters and Top return type — the top of the function
+            // lattice.  A variadic function with 0 required params accepts calls of
+            // any arity, so unification with a concrete function type (e.g.
+            // `Fn(Int, Str) -> Bool`) succeeds: the concrete type satisfies the
+            // "at least 0 params" contract.  Top as the return type is consistent
+            // with any concrete return type via subtyping.
+            //
+            // There are currently 31 `@Fn` annotation sites in stdlib/prelude.llt.
+            // These all annotate parameters that are genuinely function-valued but
+            // whose precise signature is not statically known at the annotation site
+            // (e.g. `pred@Fn`, `f@Fn`, `cmp@Fn`).  Using a precise `Function` type
+            // here (rather than `Type::Unknown`) preserves callability enforcement:
+            // a TypeAssert `[@Fn 42]` will correctly fail because `Int` is not a
+            // subtype of `Function{...}`.
+            Ok(Type::Function {
+                params: vec![],
+                ret: Box::new(Type::Top),
+                variadic: true,
+            })
         }
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
