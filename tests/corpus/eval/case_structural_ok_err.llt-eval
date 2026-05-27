@@ -1,8 +1,9 @@
-# case: structural test with Ok/Error constructors
+# case: structural test via [case [let v: Constructor]] syntax
+# Ok and Error are stdlib prelude constructors from the Result type.
 [result: [Ok 42]]
 [match result
-  [Ok v]: [str "got " v]
-  [Error e]: [str "err " e]
-  _: "other"]
+  [case [let v: Ok]    [str "got " v]]
+  [case [let e: Error] [str "err " e]]
+  [case [let _]        "other"]]
 === out
 String("got 42")

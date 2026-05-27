@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::IndexMap;
 
-use crate::ast::{Annotation, CoreExpr, Span, Spanned};
+use crate::ast::{Annotation, CoreExpr, Span, Spanned, SurfaceExpression};
 use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
@@ -2976,6 +2976,49 @@ pub(crate) async fn apply_cont(
                         };
 
                         if let Some(arm_env) = matched_env {
+                            // The sentinel pattern (Wildcard) matched. Now check if the body is a
+                            // CaseArm — if so, the actual pattern evaluation is deferred here.
+                            // CaseArm bodies are [case pattern body] arms stored with a Wildcard
+                            // sentinel so the outer match loop can find them. The real pattern
+                            // evaluation is our responsibility: process the [let ...] pattern or
+                            // exact-value match ourselves, and either bind variables and evaluate
+                            // the body, or soft-skip to the next arm.
+                            let (final_env, eval_body) =
+                                if let CoreExpr::CaseArm { pattern, body } = &arm.body.node {
+                                    // Process the CaseArm's own pattern
+                                    match &pattern.node {
+                                        CoreExpr::LetDecl { bindings } => {
+                                            // [let ...] binding pattern — structural test and variable binding
+                                            match eval_case_arm_let_pattern(
+                                                bindings,
+                                                &scrutinee_value,
+                                                &env,
+                                                match_span,
+                                                &ctx,
+                                            ) {
+                                                Some(bound_env) => (bound_env, Arc::clone(body)),
+                                                None => {
+                                                    // Structural test failed — soft skip to next arm
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            // Exact-value pattern: evaluate the pattern expression and
+                                            // compare to the scrutinee using values_equal.
+                                            // TODO(unified-bindings-structural-tests Task 4): implement
+                                            // exact-value matching for non-LetDecl case patterns.
+                                            // For now, treat as wildcard (always match) so CaseArm arms
+                                            // with non-LetDecl patterns don't crash.
+                                            (Arc::clone(&arm_env), Arc::clone(body))
+                                        }
+                                    }
+                                } else {
+                                    // Not a CaseArm body — use the arm environment as-is.
+                                    // This is the legacy match arm path.
+                                    (arm_env, Arc::clone(&arm.body))
+                                };
+
                             // Pattern matched. If there is a guard, evaluate it.
                             if let Some(guard_expr) = &arm.guard {
                                 // Push a continuation to check the guard result
@@ -2985,23 +3028,23 @@ pub(crate) async fn apply_cont(
                                     env: Arc::clone(&env),
                                     ctx: Arc::clone(&ctx),
                                     match_span,
-                                    arm_env: Arc::clone(&arm_env),
+                                    arm_env: Arc::clone(&final_env),
                                     scrutinee_value: scrutinee_value.clone(),
-                                    body: Arc::clone(&arm.body),
+                                    body: Arc::clone(&eval_body),
                                 })));
 
                                 // Evaluate the guard
                                 return Action::EvalCore {
                                     expr: Arc::clone(guard_expr),
-                                    env: arm_env,
+                                    env: final_env,
                                     ctx,
                                 };
                             }
 
                             // No guard — arm matched, evaluate body
                             return Action::EvalCore {
-                                expr: Arc::clone(&arm.body),
-                                env: arm_env,
+                                expr: eval_body,
+                                env: final_env,
                                 ctx,
                             };
                         }
@@ -3193,6 +3236,178 @@ pub(crate) async fn apply_cont(
             }
         }
     }
+}
+
+/// Evaluate a `[let ...]` binding pattern against a scrutinee value for a `[case ...]` arm.
+///
+/// Implements the soft-skip rule from unified-bindings.md §src/eval.rs:
+/// - For each binding element in `bindings`:
+///   - `Var("_") | FreeVar("_")`: wildcard, always succeeds, no binding
+///   - `Var(name) | FreeVar(name)`: bind `name` to the scrutinee; always succeeds
+///   - `Annotated { name, annotation: PropertyDict([_constructor: "CtorName"]) }`:
+///     structural test — check `scrutinee_value` is `Variant { tag == CtorName }`,
+///     extract payload, bind `name` to the payload; return None (soft skip) on mismatch
+///   - `Annotated { name, annotation: other }`: typed binding (no runtime tag check),
+///     bind `name` to the scrutinee (annotation is a static constraint only)
+///   - `LetDecl { bindings }`: multi-payload group (incomplete; bind names to scrutinee)
+/// - Returns `Some(new_env)` if all bindings succeed, `None` if any structural test fails
+///
+/// This function is synchronous (blocks on payload materialization) because pattern matching
+/// is already synchronous in the existing MatchDispatch continuation.
+fn eval_case_arm_let_pattern(
+    bindings: &[crate::ast::Spanned<CoreExpr>],
+    scrutinee_value: &Value,
+    env: &Arc<RwLock<Environment>>,
+    match_span: Span,
+    ctx: &Arc<EvalContext>,
+) -> Option<Arc<RwLock<Environment>>> {
+    let arm_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
+
+    for binding in bindings {
+        match &binding.node {
+            // Wildcard: _ — always succeeds, no binding.
+            // Check FreeVar first to handle "_" as an unresolved variable reference.
+            CoreExpr::FreeVar(name) if name == "_" => {
+                // No binding; continue
+            }
+            CoreExpr::Var { name, .. } if name == "_" => {
+                // No binding; continue
+            }
+
+            // Plain binding: VarRef(name) — bind to scrutinee
+            CoreExpr::FreeVar(name) => {
+                let scrutinee_thunk =
+                    Arc::new(Thunk::new_materialized(scrutinee_value.clone(), match_span));
+                arm_env
+                    .write()
+                    .unwrap()
+                    .insert(name.clone(), scrutinee_thunk);
+            }
+            CoreExpr::Var { name, .. } => {
+                let scrutinee_thunk =
+                    Arc::new(Thunk::new_materialized(scrutinee_value.clone(), match_span));
+                arm_env
+                    .write()
+                    .unwrap()
+                    .insert(name.clone(), scrutinee_thunk);
+            }
+
+            // Annotated binding: either typed (`name@Type`) or structural test (`name: Constructor`).
+            // Disambiguation: PropertyDict annotation with "_constructor" sentinel key = structural
+            // test (produced by `:` in the parser). All other annotation forms = typed binding
+            // (no runtime tag check — the annotation is a static constraint only).
+            CoreExpr::Annotated { name, annotation } => {
+                // Check for structural test sentinel: PropertyDict([_constructor: "CtorName"])
+                // The annotation is Spanned<Annotation> which may contain a PropertyDict with
+                // SurfaceEntry values (the Annotation type holds SurfaceNode values).
+                let constructor_name = annotation.node.get_property("_constructor").and_then(|v| {
+                    // The value node is a SurfaceNode with SurfaceExpression::Str(ctor_name)
+                    if let SurfaceExpression::Str(s) = &v.expr {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(ctor_name) = constructor_name {
+                    // Structural test: check that scrutinee_value is Variant { tag == ctor_name }
+                    match scrutinee_value {
+                        Value::Variant { tag, payload } if tag == &ctor_name => {
+                            // Tag matches! Extract payload and bind name (if not wildcard).
+                            if name != "_" {
+                                match payload {
+                                    Some(payload_id) => {
+                                        // Get the payload thunk and materialize it so we have the value
+                                        let raw_thunk = ctx.get_thunk(*payload_id);
+                                        match crate::async_rt::block_on_anywhere(materialize(
+                                            &raw_thunk,
+                                            Some(&match_span),
+                                            ctx,
+                                        )) {
+                                            Ok(payload_val) => {
+                                                let payload_thunk =
+                                                    Arc::new(Thunk::new_materialized(
+                                                        payload_val,
+                                                        match_span,
+                                                    ));
+                                                arm_env
+                                                    .write()
+                                                    .unwrap()
+                                                    .insert(name.clone(), payload_thunk);
+                                            }
+                                            Err(_) => {
+                                                // Payload materialization failed — soft skip
+                                                return None;
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        // Unit variant (no payload) — structural test with a name
+                                        // binding is a type error per spec (use `[let _: CtorName]`).
+                                        // At runtime: soft skip (the arm does not match a payload).
+                                        return None;
+                                    }
+                                }
+                            }
+                            // name == "_": tag matched, no binding — continue
+                        }
+                        _ => {
+                            // Tag mismatch or not a Variant — soft skip
+                            return None;
+                        }
+                    }
+                } else {
+                    // Typed binding (no runtime tag check): bind name to scrutinee
+                    if name != "_" {
+                        let scrutinee_thunk =
+                            Arc::new(Thunk::new_materialized(scrutinee_value.clone(), match_span));
+                        arm_env
+                            .write()
+                            .unwrap()
+                            .insert(name.clone(), scrutinee_thunk);
+                    }
+                }
+            }
+
+            // Nested LetDecl: multi-payload binding group [a b] — bind each named element
+            // to scrutinee as a fallback (constructor tag for multi-payload is lost in current
+            // parser representation; see Task 2 TODO in parser.rs).
+            // TODO(unified-bindings-structural-tests Task 2): implement proper multi-payload
+            // destructuring once the parser encodes the constructor name alongside the group.
+            CoreExpr::LetDecl { bindings: nested } => {
+                for nested_binding in nested {
+                    match &nested_binding.node {
+                        CoreExpr::FreeVar(name) if name != "_" => {
+                            let scrutinee_thunk = Arc::new(Thunk::new_materialized(
+                                scrutinee_value.clone(),
+                                match_span,
+                            ));
+                            arm_env
+                                .write()
+                                .unwrap()
+                                .insert(name.clone(), scrutinee_thunk);
+                        }
+                        CoreExpr::Var { name, .. } if name != "_" => {
+                            let scrutinee_thunk = Arc::new(Thunk::new_materialized(
+                                scrutinee_value.clone(),
+                                match_span,
+                            ));
+                            arm_env
+                                .write()
+                                .unwrap()
+                                .insert(name.clone(), scrutinee_thunk);
+                        }
+                        _ => {} // Wildcard or annotated — skip for now
+                    }
+                }
+            }
+
+            // Rest or other forms — skip (not valid in case arm let patterns)
+            _ => {}
+        }
+    }
+
+    Some(arm_env)
 }
 
 /// Main iterative evaluation loop. Executes actions until a final result is produced.

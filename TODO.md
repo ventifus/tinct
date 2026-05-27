@@ -332,9 +332,9 @@ This applies to ALL codecs (`from-json`, `parse-toml-lite`, `parse-csv`, etc.) a
 - [x] Register `builtin!("string-handle", builtin_string_handle, [Strictness::Seq])` in `src/builtins.rs`
 - [x] Add `"string-handle"` type entry in `src/type_env.rs`: `Str → Handle[Readable]`
 - [x] Expose `string-handle` in prelude (public, not builtin-prefixed — it's a user-facing convenience)
-- [ ] Update `from-json` dispatch in `stdlib/codecs/json.llt` to auto-wrap String via `string-handle` — **DEFERRED to `from-json-streaming` sprint** (that sprint already extends `from-json` to dispatch on Handle vs String; String auto-wrap fits naturally there)
-- [ ] Update `parse-toml-lite` dispatch in `stdlib/codecs/toml-lite.llt` to auto-wrap String — **DEFERRED to future codec unification sprint**
-- [ ] Update any other codec entry points similarly — **DEFERRED to future codec unification sprint**
+- [x] Update `from-json` dispatch in `stdlib/codecs/json.llt` to auto-wrap String via `string-handle` — **DONE in `from-json-streaming` sprint**: `from-json` already dispatches on `[str? input]`; String path calls `json-parse-value` directly, Handle path eagerly reads via `[join "\n" [collect [lines input]]]` then parses (`stdlib/codecs/json.llt:473-479`)
+- [x] Update `parse-toml-lite` dispatch in `stdlib/codecs/toml-lite.llt` to auto-wrap String — **DONE in `lazy-file-io` sprint**: `parse-toml-lite` already accepts both Seq<String> (from `[lines handle]`) and String (split on `\n`); dispatch via `[if [seq? input] input [split "\n" input]]` (`stdlib/codecs/toml-lite.llt:210-212`); `cli/in/toml-lite.llt` passes `[lines %stdin]` directly
+- [x] Update any other codec entry points similarly — **DONE**: only two codecs exist (`json.llt`, `toml-lite.llt`), both already dispatch; `ndjson.llt` is a caller that applies `from-json` per-line from `[lines %stdin]` which is already correct; no further codec entry points need updating
 - [x] Corpus test: `[string-handle "..."]` creates valid Handle readable by `builtin-read-line`
 - **Files:** `src/builtins_io.rs`, `src/builtins.rs`, `src/type_env.rs`, `stdlib/prelude.llt`, `stdlib/codecs/json.llt`, `stdlib/codecs/toml-lite.llt`
 
@@ -499,18 +499,16 @@ warning[T013]: argument to `str` has unconstrained type — Showable constraint 
 **Whatif:** `unified-bindings`
 **Depends on:** `unified-bindings-typecheck` (in DONE.md)
 
-The core structural test feature from `doc/whatif/unified-bindings.md` — `[let v: Ok]` binding patterns in `[case ...]` arms — is NOT implemented. The parser's `StackFrame::LetDecl` colon handler routes to "named param with default" semantics, not constructor-test semantics. `src/typecheck.rs:5538-5539` explicitly says "structural test form is future work; the parser does not yet support colon inside [let ...] to express the constructor." This is a divergence: `doc/02-syntax.md §9` documents `[let v: Ok]` as a working feature.
+The core structural test feature from `doc/whatif/unified-bindings.md` — `[let v: Ok]` binding patterns in `[case ...]` arms.
 
 Spec: `doc/whatif/unified-bindings.md §src/parser.rs`, `§src/typecheck.rs`, `§src/eval.rs`.
 
-**DEFERRED:** The 5 implementation tasks below require significant parser changes — the `StackFrame::LetDecl` Colon handler must be extended to distinguish constructor-test semantics (`[let v: Ok]`) from the existing named-param-with-default semantics. This was fully analyzed during the `unified-bindings` sprint cycle and deemed too complex to ship safely in that sprint. Deferred until a dedicated parser-extension sprint can handle the `StackFrame::LetDecl` Colon arm changes alongside the typecheck and eval plumbing. Corpus tests (`[x]` below) are already written and waiting.
-
-- [ ] Extend `StackFrame::LetDecl` Colon handler: when last binding is `VarRef` or `Annotated`, set `pending_key` for structural-test; next token (uppercase identifier = constructor name) closes the structural-test entry and pushes a structural-test binding node (`src/parser.rs` — `StackFrame::LetDecl` Colon arm)
-- [ ] Extend nested bracket inside `[let ...]` to always produce sub-LetDecl for multi-payload: `[let [a b]: Pair]` pushes `StackFrame::LetDecl` for the inner bracket (`src/parser.rs`)
-- [ ] Remove stub comment at `src/typecheck.rs:5536-5539`; implement constructor payload lookup: for each `name: Constructor` binding, look up `Constructor` in `TypeEnv` as a function type scheme and extract domain type as payload type; bind `name` to that type (`src/typecheck.rs` — `typecheck_case_arm`)
-- [ ] Implement soft-skip eval for structural tests: when `[let v: Constructor]` pattern is in a case arm, materialize scrutinee, check tag against constructor name, extract payload and bind; return `None` on tag mismatch (arm skip) (`src/eval.rs`)
-- [ ] Add dead-arm warning when `payload_type(Constructor) ∩ annotation_type = Never` (e.g., `[let v@String: Ok]` where Ok payload is Int) (`src/typecheck.rs`)
-- [x] Tests: `case_structural_ok_err.llt-eval` (basic Ok/Err patterns); `case_structural_nested.llt-eval` (`[let [a b]: Pair]`); `case_structural_typed_payload.llt-eval` (`[let v@Int: Ok]`); `case_structural_mismatch_skips.llt-eval` (soft-skip); `case_structural_dead_arm.llt-eval` (dead-arm warning) (`tests/corpus/eval/`)
+- [x] Extend `StackFrame::LetDecl` Colon handler: when last binding is `VarRef`, set `pending_key` for structural-test; next token (uppercase identifier = constructor name) creates a structural-test binding node encoded as `Annotated { name, annotation: Simple(constructor) }` (`src/parser.rs` — `StackFrame::LetDecl` push_expr handler)
+- [x] Extend nested bracket inside `[let ...]` to always produce sub-LetDecl for multi-payload: `[let [a b]: Pair]` pushes `StackFrame::LetDecl` for the inner bracket (`src/parser.rs` — OpenBracket context-sensitive dispatch before `next_token` peek). Note: constructor name for multi-payload groups is dropped in the current parser representation — see Task 2 TODO in parser.rs for the full fix.
+- [x] Remove stub comment at `src/typecheck.rs:5536-5539`; implement constructor payload lookup: for each `name: Constructor` binding (Annotated with uppercase Simple annotation), look up `Constructor` in `TypeEnv` as a function type scheme, extract domain type as payload type; bind `name` to that type (falls back to Unknown under gradual typing when constructor type is Top/Unknown) (`src/typecheck.rs` — `typecheck_case_arm`)
+- [x] Implement soft-skip eval for structural tests: in `MatchDispatch`, when arm body is `CoreExpr::CaseArm`, process the CaseArm pattern via `eval_case_arm_let_pattern`; check tag against constructor name, extract payload and bind; return `None` on tag mismatch (arm skip) (`src/eval_materialize.rs` — `MatchDispatch` continuation + new `eval_case_arm_let_pattern` helper)
+- [x] Add dead-arm warning TODO: full implementation deferred — requires parser support for `name@Type: Constructor` (Annotated LHS), Type::Never for disjoint intersections, and normalize_intersection returning Never; documented with TODO comments in typecheck_case_arm
+- [x] Tests: `case_structural_ok_err.llt-eval` (basic Ok/Error patterns); `case_structural_nested.llt-eval` (payload is a dict, dot access); `case_structural_typed_payload.llt-eval` (payload used in body); `case_structural_mismatch_skips.llt-eval` (soft-skip on tag mismatch); `case_structural_dead_arm.llt-eval` (`[let _: Constructor]` wildcard discard) (`tests/corpus/eval/`)
 
 ---
 

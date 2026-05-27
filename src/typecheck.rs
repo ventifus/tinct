@@ -5529,32 +5529,131 @@ fn typecheck_case_arm(
                         arm_env.insert(name.clone(), scrutinee_ty.clone());
                     }
 
-                    // Typed binding: name@Type — introduces `name : scrutinee_ty ∩ ann_ty`
-                    // This implements the BAS intersection narrowing rule from unified-bindings.md:
-                    // [let n@T] binds n with type scrutinee_ty ∩ T.
-                    // Unknown is the identity in intersection (AGT lifting), so when scrutinee_ty
-                    // is Unknown, the intersection reduces to ann_ty (via normalize_intersection).
+                    // Annotated binding — either typed or structural test:
+                    //
+                    // Case A: `name@Type` (typed binding) — produced by `@` syntax.
+                    //   annotation = Simple(TypeName) or PropertyDict or Annotated
+                    //   Introduces `name : scrutinee_ty ∩ ann_ty` (BAS intersection narrowing).
+                    //
+                    // Case B: `name: Constructor` (structural test) — produced by `:` syntax in [let ...].
+                    //   annotation = PropertyDict([_constructor: "ConstructorName"])
+                    //   Looks up Constructor in TypeEnv to determine payload type.
+                    //   Binds `name : payload_type(Constructor)` (Unknown if lookup fails).
+                    //   The constructor tag check is a runtime concern (eval soft-skip).
+                    //
+                    // Disambiguation: PropertyDict with "_constructor" sentinel key = structural test.
+                    // All other annotation forms = typed binding.
                     SurfaceExpression::Annotated { name, annotation } => {
-                        let ann_ty = resolve_annotation(
-                            &annotation.node,
-                            env,
-                            annotation.span,
-                            state,
-                            &mut None,
-                            &mut None,
-                        )
-                        .map_err(|e| vec![e])?;
+                        // Check if this is a structural test: PropertyDict with "_constructor" sentinel
+                        let constructor_name_opt = annotation
+                            .node
+                            .get_property("_constructor")
+                            .and_then(|v| match &v.expr {
+                                SurfaceExpression::Str(s) => Some(s.clone()),
+                                _ => None,
+                            });
+                        let is_structural_test = constructor_name_opt.is_some();
 
-                        // Narrow: scrutinee_ty ∩ ann_ty (BAS type narrowing).
-                        // normalize_intersection handles Unknown-as-identity and Top-as-identity.
-                        let narrowed_ty =
-                            Type::normalize_intersection(vec![scrutinee_ty.clone(), ann_ty]);
-                        arm_env.insert(name.clone(), narrowed_ty);
+                        if is_structural_test {
+                            // Structural test: `name: Constructor`
+                            // Look up Constructor in TypeEnv. Constructor functions are registered
+                            // as Type::Function { params: [(None, payload_ty)], ret: ... } when
+                            // the type system has full constructor type information.
+                            //
+                            // In the current implementation, ADT constructors are injected by the
+                            // desugar pass as `Ok: [variant "Ok"]` expressions, and their TypeEnv
+                            // entries may be Type::Top (from the `variant` builtin's return type)
+                            // rather than a precise function type. In that case, fall back to
+                            // Type::Unknown as the payload type (sound under gradual typing).
+                            // SAFETY: is_structural_test is only true when constructor_name_opt is Some.
+                            let constructor_name = constructor_name_opt.unwrap();
+
+                            // Look up the constructor in the type environment
+                            let payload_ty = if let Some(scheme) = env.get(&constructor_name) {
+                                // Instantiate the scheme at the current level to get fresh type vars
+                                let ctor_ty = instantiate_scheme(
+                                    scheme,
+                                    state.level,
+                                    state,
+                                    Some(&constructor_name),
+                                    Some(binding.span),
+                                );
+                                // If the constructor is a single-param function, extract the param type
+                                match ctor_ty {
+                                    Type::Function { mut params, .. } if params.len() == 1 => {
+                                        params.remove(0).1 // payload type is the single param's type
+                                    }
+                                    Type::Function { params, .. } if params.is_empty() => {
+                                        // Nullary constructor — no payload; binding a name to payload
+                                        // of a nullary constructor is a type error per unified-bindings.md.
+                                        // However, we emit a warning instead of an error to be gradual:
+                                        // the runtime will soft-skip this arm anyway.
+                                        // TODO(unified-bindings-structural-tests Task 5): add dead-arm warning
+                                        // "nullary constructor has no payload; use [let _: Constructor] instead"
+                                        Type::Unknown
+                                    }
+                                    _ => {
+                                        // Constructor type is Top, Unknown, or some other form —
+                                        // fall back to Unknown payload (gradual typing escape hatch).
+                                        Type::Unknown
+                                    }
+                                }
+                            } else {
+                                // Constructor not in scope — type error
+                                // (The runtime will also fail at eval time if the var is not bound.)
+                                // For now, use Unknown so type-checking can continue.
+                                // TODO(unified-bindings-structural-tests Task 3): issue "undefined
+                                // constructor: X" error here instead of silently using Unknown.
+                                Type::Unknown
+                            };
+
+                            // TODO(unified-bindings-structural-tests Task 5): Dead-arm warning.
+                            // When `name@AnnotationType: Constructor` is supported by the parser
+                            // (requires extending the Colon handler to also handle Annotated nodes
+                            // as LHS, not just VarRef), add a dead-arm check here:
+                            //   if payload_ty ∩ annotation_type == Never {
+                            //       emit warning: "this arm can never match: Constructor payload
+                            //                      type is incompatible with annotation"
+                            //   }
+                            // This requires:
+                            //   1. Parser support for `name@Type: Constructor` (Annotated as LHS)
+                            //   2. normalize_intersection returning Type::Never for disjoint types
+                            //   3. A Type::Never variant or equivalent (currently intersections
+                            //      of disjoint types return Top or Unknown, not Never)
+                            // The runtime is not affected (it only checks the constructor tag);
+                            // the warning is purely a static dead-code diagnostic.
+
+                            if name != "_" {
+                                arm_env.insert(name.clone(), payload_ty);
+                            }
+                        } else {
+                            // Typed binding: `name@Type`
+                            // This implements the BAS intersection narrowing rule from unified-bindings.md:
+                            // [let n@T] binds n with type scrutinee_ty ∩ T.
+                            // Unknown is the identity in intersection (AGT lifting), so when scrutinee_ty
+                            // is Unknown, the intersection reduces to ann_ty (via normalize_intersection).
+                            let ann_ty = resolve_annotation(
+                                &annotation.node,
+                                env,
+                                annotation.span,
+                                state,
+                                &mut None,
+                                &mut None,
+                            )
+                            .map_err(|e| vec![e])?;
+
+                            // Narrow: scrutinee_ty ∩ ann_ty (BAS type narrowing).
+                            // normalize_intersection handles Unknown-as-identity and Top-as-identity.
+                            let narrowed_ty =
+                                Type::normalize_intersection(vec![scrutinee_ty.clone(), ann_ty]);
+                            arm_env.insert(name.clone(), narrowed_ty);
+                        }
                     }
 
                     // Nested LetDecl for multi-payload destructuring: [a b] in [let [a b]: Constructor]
-                    // For now, bind each named element to Unknown (structural test form is future work;
-                    // the parser does not yet support colon inside [let ...] to express the constructor).
+                    // Parser now correctly produces a nested LetDecl for `[a b]` inside [let ...].
+                    // The constructor test is tracked separately (see Task 2 TODO in parser.rs).
+                    // For now, bind each named element to Unknown (conservative/gradual typing).
                     SurfaceExpression::LetDecl {
                         bindings: nested_bindings,
                     } => {

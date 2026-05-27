@@ -1,7 +1,7 @@
-# case: nested destructuring with Ok containing dict
+# case: structural test — Ok payload is a dict; payload fields accessible via dot
 [result: [Ok [x: 1  y: 2]]]
 [match result
-  [Ok v]: [+ v.x v.y]
-  _: 0]
+  [case [let v: Ok] [+ v.x v.y]]
+  [case [let _]     0]]
 === out
 Int(3)

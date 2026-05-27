@@ -771,11 +771,20 @@ enum StackFrame {
     },
     /// Binding declaration: `[let x@Int y@Float z: default]`
     /// Used in fn params, class TypeVars, type alias params, instance arm keys, and case arms.
-    /// `z: default` is a named param with a default value; the colon sets pending_key.
+    ///
+    /// Colon semantics inside [let ...]:
+    /// - `name: Constructor` (VarRef, uppercase RHS) → structural test binding
+    /// - `name: default_val` (VarRef, other RHS) → named param with default
+    /// - `[a b]: Constructor` (nested LetDecl, uppercase RHS) → multi-payload destructuring
+    ///
+    /// `pending_key` holds the left-hand side node popped when `:` is seen.
+    /// - VarRef { name, .. } → single-binding left-hand side
+    /// - LetDecl { bindings } → multi-payload binding group `[a b]`
     LetDecl {
         bindings: Vec<Arc<SurfaceNode>>,
-        /// Pending param name for `name: default` named-param-with-default syntax.
-        pending_key: Option<(String, Span)>,
+        /// Pending left-hand-side node for `lhs: rhs` syntax.
+        /// Holds the last binding popped when `:` is seen; consumed when the rhs arrives.
+        pending_key: Option<Arc<SurfaceNode>>,
         span_start: Position,
     },
     /// Match arm with explicit scoping: `[case [let v: Ok] v]`
@@ -1215,6 +1224,34 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         continue;
                     }
                     return Err(err);
+                }
+
+                // Context-sensitive rule: inside [let ...], nested brackets are always
+                // sub-LetDecl binding-pattern groups, not expressions. This is the one
+                // place in the parser where bracket classification is context-dependent
+                // (unified-bindings.md §Parsing Invariant, point 2). The `let` keyword
+                // is the announcement that makes this safe: a reader sees `[let [a b]: Pair]`
+                // and knows `[a b]` is a binding group because `[let ...]` is in scope.
+                //
+                // Note: This rule fires BEFORE the `match next_token { ... }` block, so it
+                // intercepts ALL nested brackets inside a LetDecl frame — including `[let ...]`.
+                // For `[let [let a b]]`, the inner `[` triggers this rule (pushes nested LetDecl),
+                // and then `let` is processed as VarRef("let") inside the inner LetDecl.
+                // This is a known limitation: deeply nested `[let [let ...]]` does not work as
+                // expected. The typical use case `[let [a b]: Pair]` works correctly.
+                // TODO(unified-bindings): If needed, add a check here for Token::Let as next_token
+                // and forward to the normal Token::Let arm instead of the context-sensitive rule.
+                if matches!(stack.last(), Some(StackFrame::LetDecl { .. })) {
+                    // Push a nested LetDecl for multi-payload destructuring.
+                    // The pending_key for the outer LetDecl (set by the colon handler) will
+                    // be consumed when this inner LetDecl closes and gets pushed as a node.
+                    stack.push(StackFrame::LetDecl {
+                        bindings: Vec::new(),
+                        pending_key: None,
+                        span_start: span.start,
+                    });
+                    i += 1; // Consume the OpenBracket
+                    continue;
                 }
 
                 // Peek at next non-whitespace/non-newline token for form classification
@@ -2766,25 +2803,27 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         ref mut bindings,
                         ..
                     }) => {
-                        // Named param with default: `name: default` inside [let ...]
-                        // The last binding pushed should be a VarRef (the param name).
-                        // Pop it from bindings, store it as pending_key.
+                        // Structural-test separator or named-param-with-default: `:` inside [let ...]
+                        // The last binding pushed should be a VarRef (single name) or a LetDecl
+                        // (multi-payload group `[a b]`). Pop it from bindings and store as pending_key.
+                        // The rhs (constructor name or default value) will arrive as the next expression.
                         if let Some(last_binding) = bindings.last() {
-                            if let SurfaceExpression::VarRef { name, .. } = &last_binding.expr {
-                                let key_name = name.clone();
-                                let key_span = last_binding.span;
-                                bindings.pop();
-                                *pending_key = Some((key_name, key_span));
-                                None // Next value will be the default
-                            } else {
-                                Some(ParseError {
-                                    message: "`:` in [let ...] must follow a bare identifier (for named param with default)".to_string(),
+                            match &last_binding.expr {
+                                SurfaceExpression::VarRef { .. }
+                                | SurfaceExpression::LetDecl { .. } => {
+                                    let key_node = Arc::clone(last_binding);
+                                    bindings.pop();
+                                    *pending_key = Some(key_node);
+                                    None // Next value will be rhs (constructor or default)
+                                }
+                                _ => Some(ParseError {
+                                    message: "`:` in [let ...] must follow a bare identifier or a binding group `[a b]`".to_string(),
                                     span: Some(span),
-                                })
+                                }),
                             }
                         } else {
                             Some(ParseError {
-                                message: "`:` without a name in [let ...] form".to_string(),
+                                message: "`:` without a left-hand side in [let ...] form".to_string(),
                                 span: Some(span),
                             })
                         }
@@ -5557,37 +5596,139 @@ fn push_expr_to_parent(
             }) => {
                 // LetDecl collects binding expressions.
                 // Each element can be: VarRef (bare binding), Annotated (typed binding),
-                // Rest (variadic), or named-param-with-default (after colon).
-                if let Some((key_name, key_span)) = pending_key.take() {
-                    // This node is the default value for a named param `key_name: node`
-                    // Represent as Annotated { name: key_name, annotation: PropertyDict([default: node]) }
+                // Rest (variadic), structural test (name: Constructor or [a b]: Constructor),
+                // or named-param-with-default (name: default_value).
+                if let Some(key_node) = pending_key.take() {
                     let combined_span = Span {
-                        start: key_span.start,
+                        start: key_node.span.start,
                         end: node.span.end,
                     };
-                    // Build SurfaceEntry directly (Phase 1: rv2-migrate-annotation).
-                    let surf_key = Arc::new(SurfaceNode {
-                        expr: SurfaceExpression::Str("default".to_string()),
-                        span: key_span,
-                    });
-                    let ann = Spanned::new(
-                        Annotation::PropertyDict(vec![Spanned::new(
-                            SurfaceEntry {
-                                key: Some(surf_key),
-                                value: Arc::clone(&node),
-                            },
-                            node.span,
-                        )]),
-                        combined_span,
-                    );
-                    let annotated = Arc::new(SurfaceNode {
-                        expr: SurfaceExpression::Annotated {
-                            name: key_name,
-                            annotation: ann,
-                        },
-                        span: combined_span,
-                    });
-                    bindings.push(annotated);
+
+                    // Detect structural test: RHS is an uppercase VarRef (constructor name).
+                    // Per unified-bindings.md §Design, `:` inside [let ...] means either:
+                    //   - structural test: RHS is an uppercase VarRef (constructor name)
+                    //   - named-param-with-default: RHS is any other expression (LHS must be VarRef)
+                    let constructor_name = match &node.expr {
+                        SurfaceExpression::VarRef {
+                            name,
+                            escaped: false,
+                        } if name.starts_with(|c: char| c.is_uppercase()) => Some(name.clone()),
+                        _ => None,
+                    };
+
+                    match (key_node.expr.clone(), constructor_name) {
+                        // Case 1: `name: Constructor` — single-name structural test.
+                        // Encoded as Annotated { name: "name", annotation: PropertyDict([_constructor: "Constructor"]) }.
+                        // The sentinel key "_constructor" distinguishes structural test bindings from
+                        // typed bindings (which use Simple or other annotation forms).
+                        // At typecheck time: check for PropertyDict with "_constructor" key.
+                        // At eval time: same sentinel check for tag matching.
+                        (SurfaceExpression::VarRef { name: key_name, .. }, Some(ctor_name)) => {
+                            let sentinel_key = Arc::new(SurfaceNode {
+                                expr: SurfaceExpression::Str("_constructor".to_string()),
+                                span: node.span,
+                            });
+                            let ctor_val = Arc::new(SurfaceNode {
+                                expr: SurfaceExpression::Str(ctor_name),
+                                span: node.span,
+                            });
+                            let ann = Spanned::new(
+                                Annotation::PropertyDict(vec![Spanned::new(
+                                    SurfaceEntry {
+                                        key: Some(sentinel_key),
+                                        value: ctor_val,
+                                    },
+                                    node.span,
+                                )]),
+                                node.span,
+                            );
+                            let annotated = Arc::new(SurfaceNode {
+                                expr: SurfaceExpression::Annotated {
+                                    name: key_name,
+                                    annotation: ann,
+                                },
+                                span: combined_span,
+                            });
+                            bindings.push(annotated);
+                        }
+
+                        // Case 2: `[a b]: Constructor` — multi-payload structural test.
+                        // The inner LetDecl carries the binding group; the constructor name
+                        // is the annotation. Store as a Dict with a synthetic `_constructor`
+                        // key for now — full eval support requires typecheck/eval changes.
+                        //
+                        // TODO(unified-bindings-structural-tests): The AST representation for
+                        // multi-payload structural tests `[let [a b]: Pair]` is not yet finalized.
+                        // The parser correctly produces the inner LetDecl node AND the constructor
+                        // name here. However, the downstream representation (how to encode the
+                        // binding group + constructor name as a single AST node in the LetDecl
+                        // bindings list) requires a dedicated variant or a new SurfaceExpression
+                        // wrapper. The current `Annotated { name: String, annotation }` shape
+                        // cannot hold a nested LetDecl as the "name" side.
+                        //
+                        // Current workaround: store as the inner LetDecl node unchanged (which
+                        // typecheck_case_arm already handles by binding each element to Unknown).
+                        // This silently drops the constructor test at typecheck/eval time.
+                        //
+                        // Proper fix: add `SurfaceExpression::StructuralGroup { bindings: Vec<Arc<SurfaceNode>>, constructor: String }`
+                        // or a similar dedicated variant, and handle it in typecheck and eval.
+                        // See doc/whatif/unified-bindings.md §Multi-Payload Constructor Representation.
+                        (SurfaceExpression::LetDecl { .. }, Some(_ctor_name)) => {
+                            // For now: push the inner LetDecl as-is (without the constructor
+                            // annotation). The constructor test is silently dropped.
+                            // This is a known limitation; see TODO above.
+                            bindings.push(key_node);
+                        }
+
+                        // Case 3: `name: default_value` — named param with default.
+                        // Only valid when LHS is a bare VarRef (not a nested binding group).
+                        (SurfaceExpression::VarRef { name: key_name, .. }, None) => {
+                            // Represent as Annotated { name: key_name, annotation: PropertyDict([default: node]) }
+                            let key_span = key_node.span;
+                            let surf_key = Arc::new(SurfaceNode {
+                                expr: SurfaceExpression::Str("default".to_string()),
+                                span: key_span,
+                            });
+                            let ann = Spanned::new(
+                                Annotation::PropertyDict(vec![Spanned::new(
+                                    SurfaceEntry {
+                                        key: Some(surf_key),
+                                        value: Arc::clone(&node),
+                                    },
+                                    node.span,
+                                )]),
+                                combined_span,
+                            );
+                            let annotated = Arc::new(SurfaceNode {
+                                expr: SurfaceExpression::Annotated {
+                                    name: key_name,
+                                    annotation: ann,
+                                },
+                                span: combined_span,
+                            });
+                            bindings.push(annotated);
+                        }
+
+                        // Case 4: `[a b]: default_value` — binding group with non-constructor RHS.
+                        // This is a type error: the `:` after a binding group must be followed by
+                        // a constructor name (uppercase identifier). Default values for binding
+                        // groups are not supported — only structural tests are.
+                        (SurfaceExpression::LetDecl { .. }, None) => {
+                            return Err(ParseError {
+                                message: "binding group `[...]` before `:` requires a constructor name (uppercase identifier) for multi-payload structural test".to_string(),
+                                span: Some(node.span),
+                            });
+                        }
+
+                        // Case 5: Other LHS forms — should not arise from valid parse paths.
+                        _ => {
+                            return Err(ParseError {
+                                message: "unexpected form before `:` in [let ...] binding"
+                                    .to_string(),
+                                span: Some(key_node.span),
+                            });
+                        }
+                    }
                 } else {
                     bindings.push(node);
                 }

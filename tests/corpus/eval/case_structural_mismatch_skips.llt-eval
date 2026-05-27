@@ -1,8 +1,8 @@
-# case: structural test skips mismatched arms
+# case: soft-skip — structural test skips arms where constructor tag does not match
 [result: [Error "failed"]]
 [match result
-  [Ok v]: [str "ok " v]
-  [Error e]: [str "err: " e]
-  _: "other"]
+  [case [let v: Ok]    [str "ok " v]]
+  [case [let e: Error] [str "err: " e]]
+  [case [let _]        "other"]]
 === out
 String("err: failed")
