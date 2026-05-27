@@ -170,7 +170,13 @@ fn rename_single_type_var_in_row(row: &Row, old_name: &str, fresh_name: &str, le
 
 /// Instantiate a type scheme by creating fresh type variables at the given level.
 /// Used for VAR-POLY: when a polymorphic binding is referenced, create fresh instances.
-pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferState) -> Type {
+pub fn instantiate_scheme(
+    scheme: &TypeScheme,
+    level: u32,
+    state: &mut InferState,
+    origin_name: Option<&str>,
+    origin_span: Option<Span>,
+) -> Type {
     if scheme.type_vars.is_empty() {
         // Monomorphic scheme: return body directly
         return scheme.body.clone();
@@ -193,8 +199,8 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
                 Constraint::Class {
                     class,
                     vars,
-                    origin_name,
-                    origin_span,
+                    origin_name: constraint_origin_name,
+                    origin_span: constraint_origin_span,
                 } => {
                     // Rename all vars in the constraint
                     let fresh_vars: Vec<String> = vars
@@ -202,11 +208,17 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
                         .filter_map(|v| var_renaming.get(v).cloned())
                         .collect();
                     if fresh_vars.len() == vars.len() {
+                        // Use constraint's origin info if present, otherwise use call-site origin
+                        let final_origin_name = constraint_origin_name
+                            .clone()
+                            .or_else(|| origin_name.map(|s| Arc::from(s)));
+                        let final_origin_span = constraint_origin_span.or(origin_span);
+
                         state.constraints.push(Constraint::Class {
                             class: Arc::clone(class),
                             vars: fresh_vars,
-                            origin_name: origin_name.clone(),
-                            origin_span: *origin_span,
+                            origin_name: final_origin_name,
+                            origin_span: final_origin_span,
                         });
                     }
                 }
@@ -277,19 +289,25 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
             Constraint::Class {
                 class,
                 vars,
-                origin_name,
-                origin_span,
+                origin_name: constraint_origin_name,
+                origin_span: constraint_origin_span,
             } => {
                 let fresh_vars: Vec<String> = vars
                     .iter()
                     .filter_map(|v| var_renaming.get(v).cloned())
                     .collect();
                 if fresh_vars.len() == vars.len() {
+                    // Use constraint's origin info if present, otherwise use call-site origin
+                    let final_origin_name = constraint_origin_name
+                        .clone()
+                        .or_else(|| origin_name.map(|s| Arc::from(s)));
+                    let final_origin_span = constraint_origin_span.or(origin_span);
+
                     state.constraints.push(Constraint::Class {
                         class: Arc::clone(class),
                         vars: fresh_vars,
-                        origin_name: origin_name.clone(),
-                        origin_span: *origin_span,
+                        origin_name: final_origin_name,
+                        origin_span: final_origin_span,
                     });
                 }
             }
@@ -378,6 +396,23 @@ pub fn generalize(level: u32, ty: &Type, state: &mut InferState) -> TypeScheme {
 /// When present, diagnostics report "ambiguous type variable 'x' (internal: _t42)" for better readability.
 ///
 /// `emitted` deduplicates warnings: tracks (TypeVar name, Span) pairs already warned about.
+// TODO(type-system-cleanup T013 Task 4): Track argument-level span on constraints.
+// When instantiate_scheme is called during argument type-checking, the per-argument
+// span is available at the call site. Store it on Constraint::Class as origin_span.
+//
+// TODO(type-system-cleanup T013 Task 5): Update this function to use origin info.
+// When origin_name and origin_span are set on a Constraint::Class, emit:
+//   "argument to '{origin_name}' has unconstrained type — {class} constraint will be silently dropped"
+// with a secondary span at origin_span pointing to the specific argument.
+// Drop TypeVar name from message entirely when origin info is available.
+//
+// TODO(type-system-cleanup T013 Task 6): Update format_var_name fallback below.
+// When origin info is available in the constraint, show only origin (function + span).
+// When not available, show the scheme's quantified name (e.g., 'a') without "(internal: _tN)".
+//
+// TODO(type-system-cleanup T013 Task 7): Add corpus test for T013 origin.
+// Test should verify the diagnostic message cites the origin function and points
+// to the argument span, not the internal TypeVar name.
 fn emit_ambiguous_constraint_diagnostics(
     constraints: &[Constraint],
     subst_snapshot: &HashMap<String, Type>,
@@ -2135,6 +2170,11 @@ impl TypeEnv {
         // When capabilities are passed through unchanged (e.g., `flush`, `seek`, `tls-layer`),
         // use Handle(Unknown) with an inline justification at the call site.
         // See doc/05-type-annotations.md §20 for the capability type specification.
+        //
+        // Audit (type-system-cleanup sprint): All Handle-returning builtins have been reviewed.
+        // Those using Handle(Unknown) have inline justifications explaining why precise types
+        // are not possible (lack of dependent types for capability preservation). All others
+        // use precise capability rows (e.g., string-handle, raw-create, quic-open-stream).
         //
         // `open` is SPECIAL-CASED in the type checker (typecheck.rs `check_open`):
         // when flag arguments are statically known VarRefs (e.g., Readable, Writable, Binary),

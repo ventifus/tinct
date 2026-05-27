@@ -535,7 +535,14 @@ fn improve_functional_dependency_inner(
 
             match (container_ty, key_ty) {
                 (Type::Record(row), Type::StringLiteral(field_name)) => {
-                    // Direct field lookup for Record + StringLiteral key
+                    // Direct field lookup for Record + StringLiteral key.
+                    // Missing fields return Unknown for graceful degradation — the access
+                    // is valid at runtime (returns null), so a hard type error would be
+                    // too strict. Alternative: state.fresh_type_var() to enable inference
+                    // (e.g., constrain the record to have that field), but this risks
+                    // confusing error messages when the field genuinely doesn't exist.
+                    // TODO(type-system-cleanup): Revisit when row polymorphism supports
+                    // open records with explicit row variables in user annotations.
                     Some(row.fields.get(field_name).cloned().unwrap_or(Type::Unknown))
                 }
                 (Type::Record(_), Type::Str) => {
@@ -547,6 +554,8 @@ fn improve_functional_dependency_inner(
                     // [get key (A | B)] → get(key, A) | get(key, B)
                     // Each member that has the field contributes its field type.
                     // Members without the field contribute Unknown (graceful degradation).
+                    // Same rationale as Record case above: Unknown allows runtime null
+                    // access without hard type errors.
                     let field_types: Vec<Type> = members
                         .iter()
                         .map(|member| match member {

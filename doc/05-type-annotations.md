@@ -883,7 +883,44 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 **Semantics: equi-recursive, not iso-recursive.** Aliases are transparent — they unfold automatically during type checking. There is no explicit `fold`/`unfold` syntax.
 
-### 22. Literal Types
+### 22. Gradual Typing Boundaries
+
+**`Type::Unknown` disables static typing for every expression it touches.** Because consistency (`~`) is non-transitive and symmetric, `Unknown` propagates silently: `Int ~ Unknown` and `Unknown ~ Str`, so an `Int` can flow into a `Str` context through an `Unknown` intermediary without a type error.
+
+**Unknown is a last resort** for values whose type is genuinely opaque at compile time (e.g., untyped `include` files, FFI boundaries with no schema, builtin returns that cannot be precisely typed). Misuse makes the type checker useless.
+
+**Boundary leakage: Unknown-typed bindings at document boundaries.**
+
+When a top-level binding in a document has `Type::Unknown`, it propagates across document boundaries via `include`:
+
+```tinct
+--- file: lib.llt
+untyped-value: [from-json "[1,2,3]"]  # Type: Unknown (no annotation)
+
+--- file: main.llt
+[include %libdir "lib.llt"]
+result: [+ untyped-value 10]          # Type error silently bypassed
+```
+
+The value `untyped-value` has `Type::Unknown` because `from-json` returns `Unknown` when no annotation is provided. When `main.llt` includes `lib.llt`, the `Unknown` type leaks across the boundary. The expression `[+ untyped-value 10]` should fail (adding a Seq to an Int), but the `Unknown` type makes the checker pass it.
+
+**Mitigation strategies:**
+
+1. **Annotate public exports** — add type annotations to all bindings exported from library documents:
+   ```tinct
+   values@[Seq Int]: [from-json "[1,2,3]"]
+   ```
+
+2. **Use TypeAssert at boundaries** — wrap `Unknown`-typed expressions in `[@Type expr]` to enforce a runtime contract and refine the type for downstream code:
+   ```tinct
+   values: [@[Seq Any] [from-json "[1,2,3]"]]  # Runtime check + static refinement
+   ```
+
+3. **Audit Unknown sources** — search for `Type::Unknown` in builtin signatures (`src/type_env.rs`) and stdlib code. Replace with precise types (unions, TypeVars, `Top`) wherever possible.
+
+**Lint opportunity (future work):** Emit a T002 advisory when a top-level binding in a document (not a letrec dict entry) has `Type::Unknown` and is not wrapped in a TypeAssert or annotated explicitly. This would catch leakage at the source.
+
+### 23. Literal Types
 
 Integer and string literals carry their value in the type:
 
@@ -916,7 +953,7 @@ Literal types widen only when an annotation demands the base type — they never
 
 ## Part VII: Formal Specifications
 
-### 23. Formal Grammar
+### 24. Formal Grammar
 
 ```ebnf
 (* Annotation attachment *)
@@ -939,7 +976,7 @@ chained_annotation  = ${ identifier ~ ("@" ~ annotation_value)+ }
 
 `@` is `ImmediateAt` — emitted only when it appears directly after an identifier with no whitespace. This distinguishes `x@Int` (annotation) from `x @ Int` (which would be parsed differently if `@` were a regular operator).
 
-### 24. Mixed-Stage Routing
+### 25. Mixed-Stage Routing
 
 Processing order within a `fn@[...]` metadata bracket (fixed; source key order is irrelevant):
 
@@ -965,7 +1002,7 @@ Mixed-stage routing for annotation brackets in general:
 | `x@[is: pred]` in match | Runtime | Soft guard at match time |
 | `x@[repr: "u8"]` | Runtime | Materialization boundary check |
 
-### 25. Type Inference and Let-Generalization
+### 26. Type Inference and Let-Generalization
 
 Tinct uses Hindley-Milner inference with row polymorphism and levels-based let-generalization (Kiselyov 2013).
 
@@ -987,7 +1024,7 @@ Tinct uses Hindley-Milner inference with row polymorphism and levels-based let-g
 
 See [Type Inference](06-type-inference.md) for the full let-generalization algorithm and constraint solving details.
 
-### 26. Reflection and `ast-of`
+### 27. Reflection and `ast-of`
 
 `ast-of` on an annotated expression returns the resolved type as a type dict (via `type_to_dict()`) alongside the expression's AST structure:
 

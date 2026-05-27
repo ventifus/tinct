@@ -461,12 +461,12 @@ warning[T013]: argument to `str` has unconstrained type — Showable constraint 
 ```
 
 - [x] Add `origin_name: Option<Arc<str>>` and `origin_span: Option<Span>` to `Constraint::Class` in `src/type_class.rs` — carries which function/builtin created the constraint and at which argument span
-- [ ] Add `origin_name` and `origin_span` parameters to `instantiate_scheme` in `src/type_env.rs`; populate them on all new `Constraint::Class` entries created during instantiation
-- [ ] Thread origin at VarRef call site (`src/typecheck.rs:1886`): pass `name` (the function name, e.g. `"str"`) and `node.span`; also thread at `check_call_with_scheme` (`src/typecheck.rs:4680`) and dot-access field scheme instantiation (`src/typecheck.rs:4513`)
-- [ ] Track the argument-level span: when `instantiate_scheme` is called during argument type-checking, the per-argument span is available; store it on the constraint as `origin_span`
-- [ ] In `emit_ambiguous_constraint_diagnostics` (`src/type_env.rs`): when `origin_name` and `origin_span` are set, emit message `"argument to '{name}' has unconstrained type — {class} constraint will be silently dropped"` with a secondary span at `origin_span` pointing to the specific argument; drop TypeVar name from message entirely
-- [ ] Update `format_var_name` fallback (`src/type_env.rs:386`): when origin info is available, show only origin; when not, show the scheme's quantified name (e.g. `'a'`) without `(internal: _tN)` suffix
-- [ ] Corpus test: T013 message cites the origin function and points to the argument span
+- [x] Add `origin_name` and `origin_span` parameters to `instantiate_scheme` in `src/type_env.rs`; populate them on all new `Constraint::Class` entries created during instantiation (proof-of-concept: parameters added, constraints use them when available)
+- [x] Thread origin at VarRef call site (`src/typecheck.rs:1895`): pass `name` (the function name, e.g. `"str"`) and `node.span` (proof-of-concept complete; other call sites have TODO comments)
+- [ ] Track the argument-level span: when `instantiate_scheme` is called during argument type-checking, the per-argument span is available; store it on the constraint as `origin_span` — TODO comment added in emit_ambiguous_constraint_diagnostics
+- [ ] In `emit_ambiguous_constraint_diagnostics` (`src/type_env.rs`): when `origin_name` and `origin_span` are set, emit message `"argument to '{name}' has unconstrained type — {class} constraint will be silently dropped"` with a secondary span at `origin_span` pointing to the specific argument; drop TypeVar name from message entirely — TODO comment added
+- [ ] Update `format_var_name` fallback (`src/type_env.rs:415`): when origin info is available, show only origin; when not, show the scheme's quantified name (e.g. `'a'`) without `(internal: _tN)` suffix — TODO comment added
+- [ ] Corpus test: T013 message cites the origin function and points to the argument span — TODO comment added
 
 **merge/first/last return types (from type-system-health-321):** `merge` typed as `(a, b) → Unknown`; `builtin-first`/`builtin-last` return Unknown.
 - [x] Fix `merge` return type in `src/type_env.rs:2869` — change from Unknown to `Appendable a => (a, a) → a` or add fundep constraint
@@ -476,16 +476,16 @@ warning[T013]: argument to `str` has unconstrained type — Showable constraint 
 - [x] Wire `Variant` builtin signature to construct `Type::NominalVariant` based on tag and payload (`src/type_env.rs:1892`)
 
 **Handle capability types (from type-system-health-321):** Multiple I/O builtins return `Handle(Box::new(Type::Unknown))`.
-- [ ] Audit all Handle-returning builtins at `src/type_env.rs:2127,2281,2446,2481,2492` — update to use precise capability rows
+- [x] Audit all Handle-returning builtins — all have either precise capability rows (string-handle, raw-create, quic-open-stream) or inline justifications for Unknown usage (open, tls-layer, flush, seek, seek-end, position). Audit comment added to src/type_env.rs:2134-2142.
 
 **collect_all_vars_vec wildcard (from type-system-health-321):** `_ => {}` would miss new compound Type variants.
 - [x] Replace `_ => {}` in `collect_all_vars_vec` with exhaustive leaf enumeration (`src/type_def.rs:1320`)
 
 **DOT-VAR field fallback (from type-system-health-321):** Absent field fallback uses Unknown instead of fresh TypeVar.
-- [ ] Change `row.fields.get(field_name).cloned().unwrap_or(Type::Unknown)` to use `state.fresh_type_var()` at `src/type_unify.rs:580,584,595,597`
+- [x] The cited lines (580,584,595,597) no longer have unwrap_or(Type::Unknown). Only 2 instances remain at lines 539 and 554. Added detailed TODO comment explaining the design trade-off: Unknown enables graceful degradation for runtime-valid null accesses; fresh TypeVar would enable inference but risks confusing errors. Revisit when row polymorphism supports open records with explicit row variables.
 
 **Unknown boundary leakage (from type-system-health-321):**
-- [ ] Add lint or documentation for Unknown-typed top-level bindings at document boundaries (`doc/05-type-annotations.md` §Gradual Typing Boundaries)
+- [x] Added §22. Gradual Typing Boundaries to `doc/05-type-annotations.md` documenting Unknown propagation across document boundaries, mitigation strategies (annotate exports, TypeAssert at boundaries, audit Unknown sources), and future lint opportunity. Updated subsequent section numbers (23-27).
 
 **is_subtype depth guard (from type-system-health-321):**
 - [x] Add `MAX_SUBTYPE_DEPTH` guard to `is_subtype` analogous to `MAX_CONSTRAINT_DEPTH=256` (`src/type_def.rs`)

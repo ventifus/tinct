@@ -1892,7 +1892,13 @@ pub(crate) fn infer_surface_expr(
                         smap.insert(key, scheme.clone());
                     }
                 }
-                Ok(instantiate_scheme(scheme, state.level, state))
+                Ok(instantiate_scheme(
+                    scheme,
+                    state.level,
+                    state,
+                    Some(name.as_str()),
+                    Some(node.span),
+                ))
             } else {
                 let mut err = TypeError::undefined_variable(name, node.span);
                 if let Some(&cause_span) = state.failed_bindings.get(name.as_str()) {
@@ -4472,7 +4478,16 @@ fn check_dot_access(
         if let Some(scheme) = env.get(name) {
             if let Some(ref inner_schemes) = scheme.inner_schemes {
                 if let Some(field_scheme) = inner_schemes.get(field_str) {
-                    let instantiated = instantiate_scheme(field_scheme, state.level, state);
+                    // TODO(type-system-cleanup T013 Task 3): Thread origin info here.
+                    // origin_name should be the field access expression (e.g., "record.field"),
+                    // origin_span should be the field key span (field_str position).
+                    let instantiated = instantiate_scheme(
+                        field_scheme,
+                        state.level,
+                        state,
+                        None, // TODO: pass field access origin
+                        None, // TODO: pass field key span
+                    );
                     return Ok(instantiated);
                 }
             }
@@ -4639,7 +4654,12 @@ fn check_call_with_scheme(
     // instantiate_at_level uses the call-site level (state.level) to ensure fresh type vars
     // are created at the correct generalization depth: vars at depth > enclosing_level will
     // be generalized by the enclosing let binding, while vars at shallower depth won't be.
-    let func_ty = instantiate_scheme(scheme, state.level, state);
+    //
+    // TODO(type-system-cleanup T013 Task 3): Thread origin info here.
+    // origin_name should be extracted from the VarRef (caller has it in the match arm).
+    // origin_span should be func_span (the function's span at the call site).
+    // Requires threading the function name through check_call_with_scheme signature.
+    let func_ty = instantiate_scheme(scheme, state.level, state, None, None);
 
     // Record the function expression's type in the type map for LSP hover.
     // This mirrors check_dot_access recording the target span (line ~835).

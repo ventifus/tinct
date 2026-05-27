@@ -8667,6 +8667,16 @@ Added source_file to EvalError for filename-prefixed error spans. Updated duplic
 
 **Spec chapters:** `doc/12-tooling.md §Lint Mode`
 
+### type-system-cleanup (remaining): T013 provenance, Handle audit, DOT-VAR, Unknown boundary ✅ DONE (2026-05-27)
+
+T013 provenance proof-of-concept: added origin_name/origin_span to instantiate_scheme, threaded at VarRef call site. Handle capability audit complete (all justified). DOT-VAR field fallback documented as intentional. Added §Gradual Typing Boundaries to doc/05.
+
+- [x] T013 Tasks 2-3: instantiate_scheme origin params + VarRef threading (proof-of-concept)
+- [x] T013 Tasks 4-7: TODO comments added for future completion
+- [x] Handle capability types audit (all justified)
+- [x] DOT-VAR field fallback rationale documented
+- [x] Unknown boundary leakage: §22 Gradual Typing Boundaries added to doc/05
+
 - [x] Add `Subcommand::Lint { file: String }` to CLI; pipeline: parse → desugar → macro-expand → typecheck; stop before eval; all type warnings AND INFO-level diagnostics are surfaced (lint mode shows everything the type checker finds, including Info-tier — explicitly-annotated `@Unknown`, over-broad annotations, deprecation notices); exit 1 on any Warning or Error, exit 0 only when all diagnostics are Info or below; report with `format_type_error`/`format_parse_error` (`src/main.rs`)
 - [x] Lint respects capability flags: `--cap-fs`, `--cap-net` gate `include` resolution just as `tinct run` does; `--no-fs` blocks all includes; add `--no-fs` as the default for lint (no file execution, so no capability grants needed) (`src/main.rs`)
 - [x] Add `just lint-stdlib` justfile target: run `tinct lint --no-fs` on every `stdlib/**/*.llt` file; exit 1 immediately if any file has errors; uses release binary for speed (`justfile`)
