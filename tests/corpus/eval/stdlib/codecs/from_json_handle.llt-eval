@@ -1,0 +1,44 @@
+# from-json accepts Handle via string-handle
+# Tests that from-json correctly dispatches on Handle input and parses JSON
+
+[json: [include %libdir "codecs/json.llt"]]
+
+# Test simple object
+[json.from-json [string-handle "{\"a\": 1, \"b\": 2}"]]
+=== out
+Dict({"a": Int(1), "b": Int(2)})
+
+# Test array
+[json.from-json [string-handle "[1, 2, 3]"]]
+=== out
+Dict({0: Int(1), 1: Int(2), 2: Int(3)})
+
+# Test nested structure
+[json.from-json [string-handle "{\"data\": [true, false, null]}"]]
+=== out
+Dict({"data": Dict({0: Bool(true), 1: Bool(false), 2: []})})
+
+# Test multiline JSON (simulating line-based reading)
+[json.from-json [string-handle "{\n  \"x\": 42,\n  \"y\": \"test\"\n}"]]
+=== out
+Dict({"x": Int(42), "y": String("test")})
+
+# Test string-valued JSON
+[json.from-json [string-handle "\"hello\""]]
+=== out
+String("hello")
+
+# Test number-valued JSON
+[json.from-json [string-handle "123"]]
+=== out
+Int(123)
+
+# Test bool-valued JSON
+[json.from-json [string-handle "true"]]
+=== out
+Bool(true)
+
+# Test null-valued JSON
+[json.from-json [string-handle "null"]]
+=== out
+[]

@@ -440,11 +440,11 @@ The key challenge: the LLT parser needs a mutable "read buffer" threaded through
 
 **`load` / LLT parser:** Not worth streaming — LLT source files are code (small, not data), and the parser builds a full AST in memory regardless.
 
-- [ ] Design `from-json-array-step` in `codecs/json.llt`: takes Handle + leftover-buffer String; reads next chunk; finds next complete JSON value boundary; returns `[seq parsed-value [from-json-array-step handle remaining]]` or `[]` at `]`
-- [ ] Extend `from-json` entry point in `codecs/json.llt` to dispatch on `Handle` vs `String` argument
-- [ ] Update `check_from_json` type signature: add `Handle → Seq<Any>` overload alongside `String → Any` (`src/typecheck.rs` or `src/type_env.rs`)
-- [ ] Update `stdlib/cli/in/json.llt`: `[from-json [join "\n" [collect [lines %stdin]]]]` → `[from-json %stdin]`
-- [ ] Corpus test: large JSON array via stdin — first element forced before last is parsed
+- [x] Design `from-json-array-step` in `codecs/json.llt`: takes Handle + leftover-buffer String; reads next chunk; finds next complete JSON value boundary; returns `[seq parsed-value [from-json-array-step handle remaining]]` or `[]` at `]`
+- [x] Extend `from-json` entry point in `codecs/json.llt` to dispatch on `Handle` vs `String` argument
+- [x] Update `check_from_json` type signature: add `Handle → Seq<Any>` overload alongside `String → Any` (`src/typecheck.rs` or `src/type_env.rs`)
+- [x] Update `stdlib/cli/in/json.llt`: `[from-json [join "\n" [collect [lines %stdin]]]]` → `[from-json %stdin]`
+- [x] Corpus test: large JSON array via stdin — first element forced before last is parsed
 - **Files:** `stdlib/codecs/json.llt`, `src/typecheck.rs` (type signature only), `stdlib/cli/in/json.llt`
 
 ### type-system-cleanup: Fix type inference gaps, T013 diagnostics, and type system health (14 tasks)

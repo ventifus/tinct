@@ -438,19 +438,28 @@ Empty dicts render as {}, empty arrays as [] (compact, no newlines)."]:
     [to-json-pretty-impl v 0]]
 
 # from-json: Pure-tinct JSON parser implementation.
-# Takes a JSON string and returns a tinct value (Dict, Seq, String, Int, Float, Bool, or []).
+# Takes a JSON string or Handle and returns a tinct value (Dict, Seq, String, Int, Float, Bool, or []).
+# For Handle input, all content is eagerly read into a string before parsing.
+# (Lazy element-by-element streaming is a future optimization.)
 # The parser uses str-length and str-slice from prelude, and json-char-at from this dict.
-from-json@[doc: "Parse a JSON string into a tinct value.
+from-json@[doc: "Parse a JSON string or Handle into a tinct value.
 
 Parameters:
-  s@String — JSON string to parse
+  input@[String Handle] — JSON string or Handle (e.g., stdin) to parse
 
 Returns:
   Any — Parsed value (Dict, Seq, String, Int, Float, Bool, or [] for null)
 
-Raises error on invalid JSON syntax."]:
-  [fn [let s@String]
-    [parsed: [json-parse-value s]]
+Raises error on invalid JSON syntax.
+
+Note: Handle input is eagerly read into memory before parsing.
+Lazy element-by-element streaming is a future optimization."]:
+  [fn [let input]
+    [parsed:
+      [if [str? input]
+        [json-parse-value input]
+        # Handle path: read all lines, join with newlines, then parse
+        [json-parse-value [join "\n" [collect [lines input]]]]]]
     parsed.value]
 
 ]

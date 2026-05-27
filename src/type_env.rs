@@ -2648,7 +2648,13 @@ impl TypeEnv {
         env.insert(
             "from-json".to_string(),
             Type::Function {
-                params: vec![(None, Type::Str)],
+                params: vec![(
+                    None,
+                    Type::Union(vec![
+                        Type::Str,
+                        Type::Handle(Box::new(cap_flag("readable"))),
+                    ]),
+                )],
                 // Genuinely unknown: JSON parse output can be any JSON value (object, array,
                 // string, number, bool, null). A precise type requires schema information.
                 ret: Box::new(Type::Unknown),

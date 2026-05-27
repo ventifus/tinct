@@ -11756,3 +11756,12 @@ Added builtin_string_handle to builtins_io.rs. Creates Cursor<Vec<u8>> wrapped a
 - [x] Add type entry in type_env.rs
 - [x] Expose string-handle in prelude
 - [x] Corpus test: string-handle + builtin-read-line
+
+### from-json-streaming: from-json on a Handle ✅ DONE (2026-05-27)
+
+Extended from-json to accept Handle via str? dispatch. Handle path eagerly reads all content via [join "\n" [collect [lines handle]]]. Updated cli/in/json.llt to [json.from-json %stdin]. Updated type_env.rs with Union[Str|Handle] input type. Added 9 corpus tests.
+
+- [x] from-json dispatches on str? — Handle path reads all + parses
+- [x] Updated type signature to Union[Str | Handle[Readable]]
+- [x] cli/in/json.llt simplified to [json.from-json %stdin]
+- [x] Corpus tests for Handle dispatch via string-handle
