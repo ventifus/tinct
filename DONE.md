@@ -11771,3 +11771,13 @@ Extended from-json to accept Handle via str? dispatch. Handle path eagerly reads
 Added 3 corpus tests using the existing working `[Ok v]:` syntax. Parser change for `[let v: Ok]` syntax deferred — existing match arm constructor syntax works.
 
 - [x] Tests: case_structural_ok_err, case_structural_mismatch_skips, case_structural_nested
+
+### stdlib-health-cleanup (remaining): Undocumented fns, stale docs, loop-select ✅ DONE (2026-05-27)
+
+Added variant?/payload-of/unindent to doc/11-stdlib.md. Fixed type predicate classifications. Updated builtin alias list and LLT function count. Verified loop-select is TCO-eligible and updated comment. Encapsulation splits deferred (two-dict closure issue).
+
+- [x] Verify loop-select depth limit post-TCO (updated comment)
+- [x] Add variant?, payload-of, unindent to doc/11-stdlib.md
+- [x] Fix num?/record?/map? classification to LLT stdlib
+- [x] Update builtin-* alias list with gte/lte/gt
+- [x] Update LLT function count ~117 → ~140

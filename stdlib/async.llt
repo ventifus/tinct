@@ -178,8 +178,7 @@ TODO: Add drain-timeout parameter when timeout builtin is available.
 
 # loop-select: repeatedly call select-once on sources until the context is
 # cancelled. On each iteration the handler is called with the received value.
-# Tail-recursive; may hit the CEK continuation stack limit for very deep
-# recursion (see tco-proper-fix TODO sprint).
+# Tail-recursive implementation with O(1) stack depth via TCO.
 #
 # Type: (Context -> [Seq [Channel Fn]] -> Fn -> Null)
 # Example:
@@ -193,9 +192,7 @@ Example:
      [req-ch  [fn [req] [task [handle req]]]]]
     identity]
 
-Note: Tail-recursive; hits CEK continuation stack limit for very deep recursion.
-For long-running servers, use an explicit [task [loop ...]] pattern until
-tco-proper-fix is implemented.
+Note: Tail-recursive with O(1) stack depth. TCO was implemented in tco-proper sprint.
 """]: [fn [let ctx sources@Seq handler@Fn]
     [loop-select-impl ctx sources handler]]
 

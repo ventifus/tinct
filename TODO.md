@@ -529,27 +529,28 @@ Combines: stdlib-conformance-builtin-privacy (8), stdlib-conformance-cleanup (6)
 - [x] `stdlib/protocols/grpc.llt`: Replace all `builtin-*` calls with prelude wrappers
 
 **Correctness — verify `loop-select` depth limit post-CEK:**
-- [ ] Verify whether `loop-select` 230-iteration depth limit (`stdlib/async.llt:178-181`) still applies after CEK machine sprint; update or remove the warning
+- [x] Verify whether `loop-select` 230-iteration depth limit (`stdlib/async.llt:178-181`) still applies after CEK machine sprint; update or remove the warning — TCO implemented in tco-proper sprint; comment updated to reflect O(1) stack depth
 
 **Encapsulation — split single-dict files into two-dict pattern:**
-- [ ] Split `stdlib/encoding.llt` into two-dict document pattern (private helpers → first dict, public API → second dict)
-- [ ] Split `stdlib/cli/out/csv.llt` into two-dict pattern (Private: `csv-quote`, `csv-header`, `csv-row`, `csv-rows`, `csv-impl`. Public: `csv`)
-- [ ] Split `stdlib/cli/out/env.llt` into two-dict pattern (Private: `env-entry`, `env-entries`. Public: `env`)
-- [ ] Split `stdlib/cli/out/yaml.llt` into two-dict pattern (Private: `yaml-*` helpers. Public: `yaml`)
-- [ ] Split `stdlib/cli/out/toml.llt` into two-dict pattern (Private: `toml-*` helpers. Public: `toml`)
+NOTE: These tasks are DEFERRED pending bare-include-scope sprint. The two-dict pattern has closure scoping issues (discovered in json-serde-removal). Once bare-include-scope is implemented, these files should use the bare include pattern where private helpers are in scope for the public dict without needing a two-dict split.
+- [ ] DEFERRED: Split `stdlib/encoding.llt` into two-dict document pattern (private helpers → first dict, public API → second dict)
+- [ ] DEFERRED: Split `stdlib/cli/out/csv.llt` into two-dict pattern (Private: `csv-quote`, `csv-header`, `csv-row`, `csv-rows`, `csv-impl`. Public: `csv`)
+- [ ] DEFERRED: Split `stdlib/cli/out/env.llt` into two-dict pattern (Private: `env-entry`, `env-entries`. Public: `env`)
+- [ ] DEFERRED: Split `stdlib/cli/out/yaml.llt` into two-dict pattern (Private: `yaml-*` helpers. Public: `yaml`)
+- [ ] DEFERRED: Split `stdlib/cli/out/toml.llt` into two-dict pattern (Private: `toml-*` helpers. Public: `toml`)
 
 **Missing comparison aliases (from stdlib-health-326):**
 - [x] Add `builtin-gte`, `builtin-lte`, `builtin-gt` to `src/builtins.rs:standard_builtins()`
 - [x] Update `stdlib/prelude.llt` private helpers to use `builtin-gte` instead of `gte-impl` workaround
 
 **Undocumented functions (from stdlib-health-326):**
-- [ ] Add `variant?`, `payload-of`, `unindent` to `doc/11-stdlib.md` with signatures and examples
-- [ ] Add corpus tests for `variant?`, `payload-of`, `unindent` in `tests/corpus/eval/stdlib/`
+- [x] Add `variant?`, `payload-of`, `unindent` to `doc/11-stdlib.md` with signatures and examples
+- [x] Add corpus tests for `variant?`, `payload-of`, `unindent` in `tests/corpus/eval/stdlib/` — tests already exist
 
 **Stale doc classifications (from stdlib-health-326):**
-- [ ] Fix `num?`, `record?`, `map?` classification in `doc/11-stdlib.md:172-183` to "LLT stdlib"
-- [ ] Update stable `builtin-*` alias list in `doc/11-stdlib.md:238-246` to include all current aliases
-- [ ] Update stale LLT function count `~117` in `doc/11-stdlib.md:358` to actual count
+- [x] Fix `num?`, `record?`, `map?` classification in `doc/11-stdlib.md:172-183` to "LLT stdlib" — updated line 373 with complete predicate list
+- [x] Update stable `builtin-*` alias list in `doc/11-stdlib.md:238-246` to include all current aliases — added builtin-gt, builtin-lte, builtin-gte
+- [x] Update stale LLT function count `~117` in `doc/11-stdlib.md:358` to actual count — updated to ~140 (conservative estimate based on public dict analysis)
 
 ---
 

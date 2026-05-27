@@ -231,7 +231,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 | Group | Stable alias | Primary name | Rationale |
 |-------|-------------|--------------|-----------|
 | Arithmetic | `builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div` | `+`, `-`, `*`, `/` | Host numeric types (i64, f64). |
-| Comparison | `builtin-lt`, `builtin-eq` | `<`, `=` | Cross-type Int/Float coercion at host level. `>`, `<=`, `>=` are derived from `<` and `not`. |
+| Comparison | `builtin-lt`, `builtin-eq`, `builtin-gt`, `builtin-lte`, `builtin-gte` | `<`, `=`, `>`, `<=`, `>=` | Cross-type Int/Float coercion at host level. `>`, `<=`, `>=` have stable aliases as of stdlib-health-cleanup sprint. |
 | Control | `builtin-if` | `if` | Selective materialization — only the chosen branch is materialized. |
 | Field intercept | — | `proxy` | Takes a handler `fn [field-name] value`; returns `Value::Proxy`. Any field access `.field` calls `handler(field-name)`. Enables proxy rows, mock objects, virtual namespaces. |
 | Dict primitives | `builtin-get`, `builtin-length`, `builtin-append` | `get`, `keys`, `length`, `merge`, `append` | Operate on IndexMap directly. `get`, `length`, and `append` have stable aliases for shadowability. |
@@ -362,7 +362,7 @@ The stdlib follows four organizing principles:
 
 **Architecture:** ~310 Rust-native builtins (with stable `builtin-*` aliases for shadowability) (see `standard_builtins()` in `src/builtins.rs`) + ~117 LLT-implemented functions in `stdlib/prelude.llt` (including shadowable wrappers). The shadowable wrappers are: operators (`<`, `=`, `+`, `-`, `*`, `/`, `if`), core collection ops (`filter`, `map`, `reduce`, `take`, `drop`), and sequence/list ops (`seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`), dict ops (`get`, `length`, `append`), and string ops (`str`, `split`, `str-length`, `str-slice`), plus `raise`. All wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`, `builtin-add`, `builtin-get`, `builtin-str`, `builtin-raise`). `collect-kv`, `str-repeat`, and `str-find` are pure LLT implementations in `prelude.llt` — shadowable via `$include` like other prelude functions, but with no `builtin-*` aliases.
 
-**Total stdlib API:** ~310 Rust builtins + ~117 prelude LLT functions = ~427 functions available after prelude load.
+**Total stdlib API:** ~310 Rust builtins + ~140 prelude LLT functions = ~450 functions available after prelude load.
 
 Functions available to all user code. Collection operators (`map`, `filter`, `reduce`, `take`, `drop`) and arithmetic/comparison operators (`+`, `-`, `*`, `/`, `<`, `=`, `if`) are Tinct prelude wrappers over stable Rust aliases — shadowable by `$include`d modules. Private implementation details (functions suffixed with `-impl`, `-step`, `-check`) are omitted from this reference.
 
@@ -370,7 +370,7 @@ Functions available to all user code. Collection operators (`map`, `filter`, `re
 
 - **Aggregates** (`sum`, `product`, `min`, `max`, `count`, `contains?`, `uniq`) — reduce-based collection summaries for common data analysis patterns
 - **Higher-order utilities** (`with-entries`, `partition`, `flat-map`, `find-first`, `group-by`, `deep-merge`, `walk`, `transpose`) — advanced collection transformations following Jsonnet/jq/Nix stdlib patterns
-- **Type predicates** (`int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`, `bytes?` as Rust builtins; `list?` as LLT stdlib) — runtime type inspection for dynamic dispatch and validation
+- **Type predicates** (`int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` as Rust builtins; `num?`, `bytes?`, `record?`, `map?`, `list?`, `variant?`, `proxy?` as LLT stdlib) — runtime type inspection for dynamic dispatch and validation
 - **Extended strings** (`char-code`, `chr`, `str-bytes`, `bytes-str`, `str-length`, `str-slice`, `str-chars` as Rust builtins; `str-contains?`, `starts-with?`, `ends-with?`, `str-find`, `str-repeat` in prelude; `pad-left`, `pad-right`, `str-reverse` in `stdlib/strings.llt`) — string prefix/suffix matching, padding, character/byte operations; `str-contains?`, `starts-with?`, `ends-with?`, `str-find`, and `str-repeat` are prelude functions (always available); `pad-left`, `pad-right`, `str-reverse` require `[include libdir "strings.llt"]`
 - **Extended math** (`pow`, `sqrt`, `log`, `log2`, `log10`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `nan?`, `inf?`, `finite?` in `stdlib/math.llt` as wrappers over `builtin-*` primitives; `pi`, `e`, `phi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` are pure-tinct helpers in `math.llt`) — trigonometric, exponential, and logarithmic functions; NaN/infinity checks; all require `[include libdir "math.llt"]`
 - **Bitwise & Encoding** (`band`, `bor`, `bxor`, `shl`, `shr` as prelude wrappers over `builtin-*` primitives; `hex-encode`, `hex-decode`, `base64-encode`, `base64-decode` in `stdlib/encoding.llt`) — bitwise primitives available without include via prelude; pure-tinct encoding functions require `[include libdir "encoding.llt"]`
@@ -489,6 +489,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `words` | `[fn [s] ...]` | Split a string by spaces, filtering empty strings (returns Seq). Derived from `str`, `split`, and `filter`. |
 | `str-repeat` | `fn@Str [s@Str n@Int]` | Repeat string `s` exactly `n` times. Pure LLT implementation using `reduce` over `range` |
 | `str-find` | `fn@Int [haystack@String needle@String]` | Find first occurrence of `needle` in `haystack`; returns byte index or -1 if not found. Pure LLT implementation |
+| `unindent` | `fn@String [s@String]` | Strip common leading indentation from multi-line string. Algorithm: last line (whitespace-only) determines indent depth; strips that many characters from each content line |
 
 **Control Flow:**
 
@@ -615,6 +616,8 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `record?` | LLT stdlib | Return true if value is a Dict/Overlay; alias for `dict?` (runtime has no key-type tracking) |
 | `map?` | LLT stdlib | Return true if value is a Dict/Overlay; alias for `dict?` (runtime has no key-type tracking) |
 | `list?` | LLT stdlib | Return true if value is a Dict whose keys are all integers (i.e., a list-shaped dict) |
+| `variant?` | LLT stdlib | Return true if value is a Variant |
+| `payload-of` | LLT stdlib | Extract the payload dict from a Variant value; returns `[]` for unit variants |
 
 **Numeric Predicates:**
 
