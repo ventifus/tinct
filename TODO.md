@@ -227,7 +227,7 @@ Delete RuntimeTypeCheck entirely and remove all special-case code smells identif
 **Whatif:** `typecheck-runtime-unification`
 **Depends on:** `runtime-typecheck-deletion`
 
-- [ ] Run `/review-whatif typecheck-runtime-unification` — verify all sprints are complete, implementation matches spec (no stubs or de-scoped features), and main docs are consistent; address any findings before closing
+- [x] Run `/review-whatif typecheck-runtime-unification` — verify all sprints are complete, implementation matches spec (no stubs or de-scoped features), and main docs are consistent; address any findings before closing
 
 ## Research / Design Items
 
