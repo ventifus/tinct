@@ -2147,7 +2147,12 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::Handle(Box::new(cap_flag("readable"))))],
                 // Returns Str on success, [] (null) on EOF
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Union(vec![
+                    Type::Str,
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                    }),
+                ])),
                 variadic: false,
             },
         );
@@ -2159,7 +2164,12 @@ impl TypeEnv {
                     (None, Type::Int),
                 ],
                 // Returns Bytes on success, [] (null) on EOF
-                ret: Box::new(Type::Unknown),
+                ret: Box::new(Type::Union(vec![
+                    Type::Bytes,
+                    Type::Record(Row {
+                        fields: HashMap::new(),
+                    }),
+                ])),
                 variadic: false,
             },
         );

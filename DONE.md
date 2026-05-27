@@ -11567,3 +11567,16 @@ Deleted slurp builtin entirely. Deleted old lines builtin (Handle→lazy Seq). A
 - [x] Migrate samples: versions.llt, docgen.llt
 - [x] Update CLI tests: replace slurp with join+collect+lines pattern
 
+### post-io-sprint-cleanup: Tests, type fixes, and codec cleanup ✅ DONE (2026-05-27)
+
+Partially completed sprint. Fixed type signatures for builtin-read-line/builtin-read-chunk (Unknown → proper Union types). Deleted vestigial strings.llt include from codecs/json.llt. Added 4 from-json error corpus tests (invalid escape, trailing comma, unclosed string, unclosed array).
+
+Deferred: corpus/unit tests for builtin-read-line/builtin-read-chunk remain in TODO.
+
+- [x] Delete `[include %libdir "strings.llt"]` at `stdlib/codecs/json.llt:16`
+- [x] Fix `builtin-read-line` return type to Union[Str|null] at `src/type_env.rs:2150`
+- [x] Fix `builtin-read-chunk` return type to Union[Bytes|null] at `src/type_env.rs:2162`
+- [x] Add `tests/corpus/eval/stdlib/from_json_invalid_escape.llt-eval`
+- [x] Add `tests/corpus/eval/stdlib/from_json_trailing_comma.llt-eval`
+- [x] Add `tests/corpus/eval/stdlib/from_json_unclosed_string.llt-eval`
+- [x] Add `tests/corpus/eval/stdlib/from_json_unclosed_array.llt-eval`

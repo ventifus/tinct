@@ -1,0 +1,5 @@
+# from-json: unclosed array raises error
+[json: [include %libdir "codecs/json.llt"]]
+[json.from-json "[1, 2"]
+=== error
+[E080] JSON: unexpected end of input

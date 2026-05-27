@@ -13,8 +13,6 @@
 # Handle/Task/etc. have no JSON representation. Schema-directed reconstruction
 # (JSON → nominal type) is the caller's responsibility.
 
-[include %libdir "strings.llt"]
-
 [
 
 # ---- Serializer helpers ----

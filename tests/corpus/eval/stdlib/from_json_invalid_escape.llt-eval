@@ -1,0 +1,5 @@
+# from-json: invalid escape sequence raises error
+[json: [include %libdir "codecs/json.llt"]]
+[json.from-json "\"hello\\qworld\""]
+=== error
+[E080] JSON: invalid escape sequence: \\q

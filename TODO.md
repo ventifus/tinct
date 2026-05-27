@@ -564,3 +564,51 @@ Combines: stdlib-conformance-builtin-privacy (8), stdlib-conformance-cleanup (6)
 - [ ] Update stable `builtin-*` alias list in `doc/11-stdlib.md:238-246` to include all current aliases
 - [ ] Update stale LLT function count `~117` in `doc/11-stdlib.md:358` to actual count
 
+---
+
+## Codebase Health Audit (Cycle #341, 2026-05-27)
+
+### post-io-sprint-cleanup: Tests, type fixes, and codec cleanup from lazy-file-io + json-serde-removal (11 tasks)
+
+Combines: lazy-file-io-tests (3), json-codec-cleanup (2), io-builtin-types (2), from-json-error-tests (4).
+
+**Corpus + unit tests for builtin-read-line/builtin-read-chunk [Critical]:**
+- [ ] Add corpus tests: `tests/corpus/eval/builtins/read_line_file.llt-eval`, `read_line_eof.llt-eval`, `read_chunk_file.llt-eval`, `read_chunk_boundary.llt-eval`, error tests for invalid handle type (×2)
+- [ ] Add unit tests in `src/builtins_io.rs`: closed handle error, invalid type, chunk size ≤0, EOF detection, partial read, \r\n stripping
+- [ ] Corpus test: `read_line_stdin.llt-eval` — verify \n stripped, [] on EOF, lazy Seq via prelude `lines`
+
+**Delete vestigial strings.llt include [Critical]:** `stdlib/codecs/json.llt:16` has dead `[include %libdir "strings.llt"]`.
+- [x] Delete `[include %libdir "strings.llt"]` at `stdlib/codecs/json.llt:16`
+
+**Fix Type::Unknown return types [Critical]:** Both new I/O builtins return Unknown instead of proper union.
+- [x] Fix `builtin-read-line` return type to `Type::Union([Type::Str, Type::Record(empty_row)])` at `src/type_env.rs:2150`
+- [x] Fix `builtin-read-chunk` return type to `Type::Union([Type::Bytes, Type::Record(empty_row)])` at `src/type_env.rs:2162`
+
+**from-json error tests [Major]:** Only 1 error test exists. Missing: invalid escape, trailing comma, unclosed string/array.
+- [x] Add `tests/corpus/eval/stdlib/from_json_invalid_escape.llt-eval` — `[from-json "\"\\q\""]` raises E080
+- [x] Add `tests/corpus/eval/stdlib/from_json_trailing_comma.llt-eval` — `[from-json "[1,]"]` raises E080
+- [x] Add `tests/corpus/eval/stdlib/from_json_unclosed_string.llt-eval` — `[from-json "\"abc"]` raises E080
+- [x] Add `tests/corpus/eval/stdlib/from_json_unclosed_array.llt-eval` — `[from-json "[1, 2"]` raises E080
+
+### correctness-doc-fixes: Pattern linearity doc, letrec self-ref, sequential generalization, spec consistency (10 tasks)
+
+Combines: pattern-linearity-doc (2), letrec-self-ref-silent (2), sequential-let-generalization (2), doc-spec-consistency-341 (4).
+
+**Pattern linearity documentation [Major]:** `check_pattern_linearity` is `#[cfg(test)]` only — production accepts non-linear patterns with last-binding-wins. Undocumented.
+- [ ] Document last-binding-wins semantics in `doc/14-patterns.md` as a deliberate language design decision
+- [ ] Remove or repurpose the `#[cfg(test)]`-gated linearity functions (dead in production)
+
+**Letrec self-reference diagnostic [Major]:** `[name: name]` in letrec dict silently cycles via try-or. Add diagnostic.
+- [ ] Add T002/T003 diagnostic: warn when a dict entry's value is `VarRef(name)` matching its own key — likely letrec self-reference (`src/resolve.rs` or `src/typecheck.rs`)
+- [ ] Alternatively: evaluate dict value expressions in PARENT scope when value is a bare VarRef matching its own key
+
+**Sequential let-generalization [Major]:** Sequential handler wraps bare Type via mono(), losing polymorphism.
+- [ ] In `src/typecheck.rs:1960-1969`: extract TypeSchemes from infer_dict instead of stripping to bare Type; use `child_env.insert_scheme()` to preserve polymorphism
+- [ ] Corpus test: sequential polymorphic function used at two different types
+
+**Doc/spec consistency [Major]:** Grammar spec inconsistencies found by grammar-architect.
+- [ ] `doc/02-syntax.md:838-843`: Clarify bracket access removal — explain `a[0]` was removed
+- [ ] `doc/15-ast.md:256,435-461`: Move Pipe desugaring to §Lowering Pass Rules (Pipe lowered after typecheck, not during desugar)
+- [ ] `doc/02-syntax.md:798-799`: Audit StackFrame::DocumentHeader for section header component order
+- [ ] `doc/02-syntax.md:549,575` + `doc/15-ast.md:393-432`: Clarify annotation bracket restriction classification
+
