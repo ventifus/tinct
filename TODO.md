@@ -131,10 +131,10 @@ Goal: all JSON handling in tinct stdlib; `serde_json` removed from `Cargo.toml`.
 **Blocked on:** lib.rs (JsonVisitor), profiling.rs, and lsp/server.rs still use serde_json directly — these 3 files must be migrated off serde_json before the dep can be removed from Cargo.toml. The 7 tasks below are safe to do now but `serde_json` cannot be deleted until those migrations ship.
 **Depends on:** Migrating those 3 files off serde_json first (separate work).
 
-- [ ] Remove dead error variants E041/E061/E062 (`JsonDepthExceeded`, `JsonParse`, `JsonRange`) from `src/error.rs` — no production callers after `builtin_from_json` deleted
-- [ ] Remove stale E041/E061/E062 help text from `src/main.rs:4317,4445,4454`
-- [ ] Fix `from-json` row misplaced in Rust builtins table in `doc/11-stdlib.md:247`; add `codecs/json.llt` to optional stdlib modules table
-- [ ] Add `\uXXXX` surrogate pair handling to `json-parse-string-body` in `stdlib/codecs/json.llt` (U+D800–U+DFFF rejected with clean error)
+- [x] Remove dead error variants E041/E061/E062 (`JsonDepthExceeded`, `JsonParse`, `JsonRange`) from `src/error.rs` — no production callers after `builtin_from_json` deleted
+- [x] Remove stale E041/E061/E062 help text from `src/main.rs:4317,4445,4454`
+- [x] Fix `from-json` row misplaced in Rust builtins table in `doc/11-stdlib.md:247`; add `codecs/json.llt` to optional stdlib modules table
+- [x] Add `\uXXXX` surrogate pair handling to `json-parse-string-body` in `stdlib/codecs/json.llt` (U+D800–U+DFFF rejected with clean error)
 - [ ] Remove vestigial `[include %libdir "strings.llt"]` from `stdlib/codecs/json.llt:16` (strings not used in single-dict version)
 - [ ] Verify zero remaining `serde_json` references in `src/` (`src/`)
 - [ ] Remove `serde_json = "1.0"` from `Cargo.toml`

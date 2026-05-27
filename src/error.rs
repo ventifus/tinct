@@ -191,11 +191,6 @@ pub enum ErrorKind {
     DepthExceeded {
         limit: usize,
     },
-    /// JSON nesting depth limit (distinct from eval depth — applies during
-    /// `$from-json` parsing of deeply nested JSON structures).
-    JsonDepthExceeded {
-        limit: usize,
-    },
     /// Filesystem access is disabled (--no-fs sandbox flag).
     IncludeForbidden,
     /// Resource limit exceeded (collection size, string size, etc.).
@@ -250,10 +245,6 @@ pub enum ErrorKind {
         input: String,
         target: String,
     },
-    JsonParse {
-        detail: String,
-    },
-    JsonRange,
     UriParseError {
         detail: String,
     },
@@ -439,9 +430,6 @@ impl PartialEq for ErrorKind {
                 Self::ValueNotSerializable { value_type: t2 },
             ) => t1 == t2,
             (Self::DepthExceeded { limit: l1 }, Self::DepthExceeded { limit: l2 }) => l1 == l2,
-            (Self::JsonDepthExceeded { limit: l1 }, Self::JsonDepthExceeded { limit: l2 }) => {
-                l1 == l2
-            }
             (Self::IncludeForbidden, Self::IncludeForbidden) => true,
             (
                 Self::ResourceLimitExceeded { message: m1 },
@@ -516,8 +504,6 @@ impl PartialEq for ErrorKind {
                     target: t2,
                 },
             ) => b1 == b2 && i1 == i2 && t1 == t2,
-            (Self::JsonParse { detail: d1 }, Self::JsonParse { detail: d2 }) => d1 == d2,
-            (Self::JsonRange, Self::JsonRange) => true,
             (Self::UriParseError { detail: d1 }, Self::UriParseError { detail: d2 }) => d1 == d2,
             (
                 Self::CircularDependency {
@@ -584,7 +570,6 @@ impl ErrorKind {
             Self::ValueNotSerializable { .. } => "E035",
             Self::FloatOutOfRange { .. } => "E036",
             Self::DepthExceeded { .. } => "E040",
-            Self::JsonDepthExceeded { .. } => "E041",
             Self::IncludeForbidden => "E042",
             Self::ResourceLimitExceeded { .. } => "E043",
             Self::CapabilityRequired { .. } => "E044",
@@ -597,8 +582,6 @@ impl ErrorKind {
             Self::IncludeHashRequired { .. } => "E056",
             Self::IncludePathNotAllowed { .. } => "E057",
             Self::ParseConversion { .. } => "E060",
-            Self::JsonParse { .. } => "E061",
-            Self::JsonRange => "E062",
             Self::UriParseError { .. } => "E063",
             Self::CircularDependency { .. } => "E070",
             Self::MatchExhaustion { .. } => "E071",
@@ -928,9 +911,6 @@ impl fmt::Display for ErrorKind {
             Self::DepthExceeded { limit } => {
                 write!(f, "maximum evaluation depth exceeded ({limit})")
             }
-            Self::JsonDepthExceeded { limit } => {
-                write!(f, "maximum JSON nesting depth exceeded ({limit})")
-            }
             Self::IncludeForbidden => write!(f, "filesystem access is disabled (--no-fs)"),
             Self::ResourceLimitExceeded { message } => write!(f, "{}", message),
             Self::CapabilityRequired { message } => write!(f, "{}", message),
@@ -967,8 +947,6 @@ impl fmt::Display for ErrorKind {
                 input,
                 target,
             } => write!(f, "{builtin}: cannot parse {input:?} as {target}"),
-            Self::JsonParse { detail } => write!(f, "from-json: invalid JSON: {detail}"),
-            Self::JsonRange => write!(f, "JSON number outside representable range"),
             Self::UriParseError { detail } => write!(f, "URI parse error: {detail}"),
             Self::CircularDependency { name, cycle_path } => {
                 write!(f, "circular dependency detected while evaluating {name}")?;
@@ -1577,20 +1555,6 @@ impl EvalError {
         }
     }
 
-    pub fn json_depth_exceeded(limit: usize, definition_span: Span) -> Self {
-        Self {
-            kind: ErrorKind::JsonDepthExceeded { limit },
-            definition_span,
-            materialization_span: None,
-            stack: SmallVec::new(),
-            source_file: None,
-            secondary_span: None,
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-        }
-    }
-
     pub fn include_forbidden(definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::IncludeForbidden,
@@ -1770,37 +1734,9 @@ impl EvalError {
         }
     }
 
-    pub fn json_parse(detail: String, definition_span: Span) -> Self {
-        Self {
-            kind: ErrorKind::JsonParse { detail },
-            definition_span,
-            materialization_span: None,
-            stack: SmallVec::new(),
-            source_file: None,
-            secondary_span: None,
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-        }
-    }
-
     pub fn uri_parse_error(detail: String, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::UriParseError { detail },
-            definition_span,
-            materialization_span: None,
-            stack: SmallVec::new(),
-            source_file: None,
-            secondary_span: None,
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-        }
-    }
-
-    pub fn json_range(definition_span: Span) -> Self {
-        Self {
-            kind: ErrorKind::JsonRange,
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -2400,7 +2336,6 @@ mod tests {
             value: 1e20
         }
         .is_catchable());
-        assert!(ErrorKind::JsonDepthExceeded { limit: 128 }.is_catchable());
         assert!(ErrorKind::IncludeForbidden.is_catchable());
         assert!(ErrorKind::IncludeNotAvailable.is_catchable());
         assert!(ErrorKind::IncludeIoError {
@@ -2443,11 +2378,6 @@ mod tests {
             target: "Int".to_string()
         }
         .is_catchable());
-        assert!(ErrorKind::JsonParse {
-            detail: "invalid".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::JsonRange.is_catchable());
         assert!(ErrorKind::UriParseError {
             detail: "error".to_string()
         }
@@ -2560,7 +2490,6 @@ mod tests {
                 value: 1e20,
             },
             ErrorKind::DepthExceeded { limit: 256 },
-            ErrorKind::JsonDepthExceeded { limit: 128 },
             ErrorKind::IncludeForbidden,
             ErrorKind::ResourceLimitExceeded {
                 message: "test: resource limit exceeded (1000)".to_string(),
@@ -2601,10 +2530,6 @@ mod tests {
                 input: "x".to_string(),
                 target: "Int".to_string(),
             },
-            ErrorKind::JsonParse {
-                detail: "error".to_string(),
-            },
-            ErrorKind::JsonRange,
             ErrorKind::UriParseError {
                 detail: "error".to_string(),
             },
@@ -2808,7 +2733,6 @@ mod tests {
             value: 1e20
         }
         .is_cacheable());
-        assert!(ErrorKind::JsonDepthExceeded { limit: 128 }.is_cacheable());
         assert!(ErrorKind::IncludeForbidden.is_cacheable());
         assert!(ErrorKind::ResourceLimitExceeded {
             message: "test".to_string(),
@@ -2855,11 +2779,6 @@ mod tests {
             target: "Int".to_string()
         }
         .is_cacheable());
-        assert!(ErrorKind::JsonParse {
-            detail: "invalid".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::JsonRange.is_cacheable());
         assert!(ErrorKind::UriParseError {
             detail: "error".to_string()
         }
@@ -3139,10 +3058,6 @@ mod tests {
             "maximum evaluation depth exceeded (256)"
         );
         assert_eq!(
-            format!("{}", ErrorKind::JsonDepthExceeded { limit: 128 }),
-            "maximum JSON nesting depth exceeded (128)"
-        );
-        assert_eq!(
             format!("{}", ErrorKind::IncludeForbidden),
             "filesystem access is disabled (--no-fs)"
         );
@@ -3251,19 +3166,6 @@ mod tests {
                 }
             ),
             "to-int: cannot parse \"abc\" as Int"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::JsonParse {
-                    detail: "unexpected EOF".to_string()
-                }
-            ),
-            "from-json: invalid JSON: unexpected EOF"
-        );
-        assert_eq!(
-            format!("{}", ErrorKind::JsonRange),
-            "JSON number outside representable range"
         );
         assert_eq!(
             format!(
@@ -4317,24 +4219,6 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_error_json_depth_exceeded_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::json_depth_exceeded(128, span);
-        assert!(matches!(
-            err.kind,
-            ErrorKind::JsonDepthExceeded { limit: 128 }
-        ));
-        assert_eq!(err.kind.code(), "E041");
-        assert_eq!(
-            err.kind.to_string(),
-            "maximum JSON nesting depth exceeded (128)"
-        );
-        // JsonDepthExceeded IS catchable (unlike DepthExceeded which is not)
-        assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
-    }
-
-    #[test]
     fn test_eval_error_include_forbidden_constructor() {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::include_forbidden(span);
@@ -4517,32 +4401,6 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_error_json_parse_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::json_parse("unexpected EOF at line 3".to_string(), span);
-        assert!(matches!(err.kind, ErrorKind::JsonParse { .. }));
-        assert_eq!(err.kind.code(), "E061");
-        assert!(err.kind.to_string().contains("invalid JSON"));
-        assert!(err.kind.to_string().contains("unexpected EOF at line 3"));
-        assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
-    }
-
-    #[test]
-    fn test_eval_error_json_range_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::json_range(span);
-        assert!(matches!(err.kind, ErrorKind::JsonRange));
-        assert_eq!(err.kind.code(), "E062");
-        assert_eq!(
-            err.kind.to_string(),
-            "JSON number outside representable range"
-        );
-        assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
-    }
-
-    #[test]
     fn test_eval_error_missing_required_param_constructor() {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::missing_required_param("separator", span);
@@ -4556,31 +4414,7 @@ mod tests {
         assert!(err.kind.is_cacheable());
     }
 
-    /// Verify `JsonDepthExceeded` is catchable while `DepthExceeded` is not.
-    /// These two variants are semantically similar but have opposite catchability:
-    /// - `DepthExceeded` is a resource limit (not catchable, not cacheable)
-    /// - `JsonDepthExceeded` is a data error (catchable, cacheable)
-    #[test]
-    fn test_json_depth_exceeded_vs_depth_exceeded_catchability() {
-        assert!(
-            !ErrorKind::DepthExceeded { limit: 256 }.is_catchable(),
-            "DepthExceeded must NOT be catchable"
-        );
-        assert!(
-            ErrorKind::JsonDepthExceeded { limit: 128 }.is_catchable(),
-            "JsonDepthExceeded MUST be catchable (user data error, not resource limit)"
-        );
-        assert!(
-            !ErrorKind::DepthExceeded { limit: 256 }.is_cacheable(),
-            "DepthExceeded must NOT be cacheable (context-dependent)"
-        );
-        assert!(
-            ErrorKind::JsonDepthExceeded { limit: 128 }.is_cacheable(),
-            "JsonDepthExceeded MUST be cacheable (deterministic)"
-        );
-    }
-
-    /// Verify error code uniqueness across all 37 ErrorKind variants.
+    /// Verify error code uniqueness across all ErrorKind variants.
     /// Each variant must have a distinct error code — no two variants share a code.
     #[test]
     fn test_all_error_codes_are_unique_and_valid() {
@@ -4606,11 +4440,11 @@ mod tests {
         }
         // Verify the count matches all_error_kind_variants() — the canonical list.
         // If variants are added or removed, update all_error_kind_variants() to match.
-        // Current count: 44 variants (verified against the ErrorKind enum definition).
+        // Current count: 41 variants (verified against the ErrorKind enum definition).
         assert_eq!(
             variants.len(),
-            44,
-            "Expected 44 ErrorKind variants in all_error_kind_variants(); got {}. \
+            41,
+            "Expected 41 ErrorKind variants in all_error_kind_variants(); got {}. \
              Update all_error_kind_variants() if variants were added or removed.",
             variants.len()
         );
@@ -4719,7 +4553,6 @@ mod tests {
                 ErrorKind::ValueNotSerializable { .. } => "E035",
                 ErrorKind::FloatOutOfRange { .. } => "E036",
                 ErrorKind::DepthExceeded { .. } => "E040",
-                ErrorKind::JsonDepthExceeded { .. } => "E041",
                 ErrorKind::IncludeForbidden => "E042",
                 ErrorKind::ResourceLimitExceeded { .. } => "E043",
                 ErrorKind::IncludeNotAvailable => "E050",
@@ -4731,8 +4564,6 @@ mod tests {
                 ErrorKind::IncludeHashRequired { .. } => "E056",
                 ErrorKind::IncludePathNotAllowed { .. } => "E057",
                 ErrorKind::ParseConversion { .. } => "E060",
-                ErrorKind::JsonParse { .. } => "E061",
-                ErrorKind::JsonRange => "E062",
                 ErrorKind::UriParseError { .. } => "E063",
                 ErrorKind::CircularDependency { .. } => "E070",
                 ErrorKind::MatchExhaustion { .. } => "E071",

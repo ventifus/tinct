@@ -4316,17 +4316,6 @@ If the recursion is intentional but bounded, the limit may be raised with
 --depth (if supported)."
         }
 
-        "E041" => {
-            "\
-E041: Maximum JSON nesting depth exceeded
-
-A $from-json call was given a JSON document nested more deeply than the
-allowed limit.
-
-Fix: ensure the JSON input does not have excessive nesting, or pre-process
-deeply nested JSON before passing it to tinct."
-        }
-
         "E042" => {
             "\
 E042: Filesystem access disabled
@@ -4442,26 +4431,6 @@ A $to-int or $to-float call could not parse the supplied string.
 
 Fix: ensure the string is a valid integer or floating-point literal before
 converting, or use $try to handle the error gracefully."
-        }
-
-        "E061" => {
-            "\
-E061: Invalid JSON
-
-A $from-json call received a string that is not valid JSON.
-
-Fix: ensure the input to $from-json is a well-formed JSON string."
-        }
-
-        "E062" => {
-            "\
-E062: JSON number out of range
-
-A JSON number in a $from-json call is outside the representable range for
-LLT's numeric types.
-
-Fix: pre-process the JSON to reduce large numbers, or represent them as
-strings."
         }
 
         "E070" => {
@@ -4609,7 +4578,7 @@ fix the expression to produce the declared type."
                 "unknown error code: {code}\n\
                  Run 'tinct explain <code>' with a valid code, e.g. E001 through E099 or T000-T004.\n\
                  Known codes: E001, E002, E010, E011, E020-E024, E030-E036, \
-                 E040-E043, E050-E057, E060-E062, E070, E080, E090, E099, \
+                 E040, E042-E043, E050-E057, E060, E063, E070, E080, E090, E099, \
                  T000, T001, T002, T003, T004."
             ));
         }

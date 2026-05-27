@@ -340,6 +340,17 @@ json-hex4-to-int: [fn [let s@String]
     [* [json-hex-digit-val [json-char-at 2 s]] 16]
     [json-hex-digit-val [json-char-at 3 s]]]]]]
 
+# Handle a confirmed \uXXXX escape: s still starts with \u, acc is accumulated so far.
+# Rejects surrogate codepoints (U+D800-U+DFFF) with a clean error.
+json-parse-unicode-escape: [fn [let s@String acc@String]
+  [hex-str: [str-slice s 2 6]]
+  [hex4: [json-hex4-to-int hex-str]]
+  [if [and [>= hex4 55296] [<= hex4 57343]]
+    [raise [str "JSON: surrogate pair U+D800-U+DFFF not supported: \\u" hex-str]]
+    [json-parse-string-body
+      [json-rest s 6]
+      [str acc [chr hex4]]]]]
+
 json-parse-string-body: [fn [let s@String acc@String]
   [if [= [str-length s] 0]
     [raise "JSON: unterminated string"]
@@ -353,9 +364,7 @@ json-parse-string-body: [fn [let s@String acc@String]
            # \uXXXX Unicode escape — consume 6 chars total (\uXXXX)
            [if [< [str-length s] 6]
              [raise "JSON: incomplete \\uXXXX escape"]
-             [json-parse-string-body
-               [json-rest s 6]
-               [str acc [chr [json-hex4-to-int [str-slice s 2 6]]]]]]
+             [json-parse-unicode-escape s acc]]
            # Other single-char escapes — consume 2 chars
            [json-parse-string-body
              [json-rest s 2]
