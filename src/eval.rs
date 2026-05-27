@@ -2688,6 +2688,7 @@ pub fn materialize_sync(
 /// that straddles two Or-pattern branches (same name in branch A and branch B) is a
 /// separate semantic concern (the "or-pattern completeness" invariant) and is NOT reported
 /// here — only intra-branch duplicates matter for linearity.
+#[cfg(test)]
 fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(String, Span)>) {
     match &pattern.node {
         Pattern::Variable(name) => {
@@ -2737,6 +2738,7 @@ fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(Str
 ///
 /// This is called once per match arm before `match_pattern` recurses, so the cost is
 /// O(|pattern|) per arm.
+#[cfg(test)]
 #[allow(clippy::result_large_err)]
 pub(crate) fn check_pattern_linearity(pattern: &Spanned<Pattern>) -> Result<(), EvalError> {
     // Or-patterns: check each branch independently.
@@ -8242,8 +8244,7 @@ mod tests {
     #[test]
     fn test_pm3_match_expr_duplicate_dict_field_errors() {
         // Integration test: eval a Match expression whose arm has a non-linear
-        // Dict pattern. Previously this errored with E072 DuplicateVariable, but
-        // the behavior changed to allow duplicate bindings (last binding wins).
+        // Dict pattern. Duplicate bindings use "last binding wins" semantics.
         //
         // match [a: 1  b: 2]
         //   [a: x  b: x  ...]: x
@@ -8255,7 +8256,6 @@ mod tests {
             &test_ctx(),
         )
         .unwrap();
-        // x is bound to the value of b (last occurrence), which is 2
         let ctx = test_ctx();
         let val = materialize(&result, None, &ctx).unwrap();
         assert_eq!(val, Value::Int(2));

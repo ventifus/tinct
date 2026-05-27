@@ -1,6 +1,0 @@
-# E061: from-json parse error on deeply nested JSON — serde_json's recursion limit
-# triggers before LLT's JSON_DEPTH_LIMIT check (both are ~128 levels).
-# The serde_json parser returns a parse error at ~128 levels of nesting.
-[from-json "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]"]
-=== error
-[E061] from-json: invalid JSON

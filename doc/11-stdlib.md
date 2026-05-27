@@ -244,7 +244,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 | Evaluation control | `builtin-raise` | `deep-materialize`, `materialize`, `raise`, `try`, `apply` | `deep-materialize` recursively materializes all thunks; `materialize` forces to WHNF; `raise` constructs EvalError; `try` catches materialization errors; `apply` spreads dict (Key::String → named args, Key::Int sorted → positional args). The prelude exports `error` as an alias for `raise`. `builtin-raise` is the stable alias for `raise`. |
 | Type introspection | — | `type-of`, `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?` | Inspect the Value enum variant. (`num?`, `record?`, `map?` are LLT stdlib aliases derived from these primitives.) |
 | Sequences | `builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-filter`, `builtin-map`, `builtin-reduce`, `builtin-take`, `builtin-drop`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-rest`, `builtin-cons`, `builtin-reverse`, `builtin-sort` | `seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `filter`, `map`, `reduce`, `take`, `drop`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`, `seq?` | Dual-dispatch on Dict/Seq; require `Rc<Thunk>` manipulation. All sequence/list functions have stable aliases for shadowability except `seq?`. |
-| I/O | — | `from-json` | serde_json deserialization. |
+| I/O | — | `from-json` | Pure-tinct JSON parser in `stdlib/codecs/json.llt`. Include `codecs/json.llt` to use. |
 | Include primitives | — | `load`, `expand`, `eval`, `eval-types`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put` | Thin Rust primitives for the self-hosted include pipeline. `load` parses source text; `expand` runs macro expansion; `eval` evaluates document expressions in the runtime env; `eval-types` evaluates in the type-stage env; `blake3` hashes content; `cap-identity` extracts DirCap identity; `include-cache-get`/`include-cache-put` manage the content-addressed include cache. Prelude implements `include`, `eval-file`, and the document pipeline using these primitives. |
 
 **Tinct-implemented stdlib (wrappers and derived functions):**
@@ -302,19 +302,19 @@ Any `include`d stdlib module can shadow the primary-name operators in lexical sc
 
 Only `stdlib/prelude.llt` is loaded automatically at startup (bundled at compile time via `include_str!`). All other stdlib modules must be loaded explicitly with `[include ...]`. At startup:
 
-1. `create_root_env()` pre-injects all Rust builtins directly into the bootstrap environment — all 310 builtin functions are registered by name (e.g., `builtin-lt`, `builtin-add`, `eval`, `raise`, `from-json`, `load`, `blake3`, etc.)
+1. `create_root_env()` pre-injects all Rust builtins directly into the bootstrap environment — all Rust builtin functions are registered by name (e.g., `builtin-lt`, `builtin-add`, `eval`, `raise`, `load`, `blake3`, etc.)
 2. `create_stdlib_env_inner()` parses and evaluates `stdlib/prelude.llt` in a child of the bootstrap env — prelude can access all builtins via the environment chain
 3. Prelude exports its public wrappers (`<`, `=`, `+`, `if`, `not`, `>`, `and`, `or`, ...) into the stdlib env, shadowing some builtin names with user-friendly wrappers
 4. User code inherits the stdlib env — `builtin-*` names are accessible via the environment chain, but shadowed by prelude wrappers where appropriate
 
 ```text
-Bootstrap env: all 310 Rust builtins (builtin-lt, builtin-add, eval, raise, load, blake3, ...)
+Bootstrap env: all 233 Rust builtins (builtin-lt, builtin-add, eval, raise, load, blake3, ...)
   └── Stdlib env: prelude.llt exports (<, =, +, -, *, /, if, filter, map, not, >, and, or, ...)
         └── User code / domain stdlib ([include "stdlib/sql.llt"] shadows filter, map, <, =, ...)
               └── User predicates and programs
 ```
 
-The prelude wraps builtins with stable `builtin-*` aliases (`builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div`, `builtin-eq`, `builtin-lt`, `builtin-if`, `builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-map`, `builtin-filter`, `builtin-take`, `builtin-drop`, `builtin-reduce`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-rest`, `builtin-cons`, `builtin-reverse`, `builtin-sort`, `builtin-get`, `builtin-length`, `builtin-append`, `builtin-str`, `builtin-split`, `builtin-str-length`, `builtin-str-slice`, `builtin-raise`) so domain modules can shadow the primary names while still calling the original implementation. All other builtins (e.g., `eval`, `from-json`, `load`) are used directly by name.
+The prelude wraps builtins with stable `builtin-*` aliases (`builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div`, `builtin-eq`, `builtin-lt`, `builtin-if`, `builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-map`, `builtin-filter`, `builtin-take`, `builtin-drop`, `builtin-reduce`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-rest`, `builtin-cons`, `builtin-reverse`, `builtin-sort`, `builtin-get`, `builtin-length`, `builtin-append`, `builtin-str`, `builtin-split`, `builtin-str-length`, `builtin-str-slice`, `builtin-raise`) so domain modules can shadow the primary names while still calling the original implementation. All other builtins (e.g., `eval`, `load`) are used directly by name. (`from-json` is not a Rust builtin — it is implemented in pure tinct in `stdlib/codecs/json.llt`.)
 
 **Optional stdlib modules** — load with `[include libdir "<module>.llt"]`. The `libdir` variable is a `DirCap` injected at startup pointing to the installed stdlib directory (resolves to `stdlib/` in dev builds, `<prefix>/share/tinct/stdlib/` in installed builds):
 
@@ -807,7 +807,7 @@ To call a formatter function directly from tinct code, load it with `include` an
 | File | Function | Input | Output |
 |------|----------|-------|--------|
 | `cli/out/json.llt` | `json` | any value | compact JSON string |
-| `cli/out/json-pretty.llt` | `json-pretty` | any value | compact JSON string (indentation planned) |
+| `cli/out/json-pretty.llt` | `json-pretty` | any value | indented JSON string (2-space indent) |
 | `cli/out/yaml.llt` | `yaml` | any value | YAML 1.2 string |
 | `cli/out/toml.llt` | `toml` | flat or nested dict | TOML string |
 | `cli/out/env.llt` | `env` | flat string-keyed dict | `KEY=VALUE` lines (`.env` format) |
@@ -839,13 +839,19 @@ tinct run -o json -e '[name: "Alice" age: 30]'
 # => {"name":"Alice","age":30}
 ```
 
-### `cli/out/json-pretty.llt` — indented JSON (planned)
+### `cli/out/json-pretty.llt` — indented JSON
 
-Currently produces compact JSON identical to `cli/out/json.llt`. Indented output with 2-space steps is planned for a future sprint.
+Produces indented JSON output with 2-space indentation. Dicts with sequential integer keys `0..n-1` become JSON arrays; all other dicts become JSON objects with string-coerced keys. Empty dicts render as `{}`, empty arrays as `[]` (compact, no newlines).
 
 ```bash
 tinct run -o json-pretty -e '[x: 1 y: [2 3]]'
-# => {"x":1,"y":[2,3]}
+# => {
+#   "x": 1,
+#   "y": [
+#     2,
+#     3
+#   ]
+# }
 ```
 
 ### `cli/out/toml.llt` — TOML
@@ -885,7 +891,7 @@ tinct run -o csv -e '[[name: "Alice" score: 95] [name: "Bob" score: 87]]'
 **Note:** Formatters fall into three categories by implementation:
 
 - **LLT-recursive formatters** (`csv`, `env`, `yaml`, `toml`) — implemented entirely in LLT using recursive accumulator patterns. Subject to `MAX_EVAL_DEPTH` (~256) on very deeply nested inputs. For production use with large datasets, prefer streaming or chunked approaches.
-- **Tinct-implemented formatters** (`json`, `json-pretty`) — include `stdlib/codecs/json.llt` and delegate to the tinct `to-json` function. Subject to the LLT recursion depth limit; handles sequences natively (collects and serializes as arrays). `llt` delegates to the Rust `$llt-repr` builtin.
+- **Tinct-implemented formatters** (`json`, `json-pretty`) — call the prelude's `to-json` / `to-json-pretty` function directly (not `codecs/json.llt`). Subject to the LLT recursion depth limit; handles sequences natively (collects and serializes as arrays). `llt` delegates to the Rust `$llt-repr` builtin.
 - **Trivial formatters** (`raw`, `none`) — simple conditional or literal expressions; no recursion and no Rust serialization. `raw` passes through String or joins Seq elements with newlines; `none` always returns `""`.
 
 **Known limitation:** The `format-instance` helper in `compact.llt` and `pretty.llt` emits a placeholder `<N arm(s)>` for instance values instead of rendering their structure. This is a temporary stub pending full instance serialization support.

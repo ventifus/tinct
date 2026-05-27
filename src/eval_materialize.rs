@@ -15,10 +15,9 @@ use crate::ast::{Annotation, CoreExpr, Span, Spanned, SurfaceExpression};
 use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
-    annotation_has_structural_fields, as_record_row_merged, check_pattern_linearity,
-    eval_core_expr_pub, format_field_path, format_type_for_assert, match_pattern, materialize,
-    maybe_wrap_guard, validate_and_wrap_record, value_matches_type, EvalContext,
-    DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
+    annotation_has_structural_fields, as_record_row_merged, eval_core_expr_pub, format_field_path,
+    format_type_for_assert, match_pattern, materialize, maybe_wrap_guard, validate_and_wrap_record,
+    value_matches_type, EvalContext, DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
 };
 use crate::eval_access::invoke_proxy_handler;
 use crate::eval_call::{invoke_function, CallContext};
@@ -3131,11 +3130,6 @@ pub(crate) async fn apply_cont(
                     // Try each arm starting from arm_idx
                     for i in arm_idx..arms.len() {
                         let arm = &arms[i];
-
-                        // PM3: Reject non-linear patterns
-                        if let Err(e) = check_pattern_linearity(&arm.pattern) {
-                            return Action::Continue(Err(Box::new(e)));
-                        }
 
                         // Try the pattern (this is async, so we need to spawn a sub-action)
                         // For now, we'll block on pattern matching since it's typically fast

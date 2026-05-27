@@ -1,12 +1,13 @@
 # stdlib/codecs/json.llt — JSON codec (post-runtime-v2)
 #
-# Public API (second dict):
+# Public API:
 #   to-json:   tinct value → compact JSON string
 #   from-json: JSON string → structural tinct value
 #
-# str-at/str-length come from strings.llt (included above). str-slice comes from
-# prelude (builtin-str-slice alias, (string, start, end) semantics). The dead-code
-# parser below uses builtin-str-slice directly for clarity.
+# str-length comes from prelude (builtin-str-length alias). str-slice comes from
+# prelude (builtin-str-slice alias, (string, start, end) semantics).
+# Character access uses json-char-at (defined in the dict below) which wraps
+# builtin-str-slice, avoiding any dependency on strings.llt str-at.
 # from-json produces only: Dict, Seq, String, Int, Float, Bool, [] (null).
 # Not every tinct type round-trips through JSON — Expression/Program/Document/Fn/
 # Handle/Task/etc. have no JSON representation. Schema-directed reconstruction
@@ -14,17 +15,16 @@
 
 [include %libdir "strings.llt"]
 
-# ---- Internal helpers ----
 [
 
 # ---- Serializer helpers ----
 
 json-escape: [fn [let s@String]
-  [str-replace "\\" "\\\\"
-  [str-replace "\"" "\\\""
-  [str-replace "\n" "\\n"
-  [str-replace "\r" "\\r"
-  [str-replace "\t" "\\t"
+  [replace "\\" "\\\\"
+  [replace "\"" "\\\""
+  [replace "\n" "\\n"
+  [replace "\r" "\\r"
+  [replace "\t" "\\t"
     s]]]]]]
 
 json-string: [fn [let s@String]
@@ -49,6 +49,66 @@ to-json-dict: [fn [let d@Dict]
 
 to-json-seq: [fn [let s]
   [builtin-str "[" [join "," [map to-json [collect s]]] "]"]]
+
+# ---- Pretty-print helpers (indent tracking) ----
+
+make-indent-impl: [fn [let depth@Int acc@String]
+  [builtin-if [builtin-eq depth 0]
+    acc
+    [make-indent-impl [builtin-sub depth 1] [builtin-str acc "  "]]]]
+
+make-indent: [fn [let depth@Int]
+  [make-indent-impl depth ""]]
+
+to-json-pretty-dict-nonempty: [fn [let d@Dict depth@Int]
+  [current-indent: [make-indent depth]]
+  [next-indent:    [make-indent [builtin-add depth 1]]]
+  [pairs: [map [fn [let pair]
+                 [builtin-str "\n" next-indent
+                   [json-string pair[0]] ": "
+                   [to-json-pretty-impl pair[1] [builtin-add depth 1]]]]
+               [entries d]]]
+  [builtin-str "{" [join "," pairs] "\n" current-indent "}"]]
+
+to-json-pretty-dict: [fn [let d@Dict depth@Int]
+  [builtin-if [builtin-eq [builtin-length d] 0]
+    "{}"
+    [to-json-pretty-dict-nonempty d depth]]]
+
+to-json-pretty-seq-nonempty: [fn [let collected depth@Int]
+  [current-indent: [make-indent depth]]
+  [next-indent:    [make-indent [builtin-add depth 1]]]
+  [items: [map [fn [let item]
+                 [builtin-str "\n" next-indent
+                   [to-json-pretty-impl item [builtin-add depth 1]]]]
+               [values collected]]]
+  [builtin-str "[" [join "," items] "\n" current-indent "]"]]
+
+to-json-pretty-seq: [fn [let s depth@Int]
+  [collected: [collect s]]
+  [builtin-if [builtin-eq [builtin-length collected] 0]
+    "[]"
+    [to-json-pretty-seq-nonempty collected depth]]]
+
+to-json-pretty-primitive: [fn [let v depth@Int]
+  [cond [
+    [[builtin-eq v []]     "null"]
+    [[bool? v]    [builtin-if v "true" "false"]]
+    [[int?  v]    [builtin-str v]]
+    [[float? v]   [builtin-str v]]
+    [[str?   v]   [json-string v]]
+    [[seq?   v]   [to-json-pretty-seq v depth]]
+    [[dict?  v]   [to-json-pretty-dict v depth]]
+    [true         "null"]]]]
+
+to-json-pretty-impl: [fn [let v depth@Int]
+  [match v
+    [Program  _]:   [json-program v]
+    [Document _]:   [json-document v]
+    [Expression _]: [json-expression v]
+    _:              [to-json-pretty-primitive v depth]]]
+
+# ---- Back to regular serializer helpers ----
 
 json-annotation: [fn [let a@Annotation] [to-json a]]
 
@@ -163,7 +223,7 @@ json-program: [fn [let p@Program]
   [to-json-dict [documents: [to-json-seq [map json-document p.documents]]]]]
 
 to-json-primitive: [fn [let v]
-  [cond
+  [cond [
     [[builtin-eq v []]     "null"]
     [[bool? v]    [builtin-if v "true" "false"]]
     [[int?  v]    [builtin-str v]]
@@ -175,22 +235,27 @@ to-json-primitive: [fn [let v]
     # to-json above. All other variant values (user-defined, Ok/Error, etc.) produce "null"
     # here — payload-of is now available in prelude (added in runtime-v2-rebase sprint);
     # Variant serialization can be improved to use it in a future sprint.
-    [true         "null"]]]
+    [true         "null"]]]]
 
 # ---- Deserializer helpers ----
-# Uses str-at/str-length from strings.llt and builtin-str-slice from prelude.
+# Uses str-length and builtin-str-slice from prelude (both available without strings.llt).
 # Each json-parse-* function takes remaining input and returns [value: v  rest: r].
+
+# json-char-at: extract the character at index n (0-based) from string s.
+# Uses builtin-str-slice directly (prelude builtin) to avoid dependency on strings.llt str-at.
+json-char-at: [fn [let n@Int s@String]
+  [builtin-str-slice s n [builtin-add n 1]]]
 
 json-ws?: [fn [let c@String]
   [or [builtin-eq c " "] [or [builtin-eq c "\t"] [or [builtin-eq c "\n"] [builtin-eq c "\r"]]]]]
 
 json-skip-ws: [fn [let s@String]
-  [builtin-if [or [builtin-eq [str-length s] 0] [not [json-ws? [str-at 0 s]]]]
+  [builtin-if [or [builtin-eq [str-length s] 0] [not [json-ws? [json-char-at 0 s]]]]
     s
     [json-skip-ws [builtin-str-slice s 1 [str-length s]]]]]
 
-json-parsed: [fn [let value rest@String]
-  [value: value  rest: rest]]
+json-parsed: [fn [let parsed-value parsed-rest@String]
+  [value: parsed-value  rest: parsed-rest]]
 
 json-rest: [fn [let s@String n@Int]
   [builtin-str-slice s n [str-length s]]]
@@ -224,7 +289,7 @@ json-num-char?: [fn [let c@String]
       [or [builtin-eq c "-"] [builtin-eq c "+"]]]]]]]
 
 json-scan-num: [fn [let s@String i@Int]
-  [builtin-if [or [>= i [str-length s]] [not [json-num-char? [str-at i s]]]]
+  [builtin-if [or [>= i [str-length s]] [not [json-num-char? [json-char-at i s]]]]
     i
     [json-scan-num s [builtin-add i 1]]]]
 
@@ -240,96 +305,120 @@ json-parse-number: [fn [let s@String]
     rest]]
 
 json-unescape: [fn [let c@String]
-  [cond
+  [cond [
     [[builtin-eq c "\""] "\""]
     [[builtin-eq c "\\"] "\\"]
     [[builtin-eq c "/"]  "/"]
     [[builtin-eq c "n"]  "\n"]
     [[builtin-eq c "r"]  "\r"]
     [[builtin-eq c "t"]  "\t"]
-    [[builtin-eq c "b"]  [builtin-chr 8]]
-    [[builtin-eq c "f"]  [builtin-chr 12]]
-    [true [builtin-raise[builtin-str "JSON: unknown escape \\" c]]]]]
+    [[builtin-eq c "b"]  [chr 8]]
+    [[builtin-eq c "f"]  [chr 12]]
+    [true [builtin-raise [builtin-str "JSON: unknown escape \\" c]]]]]]
+
+# Convert a single ASCII hex character ('0'-'9', 'a'-'f', 'A'-'F') to its integer value.
+json-hex-digit-val: [fn [let c@String]
+  [code: [char-code c]]
+  [cond [
+    [[and [>= code 48] [<= code 57]]  [builtin-sub code 48]]         # '0'-'9'
+    [[and [>= code 97] [<= code 102]] [builtin-add 10 [builtin-sub code 97]]]   # 'a'-'f'
+    [[and [>= code 65] [<= code 70]]  [builtin-add 10 [builtin-sub code 65]]]   # 'A'-'F'
+    [true [builtin-raise [builtin-str "JSON: invalid hex digit: " c]]]]]]
+
+# Parse 4 consecutive hex chars from string s into an integer (0x0000-0xFFFF).
+json-hex4-to-int: [fn [let s@String]
+  [builtin-add
+    [builtin-mul [json-hex-digit-val [json-char-at 0 s]] 4096]
+  [builtin-add
+    [builtin-mul [json-hex-digit-val [json-char-at 1 s]] 256]
+  [builtin-add
+    [builtin-mul [json-hex-digit-val [json-char-at 2 s]] 16]
+    [json-hex-digit-val [json-char-at 3 s]]]]]]
 
 json-parse-string-body: [fn [let s@String acc@String]
   [builtin-if [builtin-eq [str-length s] 0]
     [builtin-raise "JSON: unterminated string"]
-    [c: [str-at 0 s]]
-    [cond
-      [[builtin-eq c "\""]
+    [cond [
+      [[builtin-eq [json-char-at 0 s] "\""]
        [json-parsed acc [json-rest s 1]]]
-      [[builtin-eq c "\\"]
+      [[builtin-eq [json-char-at 0 s] "\\"]
        [builtin-if [builtin-lt [str-length s] 2]
          [builtin-raise "JSON: incomplete escape"]
-         [json-parse-string-body
-           [json-rest s 2]
-           [builtin-str acc [json-unescape [str-at 1 s]]]]]]
+         [builtin-if [builtin-eq [json-char-at 1 s] "u"]
+           # \uXXXX Unicode escape — consume 6 chars total (\uXXXX)
+           [builtin-if [builtin-lt [str-length s] 6]
+             [builtin-raise "JSON: incomplete \\uXXXX escape"]
+             [json-parse-string-body
+               [json-rest s 6]
+               [builtin-str acc [chr [json-hex4-to-int [builtin-str-slice s 2 6]]]]]]
+           # Other single-char escapes — consume 2 chars
+           [json-parse-string-body
+             [json-rest s 2]
+             [builtin-str acc [json-unescape [json-char-at 1 s]]]]]]]
       [true
-       [json-parse-string-body [json-rest s 1] [builtin-str acc c]]]]]]
+       [json-parse-string-body [json-rest s 1] [builtin-str acc [json-char-at 0 s]]]]]]]]
 
 json-parse-string: [fn [let s@String]
   # s starts with "
   [json-parse-string-body [json-rest s 1] ""]]
 
-json-parse-array-items: [fn [let s@String i@Int acc@Dict]
-  [item:  [json-parse-value s]]
-  [acc:   [merge acc [[i]: item.value]]]
-  [s:     [json-skip-ws item.rest]]
-  [c:     [str-at 0 s]]
-  [cond
-    [[builtin-eq c "]"] [json-parsed acc [json-rest s 1]]]
-    [[builtin-eq c ","] [json-parse-array-items [json-skip-ws [json-rest s 1]] [builtin-add i 1] acc]]
-    [true [builtin-raise "JSON: expected ',' or ']' in array"]]]]
+json-parse-array-items: [fn [let s@String i@Int bld]
+  # Uses builder-set for O(1) insertion with computed integer key.
+  [item: [json-parse-value s]]
+  [bld2: [builder-set bld i item.value]]
+  [s2:   [json-skip-ws item.rest]]
+  [cond [
+    [[builtin-eq [json-char-at 0 s2] "]"] [json-parsed [builder-finish bld2] [json-rest s2 1]]]
+    [[builtin-eq [json-char-at 0 s2] ","] [json-parse-array-items [json-skip-ws [json-rest s2 1]] [builtin-add i 1] bld2]]
+    [true [builtin-raise "JSON: expected ',' or ']' in array"]]]]]
 
 json-parse-array: [fn [let s@String]
   # s starts with [
-  [s: [json-skip-ws [json-rest s 1]]]
-  [builtin-if [builtin-eq [str-at 0 s] "]"]
-    [json-parsed [] [json-rest s 1]]
-    [json-parse-array-items s 0 []]]]
+  [s2: [json-skip-ws [json-rest s 1]]]
+  [builtin-if [builtin-eq [json-char-at 0 s2] "]"]
+    [json-parsed [] [json-rest s2 1]]
+    [json-parse-array-items s2 0 [make-builder]]]]
 
-json-parse-object-pairs: [fn [let s@String acc@Dict]
-  [builtin-if [not[builtin-eq [str-at 0 s] "\""]]
-    [builtin-raise "JSON: expected string key in object"]
-    [k:    [json-parse-string s]]
-    [s:    [json-skip-ws k.rest]]
-    [builtin-if [not[builtin-eq [str-at 0 s] ":"]]
-      [builtin-raise "JSON: expected ':' after object key"]
-      [v:   [json-parse-value [json-skip-ws [json-rest s 1]]]]
-      [acc: [merge acc [[k.value]: v.value]]]
-      [s:   [json-skip-ws v.rest]]
-      [c:   [str-at 0 s]]
-      [cond
-        [[builtin-eq c "}"] [json-parsed acc [json-rest s 1]]]
-        [[builtin-eq c ","] [json-parse-object-pairs [json-skip-ws [json-rest s 1]] acc]]
-        [true [builtin-raise "JSON: expected ',' or '}' in object"]]]]]]
+json-parse-object-pairs: [fn [let s@String bld]
+  # Uses builder-set for O(1) insertion with computed string key.
+  [k:    [json-parse-string
+            [builtin-if [not [builtin-eq [json-char-at 0 s] "\""]]
+              [builtin-raise "JSON: expected string key in object"]
+              s]]]
+  [s2:   [json-skip-ws k.rest]]
+  [v:    [json-parse-value
+            [builtin-if [not [builtin-eq [json-char-at 0 s2] ":"]]
+              [builtin-raise "JSON: expected ':' after object key"]
+              [json-skip-ws [json-rest s2 1]]]]]
+  [bld2: [builder-set bld k.value v.value]]
+  [s3:   [json-skip-ws v.rest]]
+  [cond [
+    [[builtin-eq [json-char-at 0 s3] "}"] [json-parsed [builder-finish bld2] [json-rest s3 1]]]
+    [[builtin-eq [json-char-at 0 s3] ","] [json-parse-object-pairs [json-skip-ws [json-rest s3 1]] bld2]]
+    [true [builtin-raise "JSON: expected ',' or '}' in object"]]]]]
 
 json-parse-object: [fn [let s@String]
   # s starts with {
-  [s: [json-skip-ws [json-rest s 1]]]
-  [builtin-if [builtin-eq [str-at 0 s] "}"]
-    [json-parsed [] [json-rest s 1]]
-    [json-parse-object-pairs s []]]]
+  [s2: [json-skip-ws [json-rest s 1]]]
+  [builtin-if [builtin-eq [json-char-at 0 s2] "}"]
+    [json-parsed [] [json-rest s2 1]]
+    [json-parse-object-pairs s2 [make-builder]]]]
 
 json-parse-value: [fn [let s@String]
-  [s: [json-skip-ws s]]
-  [builtin-if [builtin-eq [str-length s] 0]
+  [s2: [json-skip-ws s]]
+  [builtin-if [builtin-eq [str-length s2] 0]
     [builtin-raise "JSON: unexpected end of input"]
-    [c: [str-at 0 s]]
-    [cond
-      [[builtin-eq c "n"]  [json-parse-null s]]
-      [[builtin-eq c "t"]  [json-parse-true s]]
-      [[builtin-eq c "f"]  [json-parse-false s]]
-      [[builtin-eq c "\""] [json-parse-string s]]
-      [[builtin-eq c "["]  [json-parse-array s]]
-      [[builtin-eq c "{"]  [json-parse-object s]]
-      [[or [builtin-eq c "-"] [json-digit? c]] [json-parse-number s]]
-      [true [builtin-raise[builtin-str "JSON: unexpected character: " c]]]]]]
-
-]
+    [cond [
+      [[builtin-eq [json-char-at 0 s2] "n"]  [json-parse-null s2]]
+      [[builtin-eq [json-char-at 0 s2] "t"]  [json-parse-true s2]]
+      [[builtin-eq [json-char-at 0 s2] "f"]  [json-parse-false s2]]
+      [[builtin-eq [json-char-at 0 s2] "\""] [json-parse-string s2]]
+      [[builtin-eq [json-char-at 0 s2] "["]  [json-parse-array s2]]
+      [[builtin-eq [json-char-at 0 s2] "{"]  [json-parse-object s2]]
+      [[or [builtin-eq [json-char-at 0 s2] "-"] [json-digit? [json-char-at 0 s2]]] [json-parse-number s2]]
+      [true [builtin-raise [builtin-str "JSON: unexpected character: " [json-char-at 0 s2]]]]]]]]
 
 # ---- Public API ----
-[
 
 to-json@[doc: "Serialize any tinct value to a compact JSON string.
 Expression, Document, and Program values use the Variant encoding {\"Tag\": {fields}}.
@@ -342,9 +431,17 @@ Fn, Handle, Task, Channel etc. produce null."]:
       [Expression _]: [json-expression v]
       _:              [to-json-primitive v]]]
 
+to-json-pretty@[doc: "Serialize any tinct value to a pretty-printed JSON string with 2-space indentation.
+Expression, Document, and Program values use the Variant encoding {\"Tag\": {fields}}.
+Primitive types serialize directly. Not every tinct type is serializable to JSON —
+Fn, Handle, Task, Channel etc. produce null.
+Empty dicts render as {}, empty arrays as [] (compact, no newlines)."]:
+  [fn [let v]
+    [to-json-pretty-impl v 0]]
+
 # from-json: Pure-tinct JSON parser implementation.
 # Takes a JSON string and returns a tinct value (Dict, Seq, String, Int, Float, Bool, or []).
-# The parser uses str-at/str-length from strings.llt and builtin-str-slice from prelude.
+# The parser uses str-length and builtin-str-slice from prelude, and json-char-at from this dict.
 from-json@[doc: "Parse a JSON string into a tinct value.
 
 Parameters:
@@ -355,6 +452,7 @@ Returns:
 
 Raises error on invalid JSON syntax."]:
   [fn [let s@String]
-    [json-parse-value [json-skip-ws s]].value]
+    [parsed: [json-parse-value s]]
+    parsed.value]
 
 ]

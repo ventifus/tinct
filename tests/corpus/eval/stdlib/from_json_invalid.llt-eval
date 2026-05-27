@@ -1,0 +1,5 @@
+# from-json: invalid JSON syntax raises error
+[json: [include %libdir "codecs/json.llt"]]
+[json.from-json "{bad json"]
+=== error
+[E080] JSON: expected string key in object

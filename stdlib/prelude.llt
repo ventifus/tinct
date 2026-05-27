@@ -2144,7 +2144,6 @@ type-of@[doc: "Return the type name of a value as a String"]: builtin-type-of
 narrow@[doc: "Narrow a capability to a subset of operations"]: builtin-narrow
 
 # I/O / parsing
-from-json@[doc: "Parse a JSON string into a value"]: builtin-from-json
 
 # JSON serializer (pure tinct implementation — no Rust primitive needed)
 # Serializes primitive values (Int, Float, Bool, String, Dict, Seq, Null) to
@@ -2223,12 +2222,103 @@ Other unserializable values (Fn, Handle, Task, etc.) produce null."]:
       [[proxy? v]   [error "cannot serialize Proxy to JSON"]]
       [true         "null"]]]]
 
+# Helper: build indent string (depth * 2 spaces)
+to-json-pretty-indent-impl: [fn [let depth@Int acc@String]
+  [if [= depth 0]
+    acc
+    [to-json-pretty-indent-impl [- depth 1] [str acc "  "]]]]
+
+to-json-pretty-indent: [fn [let depth@Int]
+  [to-json-pretty-indent-impl depth ""]]
+
+# Helper: serialize an array-like dict to JSON array with indentation
+to-json-pretty-array-from-dict: [fn [let d depth@Int]
+  [vals: [values d]]
+  [if [empty? vals]
+    "[]"
+    [current-indent: [to-json-pretty-indent depth]]
+    [next-indent:    [to-json-pretty-indent [+ depth 1]]]
+    [items: [map [fn [let entry]
+                   [str "\n" next-indent [to-json-pretty-impl entry.value depth]]]
+                 [entries vals]]]
+    [str "[" [join "," items] "\n" current-indent "]"]]]
+
+# Helper: serialize a named dict to JSON object with indentation
+to-json-pretty-named-dict: [fn [let d depth@Int]
+  [current-indent: [to-json-pretty-indent depth]]
+  [next-indent:    [to-json-pretty-indent [+ depth 1]]]
+  [pairs: [map [fn [let entry]
+                 [str "\n" next-indent
+                   [to-json-string [str entry.key]] ": "
+                   [to-json-pretty-impl entry.value [+ depth 1]]]]
+               [entries d]]]
+  [str "{" [join "," pairs] "\n" current-indent "}"]]
+
+# Helper: serialize a dict with indentation (array-like → array, otherwise → object)
+to-json-pretty-dict-impl: [fn [let d depth@Int]
+  [if [empty? d]
+    "{}"
+    [if [to-json-array-like? d]
+      [to-json-pretty-array-from-dict d depth]
+      [to-json-pretty-named-dict d depth]]]]
+
+# Helper: serialize a Seq with indentation
+to-json-pretty-seq-elems: [fn [let s depth@Int acc]
+  [cond [
+    [[= s []]  acc]
+    [[seq? s]  [to-json-pretty-seq-elems
+                 [tail s]
+                 depth
+                 [append acc [to-json-pretty-impl [head s] depth]]]]
+    [true      [append acc [to-json-pretty-impl s depth]]]]]]
+
+to-json-pretty-seq-impl: [fn [let s depth@Int]
+  [elems: [to-json-pretty-seq-elems s depth []]]
+  [if [empty? elems]
+    "[]"
+    [current-indent: [to-json-pretty-indent depth]]
+    [next-indent:    [to-json-pretty-indent [+ depth 1]]]
+    [items: [map [fn [let item]
+                   [str "\n" next-indent item]]
+                 [values elems]]]
+    [str "[" [join "," items] "\n" current-indent "]"]]]
+
+# Helper: serialize any value with indentation (internal recursive impl)
+to-json-pretty-impl: [fn [let v depth@Int]
+  [cond [
+    [[= v []]     "null"]
+    [[bool? v]    [if v "true" "false"]]
+    [[int? v]     [str v]]
+    [[float? v]   [str v]]
+    [[str? v]     [to-json-string v]]
+    [[seq? v]     [to-json-pretty-seq-impl v [+ depth 1]]]
+    [[dict? v]    [to-json-pretty-dict-impl v depth]]
+    [[proxy? v]   [error "cannot serialize Proxy to JSON"]]
+    [true         "null"]]]]
+
+# Public: serialize any tinct value to a pretty-printed JSON string with 2-space indentation.
+# Handles: Int, Float, Bool, String, Null ([]), Dict, Seq.
+# Unknown/unserializable types produce "null".
+# Empty dicts render as {}, empty arrays as [] (compact, no newlines).
+to-json-pretty@[doc: "Serialize a tinct value to a pretty-printed JSON string with 2-space indentation.
+Handles Int, Float, Bool, String, Null ([]), Dict, and Seq values.
+Proxy values raise an error (cannot serialize to JSON).
+Other unserializable values (Fn, Handle, Task, etc.) produce null.
+Empty dicts render as {}, empty arrays as [] (compact, no newlines)."]:
+  [fn [let v]
+    [to-json-pretty-impl v 0]]
+
 # String trimming
 trim@[doc: "Remove leading and trailing whitespace from a string"]: builtin-trim
 
 # I/O primitives (used directly by user code and samples)
 emit@[doc: "Emit a string to stdout without a trailing newline"]: builtin-emit
 env@[doc: "Read an environment variable by name; returns null if unset"]: builtin-env
+list-dir@[doc: "List directory entries under a DirCap. Returns a Seq of {name: String, type: String} dicts."]: builtin-list-dir
+
+# Meta primitives: load/expand for AST introspection.
+load@[doc: "Parse tinct source text into a Program value. Named arg name: sets the display path for error spans."]: builtin-load
+expand@[doc: "Macro-expand and desugar a Program value. Returns an expanded Program."]: builtin-expand
 
 # ============================================================================
 # String Primitives (builtin-privacy-operators-and-io sprint)

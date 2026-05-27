@@ -15,7 +15,7 @@
 //! **Evaluation control:** `eval`, `error`, `try`, `apply`
 //! **Type introspection:** `type-of`, `ast-of` (plus all type predicates `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`, `bytes?`, `num?`, `record?`, `map?` implemented in LLT stdlib via `match` pattern dispatch)
 //! **Schema validation:** `validate` (runtime structural validation with constraint checking)
-//! **I/O:** `from-json`, `include`
+//! **I/O:** `include` (`from-json` moved to pure tinct in `stdlib/codecs/json.llt`)
 //! **Sequences:** `seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join`, `concat`
 
 use std::future::Future;
@@ -89,11 +89,9 @@ pub(crate) use builtin;
 /// Prevents memory exhaustion from infinite sequences without $take.
 pub const MAX_COLLECT_SIZE: usize = 1_000_000;
 
-/// Maximum JSON nesting depth for `from-json`.
-/// Separate from MAX_EVAL_DEPTH: JSON nesting is a data-model limit (128),
-/// not a recursive evaluation limit (256). Prevents deeply nested JSON from
-/// producing value trees that could cause stack overflow.
-pub(crate) const JSON_DEPTH_LIMIT: usize = 128;
+// DELETED: JSON_DEPTH_LIMIT (json-serde-removal sprint)
+// from-json is now pure tinct in stdlib/codecs/json.llt; depth checking
+// happens there, not in Rust.
 
 /// Maximum string output size for string output builtins (`$replace`, `$str-map-chars`, `$join`) (64 MB).
 /// Prevents memory exhaustion from adversarial inputs or replacement patterns.
@@ -409,13 +407,13 @@ pub(crate) use crate::builtins_io::{
 // Type/eval/meta builtins: type-of, include, error, try, apply, validate.
 // Implementations live in builtins_meta.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
-pub use crate::builtins_meta::json_to_value;
+// json_to_value deleted in json-serde-removal sprint (from-json is now pure tinct in stdlib/codecs/json.llt)
 pub(crate) use crate::builtins_meta::{
     builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_cap_identity,
     builtin_decimal, builtin_eval, builtin_eval_types, builtin_expand, builtin_force,
-    builtin_from_json, builtin_gensym, builtin_include_cache_get, builtin_include_cache_put,
-    builtin_llt_repr, builtin_load, builtin_macro_error, builtin_macro_injects, builtin_raise,
-    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_gensym, builtin_include_cache_get, builtin_include_cache_put, builtin_llt_repr,
+    builtin_load, builtin_macro_error, builtin_macro_injects, builtin_raise, builtin_tag_of,
+    builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -1608,6 +1606,12 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Seq],
             2
         ),
+        builtin!(
+            "builtin-list-dir",
+            builtin_list_dir,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
         builtin!("stat", builtin_stat, [Strictness::Seq, Strictness::Seq], 2),
         builtin!(
             "exists",
@@ -1711,7 +1715,8 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             2
         ),
         builtin!("recv-datagram", builtin_recv_datagram, [Strictness::Seq]),
-        builtin!("builtin-from-json", builtin_from_json, [Strictness::Seq]),
+        // DELETED: builtin!("builtin-from-json", builtin_from_json, [Strictness::Seq])
+        // json-serde-removal sprint: from-json is now pure tinct in stdlib/codecs/json.llt
         // DELETED: builtin!("builtin-to-json", builtin_to_json, [Strictness::Seq])
         // json-delete-to-json sprint: CLI uses tinct to-json (codecs/json.llt) instead.
         // DELETED: builtin!("include", builtin_include, [Strictness::Seq])
@@ -1721,7 +1726,9 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!("cap-identity", builtin_cap_identity, [Strictness::Seq]),
         // runtime-v2 Part F: expand/load/eval primitives for include-decomp pipeline
         builtin!("expand", builtin_expand, [Strictness::Seq], 1),
+        builtin!("builtin-expand", builtin_expand, [Strictness::Seq], 1),
         builtin!("load", builtin_load, [Strictness::Seq], 1),
+        builtin!("builtin-load", builtin_load, [Strictness::Seq], 1),
         builtin!("eval", builtin_eval, [Strictness::Seq], 1),
         builtin!("eval-types", builtin_eval_types, [Strictness::Seq], 1),
         builtin!(
@@ -2106,6 +2113,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
 /// - Operator symbols: `+`, `-`, `*`, `/`, `=`, `<`, `if` (syntax-level, always accessible)
 /// - `get?` (user-facing optional-get, not yet wrapped in prelude)
 /// - Builder ops: `make-builder`, `builder-*` (internal transient API, rarely user-facing)
+///
 /// Note: `bytes?` was previously excluded here (lacked a prelude wrapper). It is now implemented
 /// in stdlib/prelude.llt and removed from standard_builtins() entirely.
 pub fn builtin_primary_names() -> std::collections::HashSet<&'static str> {
@@ -4345,300 +4353,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn from_json_int() {
-        let result = mat(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(string_val("42".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, Value::Int(42));
-    }
-
-    #[test]
-    fn from_json_float() {
-        let result = mat(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(string_val("3.14".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, Value::Float(3.14));
-    }
-
-    #[test]
-    fn from_json_string() {
-        let result = mat(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(string_val(r#""hello""#))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, string_val("hello".into()));
-    }
-
-    #[test]
-    fn from_json_bool_true() {
-        let result = mat(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(string_val("true".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, Value::Bool(true));
-    }
-
-    #[test]
-    fn from_json_bool_false() {
-        let result = mat(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(string_val("false".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        assert_eq!(result, Value::Bool(false));
-    }
-
-    #[test]
-    fn from_json_null_becomes_empty_dict() {
-        let result = mat(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(string_val("null".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        match result {
-            Value::Dict(map) => assert!(map.is_empty()),
-            _ => panic!("expected empty Dict for null"),
-        }
-    }
-
-    #[test]
-    fn from_json_array() {
-        let ctx = test_ctx();
-        let result = mat(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(string_val("[1, 2, 3]".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }));
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 3);
-                let v0 = mat_id(map[&Key::Int(0)], &ctx);
-                assert_eq!(v0, Value::Int(1));
-                let v1 = mat_id(map[&Key::Int(1)], &ctx);
-                assert_eq!(v1, Value::Int(2));
-                let v2 = mat_id(map[&Key::Int(2)], &ctx);
-                assert_eq!(v2, Value::Int(3));
-            }
-            _ => panic!("expected Dict"),
-        }
-    }
-
-    #[test]
-    fn from_json_object() {
-        let ctx = test_ctx();
-        let result = mat(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(string_val(r#"{"name": "Alice", "age": 30}"#))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }));
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 2);
-                let name = mat_id(map[&Key::String("name".into())], &ctx);
-                assert_eq!(name, string_val("Alice".into()));
-                let age = mat_id(map[&Key::String("age".into())], &ctx);
-                assert_eq!(age, Value::Int(30));
-            }
-            _ => panic!("expected Dict"),
-        }
-    }
-
-    #[test]
-    fn from_json_nested_structure() {
-        let ctx = test_ctx();
-        let json = r#"{"users": [{"name": "Bob"}, {"name": "Eve"}]}"#;
-        let result = mat(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(string_val(json))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }));
-        match result {
-            Value::Dict(map) => {
-                let users = mat_id(map[&Key::String("users".into())], &ctx);
-                match users {
-                    Value::Dict(arr) => {
-                        assert_eq!(arr.len(), 2);
-                        let user0 = mat_id(arr[&Key::Int(0)], &ctx);
-                        match user0 {
-                            Value::Dict(u) => {
-                                let name = mat_id(u[&Key::String("name".into())], &ctx);
-                                assert_eq!(name, string_val("Bob".into()));
-                            }
-                            _ => panic!("expected Dict for user"),
-                        }
-                    }
-                    _ => panic!("expected Dict for users array"),
-                }
-            }
-            _ => panic!("expected Dict"),
-        }
-    }
-
-    #[test]
-    fn from_json_invalid_json() {
-        let err = run(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(string_val("{bad json".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("invalid JSON"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[test]
-    fn from_json_non_string_type_error() {
-        let err = run(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(Value::Int(42))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[test]
-    fn from_json_arity_check() {
-        let err = run(builtin_from_json(BuiltinArgs {
-            args: vec![],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[test]
-    fn from_json_empty_object() {
-        let result = mat(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(string_val("{}".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        match result {
-            Value::Dict(map) => assert!(map.is_empty()),
-            _ => panic!("expected empty Dict"),
-        }
-    }
-
-    #[test]
-    fn from_json_empty_array() {
-        let result = mat(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(string_val("[]".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }));
-        match result {
-            Value::Dict(map) => assert!(map.is_empty()),
-            _ => panic!("expected empty Dict"),
-        }
-    }
-
-    #[test]
-    fn from_json_mixed_array() {
-        let ctx = test_ctx();
-        let result = mat(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(string_val(r#"[1, "two", true, null]"#))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }));
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 4);
-                let v0 = mat_id(map[&Key::Int(0)], &ctx);
-                assert_eq!(v0, Value::Int(1));
-                let v1 = mat_id(map[&Key::Int(1)], &ctx);
-                assert_eq!(v1, string_val("two".into()));
-                let v2 = mat_id(map[&Key::Int(2)], &ctx);
-                assert_eq!(v2, Value::Bool(true));
-                let v3 = mat_id(map[&Key::Int(3)], &ctx);
-                match v3 {
-                    Value::Dict(m) => assert!(m.is_empty()),
-                    _ => panic!("expected empty Dict for null"),
-                }
-            }
-            _ => panic!("expected Dict"),
-        }
-    }
-
-    #[test]
-    fn from_json_depth_guard() {
-        // Build JSON nested beyond JSON_DEPTH_LIMIT: {"a":{"a":{...}}}
-        // serde_json's default recursion limit is 128, so we test json_to_value
-        // directly with a pre-parsed serde_json::Value.
-        fn build_deep(depth: usize) -> serde_json::Value {
-            let mut val = serde_json::Value::Object(serde_json::Map::new());
-            for _ in 0..depth {
-                let mut obj = serde_json::Map::new();
-                obj.insert("a".into(), val);
-                val = serde_json::Value::Object(obj);
-            }
-            val
-        }
-        let deep = build_deep(JSON_DEPTH_LIMIT + 1);
-        let ctx = test_ctx();
-        let err = json_to_value(&deep, 0, call_span(), &ctx).unwrap_err();
-        assert!(
-            err.kind
-                .to_string()
-                .contains("maximum JSON nesting depth exceeded"),
-            "expected depth error, got: {}",
-            err.kind
-        );
-    }
-
-    #[test]
-    fn from_json_finite_float_accepted() {
-        // serde_json::Number::from_f64 returns None for NaN/Inf, so we cannot
-        // construct a non-finite serde_json Number through the public API.
-        // The is_finite() guard in json_to_value is defensive against
-        // non-standard parsers or direct serde_json::Number construction.
-        // Verify that a normal finite float passes through correctly.
-        let ctx = test_ctx();
-        let result = mat_val(
-            json_to_value(
-                &serde_json::Value::Number(serde_json::Number::from_f64(3.14).expect("finite")),
-                0,
-                call_span(),
-                &ctx,
-            )
-            .unwrap(),
-        );
-        assert_eq!(result, Value::Float(3.14));
-    }
+    // DELETED: from_json_* tests (json-serde-removal sprint)
+    // builtin_from_json and json_to_value have been deleted.
+    // from-json is now implemented in pure tinct in stdlib/codecs/json.llt.
+    // Corpus tests in tests/corpus/eval/stdlib/ cover from-json functionality.
 
     #[test]
     fn keys_empty_dict() {
@@ -6288,24 +6006,6 @@ mod tests {
     }
 
     #[test]
-    fn from_json_rejects_named_args() {
-        let mut named = IndexMap::new();
-        named.insert("x".into(), thunk(Value::Int(1)));
-        let err = run(builtin_from_json(BuiltinArgs {
-            args: vec![thunk(string_val("42".into()))],
-            named: Some(named),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[test]
     fn to_int_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("x".into(), thunk(Value::Int(1)));
@@ -6732,8 +6432,14 @@ mod tests {
         //   builtin-dict?, builtin-fn?, builtin-proxy?, builtin-seq?, bytes? (bare).
         //   All are now implemented in stdlib/prelude.llt via [match x TypeTag: true _: false].
         //   Net: 242 - 10 = 232.
+        // json-serde-removal sprint (232 → 231):
+        //   Removed builtin-from-json: from-json is now pure tinct in stdlib/codecs/json.llt.
+        // Added builtin-list-dir and builtin-load stable aliases for prelude export (231 → 233):
+        //   Prelude now exports list-dir: builtin-list-dir and load: builtin-load.
+        // Added builtin-expand stable alias for prelude export (233 → 234):
+        //   Prelude now exports expand: builtin-expand.
         assert_eq!(
-            count, 232,
+            count, 234,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6889,9 +6595,10 @@ mod tests {
         assert!(names.contains(&"rename"), "missing rename");
         assert!(names.contains(&"link"), "missing link");
         assert!(names.contains(&"read-link"), "missing read-link");
+        // builtin-from-json deleted (json-serde-removal sprint): from-json is pure tinct (stdlib/codecs/json.llt)
         assert!(
-            names.contains(&"builtin-from-json"),
-            "missing builtin-from-json"
+            !names.contains(&"builtin-from-json"),
+            "builtin-from-json should NOT be in standard_builtins (deleted in json-serde-removal sprint)"
         );
         // include was deleted (builtin_include removed in include-decomp sprint)
         assert!(
@@ -7101,10 +6808,12 @@ mod tests {
         // type-predicates-to-tinct sprint: removed 10 type-predicate builtins (242 → 232):
         //   builtin-int?, builtin-float?, builtin-str?, builtin-bool?, builtin-null?,
         //   builtin-dict?, builtin-fn?, builtin-proxy?, builtin-seq?, bytes? (bare).
+        // json-serde-removal sprint: removed builtin-from-json (232 → 231).
+        // Added builtin-list-dir and builtin-load stable aliases (231 → 233).
         assert_eq!(
             names.len(),
-            232,
-            "expected 232 builtins, got {} — update this assertion if adding/removing builtins",
+            233,
+            "expected 233 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }

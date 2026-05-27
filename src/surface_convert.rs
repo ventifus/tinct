@@ -158,7 +158,7 @@ fn dict_to_surface_node_inner(
         // ---- DotAccess ----
         "dot-access" | "DotAccess" => {
             let target_val = get_dict_field(&dict, "target", &["type"], ctx)?;
-            let target = dict_to_surface_node_inner(&target_val, ctx)?;
+            let target = dict_to_surface_node(&target_val, ctx)?;
             let field_val = get_field(&dict, "field", &["type"], ctx)?;
             let field = match field_val {
                 Value::String {
@@ -185,8 +185,8 @@ fn dict_to_surface_node_inner(
             let lhs_val = get_dict_field(&dict, "lhs", &["type"], ctx)?;
             let rhs_val = get_dict_field(&dict, "rhs", &["type"], ctx)?;
             SurfaceExpression::Pipe {
-                lhs: dict_to_surface_node_inner(&lhs_val, ctx)?,
-                rhs: dict_to_surface_node_inner(&rhs_val, ctx)?,
+                lhs: dict_to_surface_node(&lhs_val, ctx)?,
+                rhs: dict_to_surface_node(&rhs_val, ctx)?,
             }
         }
 
@@ -206,13 +206,13 @@ fn dict_to_surface_node_inner(
         // ---- Call ----
         "call" | "Call" => {
             let fn_val = get_dict_field(&dict, "fn", &["type"], ctx)?;
-            let func = dict_to_surface_node_inner(&fn_val, ctx)?;
+            let func = dict_to_surface_node(&fn_val, ctx)?;
 
             let args_val = get_dict_field(&dict, "args", &["type"], ctx)?;
             let args_list = extract_list(&args_val, &["args"], ctx)?;
             let mut args = Vec::new();
             for arg_val in args_list {
-                args.push(dict_to_surface_node_inner(&arg_val, ctx)?);
+                args.push(dict_to_surface_node(&arg_val, ctx)?);
             }
 
             let named_args_val = get_dict_field(&dict, "named-args", &["type"], ctx)?;
@@ -255,7 +255,7 @@ fn dict_to_surface_node_inner(
             };
 
             let body_val = get_dict_field(&dict, "body", &["type"], ctx)?;
-            let body = dict_to_surface_node_inner(&body_val, ctx)?;
+            let body = dict_to_surface_node(&body_val, ctx)?;
 
             let desugared = get_bool_field(&dict, "desugared", &["type"], ctx)?;
 
@@ -272,7 +272,7 @@ fn dict_to_surface_node_inner(
             let annotation_val = get_dict_field(&dict, "annotation", &["type"], ctx)?;
             let annotation = dict_to_annotation(&annotation_val, &["annotation"], ctx)?;
             let expr_val = get_dict_field(&dict, "expr", &["type"], ctx)?;
-            let expr = dict_to_surface_node_inner(&expr_val, ctx)?;
+            let expr = dict_to_surface_node(&expr_val, ctx)?;
             SurfaceExpression::TypeAssert { annotation, expr }
         }
 
@@ -307,21 +307,21 @@ fn dict_to_surface_node_inner(
         // ---- Quote ----
         "quote" | "Quote" => {
             let expr_val = get_dict_field(&dict, "expr", &["type"], ctx)?;
-            let expr = dict_to_surface_node_inner(&expr_val, ctx)?;
+            let expr = dict_to_surface_node(&expr_val, ctx)?;
             SurfaceExpression::Quote(expr)
         }
 
         // ---- Unquote ----
         "unquote" | "Unquote" => {
             let expr_val = get_dict_field(&dict, "expr", &["type"], ctx)?;
-            let expr = dict_to_surface_node_inner(&expr_val, ctx)?;
+            let expr = dict_to_surface_node(&expr_val, ctx)?;
             SurfaceExpression::Unquote(expr)
         }
 
         // ---- UnquoteSplice ----
         "unquote-splice" | "UnquoteSplice" => {
             let expr_val = get_dict_field(&dict, "expr", &["type"], ctx)?;
-            let expr = dict_to_surface_node_inner(&expr_val, ctx)?;
+            let expr = dict_to_surface_node(&expr_val, ctx)?;
             SurfaceExpression::UnquoteSplice(expr)
         }
 
@@ -331,7 +331,7 @@ fn dict_to_surface_node_inner(
             let exprs_list = extract_list(&exprs_val, &["exprs"], ctx)?;
             let mut exprs = Vec::new();
             for expr_val in exprs_list {
-                exprs.push(dict_to_surface_node_inner(&expr_val, ctx)?);
+                exprs.push(dict_to_surface_node(&expr_val, ctx)?);
             }
             SurfaceExpression::Sequential(exprs)
         }
@@ -342,7 +342,7 @@ fn dict_to_surface_node_inner(
             let bindings_list = extract_list(&bindings_val, &["bindings"], ctx)?;
             let mut bindings = Vec::new();
             for binding_val in bindings_list {
-                bindings.push(dict_to_surface_node_inner(&binding_val, ctx)?);
+                bindings.push(dict_to_surface_node(&binding_val, ctx)?);
             }
             SurfaceExpression::PatternDecl { bindings }
         }
@@ -353,7 +353,7 @@ fn dict_to_surface_node_inner(
             let bindings_list = extract_list(&bindings_val, &["bindings"], ctx)?;
             let mut bindings = Vec::new();
             for binding_val in bindings_list {
-                bindings.push(dict_to_surface_node_inner(&binding_val, ctx)?);
+                bindings.push(dict_to_surface_node(&binding_val, ctx)?);
             }
             SurfaceExpression::LetDecl { bindings }
         }
@@ -416,9 +416,9 @@ fn dict_to_surface_node_inner(
         // ---- TypeApp ----
         "type-app" | "TypeApp" => {
             let func_val = get_dict_field(&dict, "func", &["type"], ctx)?;
-            let func = dict_to_surface_node_inner(&func_val, ctx)?;
+            let func = dict_to_surface_node(&func_val, ctx)?;
             let arg_val = get_dict_field(&dict, "arg", &["type"], ctx)?;
-            let arg = dict_to_surface_node_inner(&arg_val, ctx)?;
+            let arg = dict_to_surface_node(&arg_val, ctx)?;
             SurfaceExpression::TypeApp { func, arg }
         }
 
@@ -426,7 +426,7 @@ fn dict_to_surface_node_inner(
         "match" | "Match" => {
             use crate::ast::SurfaceMatchArm;
             let scrutinee_val = get_dict_field(&dict, "scrutinee", &["type"], ctx)?;
-            let scrutinee = dict_to_surface_node_inner(&scrutinee_val, ctx)?;
+            let scrutinee = dict_to_surface_node(&scrutinee_val, ctx)?;
 
             let arms_val = get_dict_field(&dict, "arms", &["type"], ctx)?;
             let arms_list = extract_list(&arms_val, &["arms"], ctx)?;
@@ -446,12 +446,12 @@ fn dict_to_surface_node_inner(
                 let pattern = dict_to_pattern(&pattern_val, &["arms", &i_str, "pattern"], ctx)?;
                 let guard = match get_optional_dict_field(&arm_dict, "guard", ctx)? {
                     Some(guard_val) if !is_empty_dict(&guard_val) => {
-                        Some(dict_to_surface_node_inner(&guard_val, ctx)?)
+                        Some(dict_to_surface_node(&guard_val, ctx)?)
                     }
                     _ => None,
                 };
                 let body_val = get_dict_field(&arm_dict, "body", &["arms", &i_str], ctx)?;
-                let body = dict_to_surface_node_inner(&body_val, ctx)?;
+                let body = dict_to_surface_node(&body_val, ctx)?;
                 arms.push(SurfaceMatchArm {
                     pattern,
                     guard,
@@ -464,9 +464,9 @@ fn dict_to_surface_node_inner(
         // ---- CaseArm ----
         "case-arm" | "CaseArm" => {
             let pattern_val = get_dict_field(&dict, "pattern", &["type"], ctx)?;
-            let pattern = dict_to_surface_node_inner(&pattern_val, ctx)?;
+            let pattern = dict_to_surface_node(&pattern_val, ctx)?;
             let body_val = get_dict_field(&dict, "body", &["type"], ctx)?;
-            let body = dict_to_surface_node_inner(&body_val, ctx)?;
+            let body = dict_to_surface_node(&body_val, ctx)?;
             SurfaceExpression::CaseArm { pattern, body }
         }
 
@@ -503,11 +503,11 @@ fn dict_to_surface_entry(
     let key_val = get_dict_field(dict, "key", path, ctx)?;
     let key: Option<Arc<SurfaceNode>> = match &key_val {
         Value::Dict(d) if d.is_empty() => None,
-        _ => Some(dict_to_surface_node_inner(&key_val, ctx)?),
+        _ => Some(dict_to_surface_node(&key_val, ctx)?),
     };
 
     let value_val = get_dict_field(dict, "value", path, ctx)?;
-    let value = dict_to_surface_node_inner(&value_val, ctx)?;
+    let value = dict_to_surface_node(&value_val, ctx)?;
 
     let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
 
@@ -534,7 +534,7 @@ fn dict_to_surface_named_arg(
 
     let name = get_string_field(dict, "name", path, ctx)?;
     let value_val = get_dict_field(dict, "value", path, ctx)?;
-    let value = dict_to_surface_node_inner(&value_val, ctx)?;
+    let value = dict_to_surface_node(&value_val, ctx)?;
 
     let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
 
@@ -833,8 +833,43 @@ fn get_string_field(
             start,
             end,
         } => Ok(source[start..end].to_string()),
+        Value::Expression(node) => {
+            // Handle the case where AST field extraction returns a VarRef Expression node.
+            // This happens when macro helpers pass VarRef nodes instead of extracting
+            // the name string. Extract the name field from the VarRef.
+            match &node.expr {
+                crate::ast::SurfaceExpression::Str(s) => Ok(s.clone()),
+                crate::ast::SurfaceExpression::VarRef { name, .. } => Ok(name.clone()),
+                _ => Err(AstError {
+                    message: format!(
+                        "field '{}' must be String or VarRef, got Expression({})",
+                        key,
+                        crate::surface_fields::surface_expr_tag(&node.expr)
+                    ),
+                    field_path: path.iter().map(|s| s.to_string()).collect(),
+                }),
+            }
+        }
+        Value::Dict(d) if d.is_empty() => {
+            // Empty dict represents "null" in tinct - field access failed silently
+            Err(AstError {
+                message: format!(
+                    "field '{}' is empty dict (null) - field access may have failed",
+                    key
+                ),
+                field_path: path.iter().map(|s| s.to_string()).collect(),
+            })
+        }
         _ => Err(AstError {
-            message: format!("field '{}' must be String", key),
+            message: format!(
+                "field '{}' must be String, got {} (type: {})",
+                key,
+                match &val {
+                    Value::Dict(d) => format!("Dict with {} entries", d.len()),
+                    _ => format!("{:?}", val),
+                },
+                val.type_name()
+            ),
             field_path: path.iter().map(|s| s.to_string()).collect(),
         }),
     }
@@ -896,9 +931,9 @@ fn get_dict_field(
 ) -> Result<Value, AstError> {
     let val = get_field(dict, key, path, ctx)?;
     match val {
-        Value::Dict(_) | Value::Variant { .. } => Ok(val),
+        Value::Dict(_) | Value::Variant { .. } | Value::Expression(_) => Ok(val),
         _ => Err(AstError {
-            message: format!("field '{}' must be Dict or Variant", key),
+            message: format!("field '{}' must be Dict, Variant, or Expression", key),
             field_path: path.iter().map(|s| s.to_string()).collect(),
         }),
     }

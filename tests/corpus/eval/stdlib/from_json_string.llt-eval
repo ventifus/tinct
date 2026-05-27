@@ -1,0 +1,5 @@
+# from-json: parse JSON string
+[json: [include %libdir "codecs/json.llt"]]
+[json.from-json "\"hello\""]
+=== out
+String("hello")

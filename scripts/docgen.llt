@@ -30,6 +30,8 @@
 
 [
 
+io: [include %libdir "io.llt"]
+
 # ── File Discovery ────────────────────────────────────────────────────────────
 
 # Collect all .llt paths under a directory prefix (relative to %libdir).
@@ -62,15 +64,20 @@ llt-files: [sort [scan-dir "" []]]
 
 # Get the display text of an Annotation Variant (or "" if null/absent).
 ann-text: [fn@String [let ann]
-  [try-or [fn [let] ann.text] ""]]
+  [try-str [fn [let] ann.text]]]
 
 # Get the doc: property from a PropertyDict Annotation (or "" if absent).
 ann-doc: [fn@String [let ann]
-  [try-or [fn [let] ann.doc] ""]]
+  [try-str [fn [let] ann.doc]]]
 
 # Get the return: property from a PropertyDict Annotation (or "" if absent).
 ann-return-prop: [fn@String [let ann]
-  [try-or [fn [let] ann.return] ""]]
+  [try-str [fn [let] ann.return]]]
+
+# Safe string extraction: call f, return "" if it errors or returns null.
+try-str: [fn@String [let f@Fn]
+  [v: [try-or f []]]
+  [if [null? v] "" [str v]]]
 
 # Determine the return type text from a return-ann Annotation Variant.
 #   Simple      → use ann.text directly (e.g. "String", "Bool")
@@ -78,7 +85,7 @@ ann-return-prop: [fn@String [let ann]
 #   PropertyDict without return: → use ann.text (the full display, e.g. "[return: X]")
 #   null/absent → "Any"
 return-type-text: [fn@String [let return-ann]
-  [tag: [try-or [fn [let] [tag-of return-ann]] ""]]
+  [tag: [try-str [fn [let] [tag-of return-ann]]]]
   [if [= tag ""]
     "Any"
     [if [= tag "PropertyDict"]
@@ -123,18 +130,18 @@ fn-ann-doc: [fn@String [let fn-expr]
 
 # Extract doc string from an Annotated key expression (old-style: name@[doc: "..."]).
 key-ann-doc: [fn@String [let key-expr]
-  [try-or [fn [let] [ann-doc key-expr.annotation]] ""]]
+  [try-str [fn [let] [ann-doc key-expr.annotation]]]]
 
 # ── Entry parsing ─────────────────────────────────────────────────────────────
 
 # Extract the binding name from a dict entry key Expression.
 # Key can be Var{name} or Annotated{name, annotation}. Returns "" for anything else.
 entry-name: [fn@String [let key-expr]
-  [tag: [try-or [fn [let] [tag-of key-expr]] ""]]
+  [tag: [try-str [fn [let] [tag-of key-expr]]]]
   [if [= tag "Var"]
-    [try-or [fn [let] key-expr.name] ""]
+    [try-str [fn [let] key-expr.name]]
     [if [= tag "Annotated"]
-      [try-or [fn [let] key-expr.name] ""]
+      [try-str [fn [let] key-expr.name]]
       ""]]]
 
 # Parse one dict Entry Variant into a doc record [name: String sig: String doc: String],
@@ -160,12 +167,12 @@ parse-entry: [fn@Dict [let entry]
                     [name: name  doc: kdoc  sig: [build-sig value]]]]
                  [key-ann-doc key]]
                 []]]  # plain Var key with no fn doc — not a documented entry
-             [try-or [fn [let] [tag-of key]] "Var"]]
+             [try-str [fn [let] [tag-of key]]]]
             # Found new-style doc
             [name: name  doc: doc  sig: [build-sig value]]]]
          [fn-ann-doc value]]
         []]]  # not a Fn — skip
-     [try-or [fn [let] [tag-of value]] ""]]]]
+     [try-str [fn [let] [tag-of value]]]]]]
 
 # Extract all documented entries from one document's last Dict expression.
 extract-from-doc: [fn [let doc]
@@ -173,7 +180,7 @@ extract-from-doc: [fn [let doc]
   # Find the last Dict expression — that is the public API dict.
   [last-dict: [reduce
     [fn [let acc expr]
-      [t: [try-or [fn [let] [tag-of expr]] ""]]
+      [t: [try-str [fn [let] [tag-of expr]]]]
       [if [= t "Dict"] expr acc]]
     []
     exprs]]
@@ -186,10 +193,10 @@ extract-from-doc: [fn [let doc]
 # Extract documented bindings from a Program.
 # Skips Type-stage documents. Concatenates entries from all Runtime documents.
 extract-from-program: [fn [let program]
-  [docs: [collect program.documents]]
+  [docs: program.documents]
   [reduce
     [fn [let acc doc]
-      [stage-tag: [try-or [fn [let] [tag-of doc.stage]] "Runtime"]]
+      [stage-tag: [try-str [fn [let] [tag-of doc.stage]]]]
       [if [= stage-tag "Type"]
         acc
         [reduce [fn [let a e] [append a e]] acc [extract-from-doc doc]]]]
@@ -219,14 +226,14 @@ render-entry: [fn@String [let e]
 
 # Write content to %docdir/<filename>.md and return the module name.
 write-module-file: [fn@String [let name@String content@String]
-  [w: [write %docdir [str [mod-filename name] ".md"] content]]
+  [w: [io.write-file %docdir [str [mod-filename name] ".md"] content]]
   [if [= w w] name name]]
 
 # Load, parse, and write documentation for one stdlib file.
 # Returns the module name, or "" if the file has no documented bindings.
 write-module: [fn@String [let full-path@String]
   [source:  [str [slurp [open %libdir full-path Readable]]]]
-  [program: [load source name: full-path]]
+  [program: [expand [load source name: full-path]]]
   [docs:    [extract-from-program program]]
   [name:    [mod-name full-path]]
   [if [empty? docs]

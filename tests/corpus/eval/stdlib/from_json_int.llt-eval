@@ -1,0 +1,5 @@
+# from-json: parse JSON integer
+[json: [include %libdir "codecs/json.llt"]]
+[json.from-json "42"]
+=== out
+Int(42)

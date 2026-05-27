@@ -300,6 +300,31 @@ async fn register_stdlib_macros_from_env(
     for (macro_name, param_specs) in stdlib_macro_specs {
         register_stdlib_macro_by_name(env_macro, stdlib_env, macro_name, param_specs);
     }
+
+    // Register "fn" as an alias for "syntax-fn" so macros that generate Call(VarRef("fn"), ...)
+    // nodes are intercepted by the syntax-fn transformer.
+    if let Some(transformer) = stdlib_env.read().unwrap().get("syntax-fn") {
+        let span = crate::ast::Span::origin();
+        let bindings: Vec<Arc<SurfaceNode>> = [("p-params", false), ("macro-body", false)]
+            .iter()
+            .map(|(name, variadic)| {
+                let expr = if *variadic {
+                    crate::ast::SurfaceExpression::Rest(Some(name.to_string()))
+                } else {
+                    crate::ast::SurfaceExpression::VarRef {
+                        name: name.to_string(),
+                        escaped: false,
+                    }
+                };
+                Arc::new(SurfaceNode { expr, span })
+            })
+            .collect();
+        let params_node = Arc::new(SurfaceNode {
+            expr: crate::ast::SurfaceExpression::LetDecl { bindings },
+            span,
+        });
+        let _ = env_macro.register_macro("fn".to_string(), transformer, params_node, None, span);
+    }
 }
 
 /// Register a single stdlib macro by looking up its transformer function from `stdlib_env`.

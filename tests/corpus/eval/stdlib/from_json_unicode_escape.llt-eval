@@ -1,0 +1,5 @@
+# from-json: \uXXXX Unicode escape sequences
+[json: [include %libdir "codecs/json.llt"]]
+[json.from-json "\"\\u0041\\u0042\\u0043\""]
+=== out
+String("ABC")

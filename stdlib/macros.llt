@@ -212,8 +212,8 @@ do-var-node: [fn [let p-name]
   [builtin-variant "VarRef" [name: p-name]]]
 
 # Build a single-param list (integer-keyed dict with one entry).
-# Uses p-name (not 'name') to avoid letrec key-shadowing: [name: name] would
-# shadow the outer 'name' binding with the dict's own letrec 'name' thunk.
+# p-name is a VarRef AST node; pass it as the "name" value.
+# The conversion code will extract the actual name string from the VarRef.
 do-params-1: [fn [let p-name]
   [0: [name: p-name  annotation: []  variadic: false]]]
 
@@ -266,14 +266,13 @@ do-is-inferred-form: [fn [let first-arg]
 # Extract the binding name from a binding step.
 # For Value::Expression(Dict): step.entries returns {0: Entry{key, value, span}}.
 # The key entry is a Var expression whose "name" field is the binding name.
+# Return the VarRef AST node itself; the conversion code will extract the name.
 do-binding-name: [fn [let step]
-  [entry-key: [get "key" [get 0 [get "entries" step]]]]
-  [get "name" entry-key]]
+  step.entries.0.key]
 
 # Extract the bound expression AST from a binding step.
-# For Value::Expression(Dict): step.entries[0].value is the value expr.
 do-binding-expr: [fn [let step]
-  [get "value" [get 0 [get "entries" step]]]]
+  step.entries.0.value]
 
 # Wrap a single step and the desugared inner expression into a bind call:
 #   binding [x: expr]: [monad.bind expr [fn [x] inner]]
@@ -332,12 +331,12 @@ do-desugar-inferred: [fn [let steps]
 fn-binding-to-param: [fn [let p-b]
   [match [tag-of p-b]
     # VarRef: plain parameter like x
-    "VarRef":    [name: [get "name" p-b]  annotation: []  variadic: false]
+    "VarRef":    [name: p-b.name  annotation: []  variadic: false]
     # Annotated: typed parameter like x@Int
-    "Annotated": [name: [get "name" p-b]  annotation: [get "annotation" p-b]  variadic: false]
+    "Annotated": [name: p-b.name  annotation: p-b.annotation  variadic: false]
     # Rest: variadic parameter like ...rest (named) or ... (anonymous — name is [] empty dict)
     # Anonymous Rest has name=[] (empty dict from ast_dict.rs); use "_" as placeholder name.
-    "Rest":      [name: [if [str? [get "name" p-b]] [get "name" p-b] "_"]  annotation: []  variadic: true]
+    "Rest":      [name: [if [str? p-b.name] p-b.name "_"]  annotation: []  variadic: false]
     # Unknown binding form — emit placeholder name
     _:           [name: "???"             annotation: []  variadic: false]]]
 
@@ -350,9 +349,9 @@ fn-binding-to-param: [fn [let p-b]
 #   other   — wrap in singleton list
 fn-flatten-params: [fn [let p-params]
   [match [tag-of p-params]
-    "LetDecl": [get "bindings" p-params]
-    "Call":    [concat [0: [get "fn" p-params]] [get "args" p-params]]
-    "Dict":    [map [fn [let p-e] [get "value" p-e]] [get "entries" p-params]]
+    "LetDecl": p-params.bindings
+    "Call":    [concat [0: p-params.fn] p-params.args]
+    "Dict":    [map [fn [let p-e] p-e.value] p-params.entries]
     "VarRef":  [0: p-params]
     _:         [0: p-params]]]
 
@@ -379,7 +378,7 @@ tmpl: [fn [let template ...parts]
     [0: template]
     [range 0 [length parts]]]]
   [tmpl-expand
-    [get "value" template]
+    template.value
     args-dict]]
 
 # do macro transformer: monadic do-notation desugaring.
@@ -467,7 +466,7 @@ syntax-class: [fn [let tvars]
 # Extracts param name strings and returns a TypeAlias Variant.
 syntax-type: [fn [let p-params p-body]
   [builtin-variant "TypeAlias" [
-    params: [map [fn [let p-b] [get "name" p-b]] [fn-flatten-params p-params]]
+    params: [map [fn [let p-b] p-b.name] [fn-flatten-params p-params]]
     expr: p-body]]]
 
 ]

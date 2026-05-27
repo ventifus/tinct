@@ -16,10 +16,13 @@ rust_image := "rust:" + rust_version
 # Project name for volume naming
 project_name := "tinct"
 
+# Propagate TIMEOUT env var to podman as --timeout=N (seconds), or omit if unset
+timeout_flag := if env_var_or_default("TIMEOUT", "") != "" { " --timeout=" + env_var_or_default("TIMEOUT", "") } else { "" }
+
 # Common container run flags
 # target/ is a bind mount so binaries land on the host (symlinkable from ~/.local/bin)
 # cargo registry cache stays a named volume — no need to expose it on the host
-run_flags := "--rm --memory 8g -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
+run_flags := "--rm --memory 8g" + timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
 
 # Default recipe - show available commands
 default:
@@ -166,12 +169,12 @@ lint-stdlib: build-release
 
 # Lint all markdown files with markdownlint-cli2
 lint-md:
-    {{container}} run --rm -v .:/workspace:z -w /workspace {{node_image}} \
+    {{container}} run --rm{{timeout_flag}} -v .:/workspace:z -w /workspace {{node_image}} \
         sh -c "npx --yes markdownlint-cli2 'doc/**/*.md' 'README.md'"
 
 # Auto-fix markdown lint issues (not all rules are auto-fixable)
 lint-md-fix:
-    {{container}} run --rm -v .:/workspace:z -w /workspace {{node_image}} \
+    {{container}} run --rm{{timeout_flag}} -v .:/workspace:z -w /workspace {{node_image}} \
         sh -c "npx --yes markdownlint-cli2 --fix 'doc/**/*.md' 'README.md'"
 
 # Run clippy with auto-fixes
@@ -237,7 +240,7 @@ lsp:
 
 # Tree-sitter grammar
 node_image := "node:22"
-ts_run_flags := "--rm -v .:/workspace:z -w /workspace/tree-sitter-llt"
+ts_run_flags := "--rm" + timeout_flag + " -v .:/workspace:z -w /workspace/tree-sitter-llt"
 
 # Generate tree-sitter parser from grammar.js
 ts-generate:
@@ -253,7 +256,7 @@ ts-parse FILE:
 
 # Build and package the VS Code extension as a .vsix file
 ext:
-    {{container}} run --rm -v .:/workspace:z -w /workspace/integrations/vscode {{node_image}} sh -c "npm install && npm run compile && npx @vscode/vsce package --no-dependencies"
+    {{container}} run --rm{{timeout_flag}} -v .:/workspace:z -w /workspace/integrations/vscode {{node_image}} sh -c "npm install && npm run compile && npx @vscode/vsce package --no-dependencies"
 
 # Format LLT source file and print to stdout (pretty formatter, default)
 fmt-llt FILE:

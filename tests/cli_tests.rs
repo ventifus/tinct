@@ -4019,7 +4019,7 @@ fn output_flag_env_empty_input() {
 #[test]
 fn eval_format_json_pretty() {
     // -o json-pretty exercises the json-pretty pipeline formatter.
-    // The formatter currently produces compact JSON (same as -o json); verify valid JSON output.
+    // Verify indented output with 2-space indent.
     let (path, _dir) = write_temp_llt("eval_format_json_pretty", "[x: 1 y: \"hello\"]");
     let output = Command::new(tinct_bin())
         .args(["run", "-o", "json-pretty", path.to_str().unwrap()])
@@ -4031,10 +4031,12 @@ fn eval_format_json_pretty() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // json-pretty currently produces compact JSON; verify it is valid JSON with correct values
-    let json: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("expected valid JSON from -o json-pretty");
-    assert_eq!(json, serde_json::json!({"x": 1, "y": "hello"}));
+    // Verify indented output with newlines and 2-space indent
+    let expected = "{\n  \"x\": 1,\n  \"y\": \"hello\"\n}\n";
+    assert_eq!(
+        stdout, expected,
+        "expected indented JSON output, got: {stdout:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------

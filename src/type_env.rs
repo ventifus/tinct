@@ -3580,7 +3580,7 @@ impl TypeEnv {
             ("builtin-apply", "apply"),
             ("builtin-type-of", "type-of"),
             ("builtin-narrow", "narrow"),
-            ("builtin-from-json", "from-json"),
+            // builtin-from-json deleted (json-serde-removal sprint): from-json is pure tinct in stdlib/codecs/json.llt
             // builtin-privacy-primary-names sprint: new builtin-* → bare-name mappings
             ("builtin-raise", "raise"),
             ("builtin-emit", "emit"),
@@ -3593,6 +3593,10 @@ impl TypeEnv {
             ("builtin-to-int", "to-int"),
             ("builtin-append", "append"),
             ("builtin-length", "length"),
+            // docgen-conformance: list-dir, load, expand exported from prelude
+            ("builtin-list-dir", "list-dir"),
+            ("builtin-load", "load"),
+            ("builtin-expand", "expand"),
             // builtin-privacy-operators-and-io sprint: new builtin-* → bare-name mappings
             ("builtin-replace", "replace"),
             ("builtin-str-chars", "str-chars"),

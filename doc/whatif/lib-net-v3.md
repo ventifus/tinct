@@ -6,6 +6,8 @@
 
 **Extends:** [`completed/lib-tls.md`](completed/lib-tls.md), [`completed/lib-net-v2.md`](completed/lib-net-v2.md) — replaces the opaque-Rust-type model for TLS, HTTP/2, HTTP/3, QUIC, WebSocket, WireGuard, and Noise with tinct stdlib implementations; adds the compositional serve/connect layer model; introduces `[Bytes N]` fixed-size byte types and a `cap-std::Pool`-backed `NetCap`.
 
+**Open question for this whatif to answer:** Binary integer serialization semantics for `stdlib/numeric.llt`'s `to-bytes`. Protocol encoding (DNS packet fields, TLS record headers, HTTP/2 frame lengths) requires converting integers to fixed-width big-endian bytes. This whatif must specify: the `to-bytes: Int × Int → Bytes` primitive (value + byte-width, big-endian, two's complement), its interaction with `[Bytes N]` fixed-size types, and where it lives (`stdlib/numeric.llt` or `stdlib/encoding.llt`).
+
 ---
 
 ## Problem

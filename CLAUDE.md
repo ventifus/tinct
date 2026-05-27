@@ -17,4 +17,4 @@ Documentation:
 
 This also means if you come across ANYTHING that hasn't been done yet, make sure it's in TODO.mc. No exceptions!
 
-Development philosophy: When encountering an issue, investigate and address the root cause. Never add workarounds or special-cases!
+Development philosophy: When encountering an issue, investigate and address the root cause. Never add workarounds or special-cases! Never take "the simplest approach", only ever take the correct approach!

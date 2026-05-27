@@ -1,0 +1,14 @@
+# codecs/json: to-json-pretty handles nested dicts with multi-level indentation
+[include %libdir "codecs/json.llt"]
+
+---
+
+[to-json-pretty [
+  name: "Alice"
+  data: [
+    age: 30
+    active: true
+  ]
+]]
+=== out
+String("{\n  \"name\": \"Alice\",\n  \"data\": {\n    \"age\": 30,\n    \"active\": true\n  }\n}")

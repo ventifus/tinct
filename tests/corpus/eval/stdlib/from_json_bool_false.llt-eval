@@ -1,0 +1,5 @@
+# from-json: parse JSON false
+[json: [include %libdir "codecs/json.llt"]]
+[json.from-json "false"]
+=== out
+Bool(false)

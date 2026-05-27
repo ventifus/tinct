@@ -1,0 +1,12 @@
+# codecs/json: to-json-pretty handles empty dict and array compactly
+[include %libdir "codecs/json.llt"]
+
+---
+
+[empty-dict: [to-json-pretty []]]
+[empty-array: [to-json-pretty []]]
+[nested: [to-json-pretty [x: [] y: []]]]
+
+[empty-dict: empty-dict  empty-array: empty-array  nested: nested]
+=== out
+Dict({"empty-dict": String("null"), "empty-array": String("null"), "nested": String("{\n  \"x\": null,\n  \"y\": null\n}")})

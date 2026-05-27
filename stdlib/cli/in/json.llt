@@ -1,4 +1,5 @@
 # JSON input formatter
 # Reads %stdin and parses as JSON, producing the parsed tinct value as %
 
-[from-json [slurp %stdin]]
+[json: [include %libdir "codecs/json.llt"]]
+[json.from-json [slurp %stdin]]

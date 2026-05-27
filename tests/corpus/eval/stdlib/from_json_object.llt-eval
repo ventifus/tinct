@@ -1,0 +1,5 @@
+# from-json: parse JSON object
+[json: [include %libdir "codecs/json.llt"]]
+[json.from-json "{\"name\": \"Alice\", \"age\": 30}"]
+=== out
+Dict({"name": String("Alice"), "age": Int(30)})

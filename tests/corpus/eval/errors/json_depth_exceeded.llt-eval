@@ -1,7 +1,0 @@
-# from-json: deeply nested JSON exceeds depth limit (E041)
-# JSON_DEPTH_LIMIT is 128, so 129 levels of nesting should trigger the error
-# Build {"a":{"a":{"a":...}}} with 129 levels
-[let json [+ "{\"a\":" [+ [repeat "{\"a\":" 128] [+ "42" [repeat "}" 129]]]]]
-[from-json json]
-=== error
-[E041] maximum JSON nesting depth exceeded (128)

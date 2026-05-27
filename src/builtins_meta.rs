@@ -1,7 +1,7 @@
 //! Type introspection, evaluation control, and meta builtins.
 //!
 //! These builtins provide type checking, evaluation control, AST manipulation,
-//! JSON conversion, file inclusion, and schema validation.
+//! file inclusion, and schema validation.
 //!
 //! **Evaluation control:**
 //! - `error`: Raise a user error with a custom message
@@ -26,9 +26,9 @@
 //! - `decimal`: Parse/convert to exact decimal (rust_decimal)
 //! - `big-int`: Parse/convert to arbitrary-precision integer
 //!
-//! **JSON and I/O:**
-//! - `from-json`: Parse JSON string to LLT value
+//! **I/O:**
 //! - `include`: Evaluate external LLT files with cycle detection and integrity checking
+//!   (Note: from-json is now implemented in pure tinct in stdlib/codecs/json.llt)
 //!
 //! **Schema validation:**
 //! - `validate`: Runtime structural validation with constraint checking
@@ -46,9 +46,7 @@ use indexmap::IndexMap;
 
 use crate::arena::ThunkId;
 use crate::ast::Span;
-use crate::builtins::{
-    builtin, ok_val, reject_named, require_string, JSON_DEPTH_LIMIT, MAX_COLLECT_SIZE,
-};
+use crate::builtins::{builtin, ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, materialize_sync};
 use crate::eval_call::{invoke_function, CallContext};
@@ -1269,108 +1267,9 @@ fn type_name(val: &Value) -> String {
     .to_string()
 }
 
-/// Convert a `serde_json::Value` into an LLT `Value`.
-///
-/// JSON null maps to an empty dict, arrays map to integer-keyed dicts,
-/// and objects map to string-keyed dicts. Numbers are converted to `Int`
-/// when they fit in i64, otherwise `Float`.
-pub fn json_to_value(
-    json: &serde_json::Value,
-    depth: usize,
-    span: Span,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
-    if depth > JSON_DEPTH_LIMIT {
-        return Err(EvalError::json_depth_exceeded(JSON_DEPTH_LIMIT, span).into());
-    }
-    match json {
-        serde_json::Value::Null => ok_val(Value::Dict(IndexMap::new()), span),
-        serde_json::Value::Bool(b) => ok_val(Value::Bool(*b), span),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                ok_val(Value::Int(i), span)
-            } else if let Some(f) = n.as_f64() {
-                if !f.is_finite() {
-                    // JSON does not support NaN or Infinity, but some parsers
-                    // (or manual serde_json::Number construction) can produce
-                    // non-finite values. Reject them explicitly.
-                    Err(EvalError::float_not_finite("from-json".to_string(), f, span).into())
-                } else {
-                    ok_val(Value::Float(f), span)
-                }
-            } else {
-                // Unreachable with default serde_json: as_f64() covers all
-                // non-i64 numbers. Return error instead of panicking.
-                Err(EvalError::json_range(span).into())
-            }
-        }
-        serde_json::Value::String(s) => ok_val(string_val(s), span),
-        serde_json::Value::Array(arr) => {
-            if arr.len() > MAX_COLLECT_SIZE {
-                return Err(EvalError::resource_limit_exceeded(
-                    format!(
-                        "from-json: array exceeds maximum collection size ({})",
-                        MAX_COLLECT_SIZE
-                    ),
-                    span,
-                )
-                .into());
-            }
-            let mut map = IndexMap::with_capacity(arr.len());
-            for (i, item) in arr.iter().enumerate() {
-                let thunk = json_to_value(item, depth + 1, span, ctx)?;
-                let thunk_id = ctx.alloc_thunk(thunk);
-                map.insert(
-                    Key::Int(i64::try_from(i).map_err(|_| {
-                        EvalError::internal("collection index overflow".to_string(), span)
-                    })?),
-                    thunk_id,
-                );
-            }
-            ok_val(Value::Dict(map), span)
-        }
-        serde_json::Value::Object(obj) => {
-            if obj.len() > MAX_COLLECT_SIZE {
-                return Err(EvalError::resource_limit_exceeded(
-                    format!(
-                        "from-json: object exceeds maximum collection size ({})",
-                        MAX_COLLECT_SIZE
-                    ),
-                    span,
-                )
-                .into());
-            }
-            let mut map = IndexMap::with_capacity(obj.len());
-            for (k, v) in obj {
-                let thunk = json_to_value(v, depth + 1, span, ctx)?;
-                let thunk_id = ctx.alloc_thunk(thunk);
-                map.insert(Key::String(k.as_str().into()), thunk_id);
-            }
-            ok_val(Value::Dict(map), span)
-        }
-    }
-}
-
-/// `from-json`: takes 1 arg (String containing JSON), parses into LLT value.
-/// Inherently materializing: must parse entire JSON string to construct value.
-pub(crate) fn builtin_from_json(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-        let val =
-            crate::builtins::expect_one_arg("from-json", &args, named.as_ref(), &ctx, call_span)?;
-        let json_str = require_string("from-json", val, args[0].span)?;
-        let parsed: serde_json::Value = serde_json::from_str(&json_str)
-            .map_err(|e| EvalError::json_parse(e.to_string(), call_span))?;
-        json_to_value(&parsed, 0, call_span, &ctx)
-    })
-}
+// DELETED: json_to_value and builtin_from_json (json-serde-removal sprint)
+// JSON parsing is now handled by the pure-tinct from-json implementation
+// in stdlib/codecs/json.llt, which is exported by the prelude.
 
 // DELETED: parse_integrity_hash (include-decomp-redelete sprint)
 // Was used by builtin_include which has been deleted.

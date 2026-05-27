@@ -3646,11 +3646,123 @@ const SCHEMA_KEYS: &[&str] = &[
     "enum",
 ];
 
-/// Describe the input contract of an LLT file.
-///
-/// Parses the file, extracts `%@Type` / `expects:` annotations from each document,
-/// and detects schema dicts by heuristic. Outputs a human-readable summary (default)
-/// or machine-readable JSON (`--json`).
+/// Simple JSON representation for the describe command.
+/// This replaces serde_json usage in run_describe and its helpers.
+#[derive(Debug, Clone)]
+enum DescribeJson {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Array(Vec<DescribeJson>),
+    Object(Vec<(String, DescribeJson)>),
+}
+
+impl DescribeJson {
+    /// Convert to a pretty-printed JSON string with 2-space indentation.
+    fn to_json_pretty(&self, indent_level: usize) -> String {
+        let indent = "  ".repeat(indent_level);
+        let next_indent = "  ".repeat(indent_level + 1);
+
+        match self {
+            DescribeJson::Bool(b) => b.to_string(),
+            DescribeJson::Int(n) => n.to_string(),
+            DescribeJson::Float(f) => {
+                // Match serde_json behavior: finite floats only
+                if f.is_finite() {
+                    f.to_string()
+                } else {
+                    "null".to_string()
+                }
+            }
+            DescribeJson::Str(s) => {
+                // Escape JSON string: quotes, backslash, control chars
+                let mut escaped = String::with_capacity(s.len() + 2);
+                escaped.push('"');
+                for ch in s.chars() {
+                    match ch {
+                        '"' => escaped.push_str("\\\""),
+                        '\\' => escaped.push_str("\\\\"),
+                        '\n' => escaped.push_str("\\n"),
+                        '\r' => escaped.push_str("\\r"),
+                        '\t' => escaped.push_str("\\t"),
+                        '\u{0008}' => escaped.push_str("\\b"), // backspace
+                        '\u{000C}' => escaped.push_str("\\f"), // form feed
+                        c if c.is_control() => {
+                            // Unicode escape for other control chars
+                            escaped.push_str(&format!("\\u{:04x}", c as u32));
+                        }
+                        c => escaped.push(c),
+                    }
+                }
+                escaped.push('"');
+                escaped
+            }
+            DescribeJson::Array(items) => {
+                if items.is_empty() {
+                    return "[]".to_string();
+                }
+                let mut result = "[\n".to_string();
+                for (i, item) in items.iter().enumerate() {
+                    result.push_str(&next_indent);
+                    result.push_str(&item.to_json_pretty(indent_level + 1));
+                    if i < items.len() - 1 {
+                        result.push(',');
+                    }
+                    result.push('\n');
+                }
+                result.push_str(&indent);
+                result.push(']');
+                result
+            }
+            DescribeJson::Object(entries) => {
+                if entries.is_empty() {
+                    return "{}".to_string();
+                }
+                let mut result = "{\n".to_string();
+                for (i, (key, value)) in entries.iter().enumerate() {
+                    result.push_str(&next_indent);
+                    // Key is always a string, so escape it
+                    result.push_str(&DescribeJson::Str(key.clone()).to_json_pretty(0));
+                    result.push_str(": ");
+                    result.push_str(&value.to_json_pretty(indent_level + 1));
+                    if i < entries.len() - 1 {
+                        result.push(',');
+                    }
+                    result.push('\n');
+                }
+                result.push_str(&indent);
+                result.push('}');
+                result
+            }
+        }
+    }
+
+    /// Get the value as a string, if it's a string.
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            DescribeJson::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Get the value as an object (Vec of key-value pairs), if it's an object.
+    fn as_object(&self) -> Option<&Vec<(String, DescribeJson)>> {
+        match self {
+            DescribeJson::Object(entries) => Some(entries),
+            _ => None,
+        }
+    }
+
+    /// Get a field from an object by key.
+    fn get(&self, key: &str) -> Option<&DescribeJson> {
+        match self {
+            DescribeJson::Object(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+}
+
 /// Write content to a file atomically using a .tmp file then rename.
 // AMBIENT-OK: CLI literate-weave --in-place writing to operator-specified file.
 #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
@@ -3673,6 +3785,11 @@ fn write_file_atomic(path: &str, content: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Describe the input contract of an LLT file.
+///
+/// Parses the file, extracts `%@Type` / `expects:` annotations from each document,
+/// and detects schema dicts by heuristic. Outputs a human-readable summary (default)
+/// or machine-readable JSON (`--json`).
 // AMBIENT-OK: CLI describe — opens file parent dir for type-checking
 #[allow(clippy::disallowed_methods)]
 fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
@@ -3714,40 +3831,40 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
         tinct::typecheck::typecheck_surface_program(&program, env);
 
     // Collect contract information from each document section.
-    let mut contracts: Vec<serde_json::Value> = Vec::new();
+    let mut contracts: Vec<DescribeJson> = Vec::new();
     let mut has_any_contract = false;
 
     for (doc_idx, doc) in program.documents.iter().enumerate() {
-        let mut doc_contract = serde_json::Map::new();
-        doc_contract.insert("section".into(), serde_json::json!(doc_idx));
+        let mut doc_contract: Vec<(String, DescribeJson)> = Vec::new();
+        doc_contract.push(("section".to_string(), DescribeJson::Int(doc_idx as i64)));
 
         // Extract expects: / %@Type annotation
         if let Some(ref ann) = doc.node.expects {
             has_any_contract = true;
             match &ann.node {
                 tinct::Annotation::Simple(type_name) => {
-                    doc_contract.insert("type".into(), serde_json::json!(type_name));
+                    doc_contract.push(("type".to_string(), DescribeJson::Str(type_name.clone())));
                 }
                 tinct::Annotation::PropertyDict(entries) => {
                     // TODO(rv2-migrate-annotation Phase 6): restore PropertyDict JSON serialization
                     // using SurfaceExpression. Stubbed for Phase 1 compilation.
-                    let mut fields = serde_json::Map::new();
+                    let mut fields: Vec<(String, DescribeJson)> = Vec::new();
                     for entry in entries {
                         if let Some(ref key_node) = entry.node.key {
                             if let tinct::SurfaceExpression::Str(ref key_name) = key_node.expr {
-                                fields.insert(
+                                fields.push((
                                     key_name.clone(),
-                                    describe_annotation_value(&entry.node.value.expr),
-                                );
+                                    describe_surface_annotation_value(&entry.node.value.expr),
+                                ));
                             }
                         }
                     }
                     if !fields.is_empty() {
-                        doc_contract.insert("fields".into(), serde_json::Value::Object(fields));
+                        doc_contract.push(("fields".to_string(), DescribeJson::Object(fields)));
                     }
                 }
                 tinct::Annotation::Annotated(name, _inner) => {
-                    doc_contract.insert("type".into(), serde_json::json!(name));
+                    doc_contract.push(("type".to_string(), DescribeJson::Str(name.clone())));
                 }
             }
         }
@@ -3756,19 +3873,19 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
         let schema_fields = detect_schema_dict(&doc.node);
         if !schema_fields.is_empty() {
             has_any_contract = true;
-            doc_contract.insert("schema".into(), serde_json::Value::Object(schema_fields));
+            doc_contract.push(("schema".to_string(), DescribeJson::Object(schema_fields)));
         }
 
         // Include doc strings from DocMap for top-level bindings
         let doc_strings = extract_doc_strings_from_doc(&doc.node, &doc_map);
         if !doc_strings.is_empty() {
             has_any_contract = true;
-            doc_contract.insert("docs".into(), serde_json::Value::Object(doc_strings));
+            doc_contract.push(("docs".to_string(), DescribeJson::Object(doc_strings)));
         }
 
         if doc_contract.len() > 1 {
             // Has more than just "section"
-            contracts.push(serde_json::Value::Object(doc_contract));
+            contracts.push(DescribeJson::Object(doc_contract));
         }
     }
 
@@ -3782,16 +3899,23 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     }
 
     if json_mode {
-        let output = serde_json::json!({ "contracts": contracts });
-        let pretty =
-            serde_json::to_string_pretty(&output).map_err(|e| format!("JSON error: {e}"))?;
+        let output = DescribeJson::Object(vec![(
+            "contracts".to_string(),
+            DescribeJson::Array(contracts),
+        )]);
+        let pretty = output.to_json_pretty(0);
         println!("{pretty}");
     } else {
         // Human-readable output: one line per field, with doc strings
         for contract in &contracts {
             if let Some(section) = contract.get("section") {
                 if contracts.len() > 1 {
-                    println!("--- section {} ---", section);
+                    // Format the section number
+                    let section_str = match section {
+                        DescribeJson::Int(n) => n.to_string(),
+                        _ => "?".to_string(),
+                    };
+                    println!("--- section {} ---", section_str);
                 }
             }
             if let Some(type_name) = contract.get("type") {
@@ -3802,7 +3926,12 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
                     print!("  {}: {}", name, format_constraint(constraint));
                     // Add doc string if available
                     if let Some(docs) = contract.get("docs").and_then(|d| d.as_object()) {
-                        if let Some(doc_str) = docs.get(name).and_then(|v| v.as_str()) {
+                        if let Some(doc_str) = docs
+                            .iter()
+                            .find(|(k, _)| k == name)
+                            .map(|(_, v)| v)
+                            .and_then(|v| v.as_str())
+                        {
                             print!(" — {}", doc_str);
                         }
                     }
@@ -3814,7 +3943,12 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
                     print!("  {}: {}", name, format_constraint(constraint));
                     // Add doc string if available
                     if let Some(docs) = contract.get("docs").and_then(|d| d.as_object()) {
-                        if let Some(doc_str) = docs.get(name).and_then(|v| v.as_str()) {
+                        if let Some(doc_str) = docs
+                            .iter()
+                            .find(|(k, _)| k == name)
+                            .map(|(_, v)| v)
+                            .and_then(|v| v.as_str())
+                        {
                             print!(" — {}", doc_str);
                         }
                     }
@@ -3826,12 +3960,12 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
                 let field_names: std::collections::HashSet<&String> = contract
                     .get("fields")
                     .and_then(|f| f.as_object())
-                    .map(|o| o.keys().collect())
+                    .map(|o| o.iter().map(|(k, _)| k).collect())
                     .unwrap_or_default();
                 let schema_names: std::collections::HashSet<&String> = contract
                     .get("schema")
                     .and_then(|s| s.as_object())
-                    .map(|o| o.keys().collect())
+                    .map(|o| o.iter().map(|(k, _)| k).collect())
                     .unwrap_or_default();
 
                 for (name, doc_str) in docs {
@@ -3853,8 +3987,8 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
 fn extract_doc_strings_from_doc(
     doc: &tinct::ast::SurfaceDocument,
     doc_map: &std::collections::HashMap<String, String>,
-) -> serde_json::Map<String, serde_json::Value> {
-    let mut result = serde_json::Map::new();
+) -> Vec<(String, DescribeJson)> {
+    let mut result: Vec<(String, DescribeJson)> = Vec::new();
 
     for expr in doc.expressions() {
         if let tinct::ast::SurfaceExpression::Dict(entries) = &expr.expr {
@@ -3876,7 +4010,7 @@ fn extract_doc_strings_from_doc(
 
                     if let Some(name) = name_opt {
                         if let Some(doc_str) = doc_map.get(name) {
-                            result.insert(name.to_string(), serde_json::json!(doc_str));
+                            result.push((name.to_string(), DescribeJson::Str(doc_str.clone())));
                         }
                     }
                 }
@@ -3887,27 +4021,13 @@ fn extract_doc_strings_from_doc(
     result
 }
 
-/// Turn an annotation value expression into a JSON description.
-fn describe_annotation_value(expr: &tinct::SurfaceExpression) -> serde_json::Value {
-    match expr {
-        tinct::SurfaceExpression::Str(s) => serde_json::json!(s),
-        tinct::SurfaceExpression::Int(n) => serde_json::json!(n),
-        tinct::SurfaceExpression::Float(f) => serde_json::json!(f),
-        tinct::SurfaceExpression::Bool(b) => serde_json::json!(b),
-        tinct::SurfaceExpression::VarRef { name, .. } => serde_json::json!(name),
-        _ => serde_json::json!("(complex)"),
-    }
-}
-
 /// Detect schema dicts in a document's expressions.
 ///
 /// A dict is a schema dict if any of its values is itself a dict containing
 /// at least one recognized schema key (type, min, max, min-length, max-length,
 /// pattern, required, items, fields, enum).
-fn detect_schema_dict(
-    doc: &tinct::ast::SurfaceDocument,
-) -> serde_json::Map<String, serde_json::Value> {
-    let mut result = serde_json::Map::new();
+fn detect_schema_dict(doc: &tinct::ast::SurfaceDocument) -> Vec<(String, DescribeJson)> {
+    let mut result: Vec<(String, DescribeJson)> = Vec::new();
     for expr in doc.expressions() {
         if let tinct::ast::SurfaceExpression::Dict(entries) = &expr.expr {
             for entry in entries {
@@ -3915,7 +4035,7 @@ fn detect_schema_dict(
                     if let tinct::ast::SurfaceExpression::Str(ref field_name) = key_node.expr {
                         // Check if the value is a dict with schema keys
                         if let Some(schema_info) = extract_schema_info(&entry.node.value.expr) {
-                            result.insert(field_name.clone(), schema_info);
+                            result.push((field_name.clone(), schema_info));
                         }
                     }
                 }
@@ -3927,60 +4047,67 @@ fn detect_schema_dict(
 
 /// If `expr` is a dict containing at least one recognized schema key, return
 /// a JSON object describing the constraints. Otherwise return None.
-fn extract_schema_info(expr: &tinct::ast::SurfaceExpression) -> Option<serde_json::Value> {
+fn extract_schema_info(expr: &tinct::ast::SurfaceExpression) -> Option<DescribeJson> {
     if let tinct::ast::SurfaceExpression::Dict(entries) = expr {
-        let mut info = serde_json::Map::new();
+        let mut info: Vec<(String, DescribeJson)> = Vec::new();
         let mut has_schema_key = false;
         for entry in entries {
             if let Some(ref key_node) = entry.node.key {
                 if let tinct::ast::SurfaceExpression::Str(ref key_name) = key_node.expr {
                     if SCHEMA_KEYS.contains(&key_name.as_str()) {
                         has_schema_key = true;
-                        info.insert(
+                        info.push((
                             key_name.clone(),
                             describe_surface_annotation_value(&entry.node.value.expr),
-                        );
+                        ));
                     }
                 }
             }
         }
         if has_schema_key {
-            return Some(serde_json::Value::Object(info));
+            return Some(DescribeJson::Object(info));
         }
     }
     None
 }
 
 /// Turn a surface annotation value expression into a JSON description.
-fn describe_surface_annotation_value(expr: &tinct::ast::SurfaceExpression) -> serde_json::Value {
+fn describe_surface_annotation_value(expr: &tinct::ast::SurfaceExpression) -> DescribeJson {
     match expr {
-        tinct::ast::SurfaceExpression::Str(s) => serde_json::json!(s),
-        tinct::ast::SurfaceExpression::Int(n) => serde_json::json!(n),
-        tinct::ast::SurfaceExpression::Float(f) => serde_json::json!(f),
-        tinct::ast::SurfaceExpression::Bool(b) => serde_json::json!(b),
-        tinct::ast::SurfaceExpression::VarRef { name, .. } => serde_json::json!(name),
-        _ => serde_json::json!("(complex)"),
+        tinct::ast::SurfaceExpression::Str(s) => DescribeJson::Str(s.clone()),
+        tinct::ast::SurfaceExpression::Int(n) => DescribeJson::Int(*n),
+        tinct::ast::SurfaceExpression::Float(f) => DescribeJson::Float(*f),
+        tinct::ast::SurfaceExpression::Bool(b) => DescribeJson::Bool(*b),
+        tinct::ast::SurfaceExpression::VarRef { name, .. } => DescribeJson::Str(name.clone()),
+        _ => DescribeJson::Str("(complex)".to_string()),
     }
 }
 
 /// Format a constraint JSON value as a human-readable string.
-fn format_constraint(val: &serde_json::Value) -> String {
+fn format_constraint(val: &DescribeJson) -> String {
     match val {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Object(map) => {
-            let parts: Vec<String> = map
+        DescribeJson::Str(s) => s.clone(),
+        DescribeJson::Object(entries) => {
+            let parts: Vec<String> = entries
                 .iter()
                 .map(|(k, v)| {
                     let v_str = match v {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => other.to_string(),
+                        DescribeJson::Str(s) => s.clone(),
+                        DescribeJson::Int(n) => n.to_string(),
+                        DescribeJson::Float(f) => f.to_string(),
+                        DescribeJson::Bool(b) => b.to_string(),
+                        DescribeJson::Array(_) => "[...]".to_string(),
+                        DescribeJson::Object(_) => "{...}".to_string(),
                     };
                     format!("{k}: {v_str}")
                 })
                 .collect();
             parts.join(", ")
         }
-        other => other.to_string(),
+        DescribeJson::Int(n) => n.to_string(),
+        DescribeJson::Float(f) => f.to_string(),
+        DescribeJson::Bool(b) => b.to_string(),
+        DescribeJson::Array(_) => "[...]".to_string(),
     }
 }
 

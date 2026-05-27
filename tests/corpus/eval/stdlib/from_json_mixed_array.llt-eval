@@ -1,0 +1,5 @@
+# from-json: parse JSON array with mixed types
+[json: [include %libdir "codecs/json.llt"]]
+[json.from-json "[1, \"two\", true, null]"]
+=== out
+Dict({0: Int(1), 1: String("two"), 2: Bool(true), 3: Dict({})})

@@ -1,0 +1,5 @@
+# from-json: parse JSON array → integer-keyed dict
+[json: [include %libdir "codecs/json.llt"]]
+[json.from-json "[1, 2, 3]"]
+=== out
+Dict({0: Int(1), 1: Int(2), 2: Int(3)})
