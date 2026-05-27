@@ -63,14 +63,14 @@ No `CoreExpr::Call` changes. No lowering pass changes. Use `Arc::strong_count(th
 
 **Race condition:** `Arc::strong_count()` and `take_pending_call()` are both synchronous (no `.await` between them). In tokio's `LocalSet` (cooperative, single-threaded), no other task can run between two synchronous operations — the count is stable. Document as a comment; no code fix needed.
 
-- [ ] Add `tail_hint: bool` to `PendingCallDispatchData` (`src/eval_materialize.rs`)
-- [ ] In `force_step`, Call branch: when `Arc::strong_count(thunk) == 1`, push `PendingCallDispatch` with `tail_hint: true`, skip `eval_stack` push (guard drops without disarm), return `Materialize { func_thunk }` — add comment explaining cooperative scheduling invariant (`src/eval_materialize.rs`)
-- [ ] Add `invoke_function_tco(ctx: &CallContext) -> EvalResult<(Arc<Spanned<CoreExpr>>, Arc<RwLock<Environment>>)>` — same as `invoke_function` but skips `Thunk::new_unevaluated_core`, returning `(body, call_env)` directly (`src/eval_call.rs`)
-- [ ] In `apply_cont(PendingCallDispatch { tail_hint: true })` for `Value::Function`: call `invoke_function_tco` → `(body_expr, new_env)`; return `Action::EvalCore { body_expr, env: new_env }` — NO `Memoize` pushed, inherited guard drops (`src/eval_materialize.rs`)
-- [ ] In `apply_cont(PendingCallDispatch { tail_hint: true })` for `Value::Builtin`: call builtin normally → `result_thunk`; return `Action::Materialize { thunk: result_thunk }` — NO `Memoize` pushed, inherited guard drops. `result_thunk` will itself be TCO-eligible on next `force_step` if count==1 (`src/eval_materialize.rs`)
-- [ ] Corpus test: `[fn [let n] [if [= n 0] 0 [f [- n 1]]]]` with 10,000+ iterations completes without `DepthExceeded`
-- [ ] Corpus test: `loop-select` survives 10,000+ iterations
-- [ ] Corpus test: mutually recursive `f(n) = g(n-1)` / `g(n) = f(n-1)` with 10,000+ iterations
+- [x] Add `tail_hint: bool` to `PendingCallDispatchData` (`src/eval_materialize.rs`)
+- [x] In `force_step`, Call branch: when `Arc::strong_count(thunk) == 1`, push `PendingCallDispatch` with `tail_hint: true`, skip `eval_stack` push (guard drops without disarm), return `Materialize { func_thunk }` — add comment explaining cooperative scheduling invariant (`src/eval_materialize.rs`)
+- [x] Add `invoke_function_tco(ctx: &CallContext) -> EvalResult<(Arc<Spanned<CoreExpr>>, Arc<RwLock<Environment>>)>` — same as `invoke_function` but skips `Thunk::new_unevaluated_core`, returning `(body, call_env)` directly (`src/eval_call.rs`)
+- [x] In `apply_cont(PendingCallDispatch { tail_hint: true })` for `Value::Function`: call `invoke_function_tco` → `(body_expr, new_env)`; return `Action::EvalCore { body_expr, env: new_env }` — NO `Memoize` pushed, inherited guard drops (`src/eval_materialize.rs`)
+- [x] In `apply_cont(PendingCallDispatch { tail_hint: true })` for `Value::Builtin`: call builtin normally → `result_thunk`; return `Action::Materialize { thunk: result_thunk }` — NO `Memoize` pushed, inherited guard drops. `result_thunk` will itself be TCO-eligible on next `force_step` if count==1 (`src/eval_materialize.rs`)
+- [x] Corpus test: `[fn [let n] [if [= n 0] 0 [f [- n 1]]]]` with 10,000+ iterations completes without `DepthExceeded`
+- [x] Corpus test: `loop-select` survives 10,000+ iterations
+- [x] Corpus test: mutually recursive `f(n) = g(n-1)` / `g(n) = f(n-1)` with 10,000+ iterations
 - **Files:** `src/eval_call.rs`, `src/eval_materialize.rs`
 
 ### macro-ast-expression-compat ✅ Partially DONE — 5 of 8 tests fixed. Remaining 2 tasks merged into nit-fixes above.

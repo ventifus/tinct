@@ -11601,3 +11601,16 @@ Changed RestoreState to use CoreExpr-based restore instead of holding arg thunk 
 - [x] In apply_cont(PendingCallDispatch): build RestoreState::CoreExpr instead of PendingCall
 - [x] Update RestoreState::restore() for CoreExpr variant; delete PendingCall variant
 - [x] Corpus test: DepthExceeded from inside recursive [if ...] branch retries correctly
+
+### tco-proper: True O(1) tail-call optimization in the CEK machine ✅ DONE (2026-05-27)
+
+Added tail_hint to PendingCallDispatchData. In force_step, set tail_hint=true when Arc::strong_count(thunk)==1. Added invoke_function_tco to eval_call.rs. TCO path for Function returns Action::EvalCore (no Memoize). TCO path for Builtin returns Action::Materialize (no Memoize). 10,000-iteration tests pass for simple recursion, loop, and mutual recursion.
+
+- [x] Add tail_hint: bool to PendingCallDispatchData
+- [x] In force_step, set tail_hint when strong_count==1
+- [x] Add invoke_function_tco to eval_call.rs
+- [x] apply_cont TCO path for Function (EvalCore, no Memoize)
+- [x] apply_cont TCO path for Builtin (Materialize, no Memoize)
+- [x] Corpus test: 10,000+ tail-recursive iterations
+- [x] Corpus test: loop 10,000+ iterations
+- [x] Corpus test: mutual recursion 10,000+ iterations

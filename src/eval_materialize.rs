@@ -20,7 +20,7 @@ use crate::eval::{
     value_matches_type, EvalContext, DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
 };
 use crate::eval_access::invoke_proxy_handler;
-use crate::eval_call::{invoke_function, CallContext};
+use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
 use crate::types::Type;
 use crate::value::{string_val, Environment, Key, Thunk, Value};
 
@@ -254,6 +254,7 @@ pub(crate) struct PendingCallDispatchData {
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
     pub(crate) original_call: Arc<Spanned<CoreExpr>>,
+    pub(crate) tail_hint: bool,
 }
 
 /// Payload for Cont::GuardedValidate. Boxed to keep the Cont enum ≤96 bytes.
@@ -825,8 +826,18 @@ pub(crate) async fn force_step(
     } else if let Some((func_thunk, args, named, call_span, caller_env, thunk_ctx, original_call)) =
         thunk.take_pending_call()
     {
+        // TCO eligibility check: If Arc::strong_count == 1, nobody else holds this thunk.
+        // Memoization is unnecessary, so we can skip the Memoize continuation push.
+        // This achieves O(1) tail-call optimization by reusing the current frame.
+        //
+        // Race condition safety: Arc::strong_count() and take_pending_call() are both
+        // synchronous (no .await between them). In tokio's LocalSet (cooperative,
+        // single-threaded), the count is stable across this check.
+        let tail_hint = Arc::strong_count(thunk) == 1;
+
         // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction).
         // PendingCallDispatch continuation inherits eval_stack pop responsibility.
+        // TCO: When tail_hint=true, eval_stack guard drops without disarm (no Memoize pushed).
         let eval_stack_guard = EvalStackGuard::push(
             &thunk_ctx.state,
             (
@@ -848,6 +859,7 @@ pub(crate) async fn force_step(
                 thunk_span,
                 mat_span,
                 original_call,
+                tail_hint,
             },
         )));
         eval_stack_guard.disarm();
@@ -1523,6 +1535,7 @@ pub(crate) async fn apply_cont(
                 thunk_span,
                 mat_span,
                 original_call,
+                tail_hint,
             } = *data;
             // Inherited guard: PendingCallDispatch inherits the eval_stack entry
             // pushed by force_step(PendingCall). Auto-pops on all exit paths;
@@ -1544,68 +1557,122 @@ pub(crate) async fn apply_cont(
                     Value::Function {
                         params, body, env, ..
                     } => {
-                        // The block scopes borrows of args/named so the borrow checker
-                        // allows args.take()/named.take() in the match arms below.
-                        let invoke_result = {
-                            let call_ctx = CallContext {
-                                params: &params,
-                                body: &body,
-                                closure_env: &env,
-                                positional: args.as_deref().expect("args set above"),
-                                named: named.as_ref().expect("named set above").as_deref(),
-                                default_env: &caller_env, // Use caller's environment for default param evaluation
-                                call_span,
-                                origin: origin.clone(),
-                                ctx: &thunk_ctx,
-                            };
-                            invoke_function(&call_ctx).await
-                        };
-
-                        match invoke_result.map_err(&decorate) {
-                            Ok(result_thunk) => {
-                                let restore = RestoreState::CoreExpr {
-                                    expr: original_call.clone(),
-                                    env: caller_env,
-                                    ctx: Arc::clone(&thunk_ctx),
+                        // TCO path: when tail_hint=true, skip Memoize and return EvalCore directly.
+                        if tail_hint {
+                            let invoke_result = {
+                                let call_ctx = CallContext {
+                                    params: &params,
+                                    body: &body,
+                                    closure_env: &env,
+                                    positional: args.as_deref().expect("args set above"),
+                                    named: named.as_ref().expect("named set above").as_deref(),
+                                    default_env: &caller_env,
+                                    call_span,
+                                    origin: origin.clone(),
+                                    ctx: &thunk_ctx,
                                 };
-                                stack.push(Cont::Memoize(Box::new(MemoizeData {
-                                    thunk: Arc::clone(&thunk),
-                                    origin,
-                                    thunk_span,
-                                    mat_span,
-                                    restore: Some(restore),
-                                    ctx: thunk_ctx,
-                                })));
-                                // Memoize continuation inherits eval_stack pop responsibility
-                                eval_stack_guard.disarm();
-                                Action::Materialize {
-                                    thunk: result_thunk,
-                                    mat_span,
+                                invoke_function_tco(&call_ctx).await
+                            };
+
+                            match invoke_result.map_err(&decorate) {
+                                Ok((body_expr, new_env)) => {
+                                    // TCO: No Memoize push. The outer thunk's result will be
+                                    // set by whatever the body evaluates to. The eval_stack
+                                    // guard drops naturally (armed), maintaining the stack frame.
+                                    Action::EvalCore {
+                                        expr: body_expr,
+                                        env: new_env,
+                                        ctx: thunk_ctx,
+                                    }
+                                }
+                                Err(mut e) => {
+                                    e.push_frame(
+                                        origin.as_deref().unwrap_or("call").to_string(),
+                                        call_span,
+                                    );
+                                    // eval_stack_guard pops on drop (armed)
+                                    if e.kind.is_cacheable() {
+                                        thunk.cache_failure_once(&e);
+                                    } else {
+                                        // Move args/named into PendingCall — no clone needed.
+                                        thunk.restore_unevaluated(
+                                            crate::value::UnevaluatedState::Call {
+                                                func: func_thunk,
+                                                args: args.take().expect("args set above"),
+                                                named: named.take().expect("named set above"),
+                                                call_span,
+                                                caller_env,
+                                                ctx: thunk_ctx,
+                                                original_call: original_call.clone(),
+                                            },
+                                        );
+                                    }
+                                    Action::Continue(Err(e))
                                 }
                             }
-                            Err(mut e) => {
-                                e.push_frame(
-                                    origin.as_deref().unwrap_or("call").to_string(),
+                        } else {
+                            // Non-TCO path: create thunk and push Memoize continuation.
+                            let invoke_result = {
+                                let call_ctx = CallContext {
+                                    params: &params,
+                                    body: &body,
+                                    closure_env: &env,
+                                    positional: args.as_deref().expect("args set above"),
+                                    named: named.as_ref().expect("named set above").as_deref(),
+                                    default_env: &caller_env, // Use caller's environment for default param evaluation
                                     call_span,
-                                );
-                                // eval_stack_guard pops on drop (armed)
-                                if e.kind.is_cacheable() {
-                                    thunk.cache_failure_once(&e);
-                                } else {
-                                    // Move args/named into PendingCall — no clone needed.
-                                    thunk.restore_unevaluated(
-                                        crate::value::UnevaluatedState::Call {
-                                            func: func_thunk,
-                                            args: args.take().expect("args set above"),
-                                            named: named.take().expect("named set above"),
-                                            call_span,
-                                            caller_env,
-                                            ctx: thunk_ctx,
-                                            original_call: original_call.clone(),
-                                        },
-                                    );
+                                    origin: origin.clone(),
+                                    ctx: &thunk_ctx,
+                                };
+                                invoke_function(&call_ctx).await
+                            };
+
+                            match invoke_result.map_err(&decorate) {
+                                Ok(result_thunk) => {
+                                    let restore = RestoreState::CoreExpr {
+                                        expr: original_call.clone(),
+                                        env: caller_env,
+                                        ctx: Arc::clone(&thunk_ctx),
+                                    };
+                                    stack.push(Cont::Memoize(Box::new(MemoizeData {
+                                        thunk: Arc::clone(&thunk),
+                                        origin,
+                                        thunk_span,
+                                        mat_span,
+                                        restore: Some(restore),
+                                        ctx: thunk_ctx,
+                                    })));
+                                    // Memoize continuation inherits eval_stack pop responsibility
+                                    eval_stack_guard.disarm();
+                                    Action::Materialize {
+                                        thunk: result_thunk,
+                                        mat_span,
+                                    }
                                 }
-                                Action::Continue(Err(e))
+                                Err(mut e) => {
+                                    e.push_frame(
+                                        origin.as_deref().unwrap_or("call").to_string(),
+                                        call_span,
+                                    );
+                                    // eval_stack_guard pops on drop (armed)
+                                    if e.kind.is_cacheable() {
+                                        thunk.cache_failure_once(&e);
+                                    } else {
+                                        // Move args/named into PendingCall — no clone needed.
+                                        thunk.restore_unevaluated(
+                                            crate::value::UnevaluatedState::Call {
+                                                func: func_thunk,
+                                                args: args.take().expect("args set above"),
+                                                named: named.take().expect("named set above"),
+                                                call_span,
+                                                caller_env,
+                                                ctx: thunk_ctx,
+                                                original_call: original_call.clone(),
+                                            },
+                                        );
+                                    }
+                                    Action::Continue(Err(e))
+                                }
                             }
                         }
                     }
@@ -1672,9 +1739,26 @@ pub(crate) async fn apply_cont(
                                     // Fast path: builtin result is already materialized.
                                     // args/named are no longer needed; drop them implicitly.
                                     // eval_stack_guard pops on drop (armed)
-                                    thunk.set_materialized(value.clone());
-                                    Action::Continue(Ok(value))
+                                    if tail_hint {
+                                        // TCO path: Don't set this thunk — it's being abandoned.
+                                        // Result goes directly to the caller's Memoize (or top-level return).
+                                        Action::Continue(Ok(value))
+                                    } else {
+                                        // Non-TCO path: set this thunk and return.
+                                        thunk.set_materialized(value.clone());
+                                        Action::Continue(Ok(value))
+                                    }
+                                } else if tail_hint {
+                                    // TCO path: Skip Memoize push, return Materialize directly.
+                                    // The result_thunk will itself be TCO-eligible on next force_step
+                                    // if its strong_count == 1.
+                                    // eval_stack_guard pops on drop (armed)
+                                    Action::Materialize {
+                                        thunk: result_thunk,
+                                        mat_span,
+                                    }
                                 } else {
+                                    // Non-TCO path: push Memoize continuation.
                                     let restore = RestoreState::CoreExpr {
                                         expr: original_call.clone(),
                                         env: caller_env,

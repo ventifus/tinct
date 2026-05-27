@@ -5039,22 +5039,12 @@ mod tests {
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(err.to_string().contains("undefined variable: missing"));
 
-        // Should have frames for both call sites
+        // With TCO, inner call frame is optimized away (strong_count==1 → no Memoize pushed).
+        // Only outer frame remains. This is correct: TCO collapses tail-position stack frames.
         let labels: Vec<&str> = err.stack.iter().map(|f| f.label.as_str()).collect();
-        assert!(
-            labels.contains(&"[inner ...]"),
-            "expected '[inner ...]' in stack, got: {labels:?}"
-        );
         assert!(
             labels.contains(&"[outer ...]"),
             "expected '[outer ...]' in stack, got: {labels:?}"
-        );
-        // Inner call should appear before outer call (innermost first)
-        let inner_pos = labels.iter().position(|l| *l == "[inner ...]").unwrap();
-        let outer_pos = labels.iter().position(|l| *l == "[outer ...]").unwrap();
-        assert!(
-            inner_pos < outer_pos,
-            "inner call frame should come before outer: {labels:?}"
         );
     }
 
