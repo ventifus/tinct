@@ -1260,23 +1260,11 @@ fn spawn_profile_flush_thread(
                         Ok(mut file_guard) => {
                             let mut write_ok = true;
                             for span in &new_spans {
-                                match serde_json::to_string(span) {
-                                    Ok(line) => {
-                                        if let Err(e) = writeln!(file_guard, "{}", line) {
-                                            eprintln!(
-                                                "profiling: background flush write error: {e}"
-                                            );
-                                            write_ok = false;
-                                            break;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "profiling: background flush serialization error: {e}"
-                                        );
-                                        write_ok = false;
-                                        break;
-                                    }
+                                let line = span.to_ndjson_line();
+                                if let Err(e) = writeln!(file_guard, "{}", line) {
+                                    eprintln!("profiling: background flush write error: {e}");
+                                    write_ok = false;
+                                    break;
                                 }
                             }
                             if write_ok {
@@ -2324,17 +2312,10 @@ fn run_eval(
             match pfile.lock() {
                 Ok(mut file_guard) => {
                     for span in &remaining {
-                        match serde_json::to_string(span) {
-                            Ok(line) => {
-                                if let Err(e) = writeln!(file_guard, "{}", line) {
-                                    eprintln!("profiling: final write error: {e}");
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("profiling: final serialization error: {e}");
-                                break;
-                            }
+                        let line = span.to_ndjson_line();
+                        if let Err(e) = writeln!(file_guard, "{}", line) {
+                            eprintln!("profiling: final write error: {e}");
+                            break;
                         }
                     }
                     if let Err(e) = file_guard.flush() {

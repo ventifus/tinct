@@ -128,16 +128,18 @@ Goal: all JSON handling in tinct stdlib; `serde_json` removed from `Cargo.toml`.
 
 ### json-remove-serde-dep: Final serde_json cleanup after all JSON code moved to tinct
 
-**Blocked on:** lib.rs (JsonVisitor), profiling.rs, and lsp/server.rs still use serde_json directly — these 3 files must be migrated off serde_json before the dep can be removed from Cargo.toml. The 7 tasks below are safe to do now but `serde_json` cannot be deleted until those migrations ship.
-**Depends on:** Migrating those 3 files off serde_json first (separate work).
+**Blocked on:** only lsp/server.rs remains (permanent LSP dependency) — serde_json cannot be removed from Cargo.toml. profiling.rs migrated (hand-written JSON serializer). lib.rs JsonVisitor intentionally retained: migrating off serde_json::Value would require a custom JsonVal enum and hand-written serializer with no benefit since LSP keeps the dep regardless (see comment in lib.rs).
+**Depends on:** n/a — complete removal of serde_json is not achievable due to permanent LSP dependency.
 
 - [x] Remove dead error variants E041/E061/E062 (`JsonDepthExceeded`, `JsonParse`, `JsonRange`) from `src/error.rs` — no production callers after `builtin_from_json` deleted
 - [x] Remove stale E041/E061/E062 help text from `src/main.rs:4317,4445,4454`
 - [x] Fix `from-json` row misplaced in Rust builtins table in `doc/11-stdlib.md:247`; add `codecs/json.llt` to optional stdlib modules table
 - [x] Add `\uXXXX` surrogate pair handling to `json-parse-string-body` in `stdlib/codecs/json.llt` (U+D800–U+DFFF rejected with clean error)
 - [x] Remove vestigial `[include %libdir "strings.llt"]` from `stdlib/codecs/json.llt:16` (strings not used in single-dict version)
-- [ ] Verify zero remaining `serde_json` references in `src/` (`src/`)
-- [ ] Remove `serde_json = "1.0"` from `Cargo.toml`
+- [x] Migrate profiling.rs off serde_json: hand-written `SpanRecord::to_ndjson_line()` and `snapshot_to_json_string()` replacing `serde_json::to_string`/`to_string_pretty`
+- [x] Document lib.rs JsonVisitor serde_json dependency: comment explains why migration is not worthwhile (LSP keeps dep regardless; would require custom JsonVal enum)
+- [ ] Verify zero remaining `serde_json` references in `src/` outside lsp/server.rs and lib.rs JsonVisitor (`src/`) — N/A: lsp/server.rs is permanent, lib.rs retained by design
+- [ ] Remove `serde_json = "1.0"` from `Cargo.toml` — BLOCKED PERMANENTLY by lsp/server.rs LSP dependency
 
 ### json-serde-removal ✅ DONE — Steps 1–3 complete (2026-05-26). See DONE.md.
 

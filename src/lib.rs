@@ -843,6 +843,21 @@ pub fn visit_value<V: ValueVisitor>(
 }
 
 // --- JSON Visitor ---
+//
+// MIGRATION STATUS: JsonVisitor uses serde_json::Value as its Output type and is the last
+// non-LSP serde_json user in src/ (profiling.rs has been migrated; lsp/server.rs is a
+// permanent LSP dependency).
+//
+// Migrating JsonVisitor off serde_json::Value would require replacing the Output associated
+// type with a custom JSON value enum (e.g., `JsonVal { Null, Bool(bool), Number(f64), ... }`),
+// then re-implementing `to_string` / `to_string_pretty` for that enum. The callers in
+// main.rs (run_literate_eval, run_literate_weave) use `serde_json::to_string[_pretty](&json)`
+// to serialize the Output — they would instead call a hand-written serializer on `JsonVal`.
+//
+// This is feasible but constitutes significant refactoring for modest gain (serde_json is
+// already in Cargo.toml as a transitive dep via the LSP). Tracked in TODO.md under
+// json-remove-serde-dep. The LSP dependency (lsp/server.rs) is permanent, so complete
+// removal of serde_json from Cargo.toml is not achievable regardless of this migration.
 
 pub struct JsonVisitor;
 

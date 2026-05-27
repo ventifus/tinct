@@ -15,27 +15,62 @@ use indexmap::IndexMap;
 use crate::eval::EvalContext;
 use crate::value::{string_val, Key, Thunk, Value};
 
-/// Serialize `Option<(usize, usize)>` as `Option<i64>` using the packed
-/// `line * 1_000_000 + col` encoding that matches the schema in doc/12-tooling.md.
-/// A `None` is serialized as `null` (JSON null, not the tinct empty-dict sentinel
-/// used by the older `spans_to_value` path).
-mod packed_line_col {
-    use serde::Serializer;
-
-    pub fn serialize<S>(value: &Option<(usize, usize)>, s: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match value {
-            Some((line, col)) => s.serialize_i64((line * 1_000_000 + col) as i64),
-            None => s.serialize_none(),
+/// Escape a string for JSON output.
+///
+/// Produces a JSON string literal including the surrounding double-quote characters.
+/// Escapes `"`, `\`, and the ASCII control characters `\n`, `\r`, `\t`, and C0 controls
+/// (U+0000–U+001F) using `\uXXXX` notation. All other bytes are passed through verbatim.
+fn json_escape_string(s: &str) -> String {
+    use std::fmt::Write as FmtWrite;
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                // Other C0 control characters as \uXXXX
+                write!(out, "\\u{:04x}", c as u32).unwrap();
+            }
+            c => out.push(c),
         }
+    }
+    out.push('"');
+    out
+}
+
+/// Format an `Option<u64>` as a JSON value: a number or `null`.
+fn json_opt_u64(v: Option<u64>) -> String {
+    match v {
+        Some(n) => n.to_string(),
+        None => "null".to_string(),
+    }
+}
+
+/// Format an `Option<String>` as a JSON value: an escaped string or `null`.
+fn json_opt_string(v: Option<&str>) -> String {
+    match v {
+        Some(s) => json_escape_string(s),
+        None => "null".to_string(),
+    }
+}
+
+/// Format an `Option<(usize, usize)>` using the packed `line * 1_000_000 + col` encoding.
+///
+/// Matches the schema in doc/12-tooling.md and the old `packed_line_col::serialize` output.
+/// `None` serializes as `null`.
+fn json_packed_line_col(v: Option<(usize, usize)>) -> String {
+    match v {
+        Some((line, col)) => ((line * 1_000_000 + col) as i64).to_string(),
+        None => "null".to_string(),
     }
 }
 
 /// A single span record: one thunk materialization with full timing and attribution data.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone)]
 pub struct SpanRecord {
     /// Unique span ID (monotonically increasing from 0).
     pub id: u64,
@@ -48,15 +83,12 @@ pub struct SpanRecord {
     /// Source file path; empty string for Rust builtins.
     pub source_file: Option<String>,
     /// Byte offset into source file (line, col) packed as `line * 1_000_000 + col`.
-    #[serde(serialize_with = "packed_line_col::serialize")]
     pub source_start: Option<(usize, usize)>,
     /// Byte offset into source file (line, col) packed as `line * 1_000_000 + col`.
-    #[serde(serialize_with = "packed_line_col::serialize")]
     pub source_end: Option<(usize, usize)>,
     /// Leading characters of source at this span (for display in traces).
     pub source_text: Option<String>,
     /// Builtin name (e.g., "builtin-map") if this is a Rust builtin.
-    #[serde(rename = "builtin")]
     pub builtin_name: Option<String>,
     /// Originating Rust builtin for cross-boundary calls (e.g., tinct function called by builtin-map).
     pub origin_builtin: Option<String>,
@@ -68,6 +100,61 @@ pub struct SpanRecord {
     pub stall_us: u64,
     /// Stall cause: "io", "net", "channel", "timer", or None for compute spans.
     pub stall_kind: Option<String>,
+}
+
+impl SpanRecord {
+    /// Serialize this span record to a compact single-line JSON object string.
+    ///
+    /// The output matches what `serde_json::to_string(span)` produced: a single-line
+    /// JSON object with kebab-case keys. Used for NDJSON profile output (one line per span).
+    pub fn to_ndjson_line(&self) -> String {
+        // Field order matches SpanRecord struct declaration order; kebab-case names match
+        // the old #[serde(rename_all = "kebab-case")] / #[serde(rename = "builtin")] attributes.
+        format!(
+            r#"{{"id":{id},"materialize-parent":{mp},"create-parent":{cp},"create-time-us":{ctu},"source-file":{sf},"source-start":{ss},"source-end":{se},"source-text":{st},"builtin":{bn},"origin-builtin":{ob},"start-us":{su},"end-us":{eu},"stall-us":{stu},"stall-kind":{sk}}}"#,
+            id = self.id,
+            mp = json_opt_u64(self.materialize_parent),
+            cp = json_opt_u64(self.create_parent),
+            ctu = self.create_time_us,
+            sf = json_opt_string(self.source_file.as_deref()),
+            ss = json_packed_line_col(self.source_start),
+            se = json_packed_line_col(self.source_end),
+            st = json_opt_string(self.source_text.as_deref()),
+            bn = json_opt_string(self.builtin_name.as_deref()),
+            ob = json_opt_string(self.origin_builtin.as_deref()),
+            su = self.start_us,
+            eu = self.end_us,
+            stu = self.stall_us,
+            sk = json_opt_string(self.stall_kind.as_deref()),
+        )
+    }
+
+    /// Serialize this span record to a pretty-printed JSON object with 4-space indentation.
+    ///
+    /// Intended to be embedded inside a JSON array indented at 2 spaces, so fields are
+    /// placed at 4 spaces to match `serde_json::to_string_pretty` output for an array of
+    /// objects. Used as a building block for `snapshot_to_json_string`.
+    fn to_json_object_pretty(&self) -> String {
+        // 4-space indented fields (2 spaces for array item + 2 spaces for object fields),
+        // matching serde_json::to_string_pretty applied to an array of SpanRecord objects.
+        format!(
+            "  {{\n    \"id\": {id},\n    \"materialize-parent\": {mp},\n    \"create-parent\": {cp},\n    \"create-time-us\": {ctu},\n    \"source-file\": {sf},\n    \"source-start\": {ss},\n    \"source-end\": {se},\n    \"source-text\": {st},\n    \"builtin\": {bn},\n    \"origin-builtin\": {ob},\n    \"start-us\": {su},\n    \"end-us\": {eu},\n    \"stall-us\": {stu},\n    \"stall-kind\": {sk}\n  }}",
+            id = self.id,
+            mp = json_opt_u64(self.materialize_parent),
+            cp = json_opt_u64(self.create_parent),
+            ctu = self.create_time_us,
+            sf = json_opt_string(self.source_file.as_deref()),
+            ss = json_packed_line_col(self.source_start),
+            se = json_packed_line_col(self.source_end),
+            st = json_opt_string(self.source_text.as_deref()),
+            bn = json_opt_string(self.builtin_name.as_deref()),
+            ob = json_opt_string(self.origin_builtin.as_deref()),
+            su = self.start_us,
+            eu = self.end_us,
+            stu = self.stall_us,
+            sk = json_opt_string(self.stall_kind.as_deref()),
+        )
+    }
 }
 
 /// Profiling collector: records span data during evaluation.
@@ -232,11 +319,16 @@ impl ProfilingCollector {
     ///
     /// Unlike `spans_to_value`, this method does NOT require an `EvalContext` and is
     /// safe to call from a background thread. The output format is a JSON array of
-    /// objects with kebab-case keys matching the schema in doc/12-tooling.md.
+    /// objects with 2-space indentation and kebab-case keys matching the schema in
+    /// doc/12-tooling.md.
     ///
     /// Used by the background flush thread and the SIGINT final-flush path.
-    pub fn snapshot_to_json_string(spans: &[SpanRecord]) -> Result<String, serde_json::Error> {
-        serde_json::to_string_pretty(spans)
+    pub fn snapshot_to_json_string(spans: &[SpanRecord]) -> String {
+        if spans.is_empty() {
+            return "[]".to_string();
+        }
+        let items: Vec<String> = spans.iter().map(|s| s.to_json_object_pretty()).collect();
+        format!("[\n{}\n]", items.join(",\n"))
     }
 
     /// Convert all collected spans to a tinct Value::Seq of dicts.
