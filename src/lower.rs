@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+use crate::type_def::Type;
 use crate::ast::{
     node_id, CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, ResolutionTable, Spanned,
     SurfaceExpression, SurfaceNode, TypeAnnotationTable,
@@ -157,20 +158,21 @@ fn lower_expr(
         } => {
             let id = node_id(arc);
             match types.get(&id) {
-                Some(ty) => CoreExpr::TypeAssert {
-                    annotation: annotation.clone(),
-                    expr: Arc::new(lower(inner, res, types)),
-                    resolved_type: ty.clone(),
-                },
-                None => {
-                    // Macro-synthesized node — bypassed typechecking.
-                    // Use RuntimeTypeCheck for best-effort dynamic validation.
+                Some(Type::Error) | None => {
+                    // Type::Error: failed_bindings entry — emit RuntimeTypeCheck to avoid
+                    // creating a TypeAssert that always fails silently in release builds.
+                    // None: Macro-synthesized node — bypassed typechecking.
                     CoreExpr::RuntimeTypeCheck {
                         annotation: annotation.clone(),
                         expr: Arc::new(lower(inner, res, types)),
                         default: None,
                     }
                 }
+                Some(ty) => CoreExpr::TypeAssert {
+                    annotation: annotation.clone(),
+                    expr: Arc::new(lower(inner, res, types)),
+                    resolved_type: ty.clone(),
+                },
             }
         }
 

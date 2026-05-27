@@ -154,12 +154,12 @@ Unify the static type-checking path and runtime type-checking path so they deriv
 
 The `failed_bindings → Type::Error` change is independent of Component 2 and can ship first. Fixes the E099 cascade bug where Unknown-typed entries create CoreExpr::Error nodes for reachable variables.
 
-- [ ] Change `failed_bindings` entries from `Type::Unknown` to `Type::Error` at 3 sites (`src/typecheck_dict.rs:413,592,608`)
-- [ ] Add `lower.rs` Type::Error guard: when `TypeAnnotationTable.get(&id) == Some(Type::Error)`, emit `CoreExpr::RuntimeTypeCheck` instead of `CoreExpr::TypeAssert { resolved_type: Type::Error }` (`src/lower.rs:159-164`)
-- [ ] Verify `unify(Error, T) = Ok(())` no-op behavior is preserved — no spurious cascade errors (`src/type_unify.rs:1777-1781`)
-- [ ] Verify `is_subtype(Error, X) = false` bidirectional rejection is preserved (`src/type_def.rs:396-399`)
-- [ ] Tests: corpus tests for E099 cascade fix — dict entry with T003'd dependency produces `Type::Error`, not `Unknown`; downstream uses produce `undefined_variable` error with `failed_bindings` note, not E099 runtime crash (`tests/corpus/typecheck/`)
-- [ ] Tests: verify T010 no longer fires for `failed_bindings` entries (they're Error, not Unknown) (`tests/corpus/typecheck/`)
+- [x] Change `failed_bindings` entries from `Type::Unknown` to `Type::Error` at 3 sites (`src/typecheck_dict.rs:413,592,608`)
+- [x] Add `lower.rs` Type::Error guard: when `TypeAnnotationTable.get(&id) == Some(Type::Error)`, emit `CoreExpr::RuntimeTypeCheck` instead of `CoreExpr::TypeAssert { resolved_type: Type::Error }` (`src/lower.rs:159-164`)
+- [x] Verify `unify(Error, T) = Ok(())` no-op behavior is preserved — no spurious cascade errors (`src/type_unify.rs:1777-1781`)
+- [x] Verify `is_subtype(Error, X) = false` bidirectional rejection is preserved (`src/type_def.rs:396-399`)
+- [x] Tests: corpus tests for E099 cascade fix — dict entry with T003'd dependency produces `Type::Error`, not `Unknown`; downstream uses produce `undefined_variable` error with `failed_bindings` note, not E099 runtime crash (`tests/corpus/typecheck/`)
+- [x] Tests: verify T010 no longer fires for `failed_bindings` entries (they're Error, not Unknown) (`tests/corpus/typecheck/`)
 
 ### consistent-subtype: Component 3 — unified runtime type check
 

@@ -8607,6 +8607,17 @@ Showable dispatch block from `builtin_str`. These are now pure primitives — sa
 `builtin_add` (which never dispatched through `Addable`). The Equatable/Comparable/Showable
 instances in `stdlib/prelude.llt` are type-checker annotations only, not runtime dispatch.
 
+### failed-bindings-error: Component 1 — failed_bindings → Type::Error ✅ DONE (2026-05-27)
+
+Changed failed_bindings entries from Type::Unknown to Type::Error at 3 sites. Added lower.rs guard for Type::Error (emit RuntimeTypeCheck). Verified unify(Error,T)=Ok and is_subtype(Error,X)=false already correct. Added corpus test.
+
+- [x] Change failed_bindings to Type::Error at 3 sites in typecheck_dict.rs
+- [x] Add lower.rs Type::Error guard
+- [x] Verify unify(Error, T) = Ok(()) (already correct)
+- [x] Verify is_subtype(Error, X) = false (already correct)
+- [x] Corpus test for E099 cascade fix
+- [x] Document T010 interaction with Type::Error
+
 **Consistent with arithmetic:** `+`, `-`, `*`, `/` do NOT dispatch through Addable/Subtractable/
 Multipliable/Divisible at runtime either — those instances are type-checker only. This is the
 correct, consistent architecture.

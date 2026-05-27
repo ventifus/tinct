@@ -1,0 +1,10 @@
+# failed_bindings uses Type::Error — no E099 cascade
+# When a dict entry fails type checking, downstream references should
+# produce undefined variable errors (with failed_bindings notes), not
+# E099 runtime crashes.
+
+[x: [+ 1 "string"]]
+[y: x]
+y
+=== error
+error: undefined variable `x`

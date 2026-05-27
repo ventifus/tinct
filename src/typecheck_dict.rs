@@ -448,7 +448,12 @@ pub(crate) fn infer_dict(
                     errors.append(&mut errs);
                     let (ref key_name, _) = key_entries[idx];
                     if let Some(name) = key_name {
-                        field_types.insert(name.clone(), Type::Unknown);
+                        // Use Type::Error (not Type::Unknown) for failed bindings so that:
+                        // - unify(Error, T) succeeds silently (prevents cascade errors)
+                        // - is_subtype(Error, _) = false (TypeAsserts correctly reject)
+                        // - T010 "inferred Unknown" diagnostic doesn't fire (Error ≠ Unknown)
+                        // - lower.rs emits RuntimeTypeCheck (not broken TypeAssert nodes)
+                        field_types.insert(name.clone(), Type::Error);
                         state.failed_bindings.insert(name.clone(), entry.span);
                     }
                 }
@@ -563,9 +568,9 @@ pub(crate) fn infer_dict(
 
                 // If the value is wrapped in TypeAssert (e.g., `x: [@T expr]`), extract the
                 // asserted type upfront. When inference of the inner expression fails, the
-                // asserted type is used as the public field type instead of Type::Unknown.
+                // asserted type is used as the public field type instead of Type::Error.
                 // This preserves the declared interface type T even when the body has errors,
-                // so callers see T rather than Unknown (which defeats the annotation's purpose).
+                // so callers see T rather than Error (which defeats the annotation's purpose).
                 //
                 // We resolve the annotation in a fresh mapping scope — the same approach used
                 // by `resolve_type_assert` — to avoid leaking TypeVars into the outer scope.
@@ -651,7 +656,7 @@ pub(crate) fn infer_dict(
                                 entry.node.value.span,
                             ) {
                                 errors.push(e);
-                                field_types.insert(name.clone(), Type::Unknown);
+                                field_types.insert(name.clone(), Type::Error);
                                 state.failed_bindings.insert(name.clone(), entry.span);
                             } else {
                                 field_types.insert(name.clone(), value_ty);
@@ -664,10 +669,10 @@ pub(crate) fn infer_dict(
                         errors.append(&mut errs);
                         // If the entry was wrapped in TypeAssert ([@T expr]), use the asserted
                         // type T as the public field type even when the body has errors. This
-                        // ensures callers see the declared type T rather than Unknown, preserving
+                        // ensures callers see the declared type T rather than Error, preserving
                         // the purpose of the annotation as a type-interface boundary.
-                        // Fall back to Unknown only when no assertion type is available.
-                        let fallback_ty = type_assert_ty.unwrap_or(Type::Unknown);
+                        // Fall back to Error only when no assertion type is available.
+                        let fallback_ty = type_assert_ty.unwrap_or(Type::Error);
                         field_types.insert(name.clone(), fallback_ty.clone());
                         state.failed_bindings.insert(name.clone(), entry.span);
                         // Populate type_map for LSP hover on failed dict value expressions.
@@ -867,7 +872,7 @@ pub(crate) fn infer_dict(
 
     // Always return best-effort results along with any errors.
     // The schemes collected in dict_env are correct for entries that succeeded; failed
-    // entries have Type::Unknown (or the TypeAssert fallback) in record_type and are
+    // entries have Type::Error (or the TypeAssert fallback) in record_type and are
     // marked in state.failed_bindings. Callers propagate errors via the third element.
     (record_type, schemes, errors)
 }
