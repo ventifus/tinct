@@ -14815,6 +14815,8 @@ mod tests {
         state.constraints.push(Constraint::Class {
             class: std::sync::Arc::new(numeric_class.clone()),
             vars: vec![alpha.clone()],
+            origin_name: None,
+            origin_span: None,
         });
 
         let a = Type::TypeVar(alpha.clone(), 1);
@@ -14827,7 +14829,7 @@ mod tests {
 
         // After unification, beta must have the Numeric constraint.
         let beta_has_numeric = state.constraints.iter().any(|c| match c {
-            Constraint::Class { class, vars } => {
+            Constraint::Class { class, vars, .. } => {
                 class.name == "Numeric" && vars.len() == 1 && vars[0] == beta
             }
             _ => false,

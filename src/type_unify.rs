@@ -176,12 +176,13 @@ pub fn entails(class_env: &ClassEnv, context: &[Constraint], target: &Constraint
     if let Constraint::Class {
         class: target_class,
         vars: target_vars,
+        ..
     } = target
     {
         if target_vars.len() == 1 {
             let target_var = &target_vars[0];
             for constraint in context {
-                if let Constraint::Class { class, vars } = constraint {
+                if let Constraint::Class { class, vars, .. } = constraint {
                     if vars.len() == 1
                         && vars[0] == *target_var
                         && is_superclass_of(class_env, &class.name, &target_class.name)
@@ -317,12 +318,12 @@ fn check_constraints_on_var(
         .constraints
         .iter()
         .filter_map(|c| match c {
-            Constraint::Class { class, vars } if vars.len() == 1 && vars[0] == var_name => {
+            Constraint::Class { class, vars, .. } if vars.len() == 1 && vars[0] == var_name => {
                 Some(ApplicableConstraint::SingleParam {
                     class: class.name.clone(),
                 })
             }
-            Constraint::Class { class, vars }
+            Constraint::Class { class, vars, .. }
                 if vars.len() > 1 && vars.iter().any(|v| v == var_name) =>
             {
                 Some(ApplicableConstraint::MultiParam {
@@ -919,7 +920,7 @@ fn promote_literal_for_constrained_var(var_name: &str, ty: Type, state: &InferSt
     ];
 
     let has_promotable_constraint = state.constraints.iter().any(|c| match c {
-        Constraint::Class { class, vars } => {
+        Constraint::Class { class, vars, .. } => {
             vars.iter().any(|v| v == var_name) && PROMOTABLE_CLASSES.contains(&class.name.as_str())
         }
         _ => false,
@@ -1563,7 +1564,7 @@ fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
         .constraints
         .iter()
         .filter_map(|c| match c {
-            Constraint::Class { class, vars } if vars.contains(&alpha.to_string()) => {
+            Constraint::Class { class, vars, .. } if vars.contains(&alpha.to_string()) => {
                 Some((Arc::clone(class), vars.clone()))
             }
             _ => None,
@@ -1579,7 +1580,7 @@ fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
         .constraints
         .iter()
         .filter_map(|c| match c {
-            Constraint::Class { class: _, vars } if vars.contains(&beta.to_string()) => {
+            Constraint::Class { class: _, vars, .. } if vars.contains(&beta.to_string()) => {
                 Some(vars.clone())
             }
             _ => None,
@@ -1604,6 +1605,8 @@ fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
             state.constraints.push(Constraint::Class {
                 class,
                 vars: renamed_vars,
+                origin_name: None,
+                origin_span: None,
             });
         }
     }

@@ -383,16 +383,29 @@ impl std::hash::Hash for Type {
     }
 }
 
+/// Maximum recursion depth for subtype checking.
+/// Prevents stack overflow on pathological recursive types (defense-in-depth).
+const MAX_SUBTYPE_DEPTH: usize = 256;
+
 impl Type {
-    /// Recursive without a depth guard; safe because `Type` is a finite tree (structural recursion
-    /// on an algebraic data type — each recursive call descends into a strict sub-term). The
-    /// occurs-check invariant (Robinson 1965) additionally ensures that substitution-applied types
-    /// are acyclic.
+    /// Subtype relation with depth guard (defense-in-depth).
+    ///
+    /// Structural recursion on algebraic data types is safe (each call descends into a strict
+    /// sub-term), and the occurs-check invariant (Robinson 1965) ensures substitution-applied
+    /// types are acyclic. However, a depth guard prevents stack overflow on pathological cases.
     ///
     /// Post gradual-typing-split (B2): Top is the true supertype (τ <: Top for all τ). Unknown
     /// is NOT in the subtype lattice — Unknown relates to other types via consistency (~), not
     /// subtyping (<:). See is_consistent() for the consistency relation.
     pub fn is_subtype(sub: &Type, sup: &Type) -> bool {
+        Self::is_subtype_inner(sub, sup, 0)
+    }
+
+    fn is_subtype_inner(sub: &Type, sup: &Type, depth: usize) -> bool {
+        // Depth guard: prevent unbounded recursion on pathological recursive types
+        if depth >= MAX_SUBTYPE_DEPTH {
+            return false;
+        }
         // Error is not a subtype of anything (not even itself), and nothing is a subtype of Error.
         // It is a sentinel for failed inference and should not satisfy any constraint.
         if matches!(sub, Type::Error) || matches!(sup, Type::Error) {
@@ -413,16 +426,20 @@ impl Type {
         }
         match (sub, sup) {
             (a, b) if a == b => true,
-            (Type::Seq(sub_elem), Type::Seq(sup_elem)) => Type::is_subtype(sub_elem, sup_elem),
+            (Type::Seq(sub_elem), Type::Seq(sup_elem)) => {
+                Self::is_subtype_inner(sub_elem, sup_elem, depth + 1)
+            }
             // Map[K V1] <: Map[K V2] when V1 <: V2 (V covariant, K invariant via ==)
-            (Type::Map(k1, v1), Type::Map(k2, v2)) => k1 == k2 && Type::is_subtype(v1, v2),
+            (Type::Map(k1, v1), Type::Map(k2, v2)) => {
+                k1 == k2 && Self::is_subtype_inner(v1, v2, depth + 1)
+            }
             (Type::IntLiteral(_), Type::Int | Type::Number) => true,
             (Type::StringLiteral(_), Type::Str) => true,
             (Type::Int | Type::Float, Type::Number) => true,
             // [UNION-INJ-L] and [UNION-INJ-R]: any member is a subtype of the union
             (sub_ty, Type::Union(sup_members)) => sup_members
                 .iter()
-                .any(|member| Type::is_subtype(sub_ty, member)),
+                .any(|member| Self::is_subtype_inner(sub_ty, member, depth + 1)),
             // [S-RcdTop] (BAS width subtyping): A union of closed single-field records with
             // disjoint field names is equivalent to Top in the BAS lattice.  The union
             // `{x: τ} | {y: π}` cannot be refined further by structural subtyping — together
@@ -439,7 +456,7 @@ impl Type {
             // [UNION-ELIM]: union is a subtype iff ALL members are subtypes
             (Type::Union(sub_members), sup_ty) => sub_members
                 .iter()
-                .all(|member| Type::is_subtype(member, sup_ty)),
+                .all(|member| Self::is_subtype_inner(member, sup_ty, depth + 1)),
             // [S-ClsBot] (nominal disjointness / structural annihilation): An intersection of
             // two or more closed single-field records with DIFFERENT field names is uninhabited
             // — no value can simultaneously be `{x: τ}` (exactly field x) and `{y: π}`
@@ -452,14 +469,16 @@ impl Type {
             // [INTERSECT-INTRO]: intersection is a subtype of any of its members
             (Type::Intersection(sub_members), sup_ty) => sub_members
                 .iter()
-                .any(|member| Type::is_subtype(member, sup_ty)),
+                .any(|member| Self::is_subtype_inner(member, sup_ty, depth + 1)),
             // [INTERSECT-ELIM]: type is a subtype of intersection iff it's a subtype of ALL members
             (sub_ty, Type::Intersection(sup_members)) => sup_members
                 .iter()
-                .all(|member| Type::is_subtype(sub_ty, member)),
+                .all(|member| Self::is_subtype_inner(sub_ty, member, depth + 1)),
             // Negation: A <: ~B iff A and B are disjoint (for now, conservative: only reflexive negation)
             // Full BAS subtyping requires RDNF normalization — this is a placeholder
-            (Type::Negation(t1), Type::Negation(t2)) => Type::is_subtype(t2, t1), // contravariant
+            (Type::Negation(t1), Type::Negation(t2)) => {
+                Self::is_subtype_inner(t2, t1, depth + 1) // contravariant
+            }
             // Negation subtyping: T <: ~A iff T and A are disjoint (no values in common).
             // Full BAS uses RDNF normalization to compute T ∩ A = Never, but we use a
             // conservative syntactic disjointness check that catches obvious cases like
@@ -467,7 +486,9 @@ impl Type {
             (sub_ty, Type::Negation(a)) => Type::types_are_disjoint(sub_ty, a),
             // Handle: covariant in capability row
             // Handle[Readable Writable] <: Handle[Readable] because more capabilities satisfy fewer
-            (Type::Handle(sub_cap), Type::Handle(sup_cap)) => Type::is_subtype(sub_cap, sup_cap),
+            (Type::Handle(sub_cap), Type::Handle(sup_cap)) => {
+                Self::is_subtype_inner(sub_cap, sup_cap, depth + 1)
+            }
             // Capability types: reflexive only (DirCap <: DirCap, etc.)
             // The equality check at the top of the match handles this, but we document it here.
             // All capability types are subtypes of Any (handled by Any short-circuit above).
@@ -482,7 +503,7 @@ impl Type {
                 for (k, sup_ty) in &sup_row.fields {
                     match sub_row.fields.get(k) {
                         Some(sub_ty) => {
-                            if !Type::is_subtype(sub_ty, sup_ty) {
+                            if !Self::is_subtype_inner(sub_ty, sup_ty, depth + 1) {
                                 return false;
                             }
                         }
@@ -528,7 +549,7 @@ impl Type {
                     match (&**sub_r, &**sup_r) {
                         (Type::Unknown, Type::Unknown) => return true,
                         _ if sub_r == sup_r => return true,
-                        _ => return Type::is_subtype(sub_r, sup_r),
+                        _ => return Self::is_subtype_inner(sub_r, sup_r, depth + 1),
                     }
                 }
 
@@ -547,13 +568,17 @@ impl Type {
                 sv == pv
                     && sub_p.len() == sup_p.len()
                     && sub_p.iter().zip(sup_p.iter()).all(
-                        |((_sp_name, sp_ty), (_pp_name, pp_ty))| Type::is_subtype(pp_ty, sp_ty),
+                        |((_sp_name, sp_ty), (_pp_name, pp_ty))| {
+                            Self::is_subtype_inner(pp_ty, sp_ty, depth + 1)
+                        },
                     )
-                    && Type::is_subtype(sub_r, sup_r)
+                    && Self::is_subtype_inner(sub_r, sup_r, depth + 1)
             }
             // App and Operator: structural equality for now (full BAS rules in hkt-bas).
             // App(f1, a1) <: App(f2, a2) requires f1 = f2 and a1 <: a2 (covariant).
-            (Type::App(f1, a1), Type::App(f2, a2)) => f1 == f2 && Type::is_subtype(a1, a2),
+            (Type::App(f1, a1), Type::App(f2, a2)) => {
+                f1 == f2 && Self::is_subtype_inner(a1, a2, depth + 1)
+            }
             // Operator variables are treated like TypeVars for subtyping purposes.
             (Type::Operator(m1), Type::Operator(m2)) => m1 == m2,
             // TypeStageApp is not a subtype of anything until reduced (conservative)
@@ -577,7 +602,7 @@ impl Type {
                 for (k, sup_ty) in &fields2.fields {
                     match fields1.fields.get(k) {
                         Some(sub_ty) => {
-                            if !Type::is_subtype(sub_ty, sup_ty) {
+                            if !Self::is_subtype_inner(sub_ty, sup_ty, depth + 1) {
                                 return false;
                             }
                         }
@@ -1317,7 +1342,32 @@ impl Type {
                 }
             }
             Type::Handle(cap) => cap.collect_all_vars_vec(type_vars),
-            _ => {}
+            // Exhaustive leaf enumeration — no wildcard to prevent silently missing new compound variants
+            Type::Int
+            | Type::IntLiteral(_)
+            | Type::Float
+            | Type::Str
+            | Type::StringLiteral(_)
+            | Type::Bool
+            | Type::Bytes
+            | Type::Number
+            | Type::Proxy
+            | Type::Unknown
+            | Type::Top
+            | Type::Error
+            | Type::DirCap
+            | Type::NetCap
+            | Type::Uri
+            | Type::Timestamp
+            | Type::Duration
+            | Type::ClockCap
+            | Type::Timezone
+            | Type::QuicSession
+            | Type::Http2Session
+            | Type::Http3Session
+            | Type::QuicDatagramHandle
+            | Type::DatagramHandle
+            | Type::Never => {}
         }
     }
 

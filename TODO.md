@@ -460,7 +460,7 @@ warning[T013]: argument to `str` has unconstrained type — Showable constraint 
   |                      ^^^^ type of this argument is not statically known
 ```
 
-- [ ] Add `origin_name: Option<Arc<str>>` and `origin_span: Option<Span>` to `Constraint::Class` in `src/type_class.rs` — carries which function/builtin created the constraint and at which argument span
+- [x] Add `origin_name: Option<Arc<str>>` and `origin_span: Option<Span>` to `Constraint::Class` in `src/type_class.rs` — carries which function/builtin created the constraint and at which argument span
 - [ ] Add `origin_name` and `origin_span` parameters to `instantiate_scheme` in `src/type_env.rs`; populate them on all new `Constraint::Class` entries created during instantiation
 - [ ] Thread origin at VarRef call site (`src/typecheck.rs:1886`): pass `name` (the function name, e.g. `"str"`) and `node.span`; also thread at `check_call_with_scheme` (`src/typecheck.rs:4680`) and dot-access field scheme instantiation (`src/typecheck.rs:4513`)
 - [ ] Track the argument-level span: when `instantiate_scheme` is called during argument type-checking, the per-argument span is available; store it on the constraint as `origin_span`
@@ -469,17 +469,17 @@ warning[T013]: argument to `str` has unconstrained type — Showable constraint 
 - [ ] Corpus test: T013 message cites the origin function and points to the argument span
 
 **merge/first/last return types (from type-system-health-321):** `merge` typed as `(a, b) → Unknown`; `builtin-first`/`builtin-last` return Unknown.
-- [ ] Fix `merge` return type in `src/type_env.rs:2869` — change from Unknown to `Appendable a => (a, a) → a` or add fundep constraint
-- [ ] Fix `builtin-first` and `builtin-last` return types at `src/type_env.rs:3343,3353` — currently Unknown; should return fresh TypeVar
+- [x] Fix `merge` return type in `src/type_env.rs:2869` — change from Unknown to `Appendable a => (a, a) → a` or add fundep constraint
+- [x] Fix `builtin-first` and `builtin-last` return types at `src/type_env.rs:3343,3353` — currently Unknown; should return fresh TypeVar
 
 **Variant type wiring (from type-system-health-321):** `Variant` returns Unknown despite `Type::NominalVariant` existing.
-- [ ] Wire `Variant` builtin signature to construct `Type::NominalVariant` based on tag and payload (`src/type_env.rs:1892`)
+- [x] Wire `Variant` builtin signature to construct `Type::NominalVariant` based on tag and payload (`src/type_env.rs:1892`)
 
 **Handle capability types (from type-system-health-321):** Multiple I/O builtins return `Handle(Box::new(Type::Unknown))`.
 - [ ] Audit all Handle-returning builtins at `src/type_env.rs:2127,2281,2446,2481,2492` — update to use precise capability rows
 
 **collect_all_vars_vec wildcard (from type-system-health-321):** `_ => {}` would miss new compound Type variants.
-- [ ] Replace `_ => {}` in `collect_all_vars_vec` with exhaustive leaf enumeration (`src/type_def.rs:1320`)
+- [x] Replace `_ => {}` in `collect_all_vars_vec` with exhaustive leaf enumeration (`src/type_def.rs:1320`)
 
 **DOT-VAR field fallback (from type-system-health-321):** Absent field fallback uses Unknown instead of fresh TypeVar.
 - [ ] Change `row.fields.get(field_name).cloned().unwrap_or(Type::Unknown)` to use `state.fresh_type_var()` at `src/type_unify.rs:580,584,595,597`
@@ -488,7 +488,7 @@ warning[T013]: argument to `str` has unconstrained type — Showable constraint 
 - [ ] Add lint or documentation for Unknown-typed top-level bindings at document boundaries (`doc/05-type-annotations.md` §Gradual Typing Boundaries)
 
 **is_subtype depth guard (from type-system-health-321):**
-- [ ] Add `MAX_SUBTYPE_DEPTH` guard to `is_subtype` analogous to `MAX_CONSTRAINT_DEPTH=256` (`src/type_def.rs`)
+- [x] Add `MAX_SUBTYPE_DEPTH` guard to `is_subtype` analogous to `MAX_CONSTRAINT_DEPTH=256` (`src/type_def.rs`)
 
 ---
 

@@ -11653,3 +11653,14 @@ Added tail_hint to PendingCallDispatchData. In force_step, set tail_hint=true wh
 - [x] Fix misleading TCO comment about thunk result being "set" — replaced with accurate abandonment explanation
 - [x] Guard set_materialized behind tail_hint in Value::Variant arms of apply_cont(PendingCallDispatch)
 - [x] Remove dead variant constructor check (__variant_tag__) from invoke_function_tco in eval_call.rs
+
+### type-system-cleanup: Fix type inference gaps and type system health ✅ Partially DONE (2026-05-27)
+
+Added origin fields to Constraint::Class (T013 infrastructure). Fixed merge return type (Unknown → Appendable a => (a,a)→a). Fixed builtin-first/last return types (Unknown → fresh TypeVar). Changed Variant return to Type::Top. Replaced collect_all_vars_vec wildcard with exhaustive enumeration. Added MAX_SUBTYPE_DEPTH=256 guard. T013 provenance threading deferred.
+
+- [x] Add origin_name/origin_span to Constraint::Class (infrastructure)
+- [x] Fix merge return type from Unknown to proper polymorphic scheme
+- [x] Fix builtin-first/builtin-last return types to fresh TypeVar
+- [x] Wire Variant builtin to Type::Top
+- [x] Replace collect_all_vars_vec wildcard with exhaustive leaf enumeration
+- [x] Add MAX_SUBTYPE_DEPTH=256 guard to is_subtype

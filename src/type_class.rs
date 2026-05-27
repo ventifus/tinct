@@ -17,12 +17,16 @@ pub enum Constraint {
     ///
     /// `class`: The type class declaration (provides name, functional dependencies, resolver, etc.)
     /// `vars`: Type variable names in the constraint (e.g., ["a"] for single-param, ["a", "b", "c"] for MPTC)
+    /// `origin_name`: Name of the function/builtin that introduced this constraint (for T013 diagnostics)
+    /// `origin_span`: Span of the argument that introduced this constraint (for T013 diagnostics)
     ///
     /// Functional dependencies are accessed via `class.determines`.
     /// For `Add a b c` with FD `(a,b) → c`: `class.determines = vec![(vec![0,1], vec![2])]`
     Class {
         class: Arc<ClassDecl>,
         vars: Vec<String>,
+        origin_name: Option<Arc<str>>,
+        origin_span: Option<Span>,
     },
     /// HasField constraint: `HasField label dict_var field_var`
     /// Asserts that dict_var has a field at label with type field_var.
@@ -40,6 +44,8 @@ impl Constraint {
         Self::Class {
             class,
             vars: vec![var.into()],
+            origin_name: None,
+            origin_span: None,
         }
     }
 
@@ -65,6 +71,8 @@ impl Constraint {
         Self::Class {
             class,
             vars: vec![var.into()],
+            origin_name: None,
+            origin_span: None,
         }
     }
 }
@@ -72,7 +80,7 @@ impl Constraint {
 impl fmt::Display for Constraint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Constraint::Class { class, vars } => {
+            Constraint::Class { class, vars, .. } => {
                 write!(f, "{}", class.name)?;
                 for var in vars {
                     write!(f, " {}", var)?;

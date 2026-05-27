@@ -190,7 +190,12 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
         // Copy constraints with renamed variables
         for constraint in &scheme.constraints {
             match constraint {
-                Constraint::Class { class, vars } => {
+                Constraint::Class {
+                    class,
+                    vars,
+                    origin_name,
+                    origin_span,
+                } => {
                     // Rename all vars in the constraint
                     let fresh_vars: Vec<String> = vars
                         .iter()
@@ -200,6 +205,8 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
                         state.constraints.push(Constraint::Class {
                             class: Arc::clone(class),
                             vars: fresh_vars,
+                            origin_name: origin_name.clone(),
+                            origin_span: *origin_span,
                         });
                     }
                 }
@@ -267,8 +274,7 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
     // Copy constraints with renamed variables
     for constraint in &scheme.constraints {
         match constraint {
-            Constraint::Class { class, vars } => {
-                // Rename all vars in the constraint
+            Constraint::Class { class, vars, origin_name, origin_span } => {
                 let fresh_vars: Vec<String> = vars
                     .iter()
                     .filter_map(|v| var_renaming.get(v).cloned())
@@ -277,6 +283,8 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
                     state.constraints.push(Constraint::Class {
                         class: Arc::clone(class),
                         vars: fresh_vars,
+                        origin_name: origin_name.clone(),
+                        origin_span: *origin_span,
                     });
                 }
             }
@@ -626,7 +634,12 @@ pub fn generalize_with_doc(
         let mut generalizable_constraints: Vec<Constraint> = Vec::new();
         for c in &state.constraints {
             match c {
-                Constraint::Class { class, vars } => {
+                Constraint::Class {
+                    class,
+                    vars,
+                    origin_name,
+                    origin_span,
+                } => {
                     // Resolve all vars through one substitution level
                     let resolved_vars: Vec<String> =
                         vars.iter().map(|v| resolve_var_name(v)).collect();
@@ -635,6 +648,8 @@ pub fn generalize_with_doc(
                         generalizable_constraints.push(Constraint::Class {
                             class: Arc::clone(class),
                             vars: resolved_vars,
+                            origin_name: origin_name.clone(),
+                            origin_span: *origin_span,
                         });
                     } else {
                         // Diagnostic: ambiguous type variable in constraint
@@ -1263,6 +1278,8 @@ impl TypeEnv {
                 constraints: vec![Constraint::Class {
                     class: Arc::clone(&addable_class),
                     vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                    origin_name: None,
+                    origin_span: None,
                 }],
                 body: Type::Function {
                     params: vec![
@@ -1286,6 +1303,8 @@ impl TypeEnv {
                 constraints: vec![Constraint::Class {
                     class: Arc::clone(&subtractable_class),
                     vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                    origin_name: None,
+                    origin_span: None,
                 }],
                 body: Type::Function {
                     params: vec![
@@ -1309,6 +1328,8 @@ impl TypeEnv {
                 constraints: vec![Constraint::Class {
                     class: Arc::clone(&multipliable_class),
                     vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                    origin_name: None,
+                    origin_span: None,
                 }],
                 body: Type::Function {
                     params: vec![
@@ -1332,6 +1353,8 @@ impl TypeEnv {
                 constraints: vec![Constraint::Class {
                     class: Arc::clone(&divisible_class),
                     vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                    origin_name: None,
+                    origin_span: None,
                 }],
                 body: Type::Function {
                     params: vec![
@@ -1435,27 +1458,24 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        env.insert(
+        // merge: Appendable a => (a, a) → a
+        // Both arguments must be the same Appendable type, and the return type is that type.
+        env.insert_scheme(
             "merge".to_string(),
-            Type::Function {
-                params: vec![
-                    (
-                        Some("dict1".to_string()),
-                        Type::Record(Row {
-                            fields: HashMap::new(),
-                        }),
-                    ),
-                    (
-                        Some("dict2".to_string()),
-                        Type::Record(Row {
-                            fields: HashMap::new(),
-                        }),
-                    ),
-                ],
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                })),
-                variadic: false,
+            TypeScheme {
+                type_vars: vec!["a".to_string()],
+                constraints: vec![Constraint::new_by_name("Appendable", "a")],
+                body: Type::Function {
+                    params: vec![
+                        (Some("dict1".to_string()), Type::TypeVar("a".to_string(), 0)),
+                        (Some("dict2".to_string()), Type::TypeVar("a".to_string(), 0)),
+                    ],
+                    ret: Box::new(Type::TypeVar("a".to_string(), 0)),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
             },
         );
         env.insert(
@@ -1916,13 +1936,15 @@ impl TypeEnv {
                 variadic: false,
             },
         );
+        // variant: variadic (1 arg: tag, or 2+ args: tag + payload fields)
+        // Returns a NominalVariant, but we can't express dependent types (tag determines return type)
+        // so we use Top as the return type. The runtime will construct Value::Variant.
         env.insert(
             "variant".to_string(),
             Type::Function {
                 params: vec![],
-                // Genuinely unknown: Returns a Variant, but we don't have Type::Variant yet
-                ret: Box::new(Type::Unknown),
-                variadic: true, // 1 arg (unit variant: tag) or 2 args (tag + payload)
+                ret: Box::new(Type::Top), // Top subsumes any NominalVariant
+                variadic: true,
             },
         );
         env.insert(
@@ -3127,6 +3149,8 @@ impl TypeEnv {
                     constraints: vec![Constraint::Class {
                         class: Arc::clone(&indexable_class),
                         vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
+                        origin_name: None,
+                        origin_span: None,
                     }],
                     body: Type::Function {
                         params: vec![
@@ -3153,6 +3177,8 @@ impl TypeEnv {
                 constraints: vec![Constraint::Class {
                     class: Arc::clone(&indexable_class),
                     vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
+                    origin_name: None,
+                    origin_span: None,
                 }],
                 body: Type::Function {
                     params: vec![
@@ -3360,26 +3386,40 @@ impl TypeEnv {
             },
         );
 
-        // builtin-first: Dict|String|Bytes -> Any (returns first element, char, or byte-as-Int)
-        // TODO(unknown-elimination): Input should be Dict|Str|Bytes union; return type depends on
-        // input (element type for Dict, Str for String, Int for Bytes). Requires union input types
-        // and type-indexed return — defer to unknown-elimination sprint.
-        env.insert(
+        // builtin-first: forall a. a -> a
+        // Returns first element, char, or byte depending on input type.
+        // Using a fresh TypeVar instead of Unknown enables better type flow.
+        env.insert_scheme(
             "builtin-first".to_string(),
-            Type::Function {
-                params: vec![(None, Type::Top)], // Top: accepts Dict, Str, or Bytes
-                ret: Box::new(Type::Unknown),    // Genuinely unknown: depends on input type
-                variadic: false,
+            TypeScheme {
+                type_vars: vec!["a".to_string()],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![(None, Type::TypeVar("a".to_string(), 0))],
+                    ret: Box::new(Type::TypeVar("a".to_string(), 0)),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
             },
         );
-        // builtin-last: Dict|String|Bytes -> Any (returns last element, char, or byte-as-Int)
-        // TODO(unknown-elimination): same as builtin-first — see above.
-        env.insert(
+        // builtin-last: forall a. a -> a
+        // Returns last element, char, or byte depending on input type.
+        // Using a fresh TypeVar instead of Unknown enables better type flow.
+        env.insert_scheme(
             "builtin-last".to_string(),
-            Type::Function {
-                params: vec![(None, Type::Top)], // Top: accepts Dict, Str, or Bytes
-                ret: Box::new(Type::Unknown),    // Genuinely unknown: depends on input type
-                variadic: false,
+            TypeScheme {
+                type_vars: vec!["a".to_string()],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![(None, Type::TypeVar("a".to_string(), 0))],
+                    ret: Box::new(Type::TypeVar("a".to_string(), 0)),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
             },
         );
 

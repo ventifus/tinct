@@ -880,6 +880,8 @@ pub(crate) fn resolve_fn_metadata(
                                         state.constraints.push(Constraint::Class {
                                             class: Arc::new(class_decl.clone()),
                                             vars: typevar_names,
+                                            origin_name: None,
+                                            origin_span: None,
                                         });
 
                                         // Skip the entries we just processed (the class name + TypeVars)
