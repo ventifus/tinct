@@ -55,6 +55,7 @@ pub(crate) async fn eval_call_core(
     env: &Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
+    original_call: Arc<Spanned<CoreExpr>>,
 ) -> EvalResult<Arc<Thunk>> {
     // Evaluate the function as a thunk using eval_core_expr_pub directly.
     // This keeps the CoreExpr path end-to-end without round-tripping through Expr,
@@ -103,6 +104,7 @@ pub(crate) async fn eval_call_core(
         *call_span,
         func_label_core(&func_expr.node),
         Arc::clone(ctx),
+        original_call,
     )))
 }
 

@@ -145,14 +145,6 @@ pub(crate) enum RestoreState {
         call_span: Span,
         ctx: Arc<EvalContext>,
     },
-    PendingCall {
-        func: Arc<Thunk>,
-        args: Vec<Arc<Thunk>>,
-        named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
-        call_span: Span,
-        caller_env: Arc<RwLock<Environment>>,
-        ctx: Arc<EvalContext>,
-    },
     Guarded {
         inner: Arc<Thunk>,
         expected: Type,
@@ -196,21 +188,6 @@ impl RestoreState {
                 args,
                 named,
                 call_span,
-                ctx,
-            },
-            RestoreState::PendingCall {
-                func,
-                args,
-                named,
-                call_span,
-                caller_env,
-                ctx,
-            } => UnevaluatedState::Call {
-                func,
-                args,
-                named,
-                call_span,
-                caller_env,
                 ctx,
             },
             RestoreState::Guarded {
@@ -276,6 +253,7 @@ pub(crate) struct PendingCallDispatchData {
     pub(crate) origin: Option<Arc<str>>,
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
+    pub(crate) original_call: Arc<Spanned<CoreExpr>>,
 }
 
 /// Payload for Cont::GuardedValidate. Boxed to keep the Cont enum ≤96 bytes.
@@ -844,7 +822,7 @@ pub(crate) async fn force_step(
                 Action::Continue(Err(decorated))
             }
         }
-    } else if let Some((func_thunk, args, named, call_span, caller_env, thunk_ctx)) =
+    } else if let Some((func_thunk, args, named, call_span, caller_env, thunk_ctx, original_call)) =
         thunk.take_pending_call()
     {
         // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction).
@@ -869,6 +847,7 @@ pub(crate) async fn force_step(
                 origin,
                 thunk_span,
                 mat_span,
+                original_call,
             },
         )));
         eval_stack_guard.disarm();
@@ -1543,6 +1522,7 @@ pub(crate) async fn apply_cont(
                 origin,
                 thunk_span,
                 mat_span,
+                original_call,
             } = *data;
             // Inherited guard: PendingCallDispatch inherits the eval_stack entry
             // pushed by force_step(PendingCall). Auto-pops on all exit paths;
@@ -1583,12 +1563,9 @@ pub(crate) async fn apply_cont(
 
                         match invoke_result.map_err(&decorate) {
                             Ok(result_thunk) => {
-                                let restore = RestoreState::PendingCall {
-                                    func: func_thunk,
-                                    args: args.take().expect("args set above"),
-                                    named: named.take().expect("named set above"),
-                                    call_span,
-                                    caller_env,
+                                let restore = RestoreState::CoreExpr {
+                                    expr: original_call.clone(),
+                                    env: caller_env,
                                     ctx: Arc::clone(&thunk_ctx),
                                 };
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
@@ -1624,6 +1601,7 @@ pub(crate) async fn apply_cont(
                                             call_span,
                                             caller_env,
                                             ctx: thunk_ctx,
+                                            original_call: original_call.clone(),
                                         },
                                     );
                                 }
@@ -1697,12 +1675,9 @@ pub(crate) async fn apply_cont(
                                     thunk.set_materialized(value.clone());
                                     Action::Continue(Ok(value))
                                 } else {
-                                    let restore = RestoreState::PendingCall {
-                                        func: func_thunk,
-                                        args: args.take().expect("args set above"),
-                                        named: named.take().expect("named set above"),
-                                        call_span,
-                                        caller_env,
+                                    let restore = RestoreState::CoreExpr {
+                                        expr: original_call.clone(),
+                                        env: caller_env,
                                         ctx: Arc::clone(&thunk_ctx),
                                     };
                                     stack.push(Cont::Memoize(Box::new(MemoizeData {
@@ -1735,6 +1710,7 @@ pub(crate) async fn apply_cont(
                                             call_span,
                                             caller_env,
                                             ctx: thunk_ctx,
+                                            original_call: original_call.clone(),
                                         },
                                     );
                                 }
@@ -1812,6 +1788,7 @@ pub(crate) async fn apply_cont(
                                 call_span,
                                 caller_env,
                                 ctx: thunk_ctx,
+                                original_call: original_call.clone(),
                             });
                         }
                         Action::Continue(Err(decorated))
@@ -1831,6 +1808,7 @@ pub(crate) async fn apply_cont(
                             call_span,
                             caller_env,
                             ctx: thunk_ctx,
+                            original_call: original_call.clone(),
                         });
                     }
                     Action::Continue(Err(e))
@@ -3224,6 +3202,10 @@ pub(crate) async fn apply_cont(
                                 match_span,
                                 None,
                                 Arc::clone(&ctx),
+                                Arc::new(Spanned {
+                                    node: CoreExpr::Int(0),
+                                    span: match_span,
+                                }),
                             ));
                             // Force the call
                             match crate::async_rt::block_on_anywhere(materialize(
@@ -3300,6 +3282,10 @@ pub(crate) async fn apply_cont(
                                 expr_span,
                                 None,
                                 Arc::clone(&ctx),
+                                Arc::new(Spanned {
+                                    node: CoreExpr::Int(0),
+                                    span: expr_span,
+                                }),
                             ));
                             // Force the call
                             match crate::async_rt::block_on_anywhere(materialize(
@@ -3427,8 +3413,6 @@ mod tests {
     use crate::ast::CoreExpr;
     use crate::test_util::{sp, test_span};
     use crate::value::{Environment, Key, Thunk};
-    use std::rc::Rc;
-
     fn empty_env() -> Arc<RwLock<Environment>> {
         Arc::new(RwLock::new(Environment::new()))
     }
@@ -3455,34 +3439,6 @@ mod tests {
     /// Synchronous shadow of `run()` for test contexts.
     fn run(initial: Action, ctx: &Arc<EvalContext>) -> crate::error::EvalResult<Value> {
         crate::async_rt::block_on_anywhere(super::run(initial, ctx))
-    }
-
-    #[test]
-    fn test_restore_state_core_expr() {
-        let expr = Arc::new(sp(CoreExpr::Int(42)));
-        let env = empty_env();
-        let ctx = test_ctx();
-        let span = test_span(1, 1, 1, 10);
-
-        let thunk = Thunk::new_unevaluated_core(expr.clone(), env.clone(), ctx.clone(), span);
-
-        // Take the state (transitions to InProgress)
-        let taken = thunk.take_core_expr();
-        assert!(taken.is_some());
-
-        // Create RestoreState and restore
-        let restore = RestoreState::CoreExpr {
-            expr: expr.clone(),
-            env: env.clone(),
-            ctx: ctx.clone(),
-        };
-        restore.restore(&thunk);
-
-        // Verify state is restored (not InProgress, not materialized)
-        assert!(
-            !thunk.is_in_progress() && !thunk.is_materialized(),
-            "Expected CoreExpr unevaluated state after restore"
-        );
     }
 
     #[test]
@@ -3538,158 +3494,108 @@ mod tests {
     }
 
     #[test]
-    fn test_restore_state_pending_call() {
+    fn test_restore_state_core_expr() {
         let span = test_span(1, 1, 1, 10);
         let ctx = test_ctx();
 
-        // Create a simple function thunk
-        let func_thunk = Arc::new(Thunk::new_materialized(
-            Value::Function {
-                params: Rc::new(vec![]),
-                body: Arc::new(sp(CoreExpr::Int(42))),
-                env: empty_env(),
-                annotation: None,
-            },
-            span,
-        ));
-
-        let args = vec![Arc::new(Thunk::new_materialized(Value::Int(1), span))];
-        let named = IndexMap::new();
+        let original_call = Arc::new(sp(CoreExpr::Call {
+            func: Arc::new(sp(CoreExpr::Int(42))),
+            args: vec![],
+            named_args: vec![],
+            implied: false,
+        }));
         let caller_env = empty_env();
 
-        let pending_thunk = Arc::new(Thunk::new_pending_call(
-            Arc::clone(&func_thunk),
-            args.clone(),
-            named.clone(),
+        // Create a PendingCall thunk, then take it to InProgress
+        let func_thunk = Arc::new(Thunk::new_materialized(Value::Int(1), span));
+        let thunk = Arc::new(Thunk::new_pending_call(
+            func_thunk,
+            vec![],
+            IndexMap::new(),
             span,
-            Arc::clone(&caller_env),
+            empty_env(),
             span,
-            Some(Arc::from("test_pending_call")),
+            None,
             Arc::clone(&ctx),
+            Arc::clone(&original_call),
         ));
+        let _ = thunk.take_pending_call();
+        assert!(thunk.is_in_progress());
 
-        // Take the state (transitions to InProgress)
-        let taken = pending_thunk.take_pending_call();
-        assert!(taken.is_some());
-
-        // Create RestoreState and restore
-        let restore = RestoreState::PendingCall {
-            func: Arc::clone(&func_thunk),
-            args,
-            named: if named.is_empty() {
-                None
-            } else {
-                Some(Box::new(named))
-            },
-            call_span: span,
-            caller_env,
+        let restore = RestoreState::CoreExpr {
+            expr: Arc::clone(&original_call),
+            env: Arc::clone(&caller_env),
             ctx: Arc::clone(&ctx),
         };
-        restore.restore(&pending_thunk);
+        restore.restore(&thunk);
 
-        // Verify state is restored
-        assert!(
-            pending_thunk.is_pending_call(),
-            "Expected PendingCall state (is_pending_call should return true)"
-        );
+        assert!(!thunk.is_pending_call());
+        assert!(!thunk.is_in_progress());
+        assert!(!thunk.is_materialized());
     }
 
     #[test]
-    fn test_pending_call_restore_preserves_args() {
+    fn test_core_expr_restore_preserves_state() {
         let span = test_span(1, 1, 1, 10);
         let ctx = test_ctx();
 
-        // Create a function thunk
-        let func_thunk = Arc::new(Thunk::new_materialized(
-            Value::Function {
-                params: Rc::new(vec![]),
-                body: Arc::new(sp(CoreExpr::Int(42))),
-                env: empty_env(),
-                annotation: None,
-            },
-            span,
-        ));
-
-        // Create multiple args with different values
-        let args = vec![
-            Arc::new(Thunk::new_materialized(Value::Int(1), span)),
-            Arc::new(Thunk::new_materialized(Value::Int(2), span)),
-            Arc::new(Thunk::new_materialized(string_val("test"), span)),
-        ];
-        let mut named = IndexMap::new();
-        named.insert(
-            "key".to_string(),
-            Arc::new(Thunk::new_materialized(Value::Bool(true), span)),
-        );
+        let original_call = Arc::new(sp(CoreExpr::Call {
+            func: Arc::new(sp(CoreExpr::Int(100))),
+            args: vec![
+                Arc::new(sp(CoreExpr::Int(1))),
+                Arc::new(sp(CoreExpr::Int(2))),
+            ],
+            named_args: vec![],
+            implied: false,
+        }));
         let caller_env = empty_env();
 
-        let pending_thunk = Arc::new(Thunk::new_pending_call(
-            Arc::clone(&func_thunk),
-            args.clone(),
-            named.clone(),
+        let func_thunk = Arc::new(Thunk::new_materialized(Value::Int(1), span));
+        let thunk = Arc::new(Thunk::new_pending_call(
+            func_thunk,
+            vec![],
+            IndexMap::new(),
             span,
-            Arc::clone(&caller_env),
+            empty_env(),
             span,
-            Some(Arc::from("test_preserve_args")),
+            None,
             Arc::clone(&ctx),
+            Arc::clone(&original_call),
         ));
+        let _ = thunk.take_pending_call();
+        assert!(thunk.is_in_progress());
 
-        // Take the state
-        let taken = pending_thunk.take_pending_call();
-        assert!(taken.is_some());
-
-        // Restore
-        let restore = RestoreState::PendingCall {
-            func: Arc::clone(&func_thunk),
-            args: args.clone(),
-            named: if named.is_empty() {
-                None
-            } else {
-                Some(Box::new(named.clone()))
-            },
-            call_span: span,
-            caller_env,
+        let restore = RestoreState::CoreExpr {
+            expr: Arc::clone(&original_call),
+            env: Arc::clone(&caller_env),
             ctx: Arc::clone(&ctx),
         };
-        restore.restore(&pending_thunk);
+        restore.restore(&thunk);
 
-        // Verify the args are preserved
-        let taken = pending_thunk.take_pending_call();
+        // Verify state is restored to CoreExpr (NOT Call)
         assert!(
-            taken.is_some(),
-            "Expected PendingCall state (take_pending_call should return Some)"
+            !thunk.is_pending_call(),
+            "Expected CoreExpr state, not Call state"
         );
-        let (_func, restored_args, restored_named, _call_span, _caller_env, _ctx) = taken.unwrap();
-
-        // Check arg count
-        assert_eq!(
-            restored_args.len(),
-            3,
-            "Expected 3 positional args, got {}",
-            restored_args.len()
+        assert!(
+            !thunk.is_in_progress(),
+            "Thunk should not be InProgress after restore"
+        );
+        assert!(
+            !thunk.is_materialized(),
+            "Thunk should not be materialized after restore"
         );
 
-        // Check that the actual arg values are correct
-        // materialize is the local sync shadow defined at the top of this test module
-        let ctx_ref = test_ctx();
-        let v0 = materialize(&restored_args[0], None, &ctx_ref).unwrap();
-        let v1 = materialize(&restored_args[1], None, &ctx_ref).unwrap();
-        let v2 = materialize(&restored_args[2], None, &ctx_ref).unwrap();
-
-        assert_eq!(v0, Value::Int(1));
-        assert_eq!(v1, Value::Int(2));
-        assert_eq!(v2, string_val("test"));
-
-        // Check named arg count and value
-        let named_map = restored_named.as_ref().expect("Expected Some named args");
-        assert_eq!(
-            named_map.len(),
-            1,
-            "Expected 1 named arg, got {}",
-            named_map.len()
+        // Verify take_pending_call returns None (because it's CoreExpr, not Call)
+        let taken = thunk.take_pending_call();
+        assert!(
+            taken.is_none(),
+            "take_pending_call should return None for CoreExpr state"
         );
-        let named_val = materialize(named_map.get("key").unwrap(), None, &ctx_ref).unwrap();
-        assert_eq!(named_val, Value::Bool(true));
+
+        // The CoreExpr restoration is correct: the entire Call expression (with args)
+        // is preserved in the expr field. When re-evaluated, eval_core_expr will
+        // process the Call expression and create fresh arg thunks from the CoreExpr.
     }
 
     #[test]

@@ -45,13 +45,29 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::arena::ThunkId;
-use crate::ast::Span;
+use crate::ast::{CoreExpr, Span, Spanned};
 use crate::builtins::{builtin, ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, materialize_sync};
 use crate::eval_call::{invoke_function, CallContext};
 use crate::eval_materialize::force_dict_tree;
 use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
+
+/// Helper: create a synthetic CoreExpr::Call for builtin-generated calls.
+fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
+    Arc::new(Spanned {
+        node: CoreExpr::Call {
+            func: Arc::new(Spanned {
+                node: CoreExpr::Int(0),
+                span,
+            }),
+            args: vec![],
+            named_args: vec![],
+            implied: false,
+        },
+        span,
+    })
+}
 
 /// `materialize`: takes 1 arg, forces it to WHNF and returns it.
 ///
@@ -376,6 +392,7 @@ pub(crate) fn builtin_until(
                 val_thunk.span,
                 Some(Arc::from("until")),
                 Arc::clone(&ctx),
+                synthetic_call_expr(call_span),
             ));
 
             let pred_val = materialize(&pred_result, Some(&call_span), &ctx).await?;
@@ -396,6 +413,7 @@ pub(crate) fn builtin_until(
                         call_span,
                         Some(Arc::from("until")),
                         Arc::clone(&ctx),
+                        synthetic_call_expr(call_span),
                     ));
 
                     // Eagerly materialize f(val) and re-wrap as a thunk for the next iteration

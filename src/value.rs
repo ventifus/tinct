@@ -1150,6 +1150,9 @@ pub enum UnevaluatedState {
         call_span: Span,
         caller_env: Arc<RwLock<Environment>>,
         ctx: Arc<crate::eval::EvalContext>,
+        /// Original CoreExpr::Call node for DepthExceeded retry path.
+        /// Enables CoreExpr-based restore (no Arc<Thunk> references held).
+        original_call: Arc<Spanned<CoreExpr>>,
     },
     /// Type guard wrapping an inner thunk (was Guarded).
     Guarded {
@@ -1213,6 +1216,7 @@ pub type PendingCallParts = (
     Span,
     Arc<RwLock<Environment>>,
     Arc<crate::eval::EvalContext>,
+    Arc<Spanned<CoreExpr>>,
 );
 
 /// Return type of `Thunk::take_core_expr`.
@@ -1404,6 +1408,7 @@ impl Thunk {
         span: Span,
         origin: Option<Arc<str>>,
         ctx: Arc<crate::eval::EvalContext>,
+        original_call: Arc<Spanned<CoreExpr>>,
     ) -> Self {
         let named_opt = if named.is_empty() {
             None
@@ -1420,6 +1425,7 @@ impl Thunk {
                     call_span,
                     caller_env,
                     ctx,
+                    original_call,
                 })),
                 result: tokio::sync::OnceCell::new(),
             },
@@ -1569,6 +1575,7 @@ impl Thunk {
                 call_span,
                 caller_env,
                 ctx: _,
+                original_call,
             } => UnevaluatedState::Call {
                 func,
                 args,
@@ -1576,6 +1583,7 @@ impl Thunk {
                 call_span,
                 caller_env,
                 ctx: new_ctx,
+                original_call,
             },
             UnevaluatedState::Guarded {
                 inner,
@@ -1680,11 +1688,12 @@ impl Thunk {
                 call_span,
                 caller_env,
                 ctx,
+                original_call,
             }) => {
                 // State is now InProgress
                 // Convert Option<Box<IndexMap>> to Option<IndexMap>
                 let named = named.map(|b| *b);
-                Some((func, args, named, call_span, caller_env, ctx))
+                Some((func, args, named, call_span, caller_env, ctx, original_call))
             }
             other => {
                 // Restore the state
@@ -2714,6 +2723,10 @@ mod tests {
             span,
             Some(Arc::from("test call")),
             Arc::clone(&ctx1),
+            Arc::new(crate::ast::Spanned {
+                node: crate::ast::CoreExpr::Int(0),
+                span,
+            }),
         );
 
         // Verify the thunk is in PendingCall state
@@ -2726,7 +2739,8 @@ mod tests {
         let taken = thunk.take_pending_call();
         assert!(taken.is_some(), "take_pending_call should succeed");
 
-        let (_func, _args, _named, _call_span, _caller_env, taken_ctx) = taken.unwrap();
+        let (_func, _args, _named, _call_span, _caller_env, taken_ctx, _original_call) =
+            taken.unwrap();
         assert!(
             Arc::ptr_eq(&taken_ctx, &ctx1),
             "PendingCall should evaluate using captured ctx1"

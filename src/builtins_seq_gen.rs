@@ -13,10 +13,27 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 
+use crate::ast::{CoreExpr, Span, Spanned};
 use crate::builtins::{builtin, ok_val, reject_named};
 use crate::error::{ArityBound, EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::value::{BuiltinArgs, Thunk, Value};
+
+/// Helper: create a synthetic CoreExpr::Call for builtin-generated calls.
+fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
+    Arc::new(Spanned {
+        node: CoreExpr::Call {
+            func: Arc::new(Spanned {
+                node: CoreExpr::Int(0),
+                span,
+            }),
+            args: vec![],
+            named_args: vec![],
+            implied: false,
+        },
+        span,
+    })
+}
 
 /// `range`: Sequence of integers from start to end (exclusive), or infinite.
 ///
@@ -364,6 +381,7 @@ pub(crate) fn builtin_iterate(
             call_span,
             Some(Arc::from("iterate")),
             Arc::clone(&ctx),
+            synthetic_call_expr(call_span),
         ));
 
         // tail = iterate(f, f(x))
@@ -420,6 +438,7 @@ pub(crate) fn builtin_unfold_step(
             call_span,
             Some(Arc::from("unfold")),
             Arc::clone(&ctx),
+            synthetic_call_expr(call_span),
         ));
         let step_result = materialize(&step_result_thunk, None, &ctx).await?;
 

@@ -1,0 +1,16 @@
+# DepthExceeded retry with CoreExpr-based restore
+# Recursive function using `if` should correctly restore state on depth limit and retry.
+# This test verifies the tco-restorestate implementation: RestoreState::CoreExpr
+# rebuilds the call from the original CoreExpr, and already-materialized sub-thunks
+# hit the try_get_materialized() fast path on retry.
+[
+  fact: [fn@Int [n@Int]
+    [if [call $<= n 1]
+      1
+      [call $* n [call fact [call $- n 1]]]
+    ]
+  ]
+  result: [call fact 5]
+]
+=== out
+Dict({"fact": Function(n), "result": Int(120)})

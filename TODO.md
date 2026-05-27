@@ -45,12 +45,12 @@ This was the root cause of `scripts/docgen.llt` producing empty documentation: `
 
 The `CoreExpr::Call` node is available in `eval_core_expr_pub` when it matches on the Call arm and calls `eval_call_core` — but it currently drops `expr` and only passes the pieces. Thread it through:
 
-- [ ] Add `original_call: Arc<Spanned<CoreExpr>>` to `UnevaluatedState::Call` and `Thunk::new_pending_call` (`src/value.rs`)
-- [ ] Pass `Arc::clone(expr)` from `eval_core_expr_pub`'s Call arm to `eval_call_core`; update `eval_call_core` signature and `new_pending_call` call (`src/eval.rs:1514`, `src/eval_call.rs:51`)
-- [ ] `take_pending_call()` returns `original_call` alongside existing fields; add `original_call` to `PendingCallDispatchData` (`src/eval_materialize.rs`)
-- [ ] In `apply_cont(PendingCallDispatch)`: build `RestoreState::CoreExpr { expr: original_call, env: caller_env }` instead of `RestoreState::PendingCall { func, args, ... }` / `RestoreState::PendingBuiltin { def, args, ... }` for both Function and Builtin dispatch paths (`src/eval_materialize.rs`)
-- [ ] Update `RestoreState::restore()` for the new `CoreExpr` variant: re-evaluate `expr` in `env` via `eval_call_core` to reconstruct a fresh PendingCall thunk, then restore that state into the thunk (`src/eval_materialize.rs`)
-- [ ] Corpus test: DepthExceeded from inside a recursive `[if ...]` branch retries correctly and produces the right result
+- [x] Add `original_call: Arc<Spanned<CoreExpr>>` to `UnevaluatedState::Call` and `Thunk::new_pending_call` (`src/value.rs`)
+- [x] Pass `Arc::clone(expr)` from `eval_core_expr_pub`'s Call arm to `eval_call_core`; update `eval_call_core` signature and `new_pending_call` call (`src/eval.rs:1514`, `src/eval_call.rs:51`)
+- [x] `take_pending_call()` returns `original_call` alongside existing fields; add `original_call` to `PendingCallDispatchData` (`src/eval_materialize.rs`)
+- [x] In `apply_cont(PendingCallDispatch)`: build `RestoreState::CoreExpr { expr: original_call, env: caller_env }` instead of `RestoreState::PendingCall { func, args, ... }` / `RestoreState::PendingBuiltin { def, args, ... }` for both Function and Builtin dispatch paths (`src/eval_materialize.rs`)
+- [x] Update `RestoreState::restore()` for the new `CoreExpr` variant: re-evaluate `expr` in `env` via `eval_call_core` to reconstruct a fresh PendingCall thunk, then restore that state into the thunk (`src/eval_materialize.rs`)
+- [x] Corpus test: DepthExceeded from inside a recursive `[if ...]` branch retries correctly and produces the right result
 - **Files:** `src/value.rs`, `src/eval.rs`, `src/eval_call.rs`, `src/eval_materialize.rs`
 
 ### tco-proper: True O(1) tail-call optimization in the CEK machine

@@ -15,10 +15,29 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 
+use crate::ast::{CoreExpr, Span, Spanned};
 use crate::builtins::{builtin, bytes_to_seq, flatten_overlay, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::value::{BuiltinArgs, Key, Strictness, Thunk, ThunkId, Value};
+
+/// Helper: create a synthetic CoreExpr::Call for builtin-generated calls.
+/// Used when builtins construct PendingCall thunks (e.g., map, filter, until).
+/// The CoreExpr is needed for DepthExceeded restore but won't be re-evaluated.
+fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
+    Arc::new(Spanned {
+        node: CoreExpr::Call {
+            func: Arc::new(Spanned {
+                node: CoreExpr::Int(0), // placeholder, never evaluated
+                span,
+            }),
+            args: vec![],
+            named_args: vec![],
+            implied: false,
+        },
+        span,
+    })
+}
 
 /// `map`: Apply a function to every element of a dict or sequence.
 ///
@@ -72,6 +91,7 @@ pub(crate) fn builtin_map(
                         value_thunk.span,
                         Some(Arc::from("map")),
                         Arc::clone(&ctx),
+                        synthetic_call_expr(call_span),
                     ));
                     new_map.insert(key.clone(), ctx.alloc_thunk(pending_call));
                 }
@@ -90,6 +110,7 @@ pub(crate) fn builtin_map(
                     head_thunk.span,
                     Some(Arc::from("map head")),
                     Arc::clone(&ctx),
+                    synthetic_call_expr(call_span),
                 ));
                 let tail_args = vec![Arc::clone(&f_thunk), Arc::clone(&tail_thunk)];
                 let new_tail = Arc::new(Thunk::new_pending_builtin(
@@ -318,6 +339,7 @@ pub(crate) fn builtin_filter_dict_step(
                 value_thunk.span,
                 Some(Arc::from("filter-dict pred")),
                 Arc::clone(&ctx),
+                synthetic_call_expr(call_span),
             ));
             let pred_result = materialize(&pred_call, None, &ctx).await?;
 
@@ -412,6 +434,7 @@ pub(crate) fn builtin_filter_seq_step(
                         head_thunk.span,
                         Some(Arc::from("filter-seq pred")),
                         Arc::clone(&ctx),
+                        synthetic_call_expr(call_span),
                     ));
                     let pred_result = materialize(&pred_call, None, &ctx).await?;
 

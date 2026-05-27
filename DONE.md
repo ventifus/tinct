@@ -11590,3 +11590,14 @@ Deferred: corpus/unit tests for builtin-read-line/builtin-read-chunk remain in T
 - [x] Add corpus test for pretty-printing array-like dicts
 - [x] fn macro alias tests (test_syntax_llt_fn_single_param, test_syntax_llt_fn_macro_triggered) — already passing
 - [x] last-binding-wins test (test_pm3_match_expr_duplicate_dict_field_errors) — already passing
+
+### tco-restorestate: Change RestoreState to CoreExpr-based restore ✅ DONE (2026-05-27)
+
+Changed RestoreState to use CoreExpr-based restore instead of holding arg thunk Vec references. Deleted RestoreState::PendingCall variant. Added RestoreState::CoreExpr { expr, env, ctx }. Threaded original_call through new_pending_call. Added synthetic original_call to all builtin-generated pending calls. Updated all tests.
+
+- [x] Add original_call: Arc<Spanned<CoreExpr>> to UnevaluatedState::Call and Thunk::new_pending_call
+- [x] Pass Arc::clone(expr) from eval_core_expr_pub's Call arm to eval_call_core; update signatures
+- [x] take_pending_call() returns original_call alongside existing fields; add to PendingCallDispatchData
+- [x] In apply_cont(PendingCallDispatch): build RestoreState::CoreExpr instead of PendingCall
+- [x] Update RestoreState::restore() for CoreExpr variant; delete PendingCall variant
+- [x] Corpus test: DepthExceeded from inside recursive [if ...] branch retries correctly

@@ -1511,7 +1511,18 @@ fn eval_core_expr<'a>(
                 args,
                 named_args,
                 ..
-            } => eval_call_core(func, args, named_args, env, ctx, &expr.span).await,
+            } => {
+                eval_call_core(
+                    func,
+                    args,
+                    named_args,
+                    env,
+                    ctx,
+                    &expr.span,
+                    Arc::new(expr.clone()),
+                )
+                .await
+            }
 
             // Fn: store body as Arc<Spanned<CoreExpr>> directly — no round-trip to Expr.
             CoreExpr::Fn {
@@ -1948,8 +1959,15 @@ pub fn materialize<'a>(
                     Err(e)
                 }
             }
-        } else if let Some((func_thunk, args, named, call_span, caller_env, thunk_ctx)) =
-            thunk.take_pending_call()
+        } else if let Some((
+            func_thunk,
+            args,
+            named,
+            call_span,
+            caller_env,
+            thunk_ctx,
+            original_call,
+        )) = thunk.take_pending_call()
         {
             // Materialize the function thunk to determine if it's a Function or Builtin
             let func_value = match run(
@@ -1975,6 +1993,7 @@ pub fn materialize<'a>(
                             call_span,
                             caller_env: caller_env.clone(),
                             ctx: thunk_ctx.clone(),
+                            original_call: original_call.clone(),
                         });
                     }
                     return Err(e);
@@ -2034,6 +2053,7 @@ pub fn materialize<'a>(
                                                 call_span,
                                                 caller_env: caller_env.clone(),
                                                 ctx: thunk_ctx.clone(),
+                                                original_call: original_call.clone(),
                                             },
                                         );
                                     }
@@ -2059,6 +2079,7 @@ pub fn materialize<'a>(
                                     call_span,
                                     caller_env: caller_env.clone(),
                                     ctx: thunk_ctx.clone(),
+                                    original_call: original_call.clone(),
                                 });
                             }
                             Err(e)
@@ -2118,6 +2139,7 @@ pub fn materialize<'a>(
                                     call_span,
                                     caller_env: caller_env.clone(),
                                     ctx: thunk_ctx.clone(),
+                                    original_call: original_call.clone(),
                                 });
                             }
                             return Err(e);
@@ -2165,6 +2187,7 @@ pub fn materialize<'a>(
                                                     call_span,
                                                     caller_env: caller_env.clone(),
                                                     ctx: thunk_ctx.clone(),
+                                                    original_call: original_call.clone(),
                                                 },
                                             );
                                         }
@@ -2184,6 +2207,7 @@ pub fn materialize<'a>(
                                     call_span,
                                     caller_env: caller_env.clone(),
                                     ctx: thunk_ctx.clone(),
+                                    original_call: original_call.clone(),
                                 });
                             }
                             Err(e)
@@ -2244,6 +2268,7 @@ pub fn materialize<'a>(
                             call_span,
                             caller_env,
                             ctx: thunk_ctx,
+                            original_call,
                         });
                     }
                     Err(decorated)
@@ -5396,6 +5421,10 @@ mod tests {
             call_span,
             Some(Arc::from("test-pending-call")),
             Arc::clone(&test_ctx()),
+            Arc::new(crate::ast::Spanned {
+                node: crate::ast::CoreExpr::Int(0),
+                span: call_span,
+            }),
         );
 
         // Materialize should call the function and return the result
@@ -5451,6 +5480,10 @@ mod tests {
             call_span,
             Some(Arc::from("test-pending-call")),
             Arc::clone(&test_ctx()),
+            Arc::new(crate::ast::Spanned {
+                node: crate::ast::CoreExpr::Int(0),
+                span: call_span,
+            }),
         );
 
         // Materialize should call the builtin directly and return the result
@@ -5492,6 +5525,10 @@ mod tests {
             call_span,
             Some(Arc::from("test-pending-call")),
             Arc::clone(&test_ctx()),
+            Arc::new(crate::ast::Spanned {
+                node: crate::ast::CoreExpr::Int(0),
+                span: call_span,
+            }),
         ));
 
         // First materialization
@@ -5528,6 +5565,10 @@ mod tests {
             call_span,
             Some(Arc::from("test-pending-call")),
             Arc::clone(&test_ctx()),
+            Arc::new(crate::ast::Spanned {
+                node: crate::ast::CoreExpr::Int(0),
+                span: call_span,
+            }),
         );
 
         let err = materialize(&pending, None, &test_ctx()).unwrap_err();
@@ -5577,6 +5618,10 @@ mod tests {
             call_span,
             Some(Arc::from("test-pending-call")),
             Arc::clone(&test_ctx()),
+            Arc::new(crate::ast::Spanned {
+                node: crate::ast::CoreExpr::Int(0),
+                span: call_span,
+            }),
         );
 
         // Materialize should evaluate the arg thunk and return the result
@@ -5680,6 +5725,10 @@ mod tests {
             call_span,
             Some(Arc::from("test-pending-call-named")),
             Arc::clone(&test_ctx()),
+            Arc::new(crate::ast::Spanned {
+                node: crate::ast::CoreExpr::Int(0),
+                span: call_span,
+            }),
         );
 
         // Materialize should pass named args through correctly
@@ -5773,6 +5822,10 @@ mod tests {
             call_span,
             Some(Arc::from("test-pending-call-default")),
             Arc::clone(&test_ctx()),
+            Arc::new(crate::ast::Spanned {
+                node: crate::ast::CoreExpr::Int(0),
+                span: call_span,
+            }),
         );
 
         // Materialize should use default for y (10)
@@ -5983,6 +6036,10 @@ mod tests {
             call_span,
             Some(Arc::from("test-pending-call")),
             Arc::clone(&test_ctx()),
+            Arc::new(crate::ast::Spanned {
+                node: crate::ast::CoreExpr::Int(0),
+                span: call_span,
+            }),
         ));
 
         // First materialization: should fail
@@ -6024,6 +6081,10 @@ mod tests {
             call_span,
             Some(Arc::from("test-pending-call")),
             Arc::clone(&test_ctx()),
+            Arc::new(crate::ast::Spanned {
+                node: crate::ast::CoreExpr::Int(0),
+                span: call_span,
+            }),
         ));
 
         // First materialization should fail with undefined variable error
@@ -8095,6 +8156,10 @@ mod tests {
             span,
             None,
             Arc::clone(&ctx),
+            Arc::new(crate::ast::Spanned {
+                node: crate::ast::CoreExpr::Int(0),
+                span,
+            }),
         ));
 
         // Materialize via the recursive path. If force_count pre-materialization is
