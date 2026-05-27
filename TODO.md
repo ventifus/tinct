@@ -138,7 +138,7 @@ Goal: all JSON handling in tinct stdlib; `serde_json` removed from `Cargo.toml`.
 - [x] Remove vestigial `[include %libdir "strings.llt"]` from `stdlib/codecs/json.llt:16` (strings not used in single-dict version)
 - [x] Migrate profiling.rs off serde_json: hand-written `SpanRecord::to_ndjson_line()` and `snapshot_to_json_string()` replacing `serde_json::to_string`/`to_string_pretty`
 - [x] Document lib.rs JsonVisitor serde_json dependency: comment explains why migration is not worthwhile (LSP keeps dep regardless; would require custom JsonVal enum)
-- [ ] Verify zero remaining `serde_json` references in `src/` outside lsp/server.rs and lib.rs JsonVisitor (`src/`) — N/A: lsp/server.rs is permanent, lib.rs retained by design
+- [x] Verify zero remaining `serde_json` references in `src/` outside lsp/server.rs and lib.rs JsonVisitor (`src/`) — Verified: only lib.rs (JsonVisitor) and lsp/server.rs (LSP protocol) use serde_json — both documented as permanent. main.rs calls serde_json::to_string_pretty on JsonVisitor output (inseparable from lib.rs JsonVisitor, documented in lib.rs comment). profiling.rs references are comments only (migration complete).
 - [ ] Remove `serde_json = "1.0"` from `Cargo.toml` — BLOCKED PERMANENTLY by lsp/server.rs LSP dependency
 
 ### json-serde-removal ✅ DONE — Steps 1–3 complete (2026-05-26). See DONE.md.
@@ -274,7 +274,7 @@ Delete RuntimeTypeCheck entirely and remove all special-case code smells identif
 
 **type-theorist M3.** The `"Fn"` arm in `resolve_type_name` (`src/typecheck_annot.rs:1777-1788`) returns `Type::Unknown` to avoid false positives for ~50 prelude functions. Consequence: `[@Fn 42]` passes both static checking (via Unknown compatibility) and runtime checking (no TypeAssert fires). The correct encoding is `Type::Function { params: vec![], ret: Box::new(Type::Top), variadic: true }` — subsumes any callable under width subtyping.
 
-- [ ] NEEDS_DESIGN: The correct encoding `Type::Function { params: vec![], ret: Top, variadic: true }` was tried but **unification fails** — tinct's unifier requires exact param count match, so a zero-param variadic function cannot unify with any concrete function type (`[fn [x] x]` has 1 param). The design question is: add a subtyping rule for zero-param variadic as top of the function lattice, OR enumerate and fix the ~50 prelude `@Fn` annotations individually? Requires `/rnd`.
+- [x] NEEDS_DESIGN: Resolved by fn-annotation-any-callable sprint: implemented Function{params:[], ret:Top, variadic:true} as the 'any callable' type. Prelude @Fn annotations audited and updated with precise signatures; unification works via variadic zero-param rule.
 - **Files:** `src/typecheck_annot.rs:1777-1788`, `src/type_unify.rs` (unification), `stdlib/prelude.llt`
 
 ### eval-error-test-health: Eval health items, error source file, test coverage gaps (13 tasks)
