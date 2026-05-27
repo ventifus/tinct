@@ -1148,7 +1148,9 @@ pub(crate) fn resolve_annotation(
                     // Resolve the inner annotation for key and value types
                     match inner.as_ref() {
                         Annotation::Simple(_) => {
-                            // @Map@T (single type) → Map[Unknown: T]
+                            // @Map@T (single type) → Map[fresh_key: T]
+                            // Use a fresh TypeVar for the key so callers can unify against
+                            // concrete key types instead of being stuck with Unknown.
                             let value_type = resolve_annotation(
                                 inner,
                                 env,
@@ -1157,7 +1159,10 @@ pub(crate) fn resolve_annotation(
                                 ann_mapping,
                                 row_ann_mapping,
                             )?;
-                            Ok(Type::Map(Box::new(Type::Unknown), Box::new(value_type)))
+                            Ok(Type::Map(
+                                Box::new(state.fresh_type_var()),
+                                Box::new(value_type),
+                            ))
                         }
                         Annotation::PropertyDict(surface_entries) => {
                             // @Map@[key: K value: V] → Map(K, V)
@@ -1209,7 +1214,9 @@ pub(crate) fn resolve_annotation(
                             }
                         }
                         _ => {
-                            // Other forms like @Map@Annotated — treat as single value type
+                            // Other forms like @Map@Annotated — treat as single value type.
+                            // Use a fresh TypeVar for the key so callers can unify against
+                            // concrete key types instead of being stuck with Unknown.
                             let value_type = resolve_annotation(
                                 inner,
                                 env,
@@ -1218,7 +1225,10 @@ pub(crate) fn resolve_annotation(
                                 ann_mapping,
                                 row_ann_mapping,
                             )?;
-                            Ok(Type::Map(Box::new(Type::Unknown), Box::new(value_type)))
+                            Ok(Type::Map(
+                                Box::new(state.fresh_type_var()),
+                                Box::new(value_type),
+                            ))
                         }
                     }
                 }
@@ -2590,7 +2600,9 @@ pub(crate) fn resolve_type_expr(
                             )?;
                             return Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)));
                         } else if args.len() == 1 {
-                            // Single-arg form: [Map Int] → Map(Unknown, Int)
+                            // Single-arg form: [Map Int] → Map(fresh_key, Int)
+                            // Use a fresh TypeVar for the key so callers can unify against
+                            // concrete key types instead of being stuck with Unknown.
                             let value_ty = resolve_type_expr(
                                 &args[0],
                                 env,
@@ -2598,7 +2610,10 @@ pub(crate) fn resolve_type_expr(
                                 ann_mapping,
                                 row_ann_mapping,
                             )?;
-                            return Ok(Type::Map(Box::new(Type::Unknown), Box::new(value_ty)));
+                            return Ok(Type::Map(
+                                Box::new(state.fresh_type_var()),
+                                Box::new(value_ty),
+                            ));
                         } else {
                             return Err(TypeError::new(
                                 "Map requires 1 or 2 type arguments",
@@ -2782,7 +2797,9 @@ pub(crate) fn resolve_type_dict(
                                 )?;
                                 return Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)));
                             } else if entries.len() == 2 {
-                                // Single-arg form: [Map Int] → Map(Unknown, Int)
+                                // Single-arg form: [Map Int] → Map(fresh_key, Int)
+                                // Use a fresh TypeVar for the key so callers can unify against
+                                // concrete key types instead of being stuck with Unknown.
                                 let value_ty = resolve_type_expr(
                                     &entries[1].node.value,
                                     env,
@@ -2790,7 +2807,10 @@ pub(crate) fn resolve_type_dict(
                                     ann_mapping,
                                     row_ann_mapping,
                                 )?;
-                                return Ok(Type::Map(Box::new(Type::Unknown), Box::new(value_ty)));
+                                return Ok(Type::Map(
+                                    Box::new(state.fresh_type_var()),
+                                    Box::new(value_ty),
+                                ));
                             } else {
                                 return Err(TypeError::new(
                                     "Map requires 1 or 2 type arguments",

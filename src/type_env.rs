@@ -2764,18 +2764,23 @@ impl TypeEnv {
             },
         );
         // builtin-collect: ∀T. Seq(T) → Dict
-        // TODO(unknown-elimination): Make Seq param ∀T once collect returns a typed Dict.
-        env.insert(
+        // Polymorphic parameter: accepts Seq of any element type.
+        // Return type is an empty record (open dict) — collect returns a Dict regardless of T.
+        env.insert_scheme(
             "builtin-collect".to_string(),
-            Type::Function {
-                // Genuinely unknown: The Unknown in Seq(Unknown) should ideally be TypeVar("T")
-                // but the Dict return type already erases element type information, so the
-                // polymorphism buys nothing here.
-                params: vec![(None, Type::Seq(Box::new(Type::Unknown)))],
-                ret: Box::new(Type::Record(Row {
-                    fields: HashMap::new(),
-                })),
-                variadic: false,
+            TypeScheme {
+                type_vars: vec!["T".to_string()],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![(None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))))],
+                    ret: Box::new(Type::Record(Row {
+                        fields: HashMap::new(),
+                    })),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
             },
         );
         env.insert(
@@ -2979,8 +2984,6 @@ impl TypeEnv {
         // Each argument must be Appendable (Record/Seq), but both args need not be the
         // same concrete type (e.g. two dicts with different field types are both Appendable).
         // Return type is genuinely unknown: output shape depends on runtime values (field merge).
-        // TODO(unknown-elimination): Return type could be a TypeVar with an Appendable constraint
-        // once the type system supports output-shape inference from structural merges.
         env.insert_scheme(
             "builtin-concat".to_string(),
             TypeScheme {

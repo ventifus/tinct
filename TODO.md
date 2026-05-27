@@ -655,23 +655,26 @@ After restructuring codecs/json.llt to single-dict (for closure scoping), all 18
 Multiple type system gaps found in final review:
 
 **Map annotation key-type defaults to Unknown:**
-- [ ] Change `@Map@[value: V]` resolution to use fresh TypeVar for key, not Unknown (`src/typecheck_annot.rs:1160,1221,2601,2793`)
+- [x] Change `@Map@[value: V]` resolution to use fresh TypeVar for key, not Unknown (`src/typecheck_annot.rs:1160,1221,2601,2793`)
 
 **is_consistent_subtype missing Union-in-sub arm:**
-- [ ] Add explicit `(Type::Union(members), _) => members.iter().all(|m| Self::is_consistent_subtype(m, sup))` arm in `src/type_def.rs` before fallthrough to `is_subtype` (eliminates dependence on ground_type_of domain invariant)
+- [x] Add explicit `(Type::Union(members), _) => members.iter().all(|m| Self::is_consistent_subtype(m, sup))` arm in `src/type_def.rs` before fallthrough to `is_subtype` (eliminates dependence on ground_type_of domain invariant)
 
 **Sequential let-generalization only for Dict-form intermediates:**
 - [ ] For non-Dict fallback in sequential handler (`src/typecheck.rs:2008`), extract schemes from record type by generalizing each field at current level (currently inserts monomorphic entries)
 
 **Stale merge return-type TODO:**
-- [ ] Remove stale TODO comment at `src/type_env.rs:2982-2983` (return type is already polymorphic TypeVar with Appendable constraint)
+- [x] Remove stale TODO comment at `src/type_env.rs:2982-2983` (return type is already polymorphic TypeVar with Appendable constraint)
+
+**builtin-collect parameter type polymorphism:**
+- [x] Change `Seq(Box::new(Type::Unknown))` parameter in `builtin-collect` to use TypeVar("T") via `insert_scheme` (`src/type_env.rs:2766-2780`)
 
 ### eval-merge-laziness: builtin_merge eagerly materializes both dicts [Major]
 
-`src/builtins.rs:232-265` flattens dicts eagerly, violating lazy Overlay design. Should return `Value::Overlay(left_id, right_id)` directly.
+`builtin_merge` in `src/builtins_dict.rs` already returns `Value::Overlay(left_id, right_id)` — O(1) lazy construction.
 
-- [ ] Replace eager flattening loop in `builtin_merge` with `Value::Overlay(left_id, right_id)` construction
-- [ ] Add corpus test: repeated $merge constructs O(N)-deep chain lazily, flattens only on first access
+- [x] Replace eager flattening loop in `builtin_merge` with `Value::Overlay(left_id, right_id)` construction
+- [x] Add corpus test: repeated $merge constructs O(N)-deep chain lazily, flattens only on first access
 
 ### doc-index-filenames: doc/index.md references wrong filenames [Major]
 
@@ -682,21 +685,21 @@ Multiple type system gaps found in final review:
 
 ### builtin-eval-materialization: builtin_eval materializes last expression contradicting eval_document_exprs contract [Major]
 
-`src/builtins_meta.rs:~545` wraps `eval_document_exprs` result in additional `materialize()` call. The `eval_document_exprs` contract says "last expression returned lazily". Either remove the extra materialize() or document why builtin_eval intentionally materializes.
+Resolved: `builtin_eval` delegates directly to `eval_document_exprs` (src/builtins_meta.rs:1754) with no extra `materialize()` call. The last expression is returned lazily as an `Arc<Thunk>`, consistent with the contract.
 
-- [ ] Determine intended semantics: should builtin_eval return lazily (matching eval_document_exprs) or eagerly (current behavior)?
-- [ ] Make code and DONE.md description consistent
+- [x] Determine intended semantics: should builtin_eval return lazily (matching eval_document_exprs) or eagerly (current behavior)?
+- [x] Make code and DONE.md description consistent
 
 ### tco-multithread-caveat: TCO strong_count check TOCTOU under multi-threaded evaluation [Major]
 
-`eval_materialize.rs:829-836` TCO eligibility check `Arc::strong_count(thunk) == 1` is race-free only on single-threaded LocalSet. If runtime migrates to multi-threaded spawn, this becomes TOCTOU.
+Comment already present at `src/eval_materialize.rs:829-836` explaining that `Arc::strong_count()` is race-free under tokio's cooperative single-threaded `LocalSet` (no `.await` between count check and `take_pending_call()`), and that multi-threaded migration would require `Arc::try_unwrap` or an atomic flag protocol.
 
-- [ ] Add comment in `doc/whatif/runtime-v2.md` or `src/eval_materialize.rs` documenting that TCO eligibility must use `Arc::try_unwrap` or atomic flag protocol under multi-threaded evaluation
-- [ ] Document as known limitation: current TCO depends on cooperative single-threaded scheduler invariant
+- [x] Add comment in `src/eval_materialize.rs` documenting that TCO eligibility must use `Arc::try_unwrap` or atomic flag protocol under multi-threaded evaluation
+- [x] Document as known limitation: current TCO depends on cooperative single-threaded scheduler invariant
 
 ### doc-16-elaboration-stale: doc/16-architecture.md describes old RefCell elaboration design [Major]
 
-`doc/16-architecture.md:58` still describes old `RefCell<Option<Type>>` elaboration invariant. Current design uses `TypeAnnotationTable` side-table. Update to reflect current design.
+Already resolved: `doc/16-architecture.md:58` already describes the `TypeAnnotationTable` side-table design ("type annotations are resolved from `TypeAnnotationTable` (a side-table keyed by `NodeId`) during lowering. `CoreExpr::TypeAssert.resolved_type` is a plain field set once at lower time — no `RefCell`").
 
-- [ ] Update doc/16-architecture.md elaboration section to describe TypeAnnotationTable side-table design
+- [x] Update doc/16-architecture.md elaboration section to describe TypeAnnotationTable side-table design
 

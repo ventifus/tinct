@@ -691,6 +691,12 @@ impl Type {
                     )
                     && Self::is_consistent_subtype(sub_r, sup_r)
             }
+            // Union in sub: all members must be c.s. subtype of sup.
+            // Handles e.g. (Int | Str) ~<: Top, (Int | Unknown) ~<: Int.
+            // Must appear before the wildcard `(_, Type::Union(...))` arm below.
+            (Type::Union(members), _) => {
+                members.iter().all(|m| Self::is_consistent_subtype(m, sup))
+            }
             // Union in sup: value is c.s. subtype of union if c.s. subtype of any member
             (_, Type::Union(members)) => {
                 members.iter().any(|m| Self::is_consistent_subtype(sub, m))
