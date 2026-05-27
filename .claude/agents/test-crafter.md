@@ -161,7 +161,7 @@ Code paths where a subtle off-by-one or wrong-comparison would slip through curr
 - Describe the suspected gap and the test needed to close it
 ```
 
-Produce this plan by reading the sprint tasks from TODO.md, the relevant `doc/*.md` spec sections, and any existing tests in the affected area.
+Produce this plan by reading the sprint items from the tracker (`sprint_get`), the relevant `doc/*.md` spec sections, and any existing tests in the affected area.
 
 ## Spec-to-Test Traceability
 
@@ -506,7 +506,7 @@ _doc/*.md is aspirational — it describes intended behavior. When code diverges
 ### Praise
 - What was done well
 
-### Future Work (→ TODO.md)
+### Future Work (→ tracker backlog)
 - Description | Suggested sprint: [slug or new] | Rationale: why this is future work
 
 ### Remediation Plan

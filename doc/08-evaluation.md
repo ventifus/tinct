@@ -1309,7 +1309,7 @@ pub trait ValueVisitor {
 
 The `ValueVisitor` trait (in `src/lib.rs`) provides a visitor pattern for structural traversal of materialized `Value` trees. It's used to produce JSON and display-string output from evaluated values.
 
-**Design:** The `visit_value` function walks a materialized `Value`, calling visitor methods for each primitive type (`visit_int`, `visit_float`, `visit_str`, `visit_bool`, etc.) and recursively traversing structured types (`visit_dict`, `visit_seq_head`). The visitor returns a type-safe `Output` associated type — `serde_json::Value` for `JsonVisitor`, `String` for `DisplayVisitor`.
+**Design:** The `visit_value` function walks a materialized `Value`, calling visitor methods for each primitive type (`visit_int`, `visit_float`, `visit_str`, `visit_bool`, etc.) and recursively traversing structured types (`visit_dict`, `visit_seq_head`). The visitor returns a type-safe `Output` associated type — `String (compact JSON)` for `JsonVisitor`, `String` for `DisplayVisitor`.
 
 **Span threading:** Every `visit_*` method receives the source `Span` of the value being visited. For structured types (Dict, Seq), the span is propagated from the thunk that contained the value. This ensures that serialization errors (e.g., "cannot serialize Function to JSON") include accurate source locations pointing to where the problematic value was defined.
 
@@ -1317,7 +1317,7 @@ The `ValueVisitor` trait (in `src/lib.rs`) provides a visitor pattern for struct
 
 **Implementations:**
 
-- **JsonVisitor** (`src/lib.rs`) — produces `serde_json::Value`, used by `visit_value` for JSON output. Rejects values that cannot be represented in JSON (NaN, Infinity, Function, Builtin, Seq). Detects array-like dicts (sequential integer keys 0..n) and serializes them as JSON arrays. Used by `run_literate_eval`/`run_literate_weave`; the CLI `-o json` formatter calls the tinct `to-json` function from `stdlib/codecs/json.llt` instead.
+- **JsonVisitor** (`src/lib.rs`) — produces compact JSON `String`, used by `visit_value` for JSON output. Rejects values that cannot be represented in JSON (NaN, Infinity, Function, Builtin, Seq). Detects array-like dicts (sequential integer keys 0..n) and serializes them as JSON arrays. Used by `run_literate_eval`/`run_literate_weave`; the CLI `-o json` formatter calls the tinct `to-json` function from `stdlib/codecs/json.llt` instead.
 - **DisplayVisitor** (`src/lib.rs:1000-1100`) — produces LLT display strings, used for error messages and debug output. Accepts all value types, rendering functions as `Function([params])` and sequences as `Seq`.
 
 **Integration with materialization:** The `visit_value` function calls `materialize()` on each dict entry and sequence head thunk before recursing, ensuring thunks are forced to WHNF before the visitor callbacks are invoked. This integrates naturally with the CEK machine's selective materialization — visitors only force what they traverse.
@@ -1336,16 +1336,15 @@ The `ValueVisitor` trait (in `src/lib.rs`) provides a visitor pattern for struct
 | Thunk origin | `origin: Cow<'static, str>` | Zero-cost for empty/static origins (`Cow::Borrowed`); allocates only for dynamic labels |
 | Type inference sets | `HashSet<String>` in `collect_type_vars`, `collect_row_vars`, `collect_all_vars`, `instantiate_scheme`, `instantiate_at_level`, `generalize` | Transient per-call allocations in `src/types.rs`; each call allocates a fresh `HashSet`, collects variable names via tree traversal, then drops the set. Hot paths during type inference — `instantiate_scheme` is called per polymorphic variable reference, `generalize` per dict entry at Pass 4. Elimination: flat environments with de Bruijn indices remove the need for name-based variable collection entirely. Mitigation: pre-sized `HashSet::with_capacity` based on scheme quantifier count, or `SmallVec`-backed collection for schemes with few variables (the common case). |
 
-**Backward-compatible optimizations.** Baseline: ~113 `Rc::new(Thunk)` calls in eval.rs, ~142 `IndexMap::new()` calls in builtins.rs. Expected impact: 75-85% of addressable allocation cost.
+**Backward-compatible optimizations.** The runtime already uses `Arc<Thunk>` and `Arc<RwLock<Environment>>` throughout. Remaining allocation hot-spots:
 
 - **Dict literal fast-path** (Nix `maybeThunk`): In `eval_dict`, when `entry.value.node` is `Int|Float|Bool|Str`, create `Materialized` thunks directly instead of wrapping in `Unevaluated`. Eliminates ~40-60% of thunk allocations for config-heavy files. Safe because literals are side-effect-free, deterministic, and don't participate in letrec cycles.
-- **String interning**: `HashSet<Rc<str>>` with `Borrow<str>` lookup (avoids key duplication of `HashMap<String, Rc<str>>`). Interns *structural identifiers only* — `Key::String`, variable names, builtin names, and thunk origins. Does NOT intern user data strings (may be large and unique). Reduces key cloning to `Rc::clone` and enables O(1) pointer-equality comparison. Scoped to evaluation session lifetime (lives in `EvalContext`, cleared per `eval_file()`). Production alternative: `lasso::Rodeo` for zero-copy Spur handles.
+- **String interning**: `HashSet<Arc<str>>` with `Borrow<str>` lookup. Interns *structural identifiers only* — `Key::String`, variable names, builtin names, and thunk origins. Does NOT intern user data strings (may be large and unique). Reduces key cloning to `Arc::clone` and enables O(1) pointer-equality comparison. Scoped to evaluation session lifetime (lives in `EvalContext`, cleared per `eval_file()`). Production alternative: `lasso::Rodeo` for zero-copy Spur handles.
 - **Key cloning reduction**: Eliminate the 2× `String` clone per dict entry in `eval_dict` (once into `dict_env` bindings, once into `dict_map`). Use `entry_mut()` pattern or restructure insert order. ~30% of dict allocation cost.
-- **AST cloning reduction**: Change `CallExpr` args from `Spanned<Expr>` to `Rc<Spanned<Expr>>` so `eval_call` can `Rc::clone` instead of deep-cloning entire AST subtrees per argument. ~20-40% of call overhead. Internal refactor to ast.rs and parser.rs; backward-compatible at the public API level.
 - **func_label allocation reduction**: `format!("${name}")` on every PendingCall creation → `Cow<'static, str>` for the common VarRef case (most calls). Only allocate for DotAccess labels. ~5-10% of call overhead.
 - **Capacity hints**: `IndexMap::with_capacity(entries.len())` on all dict construction paths (`eval_dict`, `builtin_drop` Dict path, `builtin_split`).
 - **SmallVec**: `SmallVec<[Arc<Thunk>; 4]>` for call args (most calls have ≤4 args), `SmallVec<[StackFrame; 8]>` for error stacks.
-- **Origin optimization**: `origin: String` → `Rc<str>` via string interner, with static empty sentinel for the common case.
+- **Origin optimization**: `origin: String` → `Arc<str>` via string interner, with static empty sentinel for the common case.
 
 **Arena allocation (current implementation).** The runtime uses `ThunkArena` with `ThunkId` handles for all thunk storage. This is the "arena-backed registry" approach:
 
@@ -1355,46 +1354,44 @@ The `ValueVisitor` trait (in `src/lib.rs`) provides a visitor pattern for struct
 - Arena persists across `---` boundaries (append-only, no per-section deallocation)
 - **No migration needed**: ThunkIds are stable indices that never invalidate; `$include` cache stores standalone `Arc<Thunk>` (arena-independent)
 
-**Full arena-based allocation for per-section lifetimes.** Further optimization enables per-section lifetimes:
+**Full arena-based allocation for per-section lifetimes (deferred).** A further optimization — not yet implemented — would give the arena a per-section lifetime, reclaiming unreachable thunks at `---` boundaries:
 
-- **Arena allocator**: Replace `Rc::new(Thunk)` call sites with `arena.alloc(Thunk)`. Arena stores `Vec<Thunk>` (direct ownership, not Rc-wrapped). Recommended approach: index-based arena (`Vec<Thunk>` + `ThunkId` newtype over `usize`) for stable references, bounds-checked indexing, and safe letrec (allocate `ThunkId` slots, fill later, no UB).
-- **Flat environments with slot indices**: Replace `IndexMap<String, Rc<Thunk>>` chain with flat `Vec` arrays indexed by compile-time (level, slot) pairs (de Bruijn levels). Variable lookup becomes O(1). Environment reuse in function calls becomes trivially safe (each call writes to its own activation frame).
-- **Variable resolution pass**: Pre-eval pass assigns (level, slot) indices to every `VarRef`. This pass also enables TCO detection.
+- **Per-section arena**: Give each `---`-delimited section its own arena. Thunks not reachable from `%` are reclaimed when the section ends. Requires selective migration of reachable thunks across the boundary.
+- **Flat environments with slot indices**: Replace `IndexMap<String, Arc<Thunk>>` chain with flat `Vec` arrays indexed by compile-time (level, slot) pairs (de Bruijn levels). Variable lookup becomes O(1). Environment reuse in function calls becomes trivially safe.
+- **Variable resolution pass**: Pre-eval pass assigns (level, slot) indices to every `VarRef`. This pass also enables TCO detection. (Partially implemented: `src/resolve.rs` produces `ResolutionTable`; full flat-env usage is deferred.)
 
-**Arena lifetime and persistent values:** The arena lifetime is **one document section** — the text between `---` boundaries (or the entire file for single-section documents). At each `---` boundary, values reachable from the section result are **selectively migrated** from the arena to `Rc`-backed persistent storage, bound as `%` for the next section, and the section's arena is dropped.
+**Arena lifetime and persistent values (deferred design).** If per-section arenas are adopted, the arena lifetime would be **one document section**. At each `---` boundary, values reachable from `%` would be **selectively migrated** from the section arena to `Arc`-backed persistent storage. The `---` boundary is **not** a strictness point — unevaluated thunks stay unevaluated through migration.
 
-**Selective migration** is a scoped copying pass that preserves thunk state — it translates storage, not evaluation state. Unevaluated thunks stay unevaluated (lazy), Materialized thunks keep their cached values, closures retain their environment chains. The `---` boundary is **not** a strictness point. This preserves the existing lazy pipeline semantics (§Scope Chain Semantics, DOC-PIPELINE): the `---` boundary does not trigger materialization.
-
-The migration algorithm traces from `%` (the section result) and rewrites arena handles to `Rc`-backed storage:
+The migration algorithm would trace from `%` and rewrite arena handles:
 
 ```text
-migrate(value, arena, thunk_table, env_table) → Rc<Thunk>:
+migrate(value, arena, thunk_table, env_table) → Arc<Thunk>:
   for each ThunkId in value:
     if thunk_table[id] exists:     return thunk_table[id]  (preserves sharing)
     thunk = arena[id]
-    rc = Rc::new(Thunk::placeholder())       (allocate before recursing)
-    thunk_table[id] = rc                     (insert before recursing — breaks cycles)
-    rc.fill(match thunk.state:
+    arc = Arc::new(Thunk::placeholder())     (allocate before recursing)
+    thunk_table[id] = arc                    (insert before recursing — breaks cycles)
+    arc.fill(match thunk.state:
       Materialized(v)            → Materialized(migrate_value(v, arena, thunk_table, env_table))
-      Unevaluated(expr, env)     → Unevaluated(expr, migrate_env(env, arena, thunk_table, env_table))
+      Unevaluated(node, env)     → Unevaluated(node, migrate_env(env, arena, thunk_table, env_table))
       PendingBuiltin(f, args, …) → PendingBuiltin(f, migrate_args(args, …), …)
       PendingCall(f_θ, args, …)  → PendingCall(migrate(f_θ, …), migrate_args(…), …)
       Failed(e)                  → Failed(e)
       InProgress                 → unreachable at --- boundary
     )
-  return rc
+  return arc
 ```
 
-Two-phase allocation: `Rc::new(placeholder())` is inserted into the table *before* recursing into the thunk's state. This is the standard graph-copying pattern for structures with cycles — letrec environments contain mutual references, so the table entry must exist before `migrate_env` encounters the same ThunkId transitively. The placeholder is filled via `RefCell` after the recursive migration completes. This is a blackhole-sentinel pattern similar to the `InProgress` state used for cycle detection during materialization.
+Two-phase allocation: `Arc::new(placeholder())` is inserted into the table *before* recursing into the thunk's state. This is the standard graph-copying pattern for structures with cycles — letrec environments contain mutual references, so the table entry must exist before `migrate_env` encounters the same ThunkId transitively.
 
 **Two translation tables** preserve identity across the migration boundary:
 
-- `thunk_table: HashMap<ThunkId, Rc<Thunk>>` — ensures two references to the same arena thunk map to the same `Rc<Thunk>`.
-- `env_table: HashMap<EnvId, Rc<RefCell<Environment>>>` — ensures two closures capturing the same arena environment share the same migrated environment. Without this, letrec groups that share an environment would become independent copies, breaking the sharing invariant.
+- `thunk_table: HashMap<ThunkId, Arc<Thunk>>` — ensures two references to the same arena thunk map to the same `Arc<Thunk>`.
+- `env_table: HashMap<EnvId, Arc<RwLock<Environment>>>` — ensures two closures capturing the same arena environment share the same migrated environment. Without this, letrec groups that share an environment would become independent copies, breaking the sharing invariant.
 
-AST nodes (`Rc<Spanned<Expr>>`) are reference-counted and arena-independent — they are shared, not copied. The builtins environment (root of every parent chain) is always `Rc`-backed and never arena-allocated — it is the base case that terminates `migrate_env` recursion.
+AST nodes (`Arc<SurfaceNode>`) are reference-counted and arena-independent — they are shared, not copied. The builtins environment (root of every parent chain) is always `Arc`-backed and never arena-allocated — it is the base case that terminates `migrate_env` recursion.
 
-Within a section, all thunks are arena-allocated and lazy. Letrec entries reference each other freely within the arena. At `---`, only thunks reachable from `%` are migrated — unreachable intermediate thunks (temporaries, shadowed bindings) are reclaimed when the arena drops.
+Within a section, all thunks are arena-allocated and lazy. At `---`, only thunks reachable from `%` are migrated — unreachable intermediate thunks are reclaimed when the arena drops.
 
 **What migrates correctly:**
 
@@ -1404,9 +1401,9 @@ Within a section, all thunks are arena-allocated and lazy. Letrec entries refere
 | Dict entries | Each thunk migrated; sharing preserved via table |
 | Functions/closures | Captured environment chain migrated recursively |
 | Infinite Seq | Only the cons cell is migrated; lazy tail stays lazy |
-| `$include` results | Already Arc-backed (include cache outlives sections) |
+| `include` results | Already Arc-backed (include cache outlives sections) |
 
-Per execution context:
+Per execution context (deferred per-section model):
 
 | Context | Arena lifetime | Cross-boundary value | Notes |
 |---------|---------------|---------------------|-------|
@@ -1415,17 +1412,15 @@ Per execution context:
 | REPL | Per input | `%` (selectively migrated) | Each input is implicitly a section |
 | LSP | Per section | `%` (selectively migrated) | Editing section N re-evaluates N+ with cached `%` from N-1 |
 
-**Cost model:** Migration is O(thunks reachable from `%`), not O(total section thunks). For sections where `%` is a small result derived from large intermediate computations, migration cost is much lower than deep-materialization. For sections where most thunks are reachable from `%`, cost approaches deep-materialization minus the materialization cost (migration copies state; deep-materialization evaluates).
+**Cost model:** Migration is O(thunks reachable from `%`), not O(total section thunks). For sections where `%` is a small result derived from large intermediate computations, migration cost is much lower than deep-materialization.
 
-**Rejected alternatives:** (1) Session-scoped arena — unbounded memory growth during long REPL sessions; requires stop-the-world compaction with pointer fixup across all live references. (2) Hybrid arena+Rc — two allocation paths; every thunk creation must decide arena vs Rc; closures capturing thunks make escape analysis intractable. (3) Deep-materialization at `---` — changes language semantics (lazy→eager), breaks closures (env chains hold dangling arena handles after drop), and diverges on infinite sequences in `%`. (4) Per-eval copy-out without section granularity — triggers materialization of intermediate values within a section, losing laziness benefits.
+**Rejected alternatives:** (1) Session-scoped arena — unbounded memory growth during long REPL sessions; requires stop-the-world compaction with pointer fixup across all live references. (2) Hybrid arena+Arc — two allocation paths; every thunk creation must decide arena vs Arc; closures capturing thunks make escape analysis intractable. (3) Deep-materialization at `---` — changes language semantics (lazy→eager), breaks closures (env chains hold dangling arena handles after drop), and diverges on infinite sequences in `%`. (4) Per-eval copy-out without section granularity — triggers materialization of intermediate values within a section, losing laziness benefits.
 
-**LSP incremental re-evaluation:** Migrated `%` values are self-contained `Rc`-backed storage with no arena references. The LSP caches `%` per section. Editing section N re-uses cached `%` from section N-1 (already migrated, no re-evaluation) and re-evaluates only sections N through the end.
+**LSP incremental re-evaluation:** Migrated `%` values are self-contained `Arc`-backed storage with no arena references. The LSP caches `%` per section. Editing section N re-uses cached `%` from section N-1 (already migrated, no re-evaluation) and re-evaluates only sections N through the end.
 
-**`$include` interaction:** Included files are evaluated in their own arena. The include cache stores migrated results — the cache outlives any single section's arena. An `$include` call returns an already-migrated `Rc`-backed value, which is arena-independent and can be used freely across sections. This creates a controlled one-way dependency within sections: arena-allocated thunks may reference `Rc`-backed `$include` results, but never the reverse. This is structurally determined (section-local = arena, imported = Rc) and does not require per-thunk escape analysis — the "hybrid arena+Rc" alternative (rejected above) fails because it requires per-thunk decisions, not because mixing storage backends is inherently unsound.
+**Key tradeoff:** Environment lookup stays O(depth) until flat-env optimization, but the existing `Arc<RwLock<Environment>>` chain already enables safe concurrent reads and the ThunkArena keeps allocation hot.
 
-**Key tradeoff:** Environment lookup stays O(depth) until arena evaluation with flat environments, but string interning makes each lookup step cheaper (pointer comparison vs byte comparison), and the literal fast-path reduces total thunk allocations significantly.
-
-**Precedent:** Nix uses flat `Value*[]` arrays with de Bruijn levels and Boehm GC. Jsonnet uses GC heap with flat bindings. Nickel uses `Rc<RefCell<Closure>>` (same as Tinct's current approach). Backward-compatible optimizations keep Tinct at Nickel's level; arena evaluation moves toward Nix's level.
+**Precedent:** Nix uses flat `Value*[]` arrays with de Bruijn levels and Boehm GC. Jsonnet uses GC heap with flat bindings. Nickel uses `Rc<RefCell<Closure>>`. Tinct uses `Arc<Thunk>` + `ThunkArena` (arena-backed registry); per-section arenas would move closer to Nix's model.
 
 **Constraint:** The arena model must handle letrec self-reference safely in Rust (thunk slots allocated before fill, no dangling pointers). The safe Rust arena patterns are analyzed in `doc/whatif/arena-patterns.md` — the recommended approach is an index-based arena (`Vec<Thunk>` + `ThunkId` handles), following the cranelift entity pattern.
 

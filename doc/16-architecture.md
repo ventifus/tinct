@@ -680,7 +680,7 @@ The LSP server's attack surface is limited to the parser and type checker. Both 
 
 **Dependency hygiene**:
 
-- All dependencies are actively maintained stable crates (clap, indexmap, serde_json, lsp-server, lsp-types, rustyline)
+- All dependencies are actively maintained stable crates (clap, indexmap, serde_json (optional, lsp feature only), lsp-server, lsp-types, rustyline)
 - No known CVEs
 - `cargo audit` is automated in CI
 

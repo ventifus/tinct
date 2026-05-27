@@ -2,6 +2,9 @@
 
 ### `csv`
 
+Convert list-of-dicts to CSV format (header row + data rows)
+
 ```tinct
-fn@
+fn@String [let rows@Dict]
 ```
+

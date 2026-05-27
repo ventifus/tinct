@@ -115,6 +115,8 @@ fn test_promote_literal_restricted_to_promotable_classes() {
     state.constraints.push(Constraint::Class {
         class: std::sync::Arc::new(numeric_class.clone()),
         vars: vec!["t0".to_string()],
+        origin_name: None,
+        origin_span: None,
     });
 
     let promoted = promote_literal_for_constrained_var("t0", Type::IntLiteral(42), &state);
@@ -144,6 +146,8 @@ fn test_promote_literal_not_promoted_for_non_promotable_class() {
     state.constraints.push(Constraint::Class {
         class: my_class,
         vars: vec!["t0".to_string()],
+        origin_name: None,
+        origin_span: None,
     });
 
     let result = promote_literal_for_constrained_var("t0", Type::IntLiteral(42), &state);
@@ -164,6 +168,8 @@ fn test_promote_string_literal_restricted() {
     state.constraints.push(Constraint::Class {
         class: std::sync::Arc::new(comparable_class.clone()),
         vars: vec!["t0".to_string()],
+        origin_name: None,
+        origin_span: None,
     });
 
     let promoted =
@@ -185,6 +191,8 @@ fn test_promote_literal_label_kind_never_promotes() {
     state.constraints.push(Constraint::Class {
         class: std::sync::Arc::new(numeric_class.clone()),
         vars: vec!["t0".to_string()],
+        origin_name: None,
+        origin_span: None,
     });
 
     // Mark as Label kind

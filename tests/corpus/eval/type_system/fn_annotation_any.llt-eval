@@ -1,6 +1,5 @@
-# @Fn in TypeAssert position resolves to Type::Any at runtime:
-# any value passes, including non-callables. Callability is
-# enforced only at the call site (NotAFunction), not at annotation.
+# @Fn in TypeAssert position now resolves to Function{params:[], ret:Top, variadic:true}
+# (the top of the function lattice). Non-callable values such as Int are rejected.
 [@Fn 42]
-=== out
-Int(42)
+=== error
+[E011] type assertion failed

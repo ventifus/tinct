@@ -1,0 +1,8 @@
+# case: [case [let v: Ok]] — payload bound to v, used in arm body
+[value: [Ok 99]]
+[match value
+  [case [let v: Ok]    [+ v 1]]
+  [case [let _: Error] -1]
+  [case [let _]        0]]
+=== out
+Int(100)

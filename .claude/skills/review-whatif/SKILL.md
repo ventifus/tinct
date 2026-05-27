@@ -1,7 +1,7 @@
 ---
 description: Review a completed whatif — sprint coverage, implementation verification, doc consistency. Ensures sprints are complete and properly scoped, implementation matches spec, feature doc is standalone, main docs are atemporal and complete.
 argument-hint: <whatif-name>
-allowed-tools: Agent, Read, Write, Edit, Glob, Grep, mcp__mempalace-tinct__*
+allowed-tools: Agent, Read, Write, Edit, Glob, Grep, mcp__mempalace-tinct__*, mcp__tracker__*
 model: opus
 ---
 
@@ -10,7 +10,7 @@ Full consistency review for a completed whatif. Four check areas run in sequence
 1. **Sprint coverage** — are all sprints for this whatif complete? If any are incomplete, are they properly scoped for `/sprint`?
 2. **Implementation verification** — does the source code match what the whatif specified? Stubs, deferred code, de-scoped features, and divergences are flagged.
 3. **Doc consistency** — feature doc standalone, main docs cover the content, no temporal language anywhere.
-4. **Fix pass** — apply approved fixes; reschedule divergences in TODO.
+4. **Fix pass** — apply approved fixes; reschedule divergences as tracker items.
 
 ## Doc Layer Model
 
@@ -37,7 +37,7 @@ Content flows forward only: whatif → (feature doc) → main doc. Never backwar
    - **Supersession headers** — check for these optional fields immediately after `State:`:
      - `**Replaces:** [name.md](...)` — this whatif supersedes an earlier one; extract the target path(s)
      - `**Superseded by:** [name.md](...)` — this whatif was superseded; extract the successor path
-     - `**Resolved by:** sprint-slug (DONE.md)` — superseded by an implementation sprint with no successor whatif
+     - `**Resolved by:** sprint-slug` — superseded by an implementation sprint with no successor whatif
    - **Sprint slugs** — look for any explicit sprint names in Phased Adoption, Implementation Sprints, or sprint-slug style references (`sprint-name` in backticks, or `### slug:` patterns)
    - **Key identifiers** — every concrete thing the whatif says should exist: type names (`Type::X`, `Expr::X`, `Value::X`), builtin names (`builtin-foo`, `$foo`), stdlib function names, struct fields (`field_name`), error codes (`E0NN`), syntax forms (`[keyword ...]`), CLI flags (`--flag-name`), config keys
    - **Behavioral claims** — things the whatif says should happen: "when X, Y is returned", "Z is rejected with error", "A unifies with B"
@@ -65,9 +65,9 @@ Before checking sprints, verify that any supersession headers found in Step 1 ar
 1. Read `path` and check that it contains `**Replaces:**` that includes the current whatif's filename
 2. If the forward-reference is missing: record `LINK-BROKEN: <path> missing **Replaces:** for <current>`
 
-**If this whatif has `**Resolved by:** sprint-slug (DONE.md)`:**
-1. Grep DONE.md for the sprint slug — it must exist
-2. If not found: record `LINK-BROKEN: sprint-slug not found in DONE.md`
+**If this whatif has `**Resolved by:** sprint-slug`:**
+1. Check the tracker: `mcp__tracker__sprint_list(state="done")` — filter for a sprint whose name matches the slug.
+2. If not found: record `LINK-BROKEN: sprint-slug not found in tracker`
 
 **If the whatif's `State:` says `Superseded` but has no `**Superseded by:**` or `**Resolved by:**` header:**
 Record `LINK-MISSING: State is Superseded but no successor reference found`.
@@ -82,39 +82,34 @@ Determine whether every sprint associated with this whatif is complete, and whet
 
 Sprints are linked to this whatif via `**Whatif:** \`<name>\`` in their header. This is the canonical lookup — use it first, then fall back to name-based search for sprints that predate the convention.
 
-**Primary lookup — grep by Whatif field:**
-1. In **DONE.md**: grep for `**Whatif:** \`<name>\`` (exact match on the bare name). Each `###` heading containing this field is a sprint for this whatif. Mark as `DONE`.
-2. In **TODO.md**: same grep. For each matching sprint, check task completion: `COMPLETE` (all `[x]`), `IN PROGRESS` (mixed), `NOT STARTED` (all `[ ]`).
+**Tracker lookup:**
+1. In the **tracker (done sprints)**: call `mcp__tracker__sprint_list(state="done")` and filter sprints whose name matches known sprint slugs from the whatif. Mark as `DONE`.
+2. In the **tracker (backlog sprints)**: call `mcp__tracker__sprint_list(state="backlog")` and filter similarly. For each, call `mcp__tracker__sprint_get` to check item completion: `COMPLETE` (all items done), `IN PROGRESS` (mixed), `NOT STARTED` (all backlog).
+3. **Implied sprints** — if the whatif names a sprint slug explicitly (in backticks or as `### slug:`) that does not appear in the tracker, mark as `MISSING`.
 
-**Legacy fallback — for sprints without the Whatif field:**
-3. Also grep both files for the bare whatif name in `###` sprint headings and in body text. Any sprint found here but not via the `**Whatif:**` grep is a legacy sprint — note it as `LEGACY-LINK: <sprint-slug>` and treat it as associated but recommend adding the `**Whatif:** \`<name>\`` field.
-4. **Implied sprints** — if the whatif names a sprint slug explicitly (in backticks or as `### slug:`) that appears in neither file, mark as `MISSING`.
+#### 3b: Assess Incomplete Sprints
 
-#### 2b: Assess Incomplete Sprints
+For each sprint found in the tracker backlog:
 
-For each sprint that is NOT in DONE.md:
-
-**If `IN PROGRESS` or `NOT STARTED` in TODO.md:**
-
-Check sprint readiness for `/sprint`. A sprint is ready when ALL of the following hold:
-- No unchecked `Design [...]`, `Decide [...]`, or `Research [...]` tasks
-- No hedged task language: "consider", "optionally", "possibly", "if needed", "might", "could"
-- Every task references at least one source file in parentheses (e.g., `src/file.rs` or `src/file.rs:line`)
-- At least one task is explicitly a test task
-- All `**Depends on:**` sprint targets are in DONE.md
+Call `mcp__tracker__sprint_get(sprint_id)` and check sprint readiness for `/sprint`. A sprint is ready when ALL of the following hold:
+- No items with `type="decision"` or `type="research"` in `backlog` state (unresolved design questions)
+- No hedged item titles: "consider", "optionally", "possibly", "if needed", "might", "could"
+- Item titles reference at least one source file (e.g., `` `src/file.rs` `` or `` `src/file.rs:line` ``)
+- At least one item is explicitly a test task
+- All sprint `dependencies` (from `sprint_get.dependencies`) have state `"done"` in the tracker
 
 If a sprint is NOT ready, list each gap as `SPRINT-GAP: <sprint-slug> — <gap description>`.
 
 **If `MISSING`:**
 
-This sprint was never created. Record as `SPRINT-MISSING: <sprint-slug>`. The whatif described work that has no tracking entry — this needs a new sprint in TODO.md.
+This sprint was never created. Record as `SPRINT-MISSING: <sprint-slug>`. The whatif described work that has no tracking entry — this needs a new tracker sprint.
 
-#### 2c: Check Sprint-to-Whatif Alignment
+#### 3c: Check Sprint-to-Whatif Alignment
 
-Read each uncomplete sprint in TODO.md in full. Verify the tasks reflect the whatif's intent:
-- Do the tasks cover everything the whatif's corresponding phase described?
-- Are there tasks that don't correspond to anything in the whatif (scope creep without a design)?
-- Are there items in the whatif phase that have no corresponding task (scope undercount)?
+For each incomplete backlog sprint, read its items via `sprint_get`. Verify the items reflect the whatif's intent:
+- Do the items cover everything the whatif's corresponding phase described?
+- Are there items that don't correspond to anything in the whatif (scope creep without a design)?
+- Are there things in the whatif phase that have no corresponding item (scope undercount)?
 
 Record each misalignment as `SPRINT-ALIGN: <sprint-slug> — <description>`.
 
@@ -122,9 +117,9 @@ Record each misalignment as `SPRINT-ALIGN: <sprint-slug> — <description>`.
 
 ### Step 4: Implementation Verification
 
-For each whatif that is fully done (all sprints in DONE.md), or for the completed portion of a partially-done whatif, verify the source code matches the specification.
+For each whatif that is fully done (all sprints in the tracker with state `done`), or for the completed portion of a partially-done whatif, verify the source code matches the specification.
 
-#### 3a: Verify Key Identifiers Exist
+#### 4a: Verify Key Identifiers Exist
 
 For each identifier extracted in Step 1, search the source code:
 
@@ -139,7 +134,7 @@ For each identifier extracted in Step 1, search the source code:
 
 For each PRESENT identifier, briefly read the surrounding context to verify it matches the whatif's description (not just a name match on something unrelated).
 
-#### 3b: Check for Stubs and Deferred Code
+#### 4b: Check for Stubs and Deferred Code
 
 Search the code paths associated with this whatif's identifiers for patterns indicating incomplete implementation:
 
@@ -152,20 +147,19 @@ Search the code paths associated with this whatif's identifiers for patterns ind
 
 For each hit: record `STUB: <file>:<line> — <description>`.
 
-#### 3c: Check for De-scoped or Cancelled Features
+#### 4c: Check for De-scoped or Cancelled Features
 
 Search for evidence that something the whatif specified was intentionally removed or reduced in scope without being reflected in the whatif itself:
 
-- DONE.md sprint entries that include "CANCELLED", "de-scoped", "removed", "not implemented", "decided against"
-- TODO.md items that are deleted or explicitly crossed out
+- Tracker sprint context notes that include "CANCELLED", "de-scoped", "removed", "not implemented", "decided against"
 - Git commit messages (if accessible) mentioning removal of features in this area
 - Comments in source code saying "was going to do X but..." or "removed X because..."
 
 For each hit: record `DE-SCOPED: <location> — <description>`. These need to either:
 1. Be reflected in the whatif (update whatif State to Superseded-in-part), OR
-2. Be rescheduled in TODO.md if the de-scope was unintentional
+2. Be rescheduled in the tracker as an unassigned item if the de-scope was unintentional
 
-#### 3d: Spot-Check Behavioral Claims
+#### 4d: Spot-Check Behavioral Claims
 
 For the most important behavioral claims extracted in Step 1 (pick 3-5 if there are many), verify the implementation:
 
@@ -180,7 +174,7 @@ Record each divergence as `DIVERGENCE: <file>:<line> — expected: <whatif says>
 
 ### Step 5: Doc Consistency Check
 
-#### 4a: Feature Doc
+#### 5a: Feature Doc
 
 Check whether `doc/feature/<name>.md` exists.
 
@@ -191,7 +185,7 @@ Check whether `doc/feature/<name>.md` exists.
 
 **If missing:** note it; not required unless main doc gaps are too large for the chapter format.
 
-#### 4b: Main Doc Coverage
+#### 5b: Main Doc Coverage
 
 For each relevant `doc/*.md` chapter (determined from whatif's target chapters + the routing table below):
 
@@ -214,7 +208,7 @@ For each relevant `doc/*.md` chapter (determined from whatif's target chapters +
 
 For each chapter, search for the key identifiers from Step 1. Classify each as OK / STALE / GAP.
 
-#### 4c: Temporal Language
+#### 5c: Temporal Language
 
 Scan all relevant main doc chapters and the feature doc for:
 
@@ -272,15 +266,15 @@ GAP: <section or concept>
 TEMPORAL: <file>:<line> — "<phrase>"
 
 ### Priority Action List
-1. RESCHEDULE: <divergences and missing identifiers that need new TODO sprints>
+1. RESCHEDULE: <divergences and missing identifiers that need new tracker items>
 2. FIX SPRINT: <sprint readiness gaps>
 3. FIX CODE: <stubs to remove, divergences to address>
 4. FIX DOC: <content gaps, stale content, temporal language>
 ```
 
 After presenting, ask: "Which of these would you like me to address first? I can:
-- Reschedule missing/diverged work in TODO.md
-- Tighten up incomplete sprint definitions
+- Create tracker items for missing/diverged work
+- Tighten up incomplete sprint definitions in the tracker
 - Fix doc gaps and temporal language"
 
 ---
@@ -290,23 +284,23 @@ After presenting, ask: "Which of these would you like me to address first? I can
 **Rescheduling (highest priority — missing or diverged implementation)**
 
 For each `MISSING`, `DE-SCOPED`, or `DIVERGENCE` finding:
-- Propose a concrete TODO.md sprint entry or task that tracks the missing work
+- Propose a concrete tracker item that tracks the missing work — show the user before creating
 - Frame it as a concrete implementation task (not "investigate" or "consider")
-- Place it in the appropriate sprint or create a new one under the relevant `##` section
-- Show the user the proposed TODO entry before writing
+- Create as an unassigned item (`mcp__tracker__item_create(type="task"/"bug", title="...", source_dialog="review-whatif [name]: [MISSING/DIVERGENCE/DE-SCOPED]", source_file="doc/whatif/[path]")`) so grooming can assign it; or assign it to an existing related sprint if obvious
+- Show the user the proposed item before creating
 
 For each `STUB`:
-- If the stub is in an incomplete sprint already in TODO.md, add a note to that sprint's task
-- If no sprint tracks it, propose a new task
+- If a backlog sprint already covers this area, add the item to it (`item_create(type="task", title="Remove stub: [description]", sprint_id=..., source_dialog="review-whatif [name]: STUB at [file:line]", source_file="doc/whatif/[path]")`)
+- Otherwise create an unassigned item — grooming will assign it
 
 **Sprint readiness fixes (for SPRINT-GAP findings)**
 
-For each gap in an existing sprint:
-- Add file references to tasks that lack them
-- Rewrite hedged tasks as concrete tasks
-- Add a test task if none exists
-- Remove or resolve design/decide/research items
-- Show all changes to the user before applying
+For each gap in an existing backlog sprint:
+- Add file references to items that lack them: `mcp__tracker__item_update(item_id, title="...(`src/file.rs`)")`
+- Rewrite hedged item titles as concrete tasks: `item_update(item_id, title="...")`
+- Add a test item if none exists: `item_create(type="task", title="Tests: ...", sprint_id=..., source_dialog="review-whatif [name]: sprint [slug] readiness gap — missing test task")`
+- Remove unresolved decision/research items by routing them through `/rnd` first
+- Show all proposed changes to the user before applying
 
 **Doc fixes (last)**
 
@@ -320,23 +314,23 @@ In priority order:
 - Modify `doc/whatif/` files — permanently read-only
 - Apply any edit without showing the user the proposed change first
 - Invent implementation content — all doc additions must trace back to the whatif or source code
-- Write implementation code — rescheduling means TODO entries, not source changes
+- Write implementation code — rescheduling means tracker items, not source changes
 
 ---
 
-### Step 8: Update TODO
+### Step 8: Update Tracker
 
 After all approved fixes:
-- Check off any `doc-consistency` sprint tasks in TODO.md that this review satisfies
-- If new sprints were created, confirm they appear under the correct `##` section
-- If a sprint was found complete (all tasks `[x]`) but not yet in DONE.md, note this to the user — they should move it during the next `/sprint` or `/cycle` run
+- If new sprints were created for `RESCHEDULE` or `FIX SPRINT` findings, confirm they exist in the tracker as backlog sprints with context notes explaining the finding
+- If a sprint was found complete (all tracker items done) but somehow still showing as backlog, call `mcp__tracker__sprint_complete(sprint_id)` to finalize it
+- If the whatif's review sprint itself is now satisfied, mark it done in the tracker
 
 ## Key Principles
 
 - **Whatifs are read-only.** They are the primary historical artifact. This skill never edits them.
 - **Sprint coverage before doc.** Incomplete sprints are the highest-severity finding — they mean work is untracked, not just undocumented.
 - **Implementation before docs.** A `MISSING` or `DIVERGENCE` finding outranks any doc gap.
-- **Reschedule, don't delete.** De-scoped or cancelled features need a TODO entry explaining the decision, or the whatif needs a `Superseded-in-part` note. Neither is silently dropped.
+- **Reschedule, don't delete.** De-scoped or cancelled features need a tracker item explaining the decision, or the whatif needs a `Superseded-in-part` note. Neither is silently dropped.
 - **Feature docs are standalone.** No `doc/whatif/` references — they should be fully self-contained.
 - **Main docs are atemporal.** Any phrase that reveals when something was added is a violation.
 - **One whatif per invocation.** Do not try to review multiple whatifs in one run.

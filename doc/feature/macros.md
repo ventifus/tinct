@@ -118,10 +118,10 @@ source → parse → expand_surface_program → desugar → resolve → typechec
 ```
 
 - `[macro name [let params] body]` registers a compile-time function (`[defmacro ...]` is a legacy alias)
-- When `[name arg1 arg2 ...]` appears in source, the parser quotes the arguments (converts AST to tinct dicts) and calls the macro function with the quoted forms
-- The macro function returns a tinct dict representing the expanded AST
-- The expander converts the dict back to AST and continues expansion
-- `quote` converts code to its AST-dict representation; `unquote` splices values into quoted code
+- When `[name arg1 arg2 ...]` appears in source, the expander quotes the arguments (converts each AST node to a typed `Expr` variant value) and calls the macro function with the quoted forms
+- The macro function returns a `Value::Expression` (or a dict convertible to AST) representing the expanded code
+- The expander converts the result back to AST and continues expansion
+- `quote` converts code to its `Expr` variant representation; `unquote` splices values into quoted code
 
 ### Hygiene Model
 
@@ -140,7 +140,7 @@ Macros that introduce literal binding names (e.g. `[quote [let [x: ...] ...]]` w
 
 ### AST-as-Dict Representation
 
-The AST enum (`Expr`) is projected into tinct dicts with a stable schema. Changes to the AST break existing macros, so the representation is versioned via a `schema-version` field. Each AST node becomes a dict with a `type` key discriminator. This representation:
+The AST enum (`Expr`) is projected into typed variant values with a stable schema. Changes to the AST break existing macros, so the representation is versioned via a `schema-version` field. Each AST node becomes a typed `Expr` variant value. This representation:
 
 - **Uses typed `Expr` variant values** — `ast_to_dict` wraps each AST node in the corresponding `Expr` variant constructor: `Variant("Call", {...})`, `Variant("VarRef", {...})`, `Variant("Literal", {...})`, etc. Macros inspect nodes via variant pattern matching: `[match node [case [let _ : VarRef] ...] [case [let _ : Call] ...]]`.
 - **Mirrors the `Expr` enum** — one variant shape per `Expr` variant, with fields matching the Rust struct fields.
@@ -169,7 +169,7 @@ Macros defined in an included file are available to the includer **only when usi
 
 ### Parser / Grammar
 
-`src/parser.rs` recognizes three new keywords: `macro` (produces `SurfaceExpression::MacroDecl`), `syntax-class` (produces `SurfaceExpression::SyntaxClass`), and `splice` (produces `SurfaceExpression::UnquoteSplice` in dict context). `[defmacro ...]` is a backward-compatible alias producing the same `SurfaceExpression::MacroDecl` node. Macro invocations are syntactically identical to function calls — the expander distinguishes them by name lookup against registered macros. No change to expression parsing.
+`src/parser.rs` recognizes three new keywords: `macro` (produces `SurfaceDeclaration::MacroDecl`), `syntax-class` (produces `SurfaceDeclaration::SyntaxClass`), and `splice` (produces `SurfaceDeclaration::Splice` in dict context). `[defmacro ...]` is a backward-compatible alias producing the same `SurfaceDeclaration::MacroDecl` node. Macro invocations are syntactically identical to function calls — the expander distinguishes them by name lookup against registered macros. No change to expression parsing.
 
 ### AST
 
@@ -216,7 +216,7 @@ Macro-generated AST carries dual spans: the expansion site (where the macro was 
   hygiene as a property.
 - Flatt, M. (2016). "Binding as sets of scopes." In *POPL '16*,
   pp. 705--717. ACM. --- Scope sets: simpler, more uniform hygiene model
-  replacing rename-based approaches. Candidate for Phase 3 hygiene.
+  replacing rename-based approaches. An alternative to gensym-based hygiene.
 - Bawden, A. & Rees, J. (1988). "Syntactic closures." In *LFP '88*,
   pp. 86--95. ACM. --- Introduces syntactic closures: first-class
   representations of syntactic environments that allow controlled

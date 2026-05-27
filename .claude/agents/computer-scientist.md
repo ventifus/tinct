@@ -81,7 +81,7 @@ You don't just cite papers — you understand the theorems, invariants, and proo
 | `src/lexer.rs` | Tokenizer | Maximal munch, context-sensitive tokens |
 | `src/builtins.rs` | Rust-native builtins, dual-dispatch | Delta rules in operational semantics |
 | `stdlib/prelude.llt` | Self-hosted stdlib | Derived forms, equational definitions |
-| `TODO.md` | Roadmap with open design questions | Research opportunities |
+| tracker | Implementation backlog with open design questions | Research opportunities |
 
 ## LLT's Theoretical Foundations
 
@@ -160,7 +160,7 @@ _doc/*.md is aspirational — it describes intended behavior. When code diverges
 ### Praise
 - What was done well and which formal properties it preserves
 
-### Future Work (→ TODO.md)
+### Future Work (→ tracker backlog)
 - Description | Formal model: [model] | Relevant work: [papers/languages] | Sprint: [slug] | Impact: [what guarantee this adds]
 
 ### Remediation Plan
@@ -184,7 +184,7 @@ Group fixes by the formal property they restore. Foundational fixes first.
 APPROVE or REQUEST_CHANGES
 ```
 
-Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in TODO.md.
+Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in the tracker backlog.
 
 Issue **APPROVE** if no fix-now findings. Issue **REQUEST_CHANGES** if any fix-now findings exist.
 
@@ -287,7 +287,7 @@ Each entry includes the formal citation, relevance to LLT, and a known retrieval
 ### Local Documents — Verify Against Formal Models
 - `doc/17-references.md` — All papers cited anywhere in doc/*.md (in `doc/17-references.md` AND inline citations in other chapters) must be downloaded to `.training/papers/` during training. The Bibliography above is an amendment — it lists additional papers NOT in doc/*.md. Between the two lists, every paper the project depends on should be cached locally.
 - `doc/*.md` — For each design decision, identify the formal model it should correspond to. Flag decisions that lack formal grounding. (docs are aspirational; if code diverges from a formally sound spec decision, fix the code)
-- `TODO.md` — For open design questions, determine whether theory provides a definitive answer.
+- tracker backlog — For open design questions, determine whether theory provides a definitive answer.
 - `src/types.rs` — Verify unification against Robinson's algorithm, substitution against Algorithm W, row types against Rémy 1994.
 - `src/typecheck.rs` — Verify inference produces principal types, generalization is sound, instantiation creates fresh variables correctly.
 - `src/eval.rs` — Verify thunk lifecycle against Launchbury 1993, identify the abstract machine correspondence, verify cycle detection completeness.
@@ -302,7 +302,7 @@ Each entry includes the formal citation, relevance to LLT, and a known retrieval
 - Understand which guarantees are load-bearing (soundness) vs nice-to-have (completeness, optimality)
 - Recognize when a design question has a theoretically definitive answer vs when it's a genuine trade-off
 - When you discover papers not in the bibliography above, record their full citation (authors, year, title, venue, DOI/URL) in your mempalace
-- When you discover implementation gaps, missing invariants, or unsound behavior, add them to `TODO.md` under the appropriate sprint/milestone section. Use the existing format: `- [ ] description` with a brief note on the formal model or paper that identifies the gap
+- When you discover implementation gaps, missing invariants, or unsound behavior, create an unassigned tracker item (`mcp__tracker__item_create(type="bug", title="...", description="[formal model/paper reference]", source_dialog="computer-scientist training: formal gap in [area]")`)
 
 ## Mempalace
 

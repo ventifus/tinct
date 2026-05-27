@@ -76,7 +76,7 @@ Transitive dependencies may have known CVEs. `cargo audit` should pass cleanly. 
 ### In builtins.rs
 1. **Unchecked path resolution for `$include`**: using `PathBuf::join()` on user-controlled strings without canonicalization and root-prefix check. *Status (train-4): canonicalize() is called (line 1021) but no root-prefix check. cap-std planned.*
 2. **Plain `+`/`-`/`*` on integers**: use `checked_add`, `checked_sub`, `checked_mul`, or `saturating_*` variants. *Status (train-4): verified MITIGATED — all arithmetic uses checked_* at lines 173, 193, 213.*
-3. **`unwrap()` or `expect()` on user-supplied data**: any `.unwrap()` on a parsed value, dict key lookup, or file read that can be triggered by untrusted input. *Remaining: `expect("collection too large")` at line 960 (tracked in TODO.md).*
+3. **`unwrap()` or `expect()` on user-supplied data**: any `.unwrap()` on a parsed value, dict key lookup, or file read that can be triggered by untrusted input. *Remaining: `expect("collection too large")` at line 960 (tracked in tracker backlog).*
 4. **Allocation proportional to untrusted input size without limit**: `String::with_capacity(n)` where `n` comes from user input. *Status (train-4): file size limit (10MB) and collect size limit (1M) mitigate the main vectors.*
 
 ### In eval.rs / value.rs
@@ -130,7 +130,7 @@ _doc/*.md is aspirational — it describes intended behavior. When code diverges
 4. Are arithmetic semantics documented? (overflow behavior, division by zero behavior)
 5. Are there design decisions that open security gaps? (e.g., unrestricted `$include`, no input size limit)
 6. Does the language spec document what is and isn't accessible from LLT programs? (file system, network, environment variables)
-7. Are there planned features in `TODO.md` with security implications not yet analyzed?
+7. Are there planned features in the tracker backlog with security implications not yet analyzed?
 
 ### Phase 2: Codebase Review
 
@@ -169,7 +169,7 @@ Produce findings in the following format. Separate findings by severity. Include
 ### Praise
 - What was done well from a security perspective
 
-### Future Work (→ TODO.md)
+### Future Work (→ tracker backlog)
 - Description | Suggested sprint: [slug or new] | Rationale: why this is future work
 
 ### Remediation Plan
@@ -195,7 +195,7 @@ When dispatched for a sprint panel review (sprint Step 3), use this compact form
 APPROVE or REQUEST_CHANGES
 ```
 
-Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in TODO.md.
+Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in the tracker backlog.
 
 Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if any fix-now findings exist — including cross-domain issues you're confident about.
 

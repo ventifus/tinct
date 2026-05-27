@@ -13,8 +13,8 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
-    create_stdlib_env, literate, materialize_sync as materialize, parse, visit_value, EvalContext,
-    JsonVisitor, Thunk, MAX_FILE_SIZE,
+    create_stdlib_env, escape_json_str, literate, materialize_sync as materialize, parse,
+    visit_value, EvalContext, JsonVisitor, Thunk, MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -2939,8 +2939,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
             }
             msg
         })?;
-    let output = serde_json::to_string_pretty(&json)
-        .map_err(|e| format!("JSON serialization error: {e}"))?;
+    let output = tinct::json_pretty_print(&json);
 
     println!("{output}");
 
@@ -3287,8 +3286,7 @@ fn run_literate_weave(
         // Always serialize the result to JSON (emit is additive)
         let json = visit_value(&val, &eval_ctx, 0, &JsonVisitor, thunk.definition_span())
             .map_err(|e| format!("error serializing code block {} result: {e}", i + 1))?;
-        let output_str = serde_json::to_string(&json)
-            .map_err(|e| format!("JSON serialization error in block {}: {e}", i + 1))?;
+        let output_str = json;
 
         block_outputs.push(BlockOutput {
             out: Some(output_str),
@@ -3590,6 +3588,189 @@ fn substitute_inline_markers(woven: &str, block_outputs: &[BlockOutput]) -> Stri
     result
 }
 
+/// Extract a top-level field value from a compact JSON object string.
+///
+/// Returns `Some(display_string)` if `json_output` is a JSON object containing `field`,
+/// where the display string strips surrounding `"..."` for string values and returns
+/// the raw fragment for numbers, booleans, and null.
+///
+/// Only handles the flat output of `JsonVisitor` (compact, no extra whitespace).
+fn json_get_object_field(json_output: &str, field: &str) -> Option<String> {
+    let s = json_output.trim();
+    if !s.starts_with('{') || !s.ends_with('}') {
+        return None;
+    }
+    // Build the key fragment to search for: `"<field>":`.
+    // This handles the common case where keys do not themselves contain `"` or `\`.
+    // For keys with special chars the escaped form would differ, but field names in
+    // inline expressions are always simple identifiers.
+    let needle = format!("\"{}\":", field);
+    // Scan through the object manually to find the key.
+    // We need string-aware scanning to skip over key/value strings safely.
+    let inner = &s[1..s.len() - 1]; // strip outer { }
+    let mut pos = 0;
+    let bytes = inner.as_bytes();
+    while pos < bytes.len() {
+        // Skip whitespace
+        while pos < bytes.len() && matches!(bytes[pos], b' ' | b'\t' | b'\n' | b'\r') {
+            pos += 1;
+        }
+        if pos >= bytes.len() {
+            break;
+        }
+        // We expect a quoted key
+        if bytes[pos] != b'"' {
+            break;
+        }
+        // Find end of key string (handle escapes)
+        let key_start = pos;
+        pos += 1; // skip opening "
+        while pos < bytes.len() {
+            if bytes[pos] == b'\\' {
+                pos += 2; // skip escape sequence
+            } else if bytes[pos] == b'"' {
+                pos += 1; // skip closing "
+                break;
+            } else {
+                pos += 1;
+            }
+        }
+        // Skip ':'
+        while pos < bytes.len() && bytes[pos] == b':' {
+            pos += 1;
+        }
+        // Find end of value (handle strings, nested objects/arrays)
+        let val_start = pos;
+        if pos >= bytes.len() {
+            break;
+        }
+        let val_end = json_scan_value(inner, pos);
+        let key_fragment = &inner[key_start..];
+        if key_fragment.starts_with(needle.as_str()) {
+            // This is the key we want — extract the raw value
+            let raw = inner[val_start..val_end].trim();
+            // Convert to display string
+            let display = if raw.starts_with('"') && raw.ends_with('"') && raw.len() >= 2 {
+                // Single-pass unescape of a JSON string value.
+                // Sequential .replace() chains are incorrect for inputs like \\n (escaped
+                // backslash followed by n), which would be mishandled as a newline. A
+                // single-pass character scanner handles all escape sequences correctly,
+                // including \uXXXX Unicode escapes emitted by escape_json_str for control chars.
+                let inner_str = &raw[1..raw.len() - 1];
+                let mut result = String::with_capacity(inner_str.len());
+                let mut chars = inner_str.chars();
+                while let Some(c) = chars.next() {
+                    if c == '\\' {
+                        match chars.next() {
+                            Some('"') => result.push('"'),
+                            Some('\\') => result.push('\\'),
+                            Some('n') => result.push('\n'),
+                            Some('r') => result.push('\r'),
+                            Some('t') => result.push('\t'),
+                            Some('b') => result.push('\x08'),
+                            Some('f') => result.push('\x0c'),
+                            Some('/') => result.push('/'),
+                            Some('u') => {
+                                // Consume exactly 4 hex digits per RFC 8259 §7
+                                let hex: String = chars.by_ref().take(4).collect();
+                                if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                                    if let Some(ch) = char::from_u32(n) {
+                                        result.push(ch);
+                                    }
+                                }
+                                // If invalid, silently drop (malformed JSON input)
+                            }
+                            Some(c2) => {
+                                result.push('\\');
+                                result.push(c2);
+                            }
+                            None => {}
+                        }
+                    } else {
+                        result.push(c);
+                    }
+                }
+                result
+            } else {
+                raw.to_string()
+            };
+            return Some(display);
+        }
+        pos = val_end;
+        // Skip ',' separator
+        while pos < bytes.len() && matches!(bytes[pos], b',' | b' ' | b'\t' | b'\n' | b'\r') {
+            pos += 1;
+        }
+    }
+    None
+}
+
+/// Scan a JSON value starting at `pos` in `s`, returning the end position.
+///
+/// Handles strings (with escapes), arrays, objects, and primitives.
+fn json_scan_value(s: &str, mut pos: usize) -> usize {
+    let bytes = s.as_bytes();
+    while pos < bytes.len() && matches!(bytes[pos], b' ' | b'\t') {
+        pos += 1;
+    }
+    if pos >= bytes.len() {
+        return pos;
+    }
+    match bytes[pos] {
+        b'"' => {
+            pos += 1;
+            while pos < bytes.len() {
+                if bytes[pos] == b'\\' {
+                    pos += 2;
+                } else if bytes[pos] == b'"' {
+                    pos += 1;
+                    break;
+                } else {
+                    pos += 1;
+                }
+            }
+            pos
+        }
+        b'{' | b'[' => {
+            let open = bytes[pos];
+            let close = if open == b'{' { b'}' } else { b']' };
+            let mut depth = 1usize;
+            pos += 1;
+            while pos < bytes.len() && depth > 0 {
+                if bytes[pos] == b'"' {
+                    pos += 1;
+                    while pos < bytes.len() {
+                        if bytes[pos] == b'\\' {
+                            pos += 2;
+                        } else if bytes[pos] == b'"' {
+                            pos += 1;
+                            break;
+                        } else {
+                            pos += 1;
+                        }
+                    }
+                } else if bytes[pos] == open {
+                    depth += 1;
+                    pos += 1;
+                } else if bytes[pos] == close {
+                    depth -= 1;
+                    pos += 1;
+                } else {
+                    pos += 1;
+                }
+            }
+            pos
+        }
+        _ => {
+            // Primitive: scan until ',' or '}' or ']' or end
+            while pos < bytes.len() && !matches!(bytes[pos], b',' | b'}' | b']') {
+                pos += 1;
+            }
+            pos
+        }
+    }
+}
+
 /// Resolve an inline expression against a JSON output string.
 ///
 /// Supports `%.field` patterns (dot-key field extraction from a JSON object).
@@ -3597,16 +3778,8 @@ fn substitute_inline_markers(woven: &str, block_outputs: &[BlockOutput]) -> Stri
 fn resolve_inline_expr(expr: &str, json_output: &str) -> String {
     // Handle %.field pattern
     if let Some(field) = expr.strip_prefix("%.") {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_output) {
-            if let Some(field_val) = val.get(field) {
-                return match field_val {
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Number(n) => n.to_string(),
-                    serde_json::Value::Bool(b) => b.to_string(),
-                    serde_json::Value::Null => "null".to_string(),
-                    _ => field_val.to_string(),
-                };
-            }
+        if let Some(display) = json_get_object_field(json_output, field) {
+            return display;
         }
     }
     // Fallback: return full output
@@ -3659,27 +3832,8 @@ impl DescribeJson {
                 }
             }
             DescribeJson::Str(s) => {
-                // Escape JSON string: quotes, backslash, control chars
-                let mut escaped = String::with_capacity(s.len() + 2);
-                escaped.push('"');
-                for ch in s.chars() {
-                    match ch {
-                        '"' => escaped.push_str("\\\""),
-                        '\\' => escaped.push_str("\\\\"),
-                        '\n' => escaped.push_str("\\n"),
-                        '\r' => escaped.push_str("\\r"),
-                        '\t' => escaped.push_str("\\t"),
-                        '\u{0008}' => escaped.push_str("\\b"), // backspace
-                        '\u{000C}' => escaped.push_str("\\f"), // form feed
-                        c if c.is_control() => {
-                            // Unicode escape for other control chars
-                            escaped.push_str(&format!("\\u{:04x}", c as u32));
-                        }
-                        c => escaped.push(c),
-                    }
-                }
-                escaped.push('"');
-                escaped
+                // Delegate to the shared escape_json_str from lib.rs to avoid duplication.
+                format!("\"{}\"", escape_json_str(s))
             }
             DescribeJson::Array(items) => {
                 if items.is_empty() {
@@ -4736,5 +4890,54 @@ mod tests {
         use tinct::NetCapEntry;
         let entry = parse_cli_net_cap_entry("any").unwrap();
         assert!(matches!(entry, NetCapEntry::Any));
+    }
+
+    // -------------------------------------------------------------------------
+    // json_get_object_field tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn json_get_object_field_string_value() {
+        assert_eq!(
+            json_get_object_field(r#"{"host":"localhost"}"#, "host"),
+            Some("localhost".to_string())
+        );
+    }
+
+    #[test]
+    fn json_get_object_field_number_value() {
+        assert_eq!(
+            json_get_object_field(r#"{"port":8080}"#, "port"),
+            Some("8080".to_string())
+        );
+    }
+
+    #[test]
+    fn json_get_object_field_missing_key() {
+        assert_eq!(json_get_object_field(r#"{"x":1}"#, "y"), None);
+    }
+
+    #[test]
+    fn json_get_object_field_not_an_object() {
+        assert_eq!(json_get_object_field(r#"[1,2,3]"#, "x"), None);
+    }
+
+    #[test]
+    fn json_get_object_field_escaped_backslash_n_in_value() {
+        // JSON: {"k":"a\\nb"} — the value is escaped backslash + n (not newline).
+        // After unescaping: a\nb (backslash + n as two characters).
+        assert_eq!(
+            json_get_object_field(r#"{"k":"a\\nb"}"#, "k"),
+            Some("a\\nb".to_string())
+        );
+    }
+
+    #[test]
+    fn json_get_object_field_unicode_escape() {
+        // JSON escape sequence decodes to U+0001 (SOH control character).
+        assert_eq!(
+            json_get_object_field("{\"k\":\"\\u0001\"}", "k"),
+            Some("\x01".to_string())
+        );
     }
 }

@@ -6665,7 +6665,7 @@ mod tests {
     fn check(input: &str) -> Result<(), Vec<TypeError>> {
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let (errors, _table) = typecheck_surface_program_annotation_table(&program);
+        let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program);
         if errors.is_empty() {
             Ok(())
         } else {
@@ -12209,7 +12209,7 @@ mod tests {
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
 
-        let (errors, _table) = typecheck_surface_program_annotation_table(&program);
+        let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program);
         assert!(
             errors.is_empty(),
             "% pipeline binding should work, got error: {:?}",
@@ -12225,7 +12225,7 @@ mod tests {
         let input = "[x: 1  y: 2]\n---\n[z: [+ %.x %.y]]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
-        let (errors, _table) = typecheck_surface_program_annotation_table(&program);
+        let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program);
         assert!(
             errors.is_empty(),
             "% multi-field pipeline should type-check without errors; got: {:?}",
@@ -12247,7 +12247,7 @@ mod tests {
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
 
-        let (errors, _table) = typecheck_surface_program_annotation_table(&program);
+        let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program);
         assert!(
             errors.is_empty(),
             "named section binding should work, got error: {:?}",
@@ -12264,7 +12264,7 @@ mod tests {
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
 
-        let (errors, _table) = typecheck_surface_program_annotation_table(&program);
+        let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program);
         assert!(
             errors.is_empty(),
             "simple dict should typecheck without errors"

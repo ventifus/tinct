@@ -301,7 +301,7 @@ Accumulator-based stdlib functions are O(n²), but the mechanism differs by buil
 - **`append` is O(n) per call** — `builtin_append` flattens any overlay/dict into an IndexMap (O(n) clone) then does an O(1) insert. `append`-based accumulators (`values`, `entries`, `reindex`, `zip`, `conj`, `uniq`, etc.) pay the O(n) cost eagerly on every iteration → O(n²) total.
 - **`merge` is O(1) per call** — `builtin_merge` returns a lazy `Value::Overlay(left, right)` without cloning either side. `merge`-based accumulators (`remove`, `map-entries`, `slice`, `from-entries`, `group-by`, `deep-merge`, `walk`, etc.) are O(1) per iteration but accumulate an n-deep `Overlay` chain that costs O(n²) when the result is eventually flattened at access time.
 
-In both cases the overall complexity is O(n²). The prelude docstrings for `from-entries`, `group-by`, and `deep-merge` still say `O(n²) due to repeated merge on accumulator` — correct in result, but the explanation is stale (the cost is now deferred to flatten time, not paid per-merge). Don't optimize prematurely — correctness first. This is a known limitation tracked in TODO.md.
+In both cases the overall complexity is O(n²). The prelude docstrings for `from-entries`, `group-by`, and `deep-merge` still say `O(n²) due to repeated merge on accumulator` — correct in result, but the explanation is stale (the cost is now deferred to flatten time, not paid per-merge). Don't optimize prematurely — correctness first. This is a known limitation tracked in the tracker backlog.
 
 ## Encapsulation Pattern (Two-Dict Documents)
 
@@ -339,12 +339,12 @@ Why this works: `eval_document` materializes each intermediate dict, inserts its
 When you encounter a function that *cannot* be implemented in LLT due to a language limitation:
 
 1. **Do not silently add a Rust builtin.** Instead, document the limitation clearly.
-2. **Add a deferred design item** to TODO.md or the sprint's future-work section describing:
+2. **Create an unassigned tracker item** (`item_create(type="task", title="...", source_dialog="stdlib-author: LLT limitation — [missing primitive]")`) or add to the sprint's future-work context note describing:
    - What the function needs to do
    - What specific language primitive or feature is missing (e.g., "no way to construct a list cons cell", "no string character iteration", "no mutable accumulator")
    - A proposed solution: a new primitive, a language refinement, or a minimal builtin that would unblock the LLT implementation
 3. **Prefer minimal primitives over full implementations.** If `sort` can't be written in LLT because there's no `cons` primitive, propose adding `cons` (minimal) rather than implementing `sort` in Rust (maximal). The goal is to give LLT the building blocks it needs, not to bypass it.
-4. **Temporary Rust builtins are acceptable only when** the function is blocking other sprint work AND the design-level solution requires its own design phase. In this case, mark the builtin with a comment `// TEMPORARY: replace with LLT impl after [missing feature]` and add the corresponding TODO item.
+4. **Temporary Rust builtins are acceptable only when** the function is blocking other sprint work AND the design-level solution requires its own design phase. In this case, mark the builtin with a comment `// TEMPORARY: replace with LLT impl after [missing feature]` and create a corresponding unassigned tracker item.
 
 ## When Writing Stdlib Functions
 
@@ -407,7 +407,7 @@ Produce findings in the following format. Separate findings by severity. Include
 ### Praise
 - What was done well
 
-### Future Work (→ TODO.md)
+### Future Work (→ tracker backlog)
 - Description | Suggested sprint: [slug or new] | Rationale: why this is future work
 
 ### Remediation Plan
@@ -433,7 +433,7 @@ When dispatched for a sprint panel review (sprint Step 3), use this compact form
 APPROVE or REQUEST_CHANGES
 ```
 
-Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in TODO.md.
+Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in the tracker backlog.
 
 Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if any fix-now findings exist — including cross-domain issues you're confident about.
 
@@ -461,7 +461,7 @@ Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip
 - Self-hosted stdlib patterns in lazy languages (covered in 2026-04-18/19 sessions)
 - Function naming conventions (covered — LLT uses kebab-case, `?` predicates, `-impl`/`-step` helpers)
 - Composition patterns: pipe, compose, threading macros (covered — `->` uses variadic reduce)
-- Identifying stdlib gaps vs mature ecosystems (ongoing — see stdlib-missing-core in TODO.md)
+- Identifying stdlib gaps vs mature ecosystems (ongoing — check tracker backlog for stdlib-missing-core items)
 - Documentation accuracy — doc/11-stdlib.md has many stale counts and missing functions
 - Correctness patterns: Seq guard at entry, $type-of inner check, error-as-control-flow with $try
 - **NEW**: Unified binding syntax migration — all stdlib functions need `[fn [let ...] body]` form

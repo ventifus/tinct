@@ -26,7 +26,7 @@ git diff --stat HEAD
 ## Review Process
 
 Work through each topic below sequentially. For each topic:
-1. Document every finding with file path, line number, and scope (**FIX NOW** = sprint-scope, must fix before panel review; **FIX LATER** = future work, goes to TODO.md)
+1. Document every finding with file path, line number, and scope (**FIX NOW** = sprint-scope, must fix before panel review; **FIX LATER** = future work, goes to tracker as unassigned item)
 2. Cite the specific rule, spec section, or best practice being violated
 
 ### Topics
@@ -65,7 +65,7 @@ Work through each topic below sequentially. For each topic:
 
 Write the full report to `.tmp/sprint-review-{slug}.md` (the caller will specify the slug in their brief) with:
 1. **FIX NOW**: bulleted list, each with file:line and recommended fix (sprint-scope issues that must be resolved — all nit-level issues are FIX NOW regardless of whether they're in the sprint's changes or existing code)
-2. **FIX LATER**: bulleted list, same format (genuinely future work — new features, large refactors, separate concerns. Never use for nits.)
+2. **FIX LATER**: bulleted list, same format (genuinely future work — new features, large refactors, separate concerns. Never use for nits.) — the sprint coordinator creates tracker items for these using `source_dialog="Sprint [slug] sprint-reviewer: [finding]"` as provenance
 3. **Praise**: briefly note what was done well
 
 After the findings, add a **Remediation Plan** covering every identified issue. Group related issues into logical work items ordered so foundational changes come before dependent changes. For each work item:
@@ -80,7 +80,7 @@ If any findings require a judgment call, include an `## Open Questions` section 
 
 At the very end of the report, write a `## Verdict` section containing exactly one of:
 
-- **APPROVE** — no FIX NOW findings. FIX LATER findings are acceptable and will be added to TODO.md.
+- **APPROVE** — no FIX NOW findings. FIX LATER findings are acceptable and will be added to the tracker backlog.
 - **REQUEST_CHANGES** — one or more FIX NOW findings exist that must be fixed before panel review.
 
 Also return this verdict as the last line of your response to the caller (outside the file), so the sprint coordinator can read it without opening the report.

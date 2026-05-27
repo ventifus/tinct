@@ -1,10 +1,10 @@
 ---
-description: Dispatch specialist agents to audit the full codebase and update TODO.md with findings.
-allowed-tools: Agent, Read, Write, Edit, Glob, Grep, mcp__mempalace-tinct__*
+description: Dispatch specialist agents to audit the full codebase and create tracker items for findings.
+allowed-tools: Agent, Read, Write, Edit, Glob, Grep, mcp__mempalace-tinct__*, mcp__tracker__*
 model: opus
 ---
 
-You are the LLT codebase health checker. Dispatch all specialist agents in parallel, collect their findings, and update TODO.md.
+You are the LLT codebase health checker. Dispatch all specialist agents in parallel, collect their findings, and create tracker sprints/items for them.
 
 ## Step 1: Dispatch Specialist Agents
 
@@ -31,13 +31,15 @@ Brief each agent with:
 
 Do NOT read agent definitions into your own context. Do NOT create intermediate files.
 
-## Step 2: Update TODO.md
+## Step 2: Create Tracker Items
 
 After all agents report back:
 
 1. **Deduplicate**: if multiple agents flag the same issue, keep the most detailed description
-2. **Update TODO.md** with Critical, Major, and Minor findings only. Skip Nit-level items — they're too small to track and will be addressed naturally when the relevant code is sprinted. Tag each added item with its severity.
+2. **Create tracker entries** for Critical, Major, and Minor findings only. Skip Nit-level items — they're too small to track and will be addressed naturally when the relevant code is sprinted.
+   - Create items directly with `mcp__tracker__item_create(type="bug"|"task", title="...", description="[severity] — [agent]: ...", source_dialog="Codebase health review cycle #N: [agent] [severity] — [finding summary]")`. The `sprint_id` is optional — leave items unassigned; grooming will assign them to sprints later. Only create a sprint if there are enough findings to fill one immediately.
+   - Use type `bug` for correctness/soundness issues, `task` for improvements, `research` for open questions.
 
 ## Output
 
-Report a brief summary: how many items were added per agent (only agents that contributed findings), and the total new items added to TODO.md.
+Report a brief summary: how many tracker items were created per agent (only agents that contributed findings), and the total new sprints/items added.

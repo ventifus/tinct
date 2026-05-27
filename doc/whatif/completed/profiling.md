@@ -1,6 +1,6 @@
 # What If: Program Profiling and Call Tracing for tinct
 
-**State:** Accepted — 2026-05-25
+**State:** Completed — 2026-05-27
 
 What would it take to answer "why is this tinct program slow?" and "how does this program flow?" — with attribution that crosses the Rust/tinct boundary transparently?
 

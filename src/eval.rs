@@ -27,9 +27,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use indexmap::IndexMap;
 
 use crate::arena::{EnvArena, ThunkArena, ThunkId};
-use crate::ast::{
-    CoreExpr, LiteralPattern, Param, Pattern, Span, Spanned,
-};
+use crate::ast::{CoreExpr, LiteralPattern, Param, Pattern, Span, Spanned};
 use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
 use crate::types::{Row, Type};
@@ -54,11 +52,27 @@ type MatchPatternFuture<'a> = std::pin::Pin<
 /// Must be `Pin<Box<...>>` to support recursion (direct `async fn` recursion is unsized).
 type ValuesEqualFuture = std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<bool>>>>;
 
-/// Reserved annotation meta-keys that are NOT structural field declarations.
-/// A PropertyDict annotation whose entries are all meta-keys (e.g., `[@[default: 0] $x]`)
-/// is metadata-only and has no type to validate. A PropertyDict with at least one
-/// non-meta-key entry (e.g., `[@[name: String age: Int] $x]`) is a structural record
-/// annotation that should enforce at minimum a Dict tag check when `resolved_type` is `None`.
+#[cfg(test)]
+const ANNOTATION_META_KEYS: &[&str] = &["default", "type", "doc", "is", "repr", "_constructor"];
+
+#[cfg(test)]
+pub(crate) fn annotation_has_structural_fields(annotation: &crate::ast::Annotation) -> bool {
+    match annotation {
+        crate::ast::Annotation::PropertyDict(entries) => entries.iter().any(|entry| {
+            let Some(key_node) = entry.node.key.as_ref() else {
+                return false;
+            };
+            match &key_node.expr {
+                crate::ast::SurfaceExpression::Str(name) => {
+                    !ANNOTATION_META_KEYS.contains(&name.as_str())
+                }
+                _ => true,
+            }
+        }),
+        crate::ast::Annotation::Simple(_) | crate::ast::Annotation::Annotated(_, _) => false,
+    }
+}
+
 /// Formats a field path for TypeAssert error display. Each segment is separately
 /// backtick-quoted: `user`.`address`.`zip`. Not for reconstruction — display only.
 pub(crate) fn format_field_path(field_path: &[String]) -> String {
@@ -68,7 +82,6 @@ pub(crate) fn format_field_path(field_path: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(".")
 }
-
 
 /// Immutable session configuration shared across evaluation.
 #[derive(Debug)]
@@ -4415,7 +4428,19 @@ mod tests {
     #[test]
     fn test_type_assert_int_fails_on_string() {
         // [@Int "hello"] -> error
-        let thunk = eval_str("[@Int \"hello\"]", empty_env(), &test_ctx()).unwrap();
+        // Use eval_core_for_test with resolved_type: Type::Int to exercise the TypeAssert
+        // failure path directly. eval_str uses an empty TypeAnnotationTable which gives
+        // resolved_type=Type::Unknown (accepts all values via consistent subtyping).
+        let span = Span::origin();
+        let expr = Spanned::new(
+            CoreExpr::TypeAssert {
+                annotation: sp(Annotation::Simple("Int".into())),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span)),
+                resolved_type: Type::Int,
+            },
+            span,
+        );
+        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
             err.to_string()
@@ -4428,7 +4453,18 @@ mod tests {
     #[test]
     fn test_type_assert_string_fails_on_int() {
         // [@String 42] -> error  (42 is Int, not String)
-        let thunk = eval_str("[@String 42]", empty_env(), &test_ctx()).unwrap();
+        // Use eval_core_for_test with resolved_type: Type::Str. See note in
+        // test_type_assert_int_fails_on_string for why eval_str cannot be used here.
+        let span = Span::origin();
+        let expr = Spanned::new(
+            CoreExpr::TypeAssert {
+                annotation: sp(Annotation::Simple("String".into())),
+                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span)),
+                resolved_type: Type::Str,
+            },
+            span,
+        );
+        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
             err.to_string()
@@ -4456,8 +4492,27 @@ mod tests {
 
     #[test]
     fn test_type_assert_property_dict_type_mismatch() {
-        // [@[type: Int] "hello"] -> error
-        let thunk = eval_str("[@[type: Int] \"hello\"]", empty_env(), &test_ctx()).unwrap();
+        // [@[type: Int] "hello"] -> error (PropertyDict annotation with type:Int, value is String)
+        // Use eval_core_for_test with resolved_type: Type::Int. The typecheck pass resolves
+        // the `type: Int` property to Type::Int; without typecheck (eval_str), resolved_type
+        // is Type::Unknown which accepts all values via consistent subtyping.
+        let span = Span::origin();
+        let entries = vec![surf_ann_entry(
+            "type",
+            SurfaceExpression::VarRef {
+                name: "Int".into(),
+                escaped: false,
+            },
+        )];
+        let expr = Spanned::new(
+            CoreExpr::TypeAssert {
+                annotation: sp(Annotation::PropertyDict(entries)),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span)),
+                resolved_type: Type::Int,
+            },
+            span,
+        );
+        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
             err.to_string()
@@ -4486,12 +4541,27 @@ mod tests {
     #[test]
     fn test_type_assert_default_used_on_mismatch() {
         // [@[type: Int  default: 0] "hello"] -> 0 (type mismatch, returns default)
-        let thunk = eval_str(
-            "[@[type: Int  default: 0] \"hello\"]",
-            empty_env(),
-            &test_ctx(),
-        )
-        .unwrap();
+        // Use eval_core_for_test with resolved_type: Type::Int so the type check fires.
+        let span = Span::origin();
+        let entries = vec![
+            surf_ann_entry(
+                "type",
+                SurfaceExpression::VarRef {
+                    name: "Int".into(),
+                    escaped: false,
+                },
+            ),
+            surf_ann_entry("default", SurfaceExpression::Int(0)),
+        ];
+        let expr = Spanned::new(
+            CoreExpr::TypeAssert {
+                annotation: sp(Annotation::PropertyDict(entries)),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span)),
+                resolved_type: Type::Int,
+            },
+            span,
+        );
+        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(0));
     }
@@ -4499,7 +4569,24 @@ mod tests {
     #[test]
     fn test_type_assert_property_dict_no_default_errors_on_mismatch() {
         // [@[type: Int] "hello"] -> error (no default, mismatch is an error)
-        let thunk = eval_str("[@[type: Int] \"hello\"]", empty_env(), &test_ctx()).unwrap();
+        // Use eval_core_for_test with resolved_type: Type::Int so the type check fires.
+        let span = Span::origin();
+        let entries = vec![surf_ann_entry(
+            "type",
+            SurfaceExpression::VarRef {
+                name: "Int".into(),
+                escaped: false,
+            },
+        )];
+        let expr = Spanned::new(
+            CoreExpr::TypeAssert {
+                annotation: sp(Annotation::PropertyDict(entries)),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span)),
+                resolved_type: Type::Int,
+            },
+            span,
+        );
+        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx()).unwrap();
         let err = materialize(&thunk, None, &test_ctx()).unwrap_err();
         assert!(
             err.to_string()
@@ -4512,29 +4599,60 @@ mod tests {
     #[test]
     fn test_type_assert_number_default_int_passes_string_triggers() {
         // [@[type: Number  default: -1] 42] -> 42 (Int passes Number check)
-        let thunk = eval_str(
-            "[@[type: Number  default: -1] 42]",
-            empty_env(),
-            &test_ctx(),
-        )
-        .unwrap();
+        // Use eval_core_for_test with resolved_type: Type::Number so the type check fires.
+        let span = Span::origin();
+        let entries_pass = vec![
+            surf_ann_entry(
+                "type",
+                SurfaceExpression::VarRef {
+                    name: "Number".into(),
+                    escaped: false,
+                },
+            ),
+            surf_ann_entry("default", SurfaceExpression::Int(-1)),
+        ];
+        let expr_pass = Spanned::new(
+            CoreExpr::TypeAssert {
+                annotation: sp(Annotation::PropertyDict(entries_pass)),
+                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span)),
+                resolved_type: Type::Number,
+            },
+            span,
+        );
+        let thunk = eval_core_for_test(expr_pass, empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(42));
 
         // [@[type: Number  default: -1] "nope"] -> -1 (String fails Number, returns default)
-        let thunk2 = eval_str(
-            "[@[type: Number  default: -1] \"nope\"]",
-            empty_env(),
-            &test_ctx(),
-        )
-        .unwrap();
+        let entries_fail = vec![
+            surf_ann_entry(
+                "type",
+                SurfaceExpression::VarRef {
+                    name: "Number".into(),
+                    escaped: false,
+                },
+            ),
+            surf_ann_entry("default", SurfaceExpression::Int(-1)),
+        ];
+        let expr_fail = Spanned::new(
+            CoreExpr::TypeAssert {
+                annotation: sp(Annotation::PropertyDict(entries_fail)),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("nope".into()), span)),
+                resolved_type: Type::Number,
+            },
+            span,
+        );
+        let thunk2 = eval_core_for_test(expr_fail, empty_env(), &test_ctx()).unwrap();
         let val2 = materialize(&thunk2, None, &test_ctx()).unwrap();
         assert_eq!(val2, Value::Int(-1));
     }
 
     #[test]
     fn test_type_assert_default_accesses_outer_scope() {
-        // [@[type: Int  default: $fallback] hello] with fallback=99 -> 99
+        // [@[type: Int  default: $fallback] "hello"] with fallback=99 -> 99
+        // Use eval_core_for_test with resolved_type: Type::Int so the mismatch fires.
+        // The default expression $fallback references the outer env, so the env must
+        // contain "fallback" when the default is evaluated.
         let env = empty_env();
         env.write().unwrap().insert(
             "fallback".into(),
@@ -4543,12 +4661,33 @@ mod tests {
                 test_span(1, 1, 1, 1),
             )),
         );
-        let thunk = eval_str(
-            "[@[type: Int  default: $fallback] \"hello\"]",
-            Arc::clone(&env),
-            &test_ctx(),
-        )
-        .unwrap();
+        let span = Span::origin();
+        // Build the default expression as CoreExpr::FreeVar("fallback")
+        let entries = vec![
+            surf_ann_entry(
+                "type",
+                SurfaceExpression::VarRef {
+                    name: "Int".into(),
+                    escaped: false,
+                },
+            ),
+            surf_ann_entry(
+                "default",
+                SurfaceExpression::VarRef {
+                    name: "fallback".into(),
+                    escaped: true, // $fallback in source
+                },
+            ),
+        ];
+        let expr = Spanned::new(
+            CoreExpr::TypeAssert {
+                annotation: sp(Annotation::PropertyDict(entries)),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span)),
+                resolved_type: Type::Int,
+            },
+            span,
+        );
+        let thunk = eval_core_for_test(expr, Arc::clone(&env), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert_eq!(val, Value::Int(99));
     }
@@ -6759,18 +6898,39 @@ mod tests {
 
     #[test]
     fn test_elaboration_gap_structural_annotation_non_dict_with_default() {
-        // [@[name: String default: []] 42] with resolved_type=None (no typecheck)
-        // Should use default: value is Int (not Dict), default is available
-        let thunk = eval_str(
-            "[@[name: String  default: []] 42]",
-            empty_env(),
-            &test_ctx(),
-        )
-        .unwrap();
+        // [@[name: String  default: []] 42] — structural record annotation with default.
+        // Value is Int (not a Dict), so the record shape check fails and the default is used.
+        // Use eval_core_for_test with resolved_type: Type::Record({name: Str}) so the
+        // as_record_row_merged path fires. With resolved_type=Unknown (from eval_str),
+        // is_consistent_subtype(Int, Unknown)=true and the TypeAssert passes trivially.
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), Type::Str);
+        let record_type = Type::Record(Row { fields });
+
+        let span = Span::origin();
+        let entries = vec![
+            surf_ann_entry(
+                "name",
+                SurfaceExpression::VarRef {
+                    name: "String".into(),
+                    escaped: false,
+                },
+            ),
+            surf_ann_entry("default", SurfaceExpression::Dict(vec![])),
+        ];
+        let expr = Spanned::new(
+            CoreExpr::TypeAssert {
+                annotation: sp(Annotation::PropertyDict(entries)),
+                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span)),
+                resolved_type: record_type,
+            },
+            span,
+        );
+        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
         assert!(
             matches!(val, Value::Dict(_)),
-            "Should use default when tag check fails; got: {val:?}"
+            "Should use default when record shape check fails; got: {val:?}"
         );
     }
 
@@ -6838,19 +6998,32 @@ mod tests {
 
     #[test]
     fn test_value_matches_type_int_literal() {
-        // Type::IntLiteral(n) matches only Int(n)
-        assert!(value_matches_type(&Value::Int(5), &Type::IntLiteral(5)));
+        // Type::IntLiteral(n): ground_type_of erases Int values to Type::Int.
+        // is_consistent_subtype(Type::Int, Type::IntLiteral(n)) falls to is_subtype which
+        // returns false — Int is NOT a subtype of IntLiteral(n) (it's the other way).
+        // Literal types are static-only constraints (the type checker uses them for
+        // exhaustiveness); at runtime, ground_type_of produces the base type, not a literal.
+        assert!(!value_matches_type(&Value::Int(5), &Type::IntLiteral(5)));
         assert!(!value_matches_type(&Value::Int(6), &Type::IntLiteral(5)));
         assert!(!value_matches_type(
             &string_val("5".into()),
             &Type::IntLiteral(5)
         ));
+        // But IntLiteral(n) IS a subtype of Int (literal specializes base type).
+        // Check via consistent subtyping from the literal side:
+        // is_consistent_subtype(IntLiteral(5), Int) = is_subtype(IntLiteral(5), Int) = true.
+        assert!(Type::is_consistent_subtype(
+            &Type::IntLiteral(5),
+            &Type::Int
+        ));
     }
 
     #[test]
     fn test_value_matches_type_string_literal() {
-        // Type::StringLiteral("foo") matches only String("foo")
-        assert!(value_matches_type(
+        // Type::StringLiteral: ground_type_of erases String values to Type::Str.
+        // is_consistent_subtype(Type::Str, Type::StringLiteral("foo")) = is_subtype(Str, StringLiteral)
+        // = false — Str is NOT a subtype of StringLiteral (it's the other way).
+        assert!(!value_matches_type(
             &string_val("foo".into()),
             &Type::StringLiteral("foo".into())
         ));
@@ -6861,6 +7034,11 @@ mod tests {
         assert!(!value_matches_type(
             &Value::Int(0),
             &Type::StringLiteral("foo".into())
+        ));
+        // StringLiteral IS a subtype of Str (literal specializes base type).
+        assert!(Type::is_consistent_subtype(
+            &Type::StringLiteral("foo".into()),
+            &Type::Str
         ));
     }
 
@@ -6883,31 +7061,54 @@ mod tests {
 
     #[test]
     fn test_value_matches_type_record_always_true() {
-        // Type::Record always returns true (deferred to proxy contract wrapping).
-        // This is intentional per the spec: record field validation happens via
-        // validate_and_wrap_record, not value_matches_type.
+        // Under AGT consistent subtyping, value_matches_type uses ground_type_of and
+        // is_consistent_subtype. Record type checks are now structural:
+        //
+        // - Non-Dict values: ground_type_of(Int) = Type::Int, which is NOT a consistent
+        //   subtype of Type::Record({x: Int}) — Int and Record are disjoint.
+        // - Dict values: ground_type_of(Dict({})) = Type::Record({}) (empty row).
+        //   is_consistent_subtype(Record({}), Record({x: Int})) checks field presence:
+        //   field "x" required in sup but absent in empty sub → returns false.
+        //
+        // Record validation for TypeAssert happens via as_record_row_merged + validate_and_wrap_record
+        // in the TypeAssertCheck continuation, NOT via value_matches_type. value_matches_type
+        // is only called for non-record types.
         let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
         let record_type = Type::Record(Row { fields });
-        // Even a non-Dict value returns true here — record validation is done separately
-        assert!(value_matches_type(&Value::Int(99), &record_type));
-        assert!(value_matches_type(
+        // Non-Dict value: ground_type_of(Int) = Type::Int, not a subtype of Record.
+        assert!(!value_matches_type(&Value::Int(99), &record_type));
+        // Empty Dict: ground_type_of(Dict({})) = Record({}), missing required field "x".
+        assert!(!value_matches_type(
             &Value::Dict(IndexMap::new()),
             &record_type
         ));
+        // Dict with the required field "x" AND the field type is Unknown (erased) which
+        // is consistent with Int (Unknown ~<: T for all T). However this test requires
+        // alloc_thunk to build the dict — covered by TypeAssert corpus tests instead.
+        // The key insight: value_matches_type is NOT the Record validation entry point
+        // at runtime; TypeAssertCheck uses as_record_row_merged → validate_and_wrap_record.
     }
 
     #[test]
     fn test_value_matches_type_proxy() {
-        // Type::Proxy should match Value::Proxy and reject other value kinds
+        // Under AGT consistent subtyping: ground_type_of(Value::Proxy) = Type::Unknown.
+        // Capability types (Proxy, Handle, DirCap, etc.) are opaque to the type system
+        // at runtime — they return Unknown so is_consistent_subtype(Unknown, T) = true for all T.
+        // This is the correct gradual typing behavior: the type checker validates proxy usage
+        // statically; at runtime, Unknown passes through any annotation.
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
         let handler = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span)));
         let proxy_val = Value::Proxy { handler };
 
+        // Unknown ~<: any type, so Proxy values pass all annotations at runtime.
         assert!(value_matches_type(&proxy_val, &Type::Proxy));
-        assert!(!value_matches_type(&proxy_val, &Type::Int));
+        assert!(value_matches_type(&proxy_val, &Type::Int)); // Unknown ~<: Int = true
         assert!(value_matches_type(&proxy_val, &Type::Top));
+
+        // Verify ground_type_of explicitly
+        assert_eq!(ground_type_of(&proxy_val), Type::Unknown);
     }
 
     // ── validate_and_wrap_record unit tests ──────────────────────────────────

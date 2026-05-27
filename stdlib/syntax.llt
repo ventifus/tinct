@@ -10,7 +10,7 @@
 #
 # Per unified-bindings.md (Accepted 2026-05-17), [fn [x y] body] (without let)
 # SHOULD be a parse error. Currently the parser accepts both forms — this is a
-# known bug tracked in TODO.md (unified-bindings-parser-enforcement).
+# known bug tracked in the tracker (unified-bindings-parser-enforcement).
 # The macros here handle programmatic macro-output cases where old-form Call
 # nodes are produced by other macros.
 #

@@ -987,6 +987,14 @@ mod tests {
 
     #[test]
     fn test_session_depth_exhaustion() {
+        // Return freed heap pages to the OS before spawning the large-stack thread.
+        // The test suite accumulates malloc fragments from previous tests; malloc_trim
+        // compacts the heap so the 128MB stack allocation doesn't push RSS over the
+        // container memory limit.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::malloc_trim(0);
+        }
         // 256 levels of LLT recursion needs more than the default 8MB Rust stack.
         let result = std::thread::Builder::new()
             .stack_size(128 * 1024 * 1024) // 128MB — debug-mode materialize() needs ~100MB at 256 levels

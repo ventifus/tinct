@@ -71,7 +71,7 @@ CLI Output (main.rs)
 | `src/value.rs` | Thunk `origin` label, `BuiltinFn` signature with `Span` parameter |
 | `src/builtins.rs` | Builtin error construction with call-site spans; `standard_builtins()` |
 | `CLAUDE.md` | Architecture section and file structure table |
-| `TODO.md` | Known cross-layer bugs |
+| tracker backlog | Known cross-layer bugs |
 
 ## Error Quality Standards
 
@@ -215,7 +215,7 @@ Produce findings in the following format. Separate findings by severity. Include
 ### Praise
 - What was done well
 
-### Future Work (→ TODO.md)
+### Future Work (→ tracker backlog)
 - Description | Suggested sprint: [slug or new] | Rationale: why this is future work
 
 ### Remediation Plan
@@ -241,7 +241,7 @@ When dispatched for a sprint panel review (sprint Step 3), use this compact form
 APPROVE or REQUEST_CHANGES
 ```
 
-Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in TODO.md.
+Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in the tracker backlog.
 
 Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if any fix-now findings exist — including cross-domain issues you're confident about.
 
@@ -266,7 +266,7 @@ Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip
 - `src/value.rs` — Thunk `origin` labels and BuiltinFn Span parameter
 - `src/builtins.rs` — How builtins construct errors with call-site spans
 - `CLAUDE.md` — Architecture section and file structure table
-- `TODO.md` — Known cross-layer bugs: annotation TypeVar aliasing, variadic param type, anonymous _open RowVar, named arg type checker gap
+- tracker backlog — Known cross-layer bugs: annotation TypeVar aliasing, variadic param type, anonymous _open RowVar, named arg type checker gap
 
 ### Focus Areas
 - Language implementation pipeline architectures

@@ -1,1153 +1,537 @@
 # prelude
 
-### `identity`
+### `variant?`
+
+Check if value is a Variant.
 
 ```tinct
-fn@Unknown
+fn@Bool [let v]
 ```
 
-### `const`
+### `payload-of`
+
+[unindent "\nExtract the payload dict from a Variant value.\n\nExample: [payload-of [Ok 42]] => [a: 42] (the payload dict)\n\nNote: Materializes the Variant's payload by treating the Variant as a Dict\n(auto-unpack semantics). For unit variants (no payload), returns an empty dict.\nUsed by json.llt to serialize Variant payloads.\n"]
 
 ```tinct
-fn@Unknown
-```
-
-### `not`
-
-```tinct
-fn@Unknown
-```
-
-### `and`
-
-```tinct
-fn@Unknown
-```
-
-### `or`
-
-```tinct
-fn@Unknown
-```
-
-### `any?`
-
-```tinct
-fn@Unknown
-```
-
-### `all?`
-
-```tinct
-fn@Unknown
-```
-
-### `>`
-
-```tinct
-fn@Unknown
-```
-
-### `<=`
-
-```tinct
-fn@Unknown
-```
-
-### `>=`
-
-```tinct
-fn@Unknown
-```
-
-### `quot`
-
-```tinct
-fn@Unknown
-```
-
-### `mod`
-
-```tinct
-fn@Unknown
-```
-
-### `ceil`
-
-```tinct
-fn@Unknown
-```
-
-### `trunc`
-
-```tinct
-fn@Unknown
-```
-
-### `abs`
-
-```tinct
-fn@Unknown
-```
-
-### `sign`
-
-```tinct
-fn@Unknown
-```
-
-### `clamp`
-
-```tinct
-fn@Unknown
+fn@Any [let v]
 ```
 
 ### `words`
 
+Split string on spaces into words
+
 ```tinct
-fn@
+fn@Seq [let s@String]
 ```
 
 ### `unindent`
 
-```tinct
-fn@
-```
-
-### `when`
+Strip common leading indentation from a multi-line string
 
 ```tinct
-fn@Unknown
-```
-
-### `unless`
-
-```tinct
-fn@Unknown
-```
-
-### `cond`
-
-```tinct
-fn@Unknown
-```
-
-### `get`
-
-```tinct
-fn@Unknown
-```
-
-### `has?`
-
-```tinct
-fn@Unknown
-```
-
-### `get-or`
-
-```tinct
-fn@Unknown
-```
-
-### `get-in`
-
-```tinct
-fn@Unknown
-```
-
-### `get-in-or`
-
-```tinct
-fn@Unknown
+fn@String [let s@String]
 ```
 
 ### `empty?`
 
+Check if collection is empty
+
 ```tinct
-fn@
+fn@Bool [let xs]
 ```
 
 ### `make-entry`
 
+Construct single-entry dict from key and value
+
 ```tinct
-fn@
+fn@Dict [let k v]
 ```
 
 ### `set`
 
-```tinct
-fn@
-```
-
-### `remove`
+Set key in dict
 
 ```tinct
-fn@Unknown
+fn@Dict [let xs@Dict k v]
 ```
 
 ### `update`
 
-```tinct
-fn@
-```
-
-### `values`
+Update dict value by applying function
 
 ```tinct
-fn@Unknown
-```
-
-### `entries`
-
-```tinct
-fn@Unknown
-```
-
-### `from-entries`
-
-```tinct
-fn@Unknown
+fn@Dict [let xs@Dict k f@Fn]
 ```
 
 ### `nth`
 
+Get nth element (supports negative indices)
+
 ```tinct
-(value)
+fn@Any [let xs@Dict n@Int]
 ```
 
 ### `conj`
 
-```tinct
-fn@
-```
-
-### `reindex`
+Append element to end of list
 
 ```tinct
-fn@Unknown
+fn@Dict [let xs@Dict x]
 ```
 
 ### `sort-by`
 
+Sort with custom comparator
+
 ```tinct
-fn@
+fn@Dict [let cmp@Fn xs@Dict]
 ```
 
 ### `sorted`
 
+Sort collection in ascending order
+
 ```tinct
-fn@
+fn@Dict [let xs]
 ```
 
 ### `sorted-by`
 
-```tinct
-fn@
-```
-
-### `take-while`
+Sort with custom comparator (accepts Seq or Dict)
 
 ```tinct
-fn@Unknown
-```
-
-### `drop-while`
-
-```tinct
-fn@Unknown
-```
-
-### `map-entries`
-
-```tinct
-fn@Unknown
+fn@Dict [let cmp@Fn xs]
 ```
 
 ### `fold`
 
+Left fold (alias for reduce)
+
 ```tinct
-fn@
+fn@a [let f@Fn init@a xs]
 ```
 
-### `slice-impl`
+### `flatten-impl-dict`
+
+Flatten dict implementation (internal helper)
 
 ```tinct
-fn@
-```
-
-### `slice-step`
-
-```tinct
-fn@
-```
-
-### `slice`
-
-```tinct
-fn@Unknown
-```
-
-### `zip`
-
-```tinct
-fn@Unknown
-```
-
-### `flatten-impl`
-
-```tinct
-fn@
-```
-
-### `flatten-step`
-
-```tinct
-fn@
-```
-
-### `flatten`
-
-```tinct
-fn@Unknown
+fn@Dict [let xs@Dict]
 ```
 
 ### `find-deep-impl`
 
+Find-deep implementation (internal helper)
+
 ```tinct
-fn@
+fn@Any [let xs@Dict target ks i@Int]
 ```
 
 ### `find-deep-check`
 
+Find-deep check (internal helper)
+
 ```tinct
-fn@
+fn@Any [let xs@Dict target ks i@Int current-key]
 ```
 
 ### `find-deep-try`
 
+Find-deep try (internal helper)
+
 ```tinct
-fn@
+fn@Any [let subtree@Dict target parent@Dict ks i@Int]
 ```
 
 ### `find-deep-try-check`
 
-```tinct
-fn@
-```
-
-### `find-deep`
+Find-deep try-check (internal helper)
 
 ```tinct
-fn@Unknown
-```
-
-### `with-entries`
-
-```tinct
-fn@Unknown
-```
-
-### `partition`
-
-```tinct
-fn@Unknown
-```
-
-### `flat-map`
-
-```tinct
-fn@Unknown
+fn@Any [let result parent@Dict target ks i@Int]
 ```
 
 ### `find-first`
 
+Find first element matching predicate; errors if none found
+
 ```tinct
-fn@
+fn@a [let pred@Fn xs]
 ```
 
 ### `find-first-or`
 
-```tinct
-fn@
-```
-
-### `group-by-step`
+Find first matching element or return default
 
 ```tinct
-fn@
-```
-
-### `group-by`
-
-```tinct
-fn@Unknown
+fn@a [let pred@Fn default@a xs]
 ```
 
 ### `deep-merge-step`
 
-```tinct
-fn@
-```
-
-### `deep-merge`
+Deep-merge step (internal helper)
 
 ```tinct
-fn@Unknown
+fn@Dict [let a@Dict b@Dict e]
 ```
 
 ### `walk-dict`
 
-```tinct
-fn@
-```
-
-### `walk`
+Walk nested dict structure (internal helper)
 
 ```tinct
-fn@Unknown
-```
-
-### `unzip`
-
-```tinct
-fn@Unknown
-```
-
-### `transpose`
-
-```tinct
-fn@Unknown
-```
-
-### `sum`
-
-```tinct
-fn@Unknown
-```
-
-### `product`
-
-```tinct
-fn@Unknown
-```
-
-### `min`
-
-```tinct
-fn@Unknown
-```
-
-### `max`
-
-```tinct
-fn@Unknown
+fn@Dict [let f@Fn xs@Dict]
 ```
 
 ### `count`
 
+Count elements satisfying predicate
+
 ```tinct
-fn@
+fn@Int [let pred@Fn xs]
 ```
 
 ### `contains?`
 
-```tinct
-fn@
-```
-
-### `uniq-impl`
+Check if collection contains element
 
 ```tinct
-fn@
-```
-
-### `uniq-step`
-
-```tinct
-fn@
+fn@Bool [let xs val]
 ```
 
 ### `uniq`
 
+Remove duplicates (keep first occurrence). Still O(n²) due to O(n) contains-seq? per element, but uses O(1) cons instead of O(n) append.
+
 ```tinct
-fn@
+fn@Dict [let xs@Dict]
 ```
 
 ### `foldr`
 
+Right fold
+
 ```tinct
-fn@
+fn@a [let f@Fn acc@a xs]
 ```
 
-### `compose`
+### `int?`
+
+Check if value is Int
 
 ```tinct
-fn@Unknown
+fn@Any [let x]
 ```
 
-### `->`
+### `float?`
+
+Check if value is Float
 
 ```tinct
-fn@Unknown
+fn@Any [let x]
+```
+
+### `str?`
+
+Check if value is String
+
+```tinct
+fn@Any [let x]
+```
+
+### `bool?`
+
+Check if value is Bool
+
+```tinct
+fn@Any [let x]
+```
+
+### `null?`
+
+Check if value is null (empty dict [])
+
+```tinct
+fn@Any [let x]
+```
+
+### `dict?`
+
+Check if value is Dict
+
+```tinct
+fn@Any [let x]
+```
+
+### `fn?`
+
+Check if value is a function (Function or Builtin)
+
+```tinct
+fn@Any [let x]
+```
+
+### `proxy?`
+
+Check if value is a Proxy
+
+```tinct
+fn@Any [let x]
+```
+
+### `seq?`
+
+Check if value is a Seq
+
+```tinct
+fn@Any [let x]
+```
+
+### `bytes?`
+
+Check if value is Bytes
+
+```tinct
+fn@Any [let x]
 ```
 
 ### `num?`
 
-```tinct
-fn@
-```
-
-### `record?`
+Check if value is numeric (Int or Float)
 
 ```tinct
-(value)
-```
-
-### `map?`
-
-```tinct
-(value)
+fn@Bool [let x]
 ```
 
 ### `list?`
 
-```tinct
-fn@
-```
-
-### `try-or`
+Check if dict has all integer keys
 
 ```tinct
-fn@Unknown
-```
-
-### `ok?`
-
-```tinct
-fn@Unknown
-```
-
-### `err?`
-
-```tinct
-fn@Unknown
-```
-
-### `and-then`
-
-```tinct
-fn@Unknown
-```
-
-### `result-or`
-
-```tinct
-fn@Unknown
-```
-
-### `result-map`
-
-```tinct
-fn@Unknown
-```
-
-### `result-ok`
-
-```tinct
-fn@Unknown
-```
-
-### `result`
-
-```tinct
-(value)
-```
-
-### `Functor`
-
-```tinct
-(value)
-```
-
-### `FunctorResult`
-
-```tinct
-(value)
-```
-
-### `FunctorSeq`
-
-```tinct
-(value)
-```
-
-### `Applicative`
-
-```tinct
-(value)
-```
-
-### `ApplicativeResult`
-
-```tinct
-(value)
-```
-
-### `ApplicativeSeq`
-
-```tinct
-(value)
-```
-
-### `Monad`
-
-```tinct
-(value)
-```
-
-### `MonadResult`
-
-```tinct
-(value)
-```
-
-### `MonadSeq`
-
-```tinct
-(value)
-```
-
-### `Foldable`
-
-```tinct
-(value)
-```
-
-### `FoldableSeq`
-
-```tinct
-(value)
-```
-
-### `FoldableRecord`
-
-```tinct
-(value)
-```
-
-### `FoldableResult`
-
-```tinct
-(value)
-```
-
-### `Traversable`
-
-```tinct
-(value)
-```
-
-### `TraversableSeq`
-
-```tinct
-(value)
-```
-
-### `TraversableResult`
-
-```tinct
-(value)
+fn@Bool [let xs]
 ```
 
 ### `maybe-map`
 
-```tinct
-(value)
-```
-
-### `FunctorMaybe`
+Map over Maybe value
 
 ```tinct
-(value)
-```
-
-### `ApplicativeMaybe`
-
-```tinct
-(value)
-```
-
-### `MonadMaybe`
-
-```tinct
-(value)
-```
-
-### `TraversableMaybe`
-
-```tinct
-(value)
-```
-
-### `sequence`
-
-```tinct
-fn@Unknown
-```
-
-### `traverse`
-
-```tinct
-fn@Unknown
-```
-
-### `forM`
-
-```tinct
-fn@Unknown
-```
-
-### `liftM2`
-
-```tinct
-fn@Unknown
-```
-
-### `whenM`
-
-```tinct
-fn@Unknown
-```
-
-### `Add`
-
-```tinct
-(value)
-```
-
-### `Sub`
-
-```tinct
-(value)
-```
-
-### `Mul`
-
-```tinct
-(value)
-```
-
-### `Div`
-
-```tinct
-(value)
-```
-
-### `Equatable`
-
-```tinct
-(value)
-```
-
-### `# EquatableInt`
-
-```tinct
-(value)
-```
-
-### `# EquatableFloat`
-
-```tinct
-(value)
-```
-
-### `# EquatableStr`
-
-```tinct
-(value)
-```
-
-### `# EquatableBool`
-
-```tinct
-(value)
-```
-
-### `Comparable`
-
-```tinct
-(value)
-```
-
-### `# ComparableInt`
-
-```tinct
-(value)
-```
-
-### `# ComparableFloat`
-
-```tinct
-(value)
-```
-
-### `# ComparableStr`
-
-```tinct
-(value)
-```
-
-### `Showable`
-
-```tinct
-(value)
-```
-
-### `# ShowableInt`
-
-```tinct
-(value)
-```
-
-### `# ShowableFloat`
-
-```tinct
-(value)
-```
-
-### `# ShowableStr`
-
-```tinct
-(value)
-```
-
-### `# ShowableBool`
-
-```tinct
-(value)
-```
-
-### `Mappable`
-
-```tinct
-(value)
-```
-
-### `MappableSeq`
-
-```tinct
-(value)
-```
-
-### `MappableDict`
-
-```tinct
-(value)
-```
-
-### `Appendable`
-
-```tinct
-(value)
-```
-
-### `AppendableStr`
-
-```tinct
-(value)
-```
-
-### `AppendableDict`
-
-```tinct
-(value)
-```
-
-### `AppendableSeq`
-
-```tinct
-(value)
-```
-
-### `assert`
-
-```tinct
-fn@Unknown
+fn@Any [let f ma]
 ```
 
 ### `<`
 
+Less than
+
 ```tinct
-fn@
+fn@Bool [let x@a y@a]
 ```
 
 ### `=`
 
+Equality
+
 ```tinct
-fn@
+fn@Bool [let x@a y@a]
 ```
 
 ### `+`
 
+Addition
+
 ```tinct
-fn@
+fn@Number [let a@Number b@Number]
 ```
 
 ### `-`
 
+Subtraction
+
 ```tinct
-fn@
+fn@Number [let a@Number b@Number]
 ```
 
 ### `*`
 
+Multiplication
+
 ```tinct
-fn@
+fn@Number [let a@Number b@Number]
 ```
 
 ### `/`
 
+Division
+
 ```tinct
-fn@
+fn@Number [let a@Number b@Number]
 ```
 
 ### `if`
 
+Conditional (select branch by condition)
+
 ```tinct
-(value)
+fn@Any [let c t e]
+```
+
+### `raise`
+
+[unindent "\nRaise a user error with the given message string.\n\nExample: [raise \"something went wrong\"]\n\nNote: Always fails. The error message must be a String. Use [try f] to catch\nuser errors from zero-arg functions.\n"]
+
+```tinct
+fn@Any [let msg@String]
 ```
 
 ### `filter`
 
+Keep elements matching predicate
+
 ```tinct
-(value)
+fn@Any [let pred@Fn xs]
 ```
 
 ### `map`
 
+Apply function to each element
+
 ```tinct
-(value)
+fn@Any [let f@Fn xs]
 ```
 
 ### `reduce`
 
+Reduce collection with binary function
+
 ```tinct
-(value)
+fn@Any [let f@Fn init xs]
 ```
 
 ### `take`
 
+Take first n elements
+
 ```tinct
-(value)
+fn@Any [let n@Int xs]
 ```
 
 ### `drop`
 
+Drop first n elements
+
 ```tinct
-(value)
+fn@Any [let n@Int xs]
+```
+
+### `length`
+
+[unindent "\nNumber of entries in a dict, or character count of a string.\n\nExample: [length [a: 1  b: 2  c: 3]] => 3\nExample: [length \"hello\"] => 5\nExample: [length []] => 0\n\nNote: For Seq values, prefer [count identity xs] (length forces a Seq to a Dict first).\n"]
+
+```tinct
+fn@Any [let xs]
 ```
 
 ### `collect-kv`
 
+Reconstruct dict from key-value pairs
+
 ```tinct
-fn@
+fn@Dict [let xs]
 ```
 
 ### `str-contains?`
 
+Check if haystack contains needle
+
 ```tinct
-fn@
+fn@Bool [let haystack@Stringing needle@Stringing]
 ```
 
 ### `starts-with?`
 
+Check if string starts with prefix
+
 ```tinct
-fn@
+fn@Bool [let s@Stringing prefix@Stringing]
 ```
 
 ### `ends-with?`
 
+Check if string ends with suffix
+
 ```tinct
-fn@
+fn@Bool [let s@Stringing suffix@Stringing]
 ```
 
 ### `str-repeat`
 
+Repeat string n times
+
 ```tinct
-fn@
+fn@Stringing [let s@Stringing n@Int]
 ```
 
 ### `str-find`
 
+Find first occurrence of needle in haystack; returns byte index or -1
+
 ```tinct
-fn@
+fn@Int [let haystack@Stringing needle@Stringing]
 ```
 
-### `between`
+### `to-json`
+
+Serialize a tinct value to a compact JSON string.
+Handles Int, Float, Bool, String, Null ([]), Dict, and Seq values.
+Proxy values raise an error (cannot serialize to JSON).
+Other unserializable values (Fn, Handle, Task, etc.) produce null.
 
 ```tinct
-fn@Unknown
+fn@Any [let v]
+```
+
+### `to-json-pretty`
+
+Serialize a tinct value to a pretty-printed JSON string with 2-space indentation.
+Handles Int, Float, Bool, String, Null ([]), Dict, and Seq values.
+Proxy values raise an error (cannot serialize to JSON).
+Other unserializable values (Fn, Handle, Task, etc.) produce null.
+Empty dicts render as {}, empty arrays as [] (compact, no newlines).
+
+```tinct
+fn@Any [let v]
 ```
 
 ### `non-negative`
 
+Check if value is non-negative
+
 ```tinct
-fn@
+fn@Bool [let v]
 ```
 
 ### `positive`
 
-```tinct
-fn@
-```
-
-### `seq`
+Check if value is positive
 
 ```tinct
-fn@Unknown
+fn@Bool [let v]
 ```
 
-### `head`
+### `lines`
+
+Lazily read lines from a Handle. Returns a Seq of String, one per line. Strips trailing newline.
 
 ```tinct
-fn@Unknown
+fn@Any [let h]
 ```
 
-### `tail`
+### `chunks`
+
+Lazily read fixed-size byte chunks from a Handle. Returns a Seq of Bytes.
 
 ```tinct
-fn@Unknown
+fn@Any [let h n@Int]
 ```
 
-### `collect`
-
-```tinct
-fn@Unknown
-```
-
-### `range`
-
-```tinct
-fn@Unknown
-```
-
-### `repeat`
-
-```tinct
-fn@Unknown
-```
-
-### `cycle`
-
-```tinct
-fn@Unknown
-```
-
-### `iterate`
-
-```tinct
-fn@Unknown
-```
-
-### `unfold`
-
-```tinct
-fn@Unknown
-```
-
-### `join`
-
-```tinct
-fn@Unknown
-```
-
-### `concat`
-
-```tinct
-fn@Unknown
-```
-
-### `first`
-
-```tinct
-fn@Unknown
-```
-
-### `last`
-
-```tinct
-fn@Unknown
-```
-
-### `rest`
-
-```tinct
-fn@Unknown
-```
-
-### `cons`
-
-```tinct
-fn@Unknown
-```
-
-### `reverse`
-
-```tinct
-fn@Unknown
-```
-
-### `sort`
-
-```tinct
-fn@Unknown
-```
-
-### `eval-ast`
-
-```tinct
-fn@Unknown
-```
-
-### `gensym`
-
-```tinct
-fn@Unknown
-```
-
-### `llt-repr`
-
-```tinct
-fn@Unknown
-```
-
-### `tag-of`
-
-```tinct
-fn@Unknown
-```
-
-### `variant`
-
-```tinct
-fn@Unknown
-```
-
-### `decimal`
-
-```tinct
-fn@Unknown
-```
-
-### `big-int`
-
-```tinct
-fn@Unknown
-```
-
-### `proxy`
-
-```tinct
-fn@Unknown
-```

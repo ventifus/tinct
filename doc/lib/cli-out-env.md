@@ -2,6 +2,9 @@
 
 ### `env`
 
+Convert flat dict to KEY=VALUE format (.env file)
+
 ```tinct
-fn@
+fn@String [let d@Dict]
 ```
+

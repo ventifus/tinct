@@ -1,0 +1,9 @@
+# case: [let _: Constructor] — structural test with wildcard binding (no name)
+# Tests that [let _: Constructor] correctly matches on tag without binding.
+[value: [Ok 42]]
+[match value
+  [case [let _: Ok]    "matched-ok"]
+  [case [let _: Error] "matched-err"]
+  [case [let _]        "no-match"]]
+=== out
+String("matched-ok")

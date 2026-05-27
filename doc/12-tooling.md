@@ -267,8 +267,8 @@ Each span dict carries 14 fields:
 | `create-parent` | Int \| [] | Span active when this thunk was created |
 | `create-time-us` | Int | Wall-clock microseconds when thunk was created |
 | `source-file` | Str \| null | Source file path; `null` for Rust builtins |
-| `source-start` | Int | Byte offset into source file |
-| `source-end` | Int | Byte offset into source file |
+| `source-start` | Int | Source location as packed `line * 1_000_000 + col` |
+| `source-end` | Int | Source location as packed `line * 1_000_000 + col` |
 | `source-text` | Str | Leading characters of source at this span |
 | `builtin` | Str \| [] | Builtin name (e.g., `"builtin-map"`) if Rust builtin |
 | `origin-builtin` | Str \| [] | Originating Rust builtin for cross-boundary calls |

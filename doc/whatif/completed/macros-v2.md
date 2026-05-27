@@ -1,10 +1,10 @@
 # What If: Macro System v2 — Parse-Stage Delivery and Declarative Patterns for tinct
 
-**State:** Accepted — 2026-05-17
+**State:** Completed — 2026-05-27
 **Replaces:**
 
-- [`parse-stage-macros.md`](completed/parse-stage-macros.md) — supersedes the parse-stage argument delivery approach
-- [`completed/macro-rewrite.md`](completed/macro-rewrite.md) — supersedes the defmacro-as-desugaring approach
+- [`parse-stage-macros.md`](parse-stage-macros.md) — supersedes the parse-stage argument delivery approach
+- [`macro-rewrite.md`](macro-rewrite.md) — supersedes the defmacro-as-desugaring approach
 
 What would it take to make tinct's macro system powerful enough that user-programmers — not language designers — can implement any syntactic extension, including softening the strong positions the core language takes?
 

@@ -22,7 +22,7 @@ timeout_flag := if env_var_or_default("TIMEOUT", "") != "" { " --timeout=" + env
 # Common container run flags
 # target/ is a bind mount so binaries land on the host (symlinkable from ~/.local/bin)
 # cargo registry cache stays a named volume — no need to expose it on the host
-run_flags := "--rm --memory 8g" + timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
+run_flags := "--rm --memory 10g" + timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
 
 # Default recipe - show available commands
 default:
@@ -285,13 +285,13 @@ version:
 versions:
     {{container}} run {{run_flags}} --network=host \
         -e RUST_VERSION={{rust_version}} \
-        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --quiet --bin tinct -- run --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 --profile samples/versions-spans.ndjson samples/versions.llt && cargo run --quiet --bin tinct -- run -i ndjson -o json scripts/profile/trace.llt < samples/versions-spans.ndjson > samples/versions-trace.json"
+        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --quiet --bin tinct -- run --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 --profile samples/versions-spans.ndjson samples/versions.llt && cargo run --quiet --bin tinct -- run -i ndjson -o json --strict scripts/profile/trace.llt < samples/versions-spans.ndjson > samples/versions-trace.json"
 
 # Generate stdlib API reference from @[doc: "..."] annotations.
 # Writes one file per module to doc/lib/<module>.md.
 # The module index is now maintained manually in doc/11-stdlib.md §Supplemental Module Reference.
 docgen:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "mkdir -p doc/lib && cargo run --quiet --bin tinct -- run --cap-fs docdir=doc/lib:w scripts/docgen.llt"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "mkdir -p doc/lib && cargo run --quiet --bin tinct -- run --strict --cap-fs docdir=doc/lib:w scripts/docgen.llt"
 
 # Weave tinct code block outputs into doc/*.md (living documentation).
 # Updates the === out / === warn / === info sections inside each ```tinct block.

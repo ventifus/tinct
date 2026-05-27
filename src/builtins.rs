@@ -6866,10 +6866,17 @@ mod tests {
         // Added builtin-list-dir and builtin-load stable aliases (231 → 233).
         // lazy-file-io sprint: removed slurp+lines (-2), added builtin-read-line+builtin-read-chunk (+2) = 233.
         // Net +1 from agent adding builtin-load separately = 234.
+        // Added builtin-expand stable alias for prelude export (233 → 234) — see above.
+        // stdlib-health-cleanup sprint: added builtin-gt, builtin-lte, builtin-gte (234 → 237).
+        // string-handle sprint: added string-handle builtin (237 → 238).
+        assert!(names.contains(&"builtin-gt"), "missing builtin-gt");
+        assert!(names.contains(&"builtin-lte"), "missing builtin-lte");
+        assert!(names.contains(&"builtin-gte"), "missing builtin-gte");
+        assert!(names.contains(&"string-handle"), "missing string-handle");
         assert_eq!(
             names.len(),
-            234,
-            "expected 234 builtins, got {} — update this assertion if adding/removing builtins",
+            238,
+            "expected 238 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }

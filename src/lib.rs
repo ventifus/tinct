@@ -843,88 +843,104 @@ pub fn visit_value<V: ValueVisitor>(
 }
 
 // --- JSON Visitor ---
-//
-// MIGRATION STATUS: JsonVisitor uses serde_json::Value as its Output type and is the last
-// non-LSP serde_json user in src/ (profiling.rs has been migrated; lsp/server.rs is a
-// permanent LSP dependency).
-//
-// Migrating JsonVisitor off serde_json::Value would require replacing the Output associated
-// type with a custom JSON value enum (e.g., `JsonVal { Null, Bool(bool), Number(f64), ... }`),
-// then re-implementing `to_string` / `to_string_pretty` for that enum. The callers in
-// main.rs (run_literate_eval, run_literate_weave) use `serde_json::to_string[_pretty](&json)`
-// to serialize the Output — they would instead call a hand-written serializer on `JsonVal`.
-//
-// This is feasible but constitutes significant refactoring for modest gain (serde_json is
-// already in Cargo.toml as a transitive dep via the LSP). Tracked in TODO.md under
-// json-remove-serde-dep. The LSP dependency (lsp/server.rs) is permanent, so complete
-// removal of serde_json from Cargo.toml is not achievable regardless of this migration.
+
+/// Escape a string's contents for JSON output (without surrounding quotes).
+///
+/// Escapes `"`, `\`, and ASCII control characters. `\b` and `\f` are emitted for
+/// U+0008 and U+000C. Other C0 controls use `\uXXXX`. All other characters pass through.
+pub fn escape_json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\x08' => out.push_str("\\b"),
+            '\x0c' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write as FmtWrite;
+                write!(out, "\\u{:04x}", c as u32).unwrap();
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
 
 pub struct JsonVisitor;
 
 impl ValueVisitor for JsonVisitor {
-    type Output = serde_json::Value;
+    type Output = String;
 
-    fn visit_int(&self, v: i64) -> serde_json::Value {
-        serde_json::Value::Number(v.into())
+    fn visit_int(&self, v: i64) -> String {
+        v.to_string()
     }
-    fn visit_float(
-        &self,
-        v: f64,
-        span: ast::Span,
-    ) -> Result<serde_json::Value, Box<error::EvalError>> {
-        serde_json::Number::from_f64(v)
-            .map(serde_json::Value::Number)
-            .ok_or_else(|| {
-                error::EvalError::float_not_finite("to-json".to_string(), v, span).into()
-            })
+    fn visit_float(&self, v: f64, span: ast::Span) -> Result<String, Box<error::EvalError>> {
+        if !v.is_finite() {
+            return Err(error::EvalError::float_not_finite("to-json".to_string(), v, span).into());
+        }
+        // Whole-number floats emit exactly one decimal place (e.g. `1.0`); this differs
+        // from ryu shortest-repr for large magnitudes (e.g. 1e20 → "100000000000000000000.0"
+        // here vs ryu's "1e20").
+        if v.fract() == 0.0 {
+            Ok(format!("{v:.1}"))
+        } else {
+            Ok(format!("{v}"))
+        }
     }
-    fn visit_bool(&self, v: bool) -> serde_json::Value {
-        serde_json::Value::Bool(v)
+    fn visit_bool(&self, v: bool) -> String {
+        if v {
+            "true".to_string()
+        } else {
+            "false".to_string()
+        }
     }
-    fn visit_str(&self, v: &str) -> serde_json::Value {
-        serde_json::Value::String(v.to_owned())
+    fn visit_str(&self, v: &str) -> String {
+        format!("\"{}\"", escape_json_str(v))
     }
-    fn visit_bytes(&self, v: &[u8]) -> serde_json::Value {
+    fn visit_bytes(&self, v: &[u8]) -> String {
         // Hex encode bytes for JSON output (lowercase hex string)
-        let hex_string = v.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-        serde_json::Value::String(hex_string)
+        let hex_string: String = v.iter().map(|b| format!("{:02x}", b)).collect();
+        format!("\"{}\"", hex_string)
     }
-    fn visit_null(&self) -> serde_json::Value {
-        serde_json::Value::Null
+    fn visit_null(&self) -> String {
+        "null".to_string()
     }
-    fn visit_dict(&self, entries: Vec<(value::Key, serde_json::Value)>) -> serde_json::Value {
+    fn visit_dict(&self, entries: Vec<(value::Key, String)>) -> String {
         // LLT null compatibility: [] (empty dict) serializes as JSON null.
         // Matches the tinct to-json (codecs/json.llt) null? convention.
         if entries.is_empty() {
-            return serde_json::Value::Null;
+            return "null".to_string();
         }
         // Detect array-like dict: all keys are sequential ints 0..n
-        let is_array = !entries.is_empty()
-            && entries
-                .iter()
-                .enumerate()
-                .all(|(i, (k, _))| matches!(k, value::Key::Int(n) if *n >= 0 && *n as usize == i));
+        let is_array = entries
+            .iter()
+            .enumerate()
+            .all(|(i, (k, _))| matches!(k, value::Key::Int(n) if *n >= 0 && *n as usize == i));
         if is_array {
-            serde_json::Value::Array(entries.into_iter().map(|(_, v)| v).collect())
+            let items: Vec<&str> = entries.iter().map(|(_, v)| v.as_str()).collect();
+            format!("[{}]", items.join(","))
         } else {
-            let obj: serde_json::Map<String, serde_json::Value> = entries
+            let pairs: Vec<String> = entries
                 .into_iter()
                 .map(|(k, v)| {
                     let ks = match k {
                         value::Key::Int(n) => n.to_string(),
                         value::Key::String(s) => s.to_string(),
                     };
-                    (ks, v)
+                    format!("\"{}\":{}", escape_json_str(&ks), v)
                 })
                 .collect();
-            serde_json::Value::Object(obj)
+            format!("{{{}}}", pairs.join(","))
         }
     }
     fn visit_seq_head(
         &self,
-        _head: serde_json::Value,
+        _head: String,
         span: ast::Span,
-    ) -> Result<serde_json::Value, Box<error::EvalError>> {
+    ) -> Result<String, Box<error::EvalError>> {
         // Seq is not representable in JSON; must be collected to a Dict first via $collect.
         Err(error::EvalError::value_not_serializable("Seq".to_string(), span).into())
     }
@@ -932,67 +948,52 @@ impl ValueVisitor for JsonVisitor {
         &self,
         _params: &[ast::Param],
         span: ast::Span,
-    ) -> Result<serde_json::Value, Box<error::EvalError>> {
+    ) -> Result<String, Box<error::EvalError>> {
         Err(error::EvalError::value_not_serializable("Function".to_string(), span).into())
     }
-    fn visit_builtin(
-        &self,
-        name: &str,
-        span: ast::Span,
-    ) -> Result<serde_json::Value, Box<error::EvalError>> {
+    fn visit_builtin(&self, name: &str, span: ast::Span) -> Result<String, Box<error::EvalError>> {
         Err(error::EvalError::value_not_serializable(format!("Builtin ({name})"), span).into())
     }
-    fn visit_proxy(&self, span: ast::Span) -> Result<serde_json::Value, Box<error::EvalError>> {
+    fn visit_proxy(&self, span: ast::Span) -> Result<String, Box<error::EvalError>> {
         Err(error::EvalError::value_not_serializable("Proxy".to_string(), span).into())
     }
-    fn visit_variant(&self, tag: String, payload: serde_json::Value) -> serde_json::Value {
-        let mut obj = serde_json::Map::new();
-        obj.insert(tag, payload);
-        serde_json::Value::Object(obj)
+    fn visit_variant(&self, tag: String, payload: String) -> String {
+        format!("{{\"{}\":{}}}", escape_json_str(&tag), payload)
     }
-    fn visit_decimal(&self, v: rust_decimal::Decimal) -> serde_json::Value {
+    fn visit_decimal(&self, v: rust_decimal::Decimal) -> String {
         // Serialize Decimal as JSON number string to preserve exact representation
-        use std::str::FromStr;
-        serde_json::Value::Number(
-            serde_json::Number::from_str(&v.to_string())
-                .unwrap_or_else(|_| serde_json::Number::from(0)),
-        )
+        v.to_string()
     }
-    fn visit_bigint(&self, v: &num_bigint::BigInt) -> serde_json::Value {
+    fn visit_bigint(&self, v: &num_bigint::BigInt) -> String {
         // BigInt serializes as JSON number string. May exceed JSON receiver's i64 range.
-        use std::str::FromStr;
-        serde_json::Value::Number(
-            serde_json::Number::from_str(&v.to_string())
-                .unwrap_or_else(|_| serde_json::Number::from(0)),
-        )
+        v.to_string()
     }
     fn visit_timestamp(
         &self,
         nanos: i64,
         span: ast::Span,
-    ) -> Result<serde_json::Value, Box<error::EvalError>> {
+    ) -> Result<String, Box<error::EvalError>> {
         // Convert nanoseconds to jiff::Timestamp and format as RFC 3339
         let ts = jiff::Timestamp::from_nanosecond(nanos as i128).map_err(|e| {
             error::EvalError::internal(format!("invalid timestamp value: {e}"), span)
         })?;
-        Ok(serde_json::Value::String(ts.to_string()))
+        Ok(format!("\"{}\"", ts))
     }
-    fn visit_duration(&self, nanos: i64) -> serde_json::Value {
-        // Format as ISO 8601 duration or just nanoseconds
-        // For simplicity, use nanoseconds as a number
-        serde_json::Value::Number(nanos.into())
+    fn visit_duration(&self, nanos: i64) -> String {
+        // Serialize duration as nanosecond count (JSON number)
+        nanos.to_string()
     }
-    fn visit_clock_cap(&self, span: ast::Span) -> Result<serde_json::Value, Box<error::EvalError>> {
+    fn visit_clock_cap(&self, span: ast::Span) -> Result<String, Box<error::EvalError>> {
         Err(error::EvalError::value_not_serializable("ClockCap".to_string(), span).into())
     }
-    fn visit_timezone(&self, span: ast::Span) -> Result<serde_json::Value, Box<error::EvalError>> {
+    fn visit_timezone(&self, span: ast::Span) -> Result<String, Box<error::EvalError>> {
         Err(error::EvalError::value_not_serializable("Timezone".to_string(), span).into())
     }
     fn depth_limit_output(
         &self,
         depth: usize,
         span: ast::Span,
-    ) -> Option<Result<serde_json::Value, Box<error::EvalError>>> {
+    ) -> Option<Result<String, Box<error::EvalError>>> {
         // Output depth limit: prevents infinite recursion in JSON output.
         // 256 levels of nesting is generous for any real config file.
         const MAX_JSON_OUTPUT_DEPTH: usize = 256;
@@ -1006,6 +1007,94 @@ impl ValueVisitor for JsonVisitor {
             None
         }
     }
+}
+
+/// Reformat compact JSON into a pretty-printed string with 2-space indentation.
+///
+/// Handles string escapes correctly so that `{`, `}`, `[`, `]`, `,`, `:` inside
+/// JSON strings are not treated as structural characters.
+pub fn json_pretty_print(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    let mut depth: usize = 0;
+    let mut in_string = false;
+    // Tracks whether the last structural push was an open brace/bracket for an empty
+    // container (detected via peek). Used in the `}` / `]` arm to decide whether to
+    // emit a newline+indent or close inline.
+    let mut last_was_open = false;
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if c == '\\' {
+                // Consume the escaped character verbatim
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            } else if c == '"' {
+                in_string = false;
+            }
+            last_was_open = false;
+            continue;
+        }
+        match c {
+            // Skip whitespace outside strings (the input is compact JSON)
+            ' ' | '\t' | '\n' | '\r' => {}
+            '"' => {
+                in_string = true;
+                out.push(c);
+                last_was_open = false;
+            }
+            '{' | '[' => {
+                out.push(c);
+                // Peek ahead: if immediately followed by the matching close, emit inline
+                let close = if c == '{' { '}' } else { ']' };
+                if chars.peek() == Some(&close) {
+                    // Empty container — will be emitted on next iteration without indent
+                    last_was_open = true;
+                } else {
+                    depth += 1;
+                    out.push('\n');
+                    for _ in 0..depth {
+                        out.push_str("  ");
+                    }
+                    last_was_open = false;
+                }
+            }
+            '}' | ']' => {
+                if last_was_open {
+                    // Empty container: emit close without newline
+                    out.push(c);
+                } else {
+                    depth = depth.saturating_sub(1);
+                    out.push('\n');
+                    for _ in 0..depth {
+                        out.push_str("  ");
+                    }
+                    out.push(c);
+                }
+                last_was_open = false;
+            }
+            ',' => {
+                out.push(c);
+                out.push('\n');
+                for _ in 0..depth {
+                    out.push_str("  ");
+                }
+                last_was_open = false;
+            }
+            ':' => {
+                out.push(c);
+                out.push(' ');
+                last_was_open = false;
+            }
+            _ => {
+                out.push(c);
+                last_was_open = false;
+            }
+        }
+    }
+    out
 }
 
 // --- Display Visitor ---
@@ -1156,31 +1245,39 @@ mod tests {
         Arc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 1)))
     }
 
-    fn json_to_value(json: &serde_json::Value, ctx: &Arc<eval::EvalContext>) -> Arc<Thunk> {
+    /// Build a test input Value from a simple JSON-like description.
+    /// Supports: null, bool, i64, f64, string, array (sequential ints), object (string keys).
+    #[allow(dead_code)]
+    enum TestJson {
+        Null,
+        Bool(bool),
+        Int(i64),
+        Float(f64),
+        Str(&'static str),
+        Array(Vec<TestJson>),
+        Object(Vec<(&'static str, TestJson)>),
+    }
+
+    fn make_test_value(json: TestJson, ctx: &Arc<eval::EvalContext>) -> Arc<Thunk> {
         let val = match json {
-            serde_json::Value::Null => Value::Dict(IndexMap::new()),
-            serde_json::Value::Bool(b) => Value::Bool(*b),
-            serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    Value::Int(i)
-                } else {
-                    Value::Float(n.as_f64().unwrap_or(0.0))
-                }
-            }
-            serde_json::Value::String(s) => string_val(s),
-            serde_json::Value::Array(arr) => {
+            TestJson::Null => Value::Dict(IndexMap::new()),
+            TestJson::Bool(b) => Value::Bool(b),
+            TestJson::Int(i) => Value::Int(i),
+            TestJson::Float(f) => Value::Float(f),
+            TestJson::Str(s) => string_val(s),
+            TestJson::Array(arr) => {
                 let mut map = IndexMap::new();
-                for (i, v) in arr.iter().enumerate() {
-                    let t = json_to_value(v, ctx);
+                for (i, v) in arr.into_iter().enumerate() {
+                    let t = make_test_value(v, ctx);
                     map.insert(Key::Int(i as i64), ctx.alloc_thunk(t));
                 }
                 Value::Dict(map)
             }
-            serde_json::Value::Object(obj) => {
+            TestJson::Object(obj) => {
                 let mut map = IndexMap::new();
                 for (k, v) in obj {
-                    let t = json_to_value(v, ctx);
-                    map.insert(Key::String(k.as_str().into()), ctx.alloc_thunk(t));
+                    let t = make_test_value(v, ctx);
+                    map.insert(Key::String(k.into()), ctx.alloc_thunk(t));
                 }
                 Value::Dict(map)
             }
@@ -1214,7 +1311,7 @@ mod tests {
             ast::Span::origin(),
         )
         .unwrap();
-        assert_eq!(result, serde_json::json!(42));
+        assert_eq!(result, "42");
     }
 
     #[test]
@@ -1227,7 +1324,7 @@ mod tests {
             ast::Span::origin(),
         )
         .unwrap();
-        assert_eq!(result, serde_json::json!(-100));
+        assert_eq!(result, "-100");
     }
 
     #[test]
@@ -1240,7 +1337,7 @@ mod tests {
             ast::Span::origin(),
         )
         .unwrap();
-        assert_eq!(result, serde_json::json!(0));
+        assert_eq!(result, "0");
     }
 
     #[test]
@@ -1257,7 +1354,7 @@ mod tests {
         .unwrap();
         #[allow(clippy::approx_constant)]
         {
-            assert_eq!(result, serde_json::json!(3.14));
+            assert_eq!(result, "3.14");
         }
     }
 
@@ -1271,7 +1368,7 @@ mod tests {
             ast::Span::origin(),
         )
         .unwrap();
-        assert_eq!(result, serde_json::json!(-2.5));
+        assert_eq!(result, "-2.5");
     }
 
     #[test]
@@ -1284,7 +1381,7 @@ mod tests {
             ast::Span::origin(),
         )
         .unwrap();
-        assert_eq!(result, serde_json::json!(0.0));
+        assert_eq!(result, "0.0");
     }
 
     #[test]
@@ -1336,7 +1433,7 @@ mod tests {
             ast::Span::origin(),
         )
         .unwrap();
-        assert_eq!(result, serde_json::json!("hello"));
+        assert_eq!(result, "\"hello\"");
     }
 
     #[test]
@@ -1349,7 +1446,7 @@ mod tests {
             ast::Span::origin(),
         )
         .unwrap();
-        assert_eq!(result, serde_json::json!(""));
+        assert_eq!(result, "\"\"");
     }
 
     #[test]
@@ -1362,7 +1459,7 @@ mod tests {
             ast::Span::origin(),
         )
         .unwrap();
-        assert_eq!(result, serde_json::json!("line\nnewline"));
+        assert_eq!(result, "\"line\\nnewline\"");
     }
 
     #[test]
@@ -1375,7 +1472,7 @@ mod tests {
             ast::Span::origin(),
         )
         .unwrap();
-        assert_eq!(result, serde_json::json!(true));
+        assert_eq!(result, "true");
     }
 
     #[test]
@@ -1388,7 +1485,7 @@ mod tests {
             ast::Span::origin(),
         )
         .unwrap();
-        assert_eq!(result, serde_json::json!(false));
+        assert_eq!(result, "false");
     }
 
     #[test]
@@ -1397,7 +1494,7 @@ mod tests {
         // to match the LLT null compatibility convention.
         let dict = Value::Dict(IndexMap::new());
         let result = visit_value(&dict, &test_ctx(), 0, &JsonVisitor, ast::Span::origin()).unwrap();
-        assert_eq!(result, serde_json::Value::Null);
+        assert_eq!(result, "null");
     }
 
     #[test]
@@ -1408,7 +1505,7 @@ mod tests {
         map.insert(Key::String("age".into()), thunk(Value::Int(30)));
         let val = make_dict(map, &ctx);
         let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
-        assert_eq!(result, serde_json::json!({"name": "Alice", "age": 30}));
+        assert_eq!(result, "{\"name\":\"Alice\",\"age\":30}");
     }
 
     #[test]
@@ -1420,7 +1517,7 @@ mod tests {
         map.insert(Key::Int(10), thunk(string_val("ten")));
         let val = make_dict(map, &ctx);
         let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
-        assert_eq!(result, serde_json::json!({"5": "five", "10": "ten"}));
+        assert_eq!(result, "{\"5\":\"five\",\"10\":\"ten\"}");
     }
 
     #[test]
@@ -1431,7 +1528,7 @@ mod tests {
         map.insert(Key::String("x".into()), thunk(Value::Int(1)));
         let val = make_dict(map, &ctx);
         let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
-        assert_eq!(result, serde_json::json!({"0": "zero", "x": 1}));
+        assert_eq!(result, "{\"0\":\"zero\",\"x\":1}");
     }
 
     #[test]
@@ -1444,7 +1541,7 @@ mod tests {
         map.insert(Key::Int(2), thunk(string_val("c")));
         let val = make_dict(map, &ctx);
         let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
-        assert_eq!(result, serde_json::json!(["a", "b", "c"]));
+        assert_eq!(result, "[\"a\",\"b\",\"c\"]");
     }
 
     #[test]
@@ -1454,7 +1551,7 @@ mod tests {
         map.insert(Key::Int(0), thunk(Value::Bool(true)));
         let val = make_dict(map, &ctx);
         let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
-        assert_eq!(result, serde_json::json!([true]));
+        assert_eq!(result, "[true]");
     }
 
     #[test]
@@ -1467,7 +1564,7 @@ mod tests {
         // First key is 1 at index 0 -> not array-like
         let val = make_dict(map, &ctx);
         let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
-        assert_eq!(result, serde_json::json!({"1": "b", "0": "a"}));
+        assert_eq!(result, "{\"1\":\"b\",\"0\":\"a\"}");
     }
 
     #[test]
@@ -1479,7 +1576,7 @@ mod tests {
         map.insert(Key::Int(2), thunk(Value::Int(20)));
         let val = make_dict(map, &ctx);
         let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
-        assert_eq!(result, serde_json::json!({"1": 10, "2": 20}));
+        assert_eq!(result, "{\"1\":10,\"2\":20}");
     }
 
     #[test]
@@ -1493,7 +1590,7 @@ mod tests {
         outer.insert(Key::String("y".into()), thunk(Value::Int(2)));
         let val = make_dict(outer, &ctx);
         let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
-        assert_eq!(result, serde_json::json!({"inner": {"x": 1}, "y": 2}));
+        assert_eq!(result, "{\"inner\":{\"x\":1},\"y\":2}");
     }
 
     #[test]
@@ -1511,10 +1608,7 @@ mod tests {
         arr.insert(Key::Int(1), thunk(obj2_val));
         let val = make_dict(arr, &ctx);
         let result = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap();
-        assert_eq!(
-            result,
-            serde_json::json!([{"name": "Alice"}, {"name": "Bob"}])
-        );
+        assert_eq!(result, "[{\"name\":\"Alice\"},{\"name\":\"Bob\"}]");
     }
 
     #[test]
@@ -1638,7 +1732,7 @@ mod tests {
             ast::Span::origin(),
         )
         .unwrap();
-        assert_eq!(result, serde_json::json!(i64::MAX));
+        assert_eq!(result, i64::MAX.to_string());
     }
 
     #[test]
@@ -1651,30 +1745,25 @@ mod tests {
             ast::Span::origin(),
         )
         .unwrap();
-        assert_eq!(result, serde_json::json!(i64::MIN));
+        assert_eq!(result, i64::MIN.to_string());
     }
 
-    /// Helper: run the full eval pipeline (parse, eval, materialize, to JSON).
-    fn eval_to_json(source: &str) -> serde_json::Value {
+    /// Helper: run the full eval pipeline (parse, eval, materialize, to JSON string).
+    fn eval_to_json(source: &str) -> String {
         eval_to_json_with_input(source, None)
     }
 
-    /// Helper: run the full eval pipeline with optional stdin JSON injection.
-    fn eval_to_json_with_input(
-        source: &str,
-        stdin_json: Option<serde_json::Value>,
-    ) -> serde_json::Value {
+    /// Helper: run the full eval pipeline with optional stdin input injection.
+    fn eval_to_json_with_input(source: &str, stdin_input: Option<Arc<Thunk>>) -> String {
         let parsed = parse(source).expect("parse failed");
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
         let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-        let (_type_errors, type_annotation_table) =
+        let (_type_errors, type_annotation_table, _inferred) =
             typecheck::typecheck_surface_program_annotation_table(&program);
         let type_annotation_table = std::sync::Arc::new(type_annotation_table);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
-
-        let initial_input = stdin_json.map(|json| json_to_value(&json, &ctx));
 
         let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file_with_input(
             &program,
@@ -1683,7 +1772,7 @@ mod tests {
             &resolution_table,
             &type_annotation_table,
             &std::collections::HashMap::new(),
-            initial_input,
+            stdin_input,
         ))
         .expect("eval failed");
         let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
@@ -1694,43 +1783,55 @@ mod tests {
     #[test]
     fn test_pipeline_simple_dict() {
         let result = eval_to_json("[x: 1 y: \"hello\"]");
-        assert_eq!(result, serde_json::json!({"x": 1, "y": "hello"}));
+        assert_eq!(result, "{\"x\":1,\"y\":\"hello\"}");
     }
 
     #[test]
     fn test_pipeline_array_like() {
         let result = eval_to_json("[10 20 30]");
-        assert_eq!(result, serde_json::json!([10, 20, 30]));
+        assert_eq!(result, "[10,20,30]");
     }
 
     #[test]
     fn test_pipeline_nested() {
         let result = eval_to_json("[a: [b: [c: 42]]]");
-        assert_eq!(result, serde_json::json!({"a": {"b": {"c": 42}}}));
+        assert_eq!(result, "{\"a\":{\"b\":{\"c\":42}}}");
     }
 
     #[test]
     fn test_pipeline_stdin_json_injection() {
-        let input_json = serde_json::json!({"name": "Alice", "age": 30});
-        let result = eval_to_json_with_input("[greeting: %.name]", Some(input_json));
-        assert_eq!(result, serde_json::json!({"greeting": "Alice"}));
+        let ctx = test_ctx();
+        let input = make_test_value(
+            TestJson::Object(vec![
+                ("name", TestJson::Str("Alice")),
+                ("age", TestJson::Int(30)),
+            ]),
+            &ctx,
+        );
+        let result = eval_to_json_with_input("[greeting: %.name]", Some(input));
+        assert_eq!(result, "{\"greeting\":\"Alice\"}");
     }
 
     #[test]
     fn test_pipeline_stdin_json_array() {
         // Access the 0th element of the pipeline array via get builtin
         // Bracket access removed — use [get 0 %] instead of %[0]
-        let input_json = serde_json::json!([1, 2, 3]);
-        let result = eval_to_json_with_input("[first: [get 0 %]]", Some(input_json));
-        assert_eq!(result, serde_json::json!({"first": 1}));
+        let ctx = test_ctx();
+        let input = make_test_value(
+            TestJson::Array(vec![TestJson::Int(1), TestJson::Int(2), TestJson::Int(3)]),
+            &ctx,
+        );
+        let result = eval_to_json_with_input("[first: [get 0 %]]", Some(input));
+        assert_eq!(result, "{\"first\":1}");
     }
 
     #[test]
     fn test_pipeline_stdin_json_passthrough() {
         // When % is the whole output, it should pass through
-        let input_json = serde_json::json!({"x": 42});
-        let result = eval_to_json_with_input("%", Some(input_json));
-        assert_eq!(result, serde_json::json!({"x": 42}));
+        let ctx = test_ctx();
+        let input = make_test_value(TestJson::Object(vec![("x", TestJson::Int(42))]), &ctx);
+        let result = eval_to_json_with_input("%", Some(input));
+        assert_eq!(result, "{\"x\":42}");
     }
 
     #[test]
@@ -1738,16 +1839,17 @@ mod tests {
         // Without stdin input, % defaults to empty dict.
         // By design, LLT empty dict [] serializes to JSON null (see JsonVisitor::visit_dict).
         let result = eval_to_json("%");
-        assert_eq!(result, serde_json::Value::Null);
+        assert_eq!(result, "null");
     }
 
     #[test]
     fn test_pipeline_multi_document_with_stdin() {
         // stdin -> doc1 -> % -> doc2
-        let input_json = serde_json::json!({"val": 10});
+        let ctx = test_ctx();
+        let input = make_test_value(TestJson::Object(vec![("val", TestJson::Int(10))]), &ctx);
         let source = "[result: %.val]\n---\n[wrapped: %.result]";
-        let result = eval_to_json_with_input(source, Some(input_json));
-        assert_eq!(result, serde_json::json!({"wrapped": 10}));
+        let result = eval_to_json_with_input(source, Some(input));
+        assert_eq!(result, "{\"wrapped\":10}");
     }
 
     #[test]
@@ -1757,7 +1859,7 @@ mod tests {
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
         let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-        let (_type_errors, type_annotation_table) =
+        let (_type_errors, type_annotation_table, _inferred) =
             typecheck::typecheck_surface_program_annotation_table(&program);
         let type_annotation_table = std::sync::Arc::new(type_annotation_table);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
@@ -1775,7 +1877,7 @@ mod tests {
         // visit_value materializes nested values on demand
         let json = visit_value(&val, &ctx, 0, &JsonVisitor, ast::Span::origin())
             .expect("visit_value failed");
-        assert_eq!(json, serde_json::json!({"a": {"b": {"c": 42}}}));
+        assert_eq!(json, "{\"a\":{\"b\":{\"c\":42}}}");
     }
 
     #[test]
@@ -1785,7 +1887,7 @@ mod tests {
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
         let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-        let (_type_errors, type_annotation_table) =
+        let (_type_errors, type_annotation_table, _inferred) =
             typecheck::typecheck_surface_program_annotation_table(&program);
         let type_annotation_table = std::sync::Arc::new(type_annotation_table);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
@@ -1846,19 +1948,19 @@ mod tests {
     #[test]
     fn test_pipeline_scalar_output() {
         let result = eval_to_json("42");
-        assert_eq!(result, serde_json::json!(42));
+        assert_eq!(result, "42");
     }
 
     #[test]
     fn test_pipeline_string_output() {
         let result = eval_to_json("\"hello world\"");
-        assert_eq!(result, serde_json::json!("hello world"));
+        assert_eq!(result, "\"hello world\"");
     }
 
     #[test]
     fn test_pipeline_bool_output() {
         let result = eval_to_json("true");
-        assert_eq!(result, serde_json::json!(true));
+        assert_eq!(result, "true");
     }
 
     #[test]
@@ -1867,7 +1969,7 @@ mod tests {
         // 3.14 tests float output, not π.
         #[allow(clippy::approx_constant)]
         {
-            assert_eq!(result, serde_json::json!(3.14));
+            assert_eq!(result, "3.14");
         }
     }
 
@@ -1980,7 +2082,7 @@ mod tests {
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
         let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
-        let (_type_errors, type_annotation_table) =
+        let (_type_errors, type_annotation_table, _inferred) =
             typecheck::typecheck_surface_program_annotation_table(&program);
         let type_annotation_table = std::sync::Arc::new(type_annotation_table);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
@@ -2515,6 +2617,87 @@ mod tests {
             "eval_source 0-param should work: {:?}",
             result2
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // escape_json_str tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn escape_json_str_double_quote() {
+        assert_eq!(escape_json_str("\""), "\\\"");
+    }
+
+    #[test]
+    fn escape_json_str_backslash() {
+        assert_eq!(escape_json_str("\\"), "\\\\");
+    }
+
+    #[test]
+    fn escape_json_str_newline() {
+        assert_eq!(escape_json_str("\n"), "\\n");
+    }
+
+    #[test]
+    fn escape_json_str_carriage_return() {
+        assert_eq!(escape_json_str("\r"), "\\r");
+    }
+
+    #[test]
+    fn escape_json_str_tab() {
+        assert_eq!(escape_json_str("\t"), "\\t");
+    }
+
+    #[test]
+    fn escape_json_str_backspace() {
+        assert_eq!(escape_json_str("\x08"), "\\b");
+    }
+
+    #[test]
+    fn escape_json_str_form_feed() {
+        assert_eq!(escape_json_str("\x0c"), "\\f");
+    }
+
+    #[test]
+    fn escape_json_str_c0_control() {
+        // U+0001 (SOH) → 
+        assert_eq!(escape_json_str("\x01"), "\\u0001");
+    }
+
+    #[test]
+    fn escape_json_str_clean_ascii() {
+        assert_eq!(escape_json_str("hello world"), "hello world");
+    }
+
+    // -------------------------------------------------------------------------
+    // json_pretty_print tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn json_pretty_print_simple_object() {
+        assert_eq!(json_pretty_print(r#"{"a":1}"#), "{\n  \"a\": 1\n}");
+    }
+
+    #[test]
+    fn json_pretty_print_empty_object() {
+        assert_eq!(json_pretty_print("{}"), "{}");
+    }
+
+    #[test]
+    fn json_pretty_print_empty_array() {
+        assert_eq!(json_pretty_print("[]"), "[]");
+    }
+
+    #[test]
+    fn json_pretty_print_array() {
+        assert_eq!(json_pretty_print(r#"["x","y"]"#), "[\n  \"x\",\n  \"y\"\n]");
+    }
+
+    #[test]
+    fn json_pretty_print_structural_chars_in_string() {
+        // The `{` inside the string value must not trigger extra indentation.
+        let result = json_pretty_print(r#"{"k":"a{b}"}"#);
+        assert_eq!(result, "{\n  \"k\": \"a{b}\"\n}");
     }
 }
 

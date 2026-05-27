@@ -1,6 +1,7 @@
 # Agent artifacts
 .claude/settings.json
 .claude/settings.local.json
+.claude/worktrees/
 .mcp.json
 .tmp/
 .mypy_cache/
@@ -16,6 +17,7 @@ Cargo.lock
 *.swo
 *~
 .DS_Store
+.sprint-tracker.db
 
 # Testing
 *.profdata

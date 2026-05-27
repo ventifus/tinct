@@ -37,11 +37,11 @@ Use the `Agent` tool to spawn the specialist with a training brief containing:
 5. **Dedup instructions**: search mempalace first with `mcp__mempalace-tinct__mempalace_search` using `wing: "agent_<agent-name>"`
 6. **Quality bar**: 10-20 findings, specific not vague, always include source file paths
 7. **Resource retrieval context**: `.training/` is available for caching cloned repos (gitignored, persists across sessions). Agents that need repos should clone to `.training/<name>` and skip if already present.
-8. **TODO.md gap tracking** — mandatory, not optional:
-   - For every finding (Critical/Major/Minor severity — not Nit/Praise), grep `TODO.md` for 3-5 keywords from the finding to check if it's already tracked.
-   - If NOT already tracked: add it to `TODO.md`. Place it in the most specific matching sprint/milestone section. If no section fits, add to `### misc-nits` (the catch-all section near the end of TODO.md, before `## Integration / Pipeline`). Use the existing format: `- [ ] Description — detail. (\`file:line\`) [Severity, agent-name train-N]`
+8. **Tracker gap tracking** — mandatory, not optional:
+   - For every finding (Critical/Major/Minor severity — not Nit/Praise), check the tracker backlog: call `mcp__tracker__sprint_list(state="backlog")` and scan item titles for 3-5 keywords from the finding to check if it's already tracked.
+   - If NOT already tracked: create an unassigned tracker item — `mcp__tracker__item_create(type="bug"/"task", title="...", description="[Severity] file:line — detail", source_dialog="[agent-name] training session N — [severity] finding")`.
    - If already tracked: skip (do not duplicate).
-   - At the end of training, report the list of items added to TODO.md (title + line added) so the coordinator can verify. If zero items were added, explicitly state "No new TODO items — all findings already tracked."
+   - At the end of training, report the list of items created in the tracker so the coordinator can verify. If zero items were created, explicitly state "No new tracker items — all findings already tracked."
 9. **Self-review**: after storing training findings, the agent must read its own agent definition at `.claude/agents/<agent-name>.md` and improve it in place. Specifically:
    - **Remove**: directives that are irrelevant to the actual codebase, stale file paths or line numbers in the Expertise section, Focus Areas that turned out to be non-issues
    - **Add**: patterns discovered during training that future instances should watch for, refined invariants found in the real code, new Focus Areas that proved valuable
@@ -58,9 +58,9 @@ When training all agents, dispatch them in parallel batches of 3-4 using multipl
 - Batch 3: span-integrity-checker, integration-verifier, performance-expert
 - Batch 4: computer-scientist, security-expert
 
-### 4. Verify TODO Coverage
+### 4. Verify Tracker Coverage
 
-After all agents complete, collect the per-agent TODO reports. For any finding an agent flagged as Critical or Major but did NOT add to TODO.md (e.g., because the agent missed the instruction or got it wrong), add it yourself directly. Grep to confirm it's absent before adding.
+After all agents complete, collect the per-agent tracker reports. For any finding an agent flagged as Critical or Major but did NOT create a tracker item for (e.g., because the agent missed the instruction), create it yourself directly. Check the tracker to confirm it's absent before adding.
 
 ### 5. Report Summary
 
@@ -68,7 +68,7 @@ After all agents complete, report:
 - Which agents trained
 - Key patterns extracted per agent
 - Total mempalace drawers created
-- TODO.md additions: list every item added (by agent and by coordinator fallback)
+- Tracker items created: list every item added (by agent and by coordinator fallback)
 - Any resources unavailable or issues encountered
 
 ## Notes

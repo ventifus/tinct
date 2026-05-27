@@ -1,0 +1,28 @@
+# Continuation stack exceeded (CEK limit)
+#
+# LLT's CEK evaluator has a continuation stack depth limit (MAX_CONTINUATION_STACK = 2048).
+# This test verifies that exceeding the limit produces a clean error message.
+#
+# NOTE: This test is impractical to express as a corpus test because building a 2048-level
+# expression requires either:
+# 1. 2048+ nested brackets (exceeds lexer limit of 256)
+# 2. Programmatic thunk construction (not available in .llt source)
+#
+# The functionality is tested in `eval_materialize.rs::test_max_continuation_stack_enforced`
+# which constructs a 2100-deep chain of PendingBuiltin thunks programmatically.
+#
+# This file documents the expected error behavior:
+# - Error code: E040 (DepthExceeded)
+# - Message: "maximum evaluation depth exceeded (2048)"
+# - Non-cacheable: thunk state is restored for retry
+#
+# If you need to test this interactively, use a deeply nested expression like:
+# [$+ [$+ [$+ [$+ ... (2100 levels) ... 1] 1] 1] 1]
+#
+# But this will hit the lexer's bracket limit before reaching the continuation stack limit.
+
+# Placeholder test — actual enforcement is in unit tests
+42
+
+---OUTPUT---
+Int(42)

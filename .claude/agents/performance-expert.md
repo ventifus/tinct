@@ -104,7 +104,7 @@ _doc/*.md is aspirational — it describes intended behavior. When code diverges
 1. Are there design decisions that inherently limit performance? (e.g., triple-boxing thunks, O(n) env lookup)
 2. Are performance trade-offs documented in `doc/16-architecture.md`? (IndexMap vs HashMap, Rc<RefCell> vs alternatives)
 3. Should any design decisions be revisited for performance? (e.g., flat environments, arena allocation)
-4. Are performance implications of planned work considered? (check TODO.md for upcoming phases)
+4. Are performance implications of planned work considered? (check the tracker backlog for upcoming work)
 5. Does doc/*.md imply operations with non-obvious performance costs?
 6. Are there documented features that will be expensive to implement efficiently?
 7. Are desugaring rules creating unnecessary intermediate allocations?
@@ -146,7 +146,7 @@ Produce findings in the following format. Separate findings by severity. Include
 ### Praise
 - What was done well
 
-### Future Work (→ TODO.md)
+### Future Work (→ tracker backlog)
 - Description | Suggested sprint: [slug or new] | Rationale: why this is future work
 
 ### Remediation Plan
@@ -172,7 +172,7 @@ When dispatched for a sprint panel review (sprint Step 3), use this compact form
 APPROVE or REQUEST_CHANGES
 ```
 
-Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in TODO.md.
+Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in the tracker backlog.
 
 Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if any fix-now findings exist — including cross-domain issues you're confident about.
 

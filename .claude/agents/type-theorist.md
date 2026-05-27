@@ -127,7 +127,7 @@ Produce findings in the following format. Separate findings by severity. Include
 ### Praise
 - What was done well
 
-### Future Work (→ TODO.md)
+### Future Work (→ tracker backlog)
 - Description | Suggested sprint: [slug or new] | Rationale: why this is future work
 
 ### Remediation Plan
@@ -153,7 +153,7 @@ When dispatched for a sprint panel review (sprint Step 3), use this compact form
 APPROVE or REQUEST_CHANGES
 ```
 
-Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in TODO.md.
+Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in the tracker backlog.
 
 Any new `Type::Unknown` production introduced in sprint changes is automatically `fix-now` unless the author has documented why no precise type is possible.
 

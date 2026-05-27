@@ -148,8 +148,10 @@ Produce findings in the following format. Separate findings by severity. Include
 ### Praise
 - What was done well
 
-### Future Work (→ TODO.md)
+### Future Work (→ tracker backlog)
 - Description | Suggested sprint: [slug or new] | Rationale: why this is future work
+
+When creating tracker items from this section, set `source_dialog="eval-engine [review type]: [finding summary]"`. If the finding traces to a specific doc/*.md spec, also set `source_file="doc/[chapter].md §Section"`.
 
 ### Remediation Plan
 
@@ -174,7 +176,7 @@ When dispatched for a sprint panel review (sprint Step 3), use this compact form
 APPROVE or REQUEST_CHANGES
 ```
 
-Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in TODO.md.
+Nit-level findings are always `fix-now` — fix them in this sprint regardless of whether the nit is in the sprint's changes or existing code. Nits must not accumulate in the tracker backlog.
 
 Issue **APPROVE** if there are no fix-now findings. Issue **REQUEST_CHANGES** if any fix-now findings exist — including cross-domain issues you're confident about.
 
@@ -195,7 +197,7 @@ Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip
 - `src/value.rs` — `ThunkState` transitions (study the lifecycle); environment representation
 - `src/builtins.rs` — Each builtin's materialization pattern (which args get forced when)
 - `doc/08-evaluation.md` — Evaluation model, laziness inventory, document pipeline semantics
-- `TODO.md` — Laziness inventory and remaining laziness work items
+- tracker backlog — Laziness inventory and remaining laziness work items
 
 ### Focus Areas
 - Thunk implementation patterns in lazy languages

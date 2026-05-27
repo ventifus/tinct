@@ -3488,6 +3488,7 @@ mod tests {
                     definition_span: test_span(1, 1, 1, 5),
                     materialization_span: None,
                     stack: SmallVec::new(),
+                    source_file: None,
                     secondary_span: None,
                     macro_expansion: None,
                     blame: None,

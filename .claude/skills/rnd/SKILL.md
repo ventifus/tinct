@@ -1,11 +1,11 @@
 ---
-description: HITL R&D — interactive Design, Decide, and Research loop for TODO.md items. Designs go to doc/*.md, decisions recorded inline, research proposals to doc/whatif/
+description: HITL R&D — interactive Design, Decide, and Research loop. Designs go to doc/*.md, decisions recorded in tracker, research proposals to doc/whatif/
 argument-hint: [sprint-slug]
-allowed-tools: Agent, Read, Write, Edit, Glob, Grep, mcp__mempalace-tinct__*
+allowed-tools: Agent, Read, Write, Edit, Glob, Grep, mcp__mempalace-tinct__*, mcp__tracker__*
 model: opus
 ---
 
-You are a language design partner for LLT. You work interactively with the user to design features before they're implemented, writing approved designs into the relevant `doc/*.md` chapter, decisions inline in TODO.md, or research proposals to `doc/whatif/`. Progress is tracked via checkboxes in TODO.md.
+You are a language design partner for LLT. You work interactively with the user to design features before they're implemented, writing approved designs into the relevant `doc/*.md` chapter, decisions recorded as tracker context notes, or research proposals to `doc/whatif/`. Progress is tracked via the tracker.
 
 ## Item Types
 
@@ -14,7 +14,7 @@ Four kinds of items flow through this skill, each with a different scope and out
 | Prefix / Signal | Scope | Output | Agent review? |
 |-----------------|-------|--------|---------------|
 | `Design [topic]` | Substantial — new construct, model, formal spec | doc/*.md section | Yes (full panel) |
-| `Decide [topic]` | Focused — binary/small choice gating an implementation item | Decision recorded inline in TODO.md (checked-off item text) | Optional (1–2 agents if non-obvious) |
+| `Decide [topic]` | Focused — binary/small choice gating an implementation item | Decision recorded as tracker context note | Optional (1–2 agents if non-obvious) |
 | `Research [topic]` | Exploratory — open question, no commitment yet | `doc/whatif/[name].md` proposal | No (proposal is the deliverable) |
 | Blocked sprint | Sprint with unmet `**Depends on:**` or unresolvable dependency | Unblocking action: Design/Decide/Research item, reordering, or user decision | Depends on unblocking action |
 
@@ -22,29 +22,28 @@ The workflow below describes the **Design** path in full. **Decide** and **Resea
 
 ## Arguments
 
-- No argument: scan TODO.md and work through items needing design/decision/research, starting from the first one
+- No argument: scan the tracker and work through items needing design/decision/research, starting from the first one
 - `<sprint-slug>`: focus on a specific sprint's needs
 
 ## Workflow
 
-### Step 1: Audit TODO.md for Items
+### Step 1: Audit for Items
 
-Scan TODO.md for unchecked design work:
+Scan the tracker for design work needing this skill:
 
-1. **Find existing items**: grep for `- [ ]` items whose text starts with "Design", "Decide", or "Research" (these are explicit items for this skill)
-2. **Find blocked sprints**: look for `###` sprints that carry a `**Depends on:**` line whose target sprint still has unchecked items. For each blocked sprint:
-   - Identify the blocking sprint(s) and whether they are in-progress, not-started, or themselves blocked
-   - Determine the root cause: missing implementation (→ surface to user to prioritize), unresolved design question (→ insert a Design/Decide/Research item in the blocking sprint), or an external constraint (→ surface to user for resolution)
-   - Flag the chain: if sprint A depends on B and B depends on C, report the full dependency chain so the user sees the root blocker
-3. **Find hedged items**: grep unchecked `- [ ]` items for weasel words — `optional`, `optionally`, `consider`, `possibly`, `if needed`, `if desired`, `may want to`, `might`, `could also`. Every such item is an undecided choice masquerading as a task. Surface each one with a recommendation to either **commit** (rewrite as a plain task) or **cut** (remove from TODO entirely). Never leave a hedged item as-is.
-4. **Identify sprints missing items**: look at unchecked sprints (### headings with unchecked items) that describe substantial new features, architecture, or semantics but have no design/decide/research checkbox. Signs a sprint needs one:
+1. **Find existing Design/Decide/Research items**: call `mcp__tracker__sprint_list(state="backlog")` and for each sprint call `mcp__tracker__sprint_get` to read its items. Look for items whose title starts with "Design", "Decide", or "Research".
+2. **Find blocked sprints**: use `mcp__tracker__sprint_list(state="backlog")` and check which sprints have `dependencies` set. For each blocked sprint:
+   - Call `mcp__tracker__sprint_get` on the dependency to check if it's complete
+   - Determine the root cause: missing implementation (→ surface to user), unresolved design (→ insert Design/Decide/Research item in tracker), external constraint (→ surface to user)
+   - Flag dependency chains
+3. **Find hedged items**: for each backlog sprint item whose title contains weasel words (`optional`, `optionally`, `consider`, `possibly`, `if needed`, `might`, `could also`), surface each with a recommendation to **commit** (rewrite concretely) or **cut** (delete). Update via `mcp__tracker__item_update`.
+4. **Identify sprints missing design items**: look at backlog sprints for substantial new features, architecture, or semantics with no Design/Decide/Research item. Signs a sprint needs one:
    - Introduces a new language construct or runtime concept → **Design**
-   - Describes a binary policy or strategy choice that gates implementation → **Decide**
-   - Explores a speculative feature or alternative approach → **Research**
-   - Has TODO items that say "design", "decide", "choose", "model", "policy", "consider", or "either...or"
-   - Affects user-facing semantics (not just internal refactoring, nits, docs, or tests)
-5. **Insert missing items**: for sprints that need work but lack an item, insert the appropriate checkbox (`Design`, `Decide`, or `Research`) as the first unchecked item in that sprint. Research items include the target path: `— write proposal to doc/whatif/[name].md`
-6. **Present the list**: show the user all unchecked items (existing + newly inserted), grouped by type — Design/Decide/Research first, then blocked sprints, then hedged items — and ask which to start with, or proceed in document order
+   - Describes a binary policy or strategy choice → **Decide**
+   - Explores a speculative feature → **Research**
+   - Item titles say "design", "decide", "choose", "model", "policy", "consider", or "either...or"
+5. **Insert missing items**: for sprints that need design work, add it via `mcp__tracker__item_create(type="research"|"decision", title="Design [topic]"|"Decide [topic]"|"Research [topic] — write proposal to doc/whatif/[name].md", sprint_id=..., source_dialog="rnd audit: sprint [slug] missing design item")`.
+6. **Present the list**: show the user all items grouped by type — Design/Decide/Research first, then blocked sprints, then hedged items — and ask which to start with, or proceed in order
 
 ### Step 2: Design Dialog (for `Design` items)
 
@@ -54,7 +53,7 @@ For each Design item, run the full interactive dialog:
 
 Before proposing anything, deeply understand the design space:
 
-1. Read the sprint's TODO items to understand scope and constraints
+1. Read the sprint's tracker items to understand scope and constraints (call `mcp__tracker__sprint_get(sprint_id)`)
 2. Read relevant chapters of doc/*.md for neighboring design decisions and principles
 3. Read relevant source code to understand current implementation state
 4. Check mempalace for prior design discussions on this topic
@@ -91,7 +90,7 @@ Write the approved design to the relevant `doc/*.md` chapter as a draft:
    - **Citations**: where the design draws on published work (algorithms, type systems, evaluation models, language design patterns), cite the source inline — e.g., "Remy-style row unification (Rémy 1994)" or "levels-based generalization (Kiselyov 2013)". Cite when: adopting a named algorithm, claiming equivalence to a formal model, or referencing a specific result. Don't cite for common knowledge (e.g., "hash maps have O(1) lookup").
 2. **Update Formal References**: if the design introduces citations not already in `doc/17-references.md`, add them there. Each entry: `- **Author (Year)** — "Title." *Venue.* [mapping to tinct subsystem]`. Keep entries sorted by author name.
 
-Do NOT check off the TODO item yet — the agent review may surface changes.
+Do NOT mark the design item done in the tracker yet — the agent review may surface changes.
 
 #### 2e: Agent Design Review
 
@@ -114,7 +113,7 @@ Dispatch specialist agents to review the draft design for soundness, consistency
 
 Brief each agent with:
 - The draft design text (quote the relevant doc/*.md section)
-- The TODO sprint context (what problem this design solves)
+- The sprint context (what problem this design solves)
 - Instruction to evaluate: soundness, consistency with existing design decisions, feasibility, risks, and anything the design missed
 - Instruction to use this output format:
 
@@ -140,39 +139,26 @@ APPROVE or SUGGEST_CHANGES
 #### 2f: Finalize
 
 1. **Confirm doc/*.md** is in its final state (apply any revisions from the review)
-2. **Update TODO.md**: check off the design item and append a cross-reference:
-   - `- [x] Design [topic] — see doc/[chapter].md §[Section Name]`
+2. **Update tracker**: mark the design item done via `mcp__tracker__item_update(item_id, state="done")` and add a context note to the sprint: `mcp__tracker__context_add(sprint_id, type="text", content="Design [topic] — see doc/[chapter].md §[Section Name]")`
 3. **Save to mempalace**: record the design decision with rationale
 
 #### 2g: Create Implementation Tasks
 
-After the design is finalized and all agents approve, add implementation tasks to TODO.md:
+After the design is finalized and all agents approve, create implementation sprints in the tracker:
 
-1. **Determine placement**: check whether the design item belongs to an existing sprint in TODO.md.
-   - If the design item came from a sprint that has other unchecked implementation tasks, **add the new tasks to that same sprint** (after the checked-off design item). The design was one component of a larger sprint — keep the work together.
-   - If the design was standalone or the originating sprint is fully checked off, **create a new sprint at the top** of TODO.md (after the file header, before existing sprints).
-2. **New sprint format** (when creating a new sprint): sprints are `###` headings nested under a `##` design section. `##` headings hold design/research/decide items; `###` headings hold implementation tasks. Place the new `###` sprint under the `##` section whose design generated it. If no matching `##` section exists, create one first.
+1. **Determine placement**: check whether the design item belongs to an existing backlog sprint via `mcp__tracker__sprint_get`.
+   - If the design came from a sprint that has other incomplete items, add the new implementation tasks to that same sprint via `mcp__tracker__item_create(sprint_id=...)`.
+   - If the design was standalone, create a new sprint: `mcp__tracker__sprint_create(name="sprint-slug")`.
+2. **For each new sprint**: add a context note with the design rationale and spec reference:
    ```
-   ## Feature Area: Description
-
-   Brief description of the design/feature area.
-
-   - [x] Design [topic] — see doc/[chapter].md §[Section]
-
-   ### sprint-slug: Short Description
-
-   Description sentence referencing the relevant doc/*.md chapter.
-
-   - [ ] Task with file path hint (`src/file.rs`)
-   - [ ] Task with file path hint (`src/file.rs:line`)
+   mcp__tracker__context_add(sprint_id, type="text", content="Whatif: <name>\nSpec chapters: doc/[chapter].md §Section\nDesign: see doc/[chapter].md §[Section Name]")
    ```
-   Each task should name the source file(s) it touches in parentheses. Include a one-line description sentence after the `###` heading that references the relevant doc/*.md chapter (e.g., "See doc/08-evaluation.md §Section Name."). Dependencies go on a separate line: `**Depends on:** \`other-slug\``.
-3. **Derive tasks from the design**: read the finalized doc/*.md chapter and extract concrete implementation steps. Include:
-   - Source file changes (new files, modified files)
-   - Type/struct changes (new fields, changed signatures)
-   - Test coverage (corpus tests, unit tests)
-   - Any migration from old behavior (if replacing existing implementation)
-4. **Scope check**: keep sprints to ≤12 items. If the design is large, split into multiple sprints with clear boundaries and dependency ordering.
+   If this sprint depends on another, register the dependency: `mcp__tracker__sprint_add_dep(sprint_id, dep_sprint_id)`.
+3. **Derive tasks from the design**: read the finalized doc/*.md chapter and create items for each concrete implementation step:
+   - `mcp__tracker__item_create(type="task", title="[description] (`src/file.rs`)", sprint_id=..., source_file="doc/[chapter].md §Section", source_dialog="rnd [design-topic]: implementation task")`
+   - Use `source_file` pointing to the doc/*.md chapter that specifies this task. Add `source_dialog` noting the design session if relevant. Both fields help future readers trace why the work was created.
+   - Source file changes, type/struct changes, test coverage, migration tasks
+4. **Scope check**: target ~25 items per sprint. If > 30 items, split into multiple sprints with clear boundaries and `sprint_add_dep` ordering. If < 10 items, leave them — grooming will merge with other small sprints.
 
 #### 2h: Next Item
 
@@ -198,8 +184,7 @@ Dialog with user until they choose. Same as 2c.
 
 #### 3d: Record Decision
 
-1. Check off the Decide item in TODO.md with the chosen policy inline:
-   - `- [x] Decide [topic] — [chosen option and brief rationale]`
+1. Mark the Decide item done in the tracker: `mcp__tracker__item_update(item_id, state="done")`. Add a context note to the sprint with the decision inline: `mcp__tracker__context_add(sprint_id, type="text", content="Decide [topic] — [chosen option and brief rationale]")`
 2. If the decision has implications beyond the immediate task, add a short note to the relevant doc/*.md chapter
 3. Save to mempalace if non-obvious
 
@@ -264,8 +249,7 @@ Show the user the written proposal. They may request revisions or approve as-is.
 #### 4f: Finalize
 
 1. Confirm `doc/whatif/[name].md` is written
-2. Check off the Research item in TODO.md:
-   - `- [x] Research [topic] — see doc/whatif/[name].md`
+2. Mark the Research item done in the tracker: `mcp__tracker__item_update(item_id, state="done")`. Add context note: `mcp__tracker__context_add(sprint_id, type="text", content="Research [topic] — see doc/whatif/[name].md")`
 3. Save to mempalace if the research surfaced non-obvious findings
 
 No agent review — the proposal is exploratory, not a commitment.
@@ -286,13 +270,13 @@ A blocked sprint has a `**Depends on:**` line whose target is not yet complete. 
 4. Classify the root blocker:
    - **Missing implementation** — the dependency sprint exists, has no design gaps, but just hasn't been run yet → surface to user, recommend prioritizing the dependency sprint in `/cycle`
    - **Unresolved design** — the dependency sprint has unchecked Design/Decide/Research items → work those items (follow the appropriate path in this skill)
-   - **Phantom dependency** — the dependency sprint no longer exists, is checked off, or its `**Depends on:**` reference is stale → remove or update the stale reference
-   - **External constraint** — the block is outside TODO.md (e.g., waiting on a library release, a policy decision from outside the project) → surface to user with a clear description and ask how to proceed
+   - **Phantom dependency** — the dependency sprint no longer exists or is already done in the tracker → call `mcp__tracker__sprint_remove_dep(blocked_sprint_id, dep_sprint_id)` to remove the stale link
+   - **External constraint** — the block is outside the tracker (e.g., waiting on a library release, a policy decision from outside the project) → surface to user with a clear description and ask how to proceed
 
 #### 5b: Act
 
 - **Unresolved design**: insert and work the missing Design/Decide/Research item in the blocking sprint (use Steps 2–4 as appropriate). Once resolved, the dependency sprint can be picked up by `/cycle`.
-- **Phantom dependency**: remove or update the stale `**Depends on:**` line. If the blocked sprint is now unblocked, note this to the user.
+- **Phantom dependency**: call `mcp__tracker__sprint_remove_dep(blocked_sprint_id, dep_sprint_id)`. Note to the user that the sprint is now unblocked.
 - **Missing implementation** or **External constraint**: present findings clearly — blocked sprint, root blocker, full dependency chain if multi-level — and ask the user how they want to proceed. Do not make structural changes without direction.
 
 #### 5c: Next Item
@@ -301,7 +285,7 @@ Proceed to the next unchecked item automatically. If no items remain, report com
 
 ### Step 6: Accept Path (accepting a whatif into the project)
 
-The Accept path takes a completed `doc/whatif/*.md` proposal and formally integrates it into the project. Trigger this path when the user wants to accept a specific whatif doc. This is not tied to TODO.md items — invoke it directly when the user says "accept [name]" or "let's accept [whatif]".
+The Accept path takes a completed `doc/whatif/*.md` proposal and formally integrates it into the project. Trigger this path when the user wants to accept a specific whatif doc. This is not tied to tracker items — invoke it directly when the user says "accept [name]" or "let's accept [whatif]".
 
 #### 6a: Readiness Check
 
@@ -310,7 +294,7 @@ Before accepting, verify the proposal is ready:
 1. Read the target whatif doc in full
 2. Confirm the proposal describes a single complete end state — no phases, no hedging, no "we could also" alternatives
 3. Confirm the **Prerequisites** section lists concrete dependencies (not vague "when needed")
-4. Check whether listed prerequisites are either complete (checked off in TODO.md) or have scheduled sprints
+4. Check whether listed prerequisites are either complete in the tracker or have scheduled backlog sprints
 5. If anything is missing, report the gap and ask the user whether to address it first or proceed anyway
 
 #### 6b: Mark State
@@ -339,50 +323,44 @@ Update the relevant `doc/*.md` chapters:
 
 #### 6e: Create Implementation Sprints
 
-For each phase in the **Phased Adoption** section, create a sprint in TODO.md. These sprints must be **design-complete** — fully ready for `/sprint` to execute without any additional design work.
+For each phase in the **Phased Adoption** section, create a sprint in the tracker. These sprints must be **design-complete** — fully ready for `/sprint` to execute without any additional design work.
 
 **Sprint readiness checklist** — every sprint must have all of the following before creation:
-- [ ] All Design/Decide/Research items for this phase are checked off (from Steps 6a–6d above)
-- [ ] The relevant `doc/*.md` sections are written in present tense (from Step 6d)
-- [ ] At least one "Spec chapters:" reference pointing to the doc/*.md section(s) that cover this sprint's scope
-- [ ] Implementation tasks derived from the finalized `doc/*.md` content (not from the whatif proposal's phase description — the spec is the authoritative source)
-- [ ] Explicit test tasks: at least one task for corpus tests (per feature, in `tests/corpus/eval/`), one for error cases, and one for edge cases. Mention the labeled-section format (`=== out`, `=== warn`, `=== error`) so agents produce correct test files.
-- [ ] No vague task language: "design", "consider", "decide", "possibly", "if needed" — every task is a concrete implementation step
+- All Design/Decide/Research items for this phase are done (from Steps 6a–6d above)
+- The relevant `doc/*.md` sections are written in present tense (from Step 6d)
+- At least one "Spec chapters:" reference in the context note pointing to the doc/*.md section(s)
+- Implementation tasks derived from the finalized `doc/*.md` content (not the whatif proposal)
+- Explicit test tasks: at least one item for corpus tests, one for error cases, one for edge cases
+- No vague task language: every item is a concrete implementation step
 
-**Sprint format**:
-
-```
-### sprint-slug: Short Description
-
-**Whatif:** `whatif-name`
-**Spec chapters:** `doc/[chapter].md §Section`
-
-- [ ] Task description (`src/file.rs`, `src/other.rs`)
-- [ ] Task description (`src/file.rs:approx-line`)
-- [ ] Tests: corpus tests in `tests/corpus/eval/[feature]/` using `=== out`/`=== warn`/`=== error` sections; unit tests in `src/[file].rs`
-**Depends on:** `other-slug`
-```
-
-`**Whatif:**` is mandatory for every sprint created during acceptance. Use the bare whatif filename without extension (e.g., `chr-unification`, not `chr-unification.md`). This is the canonical link from sprint to originating design — `/review-whatif` uses it to find all sprints for a whatif, and `/sprint` uses it to load the original design context.
-
-**Sizing**: target ~25 non-nit, non-doc implementation tasks per sprint. If a phase exceeds 30 implementation tasks, split into two sprints with clear boundaries and explicit `**Depends on:**` between them. If a phase has fewer than 10 implementation tasks, combine it with an adjacent phase unless a hard dependency prevents it.
-
-**Ordering constraint**: place `**Depends on:**` between phase sprints explicitly. The `/cycle` grooming step will not merge sprints that have explicit dependency links — these phase boundaries are intentional.
-
-Place new `###` sprint headings under the relevant `##` design section in TODO.md. If no matching `##` section exists, create one. Never place sprint headings at `##` level.
-
-**After all implementation sprints, add a review sprint** — the last item under the `##` section is always a single-task sprint that runs `/review-whatif` once all implementation is complete:
-
-```
-### <whatif-name>-review: Post-implementation review
-
-**Whatif:** `<whatif-name>`
-**Depends on:** `<last-sprint-slug>`
-
-- [ ] Run `/review-whatif <whatif-name>` — verify all sprints are complete, implementation matches spec (no stubs or de-scoped features), and main docs are consistent; address any findings before closing
+**Create each sprint**:
+```python
+sprint = mcp__tracker__sprint_create(name="sprint-slug")
+mcp__tracker__context_add(sprint.id, type="text", content="""
+Whatif: `whatif-name`
+Spec chapters: doc/[chapter].md §Section
+[description of what this sprint implements]
+""")
+# For each task:
+mcp__tracker__item_create(type="task", title="[Task description] (`src/file.rs`)", sprint_id=sprint.id, source_file="doc/whatif/<name>.md", source_dialog="rnd accept: <whatif-name>")
+mcp__tracker__item_create(type="task", title="Tests: corpus tests in tests/corpus/eval/[feature]/ using === out/=== warn/=== error sections", sprint_id=sprint.id, source_file="doc/whatif/<name>.md", source_dialog="rnd accept: <whatif-name>")
+# For dependencies between phases:
+mcp__tracker__sprint_add_dep(sprint.id, prev_sprint.id)
 ```
 
-Replace `<whatif-name>` with the bare whatif name (e.g., `chr-unification`) and `<last-sprint-slug>` with the slug of the final implementation sprint. If there is only one implementation sprint, that sprint is the dependency. The review sprint is always last — it must not be added to the dependency chain of other sprints.
+The `Whatif:` field in the context note is mandatory — it's how `/review-whatif` finds all sprints for a whatif.
+
+**Sizing**: target ~25 non-nit, non-doc implementation items per sprint. If a phase exceeds 30 items, split into two sprints with `sprint_add_dep` ordering. If fewer than 10 items, combine with an adjacent phase unless a hard dependency prevents it.
+
+**After all implementation sprints, add a review sprint**:
+```python
+review_sprint = mcp__tracker__sprint_create(name="<whatif-name>-review")
+mcp__tracker__context_add(review_sprint.id, type="text", content="Whatif: `<whatif-name>`\nPost-implementation review sprint")
+mcp__tracker__item_create(type="task", title="Run /review-whatif <whatif-name> — verify all sprints complete, implementation matches spec, main docs consistent", sprint_id=review_sprint.id, source_file="doc/whatif/<name>.md", source_dialog="rnd accept: <whatif-name> — review sprint")
+mcp__tracker__sprint_add_dep(review_sprint.id, last_impl_sprint.id)
+```
+
+The review sprint is always last — never add it as a dependency of other sprints.
 
 #### 6f: Update Index
 
@@ -401,7 +379,7 @@ Record the acceptance decision: what was accepted, why now, what doc/*.md sectio
 - **Match weight to scope**: Design items get full analysis + agent review. Decide items get concise options + inline resolution. Research items get thorough exploration + proposal doc. Don't over-engineer small decisions or under-analyze big ones.
 - **Depth over speed**: spend time understanding the design space. A bad design costs more than a slow design.
 - **Concrete alternatives**: don't present vague options. Each alternative should be specific enough to implement (Design/Decide) or evaluate (Research).
-- **Cross-reference everything**: Design → `doc/[chapter].md §section`. Decide → inline in TODO.md. Research → `doc/whatif/[name].md`. Accept → state marker + index entry + TODO sprints. All checked-off items include the cross-reference.
+- **Cross-reference everything**: Design → `doc/[chapter].md §section`. Decide → tracker context note. Research → `doc/whatif/[name].md`. Accept → state marker + index entry + tracker sprints. All items include the cross-reference.
 - **Respect existing decisions**: read doc/*.md thoroughly. Don't propose things that contradict confirmed decisions without flagging the conflict.
 - **One item at a time**: finish one item completely before moving to the next.
 - **No implementation**: this skill designs, decides, and researches — it doesn't implement. Implementation happens in /sprint.

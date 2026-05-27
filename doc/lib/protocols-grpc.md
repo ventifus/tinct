@@ -2,12 +2,17 @@
 
 ### `build-grpc-frame`
 
+Build a gRPC Length-Prefixed Message frame
+
 ```tinct
-(value)
+fn@String [let data@String compressed@Bool]
 ```
 
 ### `parse-grpc-frame-header`
 
+Parse gRPC Length-Prefixed Message header
+
 ```tinct
-(value)
+fn@Dict [let bytes@String]
 ```
+

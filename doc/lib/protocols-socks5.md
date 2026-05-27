@@ -2,18 +2,25 @@
 
 ### `build-socks5-greeting`
 
+Build SOCKS5 initial client greeting (RFC 1928 §3)
+
 ```tinct
-(value)
+fn@String [let methods@Dict]
 ```
 
 ### `build-socks5-connect`
 
+Build SOCKS5 CONNECT request for host:port (RFC 1928 §4)
+
 ```tinct
-(value)
+fn@String [let host@String port@Int]
 ```
 
 ### `parse-socks5-response`
 
+Parse SOCKS5 server response (RFC 1928 §6)
+
 ```tinct
-(value)
+fn@Dict [let bytes@String]
 ```
+

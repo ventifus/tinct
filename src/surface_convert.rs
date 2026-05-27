@@ -1825,10 +1825,7 @@ fn surface_decl_to_thunk_id(
                         ]
                         .into_iter()
                         .collect();
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            Value::Dict(inner),
-                            span,
-                        )))
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(inner), span)))
                     })
                     .collect();
                 dict.insert(
