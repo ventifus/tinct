@@ -53,6 +53,26 @@ Implementation: keys are evaluated via `eval_key(key_expr, parent_env, ctx, dept
 
 **Circular dependencies** are detected at materialization-time and reported with a clear cycle trace.
 
+**Self-referencing entries (`[k: k]`):** Because dict entries use letrec scoping, writing `[name: name]` does **not** capture an outer-scope binding called `name` — it creates a circular self-reference where `name` resolves to itself within the dict environment. This is a common mistake when constructing dicts from outer-scope variables:
+
+```tinct
+[fn [name doc sig]
+    [name: name  doc: doc  sig: sig]]   # BUG: each entry refers to itself
+```
+
+The type checker emits a T002 warning for bare `[k: k]` entries. To reference an outer-scope variable with the same name, alias it first or use a different parameter name:
+
+```tinct
+# Option 1: use different parameter names
+[fn [n d s]
+    [name: n  doc: d  sig: s]]
+
+# Option 2: alias before the dict
+[fn [name doc sig]
+    [let n name  d doc  s sig]
+    [name: n  doc: d  sig: s]]
+```
+
 **Nested dicts create new scopes.** Each `[]` dict introduces a new lexical scope. Inner scopes see all bindings from outer scopes, and inner bindings shadow outer bindings of the same name within that inner dict. Scoping is lexical, not dynamic — closures capture their defining environment, not the calling environment. This matches Haskell's `let`/`where` and Nix's attribute sets.
 
 The `Environment` struct's `parent` field implements this: each nested dict gets a new `Environment` whose `parent` points to the enclosing dict's environment. Variable lookup walks the parent chain outward.

@@ -549,6 +549,21 @@ process: [fn [hosts@T2] ...]   # alias resolves transitively
 
 **Bare `@Map`, `@Seq`** are accepted and mean "any map / any sequence" (unconstrained element/key/value types).
 
+**Annotation bracket restrictions.** Annotation bracket expressions (e.g., `x@[...]`) are parsed by re-parsing the bracket contents as a standalone expression and classifying the result:
+
+| Form | Classification | Accepted? |
+|------|---------------|-----------|
+| `x@[a: Int  b: String]` | Dict literal | YES — becomes `Annotation::PropertyDict` with named entries |
+| `x@[Seq Int]` | Implied call with VarRef head | YES — func and args become auto-indexed PropertyDict entries (parameterized type form) |
+| `x@[Int Null]` | Implied call with VarRef head | YES — union type form (positional entries) |
+| `x@[a Null]` | Implied call with lowercase VarRef head | YES — union with type variable |
+| `x@[call f x]` | Explicit call (implied: false) | NO — parse error |
+| `x@[fn [a] $a]` | Fn special form | NO — parse error |
+| `x@[type Number]` | TypeAlias declaration | NO — parse error |
+| `x@[@Number $val]` | TypeAssert expression | NO — parse error |
+
+The parser accepts only Dict literals and implied calls with VarRef heads (uppercase or lowercase). All other forms produce the error "property dict annotation must be a dict expression".
+
 **Annotations only.** These parameterized forms are for type annotations and `[type ...]` aliases — they describe types. They do not change how dicts are constructed or accessed at runtime.
 
 ### Type Assertions
@@ -796,7 +811,7 @@ The `---` line may carry optional section header components:
 --- %name@Type expects: Type caps: [%cap: @CapType]
 ```
 
-All components are optional. A bare `---` is valid. Components may appear in any order:
+All components are optional. A bare `---` is valid. **Components may appear in any order** — the parser accepts them in any sequence and sets the corresponding document header fields. The canonical ordering shown in examples is `%name@Type expects: Type caps: [...] stage: type`, but this is not enforced:
 
 | Component | Syntax | Purpose |
 |-----------|--------|---------|
@@ -841,6 +856,8 @@ Whitespace is significant only for `@` (annotation), not for `.`:
 - `word @Annotation` — bare identifier `word` followed by separate expression
 
 `@` (ImmediateAt) is the only whitespace-sensitive token. A space before `@` prevents annotation detection. `.` is not whitespace-sensitive — dot access works with or without preceding whitespace.
+
+**Historical note:** Bracket access (`a[0]`) was removed from the language during the access-pipeline-phase2 sprint. It required whitespace sensitivity for `[` (conflicting with immediate bracket after identifier in cases like `$f[args]`), and the feature was replaced by the `nth` and `get` function-based approach. `[` is no longer whitespace-sensitive.
 
 ### Identifier Character Rules
 

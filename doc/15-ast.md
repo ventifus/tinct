@@ -253,7 +253,7 @@ enum Annotation {
 | `VarRef { name: "x", .. }` | `x` or `$x` | Variable reference (bare identifier or escaped); resolution results live in `ResolutionTable` keyed by `NodeId` |
 | `DotAccess { field: DotKey::Ident("b"), .. }` | `a.b` | String key access: looks up `Key::String("b")` on `a` |
 | `DotAccess { field: DotKey::Int(0), .. }` | `a.0` | Integer key access: looks up `Key::Int(0)` on `a` (auto-indexed dicts) |
-| `Pipe { lhs, rhs }` | `a \| f` | **Pipe is present in the Surface AST and eliminated by the lowering pass (`src/lower.rs`) before evaluation. The evaluator never sees `SurfaceExpression::Pipe`.** Lowering rewrites `Pipe { lhs, rhs }` to `CoreExpr::Call { func: rhs, args: [lhs], ... }` (equivalent to `f(a)` for `a \| f`). The type checker operates on the Surface AST and handles Pipe directly. |
+| `Pipe { lhs, rhs }` | `a \| f` | **Pipe is present in the Surface AST and eliminated by the lowering pass (`src/lower.rs`) AFTER type checking. The evaluator never sees `SurfaceExpression::Pipe`.** Pipe survives the desugar pass, the resolve pass, and the typecheck pass. It is eliminated during the lowering pass (which runs after type checking but before evaluation), which rewrites `Pipe { lhs, rhs }` to `CoreExpr::Call { func: rhs, args: [lhs], ... }` (equivalent to `f(a)` for `a \| f`). |
 | `Sequential(exprs)` | Multi-expression fn body | Sequential expressions with let\* semantics; each expression's result dict extends environment for subsequent expressions |
 | `Dict(entries)` | `["a" "b" "c"]` or `[k: v]` | Dict/list literal |
 | `Call` | `[f x]` or `[call f x]` | Function application (implied or explicit) |
@@ -390,14 +390,15 @@ The formatter always emits `[fn [let x y] body]`.
 
 ### Annotation Bracket Restriction
 
-Annotation bracket expressions (e.g., `x@[type: Number  default: 30]`) must contain only dict entries or union type members. Special forms within annotations are parse errors. When a `type:` key is present, rest entries (`...` or `...name`) are also forbidden — they have no defined semantics in property dict context:
+Annotation bracket expressions (e.g., `x@[type: Number  default: 30]`) are parsed by re-parsing the bracket contents as a standalone expression and classifying the result. Only dict literals and implied calls with VarRef heads are accepted. Special forms and other expression types within annotations are parse errors. When a `type:` key is present, rest entries (`...` or `...name`) are also forbidden — they have no defined semantics in property dict context:
 
 ```tinct
-x@[type: Number  default: 30]    # valid: property dict
+x@[type: Number  default: 30]    # valid: property dict (Dict literal)
 x@Number                         # valid: simple annotation
 [@[name: String  ...] $val]      # valid: type expression with rest (no type: key)
-fn@[Int Null]                    # valid: union return type (two positional entries)
+fn@[Int Null]                    # valid: union return type (implied call, VarRef head)
 fn@[a Null]                      # valid: union with type variable (lowercase VarRef head)
+x@[Seq Int]                      # valid: parameterized type (implied call, VarRef head)
 x@[call $f $x]                   # ERROR: explicit call special form in annotation bracket
 x@[fn [a] $a]                    # ERROR: fn special form in annotation bracket
 x@[type Number]                  # ERROR: type special form in annotation bracket
@@ -411,22 +412,26 @@ error: property dict annotation must be a dict expression, got: [call f x]
     |   ^^^^^^^^^^^^
 ```
 
-The following constructs are rejected inside annotation brackets:
+The parser classifies annotation bracket contents after re-parsing the bracket sub-string (`src/parser.rs`, `parse_annotation`):
 
-| Rejected form | Why |
-|--------------|-----|
-| `call` | Explicit call special form — `implied: false`, produces a rejected non-Dict, non-implied-VarRef-call result |
-| `fn` | Special form — produces `SurfaceExpression::Fn`, not `SurfaceExpression::Dict` |
-| `type` | Special form — produces `SurfaceDeclaration::TypeAlias`, not `SurfaceExpression::Dict` |
-| `type_assert_body` (`[@Annotation expr]`) | Produces `SurfaceExpression::TypeAssert`, not `SurfaceExpression::Dict` — rejected even though it is not a named special form keyword |
+| Form | Classification | Accepted? | Becomes |
+|------|---------------|-----------|---------|
+| `x@[a: Int  b: String]` | `SurfaceExpression::Dict` | YES | `Annotation::PropertyDict` with named entries |
+| `x@[Seq Int]` | `SurfaceExpression::Call { implied: true, func: VarRef("Seq"), .. }` | YES | `Annotation::PropertyDict` with auto-indexed entries (parameterized type) |
+| `x@[Int Null]` | `SurfaceExpression::Call { implied: true, func: VarRef("Int"), .. }` | YES | `Annotation::PropertyDict` with auto-indexed entries (union type) |
+| `x@[a Null]` | `SurfaceExpression::Call { implied: true, func: VarRef("a"), .. }` | YES | `Annotation::PropertyDict` with auto-indexed entries (lowercase type variable union) |
+| `x@[call f x]` | `SurfaceExpression::Call { implied: false, .. }` | NO | Parse error: "property dict annotation must be a dict expression" |
+| `x@[fn [a] $a]` | `SurfaceExpression::Fn` | NO | Parse error |
+| `x@[type Number]` | `SurfaceDeclaration::TypeAlias` | NO | Parse error |
+| `x@[@Number $val]` | `SurfaceExpression::TypeAssert` | NO | Parse error |
 
-All four are caught by the same check in `parse_annotation`: after re-parsing the bracket sub-string, the result is classified as follows:
+**Exhaustive classification:**
 
-- `SurfaceExpression::Dict` → accepted as a property dict annotation (named entries, e.g. `[type: Number  default: 30]`).
-- `SurfaceExpression::Call { implied: true, func: VarRef(..), .. }` → accepted as a positional union type annotation: the func and each arg become auto-indexed `Entry` values in a `PropertyDict`. This handles `fn@[Int Null]` (parameterized) and `fn@[a Null]` (type variable). Both uppercase and lowercase VarRef heads are accepted.
-- Anything else (explicit `call` form with `implied: false`, `SurfaceExpression::Fn`, `SurfaceDeclaration::TypeAlias`, `SurfaceExpression::TypeAssert`) → parse error: "property dict annotation must be a dict expression".
+- **Dict literals** (`[a: Int b: String]`) → accepted, become `Annotation::PropertyDict` with the literal's entries.
+- **Implied VarRef-head calls** (`[Seq Int]`, `[Int Null]`, `[a Null]`) → accepted, func and args become auto-indexed PropertyDict entries. Both uppercase (parameterized types) and lowercase (type variable unions) VarRef heads are accepted.
+- **All other forms** (explicit `call`, `fn`, `type`, `TypeAssert`, VarRef alone, literals, etc.) → rejected with parse error "property dict annotation must be a dict expression".
 
-`type_assert_body` is rejected on the "anything else" basis, not because of keyword disambiguation.
+`type_assert_body` (`[@Annotation expr]`) is rejected on the "anything else" basis, not because of keyword disambiguation.
 
 When no `type:` key is present, the bracket is interpreted as a type expression (record type), and rest entries are allowed for row polymorphism.
 
@@ -449,7 +454,9 @@ Dot notation and bracket notation desugar to nested access nodes:
 
 ### Pipe Lowering
 
-`|` is preserved in the Surface AST and eliminated by the **lowering pass** (`src/lower.rs`). The parser emits `SurfaceExpression::Pipe { lhs, rhs }`, which remains intact through desugar, resolve, and typecheck. The lowering pass (which runs after type checking but before evaluation) rewrites Pipe to `CoreExpr::Call` before the evaluator runs. The evaluator never sees Pipe.
+`|` is preserved in the Surface AST and eliminated by the **lowering pass** (`src/lower.rs`) AFTER type checking. The parser emits `SurfaceExpression::Pipe { lhs, rhs }`, which remains intact through desugar, resolve, and typecheck. The lowering pass (which runs after type checking but before evaluation) rewrites Pipe to `CoreExpr::Call` before the evaluator runs. The evaluator never sees Pipe.
+
+**Note on desugaring vs lowering:** Pipe is NOT eliminated by the desugar pass (`src/desugar.rs`). The desugar pass runs immediately after parsing and handles most syntactic transformations. Pipe is an exception — it remains in the Surface AST and is handled by the type checker. Lowering eliminates Pipe after type checking is complete.
 
 Three lowering rules, applied in priority order:
 

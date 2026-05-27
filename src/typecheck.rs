@@ -1937,6 +1937,12 @@ pub(crate) fn infer_surface_expr(
             // Multi-expression sequential evaluation (let-binding semantics).
             // Each expression's result dict extends the type environment for the next.
             // The last expression's type is the overall result type.
+            //
+            // For intermediate dict expressions, we call infer_dict directly (not via
+            // infer_surface_expr) to capture per-entry TypeSchemes. This preserves
+            // let-polymorphism across sequential steps: a binding like `id: [fn [let x] x]`
+            // in an earlier step retains its polymorphic scheme `forall a. a -> a`, so
+            // later steps can instantiate it at different types (Damas & Milner, 1982).
             if exprs.is_empty() {
                 return Ok(Type::Record(Row {
                     fields: HashMap::new(),
@@ -1953,29 +1959,58 @@ pub(crate) fn infer_surface_expr(
                     return infer_surface_expr(seq_expr, &current_env, state, type_map);
                 }
 
-                // Intermediate expression: infer and extract record bindings
-                let expr_ty = infer_surface_expr(seq_expr, &current_env, state, type_map)?;
-
-                // Extract record fields to extend the type environment
-                if let Type::Record(row) = expr_ty {
-                    // Create child environment with bindings from intermediate expression
-                    let mut child_env = TypeEnv::with_parent(&current_env);
-
-                    // Add field types to environment
-                    for (field_name, field_ty) in &row.fields {
-                        child_env.insert(field_name.clone(), field_ty.clone());
+                // Intermediate expression: infer and extract record bindings.
+                // For Dict expressions, call infer_dict directly to get TypeSchemes
+                // (infer_surface_expr discards them via TypeScheme::mono()).
+                if let SurfaceExpression::Dict(entries) = &seq_expr.expr {
+                    let (dict_ty, schemes, dict_errs) =
+                        infer_dict(entries, &current_env, state, type_map, seq_expr.span);
+                    if !dict_errs.is_empty() {
+                        return Err(dict_errs);
                     }
 
-                    current_env = Rc::new(child_env);
+                    if let Type::Record(_) = &dict_ty {
+                        let mut child_env = TypeEnv::with_parent(&current_env);
+
+                        // Insert schemes (preserving polymorphism) for entries
+                        // that have generalized TypeSchemes from infer_dict.
+                        // Fall back to mono() for any field in the Record type
+                        // that doesn't have a scheme (e.g., auto-indexed entries).
+                        for (field_name, scheme) in &schemes {
+                            child_env.insert_scheme(field_name.clone(), scheme.clone());
+                        }
+
+                        current_env = Rc::new(child_env);
+                    } else {
+                        return Err(vec![TypeError::new(
+                            format!(
+                                "sequential expression requires intermediate expressions to be dicts, got {}",
+                                dict_ty
+                            ),
+                            seq_expr.span,
+                        )]);
+                    }
                 } else {
-                    // Intermediate expression must be a record (dict)
-                    return Err(vec![TypeError::new(
-                        format!(
-                            "sequential expression requires intermediate expressions to be dicts, got {}",
-                            expr_ty
-                        ),
-                        seq_expr.span,
-                    )]);
+                    let expr_ty = infer_surface_expr(seq_expr, &current_env, state, type_map)?;
+
+                    // Extract record fields to extend the type environment
+                    if let Type::Record(row) = expr_ty {
+                        let mut child_env = TypeEnv::with_parent(&current_env);
+
+                        for (field_name, field_ty) in &row.fields {
+                            child_env.insert(field_name.clone(), field_ty.clone());
+                        }
+
+                        current_env = Rc::new(child_env);
+                    } else {
+                        return Err(vec![TypeError::new(
+                            format!(
+                                "sequential expression requires intermediate expressions to be dicts, got {}",
+                                expr_ty
+                            ),
+                            seq_expr.span,
+                        )]);
+                    }
                 }
             }
 

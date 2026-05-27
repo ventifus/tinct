@@ -11676,3 +11676,18 @@ Migrated 8 stdlib files off raw builtin-* calls to prelude-exported wrappers. Ad
 - [x] stdlib/protocols/dns.llt, websocket.llt, socks5.llt, grpc.llt: replaced all builtin-* calls
 - [x] Added builtin-gte, builtin-lte, builtin-gt to standard_builtins()
 - [x] Replaced gte-impl with builtin-gte throughout prelude
+
+### correctness-doc-fixes: Pattern linearity doc, letrec self-ref, sequential generalization, spec consistency ✅ DONE (2026-05-27)
+
+Documented last-binding-wins pattern semantics in doc/14. Added T002 letrec self-reference diagnostic (warn on [k: k]). Fixed sequential let-generalization (preserve TypeScheme via infer_dict). Clarified bracket access removal, Pipe lowering, section header order, annotation bracket restriction in doc/02+doc/15.
+
+- [x] Document last-binding-wins in doc/14-patterns.md
+- [x] Add comments to #[cfg(test)] linearity functions
+- [x] Add T002 diagnostic for letrec self-reference [k: k]
+- [x] Document [k: k] letrec behavior in doc/08-evaluation.md
+- [x] Fix sequential let-generalization in typecheck.rs
+- [x] Add corpus test for sequential polymorphism
+- [x] doc/02: bracket access removal note
+- [x] doc/15: Pipe lowering placement clarification
+- [x] doc/02: section header component order verification
+- [x] doc/02+15: annotation bracket restriction classification

@@ -175,6 +175,30 @@ error: no match arm satisfied
 
 See `doc/feature/nominal-variants.md` for the nominal variant design and `src/typecheck.rs` for the complete exhaustiveness algorithm.
 
+### Non-Linear Patterns (Last-Binding-Wins)
+
+Unlike Standard ML, Haskell, and OCaml — which reject duplicate variable names within a single pattern — tinct allows them. When the same variable appears more than once in a pattern, the **last binding wins**: earlier bindings are silently shadowed.
+
+```tinct
+[match [a: 1  b: 2]
+    [a: x  b: x  ...]: x]
+# x is bound to 2 (the second occurrence shadows the first)
+```
+
+This is equivalent to writing `[a: _  b: x  ...]` — the first `x` has no observable effect.
+
+**Rationale:** Tinct's pattern matching is gradual (soft-skip on mismatch), and the language is dynamically typed at its core. Rejecting non-linear patterns adds implementation complexity (a linearity check pass) without clear user benefit. In statically-typed languages, non-linear patterns are rejected because they could mask bugs where the user intended an equality constraint (as in Erlang, where duplicate variables mean "must be equal"). Tinct does not interpret duplicate variables as equality constraints — it uses last-binding-wins, consistent with how dict keys work (later entries shadow earlier ones with the same key).
+
+**Equality matching:** To match when two fields have the same value, use a guard or a pin pattern:
+
+```tinct
+[match [a: 1  b: 1]
+    [a: x  b: $x  ...]: "equal"
+    _: "not equal"]
+```
+
+Here `$x` is a pin pattern that matches against the already-bound value of `x`, providing the equality-constraint semantics that non-linear patterns provide in Erlang.
+
 ---
 
 ## Comparison with Other Languages

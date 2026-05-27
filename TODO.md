@@ -582,22 +582,22 @@ Combines: lazy-file-io-tests (3), json-codec-cleanup (2), io-builtin-types (2), 
 Combines: pattern-linearity-doc (2), letrec-self-ref-silent (2), sequential-let-generalization (2), doc-spec-consistency-341 (4).
 
 **Pattern linearity documentation [Major]:** `check_pattern_linearity` is `#[cfg(test)]` only — production accepts non-linear patterns with last-binding-wins. Undocumented.
-- [ ] Document last-binding-wins semantics in `doc/14-patterns.md` as a deliberate language design decision
-- [ ] Remove or repurpose the `#[cfg(test)]`-gated linearity functions (dead in production)
+- [x] Document last-binding-wins semantics in `doc/14-patterns.md` as a deliberate language design decision
+- [x] Remove or repurpose the `#[cfg(test)]`-gated linearity functions (dead in production)
 
 **Letrec self-reference diagnostic [Major]:** `[name: name]` in letrec dict silently cycles via try-or. Add diagnostic.
-- [ ] Add T002/T003 diagnostic: warn when a dict entry's value is `VarRef(name)` matching its own key — likely letrec self-reference (`src/resolve.rs` or `src/typecheck.rs`)
-- [ ] Alternatively: evaluate dict value expressions in PARENT scope when value is a bare VarRef matching its own key
+- [x] Add T002/T003 diagnostic: warn when a dict entry's value is `VarRef(name)` matching its own key — likely letrec self-reference (`src/resolve.rs` or `src/typecheck.rs`)
+- [x] Alternatively: evaluate dict value expressions in PARENT scope when value is a bare VarRef matching its own key
 
 **Sequential let-generalization [Major]:** Sequential handler wraps bare Type via mono(), losing polymorphism.
-- [ ] In `src/typecheck.rs:1960-1969`: extract TypeSchemes from infer_dict instead of stripping to bare Type; use `child_env.insert_scheme()` to preserve polymorphism
-- [ ] Corpus test: sequential polymorphic function used at two different types
+- [x] In `src/typecheck.rs:1960-1969`: extract TypeSchemes from infer_dict instead of stripping to bare Type; use `child_env.insert_scheme()` to preserve polymorphism
+- [x] Corpus test: sequential polymorphic function used at two different types
 
 **Doc/spec consistency [Major]:** Grammar spec inconsistencies found by grammar-architect.
-- [ ] `doc/02-syntax.md:838-843`: Clarify bracket access removal — explain `a[0]` was removed
-- [ ] `doc/15-ast.md:256,435-461`: Move Pipe desugaring to §Lowering Pass Rules (Pipe lowered after typecheck, not during desugar)
-- [ ] `doc/02-syntax.md:798-799`: Audit StackFrame::DocumentHeader for section header component order
-- [ ] `doc/02-syntax.md:549,575` + `doc/15-ast.md:393-432`: Clarify annotation bracket restriction classification
+- [x] `doc/02-syntax.md:838-843`: Clarify bracket access removal — explain `a[0]` was removed
+- [x] `doc/15-ast.md:256,435-461`: Move Pipe desugaring to §Lowering Pass Rules (Pipe lowered after typecheck, not during desugar)
+- [x] `doc/02-syntax.md:798-799`: Audit StackFrame::DocumentHeader for section header component order
+- [x] `doc/02-syntax.md:549,575` + `doc/15-ast.md:393-432`: Clarify annotation bracket restriction classification
 
 ---
 

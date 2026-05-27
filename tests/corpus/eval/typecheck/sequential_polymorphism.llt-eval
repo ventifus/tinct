@@ -1,0 +1,6 @@
+# Sequential binding preserves polymorphism
+[id: [fn [let x] x]]
+[a: [id 42]  b: [id "hello"]]
+[str a " " b]
+=== out
+String("42 hello")

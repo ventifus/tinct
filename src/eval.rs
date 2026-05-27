@@ -2728,6 +2728,10 @@ pub fn materialize_sync(
 /// that straddles two Or-pattern branches (same name in branch A and branch B) is a
 /// separate semantic concern (the "or-pattern completeness" invariant) and is NOT reported
 /// here — only intra-branch duplicates matter for linearity.
+///
+/// **Test-only.** Production code uses last-binding-wins semantics for non-linear
+/// patterns (see doc/14-patterns.md §Non-Linear Patterns). These functions exist
+/// solely to test the detection algorithm, not to enforce linearity at runtime.
 #[cfg(test)]
 fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(String, Span)>) {
     match &pattern.node {
@@ -2776,8 +2780,9 @@ fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(Str
 /// the or-pattern completeness invariant).  Only a duplicate within a single branch
 /// is a linearity violation.
 ///
-/// This is called once per match arm before `match_pattern` recurses, so the cost is
-/// O(|pattern|) per arm.
+/// **Test-only.** Production code uses last-binding-wins semantics for non-linear
+/// patterns (see doc/14-patterns.md §Non-Linear Patterns). This function is retained
+/// as a test helper to verify duplicate-detection logic.
 #[cfg(test)]
 #[allow(clippy::result_large_err)]
 pub(crate) fn check_pattern_linearity(pattern: &Spanned<Pattern>) -> Result<(), EvalError> {
