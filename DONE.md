@@ -11554,3 +11554,16 @@ Also fixed in this sprint: pre-existing surface_convert.rs bug where `dict_to_su
 - [x] Verify `stdlib/codecs/json.llt` `from-json` handles all edge cases; restructured to single-dict
 - [x] Add corpus tests for `from-json` edge cases including `\uXXXX` Unicode escapes (`tests/corpus/eval/stdlib/`)
 
+### lazy-file-io: Replace slurp/lines with builtin-read-line/builtin-read-chunk ✅ DONE (2026-05-26)
+
+Deleted slurp builtin entirely. Deleted old lines builtin (Handle→lazy Seq). Added builtin-read-line (Handle→String|[]) and builtin-read-chunk (Handle×Int→Bytes|[]). Added LLT lines/chunks functions to prelude wrapping the new builtins. Updated all callers across stdlib, samples, scripts, and CLI tests. Two slurp calls remain (net.llt, tls_test2.llt — blocked on bytes-concat).
+
+- [x] Add builtin_read_line and builtin_read_chunk to builtins_io.rs
+- [x] Delete builtin_slurp, builtin_lines, builtin_lines_step
+- [x] Update builtins.rs registrations, type_env.rs, typecheck.rs
+- [x] Add LLT lines/chunks to prelude using builtin-read-line/builtin-read-chunk
+- [x] Update include and cli-pipeline in prelude to use join+collect+lines
+- [x] Migrate all stdlib callers: ndjson.llt, json.llt, toml-lite.llt, io.llt, codecs/toml-lite.llt
+- [x] Migrate samples: versions.llt, docgen.llt
+- [x] Update CLI tests: replace slurp with join+collect+lines pattern
+

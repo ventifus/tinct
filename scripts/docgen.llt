@@ -32,7 +32,7 @@
 
 io: [include %libdir "io.llt"]
 
-# ── File Discovery ────────────────────────────────────────────────────────────
+# ── File Discovery ────────────────────────────────────────────────────────
 
 # Collect all .llt paths under a directory prefix (relative to %libdir).
 # Returns a Seq of path strings like "strings.llt" or "codecs/json.llt".
@@ -52,7 +52,7 @@ scan-dir: [fn [let prefix@String acc]
 
 llt-files: [sort [scan-dir "" []]]
 
-# ── Annotation accessors ──────────────────────────────────────────────────────
+# ── Annotation accessors ──────────────────────────────────────────────────
 #
 # Annotation Variants (from surface_fields.rs) now expose a payload Dict with:
 #   Simple:       {text: "Name"  name: "Name"}
@@ -95,7 +95,7 @@ return-type-text: [fn@String [let return-ann]
       # Simple or Annotated — use display text directly
       [ann-text return-ann]]]]
 
-# ── Parameter signature ───────────────────────────────────────────────────────
+# ── Parameter signature ───────────────────────────────────────────────────
 
 # Build a parameter signature string from a Parameter Variant.
 # Parameter payload: {name: String  variadic: Bool  annotation: Annotation Variant}
@@ -122,7 +122,7 @@ build-sig: [fn@String [let fn-expr]
     [str " [let " [join " " [map param-sig params]] "]"]]]
   [str "fn@" ret-text param-part]]
 
-# ── Doc string extraction ─────────────────────────────────────────────────────
+# ── Doc string extraction ─────────────────────────────────────────────────
 
 # Extract doc string from a Fn expression's return-ann (new-style: fn@[doc: "..."]).
 fn-ann-doc: [fn@String [let fn-expr]
@@ -132,7 +132,7 @@ fn-ann-doc: [fn@String [let fn-expr]
 key-ann-doc: [fn@String [let key-expr]
   [try-str [fn [let] [ann-doc key-expr.annotation]]]]
 
-# ── Entry parsing ─────────────────────────────────────────────────────────────
+# ── Entry parsing ─────────────────────────────────────────────────────────
 
 # Extract the binding name from a dict entry key Expression.
 # Key can be Var{name} or Annotated{name, annotation}. Returns "" for anything else.
@@ -164,12 +164,16 @@ parse-entry: [fn@Dict [let entry]
                 [call [fn@Dict [let kdoc]
                   [if [= kdoc ""]
                     []  # no doc found anywhere — skip this entry
-                    [name: name  doc: kdoc  sig: [build-sig value]]]]
+                    # Use fn to break letrec circularity ([name: name] would be circular).
+                    [call [fn@Dict [let n d s] [name: n  doc: d  sig: s]]
+                     name kdoc [build-sig value]]]]
                  [key-ann-doc key]]
                 []]]  # plain Var key with no fn doc — not a documented entry
              [try-str [fn [let] [tag-of key]]]]
             # Found new-style doc
-            [name: name  doc: doc  sig: [build-sig value]]]]
+            # Use fn to break letrec circularity ([name: name  doc: doc] would be circular).
+            [call [fn@Dict [let n d s] [name: n  doc: d  sig: s]]
+             name doc [build-sig value]]]]
          [fn-ann-doc value]]
         []]]  # not a Fn — skip
      [try-str [fn [let] [tag-of value]]]]]]
@@ -203,7 +207,7 @@ extract-from-program: [fn [let program]
     []
     docs]]
 
-# ── Markdown Rendering ────────────────────────────────────────────────────────
+# ── Markdown Rendering ────────────────────────────────────────────────────
 
 # Strip the ".llt" suffix to get the module name.
 mod-name: [fn@String [let full-path@String]
@@ -222,7 +226,7 @@ render-entry: [fn@String [let e]
     e.sig "\n"
     "```\n"]]
 
-# ── Per-Module File Writing ───────────────────────────────────────────────────
+# ── Per-Module File Writing ───────────────────────────────────────────────
 
 # Write content to %docdir/<filename>.md and return the module name.
 write-module-file: [fn@String [let name@String content@String]
@@ -232,7 +236,7 @@ write-module-file: [fn@String [let name@String content@String]
 # Load, parse, and write documentation for one stdlib file.
 # Returns the module name, or "" if the file has no documented bindings.
 write-module: [fn@String [let full-path@String]
-  [source:  [str [slurp [open %libdir full-path Readable]]]]
+  [source:  [str [join "\n" [collect [lines [open %libdir full-path Readable]]]]]]
   [program: [expand [load source name: full-path]]]
   [docs:    [extract-from-program program]]
   [name:    [mod-name full-path]]
@@ -245,7 +249,7 @@ write-module: [fn@String [let full-path@String]
 
 ]
 
-# ── Index emission ────────────────────────────────────────────────────────────
+# ── Index emission ────────────────────────────────────────────────────────
 
 [emit [str
   "# tinct stdlib Reference\n\n"

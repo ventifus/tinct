@@ -388,20 +388,20 @@ pub(crate) use crate::builtins_dict::{
     builtin_get_optional, builtin_keys, builtin_length, builtin_make_builder, builtin_merge,
 };
 
-// I/O builtins: open, slurp, write, connect, lines, emit, env, list-dir, stat, etc.
+// I/O builtins: open, write, connect, builtin-read-line, builtin-read-chunk, emit, env, list-dir, stat, etc.
 // Implementations live in builtins_io.rs; re-exported here so that
 // standard_builtins() registration and unit tests (via `use super::*`) still work.
 pub(crate) use crate::builtins_io::{
     builtin_cap_data, builtin_close, builtin_connect, builtin_copy_file, builtin_emit, builtin_env,
     builtin_exists, builtin_flush, builtin_get_xattr, builtin_http2_session, builtin_http3_session,
-    builtin_http_request, builtin_icmp_ping, builtin_lines, builtin_link, builtin_list_dir,
-    builtin_list_xattrs, builtin_make_dir, builtin_narrow, builtin_open, builtin_position,
-    builtin_quic_open_datagram, builtin_quic_open_stream, builtin_quic_session, builtin_raw_create,
-    builtin_read_link, builtin_recv_datagram, builtin_remove, builtin_remove_xattr, builtin_rename,
-    builtin_revocable, builtin_revoke_cap, builtin_seek, builtin_seek_end, builtin_send_datagram,
-    builtin_set_permissions, builtin_set_xattr, builtin_slurp, builtin_stat, builtin_stat_symlink,
-    builtin_symlink, builtin_tls_layer, builtin_tls_peer_cert, builtin_write, builtin_write_atomic,
-    builtin_write_handle,
+    builtin_http_request, builtin_icmp_ping, builtin_link, builtin_list_dir, builtin_list_xattrs,
+    builtin_make_dir, builtin_narrow, builtin_open, builtin_position, builtin_quic_open_datagram,
+    builtin_quic_open_stream, builtin_quic_session, builtin_raw_create, builtin_read_chunk,
+    builtin_read_line, builtin_read_link, builtin_recv_datagram, builtin_remove,
+    builtin_remove_xattr, builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_seek,
+    builtin_seek_end, builtin_send_datagram, builtin_set_permissions, builtin_set_xattr,
+    builtin_stat, builtin_stat_symlink, builtin_symlink, builtin_tls_layer, builtin_tls_peer_cert,
+    builtin_write, builtin_write_atomic, builtin_write_handle,
 };
 
 // Type/eval/meta builtins: type-of, include, error, try, apply, validate.
@@ -1539,7 +1539,6 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_open,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
-        builtin!("slurp", builtin_slurp, [Strictness::Seq]),
         builtin!(
             "builtin-narrow",
             builtin_narrow,
@@ -1564,7 +1563,13 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             3
         ),
         builtin!("tls-peer-cert", builtin_tls_peer_cert, [Strictness::Seq]),
-        builtin!("lines", builtin_lines, [Strictness::Seq]),
+        builtin!("builtin-read-line", builtin_read_line, [Strictness::Seq]),
+        builtin!(
+            "builtin-read-chunk",
+            builtin_read_chunk,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
         builtin!(
             "write",
             builtin_write,
@@ -6558,7 +6563,10 @@ mod tests {
             "dir-cap was removed (ambient cap creation)"
         );
         assert!(names.contains(&"open"), "missing open");
-        assert!(names.contains(&"slurp"), "missing slurp");
+        assert!(
+            !names.contains(&"slurp"),
+            "slurp was removed (replaced by builtin-read-line/builtin-read-chunk)"
+        );
         assert!(names.contains(&"builtin-narrow"), "missing builtin-narrow");
         assert!(names.contains(&"revocable"), "missing revocable");
         assert!(names.contains(&"revoke-cap"), "missing revoke-cap");
@@ -6567,7 +6575,18 @@ mod tests {
             "net-cap was removed (ambient cap creation)"
         );
         assert!(names.contains(&"connect"), "missing connect");
-        assert!(names.contains(&"lines"), "missing lines");
+        assert!(
+            !names.contains(&"lines"),
+            "lines was removed (replaced by builtin-read-line, with prelude wrapper)"
+        );
+        assert!(
+            names.contains(&"builtin-read-line"),
+            "missing builtin-read-line"
+        );
+        assert!(
+            names.contains(&"builtin-read-chunk"),
+            "missing builtin-read-chunk"
+        );
         assert!(names.contains(&"write"), "missing write");
         assert!(names.contains(&"write-atomic"), "missing write-atomic");
         assert!(names.contains(&"cap-data"), "missing cap-data");
@@ -6581,6 +6600,12 @@ mod tests {
         assert!(names.contains(&"close"), "missing close");
         assert!(names.contains(&"raw-create"), "missing raw-create");
         assert!(names.contains(&"list-dir"), "missing list-dir");
+        assert!(
+            names.contains(&"builtin-list-dir"),
+            "missing builtin-list-dir"
+        );
+        assert!(names.contains(&"builtin-load"), "missing builtin-load");
+        assert!(names.contains(&"builtin-expand"), "missing builtin-expand");
         assert!(names.contains(&"stat"), "missing stat");
         assert!(names.contains(&"exists"), "missing exists");
         assert!(names.contains(&"stat-symlink"), "missing stat-symlink");
@@ -6810,10 +6835,12 @@ mod tests {
         //   builtin-dict?, builtin-fn?, builtin-proxy?, builtin-seq?, bytes? (bare).
         // json-serde-removal sprint: removed builtin-from-json (232 → 231).
         // Added builtin-list-dir and builtin-load stable aliases (231 → 233).
+        // lazy-file-io sprint: removed slurp+lines (-2), added builtin-read-line+builtin-read-chunk (+2) = 233.
+        // Net +1 from agent adding builtin-load separately = 234.
         assert_eq!(
             names.len(),
-            233,
-            "expected 233 builtins, got {} — update this assertion if adding/removing builtins",
+            234,
+            "expected 234 builtins, got {} — update this assertion if adding/removing builtins",
             names.len()
         );
     }

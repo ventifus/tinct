@@ -2008,11 +2008,6 @@ pub(crate) fn infer_surface_expr(
                     return check_open(args, env, node.span, state, type_map);
                 }
 
-                // Special case: `slurp` synthesizes a precise return type based on handle capabilities.
-                if name == "slurp" && named_args.is_empty() && args.len() == 1 {
-                    return check_slurp(args, env, node.span, state, type_map);
-                }
-
                 // Special case: `connect` synthesizes a precise return type based on transport variant.
                 if name == "connect" && named_args.is_empty() && args.len() == 4 {
                     let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
@@ -3498,83 +3493,6 @@ fn check_open(
     };
 
     Ok(Type::Handle(Box::new(cap_type)))
-}
-
-/// Type check `slurp` — precise return type based on handle capabilities.
-///
-/// The static signature in TypeEnv is Handle[Readable] → String | Bytes as a fallback.
-/// This special case synthesizes a precise return type:
-/// - Handle with Binary capability → Bytes
-/// - Handle without Binary (text mode) → String
-/// - Handle(Unknown) or unresolved type → String | Bytes (gradual fallback)
-fn check_slurp(
-    args: &[Arc<SurfaceNode>],
-    env: &Rc<TypeEnv>,
-    span: Span,
-    state: &mut InferState,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Result<Type, Vec<TypeError>> {
-    // Arity check: require exactly 1 arg (the handle)
-    if args.len() != 1 {
-        return Err(vec![TypeError::new(
-            format!(
-                "arity mismatch: `slurp` requires exactly 1 argument (Handle), got {}",
-                args.len()
-            ),
-            span,
-        )]);
-    }
-
-    // Infer the handle argument's type
-    let handle_ty = infer_surface_expr(&args[0], env, state, type_map)?;
-    let handle_ty = state.subst.apply(&handle_ty);
-
-    // Verify the argument is actually a Handle (not just any type)
-    let expected_handle = Type::Handle(Box::new(Type::Unknown));
-    if !Type::is_subtype(&handle_ty, &expected_handle)
-        && !Type::is_consistent(&handle_ty, &expected_handle)
-    {
-        return Err(vec![TypeError::new(
-            format!("type mismatch: `slurp` expects Handle, got {handle_ty}"),
-            span,
-        )]);
-    }
-
-    // Inspect the handle type to determine return type
-    match &handle_ty {
-        Type::Handle(cap_row) => {
-            match cap_row.as_ref() {
-                Type::Record(row) => {
-                    // Check if the cap row contains the Binary flag
-                    if row.fields.contains_key("__cap_flag_binary") {
-                        // Binary handle → returns Bytes
-                        Ok(Type::Bytes)
-                    } else {
-                        // Text handle (no Binary flag) → returns String
-                        Ok(Type::Str)
-                    }
-                }
-                Type::Unknown => {
-                    // Handle(Unknown) — gradual typing fallback
-                    Ok(Type::normalize_union(vec![Type::Str, Type::Bytes]))
-                }
-                _ => {
-                    // Unexpected cap row type (e.g., TypeVar, Union, etc.)
-                    // Fall back to gradual typing
-                    Ok(Type::normalize_union(vec![Type::Str, Type::Bytes]))
-                }
-            }
-        }
-        Type::Unknown => {
-            // Unknown handle type — gradual typing fallback
-            Ok(Type::normalize_union(vec![Type::Str, Type::Bytes]))
-        }
-        _ => {
-            // This case is unreachable because we validate the argument is a Handle above.
-            // If we reach here, it means the validation logic has a bug.
-            unreachable!("check_slurp: argument validated as Handle but matched non-Handle type")
-        }
-    }
 }
 
 /// Type check `connect` — precise return type based on transport variant.

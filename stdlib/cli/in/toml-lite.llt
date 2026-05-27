@@ -5,4 +5,4 @@
 
 ---
 
-[call %.parse-toml-lite [slurp %stdin]]
+[call %.parse-toml-lite [lines %stdin]]

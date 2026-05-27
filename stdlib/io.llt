@@ -1,13 +1,7 @@
 # I/O utilities — depends on io-phase1 builtins
-# Requires: open, slurp, lines, emit, str (all Rust builtins)
+# Requires: open, lines, emit, str (all Rust builtins)
 
 [
-# Read an entire file as a string.
-# cap: DirCap, path: String
-# Returns: [Ok content] or [Error message]
-read-file@[doc: "Read an entire file as a string"]: [fn@Dict [let cap@DirCap path@String]
-  [try [fn [let] [slurp [open cap path Readable]]]]]
-
 # Read a file as a lazy sequence of lines.
 # cap: DirCap, path: String
 # Returns: [Ok seq] or [Error message]
@@ -67,7 +61,7 @@ has-cap?@[doc: "Check if a capability is present on a Handle or WriteHandle"]: [
 
 # Copy a file from src to dst.
 # cap: DirCap, src: String source path, dst: String destination path
-# Reads the source file and writes it to the destination (create/truncate).
+# Reads the source file line-by-line and writes it to the destination (create/truncate).
 copy@[doc: "Copy a file from src to dst"]: [fn@Null [let cap@DirCap src@String dst@String]
-  [close [write-handle [raw-create cap dst] [slurp [open cap src Readable Text]]]]]
+  [close [write-lines [raw-create cap dst] [lines [open cap src Readable]]]]]
 ]

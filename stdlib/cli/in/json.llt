@@ -2,4 +2,4 @@
 # Reads %stdin and parses as JSON, producing the parsed tinct value as %
 
 [json: [include %libdir "codecs/json.llt"]]
-[json.from-json [slurp %stdin]]
+[json.from-json [join "\n" [collect [lines %stdin]]]]

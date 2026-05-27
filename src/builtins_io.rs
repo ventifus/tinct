@@ -1,11 +1,10 @@
-//! Filesystem and network I/O builtins: open, slurp, write, write-atomic, connect, lines.
+//! Filesystem and network I/O builtins: open, write, write-atomic, connect, builtin-read-line, builtin-read-chunk.
 //!
 //! These builtins provide capability-based access to filesystems and networks,
 //! implementing object-capability security through DirCap and NetCap values.
 //!
 //! **Filesystem builtins:**
 //! - `open`: Open a file within a DirCap
-//! - `slurp`: Read all bytes from a Handle (returns Str for Text, Bytes for Binary)
 //! - `write`: Write a string to a file (DirCap-based)
 //! - `write-atomic`: Atomically write to a file (temp + rename)
 //! - `narrow`: Attenuate a DirCap to a subdirectory
@@ -26,7 +25,8 @@
 //! - `close`: Close a WriteHandle
 //!
 //! **I/O helpers:**
-//! - `lines`: Read lines from a Handle lazily (Text encoding only)
+//! - `builtin-read-line`: Read a single line from a Handle (Text mode, returns String or [] on EOF)
+//! - `builtin-read-chunk`: Read n bytes from a Handle (returns Bytes or [] on EOF)
 //! - `emit`: Write to stdout and suppress JSON output
 //! - `env`: Read environment variables
 //!
@@ -45,7 +45,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::Span;
-use crate::builtins::{builtin, ok_val, reject_named, require_string};
+use crate::builtins::{ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize_sync as materialize;
 use crate::value::{string_val, BuiltinArgs, DirPerms, Thunk, Value};
@@ -423,96 +423,6 @@ pub(crate) fn builtin_open(
                 call_span,
             )
             .into())
-        }
-    })
-}
-
-/// `slurp`: Read all bytes from a Handle to a String or Bytes.
-/// Takes a Handle, reads to EOF, returns String (if Text encoding) or Bytes (if Binary encoding).
-pub(crate) fn builtin_slurp(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    Box::pin(async move {
-        let val = crate::builtins::expect_one_arg("slurp", &args, named.as_ref(), &ctx, call_span)?;
-
-        // Extract Handle
-        let (handle, caps) = match val {
-            Value::Handle { inner, caps, .. } => (inner, caps),
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "slurp".to_string(),
-                    "Handle",
-                    other.type_name(),
-                    args[0].span,
-                )
-                .into())
-            }
-        };
-
-        // Check if Binary cap is set
-        let is_binary = caps.contains_key("Binary");
-
-        use std::io::Read;
-        const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
-
-        if is_binary {
-            // Read to bytes with size limit (check length during read)
-            let mut contents = Vec::new();
-            const CHUNK_SIZE: usize = 8192;
-            loop {
-                let mut chunk = vec![0u8; CHUNK_SIZE];
-                let n = handle.borrow_mut().read(&mut chunk).map_err(|e| {
-                    EvalError::user_error(format!("slurp: read failed: {}", e), call_span)
-                })?;
-
-                if n == 0 {
-                    break; // EOF
-                }
-
-                contents.extend_from_slice(&chunk[..n]);
-
-                if contents.len() > MAX_FILE_SIZE as usize {
-                    return Err(EvalError::resource_limit_exceeded(
-                        format!("slurp: file exceeds maximum size ({} bytes)", MAX_FILE_SIZE),
-                        call_span,
-                    )
-                    .into());
-                }
-            }
-
-            let len = contents.len();
-            ok_val(
-                Value::Bytes {
-                    source: Rc::from(contents),
-                    start: 0,
-                    end: len,
-                },
-                call_span,
-            )
-        } else {
-            // Read to string (Text encoding) with size limit
-            let mut contents = String::new();
-            let mut borrowed = handle.borrow_mut();
-            let mut limited_reader = (&mut *borrowed).take(MAX_FILE_SIZE + 1);
-            limited_reader.read_to_string(&mut contents).map_err(|e| {
-                EvalError::user_error(format!("slurp: read failed: {}", e), call_span)
-            })?;
-
-            if contents.len() > MAX_FILE_SIZE as usize {
-                return Err(EvalError::resource_limit_exceeded(
-                    format!("slurp: file exceeds maximum size ({} bytes)", MAX_FILE_SIZE),
-                    call_span,
-                )
-                .into());
-            }
-
-            ok_val(string_val(&contents), call_span)
         }
     })
 }
@@ -1494,11 +1404,84 @@ fn resolve_hostname_for_cidr(
     .into())
 }
 
-/// `lines`: Read lines from a Handle lazily.
-/// Takes a Handle, returns a lazy Seq where each element is a line (without newline).
-/// This is a coinductive lazy sequence — each tail force reads the next line.
-/// Errors if the Handle has a Binary cap (lines requires Text encoding).
-pub(crate) fn builtin_lines(
+/// `builtin-read-line`: Read a single line from a Handle (Text mode).
+/// Takes a Handle and returns String on success, [] (null) on EOF.
+/// Strips trailing `\n` and `\r\n` from the result.
+/// Rejects Binary-mode handles (error: "builtin-read-line requires a text-mode Handle, not Binary").
+pub(crate) fn builtin_read_line(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg(
+            "builtin-read-line",
+            &args,
+            named.as_ref(),
+            &ctx_arg.ctx,
+            call_span,
+        )?;
+
+        // Extract Handle
+        let (handle, caps) = match val {
+            Value::Handle { inner, caps, .. } => (inner, caps),
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-read-line".to_string(),
+                    "Handle",
+                    other.type_name(),
+                    args[0].span,
+                )
+                .into())
+            }
+        };
+
+        // Reject Binary cap handles
+        if caps.contains_key("Binary") {
+            return Err(EvalError::user_error(
+                "builtin-read-line requires a text-mode Handle, not Binary".to_string(),
+                call_span,
+            )
+            .into());
+        }
+
+        use std::io::BufRead;
+        let mut line = String::new();
+
+        // Save match result before the RefMut borrow is dropped (avoids lifetime error in async).
+        let read_result = handle.borrow_mut().read_line(&mut line);
+        match read_result {
+            Ok(0) => {
+                // EOF — return null (empty dict)
+                ok_val(Value::Dict(IndexMap::new()), call_span)
+            }
+            Ok(_) => {
+                // Got a line — strip trailing newline if present
+                if line.ends_with('\n') {
+                    line.pop();
+                    if line.ends_with('\r') {
+                        line.pop();
+                    }
+                }
+                ok_val(string_val(&line), call_span)
+            }
+            Err(e) => Err(EvalError::user_error(
+                format!("builtin-read-line: read failed: {}", e),
+                call_span,
+            )
+            .into()),
+        }
+    })
+}
+
+/// `builtin-read-chunk`: Read n bytes from a Handle (works with both Text and Binary).
+/// Takes a Handle and Int (chunk size n), returns Bytes on success (partial reads OK), [] (null) on EOF.
+/// Errors on non-positive n: "builtin-read-chunk: chunk size must be positive".
+pub(crate) fn builtin_read_chunk(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     Box::pin(async move {
@@ -1508,108 +1491,81 @@ pub(crate) fn builtin_lines(
             call_span,
             ctx,
         } = ctx_arg;
-        let val = crate::builtins::expect_one_arg("lines", &args, named.as_ref(), &ctx, call_span)?;
 
-        // Extract Handle
-        let (handle, write_inner, caps) = match val {
-            Value::Handle {
-                inner,
-                write_inner,
-                caps,
-                ..
-            } => (inner, write_inner, caps),
+        // Expect exactly 2 args: Handle, Int
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("builtin-read-chunk", named.as_ref(), call_span)?;
+
+        // First arg: Handle
+        let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
+        let handle = match handle_val {
+            Value::Handle { inner, .. } => Rc::clone(&inner),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
-                    "lines".to_string(),
+                    "builtin-read-chunk".to_string(),
                     "Handle",
                     other.type_name(),
-                    args[0].span,
+                    call_span,
                 )
                 .into())
             }
         };
 
-        // Check if Binary cap is set — error if so
-        if caps.contains_key("Binary") {
+        // Second arg: Int (chunk size)
+        let size_val = materialize(&args[1], Some(&call_span), &ctx)?;
+        let n = match size_val {
+            Value::Int(i) => i,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-read-chunk".to_string(),
+                    "Int",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        // Validate n > 0
+        if n <= 0 {
             return Err(EvalError::user_error(
-                "lines: requires Text encoding (cannot read lines from Binary handle)".to_string(),
+                "builtin-read-chunk: chunk size must be positive".to_string(),
                 call_span,
             )
             .into());
         }
 
-        // Wrap the Handle in a new Handle that the step function can use
-        // The step function will read one line, then return a Seq with the line as head
-        // and a PendingBuiltin thunk for the next line as tail
-        builtin_lines_step(handle, write_inner, caps, call_span, ctx)
-    })
-}
+        use std::io::Read;
+        let mut buffer = vec![0u8; n as usize];
 
-/// Helper for `lines`: reads one line and returns Seq or null.
-pub(crate) fn builtin_lines_step(
-    handle: Rc<RefCell<Box<dyn std::io::BufRead>>>,
-    write_inner: Option<Rc<RefCell<Box<dyn std::io::Write>>>>,
-    caps: HashMap<String, Value>,
-    call_span: Span,
-    ctx: Arc<crate::eval::EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
-    use std::io::BufRead;
-
-    let mut line = String::new();
-
-    match handle.borrow_mut().read_line(&mut line) {
-        Ok(0) => {
-            // EOF — return null (empty dict)
-            ok_val(Value::Dict(IndexMap::new()), call_span)
-        }
-        Ok(_) => {
-            // Got a line — strip trailing newline if present
-            if line.ends_with('\n') {
-                line.pop();
-                if line.ends_with('\r') {
-                    line.pop();
-                }
+        let read_result = handle.borrow_mut().read(&mut buffer);
+        match read_result {
+            Ok(0) => {
+                // EOF — return null (empty dict)
+                ok_val(Value::Dict(IndexMap::new()), call_span)
             }
-
-            // Create head thunk
-            let head = ok_val(string_val(&line), call_span)?;
-            let head_id = ctx.alloc_thunk(head);
-
-            // Create tail as PendingBuiltin that will read the next line
-            // We need to pass the Handle through to the next step
-            let tail_args = vec![ok_val(
-                Value::Handle {
-                    caps: caps.clone(),
-                    inner: Rc::clone(&handle),
-                    write_inner: write_inner.as_ref().map(Rc::clone),
-                    seek_inner: None,
-                    raw_tcp: None,
-                    creation_span: call_span,
-                },
-                call_span,
-            )?];
-            let tail = Arc::new(Thunk::new_pending_builtin(
-                builtin!("lines", builtin_lines),
-                tail_args,
-                None,
-                call_span,
-                Some(Arc::from("call $lines")),
-                Arc::clone(&ctx),
-            ));
-            let tail_id = ctx.alloc_thunk(tail);
-
-            ok_val(
-                Value::Seq {
-                    head: head_id,
-                    tail: tail_id,
-                },
+            Ok(bytes_read) => {
+                // Got data (partial read is OK)
+                let result = buffer[..bytes_read].to_vec();
+                let len = result.len();
+                ok_val(
+                    Value::Bytes {
+                        source: Rc::from(result),
+                        start: 0,
+                        end: len,
+                    },
+                    call_span,
+                )
+            }
+            Err(e) => Err(EvalError::user_error(
+                format!("builtin-read-chunk: read failed: {}", e),
                 call_span,
             )
+            .into()),
         }
-        Err(e) => {
-            Err(EvalError::user_error(format!("lines: read failed: {}", e), call_span).into())
-        }
-    }
+    })
 }
 
 /// `write`: Write a String to a file.

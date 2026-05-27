@@ -3,4 +3,4 @@
 # and produces a Seq of the parsed tinct values as %
 
 [json: [include %libdir "codecs/json.llt"]]
-[map [fn [let line] [json.from-json line]] [filter [fn [let line] [not [= "" line]]] [split "\n" [slurp %stdin]]]]
+[map [fn [let line] [json.from-json line]] [filter [fn [let line] [not [= "" line]]] [lines %stdin]]]

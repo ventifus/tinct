@@ -202,12 +202,14 @@ toml-append-array-table-impl: [fn@Dict [let root@Dict path]
 
 # Parse a TOML-lite document into a nested dict structure.
 # Returns: [Ok dict] or [Error message]
-parse-toml-lite@[doc: "Parse a TOML-lite document into a nested dict structure"]: [fn [let text@String]
+parse-toml-lite@[doc: "Parse a TOML-lite document into a nested dict structure"]: [fn [let input]
     [try [fn [let] [parse-toml-lines-impl
         [collect
             [filter [fn [let line] [not-blank-or-comment line]]
                 [map [fn [let line] [trim line]]
-                    [split "\n" text]]]]]]]]
+                    [if [seq? input]
+                        input
+                        [split "\n" input]]]]]]]]]
 
 # Process a list of non-blank, non-comment lines.
 # Type: (Dict String -> Dict)

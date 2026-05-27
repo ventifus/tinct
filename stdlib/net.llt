@@ -1,6 +1,7 @@
 # Network utilities — depends on io-phase2 builtins
 # Requires: net-cap, connect, http2-session, http-request (io-phase2)
-# Requires: write-handle, slurp, str-bytes, bytes-str (io-phase1)
+# Requires: write-handle, str-bytes, bytes-str (io-phase1)
+# TODO(lazy-file-io): slurp still used at line 74 — blocked on bytes-concat availability
 # Requires prelude: make-entry, set (prelude functions, not raw builtins)
 # Uses builtin-* stable aliases for Rust primitives (defense in depth).
 # Uses [match x []: true _: false] for null checks — builtin-null? was removed in
@@ -70,6 +71,7 @@
         ""]
       [builtin-if [builtin-eq url.scheme "http"]
         [parse-http-response
+          # TODO(lazy-file-io): migrate to chunks+bytes-concat when available
           [bytes-str [slurp [write-handle
             [connect cap Tcp url.host url.port]
             [str-bytes [build-http-request "GET" url.path url.host]]]]]]

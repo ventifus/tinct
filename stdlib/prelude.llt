@@ -748,11 +748,6 @@ Note: Returns lo if x < lo, hi if x > hi, otherwise x. Inherently materializing:
 # join: delegates to builtin-join (see wrappers section at bottom of this dict).
 # O(n) performance, dual-dispatch on Dict/Seq. Example: [join ", " ["a" "b"]] => "a, b"
 
-# Split a string into lines on newline character. Returns a Seq of strings.
-# Type: (Stringing -> Seq Stringing)
-# Example: [collect [lines "a\nb\nc"]] => ["a" "b" "c"]
-lines@[doc: "Split a string into a Seq of lines (splits on newline)"]: [fn [let s@String]
-    [split "\n" s]]
 
 # Split a string on spaces, filtering empty strings. Returns a Seq of words.
 # Type: (Stringing -> Seq Stringing)
@@ -2877,7 +2872,7 @@ Uses content-addressed memoization: blake3(cap-identity + "|" + source).
 Detects circular includes via [Pending] cache state.
 Included files start with % = [] (fresh pipeline input).
 """] [let cap@DirCap path@String integrity-hash: []]
-  [source: [slurp [open cap path Readable]]]
+  [source: [join "\n" [collect [lines [open cap path Readable]]]]]
   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
   [match [include-cache-get hash]
     [Cached result]: result
@@ -2905,11 +2900,25 @@ Same semantics as --- within a file, applied across multiple files.
   [reduce
     [fn@[return: Any] [let prev file-path]
       [eval-file
-        [expand [load [slurp [open pwd file-path Readable]] name: file-path]]
+        [expand [load [join "\n" [collect [lines [open pwd file-path Readable]]]] name: file-path]]
         prev
         pwd]]
     initial
     files]]
+
+# Lazily read lines from a Handle. Returns a Seq of String, one per line.
+# Strips trailing newline. Returns empty Seq when EOF reached.
+lines@[doc: "Lazily read lines from a Handle. Returns a Seq of String, one per line. Strips trailing newline."]:
+  [fn [let h]
+    [l: [builtin-read-line h]]
+    [builtin-if [builtin-eq l []] [] [builtin-seq l [lines h]]]]
+
+# Lazily read fixed-size byte chunks from a Handle. Returns a Seq of Bytes.
+# Returns empty Seq when EOF reached.
+chunks@[doc: "Lazily read fixed-size byte chunks from a Handle. Returns a Seq of Bytes."]:
+  [fn [let h n@Int]
+    [c: [builtin-read-chunk h n]]
+    [builtin-if [builtin-eq c []] [] [builtin-seq c [chunks h n]]]]
 
 # Construct a ClockCap that always returns the given fixed timestamp.
 # Useful for testing time-sensitive code without depending on the system clock.

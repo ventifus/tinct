@@ -2073,13 +2073,13 @@ fn cap_fs_bare_literate_weave_errors() {
 #[test]
 fn cap_file_no_mode_defaults_to_r() {
     // --cap-file cfg=FILE (no :mode suffix) should default to r (readable text).
-    // We create a temp file and slurp it.
+    // We create a temp file and read it via lines.
     let dir = TempDir::new("cap_file_no_mode");
     let test_file = dir.path().join("config.txt");
     fs::write(&test_file, "key: value").unwrap();
     let main = dir.path().join("main.llt");
-    // Slurp the injected %cfg handle
-    let llt_content = r#"[call $slurp %cfg]"#;
+    // Read the injected %cfg handle via lines
+    let llt_content = r#"[call $join "\n" [collect [lines %cfg]]]"#;
     fs::write(&main, llt_content).unwrap();
 
     let file_str = test_file.to_str().unwrap();
@@ -2099,7 +2099,7 @@ fn cap_file_no_mode_defaults_to_r() {
 
     assert!(
         output.status.success(),
-        "slurp with default r mode should succeed; stderr: {}",
+        "lines with default r mode should succeed; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2116,7 +2116,7 @@ fn cap_file_read_mode_succeeds() {
     let test_file = dir.path().join("config.txt");
     fs::write(&test_file, "test data").unwrap();
     let main = dir.path().join("main.llt");
-    let llt_content = r#"[call $slurp %cfg]"#;
+    let llt_content = r#"[call $join "\n" [collect [lines %cfg]]]"#;
     fs::write(&main, llt_content).unwrap();
 
     let file_str = test_file.to_str().unwrap();
@@ -2134,7 +2134,7 @@ fn cap_file_read_mode_succeeds() {
 
     assert!(
         output.status.success(),
-        "slurp with :r mode should succeed; stderr: {}",
+        "lines with :r mode should succeed; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }
@@ -2454,7 +2454,7 @@ fn revocable_and_revoke() {
     let llt_content = r#"
 [revocable-cap: [revocable %cap]]
 [fh: [open revocable-cap "data.txt" Readable Text]]
-[content: [slurp fh]]
+[content: [join "\n" [collect [lines fh]]]]
 [_ : [revoke-cap revocable-cap]]
 content
 "#;
@@ -2522,7 +2522,7 @@ fn write_basic() {
     let llt_content = r#"
 [write %cap "output.txt" "hello world"]
 [fh: [open %cap "output.txt" Readable Text]]
-[slurp fh]
+[join "\n" [collect [lines fh]]]
 "#;
     let (path, _llt_dir) = write_temp_llt("write_basic", llt_content);
     let output = Command::new(tinct_bin())
@@ -2559,7 +2559,7 @@ fn write_atomic_basic() {
     let llt_content = r#"
 [write-atomic %cap "output.txt" "atomic content"]
 [fh: [open %cap "output.txt" Readable Text]]
-[slurp fh]
+[join "\n" [collect [lines fh]]]
 "#;
     let (path, _llt_dir) = write_temp_llt("write_atomic_basic", llt_content);
     let output = Command::new(tinct_bin())
@@ -4405,14 +4405,14 @@ fn cap_clock_fixed_invalid_timestamp() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn cap_file_readable_slurp() {
-    // Verify --cap-file injects a readable Handle that can be slurped.
-    // The LLT script reads from %cfg (injected as a Handle) via $slurp.
-    let llt_content = r#"[slurp %cfg]"#;
-    let (llt_path, _llt_dir) = write_temp_llt("cap_file_readable_slurp_script", llt_content);
+fn cap_file_readable_lines() {
+    // Verify --cap-file injects a readable Handle that can be read via lines.
+    // The LLT script reads from %cfg (injected as a Handle) via lines.
+    let llt_content = r#"[join "\n" [collect [lines %cfg]]]"#;
+    let (llt_path, _llt_dir) = write_temp_llt("cap_file_readable_lines_script", llt_content);
 
     // Write a target file with known content
-    let data_dir = TempDir::new("cap_file_readable_slurp_data");
+    let data_dir = TempDir::new("cap_file_readable_lines_data");
     let data_path = data_dir.path().join("data.txt");
     fs::write(&data_path, "hello from cap-file").expect("failed to write data file");
 
@@ -4494,7 +4494,7 @@ fn cap_file_no_fs_suppresses_injection() {
     // The Handle is not injected, so %cfg is undefined.
     // --eval forces the lazy result so the undefined-variable error is surfaced
     // (without it, the thunk is never materialized and the program exits 0 silently).
-    let llt_content = r#"[slurp %cfg]"#;
+    let llt_content = r#"[join "\n" [collect [lines %cfg]]]"#;
     let (llt_path, _llt_dir) = write_temp_llt("cap_file_no_fs_suppresses", llt_content);
 
     let output = Command::new(tinct_bin())

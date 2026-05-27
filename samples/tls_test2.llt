@@ -1,3 +1,4 @@
+# TODO(lazy-file-io): migrate to chunks+bytes-concat when available
 [r: [try [fn [let]
   [slurp [write-handle
     [tls-connect %nc Tcp "static.rust-lang.org" 443 []]

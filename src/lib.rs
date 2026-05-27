@@ -56,7 +56,7 @@ pub(crate) mod imports;
 pub(crate) mod builtins;
 // Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv.
 pub(crate) mod builtins_dict;
-// I/O builtins: open, slurp, write, connect, lines, emit, env.
+// I/O builtins: open, builtin-read-line, builtin-read-chunk, write, connect, emit, env.
 pub(crate) mod builtins_io;
 // Arithmetic, comparison, and control-flow builtins: +, -, *, /, =, <, if.
 pub(crate) mod builtins_math;

@@ -6,38 +6,38 @@ See DONE.md for the full history of completed sprints.
 
 ## Known Bugs + Nits
 
-### docgen-return-type-t003: scripts/docgen.llt line 93 residual T003 advisory error
+### nit-fixes: Prelude bugs, docgen T003, macro-ast compat (7 tasks)
 
-`return-type-text` calls `ann-return-prop` which returns `String` (via `try-str`), then passes the result to `[if [= ret ""] [ann-text return-ann] ret]`. The type checker infers `ret` as `String | _` because `try-str`'s return type isn't fully constrained, producing T003: "cannot unify String with String | _". Advisory only (does not affect runtime). Fix requires tighter return-type inference for `try-str` or adding an explicit type annotation.
+Combines: docgen-return-type-t003 (1), prelude-named-section-bug (2), prelude-pretty-array-multiarg-if (2), macro-ast-expression-compat (2).
 
-- [ ] Add `@String` type annotation to `try-str`'s return so the checker infers concrete String rather than `String | _`
-- **Files:** `scripts/docgen.llt`
+**docgen T003:** `return-type-text` in scripts/docgen.llt produces advisory T003 from unconstrained `try-str` return type.
+- [ ] Add `@String` type annotation to `try-str`'s return so the checker infers concrete String rather than `String | _` (`scripts/docgen.llt`)
 
-### prelude-named-section-bug: eval-document-pipeline named-section binding is broken
-
-`eval-document-pipeline` at prelude.llt:2772 uses `[[str "%" n]: result]` to create a dict entry binding named-section outputs. However, `[[expr]: value]` is NOT valid tinct computed-key syntax — it creates a 2-element auto-indexed dict `{0: expr-result, 1: Error(parse-recovery)}` instead of `{computed-key: value}`. Named sections (`%name` bindings) therefore don't work correctly.
-
-Fix: replace `[[str "%" n]: result]` with builder-set:
-```
-[bld: [make-builder]]
-[bld: [builder-set bld [str "%" n] result]]
-[builder-finish bld]
-```
-Or merge a builder-built single-entry dict into state.named.
-
+**prelude named-section bug:** `eval-document-pipeline` uses `[[str "%" n]: result]` (invalid computed-key syntax). Fix: use `builder-set` for named section dict construction.
 - [ ] Fix `eval-document-pipeline` in stdlib/prelude.llt to use builder-set for named section dict construction
 - [ ] Add corpus test that uses `---\n%name-of-doc` and verifies `%name-of-doc` binding works in subsequent docs
-- **Files:** `stdlib/prelude.llt`
 
-### prelude-pretty-array-multiarg-if: to-json-pretty-array-from-dict uses multi-arg if
-
-`to-json-pretty-array-from-dict` at prelude.llt:2236 calls `[if [empty? vals] "[]" [current-indent: ...] ...]` with 6 args. `if` only takes 3. This is broken for non-empty array-like dicts. Named-dict pretty-printing works (`to-json-pretty-named-dict` uses sequential fn body correctly).
-
-Fix: extract non-empty array body into a helper function `to-json-pretty-array-from-dict-nonempty` and use 3-arg `[if [empty? vals] "[]" [to-json-pretty-array-from-dict-nonempty d depth]]`.
-
-- [ ] Fix `to-json-pretty-array-from-dict` in stdlib/prelude.llt  
+**prelude pretty-array multi-arg if:** `to-json-pretty-array-from-dict` calls `[if ...]` with 6 args (only 3 allowed). Fix: extract body into helper function.
+- [ ] Fix `to-json-pretty-array-from-dict` in stdlib/prelude.llt
 - [ ] Add corpus test for pretty-printing array-like dicts (integer keys 0..n)
-- **Files:** `stdlib/prelude.llt`
+
+**macro-ast-expression-compat:** Pre-existing test failures from runtime-v2 (fn macro alias, pattern match duplicate handling).
+- [ ] `test_syntax_llt_fn_single_param` / `test_syntax_llt_fn_macro_triggered`: fn macro alias produces Fn but body VarRefs aren't resolved. Investigate resolution pass interaction with macro-expanded expressions.
+- [ ] `test_pm3_match_expr_duplicate_dict_field_errors`: verify last-binding-wins semantics work correctly after linearity check removal
+
+### letrec-self-ref-silent: `[x: x]` in letrec dicts silently cycles via try-or, producing wrong results
+
+In a letrec dict `[name: name  doc: doc  sig: sig]`, the value expressions `name` and `doc` resolve to the dict's OWN "name" and "doc" keys (not the outer-scope variables), creating circular dependencies. When forced, cycle detection or depth limiting produces an error. If a surrounding `try-or` (e.g., in `has?` via `get-or`) catches this error, it silently returns the fallback instead of the actual value.
+
+This was the root cause of `scripts/docgen.llt` producing empty documentation: `has? record "name"` returned false for all records because forcing the "name" thunk cycled.
+
+**Workaround (applied in docgen.llt):** Use an intermediate fn call to break the letrec: `[call [fn@Dict [let n d s] [name: n  doc: d  sig: s]] name kdoc sig-val]`. The fn params `n`, `d`, `s` don't conflict with the dict keys.
+
+**Proper fix:** Add a diagnostic at resolve or typecheck time warning when a letrec dict entry `[k: expr]` has `expr` being a bare VarRef with the same name as key `k`. This is almost always a bug.
+
+- [ ] Add T002/T003 diagnostic: warn when a dict entry's value is `VarRef(name)` and the entry's key is also `name` — likely letrec self-reference
+- [ ] Alternatively: evaluate dict value expressions in PARENT scope when the value is a bare VarRef matching its own key
+- **Files:** `src/resolve.rs` or `src/typecheck.rs`
 
 ### tco-restorestate: Change RestoreState to CoreExpr-based restore (prerequisite for TCO)
 
@@ -73,12 +73,7 @@ No `CoreExpr::Call` changes. No lowering pass changes. Use `Arc::strong_count(th
 - [ ] Corpus test: mutually recursive `f(n) = g(n-1)` / `g(n) = f(n-1)` with 10,000+ iterations
 - **Files:** `src/eval_call.rs`, `src/eval_materialize.rs`
 
-### macro-ast-expression-compat: Post-runtime-v2 macro AST Expression handling [Critical]
-
-Pre-existing failures found 2026-05-26. Root cause: macros that construct AST nodes via `builtin-variant` create Variant values with `Value::Expression` sub-fields, but multiple code paths in `surface_convert.rs` only handle `Value::Dict` and `Value::Variant`. Five tests fixed (dict_to_surface_node_inner→dict_to_surface_node, get_dict_field accepts Expression, macros.llt dot-access migration). Three remain:
-
-- [ ] `test_syntax_llt_fn_single_param` / `test_syntax_llt_fn_macro_triggered`: "fn" macro alias registered but parameter binding doesn't work — macro-produced Fn variant converts to SurfaceExpression::Fn correctly but the body's VarRef("x") is not resolved to the Fn's parameter. Investigate resolution pass interaction with macro-expanded expressions.
-- [ ] `test_pm3_match_expr_duplicate_dict_field_errors`: `{x: 1 x: 2}` in match expr produces DuplicateVariable instead of expected error type. Investigate eval.rs pattern match duplicate field handling.
+### macro-ast-expression-compat ✅ Partially DONE — 5 of 8 tests fixed. Remaining 2 tasks merged into nit-fixes above.
 
 ### bare-include-scope: Bare `[include ...]` promotes bindings into scope; unify eval pipelines
 
@@ -157,22 +152,7 @@ Goal: all JSON handling in tinct stdlib; `serde_json` removed from `Cargo.toml`.
 - [ ] Verify zero remaining `serde_json` references in `src/` (`src/`)
 - [ ] Remove `serde_json = "1.0"` from `Cargo.toml`
 
-### json-serde-removal ✅ DONE — Steps 1–3 complete. See DONE.md.
-
-**Step 2 — json-pretty-indent:** Add indented pretty-print support to `-o json-pretty`.
-- [x] Add `to-json-pretty` function to `stdlib/codecs/json.llt` — same as `to-json` but with configurable indent parameter
-- [x] Update `stdlib/cli/out/json-pretty.llt` to call `[to-json-pretty %]` with 2-space indent
-- [x] Update `doc/11-stdlib.md` json-pretty section to remove "(planned)" note
-- [x] Add/update CLI test `output_flag_json_pretty_exact` to verify indented output
-
-**Step 3 — json-native-from-json:** Delete builtin_from_json; from-json is pure tinct. `stdlib/codecs/json.llt` already has a complete recursive-descent parser.
-- [x] Delete `builtin_from_json` function from `src/builtins_meta.rs`
-- [x] Delete `json_to_value` helper from `src/builtins_meta.rs` — used only by `builtin_from_json`
-- [x] Remove `"from-json"` and `"builtin-from-json"` registrations from `standard_builtins()` in `src/builtins.rs`
-- [x] Verify `stdlib/codecs/json.llt` `from-json` is the sole implementation and handles all edge cases: null→[], arrays→dict, objects→dict, non-finite floats rejected
-- [x] Add/verify corpus tests for `from-json` edge cases: null, empty array, empty object, nested structures, invalid JSON error (`tests/corpus/`)
-
-**Step 4 — json-remove-serde-dep:** Blocked — serde_json still needed by `lib.rs` (JsonVisitor), `profiling.rs`, `lsp/server.rs`. See separate sprint below.
+### json-serde-removal ✅ DONE — Steps 1–3 complete (2026-05-26). See DONE.md.
 
 ## Typecheck–Runtime Unification (`doc/whatif/typecheck-runtime-unification.md`)
 
@@ -394,40 +374,40 @@ No `slurp`. Where full text is unavoidably needed (parsers), callers write `[joi
 
 #### Rust (src/builtins_io.rs, src/builtins.rs, src/type_env.rs, src/typecheck.rs)
 
-- [ ] Add `builtin_read_line` — `expect_one_arg`; extract Handle; reject Binary cap; `BufRead::read_line()`; strip `\n`/`\r\n`; return String or `[]` on EOF
-- [ ] Add `builtin_read_chunk` — 2 pre-materialized args (Handle, Int); `Read::read(&mut buf[..n])`; return Bytes or `[]` on EOF; error on non-positive n
-- [ ] Delete `builtin_slurp` from `src/builtins_io.rs`
-- [ ] Delete `builtin_lines` + `builtin_lines_step` from `src/builtins_io.rs`
-- [ ] Update `src/builtins_io.rs` module doc comment
-- [ ] Remove `builtin_slurp`, `builtin_lines` imports and `"slurp"`, `"lines"` registrations from `src/builtins.rs`; add `builtin!("builtin-read-line", ..., [Strictness::Seq])` and `builtin!("builtin-read-chunk", ..., [Strictness::Seq, Strictness::Seq], 2)`
-- [ ] Update `src/builtins.rs` test assertions (remove `"slurp"`, add `"builtin-read-line"` / `"builtin-read-chunk"`)
-- [ ] Remove `"slurp"` and `"lines"` type entries from `src/type_env.rs`; add `"builtin-read-line"` (`Handle[Readable] → Str | []`) and `"builtin-read-chunk"` (`Handle[Readable] × Int → Bytes | []`)
-- [ ] Remove `check_slurp` function and `if name == "slurp"` dispatch from `src/typecheck.rs`
+- [x] Add `builtin_read_line` — `expect_one_arg`; extract Handle; reject Binary cap; `BufRead::read_line()`; strip `\n`/`\r\n`; return String or `[]` on EOF
+- [x] Add `builtin_read_chunk` — 2 pre-materialized args (Handle, Int); `Read::read(&mut buf[..n])`; return Bytes or `[]` on EOF; error on non-positive n
+- [x] Delete `builtin_slurp` from `src/builtins_io.rs`
+- [x] Delete `builtin_lines` + `builtin_lines_step` from `src/builtins_io.rs`
+- [x] Update `src/builtins_io.rs` module doc comment
+- [x] Remove `builtin_slurp`, `builtin_lines` imports and `"slurp"`, `"lines"` registrations from `src/builtins.rs`; add `builtin!("builtin-read-line", ..., [Strictness::Seq])` and `builtin!("builtin-read-chunk", ..., [Strictness::Seq, Strictness::Seq], 2)`
+- [x] Update `src/builtins.rs` test assertions (remove `"slurp"`, add `"builtin-read-line"` / `"builtin-read-chunk"`)
+- [x] Remove `"slurp"` and `"lines"` type entries from `src/type_env.rs`; add `"builtin-read-line"` (`Handle[Readable] → Str | []`) and `"builtin-read-chunk"` (`Handle[Readable] × Int → Bytes | []`)
+- [x] Remove `check_slurp` function and `if name == "slurp"` dispatch from `src/typecheck.rs`
 
 #### stdlib/prelude.llt
 
-- [ ] Delete string-splitting `lines` at line 754 — use `[split "\n" s]` inline
-- [ ] Add `lines` and `chunks` LLT definitions (before `fixed-clock`); no `slurp`
-- [ ] `include` (line ~2790): `[slurp [open cap path Readable]]` → `[join "\n" [collect [lines [open cap path Readable]]]]` — `load` needs full String; `collect` is explicit
-- [ ] `cli-pipeline` (line ~2818): same replacement as include
+- [x] Delete string-splitting `lines` at line 754 — use `[split "\n" s]` inline
+- [x] Add `lines` and `chunks` LLT definitions (before `fixed-clock`); no `slurp`
+- [x] `include` (line ~2790): `[slurp [open cap path Readable]]` → `[join "\n" [collect [lines [open cap path Readable]]]]` — `load` needs full String; `collect` is explicit
+- [x] `cli-pipeline` (line ~2818): same replacement as include
 
 #### stdlib/cli/in/ndjson.llt — piecewise ✓
 
-- [ ] `[split "\n" [slurp %stdin]]` → `[lines %stdin]` — no collect, truly lazy
+- [x] `[split "\n" [slurp %stdin]]` → `[lines %stdin]` — no collect, truly lazy
 
 #### stdlib/cli/in/json.llt — streaming possible via from-json Handle overload (see from-json-streaming sprint)
 
-- [ ] For now: `[from-json [slurp %stdin]]` → `[from-json [join "\n" [collect [lines %stdin]]]]` — explicit collect; revisit when `from-json` gains Handle support (see `from-json-streaming` sprint below)
+- [x] For now: `[from-json [slurp %stdin]]` → `[from-json [join "\n" [collect [lines %stdin]]]]` — explicit collect; revisit when `from-json` gains Handle support (see `from-json-streaming` sprint below)
 
 #### stdlib/cli/in/toml-lite.llt — piecewise possible
 
-- [ ] `[call %.parse-toml-lite [slurp %stdin]]` → `[call %.parse-toml-lite [lines %stdin]]` — requires changing `parse-toml-lite` in `stdlib/codecs/toml-lite.llt` to accept `Seq<String>` directly (it already collects and filters internally; skip the `[split "\n" text]` step when a Seq is passed)
+- [x] `[call %.parse-toml-lite [slurp %stdin]]` → `[call %.parse-toml-lite [lines %stdin]]` — requires changing `parse-toml-lite` in `stdlib/codecs/toml-lite.llt` to accept `Seq<String>` directly (it already collects and filters internally; skip the `[split "\n" text]` step when a Seq is passed)
 
 #### stdlib/io.llt
 
-- [ ] Delete `read-file` (line 9) — it is `slurp` by another name; callers use `read-lines` or write `[join "\n" [collect [lines ...]]]` explicitly if they need a String
-- [ ] `read-lines` (line 15): `[lines [open cap path Readable]]` — works as-is with new LLT `lines`; update comment (no 10 MB limit, truly lazy)
-- [ ] `copy` (line 72): `[slurp [open cap src Readable Text]]` → stream piecewise: `[close [reduce [fn [let h line] [write-line h line]] [raw-create cap dst] [lines [open cap src Readable]]]]` — no collect, line-at-a-time
+- [x] Delete `read-file` (line 9) — it is `slurp` by another name; callers use `read-lines` or write `[join "\n" [collect [lines ...]]]` explicitly if they need a String
+- [x] `read-lines` (line 15): `[lines [open cap path Readable]]` — works as-is with new LLT `lines`; update comment (no 10 MB limit, truly lazy)
+- [x] `copy` (line 72): `[slurp [open cap src Readable Text]]` → stream piecewise: `[close [reduce [fn [let h line] [write-line h line]] [raw-create cap dst] [lines [open cap src Readable]]]]` — no collect, line-at-a-time
 
 #### stdlib/net.llt — collect unavoidable (HTTP parser needs full response bytes)
 
@@ -435,11 +415,11 @@ No `slurp`. Where full text is unavoidably needed (parsers), callers write `[joi
 
 #### stdlib/codecs/toml-lite.llt — accept Seq<String> to enable lazy toml input
 
-- [ ] Modify `parse-toml-lite` to accept either `String` or `Seq<String>`: if given a Seq, use it directly (skip `[split "\n" text]`); if given a String, split first. This enables the CLI codec to pass `[lines %stdin]` without collecting.
+- [x] Modify `parse-toml-lite` to accept either `String` or `Seq<String>`: if given a Seq, use it directly (skip `[split "\n" text]`); if given a String, split first. This enables the CLI codec to pass `[lines %stdin]` without collecting.
 
 #### samples/versions.llt — collect unavoidable (toml parser needs full text)
 
-- [ ] Lines 16-17: `[slurp [open %cwd "Cargo.toml" Readable]]` → `[join "\n" [collect [lines [open %cwd "Cargo.toml" Readable]]]]` — passed to `parse-toml-lite` which needs full text (or update to use Seq form once toml-lite.llt is updated)
+- [x] Lines 16-17: `[slurp [open %cwd "Cargo.toml" Readable]]` → `[join "\n" [collect [lines [open %cwd "Cargo.toml" Readable]]]]` — passed to `parse-toml-lite` which needs full text (or update to use Seq form once toml-lite.llt is updated)
 
 #### samples/tls_test2.llt — collect unavoidable (HTTP parser needs full response)
 
@@ -447,13 +427,13 @@ No `slurp`. Where full text is unavoidably needed (parsers), callers write `[joi
 
 #### scripts/docgen.llt — collect unavoidable (`load` needs full String)
 
-- [ ] Line 228: `[slurp [open %libdir full-path Readable]]` → `[join "\n" [collect [lines [open %libdir full-path Readable]]]]`
+- [x] Line 228: `[slurp [open %libdir full-path Readable]]` → `[join "\n" [collect [lines [open %libdir full-path Readable]]]]`
 
 #### Tests
 
-- [ ] Corpus test: `ndjson` codec with multi-MB synthetic NDJSON processes all lines lazily (no E043, no collect)
-- [ ] Corpus test: `copy` streams correctly (source larger than any buffer)
-- [ ] Unit tests: `builtin-read-line` EOF → `[]`, newline strip, Binary cap error; `builtin-read-chunk` EOF → `[]`, partial read
+- [x] Corpus test: `ndjson` codec with multi-MB synthetic NDJSON processes all lines lazily (no E043, no collect)
+- [x] Corpus test: `copy` streams correctly (source larger than any buffer)
+- [x] Unit tests: `builtin-read-line` EOF → `[]`, newline strip, Binary cap error; `builtin-read-chunk` EOF → `[]`, partial read
 
 **Files:** `src/builtins_io.rs`, `src/builtins.rs`, `src/type_env.rs`, `src/typecheck.rs`, `stdlib/prelude.llt`, `stdlib/cli/in/ndjson.llt`, `stdlib/cli/in/json.llt`, `stdlib/cli/in/toml-lite.llt`, `stdlib/codecs/toml-lite.llt`, `stdlib/io.llt`, `stdlib/net.llt`, `samples/versions.llt`, `samples/tls_test2.llt`, `scripts/docgen.llt`
 

@@ -13,8 +13,8 @@
 
 [
 
-cargo-toml-text: [@String [slurp [open %cwd "Cargo.toml" Readable]]]
-cargo-lock-text: [@String [slurp [open %cwd "Cargo.lock" Readable]]]
+cargo-toml-text: [@String [join "\n" [collect [lines [open %cwd "Cargo.toml" Readable]]]]]
+cargo-lock-text: [@String [join "\n" [collect [lines [open %cwd "Cargo.lock" Readable]]]]]
 
 fetch: net.fetch
 

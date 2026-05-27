@@ -2143,19 +2143,23 @@ impl TypeEnv {
             },
         );
         env.insert(
-            "slurp".to_string(),
+            "builtin-read-line".to_string(),
             Type::Function {
                 params: vec![(None, Type::Handle(Box::new(cap_flag("readable"))))],
-                // Returns Str for text handles ("r"); Bytes for binary handles ("rb")
-                ret: Box::new(Type::normalize_union(vec![Type::Str, Type::Bytes])),
+                // Returns Str on success, [] (null) on EOF
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
         env.insert(
-            "lines".to_string(),
+            "builtin-read-chunk".to_string(),
             Type::Function {
-                params: vec![(None, Type::Handle(Box::new(cap_flag("readable"))))],
-                ret: Box::new(Type::Seq(Box::new(Type::Str))),
+                params: vec![
+                    (None, Type::Handle(Box::new(cap_flag("readable")))),
+                    (None, Type::Int),
+                ],
+                // Returns Bytes on success, [] (null) on EOF
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
