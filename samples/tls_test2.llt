@@ -1,9 +1,9 @@
-# TODO(lazy-file-io): migrate to chunks+bytes-concat when available
 [r: [try [fn [let]
-  [slurp [write-handle
-    [tls-connect %nc Tcp "static.rust-lang.org" 443 []]
-    [str-bytes "GET /dist/channel-rust-stable.toml HTTP/1.0\r\nHost: static.rust-lang.org\r\nConnection: close\r\n\r\n"]
-  ]]
+  [bytes-str [bytes-concat [collect [chunks
+    [write-handle
+      [tls-connect %nc Tcp "static.rust-lang.org" 443 []]
+      [str-bytes "GET /dist/channel-rust-stable.toml HTTP/1.0\r\nHost: static.rust-lang.org\r\nConnection: close\r\n\r\n"]]
+    65536]]]]
 ]]]
 [match r
   [ok: body] [str "OK: " [length body] " bytes"]

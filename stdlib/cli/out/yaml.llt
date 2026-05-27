@@ -1,6 +1,7 @@
 # YAML Formatter
 # Convert a tinct value to YAML 1.2 string
 
+# Private helpers
 [
 # Internal: check if string needs quoting
 yaml-needs-quote?: [fn@Bool [let s@String]
@@ -98,7 +99,10 @@ yaml-dict-value: [fn@String [let val@Any indent@Int]
       [yaml-list val indent]
       [yaml-dict val indent]]
     [yaml-value val indent]]]
+]
 
+# Public API
+[
 # Public API: format value to YAML
 yaml@[doc: "Convert value to YAML 1.2 string"]: [fn@String [let val@Any]
   [if [dict? val]

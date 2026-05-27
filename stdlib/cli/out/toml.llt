@@ -1,6 +1,7 @@
 # TOML Formatter
 # Convert a tinct value to TOML format
 
+# Private helpers
 [
 # Internal: quote and escape a string for TOML
 toml-quote: [fn@String [let s@String]
@@ -53,12 +54,12 @@ toml-flat: [fn@String [let d@Dict ks@Dict i@Int acc@String]
     [toml-flat d ks [+ i 1]
       [str acc [get i ks] " = " [toml-value [get [get i ks] d]] "\n"]]]]
 
-# Internal: format tables (nested dicts)
+# Internal: format tables (nested dicts) — calls toml-rec for recursive sub-dicts
 toml-tables: [fn@String [let d@Dict ks@Dict i@Int acc@String]
   [if [>= i [length ks]]
     acc
     [toml-tables d ks [+ i 1]
-      [str acc "\n[" [get i ks] "]\n" [toml [get [get i ks] d]]]]]]
+      [str acc "\n[" [get i ks] "]\n" [toml-rec [get [get i ks] d]]]]]]
 
 # Internal: format a value (scalar or inline array)
 toml-value: [fn@String [let val@Any]
@@ -68,16 +69,26 @@ toml-value: [fn@String [let val@Any]
       "{}"]
     [toml-scalar val]]]
 
+# Internal: recursive entry point for sub-dicts (avoids referencing the public toml)
+toml-rec: [fn@String [let d@Dict]
+  [if [empty? d]
+    ""
+    [toml-impl d [toml-partition d [keys d] 0 [] []]]]]
+
+# Internal: format dict given pre-partitioned flat/table keys
+toml-impl: [fn@String [let d@Dict parts@Dict]
+  [str
+    [toml-flat d parts.flat 0 ""]
+    [toml-tables d parts.tables 0 ""]]]
+]
+
+# Public API
+[
 # Public API: format dict to TOML
 toml@[doc: "Convert dict to TOML format (flat keys + tables)"]: [fn@String [let d@Dict]
   [if [empty? d]
     ""
     [toml-impl d [toml-partition d [keys d] 0 [] []]]]]
-
-toml-impl: [fn@String [let d@Dict parts@Dict]
-  [str
-    [toml-flat d parts.flat 0 ""]
-    [toml-tables d parts.tables 0 ""]]]
 ]
 
 [toml %]

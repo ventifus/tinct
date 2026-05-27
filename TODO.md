@@ -35,8 +35,8 @@ This was the root cause of `scripts/docgen.llt` producing empty documentation: `
 
 **Proper fix:** Add a diagnostic at resolve or typecheck time warning when a letrec dict entry `[k: expr]` has `expr` being a bare VarRef with the same name as key `k`. This is almost always a bug.
 
-- [ ] Add T002/T003 diagnostic: warn when a dict entry's value is `VarRef(name)` and the entry's key is also `name` — likely letrec self-reference
-- [ ] Alternatively: evaluate dict value expressions in PARENT scope when the value is a bare VarRef matching its own key
+- [x] Add T002/T003 diagnostic: warn when a dict entry's value is `VarRef(name)` and the entry's key is also `name` — likely letrec self-reference
+- [x] Alternatively: evaluate dict value expressions in PARENT scope when the value is a bare VarRef matching its own key
 - **Files:** `src/resolve.rs` or `src/typecheck.rs`
 
 ### tco-restorestate: Change RestoreState to CoreExpr-based restore (prerequisite for TCO)
@@ -398,7 +398,7 @@ No `slurp`. Where full text is unavoidably needed (parsers), callers write `[joi
 
 #### stdlib/net.llt — collect unavoidable (HTTP parser needs full response bytes)
 
-- [ ] Line 73: `[bytes-str [slurp [write-handle ...]]]` → `[bytes-str [bytes-concat [collect [chunks [write-handle [connect cap Tcp url.host url.port] [str-bytes [build-http-request "GET" url.path url.host]]] 65536]]]]` — HTTP response must be fully buffered for header parsing; `collect` is explicit
+- [x] Line 73: `[bytes-str [slurp [write-handle ...]]]` → `[bytes-str [bytes-concat [collect [chunks [write-handle [connect cap Tcp url.host url.port] [str-bytes [build-http-request "GET" url.path url.host]]] 65536]]]]` — HTTP response must be fully buffered for header parsing; `collect` is explicit
 
 #### stdlib/codecs/toml-lite.llt — accept Seq<String> to enable lazy toml input
 
@@ -410,7 +410,7 @@ No `slurp`. Where full text is unavoidably needed (parsers), callers write `[joi
 
 #### samples/tls_test2.llt — collect unavoidable (HTTP parser needs full response)
 
-- [ ] Line 2: `[slurp [write-handle [tls-connect ...]]]` → `[bytes-str [bytes-concat [collect [chunks [write-handle ...] 65536]]]]`
+- [x] Line 2: `[slurp [write-handle [tls-connect ...]]]` → `[bytes-str [bytes-concat [collect [chunks [write-handle ...] 65536]]]]`
 
 #### scripts/docgen.llt — collect unavoidable (`load` needs full String)
 
@@ -532,12 +532,11 @@ Combines: stdlib-conformance-builtin-privacy (8), stdlib-conformance-cleanup (6)
 - [x] Verify whether `loop-select` 230-iteration depth limit (`stdlib/async.llt:178-181`) still applies after CEK machine sprint; update or remove the warning — TCO implemented in tco-proper sprint; comment updated to reflect O(1) stack depth
 
 **Encapsulation — split single-dict files into two-dict pattern:**
-NOTE: These tasks are DEFERRED pending bare-include-scope sprint. The two-dict pattern has closure scoping issues (discovered in json-serde-removal). Once bare-include-scope is implemented, these files should use the bare include pattern where private helpers are in scope for the public dict without needing a two-dict split.
-- [ ] DEFERRED: Split `stdlib/encoding.llt` into two-dict document pattern (private helpers → first dict, public API → second dict)
-- [ ] DEFERRED: Split `stdlib/cli/out/csv.llt` into two-dict pattern (Private: `csv-quote`, `csv-header`, `csv-row`, `csv-rows`, `csv-impl`. Public: `csv`)
-- [ ] DEFERRED: Split `stdlib/cli/out/env.llt` into two-dict pattern (Private: `env-entry`, `env-entries`. Public: `env`)
-- [ ] DEFERRED: Split `stdlib/cli/out/yaml.llt` into two-dict pattern (Private: `yaml-*` helpers. Public: `yaml`)
-- [ ] DEFERRED: Split `stdlib/cli/out/toml.llt` into two-dict pattern (Private: `toml-*` helpers. Public: `toml`)
+- [x] Split `stdlib/encoding.llt` into two-dict document pattern (private helpers → first dict, public API → second dict)
+- [x] Split `stdlib/cli/out/csv.llt` into two-dict pattern (Private: `csv-quote`, `csv-header`, `csv-row`, `csv-rows`, `csv-impl`. Public: `csv`)
+- [x] Split `stdlib/cli/out/env.llt` into two-dict pattern (Private: `env-entry`, `env-entries`. Public: `env`)
+- [x] Split `stdlib/cli/out/yaml.llt` into two-dict pattern (Private: `yaml-*` helpers. Public: `yaml`)
+- [x] Split `stdlib/cli/out/toml.llt` into two-dict pattern (Private: `toml-*` helpers. Public: `toml`; added `toml-rec` private alias to break public-api self-reference in `toml-tables`)
 
 **Missing comparison aliases (from stdlib-health-326):**
 - [x] Add `builtin-gte`, `builtin-lte`, `builtin-gt` to `src/builtins.rs:standard_builtins()`

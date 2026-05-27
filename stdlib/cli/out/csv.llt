@@ -2,6 +2,7 @@
 # Convert a list-of-dicts to CSV format
 # First row defines headers (keys), subsequent rows extract values by key
 
+# Private helpers
 [
 # Internal: quote and escape a CSV field
 # Always quote to avoid checking for special characters
@@ -29,16 +30,20 @@ csv-rows: [fn@String [let rows@Dict ks@Dict i@Int acc@String]
     [csv-rows rows ks [+ i 1]
       [str acc [csv-row [get i rows] ks 0 ""]]]]]
 
+# Internal: format list-of-dicts given pre-extracted header keys
+csv-impl: [fn@String [let rows@Dict ks@Dict]
+  [str
+    [csv-header ks 0 ""]
+    [csv-rows rows ks 0 ""]]]
+]
+
+# Public API
+[
 # Public API: format list-of-dicts to CSV
 csv@[doc: "Convert list-of-dicts to CSV format (header row + data rows)"]: [fn@String [let rows@Dict]
   [if [empty? rows]
     ""
     [csv-impl rows [keys rows.0]]]]
-
-csv-impl: [fn@String [let rows@Dict ks@Dict]
-  [str
-    [csv-header ks 0 ""]
-    [csv-rows rows ks 0 ""]]]
 ]
 
 [csv %]

@@ -18,25 +18,16 @@
 #   hex-*        Hexadecimal encoding (lowercase a-f)
 #   base64-*     Base64 encoding (RFC 4648, standard alphabet with padding)
 #   mask-apply   Simple XOR masking (repeating key cipher)
-#
-# All functions in this dict can reference each other (letrec semantics).
 # ============================================================================
 
+# ============================================================================
+# Private helpers — not exported
+# ============================================================================
 [
 
 # ============================================================================
-# Hexadecimal Encoding
+# Hexadecimal Encoding — helpers
 # ============================================================================
-
-# Convert a string to its hexadecimal representation.
-# Each character's codepoint is encoded as 2 hex digits (lowercase).
-# Only supports ASCII (codepoints 0-255).
-# Type: (String -> String)
-# Example: [hex-encode "hello"] => "68656c6c6f"
-# Example: [hex-encode "A"] => "41"
-# Example: [hex-encode ""] => ""
-hex-encode@[doc: "Convert a string to its hexadecimal representation"]: [fn@String [let s@String]
-    [hex-encode-impl s 0 [length s] ""]]
 
 hex-encode-impl: [fn@String [let s@String i@Int len@Int acc@String]
     [if [< i len]
@@ -63,17 +54,6 @@ hex-digit: [fn@String [let n@Int]
         [builtin-chr [+ 48 n]]           # '0'-'9' (48 = '0')
         [builtin-chr [+ 87 n]]]]         # 'a'-'f' (97 = 'a', 97-10=87)
 
-# Decode a hexadecimal string back to its original form.
-# Takes pairs of hex digits and converts them to characters.
-# Type: (String -> String)
-# Example: [hex-decode "68656c6c6f"] => "hello"
-# Example: [hex-decode "41"] => "A"
-# Example: [hex-decode ""] => ""
-hex-decode@[doc: "Decode a hexadecimal string back to its original form"]: [fn@String [let s@String]
-    [if [= [mod [length s] 2] 0]
-        [hex-decode-impl s 0 [length s] ""]
-        [error "hex-decode: input length must be even"]]]
-
 hex-decode-impl: [fn@String [let s@String i@Int len@Int acc@String]
     [if [< i len]
         [hex-decode-step s i len acc
@@ -89,9 +69,9 @@ hex-decode-step: [fn@String [let s@String i@Int len@Int acc@String hi@Int lo@Int
 # Type: (String -> Int)
 # Accepts: '0'-'9', 'a'-'f', 'A'-'F'
 hex-digit-to-int: [fn@Int [let c@String]
-    [hex-digit-to-int-impl [builtin-char-code c]]]
+    [hex-digit-to-int-impl c [builtin-char-code c]]]
 
-hex-digit-to-int-impl: [fn@Int [let code@Int]
+hex-digit-to-int-impl: [fn@Int [let c@String code@Int]
     [if [and [>= code 48] [<= code 57]]           # '0'-'9'
         [- code 48]
         [if [and [>= code 97] [<= code 102]]      # 'a'-'f'
@@ -101,22 +81,12 @@ hex-digit-to-int-impl: [fn@Int [let code@Int]
                 [error [str "hex-decode: invalid hex digit: " c]]]]]]
 
 # ============================================================================
-# Base64 Encoding (RFC 4648)
+# Base64 Encoding (RFC 4648) — helpers
 # ============================================================================
 
 # Base64 alphabet (indices 0-63)
 # A-Z (0-25), a-z (26-51), 0-9 (52-61), + (62), / (63)
 base64-alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-# Convert a string to base64 encoding.
-# Groups bytes in threes (24 bits) and encodes as 4 base64 characters.
-# Pads with '=' to align to 4-character boundary.
-# Type: (String -> String)
-# Example: [base64-encode "hello"] => "aGVsbG8="
-# Example: [base64-encode "hi"] => "aGk="
-# Example: [base64-encode "a"] => "YQ=="
-base64-encode@[doc: "Convert a string to base64 encoding"]: [fn@String [let s@String]
-    [base64-encode-impl s 0 [length s] ""]]
 
 base64-encode-impl: [fn@String [let s@String i@Int len@Int acc@String]
     [if [< i len]
@@ -169,14 +139,6 @@ base64-encode-1byte: [fn@String [let s@String i@Int len@Int acc@String b1@Int]
 base64-char: [fn@String [let n@Int]
     [builtin-str-slice base64-alphabet n [+ n 1]]]
 
-# Decode a base64 string back to its original form.
-# Type: (String -> String)
-# Example: [base64-decode "aGVsbG8="] => "hello"
-# Example: [base64-decode "aGk="] => "hi"
-# Example: [base64-decode "YQ=="] => "a"
-base64-decode@[doc: "Decode a base64 string back to its original form"]: [fn@String [let s@String]
-    [base64-decode-impl s 0 [length s] ""]]
-
 base64-decode-impl: [fn@String [let s@String i@Int len@Int acc@String]
     [if [< i len]
         [base64-decode-group s i len acc]
@@ -225,19 +187,8 @@ base64-char-to-int-search: [fn@Int [let c@String i@Int]
         [error [str "base64-decode: invalid character: " c]]]]
 
 # ============================================================================
-# XOR Masking (Simple Repeating-Key Cipher)
+# XOR Masking — helpers
 # ============================================================================
-
-# Apply an XOR mask to a string.
-# Each character in data is XOR'd with the corresponding character in mask.
-# The mask repeats cyclically if shorter than data.
-# Type: (String -> String -> String)
-# Example: [mask-apply "hello" "key"] => (encrypted string)
-# Example: [mask-apply [mask-apply "hello" "key"] "key"] => "hello"  (double XOR recovers original)
-mask-apply@[doc: "Apply an XOR mask to a string (repeating-key cipher)"]: [fn@String [let data@String mask@String]
-    [if [= [length mask] 0]
-        [error "mask-apply: mask cannot be empty"]
-        [mask-apply-impl data mask 0 [length data] [length mask] ""]]]
 
 mask-apply-impl: [fn@String [let data@String mask@String i@Int data-len@Int mask-len@Int acc@String]
     [if [< i data-len]
@@ -249,5 +200,62 @@ mask-apply-impl: [fn@String [let data@String mask@String i@Int data-len@Int mask
 mask-apply-step: [fn@String [let data@String mask@String i@Int data-len@Int mask-len@Int acc@String data-code@Int mask-code@Int]
     [mask-apply-impl data mask [+ i 1] data-len mask-len
         [str acc [builtin-chr [builtin-bxor data-code mask-code]]]]]
+
+]
+
+# ============================================================================
+# Public API — exported
+# ============================================================================
+[
+
+# Convert a string to its hexadecimal representation.
+# Each character's codepoint is encoded as 2 hex digits (lowercase).
+# Only supports ASCII (codepoints 0-255).
+# Type: (String -> String)
+# Example: [hex-encode "hello"] => "68656c6c6f"
+# Example: [hex-encode "A"] => "41"
+# Example: [hex-encode ""] => ""
+hex-encode@[doc: "Convert a string to its hexadecimal representation"]: [fn@String [let s@String]
+    [hex-encode-impl s 0 [length s] ""]]
+
+# Decode a hexadecimal string back to its original form.
+# Takes pairs of hex digits and converts them to characters.
+# Type: (String -> String)
+# Example: [hex-decode "68656c6c6f"] => "hello"
+# Example: [hex-decode "41"] => "A"
+# Example: [hex-decode ""] => ""
+hex-decode@[doc: "Decode a hexadecimal string back to its original form"]: [fn@String [let s@String]
+    [if [= [mod [length s] 2] 0]
+        [hex-decode-impl s 0 [length s] ""]
+        [error "hex-decode: input length must be even"]]]
+
+# Convert a string to base64 encoding.
+# Groups bytes in threes (24 bits) and encodes as 4 base64 characters.
+# Pads with '=' to align to 4-character boundary.
+# Type: (String -> String)
+# Example: [base64-encode "hello"] => "aGVsbG8="
+# Example: [base64-encode "hi"] => "aGk="
+# Example: [base64-encode "a"] => "YQ=="
+base64-encode@[doc: "Convert a string to base64 encoding"]: [fn@String [let s@String]
+    [base64-encode-impl s 0 [length s] ""]]
+
+# Decode a base64 string back to its original form.
+# Type: (String -> String)
+# Example: [base64-decode "aGVsbG8="] => "hello"
+# Example: [base64-decode "aGk="] => "hi"
+# Example: [base64-decode "YQ=="] => "a"
+base64-decode@[doc: "Decode a base64 string back to its original form"]: [fn@String [let s@String]
+    [base64-decode-impl s 0 [length s] ""]]
+
+# Apply an XOR mask to a string.
+# Each character in data is XOR'd with the corresponding character in mask.
+# The mask repeats cyclically if shorter than data.
+# Type: (String -> String -> String)
+# Example: [mask-apply "hello" "key"] => (encrypted string)
+# Example: [mask-apply [mask-apply "hello" "key"] "key"] => "hello"  (double XOR recovers original)
+mask-apply@[doc: "Apply an XOR mask to a string (repeating-key cipher)"]: [fn@String [let data@String mask@String]
+    [if [= [length mask] 0]
+        [error "mask-apply: mask cannot be empty"]
+        [mask-apply-impl data mask 0 [length data] [length mask] ""]]]
 
 ]
