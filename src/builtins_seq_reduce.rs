@@ -196,7 +196,7 @@ pub(crate) fn builtin_reduce_dict_step(
                         materialize(&call_thunk, None, &ctx)
                             .await
                             .map_err(|mut e| {
-                                e.push_frame("in reduce".to_string(), call_span);
+                                e.push_frame_with_file("in reduce".to_string(), call_span, Some(file!().into()));
                                 e
                             })?;
                     acc_thunk = Arc::new(Thunk::new_materialized(new_acc_val, call_span));
@@ -261,7 +261,7 @@ pub(crate) fn builtin_reduce_seq_step(
                         materialize(&call_thunk, None, &ctx)
                             .await
                             .map_err(|mut e| {
-                                e.push_frame("in reduce".to_string(), call_span);
+                                e.push_frame_with_file("in reduce".to_string(), call_span, Some(file!().into()));
                                 e
                             })?;
                     acc_thunk = Arc::new(Thunk::new_materialized(new_acc_val, call_span));

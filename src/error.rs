@@ -1001,6 +1001,8 @@ impl fmt::Display for ErrorKind {
 pub struct StackFrame {
     pub label: String,
     pub span: Span,
+    /// Source file where this frame's span originates, if known.
+    pub file: Option<Arc<str>>,
 }
 
 /// Evaluation error with definition-site span, optional materialization-site span,
@@ -1070,13 +1072,18 @@ impl EvalError {
 
     /// Builder for stack frame attachment.
     pub fn with_frame(mut self, label: String, span: Span) -> Self {
-        self.stack.push(StackFrame { label, span });
+        self.stack.push(StackFrame { label, span, file: None });
         self
     }
 
     /// Mutable stack frame push.
     pub fn push_frame(&mut self, label: String, span: Span) {
-        self.stack.push(StackFrame { label, span });
+        self.stack.push(StackFrame { label, span, file: None });
+    }
+
+    /// Mutable stack frame push with source file annotation.
+    pub fn push_frame_with_file(&mut self, label: String, span: Span, file: Option<Arc<str>>) {
+        self.stack.push(StackFrame { label, span, file });
     }
 
     /// Builder for attaching a secondary span label, e.g. `"evaluated to Bool"`.
@@ -1886,7 +1893,8 @@ impl fmt::Display for EvalError {
             if let Some((period, full_repeats)) = detect_repeating_period(&visible_frames) {
                 // Display one period copy
                 for frame in visible_frames.iter().take(period) {
-                    write!(f, "\n  in {} at {}", frame.label, frame.span)?;
+                    let loc = frame.file.as_deref().map_or_else(|| format!("{}", frame.span), |file| format!("{}:{}", file, frame.span));
+                    write!(f, "\n  in {} at {}", frame.label, loc)?;
                 }
                 // Display summary line
                 let remaining = full_repeats - 1;
@@ -1899,12 +1907,14 @@ impl fmt::Display for EvalError {
                 // Display any tail frames beyond the repeated cycles
                 let tail_start = period * full_repeats;
                 for frame in &visible_frames[tail_start..] {
-                    write!(f, "\n  in {} at {}", frame.label, frame.span)?;
+                    let loc = frame.file.as_deref().map_or_else(|| format!("{}", frame.span), |file| format!("{}:{}", file, frame.span));
+                    write!(f, "\n  in {} at {}", frame.label, loc)?;
                 }
             } else {
                 // No repeating pattern found - display all frames normally
                 for frame in visible_frames {
-                    write!(f, "\n  in {} at {}", frame.label, frame.span)?;
+                    let loc = frame.file.as_deref().map_or_else(|| format!("{}", frame.span), |file| format!("{}:{}", file, frame.span));
+                    write!(f, "\n  in {} at {}", frame.label, loc)?;
                 }
             }
         } else {
@@ -1914,7 +1924,8 @@ impl fmt::Display for EvalError {
                     continue;
                 }
 
-                write!(f, "\n  in {} at {}", frame.label, frame.span)?;
+                let loc = frame.file.as_deref().map_or_else(|| format!("{}", frame.span), |file| format!("{}:{}", file, frame.span));
+                write!(f, "\n  in {} at {}", frame.label, loc)?;
             }
         }
 

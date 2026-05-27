@@ -1287,9 +1287,9 @@ async fn expand_macro_call_surface(
                 call_span,
             );
             for frame in &e.stack {
-                err.push_frame(frame.label.clone(), frame.span);
+                err.push_frame_with_file(frame.label.clone(), frame.span, frame.file.clone());
             }
-            err.push_frame(format!("in expansion of `{}`", macro_name), call_span);
+            err.push_frame_with_file(format!("in expansion of `{}`", macro_name), call_span, Some(file!().into()));
             err
         })?;
 

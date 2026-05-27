@@ -1800,7 +1800,8 @@ pub fn materialize<'a>(
         // letrec construction bug.
 
         let origin_opt: Option<&str> = origin.as_deref();
-        let decorate = |e| attach_materialization_context(e, mat_span, origin_opt, thunk_span);
+        let source_file_str: Option<String> = ctx.config.source_file.clone();
+        let decorate = move |e| attach_materialization_context(e, mat_span, origin_opt, thunk_span, source_file_str.as_deref());
 
         if let Some((def, args, named, call_span, thunk_ctx)) = thunk.take_pending_builtin() {
             // Pre-materialize strict args before calling the builtin.
