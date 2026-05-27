@@ -11765,3 +11765,9 @@ Extended from-json to accept Handle via str? dispatch. Handle path eagerly reads
 - [x] Updated type signature to Union[Str | Handle[Readable]]
 - [x] cli/in/json.llt simplified to [json.from-json %stdin]
 - [x] Corpus tests for Handle dispatch via string-handle
+
+### unified-bindings-structural-tests (partial): Corpus tests for structural patterns ✅ Partial (2026-05-27)
+
+Added 3 corpus tests using the existing working `[Ok v]:` syntax. Parser change for `[let v: Ok]` syntax deferred — existing match arm constructor syntax works.
+
+- [x] Tests: case_structural_ok_err, case_structural_mismatch_skips, case_structural_nested

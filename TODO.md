@@ -508,7 +508,7 @@ Spec: `doc/whatif/unified-bindings.md §src/parser.rs`, `§src/typecheck.rs`, `�
 - [ ] Remove stub comment at `src/typecheck.rs:5536-5539`; implement constructor payload lookup: for each `name: Constructor` binding, look up `Constructor` in `TypeEnv` as a function type scheme and extract domain type as payload type; bind `name` to that type (`src/typecheck.rs` — `typecheck_case_arm`)
 - [ ] Implement soft-skip eval for structural tests: when `[let v: Constructor]` pattern is in a case arm, materialize scrutinee, check tag against constructor name, extract payload and bind; return `None` on tag mismatch (arm skip) (`src/eval.rs`)
 - [ ] Add dead-arm warning when `payload_type(Constructor) ∩ annotation_type = Never` (e.g., `[let v@String: Ok]` where Ok payload is Int) (`src/typecheck.rs`)
-- [ ] Tests: `case_structural_ok_err.llt-eval` (basic Ok/Err patterns); `case_structural_nested.llt-eval` (`[let [a b]: Pair]`); `case_structural_typed_payload.llt-eval` (`[let v@Int: Ok]`); `case_structural_mismatch_skips.llt-eval` (soft-skip); `case_structural_dead_arm.llt-eval` (dead-arm warning) (`tests/corpus/eval/`)
+- [x] Tests: `case_structural_ok_err.llt-eval` (basic Ok/Err patterns); `case_structural_nested.llt-eval` (`[let [a b]: Pair]`); `case_structural_typed_payload.llt-eval` (`[let v@Int: Ok]`); `case_structural_mismatch_skips.llt-eval` (soft-skip); `case_structural_dead_arm.llt-eval` (dead-arm warning) (`tests/corpus/eval/`)
 
 ---
 

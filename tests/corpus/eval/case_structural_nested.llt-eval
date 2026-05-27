@@ -1,0 +1,7 @@
+# case: nested destructuring with Ok containing dict
+[result: [Ok [x: 1  y: 2]]]
+[match result
+  [Ok v]: [+ v.x v.y]
+  _: 0]
+=== out
+Int(3)

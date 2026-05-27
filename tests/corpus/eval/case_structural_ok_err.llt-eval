@@ -1,0 +1,8 @@
+# case: structural test with Ok/Error constructors
+[result: [Ok 42]]
+[match result
+  [Ok v]: [str "got " v]
+  [Error e]: [str "err " e]
+  _: "other"]
+=== out
+String("got 42")

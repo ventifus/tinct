@@ -1,0 +1,8 @@
+# case: structural test skips mismatched arms
+[result: [Error "failed"]]
+[match result
+  [Ok v]: [str "ok " v]
+  [Error e]: [str "err: " e]
+  _: "other"]
+=== out
+String("err: failed")
