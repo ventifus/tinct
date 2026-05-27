@@ -1,0 +1,6 @@
+# string-handle wraps a String as a readable Handle
+[h: [string-handle "hello\nworld"]]
+[first-line: [builtin-read-line h]]
+first-line
+=== out
+String("hello")

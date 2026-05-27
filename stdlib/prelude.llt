@@ -2909,6 +2909,10 @@ Same semantics as --- within a file, applied across multiple files.
     initial
     files]]
 
+# Wrap a String as a readable Handle backed by in-memory Cursor.
+# Enables uniform codec APIs that accept Handle as primary input.
+string-handle@[doc: "Wrap a String as a readable Handle (backed by in-memory Cursor)"]: string-handle
+
 # Lazily read lines from a Handle. Returns a Seq of String, one per line.
 # Strips trailing newline. Returns empty Seq when EOF reached.
 lines@[doc: "Lazily read lines from a Handle. Returns a Seq of String, one per line. Strips trailing newline."]:

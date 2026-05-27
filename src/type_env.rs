@@ -274,7 +274,12 @@ pub fn instantiate_scheme(scheme: &TypeScheme, level: u32, state: &mut InferStat
     // Copy constraints with renamed variables
     for constraint in &scheme.constraints {
         match constraint {
-            Constraint::Class { class, vars, origin_name, origin_span } => {
+            Constraint::Class {
+                class,
+                vars,
+                origin_name,
+                origin_span,
+            } => {
                 let fresh_vars: Vec<String> = vars
                     .iter()
                     .filter_map(|v| var_renaming.get(v).cloned())
@@ -2162,6 +2167,14 @@ impl TypeEnv {
                 // precise Handle(cap_row) when flags are literal VarRef names like Readable/Writable.
                 ret: Box::new(Type::Handle(Box::new(Type::Unknown))),
                 variadic: true,
+            },
+        );
+        env.insert(
+            "string-handle".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Str)],
+                ret: Box::new(Type::Handle(Box::new(cap_flag("readable")))),
+                variadic: false,
             },
         );
         env.insert(

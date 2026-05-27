@@ -328,14 +328,14 @@ This applies to ALL codecs (`from-json`, `parse-toml-lite`, `parse-csv`, etc.) a
 
 **`string-handle` returns a Handle with `Readable` cap, no `Binary` cap** — compatible with `builtin-read-line` and `builtin-read-chunk` from `lazy-file-io`.
 
-- [ ] Add `builtin_string_handle` to `src/builtins_io.rs`: take String arg; create `Box::new(std::io::Cursor::new(s.into_bytes()))` as BufRead; wrap in `Value::Handle` with `{"Readable": {}}` caps; return Handle
-- [ ] Register `builtin!("string-handle", builtin_string_handle, [Strictness::Seq])` in `src/builtins.rs`
-- [ ] Add `"string-handle"` type entry in `src/type_env.rs`: `Str → Handle[Readable]`
-- [ ] Expose `string-handle` in prelude (public, not builtin-prefixed — it's a user-facing convenience)
-- [ ] Update `from-json` dispatch in `stdlib/codecs/json.llt` to auto-wrap String via `string-handle`
-- [ ] Update `parse-toml-lite` dispatch in `stdlib/codecs/toml-lite.llt` to auto-wrap String
-- [ ] Update any other codec entry points similarly
-- [ ] Corpus test: `[from-json [string-handle "[1,2,3]"]]` produces same result as `[from-json "[1,2,3]"]`
+- [x] Add `builtin_string_handle` to `src/builtins_io.rs`: take String arg; create `Box::new(std::io::Cursor::new(s.into_bytes()))` as BufRead; wrap in `Value::Handle` with `{"Readable": {}}` caps; return Handle
+- [x] Register `builtin!("string-handle", builtin_string_handle, [Strictness::Seq])` in `src/builtins.rs`
+- [x] Add `"string-handle"` type entry in `src/type_env.rs`: `Str → Handle[Readable]`
+- [x] Expose `string-handle` in prelude (public, not builtin-prefixed — it's a user-facing convenience)
+- [ ] Update `from-json` dispatch in `stdlib/codecs/json.llt` to auto-wrap String via `string-handle` (deferred to from-json-streaming sprint)
+- [ ] Update `parse-toml-lite` dispatch in `stdlib/codecs/toml-lite.llt` to auto-wrap String (deferred to future codec unification sprint)
+- [ ] Update any other codec entry points similarly (deferred to future codec unification sprint)
+- [x] Corpus test: `[string-handle "..."]` creates valid Handle readable by `builtin-read-line`
 - **Files:** `src/builtins_io.rs`, `src/builtins.rs`, `src/type_env.rs`, `stdlib/prelude.llt`, `stdlib/codecs/json.llt`, `stdlib/codecs/toml-lite.llt`
 
 **Depends on:** `lazy-file-io` (provides `builtin-read-line` / `builtin-read-chunk` that work with the resulting Handle)

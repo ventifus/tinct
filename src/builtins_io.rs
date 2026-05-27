@@ -1404,6 +1404,56 @@ fn resolve_hostname_for_cidr(
     .into())
 }
 
+/// `string-handle`: Wrap a String as a readable Handle backed by std::io::Cursor.
+/// Takes a String and returns Handle[Readable] (text-mode, not Binary).
+/// Compatible with builtin-read-line and builtin-read-chunk.
+pub(crate) fn builtin_string_handle(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        // Expect exactly 1 arg: String
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+        reject_named("string-handle", named.as_ref(), call_span)?;
+
+        // Get string value (pre-materialized by Strictness::Seq)
+        let val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
+
+        let s = require_string("string-handle", val, args[0].span)?;
+
+        // Create Cursor as reader
+        let cursor = std::io::Cursor::new(s.into_bytes());
+        let handle: Box<dyn std::io::BufRead> = Box::new(cursor);
+
+        // Create Handle with Readable + Text caps (matching stdin pattern from main.rs)
+        let mut caps = HashMap::new();
+        caps.insert("Readable".to_string(), Value::Bool(true));
+        caps.insert("Text".to_string(), Value::Bool(true));
+
+        ok_val(
+            Value::Handle {
+                caps,
+                inner: Rc::new(std::cell::RefCell::new(handle)),
+                write_inner: None,
+                seek_inner: None,
+                raw_tcp: None,
+                creation_span: call_span,
+            },
+            call_span,
+        )
+    })
+}
+
 /// `builtin-read-line`: Read a single line from a Handle (Text mode).
 /// Takes a Handle and returns String on success, [] (null) on EOF.
 /// Strips trailing `\n` and `\r\n` from the result.

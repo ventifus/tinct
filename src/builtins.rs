@@ -401,8 +401,8 @@ pub(crate) use crate::builtins_io::{
     builtin_read_line, builtin_read_link, builtin_recv_datagram, builtin_remove,
     builtin_remove_xattr, builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_seek,
     builtin_seek_end, builtin_send_datagram, builtin_set_permissions, builtin_set_xattr,
-    builtin_stat, builtin_stat_symlink, builtin_symlink, builtin_tls_layer, builtin_tls_peer_cert,
-    builtin_write, builtin_write_atomic, builtin_write_handle,
+    builtin_stat, builtin_stat_symlink, builtin_string_handle, builtin_symlink, builtin_tls_layer,
+    builtin_tls_peer_cert, builtin_write, builtin_write_atomic, builtin_write_handle,
 };
 
 // Type/eval/meta builtins: type-of, include, error, try, apply, validate.
@@ -1582,6 +1582,7 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             3
         ),
         builtin!("tls-peer-cert", builtin_tls_peer_cert, [Strictness::Seq]),
+        builtin!("string-handle", builtin_string_handle, [Strictness::Seq]),
         builtin!("builtin-read-line", builtin_read_line, [Strictness::Seq]),
         builtin!(
             "builtin-read-chunk",
@@ -6464,8 +6465,10 @@ mod tests {
         //   Prelude now exports expand: builtin-expand.
         // Added 3 comparison aliases: builtin-gt, builtin-lte, builtin-gte (234 → 237):
         //   These allow the prelude to eliminate gte-impl private helper.
+        // Added string-handle builtin for wrapping String as Handle[Readable] (237 → 238):
+        //   Enables uniform codec APIs accepting Handle as primary input.
         assert_eq!(
-            count, 237,
+            count, 238,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }

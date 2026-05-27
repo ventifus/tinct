@@ -11746,3 +11746,13 @@ Deleted CoreExpr::RuntimeTypeCheck variant entirely. Converted all construction 
 All 4 components verified: failed_bindings→Type::Error, is_consistent_subtype, pipeline resolved types, RuntimeTypeCheck deleted. Zero RuntimeTypeCheck references in src/. Doc sections present.
 
 - [x] Run /review-whatif typecheck-runtime-unification — verified complete
+
+### string-handle: Wrap a String as a readable Handle ✅ Partially DONE (2026-05-27)
+
+Added builtin_string_handle to builtins_io.rs. Creates Cursor<Vec<u8>> wrapped as Handle with Readable+Text caps. Registered, type-env'd, prelude-exported. Codec dispatch updates deferred to from-json-streaming sprint.
+
+- [x] Add builtin_string_handle to builtins_io.rs
+- [x] Register string-handle in builtins.rs
+- [x] Add type entry in type_env.rs
+- [x] Expose string-handle in prelude
+- [x] Corpus test: string-handle + builtin-read-line
