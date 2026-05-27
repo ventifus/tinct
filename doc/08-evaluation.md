@@ -338,7 +338,7 @@ The materialization graph (excluding `Placeholder`) has no cycles. Four backward
 - `InProgress → PendingBuiltin`: fires when a PendingBuiltin's execution raises a non-cacheable error; restores the original PendingBuiltin state for retry.
 - `InProgress → PendingCall`: fires when a PendingCall's invocation raises a non-cacheable error; restores the original PendingCall state for retry.
 
-All four fire under the same condition: any non-cacheable error (e.g., `DepthExceeded`) from a deferred state restores that state for retry. `DepthExceeded` can be raised by the continuation stack depth guard (`MAX_CONTINUATION_STACK = 2048` frames, `src/eval_materialize.rs:309`) inside the core CEK loop, and by individual builtins (e.g., `MAX_COLLECT_SIZE` in `deep_materialize`). Because such errors are transient resource-bound conditions (not semantic errors), they are non-cacheable — `cache_failure` is skipped and the thunk is restored to its pre-InProgress state so the computation can be retried. These backward restorations mean strict state-order monotonicity does not hold for the non-cacheable path. However, semantic monotonicity is preserved: the thunk's observable meaning is unchanged between attempts, and the error identity is not fixed. Every other error kind is cacheable and takes the normal `InProgress → Failed` forward edge. (`src/eval_materialize.rs`, in the `force_step()` match arms for `Unevaluated`, `Guarded`, `PendingBuiltin`, and `PendingCall`)
+All four fire under the same condition: any non-cacheable error (e.g., `DepthExceeded`) from a deferred state restores that state for retry. `DepthExceeded` can be raised by the continuation stack depth guard (`MAX_CONTINUATION_STACK = 2048` frames, `src/eval_materialize.rs:309`) inside the core CEK loop, and by individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`). Because such errors are transient resource-bound conditions (not semantic errors), they are non-cacheable — `cache_failure` is skipped and the thunk is restored to its pre-InProgress state so the computation can be retried. These backward restorations mean strict state-order monotonicity does not hold for the non-cacheable path. However, semantic monotonicity is preserved: the thunk's observable meaning is unchanged between attempts, and the error identity is not fixed. Every other error kind is cacheable and takes the normal `InProgress → Failed` forward edge. (`src/eval_materialize.rs`, in the `force_step()` match arms for `Unevaluated`, `Guarded`, `PendingBuiltin`, and `PendingCall`)
 
 **Atomicity invariant:** Each `take_*` method atomically swaps the thunk state to InProgress before returning the captured data. This ensures no observer can see the old state after the transition begins. The atomicity is provided by `std::mem::replace` under an exclusive `borrow_mut()` — Rust's borrow checker prevents double borrows within a single thread.
 
@@ -348,7 +348,7 @@ Materialization dispatches on the current state to produce a value or error. Rul
 
 **Notation:** The rules use an implementation-oriented notation mixing imperative state updates (`θ.state ← InProgress`) with declarative judgments (`eval(expr, env, Σ_θ) ⇒ θ'`). `Σ_θ` denotes the evaluation context (`EvalContext`) captured at thunk construction time — it carries context-dependent state (base directory, include guards) that must reflect the thunk's definition site. A standard operational semantics would thread an explicit store σ mapping thunk IDs to states: `materialize(θ, σ) ⇒ (v, σ')`. The notation here maps directly to the `materialize()` implementation for ease of cross-checking.
 
-**Depth tracking:** The iterative CEK machine (see §Iterative Evaluator below) has replaced recursive depth tracking with a bounded continuation stack. There is no `MAX_EVAL_DEPTH` check in the core materialization loop — the heap-allocated continuation stack (`Vec<Cont>`) replaces the Rust call stack and is bounded by `MAX_CONTINUATION_STACK = 2048` frames (`src/eval_materialize.rs:33`, ~192 KB). Sequence-spine guards in `deep_materialize` use `MAX_COLLECT_SIZE` (1,000,000), a separate constant for preventing unbounded sequence collection.
+**Depth tracking:** The iterative CEK machine (see §Iterative Evaluator below) has replaced recursive depth tracking with a bounded continuation stack. There is no `MAX_EVAL_DEPTH` check in the core materialization loop — the heap-allocated continuation stack (`Vec<Cont>`) replaces the Rust call stack and is bounded by `MAX_CONTINUATION_STACK = 2048` frames (`src/eval_materialize.rs:33`, ~192 KB). Sequence iteration guards in builtins use `MAX_COLLECT_SIZE` (1,000,000), a separate constant for preventing unbounded sequence collection.
 
 **[MATERIALIZE-CACHED]**
 
@@ -426,7 +426,7 @@ materialize(θ_inner) ⇒ error(e)               where ¬e.is_cacheable()
 materialize(θ) ⇒ error(e)
 ```
 
-Note: `DepthExceeded` can arise from the continuation stack depth guard (`check_stack_depth()` enforcing `MAX_CONTINUATION_STACK = 2048` frames) inside the CEK loop, and from individual builtins (e.g., `MAX_COLLECT_SIZE` in `deep_materialize`). The backward `InProgress → Guarded` edge handles non-cacheable errors from both sources.
+Note: `DepthExceeded` can arise from the continuation stack depth guard (`check_stack_depth()` enforcing `MAX_CONTINUATION_STACK = 2048` frames) inside the CEK loop, and from individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`). The backward `InProgress → Guarded` edge handles non-cacheable errors from both sources.
 
 [MATERIALIZE-GUARD-NONCACHEABLE] fires when the inner thunk's materialization fails with a non-cacheable error (e.g., DepthExceeded from a builtin). The Guarded state is restored because non-cacheable errors are transient resource-bound conditions, not semantic errors. (`src/eval_materialize.rs`, in the `Guarded` arm of `force_step()`)
 
@@ -542,7 +542,7 @@ Implicit decisions in the current implementation, made explicit:
 
 **2. Confluence holds only in the pure subset.** `$include` introduces evaluation-order dependence: if file A includes file B and file B includes file A, the result depends on which is evaluated first (cycle detection fires on the second). All other tinct operations are confluent — materialization order does not affect the result. The pure subset of tinct (no `$include`) satisfies the diamond property of Ariola & Felleisen's (1997) call-by-need calculus.
 
-**3. No recursive depth limit in core evaluator.** The iterative CEK machine uses a heap-allocated continuation stack (`Vec<Cont>`), eliminating the `MAX_EVAL_DEPTH` bound that existed in the recursive evaluator. There is no depth parameter in `materialize()` or `eval()`. Individual builtins may impose their own limits (e.g., `MAX_COLLECT_SIZE` for sequence collection in `deep_materialize`), but these are domain-specific bounds, not a global recursion limit. (Note: `CoreSurfaceExpression::Sequential` and `CoreExpr::Match` currently use async recursion rather than CEK continuations; see `cek-match-sequential-rust-stack` in TODO.md. Also: `DepthExceeded` as an `ErrorKind` still exists — see [Errors](10-errors.md) §Error Categories — because individual builtins may raise it for domain-specific resource limits. The eliminated limit is `MAX_EVAL_DEPTH` from the recursive evaluator call stack.)
+**3. No recursive depth limit in core evaluator.** The iterative CEK machine uses a heap-allocated continuation stack (`Vec<Cont>`), eliminating the `MAX_EVAL_DEPTH` bound that existed in the recursive evaluator. There is no depth parameter in `materialize()` or `eval()`. Individual builtins may impose their own limits (e.g., `MAX_COLLECT_SIZE` for sequence collection in `$collect`), but these are domain-specific bounds, not a global recursion limit. (Note: `CoreSurfaceExpression::Sequential` and `CoreExpr::Match` currently use async recursion rather than CEK continuations; see `cek-match-sequential-rust-stack` in TODO.md. Also: `DepthExceeded` as an `ErrorKind` still exists — see [Errors](10-errors.md) §Error Categories — because individual builtins may raise it for domain-specific resource limits. The eliminated limit is `MAX_EVAL_DEPTH` from the recursive evaluator call stack.)
 
 **4. Finite vs productive thunk lifecycles.** Dict-entry thunks have a **finite lifecycle**: they must eventually reach Materialized or Failed. Seq tail thunks have a **productive lifecycle**: materializing a tail yields a Seq value (containing a new tail thunk) or the terminal `[]`. The state machine is identical; the liveness obligation differs. This distinction is not enforced by the type system — it is a semantic contract between the sequence constructors and the programmer (see §Productivity Obligations).
 
@@ -1248,32 +1248,40 @@ Event-source builtins (`signal-channel`, `timer-channel`, `watch-channel`) spawn
 
 ---
 
-## Deep Materialization — Implementation
+## Output Serialization
 
-The `$eval` builtin uses `deep_materialize` to recursively materialize all thunks in a value tree. This is distinct from selective materialization (which materializes only what's needed for computation) — deep materialization materializes *everything*, producing a fully-evaluated value tree suitable for serialization or comparison.
+Value serialization (e.g., JSON output, display formatting) uses the `visit_value` visitor pattern in `src/lib.rs`. This is distinct from selective materialization (which materializes only what's needed for computation) — output serialization materializes the value tree as needed during traversal, producing output suitable for external consumption.
 
-The CLI `--eval` flag was changed in sprint rv2-output-formatter-contract to perform only shallow (WHNF) materialization. When combined with `-o <formatter>`, deep materialization is handled internally by the formatter (e.g., `to-json` from `codecs/json.llt`); without `-o`, only top-level forcing is performed. The `$eval` builtin itself continues to use `deep_materialize`.
+The CLI `--eval` flag performs only shallow (WHNF) materialization. When combined with `-o <formatter>`, the formatter handles recursive traversal and materialization internally (e.g., `to-json` from `codecs/json.llt`); without `-o`, only top-level forcing is performed.
 
-**Cache data structure:** `deep_materialize` uses a stack-local `HashMap<*const Thunk, Option<Arc<Thunk>>>` created at the `deep_materialize` entry point and passed through the recursion. The cache has a dual-purpose design (in `deep_materialize_impl`):
+**Visitor pattern:** The `ValueVisitor` trait (defined in `src/lib.rs`) provides callback methods for each value variant:
 
-| Cache entry | Meaning | Purpose |
-|-------------|---------|---------|
-| `None` | Blackhole sentinel — thunk is currently being deep-materialized | Cycle detection (Launchbury 1993 blackholing) |
-| `Some(Arc<Thunk>)` | Cached result — thunk was already deep-materialized | Sharing preservation (reuse the same `Arc<Thunk>` allocation) |
+```rust
+pub trait ValueVisitor {
+    type Output;
+    
+    fn visit_int(&self, v: i64) -> Self::Output;
+    fn visit_float(&self, v: f64, span: Span) -> Result<Self::Output, Box<EvalError>>;
+    fn visit_bool(&self, v: bool) -> Self::Output;
+    fn visit_str(&self, v: &str) -> Self::Output;
+    fn visit_bytes(&self, v: &[u8]) -> Self::Output;
+    fn visit_null(&self) -> Self::Output;
+    fn visit_dict(&self, entries: Vec<(Key, Self::Output)>) -> Self::Output;
+    fn visit_seq_head(&self, head: Self::Output, span: Span) -> Result<Self::Output, Box<EvalError>>;
+    fn visit_function(&self, params: &[Param], span: Span) -> Result<Self::Output, Box<EvalError>>;
+    fn visit_builtin(&self, name: &str, module: &str, span: Span) -> Result<Self::Output, Box<EvalError>>;
+    
+    fn depth_limit_output(&self, depth: usize, span: Span) -> Option<Result<Self::Output, Box<EvalError>>>;
+}
+```
 
-**Cache lifecycle:** The cache is created per `deep_materialize` call and dropped on return. It is *not* shared across multiple top-level `deep_materialize` invocations — each call to `$eval` or CLI evaluation creates a fresh cache. The cache is global *within* a single call: all branches of a nested dict or sequence tree share the same cache instance.
+**Traversal:** The `visit_value` function recursively walks the value tree, materializing thunks as needed (via the CEK machine's `materialize()`) and dispatching to the visitor callbacks. For dict values, it materializes each entry thunk and recursively visits the result. For sequence values, it materializes the head thunk and visits it (tail is shown as `...` without forcing for display purposes, or expanded iteratively for serialization).
 
-**Cycle handling:** When a thunk pointer is encountered for the second time within the same deep materialization (cache entry is `None`), the function returns `Rc::clone(thunk)` — the original thunk, not materialized (in `deep_materialize_thunk`). This prevents infinite recursion on cyclic structures (e.g., `[x: x]` or mutual dict references). The cycle is detected at the *structure* level (same thunk pointer seen twice during traversal), not the *value* level (the thunk's own `InProgress` sentinel, which detects cycles within a single thunk's evaluation).
+**Cycle handling:** Cyclic structures are caught by the per-thunk `InProgress` sentinel during materialization, not by a global visited set in the visitor. The `InProgress` state detects cycles within a single thunk's evaluation. The visitor does not need separate cycle detection because it operates on already-materialized values (or calls `materialize()` which has its own cycle detection).
 
-**Sharing preservation:** When a thunk appears multiple times in the input value tree (e.g., `let shared = [expensive: [f]] in [a: shared  b: shared]`), the cache ensures the deep-materialized result is a *single* `Rc<Thunk>` shared by all references. Without the cache, `deep_materialize` would create independent copies for each occurrence, breaking `Rc::ptr_eq` and wasting memory. The `Rc::ptr_eq` invariant holds only within one `deep_materialize` call; two separate calls on overlapping trees produce distinct output pointers.
+**Depth limiting:** Each visitor can implement `depth_limit_output` to short-circuit traversal at a maximum depth. This prevents stack overflow on deeply-nested structures and is used by display formatters to show `...` for values beyond the depth limit.
 
-**Cache cleanup on error:** If `materialize()` or recursive `deep_materialize_impl()` fails, the cache entry is removed before propagating the error (in `deep_materialize_impl`). This prevents cache poisoning: a failed thunk leaves no stale `None` sentinel that would cause subsequent encounters to incorrectly return an unevaluated thunk.
-
-**Growth characteristics:** For large dicts, the `HashMap` grows monotonically as new thunks are encountered. The cache never shrinks during traversal — it accumulates all seen thunk pointers until the entire `deep_materialize` call completes. For a dict with 10,000 entries containing shared sub-dicts, the cache may hold thousands of entries. This is acceptable because (a) the cache lifetime is bounded by the single `deep_materialize` call, not the session, and (b) the alternative (no cache) would traverse shared structures multiple times, defeating sharing.
-
-**Comparison to selective materialization:** Regular `materialize()` has no visited set — it materializes a single thunk and memoizes the result in `ThunkState::Materialized`. Cyclic dependencies are caught by the `InProgress` sentinel *within* the thunk, not by a global traversal cache. `deep_materialize` adds a *second* layer of cycle detection at the structural level (pointer identity across the value tree) via a `HashMap<*const Thunk, Option<Rc<Thunk>>>` dual-purpose cache, orthogonal to the per-thunk `InProgress` cycle detection.
-
-**Relationship to Nix:** Nix's `forceValueDeep` (eval.cc:2264) uses a similar `std::set<const Value *> seen` for pointer-identity cycle detection. The key difference: Nix's set is visit-tracking only (all entries are pointers, not `Option<ptr>`), because Nix uses a conservative GC and doesn't need explicit sharing preservation — shared `Value*` pointers are naturally deduplicated. Tinct's `Option<Rc<Thunk>>` design combines visit-tracking (`None`) with result caching (`Some(rc)`) in a single structure.
+**Comparison to selective materialization:** Regular `materialize()` forces a single thunk to WHNF and memoizes the result. The visitor pattern extends this to full tree traversal, calling `materialize()` on each encountered thunk and recursing into the result. This is lazy-by-default: only thunks actually visited are materialized.
 
 ---
 
@@ -1292,7 +1300,7 @@ The `ValueVisitor` trait (in `src/lib.rs`) provides a visitor pattern for struct
 - **JsonVisitor** (`src/lib.rs`) — produces `serde_json::Value`, used by `visit_value` for JSON output. Rejects values that cannot be represented in JSON (NaN, Infinity, Function, Builtin, Seq). Detects array-like dicts (sequential integer keys 0..n) and serializes them as JSON arrays. Used by `run_literate_eval`/`run_literate_weave`; the CLI `-o json` formatter calls the tinct `to-json` function from `stdlib/codecs/json.llt` instead.
 - **DisplayVisitor** (`src/lib.rs:1000-1100`) — produces LLT display strings, used for error messages and debug output. Accepts all value types, rendering functions as `Function([params])` and sequences as `Seq`.
 
-**Integration with deep materialization:** Visitors assume the input `Value` is already shallow-materialized (WHNF). The `visit_value` function calls `materialize()` on each dict entry and sequence head thunk before recursing. This is a safety check — the primary forcing mechanism is `deep_materialize()`, which should be called before serialization (§Deep Materialization).
+**Integration with materialization:** The `visit_value` function calls `materialize()` on each dict entry and sequence head thunk before recursing, ensuring thunks are forced to WHNF before the visitor callbacks are invoked. This integrates naturally with the CEK machine's selective materialization — visitors only force what they traverse.
 
 ---
 
@@ -1357,7 +1365,7 @@ migrate(value, arena, thunk_table, env_table) → Rc<Thunk>:
   return rc
 ```
 
-Two-phase allocation: `Rc::new(placeholder())` is inserted into the table *before* recursing into the thunk's state. This is the standard graph-copying pattern for structures with cycles — letrec environments contain mutual references, so the table entry must exist before `migrate_env` encounters the same ThunkId transitively. The placeholder is filled via `RefCell` after the recursive migration completes. This matches how `deep_materialize` inserts into its visited set before recursing.
+Two-phase allocation: `Rc::new(placeholder())` is inserted into the table *before* recursing into the thunk's state. This is the standard graph-copying pattern for structures with cycles — letrec environments contain mutual references, so the table entry must exist before `migrate_env` encounters the same ThunkId transitively. The placeholder is filled via `RefCell` after the recursive migration completes. This is a blackhole-sentinel pattern similar to the `InProgress` state used for cycle detection during materialization.
 
 **Two translation tables** preserve identity across the migration boundary:
 
@@ -1441,10 +1449,15 @@ enum Cont {
     // eval() continuations
     DotAccessForce(Box<DotAccessForceData>),           // access field from materialized dict
     TypeAssertCheck(Box<TypeAssertCheckData>),          // validate against TypeAssert annotation
+    SequentialStep(Box<SequentialStepData>),            // process next step in Sequential expression
+    ForceAndBind(Box<ForceAndBindData>),                // force dict entry and bind to environment
+    MatchDispatch(Box<MatchDispatchData>),              // dispatch to next arm after scrutinee materialized
+    MatchGuardCheck(Box<MatchGuardCheckData>),          // check guard result for matched arm
+    PredicateCheck(Box<PredicateCheckData>),            // check is: predicate result for TypeAssert
 }
 ```
 
-All `Cont` variant payloads are boxed to keep the `Cont` enum ≤96 bytes (one cache line). The compile-time assertion at `src/eval_materialize.rs:349` enforces this.
+All `Cont` variant payloads are boxed to keep the `Cont` enum ≤96 bytes (one cache line). The compile-time assertion at `src/eval_materialize.rs:467` enforces this.
 
 The main loop is a two-register machine — `action` (what's happening now) and `stack` (what's waiting):
 
@@ -1493,13 +1506,13 @@ pub(crate) async fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<V
 
 This is **structurally determined** by the `Cont` variant on the stack, not inferred at runtime. Each `Cont` variant statically knows whether it needs a materialized value or accepts a thunk. The strictness signature table (§Selective Materialization — Formal Specification) declares per-argument strictness for builtin *inputs*; the continuation context determines strictness for builtin *outputs*. Builtins like `$if` and `$get` return lazy thunks that must not be auto-materialized when used as dict values or function arguments.
 
-**deep_materialize:** Implemented as a separate recursive function in `eval_materialize.rs`, calling `materialize()` per dict entry and seq element with cycle detection and sharing preservation via a `HashMap` cache. The target architecture expresses this as `DeepEntries` and `DeepSeqTail` continuations within the CEK loop, eliminating the separate recursive helper.
+**Output serialization:** Value serialization (e.g., JSON output) uses the `visit_value` visitor pattern in `src/lib.rs`. The `ValueVisitor` trait defines callbacks for each value variant (`visit_int`, `visit_dict`, `visit_seq_head`, etc.), and `visit_value` recursively traverses the value tree, materializing thunks as needed and dispatching to the visitor callbacks. Each output format implements the `ValueVisitor` trait. This replaced the old `deep_materialize` approach which used a separate recursive function to pre-materialize the entire value tree before serialization.
 
 **Tail-call optimization:** TCO via `Memoize`-reuse was investigated but reverted due to `EvalStackGuard` invariant violations — reusing the memoize frame caused guard bookkeeping to go out of sync, producing double-cache-writes and incorrect failure propagation. Proper TCO is tracked as the `tco-proper-fix` sprint in TODO.md. Until that sprint lands, recursive calls always push a fresh `Cont::Memoize` frame. Builtin calls likewise always push a continuation — builtins rely on `PendingBuiltin` thunk deferral for lazy behavior, not tail-call elimination.
 
 **Error stack traces:** Walk `Vec<Cont>` to reconstruct the call stack, using each variant's stored span and label to produce precise "materialized at" context for every frame. This replaces the current `EvalError::stack` vector with a continuation-derived trace.
 
-**Cont variant count:** 11 variants — `Memoize`, `PendingCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `DotAccessForce`, `TypeAssertCheck`, `SequentialStep`, `ForceAndBind`, `MatchDispatch`, `MatchGuardCheck`, `PredicateCheck`. Each variant stores only its specific continuation data (Arc pointers + Span + small fields). Frame size: ≤96 bytes per Cont (enforced by the compile-time assertion at `src/eval_materialize.rs:349`).
+**Cont variant count:** 11 variants — `Memoize`, `PendingCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `DotAccessForce`, `TypeAssertCheck`, `SequentialStep`, `ForceAndBind`, `MatchDispatch`, `MatchGuardCheck`, `PredicateCheck`. Each variant stores only its specific continuation data (Arc pointers + Span + small fields). Frame size: ≤96 bytes per Cont (enforced by the compile-time assertion at `src/eval_materialize.rs:467`).
 
 **Relationship to allocation strategy:** Arena allocation and flat environments integrate naturally with the CEK machine: `Cont` variants hold `ThunkId` handles into the arena, and the `Vec<Cont>` stack's lifetime defines the arena's lifetime scope.
 
@@ -1512,14 +1525,11 @@ This is **structurally determined** by the `Cont` variant on the stack, not infe
 ```rust
 pub struct FnAnnotation {
     pub doc: Option<String>,              // extracted from fn@[doc: "..."] at eval_fn time
-    pub return_ann: Option<Annotation>,   // the fn-level Annotation (return type, constraints)
-    pub constraints: Vec<Constraint>,     // parsed from return_ann at creation time
-    pub source_file: Option<PathBuf>,     // file path — from EvalConfig.current_file
-    pub source_span: Span,               // always available at eval_fn time
+    pub source_file: Option<String>,      // file path — from EvalConfig.current_file
 }
 ```
 
-Wrapped as `Option<Box<FnAnnotation>>` — `None` for unannotated functions (zero overhead). `doc` is extracted from `return_ann` at function creation if `return_ann` is a `PropertyDict` with a `"doc"` entry. `source_file` is threaded from `EvalConfig.current_file`, set via `with_base_dir_and_path` at `src/builtins_meta.rs:1152`.
+Wrapped as `Option<Box<FnAnnotation>>` — `None` for unannotated functions (zero overhead). `doc` is extracted from the function's annotation metadata dict at function creation if present. `source_file` is threaded from `EvalConfig.current_file`.
 
 ### `ast-of` Builtin
 
@@ -1606,17 +1616,18 @@ Thunks are allocated in a `ThunkArena` (global bulk deallocation boundary) but s
 
 **Precedent:** Jsonnet's VM uses 22 `FrameKind` variants with a value register (production-tested at Google). Nickel uses an iterative stack machine with `OpFirst`/`OpSecond` continuations (production Rust). Both are defunctionalized CPS machines. The theoretical foundation is Felleisen & Friedman's CEK machine.
 
-**Recursive call sites being converted:**
+**Iterative evaluation call patterns:**
 
-| Current recursive call | Becomes |
+| Operation | CEK encoding |
 |----------------------|---------|
-| `eval()` → `eval()` (TypeAssert, desugar, defaults) | `Action::Eval` + `Cont::TypeAssertCheck` etc. |
-| `eval_call()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::CallForceFunc` |
-| `eval_dot_access()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::DotAccessForce` |
-| `eval_dict()` → computed key materialization | `Action::Eval` + `Cont::DictBuildKey` |
-| `eval_surface_document()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::DocumentScope` (`%` bound as `Unevaluated` thunk, never materialized) |
-| `bind_args_thunks()` → default eval | `Action::Eval` + `Cont::BindArgDefault` |
-| `materialize()` → `eval()` + `materialize()` | `Action::Eval` + `Cont::Memoize` |
-| `materialize()` → builtin call + `materialize()` | Builtin dispatch + `Cont::PendingBuiltinForceResult` |
-| `materialize()` → `materialize()` (PendingCall) | `Action::Materialize` + `Cont::PendingCallForceFunc` → `Cont::PendingCallForceResult` |
-| `deep_materialize()` → `materialize()` + recurse | `Action::Materialize` + `Cont::DeepEntries` / `Cont::DeepSeqTail` (within CEK loop, no separate helper) |
+| TypeAssert validation | `Action::EvalCore` (inner expr) + `Cont::TypeAssertCheck` |
+| Dot access (field extraction) | `Action::Materialize` (target dict) + `Cont::DotAccessForce` |
+| Function/builtin call dispatch | `Action::Materialize` (callee) + `Cont::PendingCallDispatch` |
+| Sequential expression chain | `Action::EvalCore` (current expr) + `Cont::SequentialStep` (for next) |
+| Match expression dispatch | `Action::Materialize` (scrutinee) + `Cont::MatchDispatch` |
+| Match guard check | `Action::EvalCore` (guard expr) + `Cont::MatchGuardCheck` |
+| Guarded thunk validation | `Action::Materialize` (inner thunk) + `Cont::GuardedValidate` |
+| Builtin strict argument forcing | `Action::Materialize` (arg thunk) + `Cont::BuiltinForceArg` |
+| Sequential binding force | `Action::Materialize` (entry value) + `Cont::ForceAndBind` |
+| TypeAssert predicate check | `Action::EvalCore` (predicate) + `Cont::PredicateCheck` |
+| Thunk memoization | `Action::Materialize` (result) + `Cont::Memoize` |

@@ -8558,6 +8558,10 @@ Root cause: the parser error-recovery mechanism converts all `push_value` errors
 - [x] Fix test harness to check recovered errors in ParseOutput instead of requiring parse() to return Err (f5994c9)
 - [x] Verify `test_invalid_corpus` passes after fix
 
+### doc-08-rv2-stale-evaluator: doc/08 Iterative Evaluator section stale after runtime-v2 ✅ DONE (2026-05-27)
+
+Fixed all 11 stale items in doc/08-evaluation.md: updated Cont enum from 6→11 variants, replaced §Deep Materialization with §Output Serialization (visit_value), fixed all non-existent Cont variant references, updated compile-time assertion line number, fixed MAX_COLLECT_SIZE references, updated FnAnnotation struct pseudocode.
+
 ### bare-include-scope: Bare [include ...] promotes bindings into scope ✅ DONE (2026-05-27)
 
 Bare include now promotes dict result bindings into scope. Changed builtins_meta.rs (builtin_eval) and eval_pipeline.rs (eval_surface_document) to create child envs from dict/overlay results of intermediate expressions. Non-dict results silently skipped. Change 3 (shared function extraction) deferred to reduce risk.

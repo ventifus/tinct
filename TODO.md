@@ -255,17 +255,17 @@ Delete RuntimeTypeCheck entirely and remove all special-case code smells identif
 - [x] Fix line 1419 assertion line number → src/eval_materialize.rs:349
 
 **Round 2 staleness (2026-05-25, computer-scientist):** The fixes above partially applied but the doc has drifted again:
-- [ ] Line 1408-1419: Cont enum listing shows 6 variants — actual is **11**: add SequentialStep, ForceAndBind, MatchDispatch, MatchGuardCheck, PredicateCheck
-- [ ] Line 1477: "6 variants" count claim → update to "11 variants"
-- [ ] Lines 1247-1272: §Deep Materialization section describes `deep_materialize` as an active function — **deleted entirely** (no references in src/). Replace with §Output Serialization describing `visit_value` visitor pattern in `src/lib.rs:657`
-- [ ] Line 1471: "deep_materialize: Implemented as a separate recursive function in eval_materialize.rs" — deleted; replace with note about visit_value
-- [ ] Line 1597: Recursive call table row "deep_materialize() → ... Cont::DeepEntries / Cont::DeepSeqTail" — neither implemented. Remove row.
-- [ ] Line 1467: References `Cont::DictBuildValue` and `Cont::BindArgDefault` — do not exist. Remove.
-- [ ] Line 1475: References `Cont::CallForceFunc` — does not exist (actual: PendingCallDispatch). Fix.
-- [ ] Line 1596: References `Cont::PendingCallForceFunc → Cont::PendingCallForceResult` — neither exists. Fix.
-- [ ] Line 1422: Compile-time assertion cited at "src/eval_materialize.rs:349" — actual line is **443**. Fix.
-- [ ] Line 429: References "MAX_COLLECT_SIZE in deep_materialize" — deep_materialize deleted. Fix.
-- [ ] Lines 1488-1494: FnAnnotation struct shows return_ann, constraints, source_span — actual struct (value.rs:29-34) has only doc and source_file. Update pseudocode.
+- [x] Line 1408-1419: Cont enum listing shows 6 variants — actual is **11**: add SequentialStep, ForceAndBind, MatchDispatch, MatchGuardCheck, PredicateCheck
+- [x] Line 1477: "6 variants" count claim → update to "11 variants"
+- [x] Lines 1247-1272: §Deep Materialization section describes `deep_materialize` as an active function — **deleted entirely** (no references in src/). Replace with §Output Serialization describing `visit_value` visitor pattern in `src/lib.rs:657`
+- [x] Line 1471: "deep_materialize: Implemented as a separate recursive function in eval_materialize.rs" — deleted; replace with note about visit_value
+- [x] Line 1597: Recursive call table row "deep_materialize() → ... Cont::DeepEntries / Cont::DeepSeqTail" — neither implemented. Remove row.
+- [x] Line 1467: References `Cont::DictBuildValue` and `Cont::BindArgDefault` — do not exist. Remove.
+- [x] Line 1475: References `Cont::CallForceFunc` — does not exist (actual: PendingCallDispatch). Fix.
+- [x] Line 1596: References `Cont::PendingCallForceFunc → Cont::PendingCallForceResult` — neither exists. Fix.
+- [x] Line 1422: Compile-time assertion cited at "src/eval_materialize.rs:349" — actual line is **443**. Fix.
+- [x] Line 429: References "MAX_COLLECT_SIZE in deep_materialize" — deep_materialize deleted. Fix.
+- [x] Lines 1488-1494: FnAnnotation struct shows return_ann, constraints, source_span — actual struct (value.rs:29-34) has only doc and source_file. Update pseudocode.
 - **File:** `doc/08-evaluation.md`
 
 ### fn-annotation-callability: @Fn bare annotation resolves to Type::Unknown [Major]
