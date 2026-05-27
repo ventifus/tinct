@@ -11728,3 +11728,15 @@ Added resolved_type to CoreExpr::RuntimeTypeCheck. Added expects_resolved side t
 - [x] Use resolved type at force time (is_consistent_subtype)
 - [x] Handle eval-time macros (fallback to string comparison when resolved_type is None)
 - [x] Corpus test for pipeline expects: with resolved type
+
+### runtime-typecheck-deletion: Delete RuntimeTypeCheck and cleanup ✅ DONE (2026-05-27)
+
+Deleted CoreExpr::RuntimeTypeCheck variant entirely. Converted all construction sites to TypeAssert (lower.rs, eval_pipeline.rs). Deleted string comparison fallback (~105 lines). Deleted annotation_has_structural_fields and ANNOTATION_META_KEYS (dead code). All type validation now flows through is_consistent_subtype. check_open/check_tls_layer/check_get kept (have active callers).
+
+- [x] Delete CoreExpr::RuntimeTypeCheck variant from ast.rs
+- [x] Delete RuntimeTypeCheck string comparison fallback path
+- [x] Convert all RuntimeTypeCheck construction sites to TypeAssert
+- [x] Document type_name() as error-display-only
+- [x] Remove dead annotation_has_structural_fields + ANNOTATION_META_KEYS
+- [x] Verify zero RuntimeTypeCheck references in src/
+- [x] Update doc/15-ast.md

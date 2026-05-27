@@ -326,7 +326,7 @@ fn typecheck_surface_document(
             &mut None,
         ) {
             Ok(expected_type) => {
-                // Store resolved type for eval_pipeline to use in RuntimeTypeCheck
+                // Store resolved type for eval_pipeline to use in TypeAssert
                 state
                     .expects_resolved
                     .insert(expects_ann.span, expected_type.clone());
@@ -2336,7 +2336,7 @@ pub(crate) fn infer_surface_expr(
                 type_map,
             );
             // Populate TypeAnnotationTable so lower.rs can produce CoreExpr::TypeAssert
-            // with the statically-resolved type, instead of falling back to RuntimeTypeCheck.
+            // with the statically-resolved type (or Type::Unknown for errors/macros).
             if let Ok(ref ty) = result {
                 let id = crate::ast::node_id(node);
                 state.type_annotation_table.insert(id, ty.clone());

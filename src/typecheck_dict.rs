@@ -452,7 +452,7 @@ pub(crate) fn infer_dict(
                         // - unify(Error, T) succeeds silently (prevents cascade errors)
                         // - is_subtype(Error, _) = false (TypeAsserts correctly reject)
                         // - T010 "inferred Unknown" diagnostic doesn't fire (Error ≠ Unknown)
-                        // - lower.rs emits RuntimeTypeCheck (not broken TypeAssert nodes)
+                        // - lower.rs emits TypeAssert with Type::Unknown (accepts all values)
                         field_types.insert(name.clone(), Type::Error);
                         state.failed_bindings.insert(name.clone(), entry.span);
                     }

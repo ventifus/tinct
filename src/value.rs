@@ -767,7 +767,10 @@ pub fn bytes_val(data: &[u8]) -> Value {
 }
 
 impl Value {
-    /// Returns the human-readable type name for error messages.
+    /// Returns a human-readable type name for error messages and diagnostics.
+    ///
+    /// **Error display only** — not for type checking. Runtime type validation uses
+    /// `is_consistent_subtype(ground_type_of(value), expected_type)`, not string comparison.
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Int(_) => "Int",

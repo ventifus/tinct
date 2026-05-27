@@ -165,14 +165,7 @@ pub enum CoreExpr {
     TypeAssert {
         annotation: Spanned<Annotation>,
         expr: Arc<Spanned<CoreExpr>>,
-        resolved_type: Type,
-    },
-    // TypeAssert for nodes absent from TypeAnnotationTable (macro-synthesized, bypassed typechecking).
-    // Falls back to default if present, raises error otherwise.
-    RuntimeTypeCheck {
-        annotation: Spanned<Annotation>,
-        expr: Arc<Spanned<CoreExpr>>,
-        default: Option<Arc<Spanned<CoreExpr>>>,
+        resolved_type: Type,  // Type::Unknown for macro-synthesized/error cases
     },
     Annotated {
         name: String,

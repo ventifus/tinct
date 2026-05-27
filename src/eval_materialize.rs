@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::IndexMap;
 
-use crate::ast::{Annotation, CoreExpr, Span, Spanned, SurfaceExpression};
+use crate::ast::{Annotation, CoreExpr, Span, Spanned};
 use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
-    annotation_has_structural_fields, as_record_row_merged, eval_core_expr_pub, format_field_path,
+    as_record_row_merged, eval_core_expr_pub, format_field_path,
     format_type_for_assert, match_pattern, materialize, maybe_wrap_guard, validate_and_wrap_record,
     value_matches_type, EvalContext, DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
 };
@@ -286,7 +286,7 @@ pub(crate) struct GuardedValidateData {
 /// zero-cost Arc<Spanned<CoreExpr>> clone.
 pub(crate) struct TypeAssertCheckData {
     pub(crate) annotation: Box<Spanned<Annotation>>,
-    pub(crate) resolved: Box<Option<Type>>,
+    pub(crate) resolved: Box<Type>,
     pub(crate) expr_span: Span,
     pub(crate) thunk_span: Span,
     pub(crate) env: Arc<RwLock<Environment>>,
@@ -1015,73 +1015,6 @@ pub(crate) async fn force_step(
             })));
             stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
                 annotation: Box::new(annotation.clone()),
-                resolved: Box::new(Some(resolved_type.clone())),
-                expr_span: lowered.span,
-                thunk_span: inner_span,
-                env,
-                ctx: Arc::clone(&thunk_ctx),
-            })));
-            return Action::Materialize {
-                thunk: inner_thunk,
-                mat_span: Some(lowered.span),
-            };
-        }
-
-        // Handle CoreExpr::RuntimeTypeCheck inline after lowering.
-        if let crate::ast::CoreExpr::RuntimeTypeCheck {
-            annotation,
-            expr: inner,
-            default,
-            resolved_type,
-        } = &lowered.node
-        {
-            let inner_thunk = match crate::eval::eval_core_expr_pub(inner, &env, &thunk_ctx).await {
-                Ok(t) => t,
-                Err(e) => {
-                    let decorated = attach_materialization_context(
-                        e,
-                        mat_span.as_ref(),
-                        origin.as_deref(),
-                        thunk_span,
-                    );
-                    if decorated.kind.is_cacheable() {
-                        thunk.cache_failure_once(&decorated);
-                    } else {
-                        restore.restore(thunk);
-                    }
-                    return Action::Continue(Err(decorated));
-                }
-            };
-            // Mirror the has_type logic from the CoreExpr::TypeAssert inline handler.
-            let has_type = match &annotation.node {
-                crate::ast::Annotation::Simple(_) => true,
-                crate::ast::Annotation::PropertyDict(_) => {
-                    annotation.node.get_property("type").is_some()
-                        || annotation
-                            .node
-                            .get_property(crate::eval::DEFAULT_ANNOTATION_KEY)
-                            .is_some()
-                        || annotation_has_structural_fields(&annotation.node)
-                }
-                crate::ast::Annotation::Annotated(_, _) => true,
-            };
-            let inner_span = inner_thunk.span;
-            stack.push(Cont::Memoize(Box::new(MemoizeData {
-                thunk: Arc::clone(thunk),
-                origin,
-                thunk_span,
-                mat_span,
-                restore: Some(restore),
-                ctx: Arc::clone(&thunk_ctx),
-            })));
-            if !has_type && default.is_none() {
-                return Action::Materialize {
-                    thunk: inner_thunk,
-                    mat_span,
-                };
-            }
-            stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
-                annotation: Box::new(annotation.clone()),
                 resolved: Box::new(resolved_type.clone()),
                 expr_span: lowered.span,
                 thunk_span: inner_span,
@@ -1246,81 +1179,6 @@ pub(crate) async fn force_step(
                 }),
                 ctx: Arc::clone(&thunk_ctx),
             })));
-            stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
-                annotation: Box::new(annotation.clone()),
-                resolved: Box::new(Some(resolved_type.clone())),
-                expr_span: core_expr.span,
-                thunk_span: inner_span,
-                env,
-                ctx: Arc::clone(&thunk_ctx),
-            })));
-            return Action::Materialize {
-                thunk: inner_thunk,
-                mat_span: Some(core_expr.span),
-            };
-        }
-
-        // Handle CoreExpr::RuntimeTypeCheck inline — same loop risk as TypeAssert.
-        // RuntimeTypeCheck is for Expr::TypeAssert nodes with no resolved_type (not typechecked
-        // or macro-synthesized). Uses the same has_type logic as the Expr::TypeAssert handler.
-        if let crate::ast::CoreExpr::RuntimeTypeCheck {
-            annotation,
-            expr: inner,
-            default,
-            resolved_type,
-        } = &core_expr.node
-        {
-            // Evaluate the inner expression as a CoreExpr thunk.
-            let inner_thunk = match eval_core_expr_pub(inner, &env, &thunk_ctx).await {
-                Ok(t) => t,
-                Err(e) => {
-                    let decorated = attach_materialization_context(
-                        e,
-                        mat_span.as_ref(),
-                        origin.as_deref(),
-                        thunk_span,
-                    );
-                    if decorated.kind.is_cacheable() {
-                        thunk.cache_failure_once(&decorated);
-                    } else {
-                        thunk.restore_unevaluated(restore);
-                    }
-                    return Action::Continue(Err(decorated));
-                }
-            };
-            // Mirror the has_type logic from the CoreExpr::TypeAssert inline handler.
-            let has_type = match &annotation.node {
-                crate::ast::Annotation::Simple(_) => true,
-                crate::ast::Annotation::PropertyDict(_) => {
-                    annotation.node.get_property("type").is_some()
-                        || annotation
-                            .node
-                            .get_property(crate::eval::DEFAULT_ANNOTATION_KEY)
-                            .is_some()
-                        || annotation_has_structural_fields(&annotation.node)
-                }
-                crate::ast::Annotation::Annotated(_, _) => true,
-            };
-            let inner_span = inner_thunk.span;
-            stack.push(Cont::Memoize(Box::new(MemoizeData {
-                thunk: Arc::clone(thunk),
-                origin,
-                thunk_span,
-                mat_span,
-                restore: Some(RestoreState::CoreExpr {
-                    expr: Arc::clone(&core_expr),
-                    env: Arc::clone(&env),
-                    ctx: Arc::clone(&thunk_ctx),
-                }),
-                ctx: Arc::clone(&thunk_ctx),
-            })));
-            if !has_type && default.is_none() {
-                // No type check and no default — pass through.
-                return Action::Materialize {
-                    thunk: inner_thunk,
-                    mat_span,
-                };
-            }
             stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
                 annotation: Box::new(annotation.clone()),
                 resolved: Box::new(resolved_type.clone()),
@@ -2717,117 +2575,77 @@ pub(crate) async fn apply_cont(
                 env,
                 ctx,
             } = *data;
+            let expected = *resolved;
             match result {
                 Err(e) => Action::Continue(Err(e)),
-                Ok(value) => match *resolved {
-                    Some(expected) => {
-                        // For Record types and Intersection-of-Records, apply proxy contract wrapping.
-                        // as_record_row_merged merges all required fields from all members into a Row.
-                        if let Some(row) = as_record_row_merged(&expected) {
-                            // Flatten Overlay to Dict before record type assertion.
-                            let value = match value {
-                                Value::Overlay(l, r) => {
-                                    match flatten_overlay(&l, &r, "type assert", &ctx, expr_span) {
-                                        Ok(map) => Value::Dict(map),
-                                        Err(e) => return Action::Continue(Err(e)),
-                                    }
+                Ok(value) => {
+                    // For Record types and Intersection-of-Records, apply proxy contract wrapping.
+                    // as_record_row_merged merges all required fields from all members into a Row.
+                    if let Some(row) = as_record_row_merged(&expected) {
+                        // Flatten Overlay to Dict before record type assertion.
+                        let value = match value {
+                            Value::Overlay(l, r) => {
+                                match flatten_overlay(&l, &r, "type assert", &ctx, expr_span) {
+                                    Ok(map) => Value::Dict(map),
+                                    Err(e) => return Action::Continue(Err(e)),
                                 }
-                                other => other,
-                            };
-                            if let Value::Dict(entries) = &value {
-                                let default_opt = annotation
-                                    .node
-                                    .get_property(DEFAULT_ANNOTATION_KEY)
-                                    .map(|node| {
-                                        (
-                                            Arc::new(crate::lower::lower(
-                                                node,
-                                                crate::ast::empty_resolution_table(),
-                                                crate::ast::empty_type_annotation_table(),
-                                            )),
-                                            Arc::clone(&env),
-                                        )
-                                    });
-                                // Construct BlameLabel for TypeAssert boundary
-                                let blame_label = Some(crate::error::BlameLabel {
-                                    origin_span: thunk_span,  // where the value was produced
-                                    boundary_span: expr_span, // where the TypeAssert annotation is
-                                    polarity: crate::error::BlameParity::Positive,
-                                });
-                                match validate_and_wrap_record(
-                                    entries,
-                                    row.as_ref(),
-                                    &mut vec![],
-                                    expr_span,
-                                    thunk_span,
-                                    &ctx,
-                                    default_opt.clone(),
-                                    blame_label,
-                                ) {
-                                    Ok(new_entries) => {
-                                        Action::Continue(Ok(Value::Dict(new_entries)))
-                                    }
-                                    Err(err) => {
-                                        if let Some((default, env)) = default_opt {
-                                            // Evaluate default expression iteratively.
-                                            // The result will flow to the next continuation on the stack.
-                                            Action::EvalCore {
-                                                expr: default,
-                                                env,
-                                                ctx: Arc::clone(&ctx),
-                                            }
-                                        } else {
-                                            Action::Continue(Err(err))
-                                        }
-                                    }
-                                }
-                            } else {
-                                if let Some(default_node) =
-                                    annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                                {
-                                    // Evaluate default expression iteratively.
-                                    // The result will flow to the next continuation on the stack.
-                                    Action::EvalCore {
-                                        expr: Arc::new(crate::lower::lower(
-                                            default_node,
+                            }
+                            other => other,
+                        };
+                        if let Value::Dict(entries) = &value {
+                            let default_opt = annotation
+                                .node
+                                .get_property(DEFAULT_ANNOTATION_KEY)
+                                .map(|node| {
+                                    (
+                                        Arc::new(crate::lower::lower(
+                                            node,
                                             crate::ast::empty_resolution_table(),
                                             crate::ast::empty_type_annotation_table(),
                                         )),
-                                        env,
-                                        ctx: Arc::clone(&ctx),
-                                    }
-                                } else {
-                                    let mut err = EvalError::type_assert_failed(
-                                        &format_type_for_assert(&expected),
-                                        value.type_name(),
-                                        thunk_span,
+                                        Arc::clone(&env),
                                     )
-                                    .with_materialization_span(expr_span);
-                                    if thunk_span != expr_span {
-                                        err = err
-                                            .with_secondary_span(thunk_span, "value produced here");
+                                });
+                            // Construct BlameLabel for TypeAssert boundary
+                            let blame_label = Some(crate::error::BlameLabel {
+                                origin_span: thunk_span,  // where the value was produced
+                                boundary_span: expr_span, // where the TypeAssert annotation is
+                                polarity: crate::error::BlameParity::Positive,
+                            });
+                            match validate_and_wrap_record(
+                                entries,
+                                row.as_ref(),
+                                &mut vec![],
+                                expr_span,
+                                thunk_span,
+                                &ctx,
+                                default_opt.clone(),
+                                blame_label,
+                            ) {
+                                Ok(new_entries) => Action::Continue(Ok(Value::Dict(new_entries))),
+                                Err(err) => {
+                                    if let Some((default, env)) = default_opt {
+                                        // Evaluate default expression iteratively.
+                                        // The result will flow to the next continuation on the stack.
+                                        Action::EvalCore {
+                                            expr: default,
+                                            env,
+                                            ctx: Arc::clone(&ctx),
+                                        }
+                                    } else {
+                                        Action::Continue(Err(err))
                                     }
-                                    Action::Continue(Err(err.into()))
                                 }
                             }
-                        } else if value_matches_type(&value, &expected) {
-                            // Type matches — check if there's an is: predicate to evaluate
-                            let is_predicate =
-                                annotation.node.get_property(IS_ANNOTATION_KEY).cloned();
-                            if let Some(predicate_node) = is_predicate {
-                                // Push a PredicateCheck continuation to handle the predicate result
-                                stack.push(Cont::PredicateCheck(Box::new(PredicateCheckData {
-                                    value: value.clone(),
-                                    annotation,
-                                    expr_span,
-                                    thunk_span,
-                                    env: Arc::clone(&env),
-                                    ctx: Arc::clone(&ctx),
-                                })));
-                                // Evaluate the predicate expression
+                        } else {
+                            if let Some(default_node) =
+                                annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                            {
+                                // Evaluate default expression iteratively.
+                                // The result will flow to the next continuation on the stack.
                                 Action::EvalCore {
                                     expr: Arc::new(crate::lower::lower(
-                                        &predicate_node,
+                                        default_node,
                                         crate::ast::empty_resolution_table(),
                                         crate::ast::empty_type_annotation_table(),
                                     )),
@@ -2835,17 +2653,33 @@ pub(crate) async fn apply_cont(
                                     ctx: Arc::clone(&ctx),
                                 }
                             } else {
-                                // No is: predicate — type check passed, return value
-                                Action::Continue(Ok(value))
+                                let mut err = EvalError::type_assert_failed(
+                                    &format_type_for_assert(&expected),
+                                    value.type_name(),
+                                    thunk_span,
+                                )
+                                .with_materialization_span(expr_span);
+                                if thunk_span != expr_span {
+                                    err =
+                                        err.with_secondary_span(thunk_span, "value produced here");
+                                }
+                                Action::Continue(Err(err.into()))
                             }
-                        } else if let Some(default_node) =
-                            annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                        {
-                            // Evaluate default expression iteratively.
-                            // The result will flow to the next continuation on the stack.
+                        }
+                    } else if value_matches_type(&value, &expected) {
+                        let is_predicate = annotation.node.get_property(IS_ANNOTATION_KEY).cloned();
+                        if let Some(predicate_node) = is_predicate {
+                            stack.push(Cont::PredicateCheck(Box::new(PredicateCheckData {
+                                value: value.clone(),
+                                annotation,
+                                expr_span,
+                                thunk_span,
+                                env: Arc::clone(&env),
+                                ctx: Arc::clone(&ctx),
+                            })));
                             Action::EvalCore {
                                 expr: Arc::new(crate::lower::lower(
-                                    default_node,
+                                    &predicate_node,
                                     crate::ast::empty_resolution_table(),
                                     crate::ast::empty_type_annotation_table(),
                                 )),
@@ -2853,124 +2687,33 @@ pub(crate) async fn apply_cont(
                                 ctx: Arc::clone(&ctx),
                             }
                         } else {
-                            let mut err = EvalError::type_assert_failed(
-                                &format_type_for_assert(&expected),
-                                value.type_name(),
-                                thunk_span,
-                            )
-                            .with_materialization_span(expr_span);
-                            if thunk_span != expr_span {
-                                err = err.with_secondary_span(thunk_span, "value produced here");
-                            }
-                            Action::Continue(Err(err.into()))
+                            Action::Continue(Ok(value))
                         }
-                    }
-                    None => {
-                        // --no-typecheck FALLBACK (nominal validation)
-                        // Per doc/07-type-extensions.md §--no-typecheck mode:
-                        // - Primitive type assertions still work (nominal string comparison)
-                        // - Structural type assertions degrade to tag-only checks (Dict tag)
-                        let expected_name: Option<String> = match &annotation.node {
-                            Annotation::Simple(name) => Some(name.clone()),
-                            Annotation::PropertyDict(_) => annotation
-                                .node
-                                .get_property("type")
-                                .and_then(|type_node| match &type_node.expr {
-                                    SurfaceExpression::Str(s) => Some(s.clone()),
-                                    // Type names written as bare identifiers (e.g., `type: Number`)
-                                    // are parsed as VarRef, not Str. Extract the name directly.
-                                    SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                                    _ => None,
-                                }),
-                            Annotation::Annotated(name, _) => Some(name.clone()),
-                        };
-                        if let Some(expected) = expected_name {
-                            let actual = value.type_name();
-                            let matches = if expected == "Number" {
-                                actual == "Int"
-                                    || actual == "Float"
-                                    || actual == "Decimal"
-                                    || actual == "BigInt"
-                            } else if expected == "Unknown"
-                                || expected == "Top"
-                                || expected == "Any"
-                            {
-                                // Unknown, Top, and Any accept all values (gradual typing escape hatch)
-                                true
-                            } else if expected == "Fn" {
-                                // Fn matches both Function and Builtin
-                                actual == "Function" || actual == "Builtin"
-                            } else if expected == "Handle" {
-                                // Handle matches both Handle and WriteHandle
-                                actual == "Handle" || actual == "WriteHandle"
-                            } else if expected == "Null" {
-                                // Null is represented as an empty Dict at runtime
-                                actual == "Dict"
-                                    && matches!(value, Value::Dict(ref entries) if entries.is_empty())
-                            } else {
-                                actual == expected.as_str()
-                            };
-                            if !matches {
-                                if let Some(default_node) =
-                                    annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                                {
-                                    // Evaluate default expression iteratively.
-                                    // The result will flow to the next continuation on the stack.
-                                    return Action::EvalCore {
-                                        expr: Arc::new(crate::lower::lower(
-                                            default_node,
-                                            crate::ast::empty_resolution_table(),
-                                            crate::ast::empty_type_annotation_table(),
-                                        )),
-                                        env,
-                                        ctx: Arc::clone(&ctx),
-                                    };
-                                }
-                                let mut err =
-                                    EvalError::type_assert_failed(&expected, actual, thunk_span)
-                                        .with_materialization_span(expr_span);
-                                if thunk_span != expr_span {
-                                    err =
-                                        err.with_secondary_span(thunk_span, "value produced here");
-                                }
-                                return Action::Continue(Err(err.into()));
-                            }
-                        } else if annotation_has_structural_fields(&annotation.node) {
-                            // Structural record annotation without resolved_type — degrade
-                            // to Dict tag check. Without elaboration we cannot validate
-                            // field names or types, but we can verify the value is a Dict
-                            // (the carrier type for records). This closes the elaboration
-                            // gap for eval-only mode (doc/07 §--no-typecheck mode).
-                            if !matches!(value, Value::Dict(_) | Value::Overlay(..)) {
-                                let actual = value.type_name();
-                                if let Some(default_node) =
-                                    annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
-                                {
-                                    // Evaluate default expression iteratively.
-                                    // The result will flow to the next continuation on the stack.
-                                    return Action::EvalCore {
-                                        expr: Arc::new(crate::lower::lower(
-                                            default_node,
-                                            crate::ast::empty_resolution_table(),
-                                            crate::ast::empty_type_annotation_table(),
-                                        )),
-                                        env,
-                                        ctx: Arc::clone(&ctx),
-                                    };
-                                }
-                                let mut err =
-                                    EvalError::type_assert_failed("Record", actual, thunk_span)
-                                        .with_materialization_span(expr_span);
-                                if thunk_span != expr_span {
-                                    err =
-                                        err.with_secondary_span(thunk_span, "value produced here");
-                                }
-                                return Action::Continue(Err(err.into()));
-                            }
+                    } else if let Some(default_node) =
+                        annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                    {
+                        Action::EvalCore {
+                            expr: Arc::new(crate::lower::lower(
+                                default_node,
+                                crate::ast::empty_resolution_table(),
+                                crate::ast::empty_type_annotation_table(),
+                            )),
+                            env,
+                            ctx: Arc::clone(&ctx),
                         }
-                        Action::Continue(Ok(value))
+                    } else {
+                        let mut err = EvalError::type_assert_failed(
+                            &format_type_for_assert(&expected),
+                            value.type_name(),
+                            thunk_span,
+                        )
+                        .with_materialization_span(expr_span);
+                        if thunk_span != expr_span {
+                            err = err.with_secondary_span(thunk_span, "value produced here");
+                        }
+                        Action::Continue(Err(err.into()))
                     }
-                },
+                }
             }
         }
         Cont::SequentialStep(data) => {

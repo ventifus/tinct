@@ -28,7 +28,7 @@ use indexmap::IndexMap;
 
 use crate::arena::{EnvArena, ThunkArena, ThunkId};
 use crate::ast::{
-    Annotation, CoreExpr, LiteralPattern, Param, Pattern, Span, Spanned, SurfaceExpression,
+    CoreExpr, LiteralPattern, Param, Pattern, Span, Spanned,
 };
 use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
@@ -59,8 +59,6 @@ type ValuesEqualFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Eval
 /// is metadata-only and has no type to validate. A PropertyDict with at least one
 /// non-meta-key entry (e.g., `[@[name: String age: Int] $x]`) is a structural record
 /// annotation that should enforce at minimum a Dict tag check when `resolved_type` is `None`.
-const ANNOTATION_META_KEYS: &[&str] = &["type", "default", "is", "repr"];
-
 /// Formats a field path for TypeAssert error display. Each segment is separately
 /// backtick-quoted: `user`.`address`.`zip`. Not for reconstruction — display only.
 pub(crate) fn format_field_path(field_path: &[String]) -> String {
@@ -71,35 +69,6 @@ pub(crate) fn format_field_path(field_path: &[String]) -> String {
         .join(".")
 }
 
-/// Check whether a PropertyDict annotation contains structural field declarations.
-///
-/// Returns `true` if the annotation has at least one entry with a string key that
-/// is NOT a reserved annotation meta-key ("type", "default"). This indicates the
-/// annotation describes a record structure (e.g., `[@[name: String age: Int] $x]`).
-///
-/// Used by the `--no-typecheck` fallback to distinguish structural record annotations
-/// (which should enforce a Dict tag check per doc/07-type-extensions.md §--no-typecheck mode)
-/// from metadata-only annotations (which have nothing to validate against).
-///
-/// **Parser guarantee:** PropertyDict entries always have `SurfaceExpression::Str` keys; non-`SurfaceExpression::Str`
-/// keys are treated as non-structural (the `_ => None` arm will never match in well-formed ASTs).
-pub(crate) fn annotation_has_structural_fields(annotation: &Annotation) -> bool {
-    match annotation {
-        Annotation::Simple(_) => false,
-        Annotation::PropertyDict(entries) => entries.iter().any(|entry| {
-            entry
-                .node
-                .key
-                .as_ref()
-                .and_then(|k| match &k.expr {
-                    SurfaceExpression::Str(name) => Some(name.as_str()),
-                    _ => None,
-                })
-                .is_some_and(|name| !ANNOTATION_META_KEYS.contains(&name))
-        }),
-        Annotation::Annotated(_, _) => false,
-    }
-}
 
 /// Immutable session configuration shared across evaluation.
 #[derive(Debug)]
@@ -1580,15 +1549,6 @@ fn eval_core_expr<'a>(
             // handles CoreExpr::TypeAssert inline, pushing a TypeAssertCheck continuation.
             // Wrapping here prevents direct recursion back through eval_core_expr.
             CoreExpr::TypeAssert { .. } => Ok(Arc::new(Thunk::new_unevaluated_core(
-                Arc::new(expr.clone()),
-                Arc::clone(env),
-                Arc::clone(ctx),
-                expr.span,
-            ))),
-
-            // RuntimeTypeCheck: same fix as TypeAssert — wrap as CoreExpr thunk, defer
-            // to force_step → eval_core_expr_pub → Expr::TypeAssert CEK path.
-            CoreExpr::RuntimeTypeCheck { .. } => Ok(Arc::new(Thunk::new_unevaluated_core(
                 Arc::new(expr.clone()),
                 Arc::clone(env),
                 Arc::clone(ctx),

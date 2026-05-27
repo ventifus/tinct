@@ -6,8 +6,7 @@
 //! Key transformations:
 //! - `VarRef` → `Var` (resolved de Bruijn coordinates) or `FreeVar` (unresolvable)
 //! - `Pipe { lhs, rhs }` → `Call { func: rhs, args: [lhs], implied: true }` (syntactic sugar)
-//! - `TypeAssert` → `TypeAssert` (with resolved_type from TypeAnnotationTable) or
-//!   `RuntimeTypeCheck` (for macro-synthesized nodes absent from the table)
+//! - `TypeAssert` → `TypeAssert` (with resolved_type from TypeAnnotationTable or Type::Unknown)
 //! - All other variants: structural lowering, recursing into child nodes
 
 use std::sync::Arc;
@@ -159,19 +158,15 @@ fn lower_expr(
             let id = node_id(arc);
             match types.get(&id) {
                 Some(Type::Error) | None => {
-                    // Type::Error: failed_bindings entry — emit RuntimeTypeCheck to avoid
-                    // creating a TypeAssert that always fails silently in release builds.
+                    // Type::Error: failed_bindings entry — emit TypeAssert with Unknown.
                     // None: Macro-synthesized node — bypassed typechecking.
-                    //
-                    // TODO(typecheck-runtime-unification Component 3): After RuntimeTypeCheck
-                    // is deleted, emit CoreExpr::TypeAssert { resolved_type: Type::Unknown }
-                    // instead. Unknown passes via consistent subtyping, and the real error
-                    // surfaces as the undefined_variable error at the failed-binding use-site.
-                    CoreExpr::RuntimeTypeCheck {
+                    // Unknown passes via consistent subtyping (always compatible), so the
+                    // annotation check is a no-op. The real error surfaces as the
+                    // undefined_variable error at the failed-binding use-site.
+                    CoreExpr::TypeAssert {
                         annotation: annotation.clone(),
                         expr: Arc::new(lower(inner, res, types)),
-                        default: None,
-                        resolved_type: None,
+                        resolved_type: Type::Unknown,
                     }
                 }
                 Some(ty) => CoreExpr::TypeAssert {
@@ -322,15 +317,6 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             desugared: *desugared,
         },
         CoreExpr::TypeAssert {
-            annotation, expr, ..
-        } => SurfaceExpression::TypeAssert {
-            annotation: annotation.clone(),
-            expr: core_expr_to_surface_node(expr),
-        },
-        // RuntimeTypeCheck has no SurfaceExpression equivalent; map to TypeAssert (annotation-only).
-        // Note: the `default` field from RuntimeTypeCheck is intentionally dropped here because
-        // SurfaceExpression::TypeAssert has no `default` field (macro-synthesized nodes only).
-        CoreExpr::RuntimeTypeCheck {
             annotation, expr, ..
         } => SurfaceExpression::TypeAssert {
             annotation: annotation.clone(),

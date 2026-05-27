@@ -28,10 +28,8 @@ thread_local! {
 
 /// Wrap a thunk with nominal type validation for pipeline input contracts.
 ///
-/// Creates a synthetic `CoreExpr::RuntimeTypeCheck` wrapping a gensym'd `FreeVar` reference.
+/// Creates a synthetic `CoreExpr::TypeAssert` wrapping a gensym'd `FreeVar` reference.
 /// When evaluated, it performs the same validation as a regular `[@Type expr]` assertion.
-/// `RuntimeTypeCheck` is used (rather than `CoreExpr::TypeAssert`) because the annotation
-/// is not statically resolved — `TypeAssert` requires a pre-resolved `Type`.
 fn wrap_with_nominal_validation(
     inner: Arc<Thunk>,
     annotation: &crate::ast::Spanned<crate::ast::Annotation>,
@@ -47,18 +45,16 @@ fn wrap_with_nominal_validation(
     let gensym_id = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed);
     let gensym_name = format!("__nominal_input_{}", gensym_id);
 
-    // Create a synthetic RuntimeTypeCheck expression: [@Annotation __nominal_input_N]
-    // When resolved_type is Some, uses structural type checking via value_matches_type.
-    // When None, falls back to nominal string comparison (legacy path for untyped contracts).
+    // Create a synthetic TypeAssert expression: [@Annotation __nominal_input_N]
+    // If resolved_type is None (untyped contract), use Type::Unknown which accepts all values.
     let type_check_expr = Arc::new(crate::ast::Spanned::new(
-        CoreExpr::RuntimeTypeCheck {
+        CoreExpr::TypeAssert {
             annotation: annotation.clone(),
             expr: Arc::new(crate::ast::Spanned::new(
                 CoreExpr::FreeVar(gensym_name.clone()),
                 validation_span,
             )),
-            default: None,
-            resolved_type,
+            resolved_type: resolved_type.unwrap_or(crate::types::Type::Unknown),
         },
         validation_span,
     ));
@@ -67,7 +63,7 @@ fn wrap_with_nominal_validation(
     let validation_env = Arc::new(RwLock::new(Environment::new()));
     validation_env.write().unwrap().insert(gensym_name, inner);
 
-    // Return an Unevaluated thunk wrapping the RuntimeTypeCheck expression
+    // Return an Unevaluated thunk wrapping the TypeAssert expression
     Arc::new(Thunk::new_unevaluated_core(
         type_check_expr,
         validation_env,
@@ -86,7 +82,7 @@ fn wrap_with_nominal_validation(
 // Callers must provide:
 // - ResolutionTable: from resolve::resolve_surface_program (variable de Bruijn coords)
 // - TypeAnnotationTable: from typecheck::typecheck_surface_program (TypeAssert resolution)
-//   An empty table is valid — TypeAssert nodes fall back to RuntimeTypeCheck.
+//   An empty table is valid — TypeAssert nodes use Type::Unknown (accepts all values).
 
 /// Evaluate a SurfaceDocument: a sequence of expression items forming a scope chain.
 ///
@@ -307,7 +303,7 @@ pub async fn eval_surface_document(
 /// `resolve_surface_program` must be called before passing the program here.
 /// The `res` table must be the one returned by `resolve_surface_program`.
 /// The `types` table may be empty (from `TypeAnnotationTable::new()`) if type checking
-/// was skipped; `TypeAssert` nodes will fall back to `RuntimeTypeCheck` in that case.
+/// was skipped; `TypeAssert` nodes will use Type::Unknown (accepts all values) in that case.
 pub async fn eval_surface_file(
     program: &SurfaceProgram,
     env: Arc<RwLock<Environment>>,

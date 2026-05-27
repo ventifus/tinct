@@ -154,8 +154,8 @@ pub struct InferState {
     pub type_annotation_table: crate::ast::TypeAnnotationTable,
     /// Resolved types for pipeline `expects:` contracts, keyed by the expects annotation's span.
     /// When a document has `--- expects: TypeExpr`, the typecheck pass resolves TypeExpr and stores
-    /// the result here. The eval pipeline reads this map to populate RuntimeTypeCheck.resolved_type,
-    /// enabling structural type checking instead of nominal string comparison.
+    /// the result here. The eval pipeline reads this map to populate TypeAssert.resolved_type,
+    /// enabling structural type checking via is_consistent_subtype.
     pub expects_resolved: HashMap<crate::ast::Span, crate::types::Type>,
 }
 

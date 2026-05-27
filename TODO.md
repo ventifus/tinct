@@ -206,21 +206,21 @@ Restructure pipeline `expects:` contracts to use resolved types instead of Runti
 
 Delete RuntimeTypeCheck entirely and remove all special-case code smells identified during review.
 
-- [ ] Delete `CoreExpr::RuntimeTypeCheck` variant from `src/ast.rs` (`src/ast.rs:903-907`)
-- [ ] Delete RuntimeTypeCheck string comparison fallback path — 105 lines (`src/eval_materialize.rs:2710-2814`)
-- [ ] Delete `type_name()` method from Value (no longer used for type checking) (`src/value.rs:771`) — verify no other callers remain; if used for error messages, keep but document as error-display-only
-- [ ] Convert all `RuntimeTypeCheck` construction sites to `CoreExpr::TypeAssert { resolved_type }` (`src/lower.rs`, `src/eval_pipeline.rs`)
-- [ ] Remove Handle validation always-true special case (32-line TODO block) — now handled by `ground_type_of → Type::Unknown` (`src/eval.rs:594-625`)
-- [ ] Remove TypeVar always-true special case — now handled by `is_consistent_subtype` TypeVar guard (`src/eval.rs:589`)
-- [ ] Remove Record always-true special case — now handled by `is_consistent_subtype` Record arm (`src/eval.rs:590`)
-- [ ] Remove Type::Error debug_assert — now handled by `is_consistent_subtype` Error guard (`src/eval.rs:663-666`)
-- [ ] Delete old `value_matches_type` match arms that are now dead code (the body is already `is_consistent_subtype(ground_type_of(v), T)` after consistent-subtype sprint) (`src/eval.rs`)
-- [ ] Delete `check_open` special case from typecheck.rs — 115 lines, replaced by typeclass instances (`src/typecheck.rs:3340-3455`)
-- [ ] Delete `check_tls_layer` special case from typecheck.rs — 42 lines, replaced by row polymorphism (`src/typecheck.rs:3812-3854`)
-- [ ] Verify `check_get` is already removed (handled by other Claude's sprint) — if not, delete it (`src/typecheck.rs:3875-3948`)
-- [ ] Tests: verify all existing TypeAssert corpus tests still pass after deletion (`tests/corpus/`)
-- [ ] Tests: verify no remaining `RuntimeTypeCheck` references in codebase (`src/`)
-- [ ] Doc: update `doc/16-architecture.md` — remove `RuntimeTypeCheck` from CoreExpr variant documentation (`doc/16-architecture.md`)
+- [x] Delete `CoreExpr::RuntimeTypeCheck` variant from `src/ast.rs` (`src/ast.rs:903-907`)
+- [x] Delete RuntimeTypeCheck string comparison fallback path — 105 lines (`src/eval_materialize.rs:2710-2814`)
+- [x] Delete `type_name()` method from Value (no longer used for type checking) (`src/value.rs:771`) — verify no other callers remain; if used for error messages, keep but document as error-display-only
+- [x] Convert all `RuntimeTypeCheck` construction sites to `CoreExpr::TypeAssert { resolved_type }` (`src/lower.rs`, `src/eval_pipeline.rs`)
+- [x] Remove Handle validation always-true special case (32-line TODO block) — now handled by `ground_type_of → Type::Unknown` (`src/eval.rs:594-625`)
+- [x] Remove TypeVar always-true special case — now handled by `is_consistent_subtype` TypeVar guard (`src/eval.rs:589`)
+- [x] Remove Record always-true special case — now handled by `is_consistent_subtype` Record arm (`src/eval.rs:590`)
+- [x] Remove Type::Error debug_assert — now handled by `is_consistent_subtype` Error guard (`src/eval.rs:663-666`)
+- [x] Delete old `value_matches_type` match arms that are now dead code (the body is already `is_consistent_subtype(ground_type_of(v), T)` after consistent-subtype sprint) (`src/eval.rs`)
+- [x] Delete `check_open` special case from typecheck.rs — 115 lines, replaced by typeclass instances (`src/typecheck.rs:3340-3455`)
+- [x] Delete `check_tls_layer` special case from typecheck.rs — 42 lines, replaced by row polymorphism (`src/typecheck.rs:3812-3854`)
+- [x] Verify `check_get` is already removed (handled by other Claude's sprint) — if not, delete it (`src/typecheck.rs:3875-3948`)
+- [x] Tests: verify all existing TypeAssert corpus tests still pass after deletion (`tests/corpus/`)
+- [x] Tests: verify no remaining `RuntimeTypeCheck` references in codebase (`src/`)
+- [x] Doc: update `doc/16-architecture.md` — remove `RuntimeTypeCheck` from CoreExpr variant documentation (`doc/16-architecture.md`)
 
 ### typecheck-runtime-unification-review: Post-implementation review
 

@@ -73,7 +73,7 @@ pub struct BlameLabel {
 /// and thread it through the validation path. This requires:
 /// 1. Tracking stage labels (document names or indices) during pipeline evaluation
 /// 2. Passing PipelineBlame to wrap_with_nominal_validation in eval_pipeline.rs
-/// 3. Threading it through RuntimeTypeCheck → GuardedValidate → validate_and_wrap_record
+/// 3. Threading it through TypeAssert → GuardedValidate → validate_and_wrap_record
 /// 4. Enriching type assertion errors with pipeline blame context
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipelineBlame {
