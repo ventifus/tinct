@@ -2145,8 +2145,15 @@ fn run_eval(
             // First file: create the base context (owns the ThunkArena).
             // Subsequent files: derive from the base context via with_base_dir_and_path so all
             // files share the same arena — ThunkIds from earlier files remain valid in later ones.
+            let stage_source_file = match stage {
+                PipelineStage::File(fp) if fp != "-" => Some(fp.clone()),
+                _ => None,
+            };
             let eval_ctx = if let Some(ref base) = base_eval_ctx {
-                base.with_base_dir_and_path(base_dir, Some(file_base_dir_path.clone()))
+                let mut ctx = base.with_base_dir_and_path(base_dir, Some(file_base_dir_path.clone()));
+                // Update source file for this stage so backtrace frames show the right filename.
+                Arc::get_mut(&mut ctx).unwrap().set_source_file(stage_source_file);
+                ctx
             } else {
                 let mut ctx = EvalContext::new_with_options(
                     base_dir,
@@ -2160,6 +2167,8 @@ fn run_eval(
                 if let Some(ref collector) = profiling_collector {
                     Arc::get_mut(&mut ctx).unwrap().profiling = Some(Arc::clone(collector));
                 }
+                // Set source file for backtrace frame filenames.
+                Arc::get_mut(&mut ctx).unwrap().set_source_file(stage_source_file);
                 // Share the already-open libdir Dir with the evaluator so that the self-hosted
                 // `include` (prelude.llt) can inject %libdir into nested includes without re-acquiring ambient authority.
                 if let Some(ref libdir_rc) = libdir_rc_for_ctx {

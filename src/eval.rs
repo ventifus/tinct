@@ -599,6 +599,15 @@ impl EvalContext {
     pub fn set_libdir_dir(&self, dir: Arc<cap_std::fs::Dir>) {
         *self.libdir_dir.lock().unwrap() = Some(dir);
     }
+
+    /// Set the source file name for error reporting (backtrace frame filenames).
+    /// Must be called on a freshly created context before any Arc::clone shares it.
+    /// Propagated through `with_base_dir` to child contexts (nested includes).
+    pub fn set_source_file(&mut self, file: Option<String>) {
+        if let Some(config) = Arc::get_mut(&mut self.config) {
+            config.source_file = file;
+        }
+    }
 }
 
 /// Extract the ground type of a runtime value for consistent subtyping validation.
