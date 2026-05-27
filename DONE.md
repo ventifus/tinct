@@ -11580,3 +11580,13 @@ Deferred: corpus/unit tests for builtin-read-line/builtin-read-chunk remain in T
 - [x] Add `tests/corpus/eval/stdlib/from_json_trailing_comma.llt-eval`
 - [x] Add `tests/corpus/eval/stdlib/from_json_unclosed_string.llt-eval`
 - [x] Add `tests/corpus/eval/stdlib/from_json_unclosed_array.llt-eval`
+
+### nit-fixes: Prelude bugs, docgen T003, macro-ast compat ✅ DONE (2026-05-27)
+
+- [x] Add @String type annotation to try-str in scripts/docgen.llt
+- [x] Fix eval-document-pipeline named-section (builder-set) in stdlib/prelude.llt
+- [x] Add corpus test for named section bindings
+- [x] Fix to-json-pretty-array-from-dict multi-arg if in stdlib/prelude.llt
+- [x] Add corpus test for pretty-printing array-like dicts
+- [x] fn macro alias tests (test_syntax_llt_fn_single_param, test_syntax_llt_fn_macro_triggered) — already passing
+- [x] last-binding-wins test (test_pm3_match_expr_duplicate_dict_field_errors) — already passing

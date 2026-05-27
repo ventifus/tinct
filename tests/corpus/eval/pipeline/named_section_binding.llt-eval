@@ -1,0 +1,12 @@
+# Named section: %name-of-doc binding works across document sections
+[x: 1  y: 2]
+
+--- %first
+
+[sum: [+ %.x %.y]]
+
+---
+
+%.sum
+=== out
+Int(3)

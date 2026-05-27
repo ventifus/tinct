@@ -11,19 +11,19 @@ See DONE.md for the full history of completed sprints.
 Combines: docgen-return-type-t003 (1), prelude-named-section-bug (2), prelude-pretty-array-multiarg-if (2), macro-ast-expression-compat (2).
 
 **docgen T003:** `return-type-text` in scripts/docgen.llt produces advisory T003 from unconstrained `try-str` return type.
-- [ ] Add `@String` type annotation to `try-str`'s return so the checker infers concrete String rather than `String | _` (`scripts/docgen.llt`)
+- [x] Add `@String` type annotation to `try-str`'s return so the checker infers concrete String rather than `String | _` (`scripts/docgen.llt`)
 
 **prelude named-section bug:** `eval-document-pipeline` uses `[[str "%" n]: result]` (invalid computed-key syntax). Fix: use `builder-set` for named section dict construction.
-- [ ] Fix `eval-document-pipeline` in stdlib/prelude.llt to use builder-set for named section dict construction
-- [ ] Add corpus test that uses `---\n%name-of-doc` and verifies `%name-of-doc` binding works in subsequent docs
+- [x] Fix `eval-document-pipeline` in stdlib/prelude.llt to use builder-set for named section dict construction
+- [x] Add corpus test that uses `---\n%name-of-doc` and verifies `%name-of-doc` binding works in subsequent docs
 
 **prelude pretty-array multi-arg if:** `to-json-pretty-array-from-dict` calls `[if ...]` with 6 args (only 3 allowed). Fix: extract body into helper function.
-- [ ] Fix `to-json-pretty-array-from-dict` in stdlib/prelude.llt
-- [ ] Add corpus test for pretty-printing array-like dicts (integer keys 0..n)
+- [x] Fix `to-json-pretty-array-from-dict` in stdlib/prelude.llt
+- [x] Add corpus test for pretty-printing array-like dicts (integer keys 0..n)
 
 **macro-ast-expression-compat:** Pre-existing test failures from runtime-v2 (fn macro alias, pattern match duplicate handling).
-- [ ] `test_syntax_llt_fn_single_param` / `test_syntax_llt_fn_macro_triggered`: fn macro alias produces Fn but body VarRefs aren't resolved. Investigate resolution pass interaction with macro-expanded expressions.
-- [ ] `test_pm3_match_expr_duplicate_dict_field_errors`: verify last-binding-wins semantics work correctly after linearity check removal
+- [x] `test_syntax_llt_fn_single_param` / `test_syntax_llt_fn_macro_triggered`: fn macro alias produces Fn but body VarRefs aren't resolved. Investigate resolution pass interaction with macro-expanded expressions.
+- [x] `test_pm3_match_expr_duplicate_dict_field_errors`: verify last-binding-wins semantics work correctly after linearity check removal
 
 ### letrec-self-ref-silent: `[x: x]` in letrec dicts silently cycles via try-or, producing wrong results
 

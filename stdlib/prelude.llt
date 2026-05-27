@@ -2226,17 +2226,22 @@ to-json-pretty-indent-impl: [fn [let depth@Int acc@String]
 to-json-pretty-indent: [fn [let depth@Int]
   [to-json-pretty-indent-impl depth ""]]
 
+# Helper: serialize an array-like dict to JSON array with indentation (non-empty case)
+to-json-pretty-array-from-dict-nonempty: [fn [let d depth@Int]
+  [vals: [values d]]
+  [current-indent: [to-json-pretty-indent depth]]
+  [next-indent:    [to-json-pretty-indent [+ depth 1]]]
+  [items: [map [fn [let entry]
+                 [str "\n" next-indent [to-json-pretty-impl entry.value depth]]]
+               [entries vals]]]
+  [str "[" [join "," items] "\n" current-indent "]"]]
+
 # Helper: serialize an array-like dict to JSON array with indentation
 to-json-pretty-array-from-dict: [fn [let d depth@Int]
   [vals: [values d]]
-  [if [empty? vals]
+  [builtin-if [empty? vals]
     "[]"
-    [current-indent: [to-json-pretty-indent depth]]
-    [next-indent:    [to-json-pretty-indent [+ depth 1]]]
-    [items: [map [fn [let entry]
-                   [str "\n" next-indent [to-json-pretty-impl entry.value depth]]]
-                 [entries vals]]]
-    [str "[" [join "," items] "\n" current-indent "]"]]]
+    [to-json-pretty-array-from-dict-nonempty d depth]]]
 
 # Helper: serialize a named dict to JSON object with indentation
 to-json-pretty-named-dict: [fn [let d depth@Int]
@@ -2769,8 +2774,10 @@ Returns: updated state {prev: result, named: updated-named-sections}
            ["%include-dir": include-dir]]]]
   [prev:  result
    named: [match doc.name
-            [Named n]: [merge state.named [[str "%" n]: result]]
-            Unnamed:   state.named]]]
+            [case [let n: Named]]
+              [merge state.named [make-entry [str "%" n] result]]
+            [case Unnamed]
+              state.named]]]
 
 # eval-document-pipeline: thread % through all documents in a file AST dict.
 #

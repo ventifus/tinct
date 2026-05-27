@@ -1,0 +1,4 @@
+# to-json-pretty: integer-keyed dict renders as JSON array with indent
+[to-json-pretty [0: "a"  1: "b"  2: "c"]]
+=== out
+String("[\n  \"a\",\n  \"b\",\n  \"c\"\n]")
