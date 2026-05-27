@@ -36,9 +36,9 @@
 retry-impl: [fn [let n@Int thunk@Fn]
     [match [try thunk]
         [Ok v]:    v
-        [Error _]: [builtin-if [> n 0]
-                       [retry-impl [builtin-sub n 1] thunk]
-                       [builtin-raise "retry limit exceeded"]]]]
+        [Error _]: [if [> n 0]
+                       [retry-impl [- n 1] thunk]
+                       [raise "retry limit exceeded"]]]]
 
 # loop-select-impl: recursive event-loop body.
 # Calls select-once on sources, passes result to handler, then loops.
@@ -46,7 +46,7 @@ retry-impl: [fn [let n@Int thunk@Fn]
 # Tail-recursive; may hit the CEK continuation stack limit for very deep
 # recursion (see tco-proper-fix TODO sprint).
 loop-select-impl: [fn [let ctx sources@Seq handler@Fn]
-    [builtin-if [cancelled? ctx]
+    [if [cancelled? ctx]
         null
         [do
             [handler [select-once sources]]
@@ -249,6 +249,6 @@ Rust-level EvalErrors bypass finally.
 """]: [fn [let cleanup@Fn body@Fn]
     [match [try body]
         [Ok v]:    [do [with-context [non-cancellable] [cleanup]] v]
-        [Error e]: [do [with-context [non-cancellable] [cleanup]] [builtin-raise e]]]]
+        [Error e]: [do [with-context [non-cancellable] [cleanup]] [raise e]]]]
 
 ]

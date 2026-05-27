@@ -373,9 +373,10 @@ pub(crate) fn reject_named(
 pub(crate) use crate::builtins_math::{
     builtin_acos, builtin_add, builtin_asin, builtin_atan, builtin_atan2, builtin_band,
     builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq, builtin_exp,
-    builtin_finite_check, builtin_float, builtin_if, builtin_inf_check, builtin_log, builtin_log10,
-    builtin_log2, builtin_lt, builtin_mul, builtin_nan_check, builtin_pow, builtin_shl,
-    builtin_shr, builtin_sin, builtin_sqrt, builtin_sub, builtin_tan,
+    builtin_finite_check, builtin_float, builtin_gt, builtin_gte, builtin_if, builtin_inf_check,
+    builtin_log, builtin_log10, builtin_log2, builtin_lt, builtin_lte, builtin_mul,
+    builtin_nan_check, builtin_pow, builtin_shl, builtin_shr, builtin_sin, builtin_sqrt,
+    builtin_sub, builtin_tan,
 };
 
 // Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv, build-dict.
@@ -1235,6 +1236,24 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         builtin!(
             "builtin-lt",
             builtin_lt,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builtin-gt",
+            builtin_gt,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builtin-lte",
+            builtin_lte,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builtin-gte",
+            builtin_gte,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
@@ -6443,8 +6462,10 @@ mod tests {
         //   Prelude now exports list-dir: builtin-list-dir and load: builtin-load.
         // Added builtin-expand stable alias for prelude export (233 → 234):
         //   Prelude now exports expand: builtin-expand.
+        // Added 3 comparison aliases: builtin-gt, builtin-lte, builtin-gte (234 → 237):
+        //   These allow the prelude to eliminate gte-impl private helper.
         assert_eq!(
-            count, 234,
+            count, 237,
             "builtin count changed - update this test and doc/11-stdlib.md"
         );
     }
@@ -6461,6 +6482,11 @@ mod tests {
         // Comparison
         assert!(names.contains(&"="), "missing =");
         assert!(names.contains(&"<"), "missing <");
+        assert!(names.contains(&"builtin-eq"), "missing builtin-eq");
+        assert!(names.contains(&"builtin-lt"), "missing builtin-lt");
+        assert!(names.contains(&"builtin-gt"), "missing builtin-gt");
+        assert!(names.contains(&"builtin-lte"), "missing builtin-lte");
+        assert!(names.contains(&"builtin-gte"), "missing builtin-gte");
         // Control
         assert!(names.contains(&"if"), "missing if");
         // Dict primitives (now under builtin-NAME; bare names are prelude wrappers)

@@ -780,6 +780,113 @@ pub(crate) fn builtin_lt(
     })
 }
 
+/// `>`: Greater-than comparison.
+///
+/// Implemented as `b < a` (argument order swap of `<`).
+pub(crate) fn builtin_gt(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named(">", named.as_ref(), call_span)?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        // Swap arguments: a > b ≡ b < a
+        let swapped_args = vec![Arc::clone(&args[1]), Arc::clone(&args[0])];
+        builtin_lt(BuiltinArgs {
+            args: swapped_args,
+            named,
+            call_span,
+            ctx,
+        })
+        .await
+    })
+}
+
+/// `<=`: Less-than-or-equal comparison.
+///
+/// Implemented as `!(b < a)` (negation of `>`).
+pub(crate) fn builtin_lte(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("<=", named.as_ref(), call_span)?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        // a <= b ≡ !(b < a)
+        let swapped_args = vec![Arc::clone(&args[1]), Arc::clone(&args[0])];
+        let gt_result = builtin_lt(BuiltinArgs {
+            args: swapped_args,
+            named,
+            call_span,
+            ctx,
+        })
+        .await?;
+
+        // Negate the result
+        let val = gt_result
+            .try_get_materialized()
+            .expect("builtin_lt returns materialized Bool");
+        match val {
+            Value::Bool(b) => ok_val(Value::Bool(!b), call_span),
+            _ => unreachable!("builtin_lt always returns Bool"),
+        }
+    })
+}
+
+/// `>=`: Greater-than-or-equal comparison.
+///
+/// Implemented as `!(a < b)` (negation of `<`).
+pub(crate) fn builtin_gte(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named(">=", named.as_ref(), call_span)?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        // a >= b ≡ !(a < b)
+        let lt_result = builtin_lt(BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        })
+        .await?;
+
+        // Negate the result
+        let val = lt_result
+            .try_get_materialized()
+            .expect("builtin_lt returns materialized Bool");
+        match val {
+            Value::Bool(b) => ok_val(Value::Bool(!b), call_span),
+            _ => unreachable!("builtin_lt always returns Bool"),
+        }
+    })
+}
+
 /// `if`: Conditional with selective materialization.
 ///
 /// Takes 3 positional args: condition, then-branch, else-branch.

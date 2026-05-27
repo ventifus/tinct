@@ -4,10 +4,10 @@
 #   to-json:   tinct value → compact JSON string
 #   from-json: JSON string → structural tinct value
 #
-# str-length comes from prelude (builtin-str-length alias). str-slice comes from
-# prelude (builtin-str-slice alias, (string, start, end) semantics).
+# str-length comes from prelude (str-length alias). str-slice comes from
+# prelude (str-slice alias, (string, start, end) semantics).
 # Character access uses json-char-at (defined in the dict below) which wraps
-# builtin-str-slice, avoiding any dependency on strings.llt str-at.
+# str-slice, avoiding any dependency on strings.llt str-at.
 # from-json produces only: Dict, Seq, String, Int, Float, Bool, [] (null).
 # Not every tinct type round-trips through JSON — Expression/Program/Document/Fn/
 # Handle/Task/etc. have no JSON representation. Schema-directed reconstruction
@@ -26,74 +26,74 @@ json-escape: [fn [let s@String]
     s]]]]]]
 
 json-string: [fn [let s@String]
-  [builtin-str "\"" [json-escape s] "\""]]
+  [str "\"" [json-escape s] "\""]]
 
 json-variant: [fn [let tag@String fields]
-  [builtin-str "{" [json-string tag] ":" [to-json fields] "}"]]
+  [str "{" [json-string tag] ":" [to-json fields] "}"]]
 
 json-span: [fn [let s@Span]
-  [builtin-str "{\"file\":"        [json-string s.file]
-       ",\"start-line\":"  [builtin-str s.start-line]
-       ",\"start-col\":"   [builtin-str s.start-col]
-       ",\"end-line\":"    [builtin-str s.end-line]
-       ",\"end-col\":"     [builtin-str s.end-col] "}"]]
+  [str "{\"file\":"        [json-string s.file]
+       ",\"start-line\":"  [str s.start-line]
+       ",\"start-col\":"   [str s.start-col]
+       ",\"end-line\":"    [str s.end-line]
+       ",\"end-col\":"     [str s.end-col] "}"]]
 
 to-json-dict: [fn [let d@Dict]
-  [builtin-str "{"
+  [str "{"
     [join ","
-      [map [fn [let pair] [builtin-str [json-string pair[0]] ":" [to-json pair[1]]]]
+      [map [fn [let pair] [str [json-string pair[0]] ":" [to-json pair[1]]]]
            [entries d]]]
     "}"]]
 
 to-json-seq: [fn [let s]
-  [builtin-str "[" [join "," [map to-json [collect s]]] "]"]]
+  [str "[" [join "," [map to-json [collect s]]] "]"]]
 
 # ---- Pretty-print helpers (indent tracking) ----
 
 make-indent-impl: [fn [let depth@Int acc@String]
-  [builtin-if [builtin-eq depth 0]
+  [if [= depth 0]
     acc
-    [make-indent-impl [builtin-sub depth 1] [builtin-str acc "  "]]]]
+    [make-indent-impl [- depth 1] [str acc "  "]]]]
 
 make-indent: [fn [let depth@Int]
   [make-indent-impl depth ""]]
 
 to-json-pretty-dict-nonempty: [fn [let d@Dict depth@Int]
   [current-indent: [make-indent depth]]
-  [next-indent:    [make-indent [builtin-add depth 1]]]
+  [next-indent:    [make-indent [+ depth 1]]]
   [pairs: [map [fn [let pair]
-                 [builtin-str "\n" next-indent
+                 [str "\n" next-indent
                    [json-string pair[0]] ": "
-                   [to-json-pretty-impl pair[1] [builtin-add depth 1]]]]
+                   [to-json-pretty-impl pair[1] [+ depth 1]]]]
                [entries d]]]
-  [builtin-str "{" [join "," pairs] "\n" current-indent "}"]]
+  [str "{" [join "," pairs] "\n" current-indent "}"]]
 
 to-json-pretty-dict: [fn [let d@Dict depth@Int]
-  [builtin-if [builtin-eq [builtin-length d] 0]
+  [if [= [length d] 0]
     "{}"
     [to-json-pretty-dict-nonempty d depth]]]
 
 to-json-pretty-seq-nonempty: [fn [let collected depth@Int]
   [current-indent: [make-indent depth]]
-  [next-indent:    [make-indent [builtin-add depth 1]]]
+  [next-indent:    [make-indent [+ depth 1]]]
   [items: [map [fn [let item]
-                 [builtin-str "\n" next-indent
-                   [to-json-pretty-impl item [builtin-add depth 1]]]]
+                 [str "\n" next-indent
+                   [to-json-pretty-impl item [+ depth 1]]]]
                [values collected]]]
-  [builtin-str "[" [join "," items] "\n" current-indent "]"]]
+  [str "[" [join "," items] "\n" current-indent "]"]]
 
 to-json-pretty-seq: [fn [let s depth@Int]
   [collected: [collect s]]
-  [builtin-if [builtin-eq [builtin-length collected] 0]
+  [if [= [length collected] 0]
     "[]"
     [to-json-pretty-seq-nonempty collected depth]]]
 
 to-json-pretty-primitive: [fn [let v depth@Int]
   [cond [
-    [[builtin-eq v []]     "null"]
-    [[bool? v]    [builtin-if v "true" "false"]]
-    [[int?  v]    [builtin-str v]]
-    [[float? v]   [builtin-str v]]
+    [[= v []]     "null"]
+    [[bool? v]    [if v "true" "false"]]
+    [[int?  v]    [str v]]
+    [[float? v]   [str v]]
     [[str?   v]   [json-string v]]
     [[seq?   v]   [to-json-pretty-seq v depth]]
     [[dict?  v]   [to-json-pretty-dict v depth]]
@@ -222,10 +222,10 @@ json-program: [fn [let p@Program]
 
 to-json-primitive: [fn [let v]
   [cond [
-    [[builtin-eq v []]     "null"]
-    [[bool? v]    [builtin-if v "true" "false"]]
-    [[int?  v]    [builtin-str v]]
-    [[float? v]   [builtin-str v]]
+    [[= v []]     "null"]
+    [[bool? v]    [if v "true" "false"]]
+    [[int?  v]    [str v]]
+    [[float? v]   [str v]]
     [[str?   v]   [json-string v]]
     [[seq?   v]   [to-json-seq v]]
     [[dict?  v]   [to-json-dict v]]
@@ -236,125 +236,125 @@ to-json-primitive: [fn [let v]
     [true         "null"]]]]
 
 # ---- Deserializer helpers ----
-# Uses str-length and builtin-str-slice from prelude (both available without strings.llt).
+# Uses str-length and str-slice from prelude (both available without strings.llt).
 # Each json-parse-* function takes remaining input and returns [value: v  rest: r].
 
 # json-char-at: extract the character at index n (0-based) from string s.
-# Uses builtin-str-slice directly (prelude builtin) to avoid dependency on strings.llt str-at.
+# Uses str-slice directly (prelude builtin) to avoid dependency on strings.llt str-at.
 json-char-at: [fn [let n@Int s@String]
-  [builtin-str-slice s n [builtin-add n 1]]]
+  [str-slice s n [+ n 1]]]
 
 json-ws?: [fn [let c@String]
-  [or [builtin-eq c " "] [or [builtin-eq c "\t"] [or [builtin-eq c "\n"] [builtin-eq c "\r"]]]]]
+  [or [= c " "] [or [= c "\t"] [or [= c "\n"] [= c "\r"]]]]]
 
 json-skip-ws: [fn [let s@String]
-  [builtin-if [or [builtin-eq [str-length s] 0] [not [json-ws? [json-char-at 0 s]]]]
+  [if [or [= [str-length s] 0] [not [json-ws? [json-char-at 0 s]]]]
     s
-    [json-skip-ws [builtin-str-slice s 1 [str-length s]]]]]
+    [json-skip-ws [str-slice s 1 [str-length s]]]]]
 
 json-parsed: [fn [let parsed-value parsed-rest@String]
   [value: parsed-value  rest: parsed-rest]]
 
 json-rest: [fn [let s@String n@Int]
-  [builtin-str-slice s n [str-length s]]]
+  [str-slice s n [str-length s]]]
 
 json-starts-with: [fn [let prefix@String s@String]
-  [builtin-if [builtin-lt [str-length s] [str-length prefix]]
+  [if [< [str-length s] [str-length prefix]]
     false
-    [builtin-eq [builtin-str-slice s 0 [str-length prefix]] prefix]]]
+    [= [str-slice s 0 [str-length prefix]] prefix]]]
 
 json-parse-null: [fn [let s@String]
-  [builtin-if [json-starts-with "null" s]
+  [if [json-starts-with "null" s]
     [json-parsed [] [json-rest s 4]]
-    [builtin-raise "JSON: expected 'null'"]]]
+    [raise "JSON: expected 'null'"]]]
 
 json-parse-true: [fn [let s@String]
-  [builtin-if [json-starts-with "true" s]
+  [if [json-starts-with "true" s]
     [json-parsed true [json-rest s 4]]
-    [builtin-raise "JSON: expected 'true'"]]]
+    [raise "JSON: expected 'true'"]]]
 
 json-parse-false: [fn [let s@String]
-  [builtin-if [json-starts-with "false" s]
+  [if [json-starts-with "false" s]
     [json-parsed false [json-rest s 5]]
-    [builtin-raise "JSON: expected 'false'"]]]
+    [raise "JSON: expected 'false'"]]]
 
 json-digit?: [fn [let c@String]
   [and [>= c "0"] [<= c "9"]]]
 
 json-num-char?: [fn [let c@String]
   [or [json-digit? c]
-      [or [builtin-eq c "."] [or [builtin-eq c "e"] [or [builtin-eq c "E"]
-      [or [builtin-eq c "-"] [builtin-eq c "+"]]]]]]]
+      [or [= c "."] [or [= c "e"] [or [= c "E"]
+      [or [= c "-"] [= c "+"]]]]]]]
 
 json-scan-num: [fn [let s@String i@Int]
-  [builtin-if [or [>= i [str-length s]] [not [json-num-char? [json-char-at i s]]]]
+  [if [or [>= i [str-length s]] [not [json-num-char? [json-char-at i s]]]]
     i
-    [json-scan-num s [builtin-add i 1]]]]
+    [json-scan-num s [+ i 1]]]]
 
 json-parse-number: [fn [let s@String]
   [len:     [json-scan-num s 0]]
-  [num-str: [builtin-str-slice s 0 len]]
+  [num-str: [str-slice s 0 len]]
   [rest:    [json-rest s len]]
   [float?:  [or [str-contains? "." num-str]
                 [or [str-contains? "e" num-str]
                     [str-contains? "E" num-str]]]]
   [json-parsed
-    [builtin-if float? [to-float num-str] [to-int num-str]]
+    [if float? [to-float num-str] [to-int num-str]]
     rest]]
 
 json-unescape: [fn [let c@String]
   [cond [
-    [[builtin-eq c "\""] "\""]
-    [[builtin-eq c "\\"] "\\"]
-    [[builtin-eq c "/"]  "/"]
-    [[builtin-eq c "n"]  "\n"]
-    [[builtin-eq c "r"]  "\r"]
-    [[builtin-eq c "t"]  "\t"]
-    [[builtin-eq c "b"]  [chr 8]]
-    [[builtin-eq c "f"]  [chr 12]]
-    [true [builtin-raise [builtin-str "JSON: unknown escape \\" c]]]]]]
+    [[= c "\""] "\""]
+    [[= c "\\"] "\\"]
+    [[= c "/"]  "/"]
+    [[= c "n"]  "\n"]
+    [[= c "r"]  "\r"]
+    [[= c "t"]  "\t"]
+    [[= c "b"]  [chr 8]]
+    [[= c "f"]  [chr 12]]
+    [true [raise [str "JSON: unknown escape \\" c]]]]]]
 
 # Convert a single ASCII hex character ('0'-'9', 'a'-'f', 'A'-'F') to its integer value.
 json-hex-digit-val: [fn [let c@String]
   [code: [char-code c]]
   [cond [
-    [[and [>= code 48] [<= code 57]]  [builtin-sub code 48]]         # '0'-'9'
-    [[and [>= code 97] [<= code 102]] [builtin-add 10 [builtin-sub code 97]]]   # 'a'-'f'
-    [[and [>= code 65] [<= code 70]]  [builtin-add 10 [builtin-sub code 65]]]   # 'A'-'F'
-    [true [builtin-raise [builtin-str "JSON: invalid hex digit: " c]]]]]]
+    [[and [>= code 48] [<= code 57]]  [- code 48]]         # '0'-'9'
+    [[and [>= code 97] [<= code 102]] [+ 10 [- code 97]]]   # 'a'-'f'
+    [[and [>= code 65] [<= code 70]]  [+ 10 [- code 65]]]   # 'A'-'F'
+    [true [raise [str "JSON: invalid hex digit: " c]]]]]]
 
 # Parse 4 consecutive hex chars from string s into an integer (0x0000-0xFFFF).
 json-hex4-to-int: [fn [let s@String]
-  [builtin-add
-    [builtin-mul [json-hex-digit-val [json-char-at 0 s]] 4096]
-  [builtin-add
-    [builtin-mul [json-hex-digit-val [json-char-at 1 s]] 256]
-  [builtin-add
-    [builtin-mul [json-hex-digit-val [json-char-at 2 s]] 16]
+  [+
+    [* [json-hex-digit-val [json-char-at 0 s]] 4096]
+  [+
+    [* [json-hex-digit-val [json-char-at 1 s]] 256]
+  [+
+    [* [json-hex-digit-val [json-char-at 2 s]] 16]
     [json-hex-digit-val [json-char-at 3 s]]]]]]
 
 json-parse-string-body: [fn [let s@String acc@String]
-  [builtin-if [builtin-eq [str-length s] 0]
-    [builtin-raise "JSON: unterminated string"]
+  [if [= [str-length s] 0]
+    [raise "JSON: unterminated string"]
     [cond [
-      [[builtin-eq [json-char-at 0 s] "\""]
+      [[= [json-char-at 0 s] "\""]
        [json-parsed acc [json-rest s 1]]]
-      [[builtin-eq [json-char-at 0 s] "\\"]
-       [builtin-if [builtin-lt [str-length s] 2]
-         [builtin-raise "JSON: incomplete escape"]
-         [builtin-if [builtin-eq [json-char-at 1 s] "u"]
+      [[= [json-char-at 0 s] "\\"]
+       [if [< [str-length s] 2]
+         [raise "JSON: incomplete escape"]
+         [if [= [json-char-at 1 s] "u"]
            # \uXXXX Unicode escape — consume 6 chars total (\uXXXX)
-           [builtin-if [builtin-lt [str-length s] 6]
-             [builtin-raise "JSON: incomplete \\uXXXX escape"]
+           [if [< [str-length s] 6]
+             [raise "JSON: incomplete \\uXXXX escape"]
              [json-parse-string-body
                [json-rest s 6]
-               [builtin-str acc [chr [json-hex4-to-int [builtin-str-slice s 2 6]]]]]]
+               [str acc [chr [json-hex4-to-int [str-slice s 2 6]]]]]]
            # Other single-char escapes — consume 2 chars
            [json-parse-string-body
              [json-rest s 2]
-             [builtin-str acc [json-unescape [json-char-at 1 s]]]]]]]
+             [str acc [json-unescape [json-char-at 1 s]]]]]]]
       [true
-       [json-parse-string-body [json-rest s 1] [builtin-str acc [json-char-at 0 s]]]]]]]]
+       [json-parse-string-body [json-rest s 1] [str acc [json-char-at 0 s]]]]]]]]
 
 json-parse-string: [fn [let s@String]
   # s starts with "
@@ -366,55 +366,55 @@ json-parse-array-items: [fn [let s@String i@Int bld]
   [bld2: [builder-set bld i item.value]]
   [s2:   [json-skip-ws item.rest]]
   [cond [
-    [[builtin-eq [json-char-at 0 s2] "]"] [json-parsed [builder-finish bld2] [json-rest s2 1]]]
-    [[builtin-eq [json-char-at 0 s2] ","] [json-parse-array-items [json-skip-ws [json-rest s2 1]] [builtin-add i 1] bld2]]
-    [true [builtin-raise "JSON: expected ',' or ']' in array"]]]]]
+    [[= [json-char-at 0 s2] "]"] [json-parsed [builder-finish bld2] [json-rest s2 1]]]
+    [[= [json-char-at 0 s2] ","] [json-parse-array-items [json-skip-ws [json-rest s2 1]] [+ i 1] bld2]]
+    [true [raise "JSON: expected ',' or ']' in array"]]]]]
 
 json-parse-array: [fn [let s@String]
   # s starts with [
   [s2: [json-skip-ws [json-rest s 1]]]
-  [builtin-if [builtin-eq [json-char-at 0 s2] "]"]
+  [if [= [json-char-at 0 s2] "]"]
     [json-parsed [] [json-rest s2 1]]
     [json-parse-array-items s2 0 [make-builder]]]]
 
 json-parse-object-pairs: [fn [let s@String bld]
   # Uses builder-set for O(1) insertion with computed string key.
   [k:    [json-parse-string
-            [builtin-if [not [builtin-eq [json-char-at 0 s] "\""]]
-              [builtin-raise "JSON: expected string key in object"]
+            [if [not [= [json-char-at 0 s] "\""]]
+              [raise "JSON: expected string key in object"]
               s]]]
   [s2:   [json-skip-ws k.rest]]
   [v:    [json-parse-value
-            [builtin-if [not [builtin-eq [json-char-at 0 s2] ":"]]
-              [builtin-raise "JSON: expected ':' after object key"]
+            [if [not [= [json-char-at 0 s2] ":"]]
+              [raise "JSON: expected ':' after object key"]
               [json-skip-ws [json-rest s2 1]]]]]
   [bld2: [builder-set bld k.value v.value]]
   [s3:   [json-skip-ws v.rest]]
   [cond [
-    [[builtin-eq [json-char-at 0 s3] "}"] [json-parsed [builder-finish bld2] [json-rest s3 1]]]
-    [[builtin-eq [json-char-at 0 s3] ","] [json-parse-object-pairs [json-skip-ws [json-rest s3 1]] bld2]]
-    [true [builtin-raise "JSON: expected ',' or '}' in object"]]]]]
+    [[= [json-char-at 0 s3] "}"] [json-parsed [builder-finish bld2] [json-rest s3 1]]]
+    [[= [json-char-at 0 s3] ","] [json-parse-object-pairs [json-skip-ws [json-rest s3 1]] bld2]]
+    [true [raise "JSON: expected ',' or '}' in object"]]]]]
 
 json-parse-object: [fn [let s@String]
   # s starts with {
   [s2: [json-skip-ws [json-rest s 1]]]
-  [builtin-if [builtin-eq [json-char-at 0 s2] "}"]
+  [if [= [json-char-at 0 s2] "}"]
     [json-parsed [] [json-rest s2 1]]
     [json-parse-object-pairs s2 [make-builder]]]]
 
 json-parse-value: [fn [let s@String]
   [s2: [json-skip-ws s]]
-  [builtin-if [builtin-eq [str-length s2] 0]
-    [builtin-raise "JSON: unexpected end of input"]
+  [if [= [str-length s2] 0]
+    [raise "JSON: unexpected end of input"]
     [cond [
-      [[builtin-eq [json-char-at 0 s2] "n"]  [json-parse-null s2]]
-      [[builtin-eq [json-char-at 0 s2] "t"]  [json-parse-true s2]]
-      [[builtin-eq [json-char-at 0 s2] "f"]  [json-parse-false s2]]
-      [[builtin-eq [json-char-at 0 s2] "\""] [json-parse-string s2]]
-      [[builtin-eq [json-char-at 0 s2] "["]  [json-parse-array s2]]
-      [[builtin-eq [json-char-at 0 s2] "{"]  [json-parse-object s2]]
-      [[or [builtin-eq [json-char-at 0 s2] "-"] [json-digit? [json-char-at 0 s2]]] [json-parse-number s2]]
-      [true [builtin-raise [builtin-str "JSON: unexpected character: " [json-char-at 0 s2]]]]]]]]
+      [[= [json-char-at 0 s2] "n"]  [json-parse-null s2]]
+      [[= [json-char-at 0 s2] "t"]  [json-parse-true s2]]
+      [[= [json-char-at 0 s2] "f"]  [json-parse-false s2]]
+      [[= [json-char-at 0 s2] "\""] [json-parse-string s2]]
+      [[= [json-char-at 0 s2] "["]  [json-parse-array s2]]
+      [[= [json-char-at 0 s2] "{"]  [json-parse-object s2]]
+      [[or [= [json-char-at 0 s2] "-"] [json-digit? [json-char-at 0 s2]]] [json-parse-number s2]]
+      [true [raise [str "JSON: unexpected character: " [json-char-at 0 s2]]]]]]]]
 
 # ---- Public API ----
 
@@ -439,7 +439,7 @@ Empty dicts render as {}, empty arrays as [] (compact, no newlines)."]:
 
 # from-json: Pure-tinct JSON parser implementation.
 # Takes a JSON string and returns a tinct value (Dict, Seq, String, Int, Float, Bool, or []).
-# The parser uses str-length and builtin-str-slice from prelude, and json-char-at from this dict.
+# The parser uses str-length and str-slice from prelude, and json-char-at from this dict.
 from-json@[doc: "Parse a JSON string into a tinct value.
 
 Parameters:

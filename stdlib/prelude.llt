@@ -90,7 +90,7 @@
 #    at eval time the first dict is materialized before the second dict's
 #    bindings exist in scope.
 #    Uses builtin-get (not the get wrapper), builtin-if chains (not and/or),
-#    and gte-impl (defined below) instead of >= (which is in the public dict).
+#    and builtin-gte instead of >= (which is in the public dict).
 #    Naming conventions:
 #      -impl   Internal recursive helper with extra state arguments.
 #      -step   Continuation passed to a Rust sequence builtin.
@@ -157,7 +157,7 @@
 # are defined in the PUBLIC dict and are NOT in scope when this dict is evaluated.
 #
 # Workarounds used here:
-#   gte-impl           private >= substitute using builtin-lt
+#   builtin-gte        instead of >= (which is in the public dict)
 #   builtin-get        instead of the get wrapper
 #   builtin-if chains  instead of and/or
 #   builtin-length     instead of length (prelude wrapper not yet in scope)
@@ -172,10 +172,6 @@
 # Private arithmetic helpers
 # ============================================================================
 
-# Private >= substitute: a >= b ↔ NOT (a < b)
-# Cannot use >= here because it's defined in the public dict.
-gte-impl: [fn@Bool [let a b] [builtin-if [builtin-lt a b] false true]]
-
 # Internal helper — not part of the public API.
 # Construct a single-entry dict from a computed key and value.
 # Access expressions like [builtin-get i ks] can't appear in key position syntactically;
@@ -189,14 +185,14 @@ make-entry: [fn@Dict [let k v] [$k: v]]
 # ============================================================================
 
 any?-impl: [fn@Bool [let pred@Fn xs@Dict ks i@Int len@Int]
-    [builtin-if [gte-impl i len]
+    [builtin-if [builtin-gte i len]
         false
         [builtin-if [pred [builtin-get [builtin-get i ks] xs]]
             true
             [any?-impl pred xs ks [builtin-add i 1] len]]]]
 
 all?-impl: [fn@Bool [let pred@Fn xs@Dict ks i@Int len@Int]
-    [builtin-if [gte-impl i len]
+    [builtin-if [builtin-gte i len]
         true
         [builtin-if [pred [builtin-get [builtin-get i ks] xs]]
             [all?-impl pred xs ks [builtin-add i 1] len]
@@ -207,7 +203,7 @@ all?-impl: [fn@Bool [let pred@Fn xs@Dict ks i@Int len@Int]
 # ============================================================================
 
 cond-impl: [fn@Any [let pairs@Dict i@Int]
-    [builtin-if [gte-impl i [builtin-length pairs]]
+    [builtin-if [builtin-gte i [builtin-length pairs]]
         []
         [cond-check pairs i [builtin-get i pairs].0 [builtin-get i pairs].1]]]
 
@@ -228,7 +224,7 @@ has?-impl: [fn@Bool [let try-result]
 # values-seq-impl: Build a lazy Seq of values (O(1) per element).
 # Recursion naturally produces correct order: recurse first, then cons.
 values-seq-impl: [fn [let xs@Dict ks i@Int len@Int]
-    [builtin-if [gte-impl i len]
+    [builtin-if [builtin-gte i len]
         []
         [builtin-seq
             [builtin-get [builtin-get i ks] xs]
@@ -236,7 +232,7 @@ values-seq-impl: [fn [let xs@Dict ks i@Int len@Int]
 
 # entries-seq-impl: Build a lazy Seq of entry dicts (O(1) per element).
 entries-seq-impl: [fn [let xs@Dict ks i@Int len@Int]
-    [builtin-if [gte-impl i len]
+    [builtin-if [builtin-gte i len]
         []
         [entries-seq-step xs ks i len [builtin-get i ks]]]]
 
@@ -274,9 +270,9 @@ zip-dict-impl: [fn@Dict [let xs@Dict ys@Dict]
     [builtin-collect [zip-dict-seq-impl xs ys [builtin-keys xs] [builtin-keys ys] 0 [builtin-length [builtin-keys xs]] [builtin-length [builtin-keys ys]]]]]
 
 zip-dict-seq-impl: [fn [let xs@Dict ys@Dict xks yks i@Int xlen@Int ylen@Int]
-    [builtin-if [gte-impl i xlen]
+    [builtin-if [builtin-gte i xlen]
         []
-        [builtin-if [gte-impl i ylen]
+        [builtin-if [builtin-gte i ylen]
             []
             [zip-dict-seq-step xs ys xks yks i xlen ylen [builtin-get i xks] [builtin-get i yks]]]]]
 
@@ -351,7 +347,7 @@ drop-while-seq: [fn [let pred@Fn entries dropping@Bool]
 # For dict elements: convert to Seq (via values-seq-impl), then append that Seq.
 # For non-dict elements: cons the element onto the result.
 flatten-seq-impl: [fn [let xs@Dict ks i@Int len@Int]
-    [builtin-if [gte-impl i len]
+    [builtin-if [builtin-gte i len]
         []
         [flatten-seq-step xs ks i len [builtin-get i ks]]]]
 
@@ -370,7 +366,7 @@ flatten-seq-append-dict: [fn [let d@Dict rest]
 
 # flatten-seq-concat-values: Recursively cons all values from dict onto rest.
 flatten-seq-concat-values: [fn [let d@Dict ks i@Int len@Int rest]
-    [builtin-if [gte-impl i len]
+    [builtin-if [builtin-gte i len]
         rest
         [builtin-seq
             [builtin-get [builtin-get i ks] d]
@@ -389,7 +385,7 @@ contains-seq?: [fn@Bool [let seq val]
 # O(n) per element * O(n) contains-seq? check = still O(n²), but O(1) cons per step.
 # Caller must reverse-seq the result before collect to restore original order.
 uniq-seq-impl: [fn [let ks xs@Dict acc seen i@Int len@Int]
-    [builtin-if [gte-impl i len]
+    [builtin-if [builtin-gte i len]
         acc
         [uniq-seq-step ks xs acc seen i len [builtin-get [builtin-get i ks] xs]]]]
 
@@ -1094,7 +1090,7 @@ flatten-impl-dict@[doc: "Flatten dict implementation (internal helper)"]: [fn@Di
 # find-deep helpers depend on find-deep and get (public) — live in public dict.
 # Inherently materializing: must traverse nested structure recursively to search.
 find-deep-impl@[doc: "Find-deep implementation (internal helper)"]: [fn@Any [let xs@Dict target ks i@Int]
-    [builtin-if [gte-impl i [length ks]]
+    [builtin-if [builtin-gte i [length ks]]
         [error [str "key not found: " target]]
         [find-deep-check xs target ks i [get i ks]]]]
 
@@ -1330,9 +1326,9 @@ contains?@[doc: "Check if collection contains element"]: [fn@Bool [let xs val]
         [str-contains? xs val]
         [builtin-if [builtin-eq [type-of xs] "Bytes"]
             [builtin-if [int? val]
-                [builtin-if [gte-impl val 0]
+                [builtin-if [builtin-gte val 0]
                     [builtin-if [builtin-lt val 256]
-                        [gte-impl [bytes-find xs [bytes-of [0: val]]] 0]
+                        [builtin-gte [bytes-find xs [bytes-of [0: val]]] 0]
                         [error "contains?: byte value must be in range 0-255"]]
                     [error "contains?: byte value must be in range 0-255"]]
                 [error "contains?: needle must be Int (byte value) when haystack is Bytes"]]
@@ -2048,7 +2044,7 @@ collect-kv@[doc: "Reconstruct dict from key-value pairs"]: [fn@Dict [let xs] [bu
 # assert: [str-contains? "hello world" "world"] => true
 # assert: [str-contains? "hello" "xyz"] => false
 str-contains?@[doc: "Check if haystack contains needle"]: [fn@Bool [let haystack@Stringing needle@Stringing]
-  [gte-impl [str-index-of haystack needle] 0]]
+  [builtin-gte [str-index-of haystack needle] 0]]
 
 # starts-with?: String -> String -> Bool
 # assert: [starts-with? "hello" "he"] => true

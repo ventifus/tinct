@@ -11664,3 +11664,15 @@ Added origin fields to Constraint::Class (T013 infrastructure). Fixed merge retu
 - [x] Wire Variant builtin to Type::Top
 - [x] Replace collect_all_vars_vec wildcard with exhaustive leaf enumeration
 - [x] Add MAX_SUBTYPE_DEPTH=256 guard to is_subtype
+
+### stdlib-health-cleanup (partial): Builtin privacy migration + comparison aliases ✅ DONE (2026-05-27)
+
+Migrated 8 stdlib files off raw builtin-* calls to prelude-exported wrappers. Added builtin-gte/lte/gt comparison builtins to Rust. Replaced gte-impl workaround in prelude with builtin-gte.
+
+- [x] stdlib/net.llt: replaced 13 builtin types with prelude wrappers
+- [x] stdlib/encoding.llt: replaced builtin-if/lt/add/sub/mul
+- [x] stdlib/async.llt: replaced builtin-if/sub/raise
+- [x] stdlib/codecs/json.llt: replaced builtin-str/if/eq/lt/add/raise/length
+- [x] stdlib/protocols/dns.llt, websocket.llt, socks5.llt, grpc.llt: replaced all builtin-* calls
+- [x] Added builtin-gte, builtin-lte, builtin-gt to standard_builtins()
+- [x] Replaced gte-impl with builtin-gte throughout prelude

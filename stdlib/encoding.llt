@@ -7,9 +7,9 @@
 #
 # Available builtins used here (all via builtin-* names or prelude wrappers):
 #   String:      builtin-str (str), builtin-str-slice, builtin-str-length (length)
-#   Arithmetic:  builtin-add, builtin-sub, builtin-mul, builtin-div
-#   Comparison:  builtin-lt, builtin-eq
-#   Control:     builtin-if
+#   Arithmetic:  +, -, *, builtin-div
+#   Comparison:  <, =
+#   Control:     if
 #   Sequences:   range (prelude wrapper), builtin-reduce
 #   Character:   builtin-char-code, builtin-chr, builtin-bxor
 #   Higher-order: quot, mod (prelude wrappers), and, >=, <=
@@ -39,12 +39,12 @@ hex-encode@[doc: "Convert a string to its hexadecimal representation"]: [fn@Stri
     [hex-encode-impl s 0 [length s] ""]]
 
 hex-encode-impl: [fn@String [let s@String i@Int len@Int acc@String]
-    [builtin-if [builtin-lt i len]
-        [hex-encode-step s i len acc [builtin-char-code [builtin-str-slice s i [builtin-add i 1]]]]
+    [if [< i len]
+        [hex-encode-step s i len acc [builtin-char-code [builtin-str-slice s i [+ i 1]]]]
         acc]]
 
 hex-encode-step: [fn@String [let s@String i@Int len@Int acc@String code@Int]
-    [hex-encode-impl s [builtin-add i 1] len
+    [hex-encode-impl s [+ i 1] len
         [str acc [int-to-hex code]]]]
 
 # Convert an integer (0-255) to a 2-digit hex string.
@@ -59,9 +59,9 @@ int-to-hex: [fn@String [let n@Int]
 # Convert a single hex digit (0-15) to its character.
 # Type: (Int -> String)
 hex-digit: [fn@String [let n@Int]
-    [builtin-if [builtin-lt n 10]
-        [builtin-chr [builtin-add 48 n]]           # '0'-'9' (48 = '0')
-        [builtin-chr [builtin-add 87 n]]]]         # 'a'-'f' (97 = 'a', 97-10=87)
+    [if [< n 10]
+        [builtin-chr [+ 48 n]]           # '0'-'9' (48 = '0')
+        [builtin-chr [+ 87 n]]]]         # 'a'-'f' (97 = 'a', 97-10=87)
 
 # Decode a hexadecimal string back to its original form.
 # Takes pairs of hex digits and converts them to characters.
@@ -70,20 +70,20 @@ hex-digit: [fn@String [let n@Int]
 # Example: [hex-decode "41"] => "A"
 # Example: [hex-decode ""] => ""
 hex-decode@[doc: "Decode a hexadecimal string back to its original form"]: [fn@String [let s@String]
-    [builtin-if [builtin-eq [mod [length s] 2] 0]
+    [if [= [mod [length s] 2] 0]
         [hex-decode-impl s 0 [length s] ""]
         [error "hex-decode: input length must be even"]]]
 
 hex-decode-impl: [fn@String [let s@String i@Int len@Int acc@String]
-    [builtin-if [builtin-lt i len]
+    [if [< i len]
         [hex-decode-step s i len acc
-            [hex-digit-to-int [str-slice s i [builtin-add i 1]]]
-            [hex-digit-to-int [str-slice s [builtin-add i 1] [builtin-add i 2]]]]
+            [hex-digit-to-int [str-slice s i [+ i 1]]]
+            [hex-digit-to-int [str-slice s [+ i 1] [+ i 2]]]]
         acc]]
 
 hex-decode-step: [fn@String [let s@String i@Int len@Int acc@String hi@Int lo@Int]
-    [hex-decode-impl s [builtin-add i 2] len
-        [str acc [builtin-chr [builtin-add [builtin-mul hi 16] lo]]]]]
+    [hex-decode-impl s [+ i 2] len
+        [str acc [builtin-chr [+ [* hi 16] lo]]]]]
 
 # Convert a hex digit character to an integer (0-15).
 # Type: (String -> Int)
@@ -92,12 +92,12 @@ hex-digit-to-int: [fn@Int [let c@String]
     [hex-digit-to-int-impl [builtin-char-code c]]]
 
 hex-digit-to-int-impl: [fn@Int [let code@Int]
-    [builtin-if [and [>= code 48] [<= code 57]]           # '0'-'9'
-        [builtin-sub code 48]
-        [builtin-if [and [>= code 97] [<= code 102]]      # 'a'-'f'
-            [builtin-sub code 87]
-            [builtin-if [and [>= code 65] [<= code 70]]   # 'A'-'F'
-                [builtin-sub code 55]
+    [if [and [>= code 48] [<= code 57]]           # '0'-'9'
+        [- code 48]
+        [if [and [>= code 97] [<= code 102]]      # 'a'-'f'
+            [- code 87]
+            [if [and [>= code 65] [<= code 70]]   # 'A'-'F'
+                [- code 55]
                 [error [str "hex-decode: invalid hex digit: " c]]]]]]
 
 # ============================================================================
@@ -119,55 +119,55 @@ base64-encode@[doc: "Convert a string to base64 encoding"]: [fn@String [let s@St
     [base64-encode-impl s 0 [length s] ""]]
 
 base64-encode-impl: [fn@String [let s@String i@Int len@Int acc@String]
-    [builtin-if [builtin-lt i len]
+    [if [< i len]
         [base64-encode-group s i len acc]
         acc]]
 
 # Encode a group of up to 3 bytes.
 base64-encode-group: [fn@String [let s@String i@Int len@Int acc@String]
-    [builtin-if [builtin-lt [builtin-add i 2] len]
+    [if [< [+ i 2] len]
         # Full 3-byte group
         [base64-encode-3bytes s i len acc
-            [builtin-char-code [builtin-str-slice s i [builtin-add i 1]]]
-            [builtin-char-code [builtin-str-slice s [builtin-add i 1] [builtin-add i 2]]]
-            [builtin-char-code [builtin-str-slice s [builtin-add i 2] [builtin-add i 3]]]]
-        [builtin-if [builtin-eq [builtin-add i 1] len]
+            [builtin-char-code [builtin-str-slice s i [+ i 1]]]
+            [builtin-char-code [builtin-str-slice s [+ i 1] [+ i 2]]]
+            [builtin-char-code [builtin-str-slice s [+ i 2] [+ i 3]]]]
+        [if [= [+ i 1] len]
             # Single byte remaining
             [base64-encode-1byte s i len acc
-                [builtin-char-code [builtin-str-slice s i [builtin-add i 1]]]]
+                [builtin-char-code [builtin-str-slice s i [+ i 1]]]]
             # Two bytes remaining
             [base64-encode-2bytes s i len acc
-                [builtin-char-code [builtin-str-slice s i [builtin-add i 1]]]
-                [builtin-char-code [builtin-str-slice s [builtin-add i 1] [builtin-add i 2]]]]]]]
+                [builtin-char-code [builtin-str-slice s i [+ i 1]]]
+                [builtin-char-code [builtin-str-slice s [+ i 1] [+ i 2]]]]]]]
 
 base64-encode-3bytes: [fn@String [let s@String i@Int len@Int acc@String b1@Int b2@Int b3@Int]
-    [base64-encode-impl s [builtin-add i 3] len
+    [base64-encode-impl s [+ i 3] len
         [str acc
             [base64-char [quot b1 4]]                                              # top 6 bits of b1
-            [base64-char [builtin-add [builtin-mul [mod b1 4] 16] [quot b2 16]]]   # bottom 2 of b1 + top 4 of b2
-            [base64-char [builtin-add [builtin-mul [mod b2 16] 4] [quot b3 64]]]   # bottom 4 of b2 + top 2 of b3
+            [base64-char [+ [* [mod b1 4] 16] [quot b2 16]]]   # bottom 2 of b1 + top 4 of b2
+            [base64-char [+ [* [mod b2 16] 4] [quot b3 64]]]   # bottom 4 of b2 + top 2 of b3
             [base64-char [mod b3 64]]]]]                                                   # bottom 6 bits of b3
 
 base64-encode-2bytes: [fn@String [let s@String i@Int len@Int acc@String b1@Int b2@Int]
-    [base64-encode-impl s [builtin-add i 2] len
+    [base64-encode-impl s [+ i 2] len
         [str acc
             [base64-char [quot b1 4]]
-            [base64-char [builtin-add [builtin-mul [mod b1 4] 16] [quot b2 16]]]
-            [base64-char [builtin-mul [mod b2 16] 4]]
+            [base64-char [+ [* [mod b1 4] 16] [quot b2 16]]]
+            [base64-char [* [mod b2 16] 4]]
             "="]]]
 
 base64-encode-1byte: [fn@String [let s@String i@Int len@Int acc@String b1@Int]
-    [base64-encode-impl s [builtin-add i 1] len
+    [base64-encode-impl s [+ i 1] len
         [str acc
             [base64-char [quot b1 4]]
-            [base64-char [builtin-mul [mod b1 4] 16]]
+            [base64-char [* [mod b1 4] 16]]
             "=="
         ]]]
 
 # Get the base64 character for index n (0-63).
 # Type: (Int -> String)
 base64-char: [fn@String [let n@Int]
-    [builtin-str-slice base64-alphabet n [builtin-add n 1]]]
+    [builtin-str-slice base64-alphabet n [+ n 1]]]
 
 # Decode a base64 string back to its original form.
 # Type: (String -> String)
@@ -178,50 +178,50 @@ base64-decode@[doc: "Decode a base64 string back to its original form"]: [fn@Str
     [base64-decode-impl s 0 [length s] ""]]
 
 base64-decode-impl: [fn@String [let s@String i@Int len@Int acc@String]
-    [builtin-if [builtin-lt i len]
+    [if [< i len]
         [base64-decode-group s i len acc]
         acc]]
 
 # Decode a group of 4 base64 characters.
 base64-decode-group: [fn@String [let s@String i@Int len@Int acc@String]
-    [builtin-if [builtin-lt [builtin-add i 3] len]
+    [if [< [+ i 3] len]
         [base64-decode-4chars s i len acc
-            [base64-char-to-int [builtin-str-slice s i [builtin-add i 1]]]
-            [base64-char-to-int [builtin-str-slice s [builtin-add i 1] [builtin-add i 2]]]
-            [base64-char-to-int [builtin-str-slice s [builtin-add i 2] [builtin-add i 3]]]
-            [base64-char-to-int [builtin-str-slice s [builtin-add i 3] [builtin-add i 4]]]]
+            [base64-char-to-int [builtin-str-slice s i [+ i 1]]]
+            [base64-char-to-int [builtin-str-slice s [+ i 1] [+ i 2]]]
+            [base64-char-to-int [builtin-str-slice s [+ i 2] [+ i 3]]]
+            [base64-char-to-int [builtin-str-slice s [+ i 3] [+ i 4]]]]
         [error "base64-decode: invalid input length (must be multiple of 4)"]]]
 
 base64-decode-4chars: [fn@String [let s@String i@Int len@Int acc@String c1@Int c2@Int c3@Int c4@Int]
-    [builtin-if [builtin-eq c4 [builtin-sub 0 1]]           # c4 is padding ('=')
-        [builtin-if [builtin-eq c3 [builtin-sub 0 1]]       # c3 is also padding ('==')
+    [if [= c4 [- 0 1]]           # c4 is padding ('=')
+        [if [= c3 [- 0 1]]       # c3 is also padding ('==')
             # Single byte encoded
-            [base64-decode-impl s [builtin-add i 4] len
-                [str acc [builtin-chr [builtin-add [builtin-mul c1 4] [quot c2 16]]]]]
+            [base64-decode-impl s [+ i 4] len
+                [str acc [builtin-chr [+ [* c1 4] [quot c2 16]]]]]
             # Two bytes encoded
-            [base64-decode-impl s [builtin-add i 4] len
+            [base64-decode-impl s [+ i 4] len
                 [str acc
-                    [builtin-chr [builtin-add [builtin-mul c1 4] [quot c2 16]]]
-                    [builtin-chr [builtin-add [builtin-mul [mod c2 16] 16] [quot c3 4]]]]]]
+                    [builtin-chr [+ [* c1 4] [quot c2 16]]]
+                    [builtin-chr [+ [* [mod c2 16] 16] [quot c3 4]]]]]]
         # Three bytes encoded
-        [base64-decode-impl s [builtin-add i 4] len
+        [base64-decode-impl s [+ i 4] len
             [str acc
-                [builtin-chr [builtin-add [builtin-mul c1 4] [quot c2 16]]]
-                [builtin-chr [builtin-add [builtin-mul [mod c2 16] 16] [quot c3 4]]]
-                [builtin-chr [builtin-add [builtin-mul [mod c3 4] 64] c4]]]]]]
+                [builtin-chr [+ [* c1 4] [quot c2 16]]]
+                [builtin-chr [+ [* [mod c2 16] 16] [quot c3 4]]]
+                [builtin-chr [+ [* [mod c3 4] 64] c4]]]]]]
 
 # Convert a base64 character to its index (0-63), or -1 for padding ('=').
 # Type: (String -> Int)
 base64-char-to-int: [fn@Int [let c@String]
-    [builtin-if [builtin-eq c "="]
-        [builtin-sub 0 1]
+    [if [= c "="]
+        [- 0 1]
         [base64-char-to-int-search c 0]]]
 
 base64-char-to-int-search: [fn@Int [let c@String i@Int]
-    [builtin-if [builtin-lt i 64]
-        [builtin-if [builtin-eq c [builtin-str-slice base64-alphabet i [builtin-add i 1]]]
+    [if [< i 64]
+        [if [= c [builtin-str-slice base64-alphabet i [+ i 1]]]
             i
-            [base64-char-to-int-search c [builtin-add i 1]]]
+            [base64-char-to-int-search c [+ i 1]]]
         [error [str "base64-decode: invalid character: " c]]]]
 
 # ============================================================================
@@ -235,19 +235,19 @@ base64-char-to-int-search: [fn@Int [let c@String i@Int]
 # Example: [mask-apply "hello" "key"] => (encrypted string)
 # Example: [mask-apply [mask-apply "hello" "key"] "key"] => "hello"  (double XOR recovers original)
 mask-apply@[doc: "Apply an XOR mask to a string (repeating-key cipher)"]: [fn@String [let data@String mask@String]
-    [builtin-if [builtin-eq [length mask] 0]
+    [if [= [length mask] 0]
         [error "mask-apply: mask cannot be empty"]
         [mask-apply-impl data mask 0 [length data] [length mask] ""]]]
 
 mask-apply-impl: [fn@String [let data@String mask@String i@Int data-len@Int mask-len@Int acc@String]
-    [builtin-if [builtin-lt i data-len]
+    [if [< i data-len]
         [mask-apply-step data mask i data-len mask-len acc
-            [builtin-char-code [builtin-str-slice data i [builtin-add i 1]]]
-            [builtin-char-code [builtin-str-slice mask [mod i mask-len] [builtin-add [mod i mask-len] 1]]]]
+            [builtin-char-code [builtin-str-slice data i [+ i 1]]]
+            [builtin-char-code [builtin-str-slice mask [mod i mask-len] [+ [mod i mask-len] 1]]]]
         acc]]
 
 mask-apply-step: [fn@String [let data@String mask@String i@Int data-len@Int mask-len@Int acc@String data-code@Int mask-code@Int]
-    [mask-apply-impl data mask [builtin-add i 1] data-len mask-len
+    [mask-apply-impl data mask [+ i 1] data-len mask-len
         [str acc [builtin-chr [builtin-bxor data-code mask-code]]]]]
 
 ]

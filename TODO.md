@@ -519,14 +519,14 @@ Spec: `doc/whatif/unified-bindings.md §src/parser.rs`, `§src/typecheck.rs`, `�
 Combines: stdlib-conformance-builtin-privacy (8), stdlib-conformance-cleanup (6), stdlib-health-326 (7). `macros.llt` and `ast.llt` are exempt from builtin-privacy (documented).
 
 **Builtin privacy — migrate non-prelude files off raw `builtin-*` calls:**
-- [ ] `stdlib/net.llt`: Replace `builtin-if`→`if`, `builtin-eq`→`=`, `builtin-length`→`length`, `builtin-split`→`split`, `builtin-merge`→`merge`, `builtin-get`→`get`, `builtin-to-int`→`to-int`, `builtin-reduce`→`reduce`, `builtin-str`→`str`, `builtin-null?`→`null?`, `builtin-raise`→`raise`, `builtin-try`→`try`, `builtin-rest`→`rest`
-- [ ] `stdlib/encoding.llt`: Replace all `builtin-if`, `builtin-lt`, `builtin-add`, `builtin-sub`, `builtin-mul` with `if`, `<`, `+`, `-`, `*` prelude wrappers
-- [ ] `stdlib/async.llt`: `retry-impl` `builtin-if`→`if`, `builtin-sub`→`-`, `builtin-raise`→`raise`; `loop-select-impl` `builtin-if`→`if`; `exit`/`graceful-exit`/`finally` `builtin-raise`→`raise`
-- [ ] `stdlib/codecs/json.llt`: Replace all `builtin-*` with prelude wrappers (`str`, `if`, `=`, `<`, `+`, `raise`, `str-slice`, `str?`, `null?`)
-- [ ] `stdlib/protocols/dns.llt`: Replace all `builtin-*` arithmetic/control calls with prelude wrappers
-- [ ] `stdlib/protocols/websocket.llt`: Replace all `builtin-*` calls with prelude wrappers
-- [ ] `stdlib/protocols/socks5.llt`: Replace all `builtin-*` calls with prelude wrappers
-- [ ] `stdlib/protocols/grpc.llt`: Replace all `builtin-*` calls with prelude wrappers
+- [x] `stdlib/net.llt`: Replace `builtin-if`→`if`, `builtin-eq`→`=`, `builtin-length`→`length`, `builtin-split`→`split`, `builtin-merge`→`merge`, `builtin-get`→`get`, `builtin-to-int`→`to-int`, `builtin-reduce`→`reduce`, `builtin-str`→`str`, `builtin-null?`→`null?`, `builtin-raise`→`raise`, `builtin-try`→`try`, `builtin-rest`→`rest`
+- [x] `stdlib/encoding.llt`: Replace all `builtin-if`, `builtin-lt`, `builtin-add`, `builtin-sub`, `builtin-mul` with `if`, `<`, `+`, `-`, `*` prelude wrappers
+- [x] `stdlib/async.llt`: `retry-impl` `builtin-if`→`if`, `builtin-sub`→`-`, `builtin-raise`→`raise`; `loop-select-impl` `builtin-if`→`if`; `exit`/`graceful-exit`/`finally` `builtin-raise`→`raise`
+- [x] `stdlib/codecs/json.llt`: Replace all `builtin-*` with prelude wrappers (`str`, `if`, `=`, `<`, `+`, `raise`, `str-slice`, `str?`, `null?`)
+- [x] `stdlib/protocols/dns.llt`: Replace all `builtin-*` arithmetic/control calls with prelude wrappers
+- [x] `stdlib/protocols/websocket.llt`: Replace all `builtin-*` calls with prelude wrappers
+- [x] `stdlib/protocols/socks5.llt`: Replace all `builtin-*` calls with prelude wrappers
+- [x] `stdlib/protocols/grpc.llt`: Replace all `builtin-*` calls with prelude wrappers
 
 **Correctness — verify `loop-select` depth limit post-CEK:**
 - [ ] Verify whether `loop-select` 230-iteration depth limit (`stdlib/async.llt:178-181`) still applies after CEK machine sprint; update or remove the warning
@@ -539,8 +539,8 @@ Combines: stdlib-conformance-builtin-privacy (8), stdlib-conformance-cleanup (6)
 - [ ] Split `stdlib/cli/out/toml.llt` into two-dict pattern (Private: `toml-*` helpers. Public: `toml`)
 
 **Missing comparison aliases (from stdlib-health-326):**
-- [ ] Add `builtin-gte`, `builtin-lte`, `builtin-gt` to `src/builtins.rs:standard_builtins()`
-- [ ] Update `stdlib/prelude.llt` private helpers to use `builtin-gte` instead of `gte-impl` workaround
+- [x] Add `builtin-gte`, `builtin-lte`, `builtin-gt` to `src/builtins.rs:standard_builtins()`
+- [x] Update `stdlib/prelude.llt` private helpers to use `builtin-gte` instead of `gte-impl` workaround
 
 **Undocumented functions (from stdlib-health-326):**
 - [ ] Add `variant?`, `payload-of`, `unindent` to `doc/11-stdlib.md` with signatures and examples

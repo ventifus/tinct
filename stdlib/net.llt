@@ -3,7 +3,7 @@
 # Requires: write-handle, str-bytes, bytes-str (io-phase1)
 # TODO(lazy-file-io): slurp still used at line 74 — blocked on bytes-concat availability
 # Requires prelude: make-entry, set (prelude functions, not raw builtins)
-# Uses builtin-* stable aliases for Rust primitives (defense in depth).
+# Uses prelude wrapper names for all Rust primitives (per builtin-privacy design).
 # Uses [match x []: true _: false] for null checks — builtin-null? was removed in
 # the type-predicates-to-tinct sprint; prelude null? is not reachable in this dict.
 #
@@ -20,37 +20,37 @@
   # Recursively parse header lines into accumulator dict.
   # Each line "Name: value" — skips malformed lines.
   parse-header-fields-impl: [fn@Dict [let lines@Dict i@Int n@Int acc@Dict]
-    [builtin-if [builtin-eq i n]
+    [if [= i n]
       acc
-      [builtin-if [builtin-eq [builtin-length [builtin-split ": " [builtin-get i lines]]] 1]
-        [parse-header-fields-impl lines [builtin-add i 1] n acc]
-        [parse-header-fields-impl lines [builtin-add i 1] n
-          [builtin-merge acc
+      [if [= [length [split ": " [get i lines]]] 1]
+        [parse-header-fields-impl lines [+ i 1] n acc]
+        [parse-header-fields-impl lines [+ i 1] n
+          [merge acc
             [make-entry
-              [builtin-get 0 [builtin-split ": " [builtin-get i lines]]]
-              [builtin-join ": " [builtin-rest [builtin-split ": " [builtin-get i lines]]]]]]]]]]
+              [get 0 [split ": " [get i lines]]]
+              [join ": " [rest [split ": " [get i lines]]]]]]]]]]
 
   # Helper to parse header+body section when separator exists.
   # Input: sections dict with 0 (headers) and 1 (body).
   parse-header-body: [fn@Dict [let sections@Dict]
-    [hdr-lines: [builtin-split "\r\n" [builtin-get 0 sections]]
+    [hdr-lines: [split "\r\n" [get 0 sections]]
     [set [set [set []
-      "status"  [builtin-to-int [builtin-get 1 [builtin-split " " [builtin-get 0 hdr-lines]]]]]
-      "headers" [parse-header-fields-impl [builtin-rest hdr-lines] 0 [builtin-length [builtin-rest hdr-lines]] []]]
-      "body"    [builtin-get 1 sections]]]]
+      "status"  [to-int [get 1 [split " " [get 0 hdr-lines]]]]]
+      "headers" [parse-header-fields-impl [rest hdr-lines] 0 [length [rest hdr-lines]] []]]
+      "body"    [get 1 sections]]]]
 ]
 
 # Public API
 [
   # Build a minimal HTTP/1.0 GET request string.
   build-http-request: [fn@String [let method@String path@String host@String]
-    [builtin-str method " " path " HTTP/1.0\r\nHost: " host "\r\nUser-Agent: tinct/0.1\r\nConnection: close\r\n\r\n"]]
+    [str method " " path " HTTP/1.0\r\nHost: " host "\r\nUser-Agent: tinct/0.1\r\nConnection: close\r\n\r\n"]]
 
   # Parse raw HTTP response string into {status headers body}.
   # Returns status 0 and body=response if no header/body separator found.
   parse-http-response: [fn@Dict [let response@String]
-    [sections: [builtin-split "\r\n\r\n" response]
-    [builtin-if [builtin-eq [builtin-length sections] 1]
+    [sections: [split "\r\n\r\n" response]
+    [if [= [length sections] 1]
       [set [set [set [] "status" 0] "headers" []] "body" response]
       [parse-header-body sections]]]]
 
@@ -62,35 +62,35 @@
   #             returns parsed response dict (throws on network error)
   #   other — throws "unsupported scheme"
   http-get: [fn [let cap@NetCap url@Url]
-    [builtin-if [builtin-eq url.scheme "https"]
+    [if [= url.scheme "https"]
       [http-request
         [http2-session cap [uri-origin url] []]
         "GET"
-        [builtin-str url.path [builtin-if [match url.query []: true _: false] "" [builtin-str "?" url.query]]]
+        [str url.path [if [match url.query []: true _: false] "" [str "?" url.query]]]
         []
         ""]
-      [builtin-if [builtin-eq url.scheme "http"]
+      [if [= url.scheme "http"]
         [parse-http-response
           # TODO(lazy-file-io): migrate to chunks+bytes-concat when available
           [bytes-str [slurp [write-handle
             [connect cap Tcp url.host url.port]
             [str-bytes [build-http-request "GET" url.path url.host]]]]]]
-        [builtin-raise [builtin-str "http-get: unsupported scheme: " url.scheme]]]]]
+        [raise [str "http-get: unsupported scheme: " url.scheme]]]]]
 
   # Parse URL string and call http-get.
-  # Returns Ok(response-dict) on success or Err(message) on failure (via builtin-try).
+  # Returns Ok(response-dict) on success or Err(message) on failure (via try).
   fetch: [fn [let cap@NetCap url-string@String]
-    [builtin-try [fn [let] [http-get cap [url url-string]]]]]
+    [try [fn [let] [http-get cap [url url-string]]]]]
 
   # Parse query string into a Dict of key-value pairs.
   # Returns empty dict if query is null.
   uri-params: [fn@Dict [let u@Url]
-    [builtin-if [match u.query []: true _: false]
+    [if [match u.query []: true _: false]
       []
-      [pairs: [builtin-split u.query "&"]
-      [builtin-reduce [fn [let acc pair]
-        [kv: [builtin-split pair "="]
-        [set acc [builtin-get 0 kv] [builtin-if [builtin-eq [builtin-length kv] 1] "" [builtin-get 1 kv]]]]]
+      [pairs: [split u.query "&"]
+      [reduce [fn [let acc pair]
+        [kv: [split pair "="]
+        [set acc [get 0 kv] [if [= [length kv] 1] "" [get 1 kv]]]]]
         [] pairs]]]]
 
   # Create an SPKI pin dict for certificate pinning.
@@ -102,16 +102,16 @@
   # Return "scheme://host:port" (origin).
   # Port is omitted if null.
   uri-origin: [fn@String [let u@Url]
-    [builtin-if [match u.port []: true _: false]
-      [builtin-str u.scheme "://" u.host]
-      [builtin-str u.scheme "://" u.host ":" u.port]]]
+    [if [match u.port []: true _: false]
+      [str u.scheme "://" u.host]
+      [str u.scheme "://" u.host ":" u.port]]]
 
   # Reconstruct full URI string from components.
   uri->string: [fn@String [let u@Url]
-    [builtin-str u.scheme "://"
-      [builtin-if [match u.host []: true _: false] "" u.host]
-      [builtin-if [match u.port []: true _: false] "" [builtin-str ":" u.port]]
+    [str u.scheme "://"
+      [if [match u.host []: true _: false] "" u.host]
+      [if [match u.port []: true _: false] "" [str ":" u.port]]
       u.path
-      [builtin-if [match u.query []: true _: false] "" [builtin-str "?" u.query]]
-      [builtin-if [match u.fragment []: true _: false] "" [builtin-str "#" u.fragment]]]]
+      [if [match u.query []: true _: false] "" [str "?" u.query]]
+      [if [match u.fragment []: true _: false] "" [str "#" u.fragment]]]]
 ]

@@ -15,14 +15,13 @@
 # The 5-byte header is called the "Length-Prefixed Message" header.
 # Callers supply the serialized protobuf bytes as a plain String.
 #
-# Dependencies (builtins used directly by name):
-#   builtin-str, builtin-str-slice, builtin-char-code, builtin-chr
-#   builtin-add, builtin-sub, builtin-mul
-#   builtin-lt, builtin-eq, builtin-if
-#   set (prelude wrapper), length (prelude wrapper), str, error
+# Dependencies (all via prelude wrappers):
+#   str, str-slice, char-code, chr
+#   +, -, *
+#   <, =, if
+#   set, length, error
 #
-# Relies on the parent scope (normally the prelude) for: length, set, str, error.
-# All direct builtin calls use builtin-* names.
+# All primitive operations use prelude-exported names per builtin-privacy design.
 #
 # Two-dict document: private helpers in dict 1, public API in dict 2.
 # All intermediate values are passed as function arguments (no [name: val]
@@ -40,19 +39,19 @@
 # --------------------------------------------------------------------------
 
 grpc-quot: [fn@Int [let a@Int b@Int]
-    [builtin-if [builtin-eq b 0]
+    [if [= b 0]
         [error "grpc-quot: division by zero"]
         [grpc-quot-impl a b]]]
 
 grpc-quot-impl: [fn@Int [let a@Int b@Int]
-    [builtin-if [builtin-lt a 0]
+    [if [< a 0]
         [error "grpc-quot: negative dividend not supported"]
-        [builtin-if [builtin-lt a b]
+        [if [< a b]
             0
-            [builtin-add 1 [grpc-quot-impl [builtin-sub a b] b]]]]]
+            [+ 1 [grpc-quot-impl [- a b] b]]]]]
 
 grpc-mod: [fn@Int [let a@Int b@Int]
-    [builtin-sub a [builtin-mul [grpc-quot a b] b]]]
+    [- a [* [grpc-quot a b] b]]]
 
 # --------------------------------------------------------------------------
 # 32-bit big-endian encoding / decoding
@@ -62,35 +61,35 @@ grpc-mod: [fn@Int [let a@Int b@Int]
 # n must be in range 0..4294967295 (unchecked for performance).
 grpc-encode-u32-be: [fn@String [let n@Int]
     [str
-        [builtin-chr [grpc-quot  n 16777216]]
-        [builtin-chr [grpc-mod   [grpc-quot n 65536]   256]]
-        [builtin-chr [grpc-mod   [grpc-quot n 256]     256]]
-        [builtin-chr [grpc-mod   n                     256]]]]
+        [chr [grpc-quot  n 16777216]]
+        [chr [grpc-mod   [grpc-quot n 65536]   256]]
+        [chr [grpc-mod   [grpc-quot n 256]     256]]
+        [chr [grpc-mod   n                     256]]]]
 
 # Decode a 4-byte big-endian string slice back to an integer.
 # Reads exactly 4 bytes starting at `offset` in `bytes`.
 grpc-decode-u32-be: [fn@Int [let bytes@String offset@Int]
-    [builtin-add
-        [builtin-mul
-            [builtin-add
-                [builtin-mul
-                    [builtin-add
-                        [builtin-mul
-                            [builtin-char-code [builtin-str-slice bytes
+    [+
+        [*
+            [+
+                [*
+                    [+
+                        [*
+                            [char-code [str-slice bytes
                                 offset
-                                [builtin-add offset 1]]]
+                                [+ offset 1]]]
                             256]
-                        [builtin-char-code [builtin-str-slice bytes
-                            [builtin-add offset 1]
-                            [builtin-add offset 2]]]]
+                        [char-code [str-slice bytes
+                            [+ offset 1]
+                            [+ offset 2]]]]
                     256]
-                [builtin-char-code [builtin-str-slice bytes
-                    [builtin-add offset 2]
-                    [builtin-add offset 3]]]]
+                [char-code [str-slice bytes
+                    [+ offset 2]
+                    [+ offset 3]]]]
             256]
-        [builtin-char-code [builtin-str-slice bytes
-            [builtin-add offset 3]
-            [builtin-add offset 4]]]]]
+        [char-code [str-slice bytes
+            [+ offset 3]
+            [+ offset 4]]]]]
 
 ]
 
@@ -119,7 +118,7 @@ GRPC-HEADER-LEN: 5
 build-grpc-frame@[doc: "Build a gRPC Length-Prefixed Message frame"]:
     [fn@String [let data@String compressed@Bool]
         [str
-            [builtin-chr [builtin-if compressed 1 0]]
+            [chr [if compressed 1 0]]
             [grpc-encode-u32-be [length data]]
             data]]
 
@@ -139,13 +138,13 @@ build-grpc-frame@[doc: "Build a gRPC Length-Prefixed Message frame"]:
 # Type: (String -> Dict)
 parse-grpc-frame-header@[doc: "Parse gRPC Length-Prefixed Message header"]:
     [fn@Dict [let bytes@String]
-        [builtin-if [builtin-lt [length bytes] GRPC-HEADER-LEN]
+        [if [< [length bytes] GRPC-HEADER-LEN]
             [set [] "err" [str
                 "parse-grpc-frame-header: need at least 5 bytes, got "
                 [length bytes]]]
             [set [set [set []
-                "compressed" [builtin-eq
-                    [builtin-char-code [builtin-str-slice bytes 0 1]]
+                "compressed" [=
+                    [char-code [str-slice bytes 0 1]]
                     1]]
                 "length"     [grpc-decode-u32-be bytes 1]]
                 "header-len" GRPC-HEADER-LEN]]]
