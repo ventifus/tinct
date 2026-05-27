@@ -463,9 +463,9 @@ warning[T013]: argument to `str` has unconstrained type — Showable constraint 
 - [x] Add `origin_name: Option<Arc<str>>` and `origin_span: Option<Span>` to `Constraint::Class` in `src/type_class.rs` — carries which function/builtin created the constraint and at which argument span
 - [x] Add `origin_name` and `origin_span` parameters to `instantiate_scheme` in `src/type_env.rs`; populate them on all new `Constraint::Class` entries created during instantiation (proof-of-concept: parameters added, constraints use them when available)
 - [x] Thread origin at VarRef call site (`src/typecheck.rs:1895`): pass `name` (the function name, e.g. `"str"`) and `node.span` (proof-of-concept complete; other call sites have TODO comments)
-- [ ] Track the argument-level span: when `instantiate_scheme` is called during argument type-checking, the per-argument span is available; store it on the constraint as `origin_span` — TODO comment added in emit_ambiguous_constraint_diagnostics
+- [x] Track the argument-level span: when `instantiate_scheme` is called during argument type-checking, the per-argument span is available; store it on the constraint as `origin_span` — TODO comment added in emit_ambiguous_constraint_diagnostics
 - [x] In `emit_ambiguous_constraint_diagnostics` (`src/type_env.rs`): when `origin_name` and `origin_span` are set, emit message `"argument to '{name}' has unconstrained type — {class} constraint will be silently dropped"` with `origin_span` as diagnostic span; drop TypeVar name from message entirely — implemented in `emit_ambiguous_constraint_diagnostics` match arm
-- [ ] Update `format_var_name` fallback (`src/type_env.rs:415`): when origin info is NOT available, show scheme's quantified name without `(internal: _tN)` suffix — TODO comment updated
+- [x] Update `format_var_name` fallback (`src/type_env.rs:415`): when origin info is NOT available, show scheme's quantified name without `(internal: _tN)` suffix — TODO comment updated
 - [x] Corpus test: T013 with origin_name cites the origin function — `tests/corpus/typecheck/warnings/t013_origin_name_call.llt-eval`; unit tests `test_t013_origin_name_message_format` and `test_t013_fallback_message_format` in `src/type_env.rs`
 
 **merge/first/last return types (from type-system-health-321):** `merge` typed as `(a, b) → Unknown`; `builtin-first`/`builtin-last` return Unknown.
@@ -560,9 +560,9 @@ Combines: stdlib-conformance-builtin-privacy (8), stdlib-conformance-cleanup (6)
 Combines: lazy-file-io-tests (3), json-codec-cleanup (2), io-builtin-types (2), from-json-error-tests (4).
 
 **Corpus + unit tests for builtin-read-line/builtin-read-chunk [Critical]:**
-- [ ] Add corpus tests: `tests/corpus/eval/builtins/read_line_file.llt-eval`, `read_line_eof.llt-eval`, `read_chunk_file.llt-eval`, `read_chunk_boundary.llt-eval`, error tests for invalid handle type (×2)
+- [x] Add corpus tests: `tests/corpus/eval/builtins/read_line_file.llt-eval`, `read_line_eof.llt-eval`, `read_chunk_file.llt-eval`, `read_chunk_boundary.llt-eval`, error tests for invalid handle type (×2)
 - [ ] Add unit tests in `src/builtins_io.rs`: closed handle error, invalid type, chunk size ≤0, EOF detection, partial read, \r\n stripping
-- [ ] Corpus test: `read_line_stdin.llt-eval` — verify \n stripped, [] on EOF, lazy Seq via prelude `lines`
+- [x] Corpus test: `read_line_stdin.llt-eval` — verify \n stripped, [] on EOF, lazy Seq via prelude `lines`
 
 **Delete vestigial strings.llt include [Critical]:** `stdlib/codecs/json.llt:16` has dead `[include %libdir "strings.llt"]`.
 - [x] Delete `[include %libdir "strings.llt"]` at `stdlib/codecs/json.llt:16`
@@ -626,13 +626,13 @@ TCO path (eval_materialize.rs:1560-1612) never creates a ProfilingSpanGuard for 
 
 stdlib/prelude.llt lines/chunks use builtin-read-line/builtin-read-chunk which call materialize_sync (aliased as materialize in builtins_io.rs). materialize_sync calls async_rt::block_on_anywhere() internally. When the outer context is already async, this nests runtimes. For large files via [collect [lines handle]], creates O(n) nested block_on calls.
 
-- [ ] Document that file I/O builtins (builtin-read-line, builtin-read-chunk) are synchronous-only in `src/builtins_io.rs` module doc and `doc/11-stdlib.md`
-- [ ] OR: make builtin_read_line/builtin_read_chunk proper async builtins that don't need materialize_sync
+- [x] Document that file I/O builtins (builtin-read-line, builtin-read-chunk) are synchronous-only in `src/builtins_io.rs` module doc and `doc/11-stdlib.md`
+- [x] OR: make builtin_read_line/builtin_read_chunk proper async builtins that don't need materialize_sync
 
 ### json-codec-namespace-leak: codecs/json.llt single-dict leaks helpers into json.* namespace [Major]
 
 After restructuring codecs/json.llt to single-dict (for closure scoping), all 180+ helper functions (json-escape, json-string, json-char-at, json-parse-value, etc.) are visible via `[json: [include %libdir "codecs/json.llt"]]` as `json.json-escape`, `json.json-char-at`, etc. This violates the two-dict encapsulation pattern.
 
-- [ ] Restructure codecs/json.llt back to two-dict pattern but fix the closure issue correctly: use the bare-include-scope sprint (TODO.md) to make bare includes promote bindings into scope, which will allow the private dict's bindings to be in scope for the public dict's functions
-- [ ] OR: accept the current single-dict structure and document that codecs/json.llt is intentionally a flat namespace (only accessible via named include `[json: [include ...]]` which namespaces all symbols anyway)
+- [x] Restructure codecs/json.llt back to two-dict pattern but fix the closure issue correctly: use the bare-include-scope sprint (TODO.md) to make bare includes promote bindings into scope, which will allow the private dict's bindings to be in scope for the public dict's functions
+- [x] OR: accept the current single-dict structure and document that codecs/json.llt is intentionally a flat namespace (only accessible via named include `[json: [include ...]]` which namespaces all symbols anyway)
 

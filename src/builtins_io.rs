@@ -30,6 +30,12 @@
 //! - `emit`: Write to stdout and suppress JSON output
 //! - `env`: Read environment variables
 //!
+//! **Note:** `builtin-read-line` and `builtin-read-chunk` are synchronous builtins that use
+//! `BufRead::read_line()` and `Read::read()` respectively. They are safe for the tinct lazy
+//! evaluation model, but when called from within an async context (e.g., inside a `[task ...]`),
+//! they block the current thread. For large files, use explicit `[collect [lines handle]]`
+//! patterns outside task boundaries.
+//!
 //! Extracted from `builtins.rs` to keep that file manageable.
 //!
 //! Registration in `standard_builtins()` and `create_root_env()` remains in `builtins.rs`.

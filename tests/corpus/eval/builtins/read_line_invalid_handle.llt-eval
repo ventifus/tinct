@@ -1,0 +1,4 @@
+# builtin-read-line: error when argument is not a Handle
+[builtin-read-line 42]
+=== error
+[E010] builtin-read-line: expected Handle, got Int
