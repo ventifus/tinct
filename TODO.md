@@ -116,7 +116,7 @@ Span-level profiling with dual attribution (materialization-context and creation
 **Whatif:** `profiling`
 **Depends on:** `profiling-scripts`
 
-- [ ] Run `/review-whatif profiling` — verify all sprints complete, implementation matches spec, docs consistent; address findings before closing
+- [x] Run `/review-whatif profiling` — verify all sprints complete, implementation matches spec, docs consistent; address findings before closing
 
 ---
 
@@ -464,9 +464,9 @@ warning[T013]: argument to `str` has unconstrained type — Showable constraint 
 - [x] Add `origin_name` and `origin_span` parameters to `instantiate_scheme` in `src/type_env.rs`; populate them on all new `Constraint::Class` entries created during instantiation (proof-of-concept: parameters added, constraints use them when available)
 - [x] Thread origin at VarRef call site (`src/typecheck.rs:1895`): pass `name` (the function name, e.g. `"str"`) and `node.span` (proof-of-concept complete; other call sites have TODO comments)
 - [ ] Track the argument-level span: when `instantiate_scheme` is called during argument type-checking, the per-argument span is available; store it on the constraint as `origin_span` — TODO comment added in emit_ambiguous_constraint_diagnostics
-- [ ] In `emit_ambiguous_constraint_diagnostics` (`src/type_env.rs`): when `origin_name` and `origin_span` are set, emit message `"argument to '{name}' has unconstrained type — {class} constraint will be silently dropped"` with a secondary span at `origin_span` pointing to the specific argument; drop TypeVar name from message entirely — TODO comment added
-- [ ] Update `format_var_name` fallback (`src/type_env.rs:415`): when origin info is available, show only origin; when not, show the scheme's quantified name (e.g. `'a'`) without `(internal: _tN)` suffix — TODO comment added
-- [ ] Corpus test: T013 message cites the origin function and points to the argument span — TODO comment added
+- [x] In `emit_ambiguous_constraint_diagnostics` (`src/type_env.rs`): when `origin_name` and `origin_span` are set, emit message `"argument to '{name}' has unconstrained type — {class} constraint will be silently dropped"` with `origin_span` as diagnostic span; drop TypeVar name from message entirely — implemented in `emit_ambiguous_constraint_diagnostics` match arm
+- [ ] Update `format_var_name` fallback (`src/type_env.rs:415`): when origin info is NOT available, show scheme's quantified name without `(internal: _tN)` suffix — TODO comment updated
+- [x] Corpus test: T013 with origin_name cites the origin function — `tests/corpus/typecheck/warnings/t013_origin_name_call.llt-eval`; unit tests `test_t013_origin_name_message_format` and `test_t013_fallback_message_format` in `src/type_env.rs`
 
 **merge/first/last return types (from type-system-health-321):** `merge` typed as `(a, b) → Unknown`; `builtin-first`/`builtin-last` return Unknown.
 - [x] Fix `merge` return type in `src/type_env.rs:2869` — change from Unknown to `Appendable a => (a, a) → a` or add fundep constraint

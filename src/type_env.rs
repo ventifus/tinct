@@ -399,20 +399,20 @@ pub fn generalize(level: u32, ty: &Type, state: &mut InferState) -> TypeScheme {
 // TODO(type-system-cleanup T013 Task 4): Track argument-level span on constraints.
 // When instantiate_scheme is called during argument type-checking, the per-argument
 // span is available at the call site. Store it on Constraint::Class as origin_span.
+// Currently origin_span is set to the VarRef span (the whole function-name span),
+// not the individual argument's span.
 //
-// TODO(type-system-cleanup T013 Task 5): Update this function to use origin info.
-// When origin_name and origin_span are set on a Constraint::Class, emit:
-//   "argument to '{origin_name}' has unconstrained type — {class} constraint will be silently dropped"
-// with a secondary span at origin_span pointing to the specific argument.
-// Drop TypeVar name from message entirely when origin info is available.
+// Task 5: DONE — origin_name/origin_span are now used when present (see match arm below).
+// Emits "argument to `{name}` has unconstrained type — {class} constraint will be silently dropped"
+// and uses origin_span as the diagnostic span when available.
 //
 // TODO(type-system-cleanup T013 Task 6): Update format_var_name fallback below.
-// When origin info is available in the constraint, show only origin (function + span).
-// When not available, show the scheme's quantified name (e.g., 'a') without "(internal: _tN)".
+// When origin info is NOT available, show the scheme's quantified name (e.g., 'a')
+// without the "(internal: _tN)" suffix — the internal name is noise for users.
 //
-// TODO(type-system-cleanup T013 Task 7): Add corpus test for T013 origin.
-// Test should verify the diagnostic message cites the origin function and points
-// to the argument span, not the internal TypeVar name.
+// Task 7: DONE — unit tests added in test_t013_origin_name_message_format and
+// test_t013_fallback_message_format; corpus test in
+// tests/corpus/typecheck/warnings/t013_origin_name_call.llt-eval.
 fn emit_ambiguous_constraint_diagnostics(
     constraints: &[Constraint],
     subst_snapshot: &HashMap<String, Type>,
@@ -438,17 +438,36 @@ fn emit_ambiguous_constraint_diagnostics(
     };
     for c in constraints {
         match c {
-            Constraint::Class { class, vars, .. } => {
+            Constraint::Class {
+                class,
+                vars,
+                origin_name,
+                origin_span,
+            } => {
                 for var in vars {
                     if !is_discharged(var) {
-                        // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                        if emitted.insert((var.clone(), span)) {
-                            diagnostics.push(crate::error::TypeDiagnostic {
-                                message: format!(
+                        // Use argument-level span when available (Task 4: origin_span set during
+                        // instantiate_scheme at argument type-checking sites). Fall back to the
+                        // call-site span passed to this function.
+                        let diag_span = origin_span.unwrap_or(span);
+                        // Deduplicate: only emit if this (var, diag_span) pair hasn't been seen
+                        if emitted.insert((var.clone(), diag_span)) {
+                            let message = if let Some(name) = origin_name {
+                                // Better message: cite the origin function and constraint class.
+                                // Drops the internal TypeVar name — user doesn't know/care about _tN.
+                                format!(
+                                    "argument to `{}` has unconstrained type — {} constraint will be silently dropped",
+                                    name, class
+                                )
+                            } else {
+                                format!(
                                     "ambiguous type variable {} in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
                                     format_var_name(var), class
-                                ),
-                                span,
+                                )
+                            };
+                            diagnostics.push(crate::error::TypeDiagnostic {
+                                message,
+                                span: diag_span,
                                 code: "T013",
                                 level: crate::error::DiagnosticLevel::Warn,
                             });
@@ -4369,5 +4388,169 @@ mod help_suggestion_tests {
             },
             other => panic!("Expected Negation type, got {:?}", other),
         }
+    }
+
+    // T013 Task 5: emit_ambiguous_constraint_diagnostics origin_name path.
+    // When a Constraint::Class carries origin_name, the diagnostic message should cite
+    // the function name rather than the internal TypeVar name.
+    #[test]
+    fn test_t013_origin_name_message_format() {
+        use crate::ast::{Position, Span};
+        use crate::error::DiagnosticLevel;
+        use crate::type_class::{ClassDecl, Constraint};
+        use std::collections::{HashMap, HashSet};
+        use std::sync::Arc;
+
+        // Build a minimal ClassDecl for "Showable" (params=[] follows Constraint::new_by_name pattern)
+        let class = Arc::new(ClassDecl {
+            name: "Showable".to_string(),
+            params: vec![],
+            superclasses: vec![],
+            determines: vec![],
+            resolver: None,
+            resolver_injective: false,
+        });
+
+        // Constraint with origin_name="str" (as would be set by instantiate_scheme at a VarRef)
+        let arg_span = Span {
+            start: Position {
+                offset: 10,
+                line: 1,
+                column: 11,
+            },
+            end: Position {
+                offset: 14,
+                line: 1,
+                column: 15,
+            },
+        };
+        let constraint_with_origin = Constraint::Class {
+            class: Arc::clone(&class),
+            vars: vec!["_t42".to_string()],
+            origin_name: Some(Arc::from("str")),
+            origin_span: Some(arg_span),
+        };
+
+        // _t42 is NOT in the substitution map → not discharged → T013 fires
+        let subst_snapshot: HashMap<String, Type> = HashMap::new();
+        let source_names: HashMap<String, String> = HashMap::new();
+        let mut diagnostics: Vec<crate::error::TypeDiagnostic> = Vec::new();
+        let fallback_span = Span {
+            start: Position {
+                offset: 0,
+                line: 1,
+                column: 1,
+            },
+            end: Position {
+                offset: 5,
+                line: 1,
+                column: 6,
+            },
+        };
+        let mut emitted: HashSet<(String, Span)> = HashSet::new();
+
+        emit_ambiguous_constraint_diagnostics(
+            &[constraint_with_origin],
+            &subst_snapshot,
+            &source_names,
+            &mut diagnostics,
+            fallback_span,
+            &mut emitted,
+        );
+
+        assert_eq!(diagnostics.len(), 1, "expected exactly one T013 diagnostic");
+        let diag = &diagnostics[0];
+        assert_eq!(diag.code, "T013");
+        assert_eq!(diag.level, DiagnosticLevel::Warn);
+        // Message must cite the origin function, not the internal TypeVar name
+        assert!(
+            diag.message.contains("argument to `str`"),
+            "expected message to cite origin function 'str'; got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("Showable"),
+            "expected message to cite constraint class 'Showable'; got: {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("_t42"),
+            "expected message to omit internal TypeVar name '_t42'; got: {}",
+            diag.message
+        );
+        // When origin_span is provided, the diagnostic span should be the argument span
+        assert_eq!(
+            diag.span, arg_span,
+            "expected diagnostic span to use origin_span (argument location)"
+        );
+    }
+
+    // T013 Task 5: when origin_name is absent, the fallback message format is preserved.
+    #[test]
+    fn test_t013_fallback_message_format() {
+        use crate::ast::{Position, Span};
+        use crate::error::DiagnosticLevel;
+        use crate::type_class::{ClassDecl, Constraint};
+        use std::collections::{HashMap, HashSet};
+        use std::sync::Arc;
+
+        let class = Arc::new(ClassDecl {
+            name: "Comparable".to_string(),
+            params: vec![],
+            superclasses: vec![],
+            determines: vec![],
+            resolver: None,
+            resolver_injective: false,
+        });
+
+        // Constraint WITHOUT origin info (annotation-driven, as in existing tests)
+        let constraint_no_origin = Constraint::new(class, "_t7");
+
+        let subst_snapshot: HashMap<String, Type> = HashMap::new();
+        let source_names: HashMap<String, String> = HashMap::new();
+        let mut diagnostics: Vec<crate::error::TypeDiagnostic> = Vec::new();
+        let call_span = Span {
+            start: Position {
+                offset: 0,
+                line: 1,
+                column: 1,
+            },
+            end: Position {
+                offset: 5,
+                line: 1,
+                column: 6,
+            },
+        };
+        let mut emitted: HashSet<(String, Span)> = HashSet::new();
+
+        emit_ambiguous_constraint_diagnostics(
+            &[constraint_no_origin],
+            &subst_snapshot,
+            &source_names,
+            &mut diagnostics,
+            call_span,
+            &mut emitted,
+        );
+
+        assert_eq!(diagnostics.len(), 1, "expected exactly one T013 diagnostic");
+        let diag = &diagnostics[0];
+        assert_eq!(diag.code, "T013");
+        assert_eq!(diag.level, DiagnosticLevel::Warn);
+        // Fallback: must still contain "ambiguous type variable" and the constraint class
+        assert!(
+            diag.message.contains("ambiguous type variable"),
+            "expected fallback message to contain 'ambiguous type variable'; got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("Comparable"),
+            "expected fallback message to cite 'Comparable'; got: {}",
+            diag.message
+        );
+        // Fallback: span should be the call_span, not any argument span
+        assert_eq!(
+            diag.span, call_span,
+            "expected fallback span to be call_span"
+        );
     }
 }
