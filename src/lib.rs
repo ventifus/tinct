@@ -1667,6 +1667,7 @@ mod tests {
             &ctx,
             &resolution_table,
             &type_annotation_table,
+            &std::collections::HashMap::new(),
             initial_input,
         ))
         .expect("eval failed");

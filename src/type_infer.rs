@@ -152,6 +152,11 @@ pub struct InferState {
     /// Populated by infer_surface_expr's TypeAssert handler. Extracted by typecheck_surface_document
     /// to merge into the document-level annotation table.
     pub type_annotation_table: crate::ast::TypeAnnotationTable,
+    /// Resolved types for pipeline `expects:` contracts, keyed by the expects annotation's span.
+    /// When a document has `--- expects: TypeExpr`, the typecheck pass resolves TypeExpr and stores
+    /// the result here. The eval pipeline reads this map to populate RuntimeTypeCheck.resolved_type,
+    /// enabling structural type checking instead of nominal string comparison.
+    pub expects_resolved: HashMap<crate::ast::Span, crate::types::Type>,
 }
 
 impl InferState {
@@ -380,6 +385,7 @@ impl InferState {
             t013_emitted: std::collections::HashSet::new(),
             registered_nominal_tags: HashMap::new(),
             type_annotation_table: crate::ast::TypeAnnotationTable::new(),
+            expects_resolved: HashMap::new(),
         }
     }
 

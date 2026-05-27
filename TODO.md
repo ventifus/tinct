@@ -189,14 +189,14 @@ Implement the AGT consistent subtyping relation and ground_type_of; replace valu
 
 Restructure pipeline `expects:` contracts to use resolved types instead of RuntimeTypeCheck string comparison.
 
-- [ ] Add `resolved_type: Option<Type>` field to `CoreExpr::RuntimeTypeCheck` in `src/ast.rs` (`src/ast.rs:903-907`)
-- [ ] Add `state.expects_resolved: HashMap<DocumentId, Type>` side table to typecheck state (`src/typecheck.rs`)
-- [ ] In typecheck `expects:` handler: instead of discarding the resolved type after advisory check, store it in `state.expects_resolved` (`src/typecheck.rs:307-341`)
-- [ ] Thread `expects_resolved` from typecheck output to `eval_surface_file_with_input` → `wrap_with_nominal_validation` (`src/eval_pipeline.rs`)
-- [ ] Update `wrap_with_nominal_validation` signature to accept `resolved_type: Option<Type>` and populate `RuntimeTypeCheck::resolved_type` (`src/eval_pipeline.rs:35-76`)
-- [ ] At force time: when `resolved_type` is `Some(ty)`, call `value_matches_type(v, ty)` instead of string comparison (`src/eval_materialize.rs:2595-2694`)
-- [ ] Handle eval-time macros producing TypeAssert nodes: either run typecheck on expanded output or restrict expansion to not produce TypeAssert without resolved types (`src/builtins_meta.rs`)
-- [ ] Tests: pipeline `expects:` contract with resolved type — verify structural type checking replaces nominal string comparison (`tests/corpus/eval/pipeline/`)
+- [x] Add `resolved_type: Option<Type>` field to `CoreExpr::RuntimeTypeCheck` in `src/ast.rs` (`src/ast.rs:903-907`)
+- [x] Add `state.expects_resolved: HashMap<DocumentId, Type>` side table to typecheck state (`src/typecheck.rs`)
+- [x] In typecheck `expects:` handler: instead of discarding the resolved type after advisory check, store it in `state.expects_resolved` (`src/typecheck.rs:307-341`)
+- [x] Thread `expects_resolved` from typecheck output to `eval_surface_file_with_input` → `wrap_with_nominal_validation` (`src/eval_pipeline.rs`)
+- [x] Update `wrap_with_nominal_validation` signature to accept `resolved_type: Option<Type>` and populate `RuntimeTypeCheck::resolved_type` (`src/eval_pipeline.rs:35-76`)
+- [x] At force time: when `resolved_type` is `Some(ty)`, call `value_matches_type(v, ty)` instead of string comparison (`src/eval_materialize.rs:2595-2694`)
+- [x] Handle eval-time macros producing TypeAssert nodes: either run typecheck on expanded output or restrict expansion to not produce TypeAssert without resolved types (`src/builtins_meta.rs`)
+- [x] Tests: pipeline `expects:` contract with resolved type — verify structural type checking replaces nominal string comparison (`tests/corpus/eval/pipeline/`)
 
 ### runtime-typecheck-deletion: Delete RuntimeTypeCheck and cleanup
 

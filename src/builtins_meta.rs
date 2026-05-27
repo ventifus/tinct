@@ -1549,7 +1549,7 @@ pub(crate) fn builtin_expand(
                 // Typecheck to populate TypeAnnotationTable for static type resolution in TypeAssert nodes.
                 // Type errors are advisory — eval proceeds regardless. Callers that care
                 // about type errors use `builtin_eval_types`.
-                let (_annotation_errors, type_annotation_table) =
+                let (_annotation_errors, type_annotation_table, _expects_resolved) =
                     crate::typecheck::typecheck_surface_program_annotation_table(
                         &new_surface_program,
                     );

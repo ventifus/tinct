@@ -67,7 +67,11 @@ pub use crate::types::SchemeMap;
 /// - `table`: TypeAnnotationTable mapping NodeId → Type for successfully inferred expressions
 pub fn typecheck_surface_program_annotation_table(
     program: &SurfaceProgram,
-) -> (Vec<TypeError>, TypeAnnotationTable) {
+) -> (
+    Vec<TypeError>,
+    TypeAnnotationTable,
+    HashMap<crate::ast::Span, Type>,
+) {
     let mut errors = Vec::new();
     let mut table = TypeAnnotationTable::new();
     let mut env = crate::imports::build_prelude_env();
@@ -109,7 +113,7 @@ pub fn typecheck_surface_program_annotation_table(
         pipeline_type = doc_output_type;
     }
 
-    (errors, table)
+    (errors, table, state.expects_resolved)
 }
 
 /// Type-check a `SurfaceProgram` with a given initial type environment.
@@ -322,6 +326,11 @@ fn typecheck_surface_document(
             &mut None,
         ) {
             Ok(expected_type) => {
+                // Store resolved type for eval_pipeline to use in RuntimeTypeCheck
+                state
+                    .expects_resolved
+                    .insert(expects_ann.span, expected_type.clone());
+
                 let (pipeline_type_resolved, expected_type_resolved) = if state.subst.is_empty() {
                     (pipeline_type.clone(), expected_type.clone())
                 } else {

@@ -12,11 +12,11 @@
 
 use std::sync::Arc;
 
-use crate::type_def::Type;
 use crate::ast::{
     node_id, CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, ResolutionTable, Spanned,
     SurfaceExpression, SurfaceNode, TypeAnnotationTable,
 };
+use crate::type_def::Type;
 
 /// Lower a single surface node to a CoreExpr.
 ///
@@ -162,10 +162,16 @@ fn lower_expr(
                     // Type::Error: failed_bindings entry — emit RuntimeTypeCheck to avoid
                     // creating a TypeAssert that always fails silently in release builds.
                     // None: Macro-synthesized node — bypassed typechecking.
+                    //
+                    // TODO(typecheck-runtime-unification Component 3): After RuntimeTypeCheck
+                    // is deleted, emit CoreExpr::TypeAssert { resolved_type: Type::Unknown }
+                    // instead. Unknown passes via consistent subtyping, and the real error
+                    // surfaces as the undefined_variable error at the failed-binding use-site.
                     CoreExpr::RuntimeTypeCheck {
                         annotation: annotation.clone(),
                         expr: Arc::new(lower(inner, res, types)),
                         default: None,
+                        resolved_type: None,
                     }
                 }
                 Some(ty) => CoreExpr::TypeAssert {

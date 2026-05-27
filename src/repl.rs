@@ -247,6 +247,7 @@ impl ReplSession {
             &self.ctx,
             &resolution_table,
             &type_annotation_table,
+            &std::collections::HashMap::new(),
             Some(Arc::clone(&self.prev_result)),
         )
         .await

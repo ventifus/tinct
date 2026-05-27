@@ -2040,7 +2040,7 @@ fn run_eval(
             let _resolution_table =
                 tinct::resolve::resolve_surface_program(output.as_surface_program());
             // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
-            let (_type_errors, _type_annotation_table) =
+            let (_type_errors, _type_annotation_table, _expects_resolved) =
                 tinct::typecheck::typecheck_surface_program_annotation_table(
                     output.as_surface_program(),
                 );
@@ -2194,6 +2194,7 @@ fn run_eval(
                 &eval_ctx,
                 &resolution_table,
                 &type_annotation_table,
+                &infer_state.expects_resolved,
                 pipeline_input.clone(),
             ))
             .map_err(|e| {
@@ -2385,7 +2386,7 @@ async fn run_fmt(
         let _resolution_table =
             tinct::resolve::resolve_surface_program(output.as_surface_program());
         // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
-        let (_type_errors, _type_annotation_table) =
+        let (_type_errors, _type_annotation_table, _expects_resolved) =
             tinct::typecheck::typecheck_surface_program_annotation_table(
                 output.as_surface_program(),
             );
@@ -2506,7 +2507,7 @@ fn run_lint(
     // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
     let _resolution_table = tinct::resolve::resolve_surface_program(output.as_surface_program());
     // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
-    let (_type_errors, _type_annotation_table) =
+    let (_type_errors, _type_annotation_table, _expects_resolved) =
         tinct::typecheck::typecheck_surface_program_annotation_table(output.as_surface_program());
 
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
@@ -2759,7 +2760,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
     let _resolution_table = tinct::resolve::resolve_surface_program(output.as_surface_program());
     // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
-    let (_type_errors, _type_annotation_table) =
+    let (_type_errors, _type_annotation_table, _expects_resolved) =
         tinct::typecheck::typecheck_surface_program_annotation_table(output.as_surface_program());
 
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
@@ -2777,7 +2778,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     tinct::desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let resolution_table = std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
-    let (type_errors, type_annotation_table) =
+    let (type_errors, type_annotation_table, _expects_resolved) =
         tinct::typecheck::typecheck_surface_program_annotation_table(&program);
     let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
@@ -3155,7 +3156,7 @@ fn run_literate_weave(
                 let _resolution_table =
                     tinct::resolve::resolve_surface_program(o.as_surface_program());
                 // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
-                let (_type_errors, _type_annotation_table) =
+                let (_type_errors, _type_annotation_table, _expects_resolved) =
                     tinct::typecheck::typecheck_surface_program_annotation_table(
                         o.as_surface_program(),
                     );
@@ -3215,7 +3216,7 @@ fn run_literate_weave(
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let resolution_table =
             std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
-        let (type_errors, type_annotation_table) =
+        let (type_errors, type_annotation_table, expects_resolved) =
             tinct::typecheck::typecheck_surface_program_annotation_table(&program);
         let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
@@ -3261,6 +3262,7 @@ fn run_literate_weave(
             &eval_ctx,
             &resolution_table,
             &type_annotation_table,
+            &expects_resolved,
             pipeline_input.clone(),
         ));
         let thunk = match thunk_result {
@@ -3798,7 +3800,7 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
     let _resolution_table = tinct::resolve::resolve_surface_program(output.as_surface_program());
     // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
-    let (_type_errors, _type_annotation_table) =
+    let (_type_errors, _type_annotation_table, _expects_resolved) =
         tinct::typecheck::typecheck_surface_program_annotation_table(output.as_surface_program());
 
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.

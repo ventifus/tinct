@@ -1032,6 +1032,7 @@ pub(crate) async fn force_step(
             annotation,
             expr: inner,
             default,
+            resolved_type,
         } = &lowered.node
         {
             let inner_thunk = match crate::eval::eval_core_expr_pub(inner, &env, &thunk_ctx).await {
@@ -1081,7 +1082,7 @@ pub(crate) async fn force_step(
             }
             stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
                 annotation: Box::new(annotation.clone()),
-                resolved: Box::new(None),
+                resolved: Box::new(resolved_type.clone()),
                 expr_span: lowered.span,
                 thunk_span: inner_span,
                 env,
@@ -1266,6 +1267,7 @@ pub(crate) async fn force_step(
             annotation,
             expr: inner,
             default,
+            resolved_type,
         } = &core_expr.node
         {
             // Evaluate the inner expression as a CoreExpr thunk.
@@ -1321,7 +1323,7 @@ pub(crate) async fn force_step(
             }
             stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
                 annotation: Box::new(annotation.clone()),
-                resolved: Box::new(None),
+                resolved: Box::new(resolved_type.clone()),
                 expr_span: core_expr.span,
                 thunk_span: inner_span,
                 env,

@@ -4,7 +4,7 @@
 //! expression). Files are sequences of documents separated by `---`, with `%` threading
 //! the previous document's output into the next.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
@@ -35,6 +35,7 @@ thread_local! {
 fn wrap_with_nominal_validation(
     inner: Arc<Thunk>,
     annotation: &crate::ast::Spanned<crate::ast::Annotation>,
+    resolved_type: Option<crate::types::Type>,
     validation_span: Span,
     ctx: &Arc<EvalContext>,
 ) -> Arc<Thunk> {
@@ -47,9 +48,8 @@ fn wrap_with_nominal_validation(
     let gensym_name = format!("__nominal_input_{}", gensym_id);
 
     // Create a synthetic RuntimeTypeCheck expression: [@Annotation __nominal_input_N]
-    // RuntimeTypeCheck is correct here because the type is not statically resolved —
-    // it uses Annotation directly, which RuntimeTypeCheck supports. CoreExpr::TypeAssert
-    // requires a pre-resolved Type which we don't have at pipeline input time.
+    // When resolved_type is Some, uses structural type checking via value_matches_type.
+    // When None, falls back to nominal string comparison (legacy path for untyped contracts).
     let type_check_expr = Arc::new(crate::ast::Spanned::new(
         CoreExpr::RuntimeTypeCheck {
             annotation: annotation.clone(),
@@ -58,6 +58,7 @@ fn wrap_with_nominal_validation(
                 validation_span,
             )),
             default: None,
+            resolved_type,
         },
         validation_span,
     ));
@@ -314,7 +315,7 @@ pub async fn eval_surface_file(
     res: &Arc<ResolutionTable>,
     types: &Arc<TypeAnnotationTable>,
 ) -> EvalResult<Arc<Thunk>> {
-    eval_surface_file_with_input(program, env, ctx, res, types, None).await
+    eval_surface_file_with_input(program, env, ctx, res, types, &HashMap::new(), None).await
 }
 
 /// Evaluate a SurfaceProgram with an optional initial `%` value.
@@ -327,6 +328,7 @@ pub async fn eval_surface_file_with_input(
     ctx: &Arc<EvalContext>,
     res: &Arc<ResolutionTable>,
     types: &Arc<TypeAnnotationTable>,
+    expects_resolved: &HashMap<crate::ast::Span, crate::types::Type>,
     initial_input: Option<Arc<Thunk>>,
 ) -> EvalResult<Arc<Thunk>> {
     let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(Arc::clone));
@@ -343,9 +345,11 @@ pub async fn eval_surface_file_with_input(
 
         // Bind % (pipeline variable), wrapping with validation if expects: is declared
         let percent_thunk = if let Some(ref expects_ann) = surface_doc.node.expects {
+            let resolved_type = expects_resolved.get(&expects_ann.span).cloned();
             wrap_with_nominal_validation(
                 Arc::clone(&prev_output),
                 expects_ann,
+                resolved_type,
                 surface_doc.span,
                 ctx,
             )

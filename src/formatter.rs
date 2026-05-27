@@ -136,6 +136,7 @@ pub async fn format_source_tinct_with_dir(
         &ctx,
         &formatter_resolution_table,
         &formatter_type_annotation_table,
+        &std::collections::HashMap::new(),
         Some(ast_thunk),
     )
     .await

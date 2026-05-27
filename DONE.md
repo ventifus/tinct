@@ -11715,3 +11715,16 @@ Documented last-binding-wins pattern semantics in doc/14. Added T002 letrec self
 - [x] doc/15: Pipe lowering placement clarification
 - [x] doc/02: section header component order verification
 - [x] doc/02+15: annotation bracket restriction classification
+
+### pipeline-expects-restructure: Pipeline expects: contract restructure ✅ DONE (2026-05-27)
+
+Added resolved_type to CoreExpr::RuntimeTypeCheck. Added expects_resolved side table to typecheck state. Threaded resolved types from typechecker through eval_pipeline to RuntimeTypeCheck. When resolved_type is available, uses is_consistent_subtype instead of string comparison.
+
+- [x] Add resolved_type: Option<Type> to CoreExpr::RuntimeTypeCheck
+- [x] Add expects_resolved side table to typecheck state
+- [x] Store resolved type in expects handler
+- [x] Thread expects_resolved to eval_surface_file_with_input
+- [x] Update wrap_with_nominal_validation with resolved_type
+- [x] Use resolved type at force time (is_consistent_subtype)
+- [x] Handle eval-time macros (fallback to string comparison when resolved_type is None)
+- [x] Corpus test for pipeline expects: with resolved type
