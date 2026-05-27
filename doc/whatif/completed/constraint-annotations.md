@@ -228,13 +228,13 @@ append the text to the hover output below the type signature.
 
 **Impact:** Minor. Additive change to hover rendering.
 
-### `doc/04-functions.md` and `doc/05-type-system.md`
+### `doc/04-functions.md` and `doc/05-type-annotations.md`
 
 **Current:** Documents `fn@Type` as the only annotation form. No coverage of the
 dict form.
 
 **Proposed:** Add documentation for the full `fn@[return: ... constraint: ...
-doc: ...]` form. Update the annotation reference in `doc/05-type-system.md` with
+doc: ...]` form. Update the annotation reference in `doc/05-type-annotations.md` with
 the constraint syntax and its interaction with TypeVar scoping.
 
 **Impact:** Minor. Documentation only.

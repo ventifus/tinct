@@ -680,8 +680,8 @@ Multiple type system gaps found in final review:
 
 `doc/index.md` references non-existent chapters `doc/05-types.md` and `doc/07-type-system.md`. Actual filenames are `doc/05-type-annotations.md` and `doc/07-type-extensions.md`.
 
-- [ ] Fix `doc/index.md` to use correct filenames for all chapter references
-- [ ] Audit all internal doc/*.md cross-references for broken links
+- [x] Fix `doc/index.md` to use correct filenames for all chapter references
+- [x] Audit all internal doc/*.md cross-references for broken links
 
 ### builtin-eval-materialization: builtin_eval materializes last expression contradicting eval_document_exprs contract [Major]
 
