@@ -135,7 +135,7 @@ Goal: all JSON handling in tinct stdlib; `serde_json` removed from `Cargo.toml`.
 - [x] Remove stale E041/E061/E062 help text from `src/main.rs:4317,4445,4454`
 - [x] Fix `from-json` row misplaced in Rust builtins table in `doc/11-stdlib.md:247`; add `codecs/json.llt` to optional stdlib modules table
 - [x] Add `\uXXXX` surrogate pair handling to `json-parse-string-body` in `stdlib/codecs/json.llt` (U+D800–U+DFFF rejected with clean error)
-- [ ] Remove vestigial `[include %libdir "strings.llt"]` from `stdlib/codecs/json.llt:16` (strings not used in single-dict version)
+- [x] Remove vestigial `[include %libdir "strings.llt"]` from `stdlib/codecs/json.llt:16` (strings not used in single-dict version)
 - [ ] Verify zero remaining `serde_json` references in `src/` (`src/`)
 - [ ] Remove `serde_json = "1.0"` from `Cargo.toml`
 
