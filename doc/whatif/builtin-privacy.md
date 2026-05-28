@@ -172,11 +172,11 @@ Without matching TypeEnv changes, a user program calling `builtin-write` would p
 
 ### Prelude's `--- uses:` Declaration
 
-Prelude declares `--- uses: ["core"]` only. Async builtins (`task`, `await`, `send`, `recv`, etc.) are part of "core" and universally available. Three I/O builtins are also in "core" because prelude's implementation requires them: `open` and `builtin-read-all` power the self-hosted `include` pipeline (prelude.llt:2878, 2906); `builtin-emit` is the primitive behind `emit`. `builtin-read-all` is used internally by prelude but **not re-exported** — user code uses lazy `lines` or chunked `read-chunk`.
+Prelude declares `--- uses: ["core"]` only. Async builtins (`task`, `await`, `send`, `recv`, etc.) are part of "core" and universally available. All I/O builtins are also in "core" and prelude re-exports the ones user programs commonly need: `open`, `emit`, `lines`, `slurp`, `env`, `list-dir`, `narrow`, `string-handle`, `write`, `flush`, `close`, `stat`, `exists`, `make-dir`, `rename`, `read-chunk`. `builtin-read-all` is used internally by prelude's include pipeline but **not re-exported** — user code uses lazy `lines` or chunked `read-chunk`.
 
 All tinct-level async utilities from `stdlib/async.llt` move into prelude. `loop-select-impl` and `retry-impl` (private helpers) go into prelude's **first (private) dict**; `loop-select`, `retry`, `finally`, `await-all`, `recv-all`, `par-map`, `par-filter`, `exit`, `graceful-exit` (public API) go into prelude's **second (public) dict**. `stdlib/async.llt` is deleted. (`defer` and `with-resource` appear in the ffi.md whatif spec but were never implemented in the current codebase.)
 
-**IO in core** — There is no separate "io" module. All I/O builtins are part of "core" alongside async, builder, and language primitives. B-168 renames all bare I/O names to `builtin-*`. `builtin-read-all` is a new primitive (`Handle → String`) that replaces the current `[join "\n" [collect [lines [open ...]]]]` pattern in the include pipeline with `[builtin-read-all [open ...]]` — it is in "core" but **not re-exported** from prelude; user code uses lazy `lines` or chunked `read-chunk`. Prelude uses `open` internally (include pipeline at prelude.llt:2878, 2906) but does NOT export it as a named binding — user code calls it through the `include` mechanism, not directly. Prelude re-exports `emit` and `lines`; all other I/O names (`write`, `env`, `narrow`, `list-dir`, `string-handle`, etc.) are accessible to stdlib files that declare `--- uses: ["core"]` and choose to re-export them, but are not in prelude's public dict.
+**IO in core** — There is no separate "io" module. All I/O builtins are part of "core" and re-exported directly from prelude. B-168 renames all bare I/O names to `builtin-*`. `builtin-read-all` is a new primitive (`Handle → String`) used internally by the include pipeline — not re-exported (user code uses lazy `lines` or chunked `read-chunk`).
 
 **Datetime** bare names (`now`, `parse-timestamp`, etc.) — B-168 renames them; `stdlib/datetime.llt` (declaring `--- uses: ["datetime"]`) wraps them. None belong in prelude.
 
@@ -345,7 +345,6 @@ if let Some(ref uses) = doc.node.uses {
 - `stdlib/prelude.llt` — `--- uses: ["core"]` (second document; all builtins including I/O are in "core")
 - `stdlib/macros.llt` — `--- uses: ["core"]` (calls `builtin-variant` by raw name directly; `tag-of` and `gensym` are accessed via prelude-exported wrappers and don't require `--- uses:`, but `--- uses: ["core"]` ensures `builtin-variant` is in scope)
 - `stdlib/datetime.llt` — `--- uses: ["datetime"]`
-- `stdlib/io.llt` — `--- uses: ["core"]` (wraps `builtin-write`, `builtin-env`, `builtin-narrow`, `builtin-list-dir` etc. for programs that need direct I/O access)
 - `stdlib/sql.llt` — `--- uses: ["sql"]` (future sprint — `src/builtins_sql.rs` does not yet exist)
 - `stdlib/regex.llt` — `--- uses: ["regex"]` (future sprint — `stdlib/regex.llt` is currently pure-tinct with no Rust builtins; header added when Rust regex builtins land)
 - `stdlib/crypto.llt` — `--- uses: ["crypto"]` (future sprint — `src/builtins_crypto.rs` does not yet exist)

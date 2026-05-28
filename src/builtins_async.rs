@@ -985,13 +985,13 @@ pub(crate) fn builtin_par_filter(
     })
 }
 
-/// `signal-channel`: Create a channel that receives a value when a Unix signal fires.
+/// `signal-channel`: Create a channel that receives a `Signal` variant when a Unix signal fires.
 ///
-/// Signature: `Str → Channel@Null`
+/// Signature: `[Fn [signals@[Seq Signal]] [Channel Signal]]`
 ///
-/// Supported signal names: "SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGUSR1", "SIGUSR2".
-/// Spawns a local task that listens for the signal and sends `null` (empty dict) on each delivery.
-/// The returned channel has capacity 1; additional signals delivered before recv are dropped.
+/// Supported signals: SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2.
+/// Spawns one background task per signal; all write to the same channel.
+/// Channel capacity = number of signals; additional deliveries before recv are dropped.
 ///
 /// On non-Unix platforms this builtin always returns an error.
 pub(crate) fn builtin_signal_channel(
@@ -1004,85 +1004,121 @@ pub(crate) fn builtin_signal_channel(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let sig_thunk = take_one_thunk("signal-channel", &args, named.as_ref(), call_span.clone())?;
-        let sig_val = materialize(&sig_thunk, Some(&call_span), &ctx).await?;
+        let signals_thunk =
+            take_one_thunk("signal-channel", &args, named.as_ref(), call_span.clone())?;
+        let signals_val = materialize(&signals_thunk, Some(&call_span), &ctx).await?;
 
-        let sig_name = match sig_val {
-            Value::String {
-                ref source,
-                start,
-                end,
-            } => source[start..end].to_string(),
-            _ => {
-                return Err(EvalError::type_mismatch("Str", sig_val.type_name(), call_span).into())
+        // Collect signal names by traversing the [Seq Signal] linked-list.
+        let mut sig_names: Vec<String> = Vec::new();
+        let mut current = signals_val;
+        loop {
+            match current {
+                Value::Dict(ref map) if map.is_empty() => break,
+                Value::Seq { head, tail } => {
+                    let head_thunk = ctx.get_thunk(head);
+                    let head_val = materialize(&head_thunk, Some(&call_span), &ctx).await?;
+                    let name = match head_val {
+                        Value::Variant { ref tag, .. } => tag.clone(),
+                        _ => {
+                            return Err(EvalError::type_mismatch(
+                                "Signal",
+                                head_val.type_name(),
+                                call_span,
+                            )
+                            .into())
+                        }
+                    };
+                    sig_names.push(name);
+                    let tail_thunk = ctx.get_thunk(tail);
+                    current = materialize(&tail_thunk, Some(&call_span), &ctx).await?;
+                }
+                _ => {
+                    return Err(EvalError::type_mismatch(
+                        "[Seq Signal]",
+                        current.type_name(),
+                        call_span,
+                    )
+                    .into())
+                }
             }
-        };
+        }
+
+        if sig_names.is_empty() {
+            return Err(EvalError::user_error(
+                "signal-channel: requires at least one signal".to_string(),
+                call_span,
+            )
+            .into());
+        }
 
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
 
-            let kind = match sig_name.as_str() {
-                "SIGINT" => SignalKind::interrupt(),
-                "SIGTERM" => SignalKind::terminate(),
-                "SIGHUP" => SignalKind::hangup(),
-                "SIGQUIT" => SignalKind::quit(),
-                "SIGUSR1" => SignalKind::user_defined1(),
-                "SIGUSR2" => SignalKind::user_defined2(),
-                other => {
-                    return Err(EvalError::user_error(
-                        format!("signal-channel: unknown signal name {other:?}; supported: SIGINT SIGTERM SIGHUP SIGQUIT SIGUSR1 SIGUSR2"),
-                        call_span,
+            let capacity = sig_names.len();
+            let (tx, rx) = tokio::sync::mpsc::channel::<Value>(capacity);
+
+            for sig_name in sig_names {
+                let kind = match sig_name.as_str() {
+                    "SIGINT" => SignalKind::interrupt(),
+                    "SIGTERM" => SignalKind::terminate(),
+                    "SIGHUP" => SignalKind::hangup(),
+                    "SIGQUIT" => SignalKind::quit(),
+                    "SIGUSR1" => SignalKind::user_defined1(),
+                    "SIGUSR2" => SignalKind::user_defined2(),
+                    other => {
+                        return Err(EvalError::user_error(
+                            format!("signal-channel: unknown signal {other:?}; supported: SIGINT SIGTERM SIGHUP SIGQUIT SIGUSR1 SIGUSR2"),
+                            call_span,
+                        )
+                        .into())
+                    }
+                };
+
+                let mut sig_stream = signal(kind).map_err(|e| {
+                    EvalError::user_error(
+                        format!("signal-channel: failed to register signal handler: {e}"),
+                        call_span.clone(),
                     )
-                    .into())
-                }
-            };
+                })?;
 
-            let mut sig_stream = signal(kind).map_err(|e| {
-                EvalError::user_error(
-                    format!("signal-channel: failed to register signal handler: {e}"),
-                    call_span.clone(),
-                )
-            })?;
+                let tx_clone = tx.clone();
+                let cancel_token = ctx.cancel.clone();
 
-            // Channel capacity 1: additional signals before recv are dropped gracefully.
-            let (tx, rx) = tokio::sync::mpsc::channel::<Value>(1);
-            let tx_clone = tx.clone();
-            let cancel_token = ctx.cancel.clone();
-
-            let handle = crate::async_rt::spawn_local(async move {
-                loop {
-                    tokio::select! {
-                        biased;
-                        _ = cancel_token.cancelled() => {
-                            break;
-                        }
-                        signal = sig_stream.recv() => {
-                            // recv() returns None when the signal stream is closed (process shutdown)
-                            if signal.is_none() {
+                let handle = crate::async_rt::spawn_local(async move {
+                    loop {
+                        tokio::select! {
+                            biased;
+                            _ = cancel_token.cancelled() => {
                                 break;
                             }
-                            // Ignore send errors (receiver dropped)
-                            let _ = tx_clone.try_send(Value::Dict(IndexMap::new()));
+                            result = sig_stream.recv() => {
+                                if result.is_none() {
+                                    break;
+                                }
+                                let _ = tx_clone.try_send(Value::Variant {
+                                    tag: sig_name.clone(),
+                                    payload: None,
+                                });
+                            }
                         }
                     }
-                }
-            });
+                });
 
-            // Register background task for drain tracking
-            ctx.task_registry.lock().unwrap().push(handle);
+                ctx.task_registry.lock().unwrap().push(handle);
+            }
 
             let channel_inner = crate::value::ChannelInner {
                 sender: tx,
                 receiver: tokio::sync::Mutex::new(rx),
-                capacity: 1,
+                capacity: capacity as i64,
             };
             ok_val(Value::Channel(Arc::new(channel_inner)), call_span)
         }
 
         #[cfg(not(unix))]
         {
-            let _ = sig_name;
+            let _ = sig_names;
             Err(EvalError::user_error(
                 "signal-channel is only supported on Unix platforms".to_string(),
                 call_span,

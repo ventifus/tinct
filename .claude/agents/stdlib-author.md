@@ -175,10 +175,8 @@ New tinct-implemented async stdlib functions (`stdlib/async.llt`): `exit`, `grac
 ### New Type Declarations in Prelude
 
 ```tinct
-Signal: [type [SIGTERM] [SIGINT] [SIGHUP] [SIGUSR1] [SIGUSR2] [SIGPIPE] [SIGALRM]]
-Action: [Fn [] Null]           # zero-arg side-effecting function
-CancelHandle: [type [CancelHandle  child-ctx: Context  cancel: Action]]
-SelectSource: [type [t r] [SelectSource  ch: [Channel t]  handler: [Fn [t] r]]]
+Signal: [type [SIGTERM] [SIGINT] [SIGHUP] [SIGQUIT] [SIGUSR1] [SIGUSR2]]
+Action: [type [Fn@Null []]]
 ```
 
 ### Deleted / Renamed

@@ -2946,6 +2946,25 @@ fixed-clock: fixed-clock
 # sprint, with prelude expected to re-export them. async.llt depends on these.
 # ============================================================================
 
+# Signal type: POSIX signal variants for signal-channel
+# Used to specify which signal to listen for when creating a signal channel.
+# Supported on Unix platforms only (macOS, Linux, BSD).
+Signal: [type [SIGTERM] [SIGINT] [SIGHUP] [SIGQUIT] [SIGUSR1] [SIGUSR2]]
+
+# Re-export Signal variant constructors
+SIGTERM: [variant "SIGTERM"]
+SIGINT:  [variant "SIGINT"]
+SIGHUP:  [variant "SIGHUP"]
+SIGQUIT: [variant "SIGQUIT"]
+SIGUSR1: [variant "SIGUSR1"]
+SIGUSR2: [variant "SIGUSR2"]
+
+# Action: zero-arg side-effecting function (Moggi/Haskell IO distinction)
+Action: [type [Fn@Null []]]
+
+# CancelHandle: [type [CancelHandle child-ctx: Context  cancel: Action]]  — return value of with-cancel
+# SelectSource: [type [let t r] [SelectSource  ch: [Channel t]  handler: [Fn@r [t]]]]  — one source entry for select-once
+
 # Task lifecycle
 task:          builtin-task
 await:         builtin-await

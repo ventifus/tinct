@@ -4,8 +4,8 @@
 
 **Supersedes:**
 
-- [`ast-value-types.md`](ast-value-types.md) — fully absorbed
-- [`async-eval.md`](async-eval.md) — core async runtime absorbed here; serve/connect layers and networking content extracted to [`lib-net-v3.md`](lib-net-v3.md)
+- [`ast-value-types.md`](ast-value-types.md) — fully absorbed into this document rather than preserved as a separate whatif
+- [`async-eval.md`](async-eval.md) — core async runtime absorbed here; serve/connect layers and networking content extracted to [`lib-net-v3.md`](lib-net-v3.md); the original file was absorbed rather than preserved
 
 **Refines:** [`include-decomposition.md`](include-decomposition.md) — replaces the serialized-Dict representation for `load`/`expand`/`eval` with native AST value types; the self-hosted pipeline structure is unchanged.
 
@@ -1024,8 +1024,10 @@ Three types are opaque and Rust-backed — `Context` (wraps `tokio_util::sync::C
 `Signal` is a genuine tinct sum type — its variants are user-visible names, not implementation details:
 
 ```tinct
-Signal: [type [SIGTERM] [SIGINT] [SIGHUP] [SIGUSR1] [SIGUSR2] [SIGPIPE] [SIGALRM]]
+Signal: [type [SIGTERM] [SIGINT] [SIGHUP] [SIGQUIT] [SIGUSR1] [SIGUSR2]]
 ```
+
+> **Note:** `SIGPIPE` and `SIGALRM` were excluded during implementation — `SIGPIPE` is not safe to handle via tokio's signal machinery (the default disposition is already correct for most programs, and registering a handler interferes with the write-error propagation model), and `SIGALRM` conflicts with the `--timeout` infrastructure. `SIGQUIT` replaces them as it is the standard interactive "quit with core" signal and is safe to handle.
 
 Three structural types are named so that signatures stay readable:
 
@@ -1033,7 +1035,7 @@ Three structural types are named so that signatures stay readable:
 # Zero-argument side-effecting function — runs for effect, returns nothing.
 # Named after Moggi/Haskell's Action/IO distinction; avoids collision with
 # the evaluator's own "thunk" concept.
-Action: [Fn [] Null]
+Action: [type [Fn@Null []]]
 
 # Return value of with-cancel
 CancelHandle: [type [CancelHandle
@@ -1073,9 +1075,9 @@ SelectSource: [type [t r] [SelectSource
 | `par` | `[Fn [expr@Any] t]` | Spawn on thread pool immediately |
 | `par-map` | `[Fn [f@[Fn [a] b]  seq@[Seq a]] [Seq b]]` | Parallel map; results in order |
 | `par-filter` | `[Fn [f@[Fn [a] Bool]  seq@[Seq a]] [Seq a]]` | Parallel filter |
-| `signal-channel` | `[Fn [signals@[Seq Signal]] [Channel Signal]]` | OS signal delivery channel |
-| `timer-channel` | `[Fn [clock@ClockCap  interval@Duration] [Channel Timestamp]]` | Periodic timer channel |
-| `watch-channel` | `[Fn [cap@DirCap  path@String] [Channel Null]]` | Filesystem watch channel |
+| `signal-channel` | `[Fn [signals@[Seq Signal]] [Channel Signal]]` | OS signal delivery channel — subscribes to listed signals; sends the `Signal` variant on each delivery |
+| `timer-channel` | `[Fn [clock@ClockCap  interval@Duration] [Channel Timestamp]]` | Periodic timer channel — fires every `interval`; sends a `Timestamp` on each tick |
+| `watch-channel` | `[Fn [cap@DirCap  path@String] [Channel Null]]` | Filesystem watch channel — fires when the file or directory at `path` changes |
 
 The signatures in this table use lowercase single-letter names (`t`, `r`, `a`, `b`) as type variables — these are descriptive for human readers. In tinct source, the stdlib implementations carry no explicit type annotations; let-generalization at the definition site produces the correct polymorphic schemes. Functions close over the environment where they are defined, not where they are invoked — type variables are scoped to the definition, exactly as values are.
 
@@ -1186,13 +1188,6 @@ A cleanup pass at the end of the sprint must verify every item below is gone. No
 - String-keyed `type:` Dict schema — superseded; no backwards compat
 
 **`src/desugar.rs`** — **retained**. `Pipe` → `Call` moves into the lowering pass in `src/lower.rs`. `$_` implicit lambda desugaring stays in Rust (see §`$_` implicit lambda desugaring above — cannot be expressed as a tinct macro). The file is renamed and trimmed: old Expr-based functions deleted, Surface API (`desugar_surface_program`, `desugar_surface_node`) is the permanent live implementation.
-
-**`src/eval_pipeline.rs`** — entire file deleted
-
-- `eval_file_with_input`
-- `eval_document` (the let\* loop is extracted into `src/lower.rs` or inline in the evaluator)
-- `eval_file` (public wrapper around `eval_file_with_input`)
-Note: `run_eval` does **not** exist in this file — confirmed by code inspection.
 
 **`src/builtins_meta.rs`**
 
