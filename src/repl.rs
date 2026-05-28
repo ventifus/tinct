@@ -268,14 +268,15 @@ impl ReplSession {
             }
             error_str
         })?;
-        let display = value_to_display_string(&val, &self.ctx, result_thunk.span).map_err(|e| {
-            let mut error_str = format!("{e}");
-            if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
-                error_str.push('\n');
-                error_str.push_str(&snippet);
-            }
-            error_str
-        })?;
+        let display =
+            value_to_display_string(&val, &self.ctx, result_thunk.span.clone()).map_err(|e| {
+                let mut error_str = format!("{e}");
+                if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
+                    error_str.push('\n');
+                    error_str.push_str(&snippet);
+                }
+                error_str
+            })?;
 
         // Success: commit the result to session state.
         self.prev_result = result_thunk;
@@ -391,7 +392,7 @@ impl ReplSession {
         let binding = self.env.read().unwrap().get(name)?;
 
         // The thunk has a span we can use to look up the type
-        let span = binding.span;
+        let span = binding.span.clone();
         let key = (span.start.offset, span.end.offset);
 
         self.type_map.get(&key).map(|ty| format!("{ty}"))

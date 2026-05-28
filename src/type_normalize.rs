@@ -263,7 +263,7 @@ pub(crate) fn type_to_dict(ty: &Type, ctx: &Arc<crate::eval::EvalContext>) -> Op
         Type::Map(k, v) => {
             let k_dict = type_to_dict(k, ctx)?;
             let v_dict = type_to_dict(v, ctx)?;
-            let k_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(k_dict, origin)));
+            let k_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(k_dict, origin.clone())));
             let v_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v_dict, origin)));
             let mut dict = IndexMap::new();
             dict.insert(Key::String("kind".into()), alloc_str("map", ctx));

@@ -34,7 +34,7 @@ fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
         node: CoreExpr::Call {
             func: Arc::new(Spanned {
                 node: CoreExpr::Int(0),
-                span,
+                span: span.clone(),
             }),
             args: vec![],
             named_args: vec![],
@@ -62,7 +62,7 @@ pub(crate) fn builtin_reduce(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("reduce", named.as_ref(), call_span)?;
+        reject_named("reduce", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
@@ -76,13 +76,13 @@ pub(crate) fn builtin_reduce(
         // Flatten Overlay to Dict before dispatch. Bytes → Seq of Int byte values.
         let xs = match xs {
             Value::Overlay(l, r) => {
-                Value::Dict(flatten_overlay(&l, &r, "reduce", &ctx, call_span)?)
+                Value::Dict(flatten_overlay(&l, &r, "reduce", &ctx, call_span.clone())?)
             }
             Value::Bytes {
                 ref source,
                 start,
                 end,
-            } => bytes_to_seq(&source[start..end], call_span, &ctx),
+            } => bytes_to_seq(&source[start..end], call_span.clone(), &ctx),
             other => other,
         };
         match xs {
@@ -94,11 +94,11 @@ pub(crate) fn builtin_reduce(
 
                 // Create a Dict value to pass to the step builtin
                 // The step builtin will iterate through it
-                let xs_thunk = Arc::new(Thunk::new_materialized(xs.clone(), call_span));
+                let xs_thunk = Arc::new(Thunk::new_materialized(xs.clone(), call_span.clone()));
 
                 // Create a PendingBuiltin thunk for the first step
                 // Args: (f, init, xs_dict, idx_int)
-                let idx_thunk = Arc::new(Thunk::new_materialized(Value::Int(0), call_span));
+                let idx_thunk = Arc::new(Thunk::new_materialized(Value::Int(0), call_span.clone()));
                 let step_thunk = Arc::new(Thunk::new_pending_builtin(
                     builtin!("reduce_dict_step", builtin_reduce_dict_step),
                     vec![f_thunk, init_thunk, xs_thunk, idx_thunk],
@@ -116,7 +116,7 @@ pub(crate) fn builtin_reduce(
             } => {
                 // Seq path: delegate to step builtin
                 // Args: (f, init, seq)
-                let seq_thunk = Arc::new(Thunk::new_materialized(xs.clone(), call_span));
+                let seq_thunk = Arc::new(Thunk::new_materialized(xs.clone(), call_span.clone()));
                 let step_thunk = Arc::new(Thunk::new_pending_builtin(
                     builtin!("reduce_seq_step", builtin_reduce_seq_step),
                     vec![f_thunk, init_thunk, seq_thunk],
@@ -185,21 +185,21 @@ pub(crate) fn builtin_reduce_dict_step(
                         Arc::clone(&f_thunk),
                         vec![Arc::clone(&acc_thunk), Arc::clone(&value_thunk)],
                         IndexMap::new(),
-                        call_span,
+                        call_span.clone(),
                         Arc::clone(&ctx.config.stdlib_env),
-                        value_thunk.span,
+                        value_thunk.span.clone(),
                         Some(Arc::from("reduce")),
                         Arc::clone(&ctx),
-                        synthetic_call_expr(call_span),
+                        synthetic_call_expr(call_span.clone()),
                     ));
                     let new_acc_val =
                         materialize(&call_thunk, None, &ctx)
                             .await
                             .map_err(|mut e| {
-                                e.push_frame_with_file("in reduce".to_string(), call_span, Some(file!().into()));
+                                e.push_frame("in reduce".to_string(), call_span.clone());
                                 e
                             })?;
-                    acc_thunk = Arc::new(Thunk::new_materialized(new_acc_val, call_span));
+                    acc_thunk = Arc::new(Thunk::new_materialized(new_acc_val, call_span.clone()));
                 }
                 Ok(acc_thunk)
             }
@@ -250,21 +250,21 @@ pub(crate) fn builtin_reduce_seq_step(
                         Arc::clone(&f_thunk),
                         vec![Arc::clone(&acc_thunk), Arc::clone(&head_thunk)],
                         IndexMap::new(),
-                        call_span,
+                        call_span.clone(),
                         Arc::clone(&ctx.config.stdlib_env),
-                        head_thunk.span,
+                        head_thunk.span.clone(),
                         Some(Arc::from("reduce")),
                         Arc::clone(&ctx),
-                        synthetic_call_expr(call_span),
+                        synthetic_call_expr(call_span.clone()),
                     ));
                     let new_acc_val =
                         materialize(&call_thunk, None, &ctx)
                             .await
                             .map_err(|mut e| {
-                                e.push_frame_with_file("in reduce".to_string(), call_span, Some(file!().into()));
+                                e.push_frame("in reduce".to_string(), call_span.clone());
                                 e
                             })?;
-                    acc_thunk = Arc::new(Thunk::new_materialized(new_acc_val, call_span));
+                    acc_thunk = Arc::new(Thunk::new_materialized(new_acc_val, call_span.clone()));
 
                     // Advance to the tail
                     seq_val = materialize(&tail_thunk, None, &ctx).await?;
@@ -300,7 +300,7 @@ pub(crate) fn builtin_join(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("join", named.as_ref(), call_span)?;
+        reject_named("join", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -308,14 +308,16 @@ pub(crate) fn builtin_join(
         let sep = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let sep_str = require_string("join", sep, args[0].span)?;
+        let sep_str = require_string("join", sep, args[0].span.clone())?;
 
         let xs = args[1]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         // Flatten Overlay to Dict before dispatch.
         let xs = match xs {
-            Value::Overlay(l, r) => Value::Dict(flatten_overlay(&l, &r, "join", &ctx, call_span)?),
+            Value::Overlay(l, r) => {
+                Value::Dict(flatten_overlay(&l, &r, "join", &ctx, call_span.clone())?)
+            }
             other => other,
         };
         match xs {
@@ -345,7 +347,7 @@ pub(crate) fn builtin_join(
                             MAX_STRING_SIZE / (1024 * 1024),
                             total_output_len
                         ),
-                        call_span,
+                        call_span.clone(),
                     )
                     .into());
                 }
@@ -367,7 +369,7 @@ pub(crate) fn builtin_join(
                     if parts.len() >= MAX_COLLECT_SIZE {
                         return Err(EvalError::resource_limit_exceeded(
                             format!("join: sequence exceeds {} elements", MAX_COLLECT_SIZE),
-                            call_span,
+                            call_span.clone(),
                         )
                         .into());
                     }
@@ -397,7 +399,7 @@ pub(crate) fn builtin_join(
 
                 // Early return for empty collection
                 if parts.is_empty() {
-                    return ok_val(string_val(""), call_span);
+                    return ok_val(string_val(""), call_span.clone());
                 }
 
                 // Check output size before joining
@@ -412,7 +414,7 @@ pub(crate) fn builtin_join(
                             MAX_STRING_SIZE / (1024 * 1024),
                             total_output_len
                         ),
-                        call_span,
+                        call_span.clone(),
                     )
                     .into());
                 }
@@ -446,13 +448,13 @@ pub(crate) fn builtin_concat(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("concat", named.as_ref(), call_span)?;
+        reject_named("concat", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let xs_span = args[0].span;
-        let ys_span = args[1].span;
+        let xs_span = args[0].span.clone();
+        let ys_span = args[1].span.clone();
         let xs = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
@@ -460,7 +462,7 @@ pub(crate) fn builtin_concat(
         // Flatten Overlay to Dict before dispatch.
         let xs = match xs {
             Value::Overlay(l, r) => {
-                Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, call_span)?)
+                Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, call_span.clone())?)
             }
             other => other,
         };
@@ -492,7 +494,7 @@ pub(crate) fn builtin_concat(
                     builtin!("builtin-concat", builtin_concat_seq_step),
                     step_args,
                     None,
-                    call_span,
+                    call_span.clone(),
                     Some(Arc::from("call $concat")),
                     Arc::clone(&ctx),
                 ));
@@ -530,7 +532,7 @@ pub(crate) fn builtin_concat(
                 // Flatten Overlay ys to Dict for the dict-concat path.
                 let ys = match ys {
                     Value::Overlay(l, r) => {
-                        Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, call_span)?)
+                        Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, call_span.clone())?)
                     }
                     other => other,
                 };
@@ -543,7 +545,7 @@ pub(crate) fn builtin_concat(
                         for (_key, value_thunk_id) in xs_map {
                             result.insert(Key::Int(idx), *value_thunk_id);
                             idx = idx.checked_add(1).ok_or_else(|| {
-                                EvalError::integer_overflow("concat".to_string(), call_span)
+                                EvalError::integer_overflow("concat".to_string(), call_span.clone())
                             })?;
                         }
 
@@ -551,7 +553,7 @@ pub(crate) fn builtin_concat(
                         for (_key, value_thunk_id) in ys_map {
                             result.insert(Key::Int(idx), *value_thunk_id);
                             idx = idx.checked_add(1).ok_or_else(|| {
-                                EvalError::integer_overflow("concat".to_string(), call_span)
+                                EvalError::integer_overflow("concat".to_string(), call_span.clone())
                             })?;
                         }
 
@@ -611,7 +613,7 @@ pub(crate) fn builtin_concat_seq_step(
                     builtin!("builtin-concat", builtin_concat_seq_step),
                     step_args,
                     None,
-                    call_span,
+                    call_span.clone(),
                     Some(Arc::from("call $concat")),
                     Arc::clone(&ctx),
                 ));

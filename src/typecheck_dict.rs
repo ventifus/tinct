@@ -454,7 +454,9 @@ pub(crate) fn infer_dict(
                         // - T010 "inferred Unknown" diagnostic doesn't fire (Error ≠ Unknown)
                         // - lower.rs emits TypeAssert with Type::Unknown (accepts all values)
                         field_types.insert(name.clone(), Type::Error);
-                        state.failed_bindings.insert(name.clone(), entry.span);
+                        state
+                            .failed_bindings
+                            .insert(name.clone(), entry.span.clone());
                     }
                 }
             }
@@ -540,7 +542,7 @@ pub(crate) fn infer_dict(
                                  the value resolves to itself in letrec scope. \
                                  Use a different name or alias the outer binding first"
                             ),
-                            span: entry.node.value.span,
+                            span: entry.node.value.span.clone(),
                             code: "T002",
                             level: crate::error::DiagnosticLevel::Warn,
                         });
@@ -588,7 +590,7 @@ pub(crate) fn infer_dict(
                     resolve_annotation(
                         &annotation.node,
                         &dict_env_rc,
-                        annotation.span,
+                        annotation.span.clone(),
                         state,
                         &mut ann_mapping_opt,
                         &mut row_ann_mapping_opt,
@@ -606,7 +608,7 @@ pub(crate) fn infer_dict(
                             &dict_env_rc,
                             state,
                             type_map,
-                            entry.node.value.span,
+                            entry.node.value.span.clone(),
                         );
                         errors.append(&mut nested_errs);
                         (Ok(ty), Some(schemes))
@@ -653,11 +655,13 @@ pub(crate) fn infer_dict(
                                 &value_ty,
                                 &mut subst,
                                 state,
-                                entry.node.value.span,
+                                entry.node.value.span.clone(),
                             ) {
                                 errors.push(e);
                                 field_types.insert(name.clone(), Type::Error);
-                                state.failed_bindings.insert(name.clone(), entry.span);
+                                state
+                                    .failed_bindings
+                                    .insert(name.clone(), entry.span.clone());
                             } else {
                                 field_types.insert(name.clone(), value_ty);
                             }
@@ -674,7 +678,9 @@ pub(crate) fn infer_dict(
                         // Fall back to Error only when no assertion type is available.
                         let fallback_ty = type_assert_ty.unwrap_or(Type::Error);
                         field_types.insert(name.clone(), fallback_ty.clone());
-                        state.failed_bindings.insert(name.clone(), entry.span);
+                        state
+                            .failed_bindings
+                            .insert(name.clone(), entry.span.clone());
                         // Populate type_map for LSP hover on failed dict value expressions.
                         // Use the asserted type if available so hover shows T instead of Unknown.
                         if let Some(ref mut map) = type_map {
@@ -716,7 +722,9 @@ pub(crate) fn infer_dict(
                 match existing_opt {
                     Some(existing) => {
                         subst.type_map.borrow_mut().remove(&k);
-                        if let Err(e) = unify(&existing, &applied_v, &mut subst, state, span) {
+                        if let Err(e) =
+                            unify(&existing, &applied_v, &mut subst, state, span.clone())
+                        {
                             errors.push(e);
                             subst.type_map.borrow_mut().insert(k, existing);
                             continue;
@@ -735,7 +743,7 @@ pub(crate) fn infer_dict(
         // This attempts to resolve TypeStageApp and Union-vs-Union constraints that may
         // have become ground after unification in this SCC. See doc/06-type-inference.md:884.
         if !state.deferred_equalities.is_empty() {
-            crate::types::process_deferred_equalities(state, &mut subst, span);
+            crate::types::process_deferred_equalities(state, &mut subst, span.clone());
         }
 
         // Apply substitution to this SCC's field types
@@ -761,7 +769,7 @@ pub(crate) fn infer_dict(
                 .borrow_mut()
                 .insert(k.clone(), v.clone());
         }
-        if let Err(e) = state.subst.check_size(span) {
+        if let Err(e) = state.subst.check_size(span.clone()) {
             errors.push(e);
         }
 
@@ -815,8 +823,13 @@ pub(crate) fn infer_dict(
                     // generalize_with_doc to emit spurious T013 warnings alongside the real
                     // type error already recorded in state.diagnostics.
                     if state.failed_bindings.contains_key(name) {
-                        let mut scheme =
-                            generalize_with_doc(enclosing_level, ty, state, doc, entry.span);
+                        let mut scheme = generalize_with_doc(
+                            enclosing_level,
+                            ty,
+                            state,
+                            doc,
+                            entry.span.clone(),
+                        );
                         if let Some(inner) = entry_inner_schemes.get(name) {
                             scheme.inner_schemes = Some(inner.clone());
                         }
@@ -832,7 +845,7 @@ pub(crate) fn infer_dict(
                     );
 
                     let mut scheme =
-                        generalize_with_doc(enclosing_level, ty, state, doc, entry.span);
+                        generalize_with_doc(enclosing_level, ty, state, doc, entry.span.clone());
 
                     // Restore parent scope constraints after generalization
                     state.constraints = saved_constraints;

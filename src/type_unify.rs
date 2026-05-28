@@ -151,6 +151,15 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
             ty,
             Type::Int | Type::IntLiteral(_) | Type::Float | Type::Number
         ),
+        // Appendable: hardcoded for Record (dict merge), Seq (concat), and Str (string concat).
+        // These are the three types that satisfy Appendable at runtime. Hardcoded here
+        // so that Appendable constraint checking works before the PRELUDE_INSTANCE_CACHE
+        // is populated and seeded into the user InferState. Also provides a reliable
+        // fallback when the dynamic instance resolution is unavailable.
+        "Appendable" => matches!(
+            ty,
+            Type::Record(_) | Type::Seq(_) | Type::Str | Type::StringLiteral(_)
+        ),
         _ => false, // All other classes resolved via InstanceEnv::resolve_instance
     }
 }
@@ -361,7 +370,7 @@ fn check_constraints_on_var(
                             MAX_INSTANCE_RESOLUTION_DEPTH,
                             class
                         ),
-                        span,
+                        span.clone(),
                     ));
                 }
                 state.instance_resolution_depth += 1;
@@ -379,7 +388,7 @@ fn check_constraints_on_var(
                 // No instance found - constraint violated
                 return Err(TypeError::new(
                     format!("type {} does not satisfy constraint {}", concrete_ty, class),
-                    span,
+                    span.clone(),
                 ));
             }
             ApplicableConstraint::MultiParam {
@@ -397,7 +406,7 @@ fn check_constraints_on_var(
                     concrete_ty,
                     subst,
                     state,
-                    span,
+                    span.clone(),
                 )?;
             }
         }
@@ -587,7 +596,7 @@ fn improve_functional_dependency_inner(
                     .map(|(_, _, ty)| ty.clone())
                     .collect::<Vec<_>>(),
                 state,
-                span,
+                span.clone(),
             )?
         } else if let Some(class_decl) = state.class_env.get(class) {
             // Not an arithmetic class — check for resolver
@@ -641,7 +650,7 @@ fn improve_functional_dependency_inner(
                                                     "no instance for {} (determined field {} missing)",
                                                     class, pos
                                                 ),
-                                                span,
+                                                span.clone(),
                                             )
                                         })?,
                                     None => {
@@ -650,7 +659,7 @@ fn improve_functional_dependency_inner(
                                                 "no instance for {} (no determined position found)",
                                                 class
                                             ),
-                                            span,
+                                            span.clone(),
                                         ));
                                     }
                                 }
@@ -661,7 +670,7 @@ fn improve_functional_dependency_inner(
                                         "no instance for {} (unexpected instance_type shape)",
                                         class
                                     ),
-                                    span,
+                                    span.clone(),
                                 ));
                             }
                         }
@@ -676,13 +685,19 @@ fn improve_functional_dependency_inner(
                         if class == "Indexable" {
                             continue;
                         }
-                        return Err(TypeError::new(format!("no instance for {}", class), span));
+                        return Err(TypeError::new(
+                            format!("no instance for {}", class),
+                            span.clone(),
+                        ));
                     }
                 }
             }
         } else {
             // Class not found in class_env — should not happen
-            return Err(TypeError::new(format!("unknown class {}", class), span));
+            return Err(TypeError::new(
+                format!("unknown class {}", class),
+                span.clone(),
+            ));
         };
 
         // Unify each determined position with the result type
@@ -705,7 +720,13 @@ fn improve_functional_dependency_inner(
             // for completed bindings. The caller's `subst` parameter is a view/snapshot used
             // for reading, not writing.
             let mut local_subst = std::mem::take(&mut state.subst);
-            let result = unify(&ded_type_var, &result_type, &mut local_subst, state, span);
+            let result = unify(
+                &ded_type_var,
+                &result_type,
+                &mut local_subst,
+                state,
+                span.clone(),
+            );
             state.subst = local_subst;
             result?;
         }
@@ -1006,7 +1027,7 @@ pub fn resolve_has_field(
         Type::Union(members) => {
             let mut field_types = Vec::new();
             for member in members {
-                let field_ty = resolve_has_field(label, member, state, span, depth + 1)?;
+                let field_ty = resolve_has_field(label, member, state, span.clone(), depth + 1)?;
                 field_types.push(field_ty);
             }
             Ok(Type::normalize_union(field_types))
@@ -1016,7 +1037,7 @@ pub fn resolve_has_field(
         Type::Intersection(members) => {
             let mut field_types = Vec::new();
             for member in members {
-                let field_ty = resolve_has_field(label, member, state, span, depth + 1)?;
+                let field_ty = resolve_has_field(label, member, state, span.clone(), depth + 1)?;
                 field_types.push(field_ty);
             }
             Ok(Type::normalize_intersection(field_types))
@@ -1379,7 +1400,7 @@ fn unify_rows(
     {
         for (key, ty1) in &row1.fields {
             let ty2 = &row2.fields[key];
-            unify(ty1, ty2, subst, state, span)?;
+            unify(ty1, ty2, subst, state, span.clone())?;
         }
         return Ok(());
     }
@@ -1395,7 +1416,7 @@ fn unify_rows(
         }
         if let Some(ty2) = row2.fields.get(key) {
             shared_count += 1;
-            unify(ty1, ty2, subst, state, span)?;
+            unify(ty1, ty2, subst, state, span.clone())?;
         }
     }
     for ty2 in row2.fields.values() {
@@ -1698,7 +1719,7 @@ fn bind_single_type_var_from_compound(
     }
 
     let concrete_promoted = promote_literal_for_constrained_var(var_name, concrete.clone(), state);
-    check_constraints_on_var(var_name, &concrete_promoted, subst, state, span)?;
+    check_constraints_on_var(var_name, &concrete_promoted, subst, state, span.clone())?;
     subst
         .type_map
         .borrow_mut()
@@ -1856,7 +1877,7 @@ pub fn unify(
                 subst.type_map.borrow_mut().insert(name.clone(), b);
             } else {
                 // Binding α to a concrete type — check constraints normally
-                check_constraints_on_var(name, &b, subst, state, span)?;
+                check_constraints_on_var(name, &b, subst, state, span.clone())?;
                 subst.type_map.borrow_mut().insert(name.clone(), b);
             }
             subst.check_size(span)?;
@@ -1889,7 +1910,7 @@ pub fn unify(
                 subst.type_map.borrow_mut().insert(name.clone(), a);
             } else {
                 // Binding α to a concrete type — check constraints normally
-                check_constraints_on_var(name, &a, subst, state, span)?;
+                check_constraints_on_var(name, &a, subst, state, span.clone())?;
                 subst.type_map.borrow_mut().insert(name.clone(), a);
             }
             subst.check_size(span)?;
@@ -1981,7 +2002,7 @@ pub fn unify(
             // from earlier parameter unifications are therefore visible to later ones via
             // the shared `subst` -- this is correct Robinson (1965) unification.
             for ((_name_a, ty_a), (_name_b, ty_b)) in p1.iter().zip(p2.iter()) {
-                unify(ty_a, ty_b, subst, state, span)?;
+                unify(ty_a, ty_b, subst, state, span.clone())?;
             }
             unify(r1, r2, subst, state, span)
         }
@@ -1998,7 +2019,7 @@ pub fn unify(
             match (&k1_resolved, &k2_resolved) {
                 // If either is still a TypeVar, unify them
                 (Type::TypeVar(_, _), _) | (_, Type::TypeVar(_, _)) => {
-                    unify(&k1_resolved, &k2_resolved, subst, state, span)?;
+                    unify(&k1_resolved, &k2_resolved, subst, state, span.clone())?;
                 }
                 // For concrete types, enforce strict invariance (no Int <: Number subsumption)
                 (Type::Int, Type::Number)
@@ -2118,7 +2139,7 @@ pub fn unify(
                 subst.type_map.borrow_mut().insert(m.clone(), b.clone());
             } else {
                 // Binding to concrete type — check constraints
-                check_constraints_on_var(m, &b, subst, state, span)?;
+                check_constraints_on_var(m, &b, subst, state, span.clone())?;
                 subst.type_map.borrow_mut().insert(m.clone(), b.clone());
             }
             subst.check_size(span)?;
@@ -2144,7 +2165,7 @@ pub fn unify(
                 subst.type_map.borrow_mut().insert(m.clone(), a.clone());
             } else {
                 // Binding to concrete type — check constraints
-                check_constraints_on_var(m, &a, subst, state, span)?;
+                check_constraints_on_var(m, &a, subst, state, span.clone())?;
                 subst.type_map.borrow_mut().insert(m.clone(), a.clone());
             }
             subst.check_size(span)?;
@@ -2155,7 +2176,7 @@ pub fn unify(
         // Unify constructors first, then apply resulting substitution and unify arguments.
         (Type::App(f1, a1), Type::App(f2, a2)) => {
             // Unify constructors
-            unify(f1, f2, subst, state, span)?;
+            unify(f1, f2, subst, state, span.clone())?;
             // Substitution from constructor unification is already in subst and will be
             // applied by the recursive unify() call (via apply_with_visited at the top).
             unify(a1, a2, subst, state, span)
@@ -2222,7 +2243,7 @@ pub fn unify(
         {
             let members = members.clone();
             for member in &members {
-                unify(&a, member, subst, state, span)?;
+                unify(&a, member, subst, state, span.clone())?;
             }
             Ok(())
         }
@@ -2231,7 +2252,7 @@ pub fn unify(
         {
             let members = members.clone();
             for member in &members {
-                unify(member, &b, subst, state, span)?;
+                unify(member, &b, subst, state, span.clone())?;
             }
             Ok(())
         }
@@ -2313,7 +2334,7 @@ pub fn unify(
                 ));
             }
             for (arg1, arg2) in a1.iter().zip(a2.iter()) {
-                unify(arg1, arg2, subst, state, span)?;
+                unify(arg1, arg2, subst, state, span.clone())?;
             }
             Ok(())
         }
@@ -2394,7 +2415,7 @@ pub fn process_deferred_equalities(state: &mut InferState, subst: &mut Substitut
             if !a_norm.has_type_stage_app() && !b_norm.has_type_stage_app() {
                 // Both sides fully reduced — attempt unification.
                 // F10 FIX: Emit diagnostic on unification failure instead of silently dropping.
-                match unify(&a_norm, &b_norm, subst, state, span) {
+                match unify(&a_norm, &b_norm, subst, state, span.clone()) {
                     Ok(()) => {
                         progress = true;
                     }
@@ -2405,7 +2426,7 @@ pub fn process_deferred_equalities(state: &mut InferState, subst: &mut Substitut
                                 "deferred type equality failed: cannot unify {} with {} — {}",
                                 a_norm, b_norm, err.message
                             ),
-                            span,
+                            span: span.clone(),
                             code: "T013",
                             level: crate::error::DiagnosticLevel::Warn,
                         });

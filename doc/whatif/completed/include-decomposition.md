@@ -2,7 +2,7 @@
 
 **State:** Accepted — 2026-05-18
 
-**Refines:** [`completed/builtin-privacy.md`](completed/builtin-privacy.md) — replaces the `%rust` virtual-module design with a flat `Value::Dict`; the bootstrap env isolation principle is unchanged
+**Refines:** [`../builtin-privacy.md`](../builtin-privacy.md) — replaces the `%rust` virtual-module design with a flat `Value::Dict`; the bootstrap env isolation principle is unchanged
 
 What would it take to make `include`, `eval-file`, and the document pipeline self-hosted — defined in tinct, built from a minimal set of Rust primitives?
 

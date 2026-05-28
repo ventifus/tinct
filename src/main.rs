@@ -14,7 +14,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
     create_stdlib_env, escape_json_str, literate, materialize_sync as materialize, parse,
-    visit_value, EvalContext, JsonVisitor, Thunk, MAX_FILE_SIZE,
+    parse_with_file, visit_value, EvalContext, JsonVisitor, SourceFile, Thunk, MAX_FILE_SIZE,
 };
 
 // Exit codes for llt eval
@@ -2004,26 +2004,34 @@ fn run_eval(
     // `last_eval_ctx` is available for the final profile write.
     let eval_result: Result<(), String> = (|| {
         for stage in &pipeline_stages {
-            // Read the LLT source (from file or inline expression)
-            let source = match stage {
-                PipelineStage::File(file_path) => read_source(file_path)?,
-                PipelineStage::Expr(expression) => expression.clone(),
-            };
-
-            // Parse
-            let output = parse(&source).map_err(|e| {
-                if strict {
-                    // In strict mode, use rich diagnostic formatting
-                    let file_name = match stage {
-                        PipelineStage::File(fp) => fp.as_str(),
-                        PipelineStage::Expr(_) => "<expr>",
-                    };
-                    tinct::format_parse_error(&e, &source, file_name)
-                } else {
-                    // Non-strict mode: use simple formatting
-                    format!("{e}")
+            // Read the LLT source (from file or inline expression).
+            // For file stages, build an Arc<SourceFile> so spans carry the file name.
+            // For inline expressions, parse without a file reference.
+            // `source` is kept for downstream error formatting (type errors, eval snippets).
+            let (source, output) = match stage {
+                PipelineStage::File(file_path) => {
+                    let sf = read_source(file_path)?;
+                    let source_str = String::from(&*sf.content);
+                    let out = parse_with_file(&source_str, Arc::clone(&sf)).map_err(|e| {
+                        if strict {
+                            tinct::format_parse_error(&e, &source_str, file_path)
+                        } else {
+                            format!("{e}")
+                        }
+                    })?;
+                    (source_str, out)
                 }
-            })?;
+                PipelineStage::Expr(expression) => {
+                    let out = parse(expression).map_err(|e| {
+                        if strict {
+                            tinct::format_parse_error(&e, expression, "<expr>")
+                        } else {
+                            format!("{e}")
+                        }
+                    })?;
+                    (expression.clone(), out)
+                }
+            };
             // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
             let _resolution_table =
                 tinct::resolve::resolve_surface_program(output.as_surface_program());
@@ -2150,9 +2158,12 @@ fn run_eval(
                 _ => None,
             };
             let eval_ctx = if let Some(ref base) = base_eval_ctx {
-                let mut ctx = base.with_base_dir_and_path(base_dir, Some(file_base_dir_path.clone()));
+                let mut ctx =
+                    base.with_base_dir_and_path(base_dir, Some(file_base_dir_path.clone()));
                 // Update source file for this stage so backtrace frames show the right filename.
-                Arc::get_mut(&mut ctx).unwrap().set_source_file(stage_source_file);
+                Arc::get_mut(&mut ctx)
+                    .unwrap()
+                    .set_source_file(stage_source_file);
                 ctx
             } else {
                 let mut ctx = EvalContext::new_with_options(
@@ -2168,7 +2179,9 @@ fn run_eval(
                     Arc::get_mut(&mut ctx).unwrap().profiling = Some(Arc::clone(collector));
                 }
                 // Set source file for backtrace frame filenames.
-                Arc::get_mut(&mut ctx).unwrap().set_source_file(stage_source_file);
+                Arc::get_mut(&mut ctx)
+                    .unwrap()
+                    .set_source_file(stage_source_file);
                 // Share the already-open libdir Dir with the evaluator so that the self-hosted
                 // `include` (prelude.llt) can inject %libdir into nested includes without re-acquiring ambient authority.
                 if let Some(ref libdir_rc) = libdir_rc_for_ctx {
@@ -2364,14 +2377,15 @@ async fn run_fmt(
     output_name: &str,
     strict: bool,
 ) -> Result<(), String> {
-    let source = read_source(file_path)?;
+    let sf = read_source(file_path)?;
+    let source = String::from(&*sf.content);
 
     // If --strict is set, typecheck the file first and fail if type errors exist.
     // Parse once and run the type checking pipeline on the parsed AST.
     // This avoids the double-parse that would happen if we called typecheck_source().
     if strict {
-        let output =
-            parse(&source).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
+        let output = parse_with_file(&source, Arc::clone(&sf))
+            .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
         // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
         let _resolution_table =
             tinct::resolve::resolve_surface_program(output.as_surface_program());
@@ -2490,10 +2504,12 @@ fn run_lint(
     _cap_fs: &[String],
     _cap_net: &[String],
 ) -> Result<(), String> {
-    let source = read_source(file_path)?;
+    let sf = read_source(file_path)?;
+    let source = String::from(&*sf.content);
 
     // Parse the file
-    let output = parse(&source).map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
+    let output = parse_with_file(&source, Arc::clone(&sf))
+        .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
     // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
     let _resolution_table = tinct::resolve::resolve_surface_program(output.as_surface_program());
     // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
@@ -2581,7 +2597,7 @@ fn format_type_diagnostic(diag: &tinct::TypeDiagnostic, source: &str, file_name:
     out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
 
     // Snippet: source context with caret
-    if let Some(snippet) = tinct::render_span_snippet(source, diag.span) {
+    if let Some(snippet) = tinct::render_span_snippet(source, diag.span.clone()) {
         out.push_str("  |\n");
         out.push_str(&snippet);
     }
@@ -2614,9 +2630,13 @@ fn run_hash(file_path: &str) -> Result<(), String> {
 }
 
 /// Read LLT source from a file path or stdin (when path is `-`).
+///
+/// Returns an `Arc<SourceFile>` with both the path and content, ready to be
+/// threaded into `parse_with_file` so that all spans in the parsed AST carry
+/// a reference to the originating source file.
 // AMBIENT-OK: CLI entry point reading operator-specified file.
 #[allow(clippy::disallowed_types)]
-fn read_source(file_path: &str) -> Result<String, String> {
+fn read_source(file_path: &str) -> Result<Arc<SourceFile>, String> {
     if file_path == "-" {
         let mut buf = String::new();
         io::stdin()
@@ -2629,7 +2649,10 @@ fn read_source(file_path: &str) -> Result<String, String> {
                 MAX_FILE_SIZE
             ));
         }
-        Ok(buf)
+        Ok(Arc::new(SourceFile {
+            path: Arc::from("-"),
+            content: Arc::from(buf.as_str()),
+        }))
     } else {
         // Open the file first to get a stable fd, avoiding TOCTOU race.
         let file =
@@ -2655,7 +2678,10 @@ fn read_source(file_path: &str) -> Result<String, String> {
                 buf.len()
             ));
         }
-        Ok(buf)
+        Ok(Arc::new(SourceFile {
+            path: Arc::from(file_path),
+            content: Arc::from(buf.as_str()),
+        }))
     }
 }
 
@@ -2685,7 +2711,7 @@ struct LiterateConfig<'a> {
 #[allow(clippy::disallowed_methods)]
 fn run_literate(config: &LiterateConfig) -> Result<(), String> {
     let file_path = config.file_path;
-    let markdown = read_source(file_path)?;
+    let markdown = String::from(&*read_source(file_path)?.content);
     let blocks = literate::extract_code_blocks(&markdown);
 
     if blocks.is_empty() {
@@ -3939,8 +3965,9 @@ fn write_file_atomic(path: &str, content: &str) -> Result<(), String> {
 // AMBIENT-OK: CLI describe — opens file parent dir for type-checking
 #[allow(clippy::disallowed_methods)]
 fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
-    let source = read_source(file_path)?;
-    let output = parse(&source).map_err(|e| format!("{e}"))?;
+    let sf = read_source(file_path)?;
+    let source = String::from(&*sf.content);
+    let output = parse_with_file(&source, Arc::clone(&sf)).map_err(|e| format!("{e}"))?;
     // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
     let _resolution_table = tinct::resolve::resolve_surface_program(output.as_surface_program());
     // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).

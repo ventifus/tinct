@@ -25,7 +25,7 @@ fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
         node: CoreExpr::Call {
             func: Arc::new(Spanned {
                 node: CoreExpr::Int(0),
-                span,
+                span: span.clone(),
             }),
             args: vec![],
             named_args: vec![],
@@ -52,7 +52,7 @@ pub(crate) fn builtin_range(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("range", named.as_ref(), call_span)?;
+        reject_named("range", named.as_ref(), call_span.clone())?;
         if args.len() != 1 && args.len() != 2 {
             return Err(EvalError::arity_mismatch_bound(
                 ArityBound::Range(1, 2),
@@ -82,16 +82,16 @@ pub(crate) fn builtin_range(
 
         if args.len() == 1 {
             // Infinite range: [start, start+1, start+2, ...]
-            let next_start = start_int
-                .checked_add(1)
-                .ok_or_else(|| EvalError::integer_overflow("range".to_string(), call_span))?;
-            let head = ok_val(Value::Int(start_int), call_span)?;
-            let tail_args = vec![ok_val(Value::Int(next_start), call_span)?];
+            let next_start = start_int.checked_add(1).ok_or_else(|| {
+                EvalError::integer_overflow("range".to_string(), call_span.clone())
+            })?;
+            let head = ok_val(Value::Int(start_int), call_span.clone())?;
+            let tail_args = vec![ok_val(Value::Int(next_start), call_span.clone())?];
             let tail = Arc::new(Thunk::new_pending_builtin(
                 builtin!("builtin-range", builtin_range),
                 tail_args,
                 None,
-                call_span,
+                call_span.clone(),
                 Some(Arc::from("call $range")),
                 Arc::clone(&ctx),
             ));
@@ -131,19 +131,19 @@ pub(crate) fn builtin_range(
                 // Empty range
                 ok_val(Value::Dict(IndexMap::new()), call_span)
             } else {
-                let next_start = start_int
-                    .checked_add(1)
-                    .ok_or_else(|| EvalError::integer_overflow("range".to_string(), call_span))?;
-                let head = ok_val(Value::Int(start_int), call_span)?;
+                let next_start = start_int.checked_add(1).ok_or_else(|| {
+                    EvalError::integer_overflow("range".to_string(), call_span.clone())
+                })?;
+                let head = ok_val(Value::Int(start_int), call_span.clone())?;
                 let tail_args = vec![
-                    ok_val(Value::Int(next_start), call_span)?,
-                    ok_val(Value::Int(end_int), call_span)?,
+                    ok_val(Value::Int(next_start), call_span.clone())?,
+                    ok_val(Value::Int(end_int), call_span.clone())?,
                 ];
                 let tail = Arc::new(Thunk::new_pending_builtin(
                     builtin!("builtin-range", builtin_range),
                     tail_args,
                     None,
-                    call_span,
+                    call_span.clone(),
                     Some(Arc::from("call $range")),
                     Arc::clone(&ctx),
                 ));
@@ -177,7 +177,7 @@ pub(crate) fn builtin_repeat(
             ctx,
             ..
         } = ctx_arg;
-        reject_named("repeat", named.as_ref(), call_span)?;
+        reject_named("repeat", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
@@ -188,7 +188,7 @@ pub(crate) fn builtin_repeat(
             builtin!("builtin-repeat", builtin_repeat),
             tail_args,
             None,
-            call_span,
+            call_span.clone(),
             Some(Arc::from("call $repeat")),
             Arc::clone(&ctx),
         ));
@@ -216,7 +216,7 @@ pub(crate) fn builtin_cycle_step(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("cycle_step", named.as_ref(), call_span)?;
+        reject_named("cycle_step", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -254,7 +254,7 @@ pub(crate) fn builtin_cycle_step(
         };
 
         if map.is_empty() {
-            return Err(EvalError::empty_collection("cycle".to_string(), call_span).into());
+            return Err(EvalError::empty_collection("cycle".to_string(), call_span.clone()).into());
         }
 
         let len = map.len() as i64;
@@ -266,19 +266,19 @@ pub(crate) fn builtin_cycle_step(
             .get_index(current_idx as usize)
             .map(|(_, v)| *v)
             .ok_or_else(|| {
-                EvalError::internal("cycle: index out of bounds".to_string(), call_span)
+                EvalError::internal("cycle: index out of bounds".to_string(), call_span.clone())
             })?;
 
         // Create tail as PendingBuiltin for next step
         let tail_args = vec![
             Arc::clone(&args[0]),
-            ok_val(Value::Int(next_idx), call_span)?,
+            ok_val(Value::Int(next_idx), call_span.clone())?,
         ];
         let tail = Arc::new(Thunk::new_pending_builtin(
             builtin!("builtin-cycle", builtin_cycle_step, [], 2),
             tail_args,
             None,
-            call_span,
+            call_span.clone(),
             Some(Arc::from("call $cycle")),
             Arc::clone(&ctx),
         ));
@@ -309,7 +309,7 @@ pub(crate) fn builtin_cycle(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("cycle", named.as_ref(), call_span)?;
+        reject_named("cycle", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
@@ -325,7 +325,10 @@ pub(crate) fn builtin_cycle(
                 drop(map); // ensure map (and thus val) is dropped before .await
                            // Start cycling from index 0
                 builtin_cycle_step(BuiltinArgs {
-                    args: vec![Arc::clone(&args[0]), ok_val(Value::Int(0), call_span)?],
+                    args: vec![
+                        Arc::clone(&args[0]),
+                        ok_val(Value::Int(0), call_span.clone())?,
+                    ],
                     named: None,
                     call_span,
                     ctx: Arc::clone(&ctx),
@@ -359,7 +362,7 @@ pub(crate) fn builtin_iterate(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("iterate", named.as_ref(), call_span)?;
+        reject_named("iterate", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -376,12 +379,12 @@ pub(crate) fn builtin_iterate(
             Arc::clone(&f),
             vec![Arc::clone(&x)],
             IndexMap::new(),
-            call_span,
+            call_span.clone(),
             Arc::clone(&ctx.config.stdlib_env),
-            call_span,
+            call_span.clone(),
             Some(Arc::from("iterate")),
             Arc::clone(&ctx),
-            synthetic_call_expr(call_span),
+            synthetic_call_expr(call_span.clone()),
         ));
 
         // tail = iterate(f, f(x))
@@ -390,7 +393,7 @@ pub(crate) fn builtin_iterate(
             builtin!("builtin-iterate", builtin_iterate),
             tail_args,
             None,
-            call_span,
+            call_span.clone(),
             Some(Arc::from("call $iterate")),
             Arc::clone(&ctx),
         ));
@@ -420,7 +423,7 @@ pub(crate) fn builtin_unfold_step(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("unfold_step", named.as_ref(), call_span)?;
+        reject_named("unfold_step", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -433,12 +436,12 @@ pub(crate) fn builtin_unfold_step(
             step.clone(),
             vec![seed],
             IndexMap::new(),
-            call_span,
+            call_span.clone(),
             Arc::clone(&ctx.config.stdlib_env),
-            call_span,
+            call_span.clone(),
             Some(Arc::from("unfold")),
             Arc::clone(&ctx),
-            synthetic_call_expr(call_span),
+            synthetic_call_expr(call_span.clone()),
         ));
         let step_result = materialize(&step_result_thunk, None, &ctx).await?;
 
@@ -463,7 +466,7 @@ pub(crate) fn builtin_unfold_step(
                     builtin!("builtin-unfold", builtin_unfold_step),
                     tail_args,
                     None,
-                    call_span,
+                    call_span.clone(),
                     Some(Arc::from("call $unfold")),
                     Arc::clone(&ctx),
                 ));
@@ -514,7 +517,7 @@ pub(crate) fn builtin_unfold(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("unfold", named.as_ref(), call_span)?;
+        reject_named("unfold", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }

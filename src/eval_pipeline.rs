@@ -55,11 +55,11 @@ fn wrap_with_nominal_validation(
             annotation: annotation.clone(),
             expr: Arc::new(crate::ast::Spanned::new(
                 CoreExpr::FreeVar(gensym_name.clone()),
-                validation_span,
+                validation_span.clone(),
             )),
             resolved_type: resolved_type.unwrap_or(crate::types::Type::Unknown),
         },
-        validation_span,
+        validation_span.clone(),
     ));
 
     // Create an environment with __nominal_input_N bound to the inner thunk
@@ -129,7 +129,7 @@ pub(crate) async fn eval_document_exprs(
 
     for (i, node) in expr_nodes.iter().enumerate() {
         let core_spanned = crate::lower::lower(node, res, types);
-        let node_span = node.span;
+        let node_span = node.span.clone();
 
         if i == last_idx {
             // Last expression: return its thunk lazily (no materialization).
@@ -151,7 +151,7 @@ pub(crate) async fn eval_document_exprs(
                 r,
                 "document pipeline",
                 ctx,
-                node_span,
+                node_span.clone(),
             )?),
             _ => None,
         };
@@ -165,7 +165,8 @@ pub(crate) async fn eval_document_exprs(
                     let val_thunk = ctx.get_thunk(*val_thunk_id);
                     // Strictly materialize each value before binding (shallow let* semantics).
                     let forced_value = materialize(&val_thunk, Some(&node_span), ctx).await?;
-                    let strict_thunk = Arc::new(Thunk::new_materialized(forced_value, node_span));
+                    let strict_thunk =
+                        Arc::new(Thunk::new_materialized(forced_value, node_span.clone()));
                     child_env
                         .write()
                         .unwrap()
@@ -250,7 +251,7 @@ pub async fn eval_surface_document(
                     ));
                 }
 
-                return Err(EvalError::capability_required(message, caps_ann.span).into());
+                return Err(EvalError::capability_required(message, caps_ann.span.clone()).into());
             }
         }
     }
@@ -315,7 +316,7 @@ pub async fn eval_surface_file_with_input(
                 Arc::clone(&prev_output),
                 expects_ann,
                 resolved_type,
-                surface_doc.span,
+                surface_doc.span.clone(),
                 ctx,
             )
         } else {

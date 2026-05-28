@@ -104,14 +104,16 @@ use std::sync::Arc;
 
 /// AST node types produced by the parser.
 // Document, Entry, Expr, File, NamedArg deleted (sprint rv2-delete-old-ast 2026-05-24).
-pub use ast::{Annotation, Param, Position, Span, Spanned};
+pub use ast::{Annotation, Param, Position, SourceFile, Span, Spanned};
 /// Surface AST types for the runtime-v2 pipeline.
 pub use ast::{
     ResolutionTable, SurfaceEntry, SurfaceExpression, SurfaceNode, SurfaceProgram,
     TypeAnnotationTable,
 };
 /// Parser entry points and error type.
-pub use parser::{format_parse_error, parse, parse_surface_expression, ParseError, ParseOutput};
+pub use parser::{
+    format_parse_error, parse, parse_surface_expression, parse_with_file, ParseError, ParseOutput,
+};
 
 /// Evaluation functions.
 pub use eval::{
@@ -176,17 +178,19 @@ fn attach_macro_provenance(
 ) -> Box<EvalError> {
     if err.macro_expansion.is_none() {
         // Check definition span
-        let mut found = provenance.get(&expand::SpanKey::from(err.definition_span));
+        let mut found = provenance.get(&expand::SpanKey::from(err.definition_span.clone()));
         // Check materialization span
         if found.is_none() {
-            if let Some(mat_span) = err.materialization_span {
-                found = provenance.get(&expand::SpanKey::from(mat_span));
+            if let Some(mat_span) = &err.materialization_span {
+                found = provenance.get(&expand::SpanKey::from(mat_span.clone()));
             }
         }
         // Check stack frame spans
         if found.is_none() {
             for frame in &err.stack {
-                if let Some(prov) = provenance.get(&expand::SpanKey::from(frame.span)) {
+                if let Some(prov) =
+                    provenance.get(&expand::SpanKey::from(frame.definition_span.clone()))
+                {
                     found = Some(prov);
                     break;
                 }
@@ -194,12 +198,12 @@ fn attach_macro_provenance(
         }
         // Check secondary span
         if found.is_none() {
-            if let Some((sec_span, _)) = err.secondary_span {
-                found = provenance.get(&expand::SpanKey::from(sec_span));
+            if let Some((sec_span, _)) = &err.secondary_span {
+                found = provenance.get(&expand::SpanKey::from(sec_span.clone()));
             }
         }
         if let Some(prov) = found {
-            err.macro_expansion = Some((prov.macro_name.clone(), prov.call_site_span));
+            err.macro_expansion = Some((prov.macro_name.clone(), prov.call_site_span.clone()));
         }
     }
     err
@@ -356,7 +360,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     .map_err(|e| attach_and_format_error(e, &provenance))?;
     let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
         .map_err(|e| attach_and_format_error(e, &provenance))?;
-    value_to_display_string(&val, &ctx, thunk.span)
+    value_to_display_string(&val, &ctx, thunk.span.clone())
         .map_err(|e| attach_and_format_error(e, &provenance))
 }
 
@@ -488,7 +492,7 @@ pub fn eval_source_with_cap_net(
     .map_err(|e| attach_and_format_error(e, &provenance))?;
     let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
         .map_err(|e| attach_and_format_error(e, &provenance))?;
-    value_to_display_string(&val, &ctx, thunk.span)
+    value_to_display_string(&val, &ctx, thunk.span.clone())
         .map_err(|e| attach_and_format_error(e, &provenance))
 }
 
@@ -701,7 +705,7 @@ pub fn visit_value<V: ValueVisitor>(
     visitor: &V,
     span: ast::Span,
 ) -> Result<V::Output, Box<error::EvalError>> {
-    if let Some(limit_result) = visitor.depth_limit_output(depth, span) {
+    if let Some(limit_result) = visitor.depth_limit_output(depth, span.clone()) {
         return limit_result;
     }
     match val {
@@ -729,7 +733,7 @@ pub fn visit_value<V: ValueVisitor>(
             for (key, thunk_id) in map {
                 let thunk = ctx.get_thunk(*thunk_id);
                 let v = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, ctx))?;
-                let child_span = thunk.span;
+                let child_span = thunk.span.clone();
                 entries.push((
                     key.clone(),
                     visit_value(&v, ctx, depth + 1, visitor, child_span)?,
@@ -739,15 +743,15 @@ pub fn visit_value<V: ValueVisitor>(
         }
         value::Value::Overlay(l, r) => {
             // Flatten overlay to a concrete dict, then visit it.
-            let map = builtins::flatten_overlay(l, r, "value serialization", ctx, span)?;
+            let map = builtins::flatten_overlay(l, r, "value serialization", ctx, span.clone())?;
             visit_value(&value::Value::Dict(map), ctx, depth, visitor, span)
         }
         value::Value::Seq { head, .. } => {
             let head_thunk = ctx.get_thunk(*head);
             let head_val =
                 crate::async_rt::block_on_anywhere(eval::materialize(&head_thunk, None, ctx))?;
-            let head_span = head_thunk.span;
-            let head_out = visit_value(&head_val, ctx, depth + 1, visitor, head_span)?;
+            let head_span = head_thunk.span.clone();
+            let head_out = visit_value(&head_val, ctx, depth + 1, visitor, head_span.clone())?;
             visitor.visit_seq_head(head_out, head_span)
         }
         value::Value::Function { params, .. } => visitor.visit_function(params, span),
@@ -777,7 +781,7 @@ pub fn visit_value<V: ValueVisitor>(
                     let thunk = ctx.get_thunk(*thunk_id);
                     let v =
                         crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, ctx))?;
-                    let payload_span = thunk.span;
+                    let payload_span = thunk.span.clone();
                     visit_value(&v, ctx, depth + 1, visitor, payload_span)?
                 }
                 None => visitor.visit_null(),
@@ -1640,7 +1644,8 @@ mod tests {
             annotation: None,
         };
         let call_site_span = test_span(3, 5, 3, 20);
-        let err = visit_value(&f, &test_ctx(), 0, &JsonVisitor, call_site_span).unwrap_err();
+        let err =
+            visit_value(&f, &test_ctx(), 0, &JsonVisitor, call_site_span.clone()).unwrap_err();
         assert_eq!(err.definition_span, call_site_span);
     }
 
@@ -2202,6 +2207,7 @@ mod tests {
                 line: 3,
                 column: 2,
             },
+            file: None,
         };
 
         let snippet = error::render_span_snippet(source, span)

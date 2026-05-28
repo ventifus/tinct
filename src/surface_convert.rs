@@ -1094,33 +1094,42 @@ pub fn surface_program_to_dict(
     let span = program
         .documents
         .first()
-        .map(|d| d.span)
+        .map(|d| d.span.clone())
         .unwrap_or_else(Span::origin);
     let mut root = IndexMap::new();
 
     root.insert(
         Key::String("type".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("file"), span))),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            string_val("file"),
+            span.clone(),
+        ))),
     );
 
     root.insert(
         Key::String("schema-version".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Int(1),
+            span.clone(),
+        ))),
     );
 
     // documents: list of document dicts
     let docs: Vec<_> = program
         .documents
         .iter()
-        .map(|doc| surface_document_to_thunk_id(&doc.node, doc.span, opts, ctx))
+        .map(|doc| surface_document_to_thunk_id(&doc.node, doc.span.clone(), opts, ctx))
         .collect::<EvalResult<Vec<_>>>()?;
 
     root.insert(
         Key::String("documents".into()),
-        list_to_thunk_id(docs.into_iter(), span, ctx)?,
+        list_to_thunk_id(docs.into_iter(), span.clone(), ctx)?,
     );
 
-    root.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
+    root.insert(
+        Key::String("span".into()),
+        span_to_thunk_id(span.clone(), ctx)?,
+    );
 
     Ok(Arc::new(Thunk::new_materialized(Value::Dict(root), span)))
 }
@@ -1134,21 +1143,21 @@ fn span_to_thunk_id(span: Span, ctx: &Arc<crate::eval::EvalContext>) -> EvalResu
         Key::String("line".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.line as i64),
-            span,
+            span.clone(),
         ))),
     );
     start_dict.insert(
         Key::String("col".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.column as i64),
-            span,
+            span.clone(),
         ))),
     );
     start_dict.insert(
         Key::String("offset".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.offset as i64),
-            span,
+            span.clone(),
         ))),
     );
 
@@ -1158,21 +1167,21 @@ fn span_to_thunk_id(span: Span, ctx: &Arc<crate::eval::EvalContext>) -> EvalResu
         Key::String("line".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.line as i64),
-            span,
+            span.clone(),
         ))),
     );
     end_dict.insert(
         Key::String("col".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.column as i64),
-            span,
+            span.clone(),
         ))),
     );
     end_dict.insert(
         Key::String("offset".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.offset as i64),
-            span,
+            span.clone(),
         ))),
     );
 
@@ -1180,14 +1189,14 @@ fn span_to_thunk_id(span: Span, ctx: &Arc<crate::eval::EvalContext>) -> EvalResu
         Key::String("start".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Dict(start_dict),
-            span,
+            span.clone(),
         ))),
     );
     dict.insert(
         Key::String("end".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Dict(end_dict),
-            span,
+            span.clone(),
         ))),
     );
 
@@ -1219,7 +1228,7 @@ fn surface_named_arg_to_thunk_id(
         Key::String("name".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             string_val(&named_arg.name),
-            span,
+            span.clone(),
         ))),
     );
     dict.insert(
@@ -1240,16 +1249,16 @@ fn surface_param_to_thunk_id(
         Key::String("name".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             string_val(&param.name),
-            span,
+            span.clone(),
         ))),
     );
     dict.insert(
         Key::String("annotation".into()),
         match &param.annotation {
-            Some(a) => annotation_to_thunk_id(&a.node, span, ctx)?,
+            Some(a) => annotation_to_thunk_id(&a.node, span.clone(), ctx)?,
             None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
-                span,
+                span.clone(),
             ))),
         },
     );
@@ -1257,7 +1266,7 @@ fn surface_param_to_thunk_id(
         Key::String("variadic".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Bool(param.variadic),
-            span,
+            span.clone(),
         ))),
     );
     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
@@ -1270,12 +1279,15 @@ fn surface_entry_to_thunk_id(
     opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
-    let span = entry.value.span;
+    let span = entry.value.span.clone();
     let mut dict = IndexMap::new();
 
     dict.insert(
         Key::String("type".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("entry"), span))),
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            string_val("entry"),
+            span.clone(),
+        ))),
     );
 
     dict.insert(
@@ -1284,7 +1296,7 @@ fn surface_entry_to_thunk_id(
             Some(k) => surface_node_to_thunk_id(k, opts, ctx)?,
             None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
-                span,
+                span.clone(),
             ))),
         },
     );
@@ -1304,7 +1316,7 @@ fn surface_entry_to_thunk_id(
         Key::String("blank-before".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Bool(blank_before),
-            span,
+            span.clone(),
         ))),
     );
 
@@ -1314,19 +1326,25 @@ fn surface_entry_to_thunk_id(
                 let comment_ids: Vec<ThunkId> = comments
                     .iter()
                     .map(|c| {
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(c), span)))
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                            string_val(c),
+                            span.clone(),
+                        )))
                     })
                     .collect();
                 dict.insert(
                     Key::String("leading-comments".into()),
-                    list_to_thunk_id(comment_ids.into_iter(), span, ctx)?,
+                    list_to_thunk_id(comment_ids.into_iter(), span.clone(), ctx)?,
                 );
             }
         }
         if let Some(comment) = comment_maps.trailing_comments.get(&entry_span.start.offset) {
             dict.insert(
                 Key::String("trailing-comment".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(comment), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(comment),
+                    span.clone(),
+                ))),
             );
         }
     }
@@ -1348,7 +1366,7 @@ fn pattern_to_thunk_id(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("wildcard"),
-                    span,
+                    span.clone(),
                 ))),
             );
         }
@@ -1357,12 +1375,15 @@ fn pattern_to_thunk_id(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("variable"),
-                    span,
+                    span.clone(),
                 ))),
             );
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(name),
+                    span.clone(),
+                ))),
             );
         }
         Pattern::TypeTag(tag) => {
@@ -1370,22 +1391,31 @@ fn pattern_to_thunk_id(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("type_tag"),
-                    span,
+                    span.clone(),
                 ))),
             );
             dict.insert(
                 Key::String("tag".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(tag), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(tag),
+                    span.clone(),
+                ))),
             );
         }
         Pattern::Pin(name) => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("pin"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("pin"),
+                    span.clone(),
+                ))),
             );
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(name),
+                    span.clone(),
+                ))),
             );
         }
         Pattern::Literal(lit) => {
@@ -1393,7 +1423,7 @@ fn pattern_to_thunk_id(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("literal"),
-                    span,
+                    span.clone(),
                 ))),
             );
             let value = match lit {
@@ -1404,13 +1434,16 @@ fn pattern_to_thunk_id(
             };
             dict.insert(
                 Key::String("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(value, span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(value, span.clone()))),
             );
         }
         Pattern::Dict { fields, rest } => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("dict"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("dict"),
+                    span.clone(),
+                ))),
             );
             // Convert fields to a dict
             let mut fields_dict = IndexMap::new();
@@ -1418,17 +1451,20 @@ fn pattern_to_thunk_id(
                 let mut field_dict = IndexMap::new();
                 field_dict.insert(
                     Key::String("key".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(key), pat.span))),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        string_val(key),
+                        pat.span.clone(),
+                    ))),
                 );
                 field_dict.insert(
                     Key::String("pattern".into()),
-                    pattern_to_thunk_id(&pat.node, pat.span, ctx)?,
+                    pattern_to_thunk_id(&pat.node, pat.span.clone(), ctx)?,
                 );
                 fields_dict.insert(
                     Key::String(Rc::from(i.to_string().as_str())),
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(field_dict),
-                        pat.span,
+                        pat.span.clone(),
                     ))),
                 );
             }
@@ -1436,26 +1472,32 @@ fn pattern_to_thunk_id(
                 Key::String("fields".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(fields_dict),
-                    span,
+                    span.clone(),
                 ))),
             );
             dict.insert(
                 Key::String("rest".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Bool(*rest), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Bool(*rest),
+                    span.clone(),
+                ))),
             );
         }
         Pattern::Seq { head, tail } => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("seq"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("seq"),
+                    span.clone(),
+                ))),
             );
             dict.insert(
                 Key::String("head".into()),
-                pattern_to_thunk_id(&head.node, head.span, ctx)?,
+                pattern_to_thunk_id(&head.node, head.span.clone(), ctx)?,
             );
             dict.insert(
                 Key::String("tail".into()),
-                pattern_to_thunk_id(&tail.node, tail.span, ctx)?,
+                pattern_to_thunk_id(&tail.node, tail.span.clone(), ctx)?,
             );
         }
         Pattern::Constructor { tag, binding } => {
@@ -1463,28 +1505,34 @@ fn pattern_to_thunk_id(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("constructor"),
-                    span,
+                    span.clone(),
                 ))),
             );
             dict.insert(
                 Key::String("tag".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(tag), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(tag),
+                    span.clone(),
+                ))),
             );
             if let Some(pat) = binding {
                 dict.insert(
                     Key::String("binding".into()),
-                    pattern_to_thunk_id(&pat.node, pat.span, ctx)?,
+                    pattern_to_thunk_id(&pat.node, pat.span.clone(), ctx)?,
                 );
             }
         }
         Pattern::Or(patterns) => {
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("or"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("or"),
+                    span.clone(),
+                ))),
             );
             let pattern_thunks: Vec<_> = patterns
                 .iter()
-                .map(|pat| pattern_to_thunk_id(&pat.node, pat.span, ctx))
+                .map(|pat| pattern_to_thunk_id(&pat.node, pat.span.clone(), ctx))
                 .collect::<EvalResult<Vec<_>>>()?;
             let patterns_dict: IndexMap<Key, ThunkId> = pattern_thunks
                 .into_iter()
@@ -1495,7 +1543,7 @@ fn pattern_to_thunk_id(
                 Key::String("patterns".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(patterns_dict),
-                    span,
+                    span.clone(),
                 ))),
             );
         }
@@ -1515,7 +1563,7 @@ fn annotation_to_thunk_id(
         Key::String("type".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             string_val("annotation"),
-            span,
+            span.clone(),
         ))),
     );
 
@@ -1525,12 +1573,15 @@ fn annotation_to_thunk_id(
                 Key::String("kind".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("simple"),
-                    span,
+                    span.clone(),
                 ))),
             );
             dict.insert(
                 Key::String("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(name),
+                    span.clone(),
+                ))),
             );
         }
         Annotation::Annotated(name, inner) => {
@@ -1538,22 +1589,28 @@ fn annotation_to_thunk_id(
                 Key::String("kind".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("annotated"),
-                    span,
+                    span.clone(),
                 ))),
             );
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(name),
+                    span.clone(),
+                ))),
             );
             dict.insert(
                 Key::String("inner".into()),
-                annotation_to_thunk_id(inner, span, ctx)?,
+                annotation_to_thunk_id(inner, span.clone(), ctx)?,
             );
         }
         Annotation::PropertyDict(entries) => {
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("dict"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("dict"),
+                    span.clone(),
+                ))),
             );
 
             // Convert entries to thunk IDs - these are annotation entries (simpler than regular entries)
@@ -1565,7 +1622,7 @@ fn annotation_to_thunk_id(
                         Key::String("type".into()),
                         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             string_val("entry"),
-                            e.span,
+                            e.span.clone(),
                         ))),
                     );
 
@@ -1574,16 +1631,16 @@ fn annotation_to_thunk_id(
                     let key_id = match &e.node.key {
                         Some(k) => match &k.expr {
                             crate::ast::SurfaceExpression::Str(s) => ctx.alloc_thunk(Arc::new(
-                                Thunk::new_materialized(string_val(s), k.span),
+                                Thunk::new_materialized(string_val(s), k.span.clone()),
                             )),
                             _ => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                 Value::Dict(IndexMap::new()),
-                                k.span,
+                                k.span.clone(),
                             ))),
                         },
                         None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             Value::Dict(IndexMap::new()),
-                            e.span,
+                            e.span.clone(),
                         ))),
                     };
 
@@ -1593,10 +1650,10 @@ fn annotation_to_thunk_id(
                     // or full AST dicts for compound values like [a: Numeric] or Seq@Int.
                     let value_id = match &e.node.value.expr {
                         crate::ast::SurfaceExpression::Str(s) => ctx.alloc_thunk(Arc::new(
-                            Thunk::new_materialized(string_val(s), e.node.value.span),
+                            Thunk::new_materialized(string_val(s), e.node.value.span.clone()),
                         )),
                         crate::ast::SurfaceExpression::Int(n) => ctx.alloc_thunk(Arc::new(
-                            Thunk::new_materialized(Value::Int(*n), e.node.value.span),
+                            Thunk::new_materialized(Value::Int(*n), e.node.value.span.clone()),
                         )),
                         _ => {
                             surface_node_to_thunk_id(&e.node.value, &AstToDictOpts::default(), ctx)?
@@ -1606,14 +1663,14 @@ fn annotation_to_thunk_id(
                     entry_dict.insert(Key::String("value".into()), value_id);
                     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(entry_dict),
-                        e.span,
+                        e.span.clone(),
                     ))))
                 })
                 .collect::<EvalResult<Vec<_>>>()?;
 
             dict.insert(
                 Key::String("entries".into()),
-                list_to_thunk_id(entry_ids.into_iter(), span, ctx)?,
+                list_to_thunk_id(entry_ids.into_iter(), span.clone(), ctx)?,
             );
         }
     }
@@ -1639,7 +1696,7 @@ fn surface_document_to_thunk_id(
         Key::String("type".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             string_val("document"),
-            span,
+            span.clone(),
         ))),
     );
 
@@ -1649,23 +1706,28 @@ fn surface_document_to_thunk_id(
         .iter()
         .map(|item| match item {
             SurfaceItem::Expr(node) => surface_node_to_thunk_id(node, opts, ctx),
-            SurfaceItem::Decl(decl) => surface_decl_to_thunk_id(&decl.node, decl.span, opts, ctx),
+            SurfaceItem::Decl(decl) => {
+                surface_decl_to_thunk_id(&decl.node, decl.span.clone(), opts, ctx)
+            }
         })
         .collect::<EvalResult<Vec<_>>>()?;
 
     dict.insert(
         Key::String("expressions".into()),
-        list_to_thunk_id(item_ids.into_iter(), span, ctx)?,
+        list_to_thunk_id(item_ids.into_iter(), span.clone(), ctx)?,
     );
 
     // name: string or []
     dict.insert(
         Key::String("name".into()),
         match &doc.name {
-            Some(s) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(s), span))),
+            Some(s) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                string_val(s),
+                span.clone(),
+            ))),
             None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
-                span,
+                span.clone(),
             ))),
         },
     );
@@ -1674,10 +1736,10 @@ fn surface_document_to_thunk_id(
     dict.insert(
         Key::String("output-type".into()),
         match &doc.output_type {
-            Some(a) => annotation_to_thunk_id(&a.node, span, ctx)?,
+            Some(a) => annotation_to_thunk_id(&a.node, span.clone(), ctx)?,
             None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
-                span,
+                span.clone(),
             ))),
         },
     );
@@ -1686,10 +1748,10 @@ fn surface_document_to_thunk_id(
     dict.insert(
         Key::String("expects".into()),
         match &doc.expects {
-            Some(a) => annotation_to_thunk_id(&a.node, span, ctx)?,
+            Some(a) => annotation_to_thunk_id(&a.node, span.clone(), ctx)?,
             None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
-                span,
+                span.clone(),
             ))),
         },
     );
@@ -1706,7 +1768,7 @@ fn surface_document_to_thunk_id(
                 tag: stage_tag.to_string(),
                 payload: None,
             },
-            span,
+            span.clone(),
         ))),
     );
 
@@ -1717,18 +1779,24 @@ fn surface_document_to_thunk_id(
                 let comment_ids: Vec<ThunkId> = comments
                     .iter()
                     .map(|c| {
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(c), span)))
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                            string_val(c),
+                            span.clone(),
+                        )))
                     })
                     .collect();
                 dict.insert(
                     Key::String("leading-comments".into()),
-                    list_to_thunk_id(comment_ids.into_iter(), span, ctx)?,
+                    list_to_thunk_id(comment_ids.into_iter(), span.clone(), ctx)?,
                 );
             }
         }
     }
 
-    dict.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
+    dict.insert(
+        Key::String("span".into()),
+        span_to_thunk_id(span.clone(), ctx)?,
+    );
 
     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
@@ -1755,12 +1823,15 @@ fn surface_decl_to_thunk_id(
                 let params_thunk_ids: Vec<ThunkId> = params
                     .iter()
                     .map(|p| {
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(p), span)))
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                            string_val(p),
+                            span.clone(),
+                        )))
                     })
                     .collect();
                 dict.insert(
                     Key::String("params".into()),
-                    list_to_thunk_id(params_thunk_ids.into_iter(), span, ctx)?,
+                    list_to_thunk_id(params_thunk_ids.into_iter(), span.clone(), ctx)?,
                 );
             }
             dict.insert(
@@ -1781,7 +1852,10 @@ fn surface_decl_to_thunk_id(
             variant_tag = "ClassDecl";
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(name),
+                    span.clone(),
+                ))),
             );
             // params: integer-keyed list of param name strings
             let params_dict: IndexMap<Key, ThunkId> = params
@@ -1790,7 +1864,10 @@ fn surface_decl_to_thunk_id(
                 .map(|(i, p)| {
                     (
                         Key::Int(i as i64),
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(p), span))),
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                            string_val(p),
+                            span.clone(),
+                        ))),
                     )
                 })
                 .collect();
@@ -1798,7 +1875,7 @@ fn surface_decl_to_thunk_id(
                 Key::String("params".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(params_dict),
-                    span,
+                    span.clone(),
                 ))),
             );
             // superclasses: Seq of 2-element Seqs [[class-name, var-name] ...]
@@ -1812,25 +1889,28 @@ fn surface_decl_to_thunk_id(
                                 Key::Int(0),
                                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                     string_val(class_name),
-                                    span,
+                                    span.clone(),
                                 ))),
                             ),
                             (
                                 Key::Int(1),
                                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                     string_val(var_name),
-                                    span,
+                                    span.clone(),
                                 ))),
                             ),
                         ]
                         .into_iter()
                         .collect();
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(inner), span)))
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                            Value::Dict(inner),
+                            span.clone(),
+                        )))
                     })
                     .collect();
                 dict.insert(
                     Key::String("superclasses".into()),
-                    list_to_thunk_id(pair_thunk_ids.into_iter(), span, ctx)?,
+                    list_to_thunk_id(pair_thunk_ids.into_iter(), span.clone(), ctx)?,
                 );
             }
             // methods: string-keyed dict of method expression dicts
@@ -1854,7 +1934,7 @@ fn surface_decl_to_thunk_id(
                 Key::String("methods".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(methods_dict),
-                    span,
+                    span.clone(),
                 ))),
             );
             // determines: optional integer-keyed list of expression dicts
@@ -1873,7 +1953,7 @@ fn surface_decl_to_thunk_id(
                     Key::String("determines".into()),
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(determines_dict),
-                        span,
+                        span.clone(),
                     ))),
                 );
             }
@@ -1888,7 +1968,10 @@ fn surface_decl_to_thunk_id(
             if *resolver_injective {
                 dict.insert(
                     Key::String("injective".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Bool(true), span))),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Bool(true),
+                        span.clone(),
+                    ))),
                 );
             }
         }
@@ -1899,7 +1982,7 @@ fn surface_decl_to_thunk_id(
                 Key::String("class".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val(class_name),
-                    span,
+                    span.clone(),
                 ))),
             );
             // arms: integer-keyed list of {pattern, methods} dicts
@@ -1933,14 +2016,14 @@ fn surface_decl_to_thunk_id(
                         Key::String("methods".into()),
                         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             Value::Dict(methods_dict),
-                            span,
+                            span.clone(),
                         ))),
                     );
                     Some((
                         Key::Int(i as i64),
                         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             Value::Dict(arm_dict),
-                            span,
+                            span.clone(),
                         ))),
                     ))
                 })
@@ -1949,7 +2032,7 @@ fn surface_decl_to_thunk_id(
                 Key::String("arms".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(arms_dict),
-                    span,
+                    span.clone(),
                 ))),
             );
         }
@@ -1958,7 +2041,10 @@ fn surface_decl_to_thunk_id(
             variant_tag = "DefMacro";
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(name),
+                    span.clone(),
+                ))),
             );
             dict.insert(
                 Key::String("params".into()),
@@ -1974,7 +2060,10 @@ fn surface_decl_to_thunk_id(
             variant_tag = "MacroDecl";
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(name),
+                    span.clone(),
+                ))),
             );
             dict.insert(
                 Key::String("params".into()),
@@ -1994,7 +2083,10 @@ fn surface_decl_to_thunk_id(
             variant_tag = "SyntaxClass";
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(name),
+                    span.clone(),
+                ))),
             );
             dict.insert(
                 Key::String("pattern".into()),
@@ -2003,7 +2095,10 @@ fn surface_decl_to_thunk_id(
             if let Some(msg) = message {
                 dict.insert(
                     Key::String("message".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(msg), span))),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        string_val(msg),
+                        span.clone(),
+                    ))),
                 );
             }
         }
@@ -2024,14 +2119,20 @@ fn surface_decl_to_thunk_id(
                             .map(|(i, v)| (Key::Int(i as i64), v))
                             .collect(),
                     ),
-                    span,
+                    span.clone(),
                 ))),
             );
         }
     }
 
-    dict.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
-    let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span)));
+    dict.insert(
+        Key::String("span".into()),
+        span_to_thunk_id(span.clone(), ctx)?,
+    );
+    let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::Dict(dict),
+        span.clone(),
+    )));
     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
         Value::Variant {
             tag: variant_tag.to_string(),
@@ -2051,7 +2152,7 @@ fn surface_node_to_thunk_id(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
     let expr = &node.expr;
-    let span = node.span;
+    let span = node.span.clone();
 
     let capacity = match expr {
         SurfaceExpression::Int(_) | SurfaceExpression::Float(_) | SurfaceExpression::Bool(_) => 2,
@@ -2085,11 +2186,17 @@ fn surface_node_to_thunk_id(
             variant_tag = "Literal";
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("int"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("int"),
+                    span.clone(),
+                ))),
             );
             dict.insert(
                 Key::String("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(*n), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Int(*n),
+                    span.clone(),
+                ))),
             );
         }
 
@@ -2097,11 +2204,17 @@ fn surface_node_to_thunk_id(
             variant_tag = "Literal";
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("float"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("float"),
+                    span.clone(),
+                ))),
             );
             dict.insert(
                 Key::String("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Float(*f), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Float(*f),
+                    span.clone(),
+                ))),
             );
         }
 
@@ -2109,11 +2222,17 @@ fn surface_node_to_thunk_id(
             variant_tag = "Literal";
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("bool"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("bool"),
+                    span.clone(),
+                ))),
             );
             dict.insert(
                 Key::String("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Bool(*b), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Bool(*b),
+                    span.clone(),
+                ))),
             );
         }
 
@@ -2121,11 +2240,17 @@ fn surface_node_to_thunk_id(
             variant_tag = "Literal";
             dict.insert(
                 Key::String("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val("str"), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("str"),
+                    span.clone(),
+                ))),
             );
             dict.insert(
                 Key::String("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(s), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(s),
+                    span.clone(),
+                ))),
             );
             let bare = opts
                 .source
@@ -2139,7 +2264,10 @@ fn surface_node_to_thunk_id(
                 .unwrap_or(false);
             dict.insert(
                 Key::String("bare".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Bool(bare), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Bool(bare),
+                    span.clone(),
+                ))),
             );
         }
 
@@ -2147,7 +2275,10 @@ fn surface_node_to_thunk_id(
             variant_tag = "VarRef";
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(name),
+                    span.clone(),
+                ))),
             );
         }
 
@@ -2164,13 +2295,19 @@ fn surface_node_to_thunk_id(
                 DotKey::Ident(s) => {
                     dict.insert(
                         Key::String("field".into()),
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(s), span))),
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                            string_val(s),
+                            span.clone(),
+                        ))),
                     );
                 }
                 DotKey::Int(n) => {
                     dict.insert(
                         Key::String("field".into()),
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(*n), span))),
+                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                            Value::Int(*n),
+                            span.clone(),
+                        ))),
                     );
                 }
             }
@@ -2196,7 +2333,7 @@ fn surface_node_to_thunk_id(
                 .collect::<EvalResult<Vec<_>>>()?;
             dict.insert(
                 Key::String("exprs".into()),
-                list_to_thunk_id(expr_ids.into_iter(), span, ctx)?,
+                list_to_thunk_id(expr_ids.into_iter(), span.clone(), ctx)?,
             );
         }
 
@@ -2204,11 +2341,11 @@ fn surface_node_to_thunk_id(
             variant_tag = "Dict";
             let entry_ids: Vec<_> = entries
                 .iter()
-                .map(|e| surface_entry_to_thunk_id(&e.node, e.span, opts, ctx))
+                .map(|e| surface_entry_to_thunk_id(&e.node, e.span.clone(), opts, ctx))
                 .collect::<EvalResult<Vec<_>>>()?;
             dict.insert(
                 Key::String("entries".into()),
-                list_to_thunk_id(entry_ids.into_iter(), span, ctx)?,
+                list_to_thunk_id(entry_ids.into_iter(), span.clone(), ctx)?,
             );
         }
 
@@ -2229,21 +2366,21 @@ fn surface_node_to_thunk_id(
                 .collect::<EvalResult<Vec<_>>>()?;
             dict.insert(
                 Key::String("args".into()),
-                list_to_thunk_id(arg_ids.into_iter(), span, ctx)?,
+                list_to_thunk_id(arg_ids.into_iter(), span.clone(), ctx)?,
             );
             let named_arg_ids: Vec<_> = named_args
                 .iter()
-                .map(|na| surface_named_arg_to_thunk_id(&na.node, na.span, opts, ctx))
+                .map(|na| surface_named_arg_to_thunk_id(&na.node, na.span.clone(), opts, ctx))
                 .collect::<EvalResult<Vec<_>>>()?;
             dict.insert(
                 Key::String("named-args".into()),
-                list_to_thunk_id(named_arg_ids.into_iter(), span, ctx)?,
+                list_to_thunk_id(named_arg_ids.into_iter(), span.clone(), ctx)?,
             );
             dict.insert(
                 Key::String("implied".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Bool(*implied),
-                    span,
+                    span.clone(),
                 ))),
             );
         }
@@ -2257,19 +2394,19 @@ fn surface_node_to_thunk_id(
             variant_tag = "Fn";
             let param_ids: Vec<_> = params
                 .iter()
-                .map(|p| surface_param_to_thunk_id(&p.node, span, ctx))
+                .map(|p| surface_param_to_thunk_id(&p.node, span.clone(), ctx))
                 .collect::<EvalResult<Vec<_>>>()?;
             dict.insert(
                 Key::String("params".into()),
-                list_to_thunk_id(param_ids.into_iter(), span, ctx)?,
+                list_to_thunk_id(param_ids.into_iter(), span.clone(), ctx)?,
             );
             dict.insert(
                 Key::String("return-ann".into()),
                 match return_ann {
-                    Some(a) => annotation_to_thunk_id(&a.node, span, ctx)?,
+                    Some(a) => annotation_to_thunk_id(&a.node, span.clone(), ctx)?,
                     None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(IndexMap::new()),
-                        span,
+                        span.clone(),
                     ))),
                 },
             );
@@ -2281,7 +2418,7 @@ fn surface_node_to_thunk_id(
                 Key::String("desugared".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Bool(*desugared),
-                    span,
+                    span.clone(),
                 ))),
             );
         }
@@ -2293,7 +2430,7 @@ fn surface_node_to_thunk_id(
             variant_tag = "TypeAssert";
             dict.insert(
                 Key::String("annotation".into()),
-                annotation_to_thunk_id(&annotation.node, span, ctx)?,
+                annotation_to_thunk_id(&annotation.node, span.clone(), ctx)?,
             );
             dict.insert(
                 Key::String("expr".into()),
@@ -2305,11 +2442,14 @@ fn surface_node_to_thunk_id(
             variant_tag = "Annotated";
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(name), span))),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(name),
+                    span.clone(),
+                ))),
             );
             dict.insert(
                 Key::String("annotation".into()),
-                annotation_to_thunk_id(&annotation.node, span, ctx)?,
+                annotation_to_thunk_id(&annotation.node, span.clone(), ctx)?,
             );
         }
 
@@ -2318,12 +2458,13 @@ fn surface_node_to_thunk_id(
             dict.insert(
                 Key::String("name".into()),
                 match name_opt {
-                    Some(s) => {
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(string_val(s), span)))
-                    }
+                    Some(s) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        string_val(s),
+                        span.clone(),
+                    ))),
                     None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(IndexMap::new()),
-                        span,
+                        span.clone(),
                     ))),
                 },
             );
@@ -2365,7 +2506,7 @@ fn surface_node_to_thunk_id(
                     let mut arm_dict = IndexMap::new();
                     arm_dict.insert(
                         Key::String("pattern".into()),
-                        pattern_to_thunk_id(&arm.pattern.node, arm.pattern.span, ctx)?,
+                        pattern_to_thunk_id(&arm.pattern.node, arm.pattern.span.clone(), ctx)?,
                     );
                     if let Some(guard) = &arm.guard {
                         arm_dict.insert(
@@ -2379,7 +2520,7 @@ fn surface_node_to_thunk_id(
                     );
                     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(arm_dict),
-                        arm.pattern.span,
+                        arm.pattern.span.clone(),
                     ))))
                 })
                 .collect::<EvalResult<Vec<_>>>()?;
@@ -2392,7 +2533,7 @@ fn surface_node_to_thunk_id(
                 Key::String("arms".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(arms_dict),
-                    span,
+                    span.clone(),
                 ))),
             );
         }
@@ -2408,7 +2549,7 @@ fn surface_node_to_thunk_id(
                 Key::String("bindings".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(bindings_dict),
-                    span,
+                    span.clone(),
                 ))),
             );
         }
@@ -2424,7 +2565,7 @@ fn surface_node_to_thunk_id(
                 Key::String("bindings".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(bindings_dict),
-                    span,
+                    span.clone(),
                 ))),
             );
         }
@@ -2461,24 +2602,30 @@ fn surface_node_to_thunk_id(
             variant_tag = "AstError";
             dict.insert(
                 Key::String("span".into()),
-                span_to_thunk_id(*error_span, ctx)?,
+                span_to_thunk_id(error_span.clone(), ctx)?,
             );
             let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(dict),
-                *error_span,
+                error_span.clone(),
             )));
             return Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Variant {
                     tag: variant_tag.to_string(),
                     payload: Some(payload_id),
                 },
-                *error_span,
+                error_span.clone(),
             ))));
         }
     }
 
-    dict.insert(Key::String("span".into()), span_to_thunk_id(span, ctx)?);
-    let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span)));
+    dict.insert(
+        Key::String("span".into()),
+        span_to_thunk_id(span.clone(), ctx)?,
+    );
+    let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::Dict(dict),
+        span.clone(),
+    )));
     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
         Value::Variant {
             tag: variant_tag.to_string(),

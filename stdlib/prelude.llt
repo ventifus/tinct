@@ -2845,7 +2845,7 @@ path:           file path string (for error spans)
 hash:           content cache key (blake3(cap-identity + "|" + source))
 cap:            DirCap — passed as %include-dir; included files start with % = []
 integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
-"""] [let source path hash cap integrity-hash: []]
+"""] [let source path hash cap integrity-hash@[default: []]]
   [include-cache-put hash Pending]
   [program: [if [null? integrity-hash]
     [load source name: path]
@@ -2874,7 +2874,7 @@ integrity-hash: optional blake3 hex digest for integrity verification (--require
 Uses content-addressed memoization: blake3(cap-identity + "|" + source).
 Detects circular includes via [Pending] cache state.
 Included files start with % = [] (fresh pipeline input).
-"""] [let cap@DirCap path@String integrity-hash: []]
+"""] [let cap@DirCap path@String integrity-hash@[default: []]]
   [source: [join "\n" [collect [lines [open cap path Readable]]]]]
   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
   [match [include-cache-get hash]
@@ -2937,5 +2937,46 @@ bytes-concat@[doc: "Concatenate a Seq or Dict of Bytes values into a single Byte
 # Useful for testing time-sensitive code without depending on the system clock.
 # Pass the result wherever a ClockCap (%clock) is expected.
 fixed-clock: fixed-clock
+
+# ============================================================================
+# Async concurrency primitives
+#
+# Bare-name wrappers over builtin-* stable aliases.
+# These were removed from standard_builtins() in the builtin-privacy-primary-names
+# sprint, with prelude expected to re-export them. async.llt depends on these.
+# ============================================================================
+
+# Task lifecycle
+task:          builtin-task
+await:         builtin-await
+par:           builtin-par
+par-map:       builtin-par-map
+par-filter:    builtin-par-filter
+
+# Channels
+channel:       builtin-channel
+send:          builtin-send
+recv:          builtin-recv
+select-once:   builtin-select-once
+
+# Event-source channels
+signal-channel:  builtin-signal-channel
+timer-channel:   builtin-timer-channel
+watch-channel:   builtin-watch-channel
+
+# Cancellation contexts
+context:         builtin-context
+with-cancel:     builtin-with-cancel
+with-timeout:    builtin-with-timeout
+with-deadline:   builtin-with-deadline
+with-context:    builtin-with-context
+non-cancellable: builtin-non-cancellable
+cancelled?:      builtin-cancelled-q
+cancel-task:     builtin-cancel-task
+
+# Process lifecycle
+cancel-root:   builtin-cancel-root
+drain:         builtin-drain
+exit-now:      builtin-exit-now
 
 ]

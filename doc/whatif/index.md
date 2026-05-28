@@ -39,7 +39,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 | Proposal | Summary |
 |----------|---------|
-| [builtin-* Privacy](completed/builtin-privacy.md) | **Accepted 2026-05-11.** Restrict `builtin-*` stable aliases to prelude evaluation context; env-layer isolation + T009 type-checker warning; migrate macros.llt, path.llt, toml-lite.llt to public wrappers |
+| [builtin-* Privacy](builtin-privacy.md) | **Accepted 2026-05-28.** Delete `standard_builtins()` / `create_root_env()` / `TypeEnv::with_builtins()`. Replace with `--- uses: ["core"]` document headers and `builtin_module()` registry — builtins injected doc-locally into each stdlib file's scope; user code inherits only prelude's exported dict. Prerequisite: B-168. |
 
 ## Error Handling
 
@@ -52,7 +52,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | Proposal | Summary |
 |----------|---------|
 | [Macro-Rewrite](completed/macro-rewrite.md) | Superseded — let-binding done as `Expr::Sequential`, match as `Expr::Match`. `i"..."` migrated to `[defmacro tmpl]` (`tmpl-macro` sprint complete, see DONE.md) |
-| [Macro System v2](macros-v2.md) | **Accepted 2026-05-17.** `macro` unified form with `[let ...]` patterns; `inject: name` for anaphoric binding with dict-key override; `splice` for multi-form output; `macro-error`/`span-of`; `syntax-class`; `flatten-args`; parser enforcement moved to type checker. Supersedes `parse-stage-macros.md`. |
+| [Macro System v2](completed/macros-v2.md) | **Completed 2026-05-27.** `macro` unified form with `[let ...]` patterns; `inject: name` for anaphoric binding with dict-key override; `splice` for multi-form output; `macro-error`/`span-of`; `syntax-class`; `flatten-args`; parser enforcement moved to type checker. Supersedes `parse-stage-macros.md`. |
 | [Custom Call Aliases](call-aliases.md) | `[timed f ...]` — macro-defined call forms; gated on macros |
 
 ## Concurrency and Distribution
@@ -106,7 +106,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 | Proposal | Summary |
 |----------|---------|
 | [Multi-Line Strings](completed/multi-line-strings.md) | **Accepted 2026-05-11.** `unindent` stdlib function strips indentation using last-line baseline; `"""..."""` is a parse-stage macro wrapping `[unindent "..."]`; `i"""..."""` for interpolation; no lexer changes needed |
-| [Unified Binding Declarations](unified-bindings.md) | **Accepted 2026-05-17.** `[let ...]` universal binding form for fn/class/type/instance/case; `[case ...]` explicit match arms; `...` placeholder expression; constructor payload registry; parsing invariant: `[let ...]` = binding, everything else = expression |
+| [Unified Binding Declarations](completed/unified-bindings.md) | **Completed 2026-05-27.** `[let ...]` universal binding form for fn/class/type/instance/case; `[case ...]` explicit match arms; `...` placeholder expression; constructor payload registry; parsing invariant: `[let ...]` = binding, everything else = expression |
 | [Template-Polarity Embedding](template-polarity.md) | `tinct template` subcommand — `{{ expr }}` / `{% block %}` Jinja-style preprocessing of foreign-format files (nginx.conf, Dockerfile, Makefile) |
 
 ## Standard Library
@@ -131,8 +131,6 @@ Accepted proposals with sprints in TODO.md. Not yet fully implemented.
 | Proposal | Summary | Accepted |
 |----------|---------|----------|
 | [Runtime v2 — AST Redesign, Native Value Types, Async Parallel Evaluation](runtime-v2.md) | `SurfaceExpression`/`CoreExpr` split; `NodeId` side tables; `ResolutionTable`/`TypeAnnotationTable`; `Value::Program`/`Document`/`Expression`; `async fn` eval; `Rc`→`Arc`; `OnceCell` thunk; parallel dict eval; `task`/`await`/`channel`/`select-once`; context/cancellation | 2026-05-20 |
-| [Unified Binding Declarations](unified-bindings.md) | `[let ...]` universal binding form; `[case ...]` match arms; `...` placeholder; constructor payload registry; `Expr::LetDecl`/`CaseArm`/`Placeholder` | 2026-05-17 |
-| [Program Profiling and Call Tracing](profiling.md) | `--profile spans.json` collects raw span data; `scripts/profile/` analysis scripts; dual attribution (`materialize-parent`/`create-parent`); stall attribution; Criterion benchmarks; unblocks `string-interning` and `union-find-substitution` | 2026-05-25 |
 
 ### Completed
 
@@ -164,6 +162,9 @@ These proposals are fully implemented. Source documents are archived in [doc/wha
 | [Formal Gradual Typing](completed/gradual-typing.md) | `Unknown` + `Top` split; consistency relation; blame tracking | 2026-05-07 — typing-cluster B2/D4 |
 | [Structural Contracts](completed/structural-contracts.md) | `%@Type` pipeline boundary checking + `validate` schema-as-dict runtime constraints | 2026-05-07 — typing-cluster SC1–4 |
 | [Numeric Types](completed/numeric-types.md) | Range annotations + Decimal + BigInt + `repr:` storage hints | 2026-05-07 — typing-cluster N1–4 |
+| [Macro System v2](completed/macros-v2.md) | `[macro ...]` with `[let ...]` patterns; `inject:`; `syntax-class`; `splice`; `macro-error`/`span-of`; typed `Expr` variants; `flatten-args`; meta-macros | 2026-05-27 |
+| [Unified Binding Declarations](completed/unified-bindings.md) | `[let ...]` universal binding form; `[case ...]` match arms; `...` placeholder; constructor payload registry; structural test `[let v: Ok]` | 2026-05-27 |
+| [Program Profiling and Call Tracing](completed/profiling.md) | `--profile spans.ndjson` span collection; `scripts/profile/` analysis scripts; dual attribution; stall attribution; Criterion benchmarks | 2026-05-27 |
 | [Parameterized Type Aliases](completed/parameterized-type-aliases.md) | `[type [a] body]` — fresh instantiation per use site; arity-checked type constructors | 2026-05-07 — typing-cluster B3 |
 | [Path-Sensitive Narrowing](completed/narrowing.md) | Refine variable types in `if`/`match` branches from equality and type-predicate guards | 2026-05-07 — typing-cluster B5a/B5b |
 | [Supplemental Stdlib Modules](completed/lib-supplemental.md) | Extended strings, math, bitwise, Bytes type, TOML-lite, FsCap protocol, capability-typed handles, StringView | 2026-05-07 — 8 sprints: `string-view` through `toml-lite-path` |
@@ -175,7 +176,7 @@ These proposals are fully implemented. Source documents are archived in [doc/wha
 | [Consistent Error Handling](completed/error-patterns.md) | Nominal `[or [Ok T] [Err String]]` Result; `and-then` combinator; `[do monad ...]` macro; fallible I/O returns Result, pure functions propagate | 2026-05-09 — `result-nominal` |
 | [Record/Map Split and Parameterized Maps](completed/parameterized-dict.md) | `Record` vs `Map[K: V]` type split with bracket application form `@[Map [K: V]]`; `Dict = Record ∨ Map` BAS union; `get?` for safe map access; order-insensitive structural dict equality | 2026-05-09 — `record-map-split` |
 | [Constraint Annotations and fn@[...] Metadata](completed/constraint-annotations.md) | `fn@[return: T constraint: [a: Comparable] doc: "..."]`; TypeVar constraint binding syntax; `fn@Type` shorthand permanent; `TypeScheme.doc` for LSP hover | 2026-05-11 — `constraint-annotations` |
-| [builtin-* Privacy](completed/builtin-privacy.md) | Restrict `builtin-*` aliases to prelude evaluation context; env-layer isolation + T009 warning; migrate macros.llt, path.llt, toml-lite.llt to public wrappers | 2026-05-11 — `builtin-privacy` |
+| [builtin-* Privacy](builtin-privacy.md) | Env isolation not yet achieved — moved to Accepted; see Internal Integrity above | — |
 | [Multi-Line Strings](completed/multi-line-strings.md) | `"""..."""` triple-quoted strings; `unindent` stdlib strips indentation via last-line baseline; `i"""..."""` interpolation; parse-stage macro desugaring | 2026-05-11 — `prelude-triple-quote` (ongoing); lexer + parser complete |
 | [Directory Capability Permissions](completed/dir-cap-permissions.md) | `DirPerms` struct with 7 flags; `--cap-fs name=path:mode` CLI parsing; `from_letter` bundles (`r`/`w`/`a`/`s`/`l`); row-polymorphic `[DirCap [Readable ...]]` type | 2026-05-11 — `dir-cap-permissions` |
 | [Inference Completeness](completed/inference-completeness.md) | SCC-based DICT-GEN; variadic `Seq(T)` typed params; nested dict polymorphism via `TypeScheme.inner_schemes`; typeclass-based heterogeneous variadics | 2026-05-14 — `inference-completeness-variadic`, `inference-completeness-nested-dict` |
@@ -205,7 +206,7 @@ These proposals have accepted designs but explicit gating conditions not yet met
 | [Union-Find for Type Substitution](union-find-substitution.md) | `profiling.md` Criterion `bench_deep_scope` confirms average TypeVar chain depth ≥4 on real programs |
 | [Value Serializer Visitor](value-serializer-visitor.md) | A third output format (YAML, TOML) is implemented and traversal duplication becomes maintenance burden |
 | [Template-Polarity Embedding](template-polarity.md) | A real 90%+ static foreign-format file (nginx.conf, Dockerfile, Makefile) with ≤10 tinct substitutions where data-first is unreasonably awkward |
-| [Macro System v2](macros-v2.md) | **Accepted 2026-05-17** — see Syntax and Ergonomics table above |
+| [Macro System v2](completed/macros-v2.md) | **Completed 2026-05-27** — see Syntax and Ergonomics table above |
 | [Evaluation Semantics Verification](eval-semantics-verification.md) Phase 2+ | Phase 1 proptest suite implemented with zero failures (doc proof sketch done; proptest pending) |
 
 ### Additive Capability (No TODO Replacement)

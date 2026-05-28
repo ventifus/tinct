@@ -973,7 +973,7 @@ let result = rt.block_on(async { /* quinn QUIC handshake */ });
 
 ## Stable Builtin Aliases
 
-The `builtin-*` aliases provide access to the raw Rust implementations by stable names that cannot be shadowed by user code. They are pre-injected into the bootstrap environment and accessible to prelude, but **not re-exported to user scope**.
+The `builtin-*` names are the canonical registration names for all Rust builtins. They are injected into a stdlib file's document-local scope when that file declares `--- uses: ["core"]` (or another module group). Prelude re-exports a subset under their public names (e.g., `map: builtin-map`); the raw `builtin-*` names are not in prelude's exported dict and are therefore unreachable from user code.
 
 | Alias | Target | Purpose |
 |-------|--------|---------|
@@ -1060,8 +1060,6 @@ Capability-gated time access and timestamp manipulation.
 
 ## Summary
 
-**Total:** 301 Rust-native builtins registered in `standard_builtins()`.
-
-Builtins are organized by functionality but counted individually. See `standard_builtins()` in `src/builtins.rs` for the authoritative list. Key categories include arithmetic, comparison, control flow, dict primitives, sequences, strings, I/O, networking, type introspection, and meta/code generation.
+Builtins are organized into named module groups via `builtin_module(name)` in `src/builtins.rs`: `"core"` (language primitives, async, I/O, builder ops), `"datetime"`, and `"net"`. Each group is co-located with its type signatures in a per-module source file. Key categories include arithmetic, comparison, control flow, dict primitives, sequences, strings, I/O, networking, type introspection, and meta/code generation.
 
 **Design principle:** These builtins are the minimal set of primitives that **cannot be expressed in LLT itself**. Everything else (sorting, logic operators, dict utilities, composition functions) is implemented in the [Standard Library](11-stdlib.md) using only these primitives plus LLT's syntax and lazy evaluation.

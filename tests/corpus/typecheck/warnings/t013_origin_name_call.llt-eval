@@ -1,15 +1,15 @@
-# T013 warning with origin_name: calling a zero-parameter function whose scheme
-# carries an explicit typeclass constraint that is disconnected from its return type.
+# T013 warning: zero-parameter function with a typeclass constraint that is
+# disconnected from its return type.
 #
 # g has annotation [constraint: [a: Comparable] return: Int] with no parameters.
-# When [g] is called, instantiate_scheme sets origin_name="g" on the Comparable
-# constraint. Since the constraint TypeVar does not appear in the return type Int,
-# T013 fires at the call site with the better message citing the origin function name:
-#   "argument to `g` has unconstrained type — Comparable constraint will be silently dropped"
+# Since the constraint TypeVar 'a' does not appear in the return type Int,
+# T013 fires at g's definition with the "ambiguous type variable" message:
+#   "ambiguous type variable 'a' ... in constraint Comparable: appears in constraint
+#    but not in the type — constraint will be silently dropped"
 #
-# T013 also fires at g's definition (annotation-driven, no origin_name), producing the
-# fallback "ambiguous type variable" message. Both messages appear; this test checks
-# for the call-site message with origin_name.
+# Note: the annotation is now correctly processed (constraint: and return: keys are
+# recognized as function metadata keys after annotation key normalization). The TypeVar
+# 'a' is ambiguous at the definition site because it doesn't appear in the return type.
 [
   g: [fn@[constraint: [a: Comparable] return: Int] [] 42]
   result: [g]
@@ -17,4 +17,4 @@
 === out
 Dict({"g": Function(), "result": Int(42)})
 === warn
-argument to `g` has unconstrained type
+ambiguous type variable

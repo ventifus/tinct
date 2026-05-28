@@ -6,11 +6,11 @@
 [
   # Span name: builtin name if present, else source-file:start-end
   span-name: [fn [let s]
-    [if [= [] s.builtin-name]
+    [if [= [] s.builtin]
       [if [= [] s.source-file]
         [str "span-" s.id]
         [str s.source-file ":" s.source-start "-" s.source-end]]
-      s.builtin-name]]
+      s.builtin]]
 
   # Stall color coding for chrome://tracing (cname field)
   # green=normal, yellow=io, red=net, blue=channel, olive=timer

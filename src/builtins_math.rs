@@ -165,7 +165,7 @@ async fn try_dispatch_method(
                 format!("{class_name}.{method_name}"),
                 "Function or Builtin",
                 method_val.type_name(),
-                method_thunk.span,
+                method_thunk.span.clone(),
             )
             .into());
         }
@@ -187,7 +187,7 @@ pub(crate) fn builtin_add(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("+", named.as_ref(), call_span)?;
+        reject_named("+", named.as_ref(), call_span.clone())?;
         if args.len() < 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -202,24 +202,30 @@ pub(crate) fn builtin_add(
         match (&left, &right) {
             (Value::Int(a), Value::Int(b)) => a
                 .checked_add(*b)
-                .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span)))
+                .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span.clone())))
                 .ok_or_else(|| EvalError::integer_overflow("+".to_string(), call_span).into()),
             (Value::Float(a), Value::Float(b)) => check_float_result(a + b, "+", call_span),
             (Value::Int(a), Value::Float(b)) => {
-                check_int_to_float_precision(*a, args[0].span)?;
+                check_int_to_float_precision(*a, args[0].span.clone())?;
                 check_float_result((*a as f64) + b, "+", call_span)
             }
             (Value::Float(a), Value::Int(b)) => {
-                check_int_to_float_precision(*b, args[1].span)?;
+                check_int_to_float_precision(*b, args[1].span.clone())?;
                 check_float_result(a + (*b as f64), "+", call_span)
             }
             _ => {
                 // Non-Int/Float: try dispatching to an Addable instance.
                 // type_tags uses num_determining=2 (a,b)→c functional dependency.
                 let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
-                if let Some(result) =
-                    try_dispatch_method("Addable", "+", type_tags.clone(), args, ctx, call_span)
-                        .await?
+                if let Some(result) = try_dispatch_method(
+                    "Addable",
+                    "+",
+                    type_tags.clone(),
+                    args,
+                    ctx,
+                    call_span.clone(),
+                )
+                .await?
                 {
                     Ok(result)
                 } else {
@@ -241,7 +247,7 @@ pub(crate) fn builtin_sub(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("-", named.as_ref(), call_span)?;
+        reject_named("-", named.as_ref(), call_span.clone())?;
         if args.len() < 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -256,15 +262,15 @@ pub(crate) fn builtin_sub(
         match (&left, &right) {
             (Value::Int(a), Value::Int(b)) => a
                 .checked_sub(*b)
-                .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span)))
+                .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span.clone())))
                 .ok_or_else(|| EvalError::integer_overflow("-".to_string(), call_span).into()),
             (Value::Float(a), Value::Float(b)) => check_float_result(a - b, "-", call_span),
             (Value::Int(a), Value::Float(b)) => {
-                check_int_to_float_precision(*a, args[0].span)?;
+                check_int_to_float_precision(*a, args[0].span.clone())?;
                 check_float_result((*a as f64) - b, "-", call_span)
             }
             (Value::Float(a), Value::Int(b)) => {
-                check_int_to_float_precision(*b, args[1].span)?;
+                check_int_to_float_precision(*b, args[1].span.clone())?;
                 check_float_result(a - (*b as f64), "-", call_span)
             }
             _ => {
@@ -275,7 +281,7 @@ pub(crate) fn builtin_sub(
                     type_tags.clone(),
                     args,
                     ctx,
-                    call_span,
+                    call_span.clone(),
                 )
                 .await?
                 {
@@ -299,7 +305,7 @@ pub(crate) fn builtin_mul(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("*", named.as_ref(), call_span)?;
+        reject_named("*", named.as_ref(), call_span.clone())?;
         if args.len() < 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -314,15 +320,15 @@ pub(crate) fn builtin_mul(
         match (&left, &right) {
             (Value::Int(a), Value::Int(b)) => a
                 .checked_mul(*b)
-                .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span)))
+                .map(|r| Arc::new(Thunk::new_materialized(Value::Int(r), call_span.clone())))
                 .ok_or_else(|| EvalError::integer_overflow("*".to_string(), call_span).into()),
             (Value::Float(a), Value::Float(b)) => check_float_result(a * b, "*", call_span),
             (Value::Int(a), Value::Float(b)) => {
-                check_int_to_float_precision(*a, args[0].span)?;
+                check_int_to_float_precision(*a, args[0].span.clone())?;
                 check_float_result((*a as f64) * b, "*", call_span)
             }
             (Value::Float(a), Value::Int(b)) => {
-                check_int_to_float_precision(*b, args[1].span)?;
+                check_int_to_float_precision(*b, args[1].span.clone())?;
                 check_float_result(a * (*b as f64), "*", call_span)
             }
             _ => {
@@ -333,7 +339,7 @@ pub(crate) fn builtin_mul(
                     type_tags.clone(),
                     args,
                     ctx,
-                    call_span,
+                    call_span.clone(),
                 )
                 .await?
                 {
@@ -358,7 +364,7 @@ pub(crate) fn builtin_div_float(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("/", named.as_ref(), call_span)?;
+        reject_named("/", named.as_ref(), call_span.clone())?;
         if args.len() < 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -373,26 +379,34 @@ pub(crate) fn builtin_div_float(
         match (&left, &right) {
             (Value::Int(a), Value::Int(b)) => {
                 if *b == 0 {
-                    return Err(
-                        EvalError::user_error("division by zero".to_string(), call_span).into(),
-                    );
+                    return Err(EvalError::user_error(
+                        "division by zero".to_string(),
+                        call_span.clone(),
+                    )
+                    .into());
                 }
                 check_float_result(*a as f64 / *b as f64, "/", call_span)
             }
             (Value::Float(a), Value::Float(b)) => check_float_result(a / b, "/", call_span),
             (Value::Int(a), Value::Float(b)) => {
-                check_int_to_float_precision(*a, args[0].span)?;
+                check_int_to_float_precision(*a, args[0].span.clone())?;
                 check_float_result((*a as f64) / b, "/", call_span)
             }
             (Value::Float(a), Value::Int(b)) => {
-                check_int_to_float_precision(*b, args[1].span)?;
+                check_int_to_float_precision(*b, args[1].span.clone())?;
                 check_float_result(a / (*b as f64), "/", call_span)
             }
             _ => {
                 let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
-                if let Some(result) =
-                    try_dispatch_method("Divisible", "/", type_tags.clone(), args, ctx, call_span)
-                        .await?
+                if let Some(result) = try_dispatch_method(
+                    "Divisible",
+                    "/",
+                    type_tags.clone(),
+                    args,
+                    ctx,
+                    call_span.clone(),
+                )
+                .await?
                 {
                     Ok(result)
                 } else {
@@ -418,7 +432,7 @@ pub(crate) fn builtin_eq(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("=", named.as_ref(), call_span)?;
+        reject_named("=", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -501,8 +515,15 @@ pub(crate) fn builtin_eq(
                 // Dict: structural equality with cycle detection
                 (Value::Dict(_), Value::Dict(_)) | (Value::Overlay(..), Value::Overlay(..)) => {
                     // Get the dicts (flattening Overlay if necessary)
-                    let left_map = require_dict("=", left.clone(), call_span, ctx, call_span)?;
-                    let right_map = require_dict("=", right.clone(), call_span, ctx, call_span)?;
+                    let left_map =
+                        require_dict("=", left.clone(), call_span.clone(), ctx, call_span.clone())?;
+                    let right_map = require_dict(
+                        "=",
+                        right.clone(),
+                        call_span.clone(),
+                        ctx,
+                        call_span.clone(),
+                    )?;
 
                     // Check pointer identity cycle detection
                     let left_ptr = left as *const Value as usize;
@@ -549,7 +570,8 @@ pub(crate) fn builtin_eq(
                         let right_val = materialize(&right_thunk, Some(&call_span), ctx)?;
 
                         // Recurse with visited set threaded through
-                        if !values_eq_impl(&left_val, &right_val, ctx, call_span, visited)? {
+                        if !values_eq_impl(&left_val, &right_val, ctx, call_span.clone(), visited)?
+                        {
                             visited.remove(&pair);
                             return Ok(false);
                         }
@@ -584,11 +606,11 @@ pub(crate) fn builtin_eq(
             // explicit [float n] cast. This prevents non-transitive equality bugs
             // (doc/11-stdlib.md §Equality P3).
             (Value::Int(a), Value::Float(b)) => {
-                check_int_to_float_precision(*a, args[0].span)?;
+                check_int_to_float_precision(*a, args[0].span.clone())?;
                 (*a as f64) == *b
             }
             (Value::Float(a), Value::Int(b)) => {
-                check_int_to_float_precision(*b, args[1].span)?;
+                check_int_to_float_precision(*b, args[1].span.clone())?;
                 *a == (*b as f64)
             }
             // Variant: equal if tags match and payloads match (recursive comparison)
@@ -616,7 +638,7 @@ pub(crate) fn builtin_eq(
                             let result_thunk = builtin_eq(BuiltinArgs {
                                 args: recursive_args,
                                 named: None,
-                                call_span,
+                                call_span: call_span.clone(),
                                 ctx: Arc::clone(&ctx),
                             })
                             .await?;
@@ -633,7 +655,7 @@ pub(crate) fn builtin_eq(
             // Dict: structural equality (order-insensitive key comparison, recursive value comparison)
             (Value::Dict(_), Value::Dict(_)) | (Value::Overlay(..), Value::Overlay(..)) => {
                 let mut visited = std::collections::HashSet::new();
-                values_eq_impl(&left, &right, &ctx, call_span, &mut visited)?
+                values_eq_impl(&left, &right, &ctx, call_span.clone(), &mut visited)?
             }
             // For types not handled above (e.g. user-defined opaque wrappers), try dispatching
             // to an Equatable instance. Equatable uses num_determining=1 (single type param).
@@ -646,7 +668,7 @@ pub(crate) fn builtin_eq(
                     type_tags,
                     args,
                     Arc::clone(&ctx),
-                    call_span,
+                    call_span.clone(),
                 )
                 .await?
                 {
@@ -690,7 +712,7 @@ pub(crate) fn builtin_lt(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("<", named.as_ref(), call_span)?;
+        reject_named("<", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -725,11 +747,11 @@ pub(crate) fn builtin_lt(
             // Precision guard: integers with |n| > 2^53 trigger an error, suggesting
             // explicit [float n] cast (doc/11-stdlib.md §Equality P3, P6).
             (Value::Int(a), Value::Float(b)) => {
-                check_int_to_float_precision(*a, args[0].span)?;
+                check_int_to_float_precision(*a, args[0].span.clone())?;
                 (*a as f64) < *b
             }
             (Value::Float(a), Value::Int(b)) => {
-                check_int_to_float_precision(*b, args[1].span)?;
+                check_int_to_float_precision(*b, args[1].span.clone())?;
                 *a < (*b as f64)
             }
             // For types not handled above, try dispatching to a Comparable instance.
@@ -738,14 +760,14 @@ pub(crate) fn builtin_lt(
             _ => {
                 let type_tags = vec![left.type_name().to_string()];
                 // Save arg spans before moving args into try_dispatch_method.
-                let arg0_span = args[0].span;
+                let arg0_span = args[0].span.clone();
                 match try_dispatch_method(
                     "Comparable",
                     "lt",
                     type_tags,
                     args,
                     Arc::clone(&ctx),
-                    call_span,
+                    call_span.clone(),
                 )
                 .await?
                 {
@@ -793,7 +815,7 @@ pub(crate) fn builtin_gt(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named(">", named.as_ref(), call_span)?;
+        reject_named(">", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -823,7 +845,7 @@ pub(crate) fn builtin_lte(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("<=", named.as_ref(), call_span)?;
+        reject_named("<=", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -833,7 +855,7 @@ pub(crate) fn builtin_lte(
         let gt_result = builtin_lt(BuiltinArgs {
             args: swapped_args,
             named,
-            call_span,
+            call_span: call_span.clone(),
             ctx,
         })
         .await?;
@@ -862,7 +884,7 @@ pub(crate) fn builtin_gte(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named(">=", named.as_ref(), call_span)?;
+        reject_named(">=", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -871,7 +893,7 @@ pub(crate) fn builtin_gte(
         let lt_result = builtin_lt(BuiltinArgs {
             args,
             named,
-            call_span,
+            call_span: call_span.clone(),
             ctx,
         })
         .await?;
@@ -903,7 +925,7 @@ pub(crate) fn builtin_if(
         ctx: _,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("if", named.as_ref(), call_span)?;
+        reject_named("if", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
@@ -917,16 +939,17 @@ pub(crate) fn builtin_if(
             Value::Bool(true) => Ok(Arc::clone(&args[1])),
             Value::Bool(false) => Ok(Arc::clone(&args[2])),
             _ => {
+                let cond_span = args[0].span.clone();
                 let mut err = EvalError::type_mismatch_ctx(
                     "if".to_string(),
                     "Bool",
                     condition.type_name(),
-                    args[0].span,
+                    cond_span.clone(),
                 );
                 // Add secondary span if different from definition span
-                if call_span != args[0].span {
+                if call_span != cond_span {
                     err = err.with_secondary_span(
-                        args[0].span,
+                        cond_span,
                         format!("condition evaluated to {} here", condition.type_name()),
                     );
                 }
@@ -958,7 +981,7 @@ fn extract_single_float(
             name.to_string(),
             "Int or Float",
             val.type_name(),
-            args[0].span,
+            args[0].span.clone(),
         )
         .into()),
     }
@@ -991,7 +1014,7 @@ fn extract_two_floats(
                 name.to_string(),
                 "Int or Float",
                 left.type_name(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into())
         }
@@ -1005,7 +1028,7 @@ fn extract_two_floats(
                 name.to_string(),
                 "Int or Float",
                 right.type_name(),
-                args[1].span,
+                args[1].span.clone(),
             )
             .into())
         }
@@ -1026,7 +1049,8 @@ pub(crate) fn builtin_pow(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let (base, exp) = extract_two_floats("pow", &args, named.as_ref(), &ctx, call_span)?;
+        let (base, exp) =
+            extract_two_floats("pow", &args, named.as_ref(), &ctx, call_span.clone())?;
         check_float_result(base.powf(exp), "pow", call_span)
     })
 }
@@ -1044,7 +1068,7 @@ pub(crate) fn builtin_sqrt(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("sqrt", &args, named.as_ref(), &ctx, call_span)?;
+        let val = extract_single_float("sqrt", &args, named.as_ref(), &ctx, call_span.clone())?;
         ok_val(Value::Float(val.sqrt()), call_span)
     })
 }
@@ -1062,7 +1086,7 @@ pub(crate) fn builtin_log(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("log", &args, named.as_ref(), &ctx, call_span)?;
+        let val = extract_single_float("log", &args, named.as_ref(), &ctx, call_span.clone())?;
         ok_val(Value::Float(val.ln()), call_span)
     })
 }
@@ -1079,7 +1103,7 @@ pub(crate) fn builtin_log2(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("log2", &args, named.as_ref(), &ctx, call_span)?;
+        let val = extract_single_float("log2", &args, named.as_ref(), &ctx, call_span.clone())?;
         check_float_result(val.log2(), "log2", call_span)
     })
 }
@@ -1096,7 +1120,7 @@ pub(crate) fn builtin_log10(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("log10", &args, named.as_ref(), &ctx, call_span)?;
+        let val = extract_single_float("log10", &args, named.as_ref(), &ctx, call_span.clone())?;
         check_float_result(val.log10(), "log10", call_span)
     })
 }
@@ -1113,7 +1137,7 @@ pub(crate) fn builtin_exp(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("exp", &args, named.as_ref(), &ctx, call_span)?;
+        let val = extract_single_float("exp", &args, named.as_ref(), &ctx, call_span.clone())?;
         check_float_result(val.exp(), "exp", call_span)
     })
 }
@@ -1130,7 +1154,7 @@ pub(crate) fn builtin_sin(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("sin", &args, named.as_ref(), &ctx, call_span)?;
+        let val = extract_single_float("sin", &args, named.as_ref(), &ctx, call_span.clone())?;
         check_float_result(val.sin(), "sin", call_span)
     })
 }
@@ -1147,7 +1171,7 @@ pub(crate) fn builtin_cos(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("cos", &args, named.as_ref(), &ctx, call_span)?;
+        let val = extract_single_float("cos", &args, named.as_ref(), &ctx, call_span.clone())?;
         check_float_result(val.cos(), "cos", call_span)
     })
 }
@@ -1164,7 +1188,7 @@ pub(crate) fn builtin_tan(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("tan", &args, named.as_ref(), &ctx, call_span)?;
+        let val = extract_single_float("tan", &args, named.as_ref(), &ctx, call_span.clone())?;
         check_float_result(val.tan(), "tan", call_span)
     })
 }
@@ -1181,7 +1205,7 @@ pub(crate) fn builtin_asin(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("asin", &args, named.as_ref(), &ctx, call_span)?;
+        let val = extract_single_float("asin", &args, named.as_ref(), &ctx, call_span.clone())?;
         check_float_result(val.asin(), "asin", call_span)
     })
 }
@@ -1198,7 +1222,7 @@ pub(crate) fn builtin_acos(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("acos", &args, named.as_ref(), &ctx, call_span)?;
+        let val = extract_single_float("acos", &args, named.as_ref(), &ctx, call_span.clone())?;
         check_float_result(val.acos(), "acos", call_span)
     })
 }
@@ -1215,7 +1239,7 @@ pub(crate) fn builtin_atan(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("atan", &args, named.as_ref(), &ctx, call_span)?;
+        let val = extract_single_float("atan", &args, named.as_ref(), &ctx, call_span.clone())?;
         check_float_result(val.atan(), "atan", call_span)
     })
 }
@@ -1232,7 +1256,7 @@ pub(crate) fn builtin_atan2(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let (y, x) = extract_two_floats("atan2", &args, named.as_ref(), &ctx, call_span)?;
+        let (y, x) = extract_two_floats("atan2", &args, named.as_ref(), &ctx, call_span.clone())?;
         check_float_result(y.atan2(x), "atan2", call_span)
     })
 }
@@ -1249,7 +1273,7 @@ pub(crate) fn builtin_nan_check(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("nan?", &args, named.as_ref(), &ctx, call_span)?;
+        let val = extract_single_float("nan?", &args, named.as_ref(), &ctx, call_span.clone())?;
         ok_val(Value::Bool(val.is_nan()), call_span)
     })
 }
@@ -1266,7 +1290,7 @@ pub(crate) fn builtin_inf_check(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("inf?", &args, named.as_ref(), &ctx, call_span)?;
+        let val = extract_single_float("inf?", &args, named.as_ref(), &ctx, call_span.clone())?;
         ok_val(Value::Bool(val.is_infinite()), call_span)
     })
 }
@@ -1283,7 +1307,7 @@ pub(crate) fn builtin_finite_check(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = extract_single_float("finite?", &args, named.as_ref(), &ctx, call_span)?;
+        let val = extract_single_float("finite?", &args, named.as_ref(), &ctx, call_span.clone())?;
         ok_val(Value::Bool(val.is_finite()), call_span)
     })
 }
@@ -1314,7 +1338,7 @@ fn extract_int_pair(
                 name.to_string(),
                 "Int",
                 left.type_name(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into())
         }
@@ -1327,7 +1351,7 @@ fn extract_int_pair(
                 name.to_string(),
                 "Int",
                 right.type_name(),
-                args[1].span,
+                args[1].span.clone(),
             )
             .into())
         }
@@ -1348,7 +1372,7 @@ pub(crate) fn builtin_band(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let (a, b) = extract_int_pair("band", &args, named.as_ref(), &ctx, call_span)?;
+        let (a, b) = extract_int_pair("band", &args, named.as_ref(), &ctx, call_span.clone())?;
         ok_val(Value::Int(a & b), call_span)
     })
 }
@@ -1365,7 +1389,7 @@ pub(crate) fn builtin_bor(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let (a, b) = extract_int_pair("bor", &args, named.as_ref(), &ctx, call_span)?;
+        let (a, b) = extract_int_pair("bor", &args, named.as_ref(), &ctx, call_span.clone())?;
         ok_val(Value::Int(a | b), call_span)
     })
 }
@@ -1382,7 +1406,7 @@ pub(crate) fn builtin_bxor(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let (a, b) = extract_int_pair("bxor", &args, named.as_ref(), &ctx, call_span)?;
+        let (a, b) = extract_int_pair("bxor", &args, named.as_ref(), &ctx, call_span.clone())?;
         ok_val(Value::Int(a ^ b), call_span)
     })
 }
@@ -1399,7 +1423,8 @@ pub(crate) fn builtin_shl(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let (value, bits) = extract_int_pair("shl", &args, named.as_ref(), &ctx, call_span)?;
+        let (value, bits) =
+            extract_int_pair("shl", &args, named.as_ref(), &ctx, call_span.clone())?;
 
         // Negative shift is undefined; shifts >= 64 produce 0
         if bits < 0 {
@@ -1430,7 +1455,8 @@ pub(crate) fn builtin_shr(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let (value, bits) = extract_int_pair("shr", &args, named.as_ref(), &ctx, call_span)?;
+        let (value, bits) =
+            extract_int_pair("shr", &args, named.as_ref(), &ctx, call_span.clone())?;
 
         // Negative shift is undefined; shifts >= 64 produce 0
         if bits < 0 {
@@ -1467,7 +1493,7 @@ pub(crate) fn builtin_float(
         ctx: _,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("float", named.as_ref(), call_span)?;
+        reject_named("float", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
@@ -1481,7 +1507,7 @@ pub(crate) fn builtin_float(
                 "float".to_string(),
                 "Int or Float",
                 val.type_name(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into()),
         }

@@ -211,8 +211,9 @@ pub fn instantiate_scheme(
                         // Use constraint's origin info if present, otherwise use call-site origin
                         let final_origin_name = constraint_origin_name
                             .clone()
-                            .or_else(|| origin_name.map(|s| Arc::from(s)));
-                        let final_origin_span = constraint_origin_span.or(origin_span);
+                            .or_else(|| origin_name.map(Arc::from));
+                        let final_origin_span =
+                            constraint_origin_span.clone().or(origin_span.clone());
 
                         state.constraints.push(Constraint::Class {
                             class: Arc::clone(class),
@@ -300,8 +301,8 @@ pub fn instantiate_scheme(
                     // Use constraint's origin info if present, otherwise use call-site origin
                     let final_origin_name = constraint_origin_name
                         .clone()
-                        .or_else(|| origin_name.map(|s| Arc::from(s)));
-                    let final_origin_span = constraint_origin_span.or(origin_span);
+                        .or_else(|| origin_name.map(Arc::from));
+                    let final_origin_span = constraint_origin_span.clone().or(origin_span.clone());
 
                     state.constraints.push(Constraint::Class {
                         class: Arc::clone(class),
@@ -449,9 +450,9 @@ fn emit_ambiguous_constraint_diagnostics(
                         // Use argument-level span when available (Task 4: origin_span set during
                         // instantiate_scheme at argument type-checking sites). Fall back to the
                         // call-site span passed to this function.
-                        let diag_span = origin_span.unwrap_or(span);
+                        let diag_span = origin_span.clone().unwrap_or_else(|| span.clone());
                         // Deduplicate: only emit if this (var, diag_span) pair hasn't been seen
-                        if emitted.insert((var.clone(), diag_span)) {
+                        if emitted.insert((var.clone(), diag_span.clone())) {
                             let message = if let Some(name) = origin_name {
                                 // Better message: cite the origin function and constraint class.
                                 // Drops the internal TypeVar name — user doesn't know/care about _tN.
@@ -482,13 +483,13 @@ fn emit_ambiguous_constraint_diagnostics(
             } => {
                 if !is_discharged(dict_var) {
                     // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                    if emitted.insert((dict_var.clone(), span)) {
+                    if emitted.insert((dict_var.clone(), span.clone())) {
                         diagnostics.push(crate::error::TypeDiagnostic {
                             message: format!(
                                 "ambiguous type variable {} (dict) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
                                 format_var_name(dict_var)
                             ),
-                            span,
+                            span: span.clone(),
                             code: "T013",
                             level: crate::error::DiagnosticLevel::Warn,
                         });
@@ -501,13 +502,13 @@ fn emit_ambiguous_constraint_diagnostics(
                 if let Label::Var(label_var) = label {
                     if !is_discharged(label_var) {
                         // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                        if emitted.insert((label_var.clone(), span)) {
+                        if emitted.insert((label_var.clone(), span.clone())) {
                             diagnostics.push(crate::error::TypeDiagnostic {
                                 message: format!(
                                     "ambiguous label variable {} in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
                                     format_var_name(label_var)
                                 ),
-                                span,
+                                span: span.clone(),
                                 code: "T013",
                                 level: crate::error::DiagnosticLevel::Warn,
                             });
@@ -516,13 +517,13 @@ fn emit_ambiguous_constraint_diagnostics(
                 }
                 if !is_discharged(field_var) {
                     // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                    if emitted.insert((field_var.clone(), span)) {
+                    if emitted.insert((field_var.clone(), span.clone())) {
                         diagnostics.push(crate::error::TypeDiagnostic {
                             message: format!(
                                 "ambiguous type variable {} (field) in HasField constraint: appears in constraint but not in the type — constraint will be silently dropped",
                                 format_var_name(field_var)
                             ),
-                            span,
+                            span: span.clone(),
                             code: "T013",
                             level: crate::error::DiagnosticLevel::Warn,
                         });
@@ -708,7 +709,7 @@ pub fn generalize_with_doc(
                             class: Arc::clone(class),
                             vars: resolved_vars,
                             origin_name: origin_name.clone(),
-                            origin_span: *origin_span,
+                            origin_span: origin_span.clone(),
                         });
                     } else {
                         // Diagnostic: ambiguous type variable in constraint
@@ -736,14 +737,14 @@ pub fn generalize_with_doc(
 
                                 if !is_fd_covered {
                                     // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                                    if state.t013_emitted.insert((var.clone(), span)) {
+                                    if state.t013_emitted.insert((var.clone(), span.clone())) {
                                         state.diagnostics.push(crate::error::TypeDiagnostic {
                                             message: format!(
                                                 "ambiguous type variable {} in constraint {}: appears in constraint but not in the type — constraint will be silently dropped",
                                                 format_var_name(var),
                                                 class.name
                                             ),
-                                            span,
+                                            span: span.clone(),
                                             code: "T013",
                                             level: crate::error::DiagnosticLevel::Warn,
                                         });
@@ -770,13 +771,13 @@ pub fn generalize_with_doc(
                                 // Diagnostic: ambiguous label variable
                                 if !is_discharged(&resolved) {
                                     // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                                    if state.t013_emitted.insert((resolved.clone(), span)) {
+                                    if state.t013_emitted.insert((resolved.clone(), span.clone())) {
                                         state.diagnostics.push(crate::error::TypeDiagnostic {
                                             message: format!(
                                                 "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
                                                 format_var_name(&resolved)
                                             ),
-                                            span,
+                                            span: span.clone(),
                                             code: "T013",
                                             level: crate::error::DiagnosticLevel::Warn,
                                         });
@@ -807,14 +808,17 @@ pub fn generalize_with_doc(
 
                                 if !dict_discharged || !field_discharged {
                                     // For aggregated warnings, deduplicate on dict (the first var mentioned)
-                                    if state.t013_emitted.insert((effective_dict.clone(), span)) {
+                                    if state
+                                        .t013_emitted
+                                        .insert((effective_dict.clone(), span.clone()))
+                                    {
                                         state.diagnostics.push(crate::error::TypeDiagnostic {
                                             message: format!(
                                                 "ambiguous type variables {}, {} in constraint HasField: appear in constraint but not in the type — constraint will be silently dropped",
                                                 format_var_name(&effective_dict),
                                                 format_var_name(&effective_field)
                                             ),
-                                            span,
+                                            span: span.clone(),
                                             code: "T013",
                                             level: crate::error::DiagnosticLevel::Warn,
                                         });
@@ -822,26 +826,32 @@ pub fn generalize_with_doc(
                                 }
                             } else if dict_ambiguous && !is_discharged(&effective_dict) {
                                 // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                                if state.t013_emitted.insert((effective_dict.clone(), span)) {
+                                if state
+                                    .t013_emitted
+                                    .insert((effective_dict.clone(), span.clone()))
+                                {
                                     state.diagnostics.push(crate::error::TypeDiagnostic {
                                         message: format!(
                                             "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
                                             format_var_name(&effective_dict)
                                         ),
-                                        span,
+                                        span: span.clone(),
                                         code: "T013",
                                         level: crate::error::DiagnosticLevel::Warn,
                                     });
                                 }
                             } else if field_ambiguous && !is_discharged(&effective_field) {
                                 // Deduplicate: only emit if this (var, span) pair hasn't been seen
-                                if state.t013_emitted.insert((effective_field.clone(), span)) {
+                                if state
+                                    .t013_emitted
+                                    .insert((effective_field.clone(), span.clone()))
+                                {
                                     state.diagnostics.push(crate::error::TypeDiagnostic {
                                         message: format!(
                                             "ambiguous type variable {} in constraint HasField: appears in constraint but not in the type — constraint will be silently dropped",
                                             format_var_name(&effective_field)
                                         ),
-                                        span,
+                                        span: span.clone(),
                                         code: "T013",
                                         level: crate::error::DiagnosticLevel::Warn,
                                     });
@@ -1469,6 +1479,66 @@ impl TypeEnv {
             },
         );
 
+        // Greater-than: Comparable a => a -> a -> Bool
+        env.insert_scheme(
+            ">".to_string(),
+            TypeScheme {
+                type_vars: vec!["a".to_string()],
+                constraints: vec![Constraint::new(Arc::clone(&comparable_class), "a")],
+                body: Type::Function {
+                    params: vec![
+                        (None, Type::TypeVar("a".to_string(), 0)),
+                        (None, Type::TypeVar("a".to_string(), 0)),
+                    ],
+                    ret: Box::new(Type::Bool),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
+            },
+        );
+
+        // Greater-than-or-equal: Comparable a => a -> a -> Bool
+        env.insert_scheme(
+            ">=".to_string(),
+            TypeScheme {
+                type_vars: vec!["a".to_string()],
+                constraints: vec![Constraint::new(Arc::clone(&comparable_class), "a")],
+                body: Type::Function {
+                    params: vec![
+                        (None, Type::TypeVar("a".to_string(), 0)),
+                        (None, Type::TypeVar("a".to_string(), 0)),
+                    ],
+                    ret: Box::new(Type::Bool),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
+            },
+        );
+
+        // Less-than-or-equal: Comparable a => a -> a -> Bool
+        env.insert_scheme(
+            "<=".to_string(),
+            TypeScheme {
+                type_vars: vec!["a".to_string()],
+                constraints: vec![Constraint::new(Arc::clone(&comparable_class), "a")],
+                body: Type::Function {
+                    params: vec![
+                        (None, Type::TypeVar("a".to_string(), 0)),
+                        (None, Type::TypeVar("a".to_string(), 0)),
+                    ],
+                    ret: Box::new(Type::Bool),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
+            },
+        );
+
         // Control flow: if takes Bool and two branches, returns Top (type depends on branches)
         env.insert(
             "if".to_string(),
@@ -1517,24 +1587,37 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        // merge: Appendable a => (a, a) → a
-        // Both arguments must be the same Appendable type, and the return type is that type.
-        env.insert_scheme(
+        // merge: Dict → Dict → Dict
+        // Accepts any two dicts and returns a dict (right-biased field merge).
+        // Under BAS width subtyping, any concrete record type is a subtype of Dict (Record({})).
+        // Using Dict → Dict → Dict allows [merge {a: 1} {b: 2}] to typecheck even when the
+        // two args have different field sets — both are subtypes of Dict via width subtyping.
+        //
+        // Note: previously this was Appendable a => a → a → a (requiring same type for both args),
+        // which was too restrictive for the common pattern of merging two records with different fields.
+        // The Appendable class is still used by builtin-concat (for Seq concatenation) but merge
+        // is a structural dict-merge operation that should accept any two dict types.
+        env.insert(
             "merge".to_string(),
-            TypeScheme {
-                type_vars: vec!["a".to_string()],
-                constraints: vec![Constraint::new_by_name("Appendable", "a")],
-                body: Type::Function {
-                    params: vec![
-                        (Some("dict1".to_string()), Type::TypeVar("a".to_string(), 0)),
-                        (Some("dict2".to_string()), Type::TypeVar("a".to_string(), 0)),
-                    ],
-                    ret: Box::new(Type::TypeVar("a".to_string(), 0)),
-                    variadic: false,
-                },
-                label_vars: vec![],
-                doc: None,
-                inner_schemes: None,
+            Type::Function {
+                params: vec![
+                    (
+                        Some("dict1".to_string()),
+                        Type::Record(Row {
+                            fields: std::collections::HashMap::new(),
+                        }),
+                    ),
+                    (
+                        Some("dict2".to_string()),
+                        Type::Record(Row {
+                            fields: std::collections::HashMap::new(),
+                        }),
+                    ),
+                ],
+                ret: Box::new(Type::Record(Row {
+                    fields: std::collections::HashMap::new(),
+                })),
+                variadic: false,
             },
         );
         env.insert(
@@ -2763,6 +2846,24 @@ impl TypeEnv {
                 inner_schemes: None,
             },
         );
+        // builtin-head: ∀T. Seq(T) → T (first element of a Seq)
+        // Used internally by prelude functions (zip, take-while, etc.) and the `head` wrapper.
+        // Same semantics as builtin-first; registered separately to support both names.
+        env.insert_scheme(
+            "builtin-head".to_string(),
+            TypeScheme {
+                type_vars: vec!["T".to_string()],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![(None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))))],
+                    ret: Box::new(Type::TypeVar("T".to_string(), 0)),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
+            },
+        );
         // builtin-collect: ∀T. Seq(T) → Dict
         // Polymorphic parameter: accepts Seq of any element type.
         // Return type is an empty record (open dict) — collect returns a Dict regardless of T.
@@ -2793,12 +2894,18 @@ impl TypeEnv {
         );
 
         // Sequences: generators (registered as builtin-NAME; prelude exports unwrapped names)
+        // builtin-range: 1-arg form (start; infinite) or 2-arg form (start, end; half-open [start,end)).
+        // Variadic: accepts 1 required arg (start) with optional 2nd arg (end).
+        // The prelude wrapper `range` delegates to this with [let start@Int ...rest].
         env.insert(
             "builtin-range".to_string(),
             Type::Function {
-                params: vec![(None, Type::Int), (None, Type::Int)],
+                params: vec![
+                    (None, Type::Int),                      // start (required)
+                    (None, Type::Seq(Box::new(Type::Int))), // variadic rest (optional end)
+                ],
                 ret: Box::new(Type::Seq(Box::new(Type::Int))),
-                variadic: false,
+                variadic: true,
             },
         );
         // builtin-repeat: ∀T. T → Seq(T)
@@ -3682,6 +3789,9 @@ impl TypeEnv {
     pub fn inject_builtin_aliases(&mut self) {
         for (alias, canonical) in [
             ("builtin-lt", "<"),
+            ("builtin-gt", ">"),
+            ("builtin-gte", ">="),
+            ("builtin-lte", "<="),
             ("builtin-eq", "="),
             ("builtin-add", "+"),
             ("builtin-sub", "-"),
@@ -3787,7 +3897,7 @@ pub struct TypeError {
     pub message: String,
     pub span: Span,
     /// Extra `= note:` lines attached at the error-generation site (e.g. "caused by" context).
-    pub notes: Vec<String>,
+    pub notes: Box<Vec<String>>,
     /// Explicit stable error code, e.g. `"T014"`. When `Some`, overrides the message-pattern
     /// dispatch in `code()`. Use `with_code()` to attach a code at the construction site.
     pub code: Option<String>,
@@ -3795,10 +3905,15 @@ pub struct TypeError {
 
 impl TypeError {
     pub fn new(message: impl Into<String>, span: Span) -> Self {
+        let span = Span {
+            start: span.start,
+            end: span.end,
+            file: None,
+        };
         Self {
             message: message.into(),
             span,
-            notes: Vec::new(),
+            notes: Box::new(Vec::new()),
             code: None,
         }
     }
@@ -3926,7 +4041,7 @@ pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> Stri
     out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
 
     // Snippet: source context with caret
-    if let Some(snippet) = render_span_snippet(source, err.span) {
+    if let Some(snippet) = render_span_snippet(source, err.span.clone()) {
         out.push_str("  |\n");
         out.push_str(&snippet);
     }
@@ -3939,7 +4054,7 @@ pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> Stri
     }
 
     // Attached notes added at error-generation time (e.g. "caused by" for cascade T002s)
-    for note in &err.notes {
+    for note in err.notes.iter() {
         out.push('\n');
         out.push_str(note);
     }
@@ -4426,12 +4541,13 @@ mod help_suggestion_tests {
                 line: 1,
                 column: 15,
             },
+            file: None,
         };
         let constraint_with_origin = Constraint::Class {
             class: Arc::clone(&class),
             vars: vec!["_t42".to_string()],
             origin_name: Some(Arc::from("str")),
-            origin_span: Some(arg_span),
+            origin_span: Some(arg_span.clone()),
         };
 
         // _t42 is NOT in the substitution map → not discharged → T013 fires
@@ -4449,6 +4565,7 @@ mod help_suggestion_tests {
                 line: 1,
                 column: 6,
             },
+            file: None,
         };
         let mut emitted: HashSet<(String, Span)> = HashSet::new();
 
@@ -4523,6 +4640,7 @@ mod help_suggestion_tests {
                 line: 1,
                 column: 6,
             },
+            file: None,
         };
         let mut emitted: HashSet<(String, Span)> = HashSet::new();
 
@@ -4531,7 +4649,7 @@ mod help_suggestion_tests {
             &subst_snapshot,
             &source_names,
             &mut diagnostics,
-            call_span,
+            call_span.clone(),
             &mut emitted,
         );
 

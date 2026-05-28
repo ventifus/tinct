@@ -48,13 +48,13 @@
 - `Value` serialization: every `Value` variant must have handlers in both `JsonVisitor` (via `visit_value`) and `value_to_display_string()` (src/lib.rs)
 - Type checker role: advisory only — type errors are warnings, evaluation proceeds regardless
 - AST coverage: every `SurfaceExpression` variant requires both a `lower` handler (src/lower.rs producing `CoreExpr`) and a `typecheck` handler (src/typecheck.rs); every `CoreExpr` variant requires an `eval_core_expr` handler (src/eval.rs)
-- Builtin registration: all builtins must appear in `standard_builtins()` (src/builtins.rs) — this is the authoritative list
-- Environment chain: builtins → stdlib → user code (root env contains Rust-native builtins; stdlib env wraps root and loads prelude.llt; user code inherits from stdlib)
+- Builtin registration: builtins are organized into named module groups via `builtin_module(name)` (src/builtins.rs) — "core", "datetime", "net". Each stdlib file declares its Rust dependencies with a `--- uses: ["core"]` document header; the evaluator injects the named group into the document's local scope before any expressions run.
+- Environment chain: user code inherits only prelude's exported dict. Builtins are in scope only during prelude evaluation (via `--- uses: ["core"]`) and are not propagated into user code's environment. The old `root_env → stdlib_env → user env` chain with all builtins pre-injected is replaced by a document-local injection model.
 - Desugar ordering: `desugar_surface_program()` runs after parse and before both typecheck and eval in all entry points (eval_source, eval_surface_file_with_input, CLI, REPL, stdlib loading, lsp/document.rs::update_document)
 
 **Cross-module coupling:**
 
-- Circular dependency: builtins.rs calls `materialize`/`invoke_function` (eval.rs); eval.rs calls `standard_builtins()` (builtins.rs). Safe because dependency is at function-call level, not module init.
+- Circular dependency: builtins.rs calls `materialize`/`invoke_function` (eval.rs); eval.rs calls `builtin_module()` (builtins.rs). Safe because dependency is at function-call level, not module init.
 - Elaboration write-once: type annotations are resolved from `TypeAnnotationTable` (a side-table keyed by `NodeId`) during lowering. `CoreExpr::TypeAssert.resolved_type` is a plain field set once at lower time — no `RefCell`, no re-typecheck panic. Parse a fresh `SurfaceProgram` for each typecheck run (side tables are separate).
 - Include cache: `EvalContext.state.string_include_cache` (`HashMap<String, IncludeCacheEntry>`, content-addressed, keyed by `blake3(cap-identity + "|" + source_text)`) memoizes `$include` results — the old inode-keyed `include_guard` and `include_cache` fields are deleted.
 

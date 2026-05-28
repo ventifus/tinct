@@ -131,6 +131,7 @@ mod tests {
                 line: end_line,
                 column: end_col,
             },
+            file: None,
         }
     }
 

@@ -102,7 +102,7 @@ pub(crate) fn resolve_type_assert(
     let expected = resolve_annotation(
         &annotation.node,
         env,
-        annotation.span,
+        annotation.span.clone(),
         state,
         &mut ann_mapping_opt,
         &mut row_ann_mapping_opt,
@@ -145,7 +145,7 @@ pub(crate) fn resolve_type_assert(
                             "default value type mismatch: default has type {default_ty}, \
                              but assertion expects {expected_resolved}"
                         ),
-                        default_node.span,
+                        default_node.span.clone(),
                     )]);
                 }
             }
@@ -168,7 +168,7 @@ pub(crate) fn resolve_type_assert(
                         "invalid repr: \"{repr_val}\" — must be one of: {}",
                         VALID_REPRS.join(", ")
                     ),
-                    repr_node.span,
+                    repr_node.span.clone(),
                 )]);
             }
             // Check consistency: repr requires a numeric type (Int or Number)
@@ -179,7 +179,7 @@ pub(crate) fn resolve_type_assert(
                         "repr: \"{repr_val}\" requires a numeric type, but annotation declares {}",
                         expected
                     ),
-                    repr_node.span,
+                    repr_node.span.clone(),
                 )]);
             }
         }
@@ -216,7 +216,7 @@ pub(crate) fn resolve_type_assert(
                      elaboration invariant violated (previous: {prev_repr}, new: {new_repr}). \
                      This indicates a bug in the type checker."
                 ),
-                annotation.span,
+                annotation.span.clone(),
             )]);
         }
         // Consistent double-write: previous value matches. Idempotent — return Ok.
@@ -249,7 +249,7 @@ pub(crate) fn resolve_annotated(
         resolve_fn_type(
             &annotation.node,
             env,
-            annotation.span,
+            annotation.span.clone(),
             state,
             ann_mapping,
             row_ann_mapping,
@@ -258,7 +258,7 @@ pub(crate) fn resolve_annotated(
         let elem = resolve_annotation(
             &annotation.node,
             env,
-            span,
+            span.clone(),
             state,
             ann_mapping,
             row_ann_mapping,
@@ -313,6 +313,19 @@ pub(crate) fn resolve_annotated(
 ///
 /// Returns (return_type, doc_string).
 #[allow(dead_code)]
+/// Extract the string key name from a dict key expression.
+///
+/// Accepts both `SurfaceExpression::Str("key")` (string literal, user code) and
+/// `SurfaceExpression::VarRef { name: "key" }` (identifier, prelude annotations re-parsed via parse()).
+/// Returns `None` for any other expression form.
+fn extract_key_name(key_expr: &Arc<SurfaceNode>) -> Option<&str> {
+    match &key_expr.expr {
+        SurfaceExpression::Str(s) => Some(s.as_str()),
+        SurfaceExpression::VarRef { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
+}
+
 pub(crate) fn resolve_fn_metadata(
     entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
@@ -355,7 +368,7 @@ pub(crate) fn resolve_fn_metadata(
                                 if bind_entry.node.key.is_some() {
                                     return Err(TypeError::new(
                                         "bind: list must contain only positional entries (bare names)",
-                                        bind_entry.span,
+                                        bind_entry.span.clone(),
                                     ));
                                 }
                                 match &bind_entry.node.value.expr {
@@ -367,7 +380,7 @@ pub(crate) fn resolve_fn_metadata(
                                                     "bind: TypeVar name '{}' must start with lowercase letter",
                                                     name
                                                 ),
-                                                bind_entry.node.value.span,
+                                                bind_entry.node.value.span.clone(),
                                             ));
                                         }
                                         // Create fresh TypeVar and register in ann_mapping
@@ -390,7 +403,7 @@ pub(crate) fn resolve_fn_metadata(
                                     _ => {
                                         return Err(TypeError::new(
                                             "bind: entries must be bare names (TypeVar names)",
-                                            bind_entry.node.value.span,
+                                            bind_entry.node.value.span.clone(),
                                         ));
                                     }
                                 }
@@ -409,7 +422,7 @@ pub(crate) fn resolve_fn_metadata(
                             if !named_args.is_empty() {
                                 return Err(TypeError::new(
                                     "bind: list must contain only bare names, not named arguments",
-                                    entry.node.value.span,
+                                    entry.node.value.span.clone(),
                                 ));
                             }
                             // Collect all names: func first, then each positional arg
@@ -418,23 +431,23 @@ pub(crate) fn resolve_fn_metadata(
                                     let mut v: Vec<(&str, Span)> = Vec::new();
                                     match &func.expr {
                                         SurfaceExpression::VarRef { name, .. } => {
-                                            v.push((name.as_str(), func.span))
+                                            v.push((name.as_str(), func.span.clone()))
                                         }
                                         _ => {
                                             return Err(TypeError::new(
                                                 "bind: entries must be bare names (TypeVar names)",
-                                                func.span,
+                                                func.span.clone(),
                                             ))
                                         }
                                     }
                                     for arg in args.iter() {
                                         match &arg.expr {
                                             SurfaceExpression::VarRef { name, .. } => {
-                                                v.push((name.as_str(), arg.span))
+                                                v.push((name.as_str(), arg.span.clone()))
                                             }
                                             _ => return Err(TypeError::new(
                                                 "bind: entries must be bare names (TypeVar names)",
-                                                arg.span,
+                                                arg.span.clone(),
                                             )),
                                         }
                                     }
@@ -470,7 +483,7 @@ pub(crate) fn resolve_fn_metadata(
                         _ => {
                             return Err(TypeError::new(
                                 "bind: value must be a list [a b c]",
-                                entry.node.value.span,
+                                entry.node.value.span.clone(),
                             ))
                         }
                     }
@@ -494,13 +507,13 @@ pub(crate) fn resolve_fn_metadata(
                                             SurfaceExpression::Str(s) => s.clone(),
                                             _ => return Err(TypeError::new(
                                                 "kinds: keys must be bare words (TypeVar names)",
-                                                kind_entry.span,
+                                                kind_entry.span.clone(),
                                             )),
                                         },
                                         None => {
                                             return Err(TypeError::new(
                                                 "kinds: entries must be keyed [name: kind]",
-                                                kind_entry.span,
+                                                kind_entry.span.clone(),
                                             ))
                                         }
                                     };
@@ -515,7 +528,7 @@ pub(crate) fn resolve_fn_metadata(
                                                     "kinds: TypeVar '{}' not found in bind: list",
                                                     typevar_name
                                                 ),
-                                                kind_entry.span,
+                                                kind_entry.span.clone(),
                                             ))
                                         }
                                     }
@@ -540,7 +553,7 @@ pub(crate) fn resolve_fn_metadata(
                                                     "unknown kind '{}' (valid: Operator, Label)",
                                                     kind_name
                                                 ),
-                                                    kind_entry.node.value.span,
+                                                    kind_entry.node.value.span.clone(),
                                                 ))
                                             }
                                         };
@@ -549,7 +562,7 @@ pub(crate) fn resolve_fn_metadata(
                                     _ => {
                                         return Err(TypeError::new(
                                             "kinds: value must be a kind name (Operator or Label)",
-                                            kind_entry.node.value.span,
+                                            kind_entry.node.value.span.clone(),
                                         ));
                                     }
                                 }
@@ -558,7 +571,7 @@ pub(crate) fn resolve_fn_metadata(
                         _ => {
                             return Err(TypeError::new(
                                 "kinds: value must be a dict [name: kind ...]",
-                                entry.node.value.span,
+                                entry.node.value.span.clone(),
                             ))
                         }
                     }
@@ -588,7 +601,7 @@ pub(crate) fn resolve_fn_metadata(
                                         _ => {
                                             return Err(TypeError::new(
                                                 "constraint key must be a bare word (TypeVar name)",
-                                                c_entry.span,
+                                                c_entry.span.clone(),
                                             ));
                                         }
                                     },
@@ -630,7 +643,7 @@ pub(crate) fn resolve_fn_metadata(
                                         {
                                             return Err(TypeError::new(
                                                 format!("unknown constraint class '{}'", name),
-                                                c_entry.node.value.span,
+                                                c_entry.node.value.span.clone(),
                                             ));
                                         }
                                         state.add_constraint(name.clone(), type_var.clone());
@@ -650,19 +663,19 @@ pub(crate) fn resolve_fn_metadata(
                                                     // [a: [Comparable Showable]] — no 'each', error
                                                     return Err(TypeError::new(
                                                         "constraint class list must start with 'each' keyword: use [each ClassName ...]",
-                                                        class_list[0].span,
+                                                        class_list[0].span.clone(),
                                                     ));
                                                 }
                                             } else {
                                                 return Err(TypeError::new(
                                                     "constraint class list must start with 'each' keyword: use [each ClassName ...]",
-                                                    class_list[0].span,
+                                                    class_list[0].span.clone(),
                                                 ));
                                             }
                                         } else {
                                             return Err(TypeError::new(
                                                 "constraint class list cannot be empty",
-                                                c_entry.node.value.span,
+                                                c_entry.node.value.span.clone(),
                                             ));
                                         };
 
@@ -671,7 +684,7 @@ pub(crate) fn resolve_fn_metadata(
                                             if class_entry.node.key.is_some() {
                                                 return Err(TypeError::new(
                                                     "constraint class list must contain only positional entries",
-                                                    class_entry.span,
+                                                    class_entry.span.clone(),
                                                 ));
                                             }
                                             match &class_entry.node.value.expr {
@@ -684,7 +697,7 @@ pub(crate) fn resolve_fn_metadata(
                                                                 "unknown constraint class '{}'",
                                                                 name
                                                             ),
-                                                            class_entry.node.value.span,
+                                                            class_entry.node.value.span.clone(),
                                                         ));
                                                     }
                                                     state.add_constraint(
@@ -695,7 +708,7 @@ pub(crate) fn resolve_fn_metadata(
                                                 _ => {
                                                     return Err(TypeError::new(
                                                         "constraint class must be a class name (e.g., Comparable)",
-                                                        class_entry.node.value.span,
+                                                        class_entry.node.value.span.clone(),
                                                     ));
                                                 }
                                             }
@@ -715,7 +728,7 @@ pub(crate) fn resolve_fn_metadata(
                                         if !named_args.is_empty() {
                                             return Err(TypeError::new(
                                                 "constraint class list must not contain named arguments",
-                                                c_entry.node.value.span,
+                                                c_entry.node.value.span.clone(),
                                             ));
                                         }
                                         // Determine class names to add
@@ -729,12 +742,12 @@ pub(crate) fn resolve_fn_metadata(
                                                     for arg in args.iter() {
                                                         match &arg.expr {
                                                             SurfaceExpression::VarRef { name, .. } => {
-                                                                names.push((name.as_str(), arg.span))
+                                                                names.push((name.as_str(), arg.span.clone()))
                                                             }
                                                             _ => {
                                                                 return Err(TypeError::new(
                                                                     "constraint class must be a class name (e.g., Comparable)",
-                                                                    arg.span,
+                                                                    arg.span.clone(),
                                                                 ))
                                                             }
                                                         }
@@ -745,12 +758,12 @@ pub(crate) fn resolve_fn_metadata(
                                                     if args.is_empty() =>
                                                 {
                                                     // [ClassName]: zero-arg call, treat func as single class
-                                                    vec![(name.as_str(), func.span)]
+                                                    vec![(name.as_str(), func.span.clone())]
                                                 }
                                                 _ => {
                                                     return Err(TypeError::new(
                                                         "constraint value must be a class name or [each Class1 Class2 ...]",
-                                                        c_entry.node.value.span,
+                                                        c_entry.node.value.span.clone(),
                                                     ))
                                                 }
                                             };
@@ -770,7 +783,7 @@ pub(crate) fn resolve_fn_metadata(
                                     _ => {
                                         return Err(TypeError::new(
                                             "constraint value must be a class name or list of class names",
-                                            c_entry.node.value.span,
+                                            c_entry.node.value.span.clone(),
                                         ));
                                     }
                                 }
@@ -779,7 +792,7 @@ pub(crate) fn resolve_fn_metadata(
                         _ => {
                             return Err(TypeError::new(
                                 "constraint: value must be a dict [a: Comparable]",
-                                entry.node.value.span,
+                                entry.node.value.span.clone(),
                             ));
                         }
                     }
@@ -819,7 +832,7 @@ pub(crate) fn resolve_fn_metadata(
                                                         "unknown class '{}' in MPTC constraint",
                                                         class_name
                                                     ),
-                                                    c_entry.node.value.span,
+                                                    c_entry.node.value.span.clone(),
                                                 )
                                             })?;
 
@@ -846,7 +859,7 @@ pub(crate) fn resolve_fn_metadata(
                                                                     "TypeVar '{}' not declared in bind: — add bind: [{}] before constraint:",
                                                                     var_name, var_name
                                                                 ),
-                                                                subsequent.node.value.span,
+                                                                subsequent.node.value.span.clone(),
                                                             ));
                                                         }
                                                         // Map to the actual TypeVar name (e.g., _t0)
@@ -869,7 +882,7 @@ pub(crate) fn resolve_fn_metadata(
                                                 _ => {
                                                     return Err(TypeError::new(
                                                         "MPTC constraint entries after class name must be TypeVar names",
-                                                        subsequent.node.value.span,
+                                                        subsequent.node.value.span.clone(),
                                                     ));
                                                 }
                                             }
@@ -893,7 +906,7 @@ pub(crate) fn resolve_fn_metadata(
                                         // without a class
                                         return Err(TypeError::new(
                                             "positional constraint entries must start with escaped class name (e.g., $Add)",
-                                            c_entry.node.value.span,
+                                            c_entry.node.value.span.clone(),
                                         ));
                                     }
                                 }
@@ -958,7 +971,7 @@ pub(crate) fn resolve_fn_metadata(
                         None => {
                             return Err(TypeError::new(
                                 "doc: value must be a string literal",
-                                entry.node.value.span,
+                                entry.node.value.span.clone(),
                             ));
                         }
                     }
@@ -978,7 +991,7 @@ pub(crate) fn resolve_fn_metadata(
                             "unknown function annotation key '{}' (valid keys: return, constraint, doc, bind, kinds)",
                             key_name
                         ),
-                        key_expr.span,
+                        key_expr.span.clone(),
                     ));
                 }
             }
@@ -1036,7 +1049,7 @@ fn resolve_fn_type(
                 let (ret, _doc) = resolve_fn_metadata(
                     surface_entries,
                     env,
-                    span,
+                    span.clone(),
                     state,
                     ann_mapping,
                     row_ann_mapping,
@@ -1064,8 +1077,14 @@ fn resolve_fn_type(
         }
         _ => {
             // Simple(name) path: fn@Int, fn@a, etc.
-            let ret =
-                resolve_annotation_as_type(ann, env, span, state, ann_mapping, row_ann_mapping)?;
+            let ret = resolve_annotation_as_type(
+                ann,
+                env,
+                span.clone(),
+                state,
+                ann_mapping,
+                row_ann_mapping,
+            )?;
             let ty = Type::Function {
                 params: vec![],
                 ret: Box::new(ret),
@@ -1743,6 +1762,7 @@ pub(crate) fn resolve_type_name(
         "Bool" => Ok(Type::Bool),
         "Number" => Ok(Type::Number),
         "Any" => Ok(Type::Top),
+        "Proxy" => Ok(Type::Proxy),
         // BAS type names
         "Never" => Ok(Type::Never),
         "Top" => Ok(Type::Top),
@@ -1951,7 +1971,7 @@ fn expand_alias_body_guarded(
                         alias_guard,
                         current_alias,
                         depth,
-                        span,
+                        span.clone(),
                     )?,
                 );
             }
@@ -1976,7 +1996,7 @@ fn expand_alias_body_guarded(
                             alias_guard,
                             current_alias,
                             depth,
-                            span,
+                            span.clone(),
                         )?,
                     ))
                 })
@@ -2025,7 +2045,7 @@ fn expand_alias_body_guarded(
                         alias_guard,
                         current_alias,
                         depth,
-                        span,
+                        span.clone(),
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -2044,7 +2064,7 @@ fn expand_alias_body_guarded(
                         alias_guard,
                         current_alias,
                         depth,
-                        span,
+                        span.clone(),
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -2060,7 +2080,7 @@ fn expand_alias_body_guarded(
                 alias_guard,
                 current_alias,
                 depth,
-                span,
+                span.clone(),
             )?);
             let new_value = Box::new(expand_alias_body_guarded(
                 value,
@@ -2106,7 +2126,7 @@ pub(crate) fn resolve_type_expr_with_guard(
                 "recursive type alias '{}' exceeds maximum unfolding depth ({})",
                 current_alias, MAX_ALIAS_DEPTH
             ),
-            node.span,
+            node.span.clone(),
         ));
     }
 
@@ -2115,7 +2135,7 @@ pub(crate) fn resolve_type_expr_with_guard(
         SurfaceExpression::VarRef { name, .. } => resolve_type_name_with_guard(
             name,
             env,
-            node.span,
+            node.span.clone(),
             state,
             ann_mapping,
             row_ann_mapping,
@@ -2126,7 +2146,7 @@ pub(crate) fn resolve_type_expr_with_guard(
         SurfaceExpression::Dict(entries) => resolve_type_dict_with_guard(
             entries,
             env,
-            node.span,
+            node.span.clone(),
             state,
             ann_mapping,
             row_ann_mapping,
@@ -2258,7 +2278,7 @@ fn resolve_type_dict_with_guard(
                     _ => {
                         return Err(TypeError::new(
                             "type record keys must be bare words",
-                            k.span,
+                            k.span.clone(),
                         ))
                     }
                 },
@@ -2358,7 +2378,7 @@ pub(crate) fn resolve_type_expr(
             //      `[type [Option a] [Some a] None]`.
             //   3. For lowercase names, propagate the `resolve_type_name` error directly.
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
-            match resolve_type_name(name, env, node.span, state, ann_mapping, &row_ref) {
+            match resolve_type_name(name, env, node.span.clone(), state, ann_mapping, &row_ref) {
                 Ok(ty) => Ok(ty),
                 Err(e) if crate::eval::is_constructor_name(name) => {
                     // Unknown uppercase name: treat as a zero-payload nominal variant constructor.
@@ -2375,15 +2395,20 @@ pub(crate) fn resolve_type_expr(
                 Err(e) => Err(e),
             }
         }
-        SurfaceExpression::Dict(entries) => {
-            resolve_type_dict(entries, env, node.span, state, ann_mapping, row_ann_mapping)
-        }
+        SurfaceExpression::Dict(entries) => resolve_type_dict(
+            entries,
+            env,
+            node.span.clone(),
+            state,
+            ann_mapping,
+            row_ann_mapping,
+        ),
         SurfaceExpression::Annotated { name, annotation } => {
             if name == "Fn" {
                 resolve_fn_type(
                     &annotation.node,
                     env,
-                    annotation.span,
+                    annotation.span.clone(),
                     state,
                     ann_mapping,
                     row_ann_mapping,
@@ -2392,7 +2417,7 @@ pub(crate) fn resolve_type_expr(
                 resolve_annotation(
                     &annotation.node,
                     env,
-                    node.span,
+                    node.span.clone(),
                     state,
                     ann_mapping,
                     row_ann_mapping,
@@ -2423,7 +2448,7 @@ pub(crate) fn resolve_type_expr(
                     let ret = resolve_annotation_as_type(
                         &annotation.node,
                         env,
-                        annotation.span,
+                        annotation.span.clone(),
                         state,
                         ann_mapping,
                         row_ann_mapping,
@@ -2501,7 +2526,7 @@ pub(crate) fn resolve_type_expr(
                                 "function type [Fn@Return [Params]] requires exactly 2 entries, got {}",
                                 1 + args.len()
                             ),
-                            node.span,
+                            node.span.clone(),
                         ));
                     }
                     return Ok(Type::Function {
@@ -2526,7 +2551,7 @@ pub(crate) fn resolve_type_expr(
                     if args.is_empty() {
                         return Err(TypeError::new(
                             "[or ...] requires at least one type argument",
-                            node.span,
+                            node.span.clone(),
                         ));
                     }
                     let mut members = Vec::new();
@@ -2540,7 +2565,7 @@ pub(crate) fn resolve_type_expr(
                     if args.is_empty() {
                         return Err(TypeError::new(
                             "[all ...] requires at least one type argument",
-                            node.span,
+                            node.span.clone(),
                         ));
                     }
                     let mut members = Vec::new();
@@ -2553,7 +2578,7 @@ pub(crate) fn resolve_type_expr(
                     if args.len() != 1 {
                         return Err(TypeError::new(
                             "[without A] requires exactly one type argument",
-                            node.span,
+                            node.span.clone(),
                         ));
                     }
                     let inner =
@@ -2589,7 +2614,10 @@ pub(crate) fn resolve_type_expr(
                             )?;
                             return Ok(Type::Seq(Box::new(elem_ty)));
                         } else {
-                            return Err(TypeError::new("Seq requires 1 type argument", node.span));
+                            return Err(TypeError::new(
+                                "Seq requires 1 type argument",
+                                node.span.clone(),
+                            ));
                         }
                     }
                     "Map" => {
@@ -2627,7 +2655,7 @@ pub(crate) fn resolve_type_expr(
                         } else {
                             return Err(TypeError::new(
                                 "Map requires 1 or 2 type arguments",
-                                node.span,
+                                node.span.clone(),
                             ));
                         }
                     }
@@ -2659,7 +2687,7 @@ pub(crate) fn resolve_type_expr(
                                 alias.params.len(),
                                 type_args.len()
                             ),
-                            node.span,
+                            node.span.clone(),
                         ));
                     }
 
@@ -2717,20 +2745,59 @@ pub(crate) fn resolve_type_expr(
                                 "nominal constructor {} requires either 0 args, 1 arg, or named args",
                                 name
                             ),
-                            node.span,
+                            node.span.clone(),
                         ));
                     }
                 }
             }
 
+            // Lowercase VarRef in implied-call head position with args: treat as Union type.
+            //
+            // Pattern: [a T1 T2 ...] where `a` is lowercase (a type variable).
+            // Interpretation: Union([TypeVar(a), T1, T2, ...])
+            //
+            // This handles prelude annotations like `[return: [a Null]]` in:
+            //   cond: [fn@[return: [a Null] doc: "..."] ...]
+            //   when: [fn@[return: [a Null] doc: "..."] ...]
+            //   unless: [fn@[return: [a Null] doc: "..."] ...]
+            //
+            // In these annotations, `a` is a type variable and `Null` is the empty record.
+            // The parser sees `[a Null]` as an implied call `Call(VarRef("a"), [VarRef("Null")])`
+            // because `a` in head position without `:` or `@` is treated as a function name.
+            // The intended meaning is `Union([TypeVar(a), Null])` which we recover here.
+            if let SurfaceExpression::VarRef {
+                name: func_name, ..
+            } = &func.expr
+            {
+                if func_name.starts_with(|c: char| c.is_lowercase()) && !args.is_empty() {
+                    // Treat func as a type variable and resolve all args as type members.
+                    // Form: Union([TypeVar(func_name), arg0_ty, arg1_ty, ...])
+                    let head_ty = resolve_type_name(
+                        func_name,
+                        env,
+                        func.span.clone(),
+                        state,
+                        ann_mapping,
+                        &row_ann_mapping.as_ref().map(|m| &**m),
+                    )?;
+                    let mut members = vec![head_ty];
+                    for arg in args.iter() {
+                        let member_ty =
+                            resolve_type_expr(arg, env, state, ann_mapping, row_ann_mapping)?;
+                        members.push(member_ty);
+                    }
+                    return Ok(Type::normalize_union(members));
+                }
+            }
+
             Err(TypeError::new(
                 format!("invalid type expression in annotation: {:?}", node.expr),
-                node.span,
+                node.span.clone(),
             ))
         }
         _ => Err(TypeError::new(
             format!("invalid type expression in annotation: {:?}", node.expr),
-            node.span,
+            node.span.clone(),
         )),
     }
 }
@@ -2743,9 +2810,14 @@ pub(crate) fn resolve_type_dict(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
-    if let Some(fn_type) =
-        try_resolve_fn_type_expr(entries, env, span, state, ann_mapping, row_ann_mapping)?
-    {
+    if let Some(fn_type) = try_resolve_fn_type_expr(
+        entries,
+        env,
+        span.clone(),
+        state,
+        ann_mapping,
+        row_ann_mapping,
+    )? {
         return Ok(fn_type);
     }
 
@@ -2854,7 +2926,7 @@ pub(crate) fn resolve_type_dict(
                                             "unexpected keyed entry in type alias application '{}'",
                                             name
                                         ),
-                                        entry.span,
+                                        entry.span.clone(),
                                     ));
                                 }
                                 type_args.push(resolve_type_expr(
@@ -3065,7 +3137,7 @@ pub(crate) fn resolve_type_dict(
                                             SurfaceExpression::Str(s) => s.clone(),
                                             _ => return Err(TypeError::new(
                                                 "nominal variant field names must be bare words",
-                                                k.span,
+                                                k.span.clone(),
                                             )),
                                         };
                                         let field_ty = resolve_type_expr(
@@ -3080,7 +3152,7 @@ pub(crate) fn resolve_type_dict(
                                     None => {
                                         return Err(TypeError::new(
                                             "nominal variant constructor with named fields requires all fields after the constructor tag to be keyed (field: Type)",
-                                            field_entry.span,
+                                            field_entry.span.clone(),
                                         ));
                                     }
                                 }
@@ -3180,14 +3252,14 @@ pub(crate) fn resolve_type_dict(
                 _ => {
                     return Err(TypeError::new(
                         "type record keys must be bare words",
-                        k.span,
+                        k.span.clone(),
                     ))
                 }
             },
             None => {
                 return Err(TypeError::new(
                     "auto-indexed entries not supported in type expressions",
-                    entry.span,
+                    entry.span.clone(),
                 ))
             }
         };
@@ -3283,7 +3355,7 @@ fn try_resolve_fn_type_expr(
 
     let (ann_node, ann_span) = match &first.node.value.expr {
         SurfaceExpression::Annotated { name, annotation } if name == "Fn" => {
-            (&annotation.node, annotation.span)
+            (&annotation.node, annotation.span.clone())
         }
         _ => return Ok(None),
     };
@@ -3302,7 +3374,7 @@ fn try_resolve_fn_type_expr(
     if second.node.key.is_some() {
         return Err(TypeError::new(
             "function type parameter list must be auto-indexed",
-            second.span,
+            second.span.clone(),
         ));
     }
 
@@ -3351,7 +3423,7 @@ fn try_resolve_fn_type_expr(
         _ => {
             return Err(TypeError::new(
                 "function type parameter list must be a bracket expression",
-                second.node.value.span,
+                second.node.value.span.clone(),
             ))
         }
     }

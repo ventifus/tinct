@@ -1,5 +1,7 @@
 # What If: Network Serve and Connect Layers (lib-net-v3)
 
+TODO: Verify that Uri, Url are Tinct-native data structures
+
 **State:** Draft — 2026-05-21
 
 **Depends on:** [`runtime-v2.md`](runtime-v2.md) ✓ complete — `task`/`await`/`channel`/`recv`/`send`/`select-once`/`loop-select`, `Arc`-based thunks, async Tokio runtime, and `stdlib/async.llt` (including `collect-channel`, `loop-select`, `exit`, `drain`) are all available. All concurrency primitives are used here without redefinition. `tcp-connect`, `quic-connect`, and `tls-layer` are **not** runtime-v2 primitives — they are tinct stdlib functions defined in this whatif.

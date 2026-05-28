@@ -147,7 +147,7 @@ fn build_seq_from_vec(
     // Build from right to left: [..., tail] where tail is empty dict
     let mut tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
         Value::Dict(IndexMap::new()),
-        call_span,
+        call_span.clone(),
     )));
 
     for head_id in items.into_iter().rev() {
@@ -155,7 +155,7 @@ fn build_seq_from_vec(
             head: head_id,
             tail: tail_id,
         };
-        tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(seq, call_span)));
+        tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(seq, call_span.clone())));
     }
 
     tail_id
@@ -184,11 +184,11 @@ pub(crate) fn builtin_task(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let func_thunk = take_one_thunk("task", &args, named.as_ref(), call_span)?;
+        let func_thunk = take_one_thunk("task", &args, named.as_ref(), call_span.clone())?;
 
         // Clone what we need for the 'static async block
         let ctx_clone = Arc::clone(&ctx);
-        let call_span_clone = call_span;
+        let call_span_clone = call_span.clone();
         let func_thunk_clone = Arc::clone(&func_thunk);
 
         // Spawn the task using spawn_local
@@ -270,7 +270,7 @@ pub(crate) fn builtin_await(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let task_thunk = take_one_thunk("await", &args, named.as_ref(), call_span)?;
+        let task_thunk = take_one_thunk("await", &args, named.as_ref(), call_span.clone())?;
         let task_val = materialize(&task_thunk, Some(&call_span), &ctx).await?;
 
         match task_val {
@@ -302,14 +302,14 @@ pub(crate) fn builtin_await(
                                     Ok(inner) => inner,
                                     Err(e) => Err(EvalError::user_error(
                                         format!("task panicked: {e}"),
-                                        call_span,
+                                        call_span.clone(),
                                     ).into()),
                                 }
                             }
                             _ = ctx.cancel.cancelled() => {
                                 // Cache cancellation error so subsequent awaits see it too
                                 let err: Box<EvalError> = EvalError::user_error(
-                                    "await: cancelled".to_string(), call_span
+                                    "await: cancelled".to_string(), call_span.clone()
                                 ).into();
                                 *guard = crate::value::TaskState::Done(Err(err.clone()));
                                 return Err(err);
@@ -354,7 +354,7 @@ pub(crate) fn builtin_channel(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let capacity_thunk = take_one_thunk("channel", &args, named.as_ref(), call_span)?;
+        let capacity_thunk = take_one_thunk("channel", &args, named.as_ref(), call_span.clone())?;
         let capacity_val = materialize(&capacity_thunk, Some(&call_span), &ctx).await?;
 
         match capacity_val {
@@ -393,7 +393,8 @@ pub(crate) fn builtin_send(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let (chan_thunk, val_thunk) = take_two_thunks("send", &args, named.as_ref(), call_span)?;
+        let (chan_thunk, val_thunk) =
+            take_two_thunks("send", &args, named.as_ref(), call_span.clone())?;
         let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
 
         match chan_val {
@@ -407,14 +408,14 @@ pub(crate) fn builtin_send(
                         result.map_err(|_| {
                             EvalError::user_error(
                                 "channel closed (receiver dropped)".to_string(),
-                                call_span,
+                                call_span.clone(),
                             )
                         })?;
                     }
                     _ = ctx.cancel.cancelled() => {
                         return Err(EvalError::user_error(
                             "send: cancelled".to_string(),
-                            call_span,
+                            call_span.clone(),
                         ).into());
                     }
                 }
@@ -442,7 +443,7 @@ pub(crate) fn builtin_recv(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let chan_thunk = take_one_thunk("recv", &args, named.as_ref(), call_span)?;
+        let chan_thunk = take_one_thunk("recv", &args, named.as_ref(), call_span.clone())?;
         let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
 
         match chan_val {
@@ -454,13 +455,13 @@ pub(crate) fn builtin_recv(
                 let value = tokio::select! {
                     result = rx.recv() => {
                         result.ok_or_else(|| {
-                            EvalError::user_error("channel closed (sender dropped)".to_string(), call_span)
+                            EvalError::user_error("channel closed (sender dropped)".to_string(), call_span.clone())
                         })?
                     }
                     _ = ctx.cancel.cancelled() => {
                         return Err(EvalError::user_error(
                             "recv: cancelled".to_string(),
-                            call_span,
+                            call_span.clone(),
                         ).into());
                     }
                 };
@@ -497,11 +498,13 @@ pub(crate) fn builtin_select_once(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let sources_thunk = take_one_thunk("select-once", &args, named.as_ref(), call_span)?;
+        let sources_thunk =
+            take_one_thunk("select-once", &args, named.as_ref(), call_span.clone())?;
         let sources_val = materialize(&sources_thunk, Some(&call_span), &ctx).await?;
 
         // Collect the sequence of sources into a vec
-        let source_ids = collect_seq_to_vec(sources_val, &ctx, call_span, "select-once").await?;
+        let source_ids =
+            collect_seq_to_vec(sources_val, &ctx, call_span.clone(), "select-once").await?;
 
         if source_ids.is_empty() {
             return Err(EvalError::user_error(
@@ -646,7 +649,7 @@ pub(crate) fn builtin_select_once(
                                 ));
                                 call_env.write().unwrap().insert(
                                     params[0].name.clone(),
-                                    Arc::new(Thunk::new_materialized(value, call_span)),
+                                    Arc::new(Thunk::new_materialized(value, call_span.clone())),
                                 );
 
                                 // Evaluate and return the body.
@@ -657,11 +660,12 @@ pub(crate) fn builtin_select_once(
                             }
                             Value::Builtin(def) => {
                                 // Call builtin with the value.
-                                let arg_thunk = Arc::new(Thunk::new_materialized(value, call_span));
+                                let arg_thunk =
+                                    Arc::new(Thunk::new_materialized(value, call_span.clone()));
                                 let result = (def.func)(BuiltinArgs {
                                     args: vec![arg_thunk],
                                     named: None,
-                                    call_span,
+                                    call_span: call_span.clone(),
                                     ctx: Arc::clone(&ctx),
                                 })
                                 .await?;
@@ -742,13 +746,14 @@ pub(crate) fn builtin_par_map(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let (func_thunk, seq_thunk) = take_two_thunks("par-map", &args, named.as_ref(), call_span)?;
+        let (func_thunk, seq_thunk) =
+            take_two_thunks("par-map", &args, named.as_ref(), call_span.clone())?;
 
         // Materialize the sequence
         let seq_val = materialize(&seq_thunk, Some(&call_span), &ctx).await?;
 
         // Collect sequence items
-        let item_ids = collect_seq_to_vec(seq_val, &ctx, call_span, "par-map").await?;
+        let item_ids = collect_seq_to_vec(seq_val, &ctx, call_span.clone(), "par-map").await?;
 
         // Spawn a task for each item
         let mut tasks = Vec::new();
@@ -756,7 +761,7 @@ pub(crate) fn builtin_par_map(
             let func_thunk_clone = Arc::clone(&func_thunk);
             let item_thunk_clone = ctx.get_thunk(*item_id);
             let ctx_clone = Arc::clone(&ctx);
-            let call_span_clone = call_span;
+            let call_span_clone = call_span.clone();
 
             let handle = crate::async_rt::spawn_local(async move {
                 // Materialize the function
@@ -802,7 +807,7 @@ pub(crate) fn builtin_par_map(
                     Value::Builtin(def) => {
                         // Call builtin with the item
                         let item_thunk_arg =
-                            Arc::new(Thunk::new_materialized(item_val, call_span_clone));
+                            Arc::new(Thunk::new_materialized(item_val, call_span_clone.clone()));
                         let result = (def.func)(BuiltinArgs {
                             args: vec![item_thunk_arg],
                             named: None,
@@ -828,10 +833,12 @@ pub(crate) fn builtin_par_map(
         let mut result_ids = Vec::new();
         for handle in tasks {
             let result_val = handle.await.map_err(|e| {
-                EvalError::user_error(format!("par-map task panicked: {e}"), call_span)
+                EvalError::user_error(format!("par-map task panicked: {e}"), call_span.clone())
             })??;
-            let result_id =
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(result_val, call_span)));
+            let result_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                result_val,
+                call_span.clone(),
+            )));
             result_ids.push(result_id);
         }
 
@@ -857,13 +864,13 @@ pub(crate) fn builtin_par_filter(
     } = ctx_arg;
     Box::pin(async move {
         let (pred_thunk, seq_thunk) =
-            take_two_thunks("par-filter", &args, named.as_ref(), call_span)?;
+            take_two_thunks("par-filter", &args, named.as_ref(), call_span.clone())?;
 
         // Materialize the sequence
         let seq_val = materialize(&seq_thunk, Some(&call_span), &ctx).await?;
 
         // Collect sequence items
-        let item_ids = collect_seq_to_vec(seq_val, &ctx, call_span, "par-filter").await?;
+        let item_ids = collect_seq_to_vec(seq_val, &ctx, call_span.clone(), "par-filter").await?;
 
         // Spawn a task for each item to evaluate the predicate
         let mut tasks = Vec::new();
@@ -871,7 +878,7 @@ pub(crate) fn builtin_par_filter(
             let pred_thunk_clone = Arc::clone(&pred_thunk);
             let item_thunk_clone = ctx.get_thunk(*item_id);
             let ctx_clone = Arc::clone(&ctx);
-            let call_span_clone = call_span;
+            let call_span_clone = call_span.clone();
             let item_id_copy = *item_id;
 
             let handle = crate::async_rt::spawn_local(async move {
@@ -907,7 +914,10 @@ pub(crate) fn builtin_par_filter(
                         ));
                         call_env.write().unwrap().insert(
                             params[0].name.clone(),
-                            Arc::new(Thunk::new_materialized(item_val.clone(), call_span_clone)),
+                            Arc::new(Thunk::new_materialized(
+                                item_val.clone(),
+                                call_span_clone.clone(),
+                            )),
                         );
 
                         // Evaluate the body
@@ -915,12 +925,14 @@ pub(crate) fn builtin_par_filter(
                         materialize(&result_thunk, None, &ctx_clone).await?
                     }
                     Value::Builtin(def) => {
-                        let arg_thunk =
-                            Arc::new(Thunk::new_materialized(item_val.clone(), call_span_clone));
+                        let arg_thunk = Arc::new(Thunk::new_materialized(
+                            item_val.clone(),
+                            call_span_clone.clone(),
+                        ));
                         let result_thunk = (def.func)(BuiltinArgs {
                             args: vec![arg_thunk],
                             named: None,
-                            call_span: call_span_clone,
+                            call_span: call_span_clone.clone(),
                             ctx: ctx_clone.clone(),
                         })
                         .await?;
@@ -954,7 +966,7 @@ pub(crate) fn builtin_par_filter(
         let mut results_with_idx = Vec::new();
         for handle in tasks {
             let result = handle.await.map_err(|e| {
-                EvalError::user_error(format!("par-filter task panicked: {e}"), call_span)
+                EvalError::user_error(format!("par-filter task panicked: {e}"), call_span.clone())
             })??;
             if let Some(item) = result {
                 results_with_idx.push(item);
@@ -992,7 +1004,7 @@ pub(crate) fn builtin_signal_channel(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let sig_thunk = take_one_thunk("signal-channel", &args, named.as_ref(), call_span)?;
+        let sig_thunk = take_one_thunk("signal-channel", &args, named.as_ref(), call_span.clone())?;
         let sig_val = materialize(&sig_thunk, Some(&call_span), &ctx).await?;
 
         let sig_name = match sig_val {
@@ -1029,7 +1041,7 @@ pub(crate) fn builtin_signal_channel(
             let mut sig_stream = signal(kind).map_err(|e| {
                 EvalError::user_error(
                     format!("signal-channel: failed to register signal handler: {e}"),
-                    call_span,
+                    call_span.clone(),
                 )
             })?;
 
@@ -1097,7 +1109,7 @@ pub(crate) fn builtin_timer_channel(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let ms_thunk = take_one_thunk("timer-channel", &args, named.as_ref(), call_span)?;
+        let ms_thunk = take_one_thunk("timer-channel", &args, named.as_ref(), call_span.clone())?;
         let ms_val = materialize(&ms_thunk, Some(&call_span), &ctx).await?;
 
         let interval_ms = match ms_val {
@@ -1169,7 +1181,7 @@ pub(crate) fn builtin_watch_channel(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let init_thunk = take_one_thunk("watch-channel", &args, named.as_ref(), call_span)?;
+        let init_thunk = take_one_thunk("watch-channel", &args, named.as_ref(), call_span.clone())?;
         let init_val = materialize(&init_thunk, Some(&call_span), &ctx).await?;
 
         // watch channel: holds the latest value; watch_rx.changed() fires on each update.
@@ -1272,19 +1284,24 @@ pub(crate) fn builtin_watch_channel(
         }));
 
         // Return [recv-channel update-channel] as a Seq.
-        let recv_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(recv_channel, call_span)));
-        let update_id =
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(update_channel, call_span)));
+        let recv_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            recv_channel,
+            call_span.clone(),
+        )));
+        let update_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            update_channel,
+            call_span.clone(),
+        )));
         let empty_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Dict(IndexMap::new()),
-            call_span,
+            call_span.clone(),
         )));
         let tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Seq {
                 head: update_id,
                 tail: empty_id,
             },
-            call_span,
+            call_span.clone(),
         )));
         let seq_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Seq {
@@ -1363,7 +1380,7 @@ pub(crate) fn builtin_with_cancel(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let parent_thunk = take_one_thunk("with-cancel", &args, named.as_ref(), call_span)?;
+        let parent_thunk = take_one_thunk("with-cancel", &args, named.as_ref(), call_span.clone())?;
         let parent_val = materialize(&parent_thunk, Some(&call_span), &ctx).await?;
 
         let parent_token = match parent_val {
@@ -1385,9 +1402,14 @@ pub(crate) fn builtin_with_cancel(
         let cancel_val = Value::Context(cancel_token);
 
         let mut result = IndexMap::new();
-        let child_ctx_id =
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(child_ctx_val, call_span)));
-        let cancel_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(cancel_val, call_span)));
+        let child_ctx_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            child_ctx_val,
+            call_span.clone(),
+        )));
+        let cancel_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            cancel_val,
+            call_span.clone(),
+        )));
         result.insert(Key::String("child-ctx".into()), child_ctx_id);
         result.insert(Key::String("cancel".into()), cancel_id);
 
@@ -1415,7 +1437,7 @@ pub(crate) fn builtin_with_timeout(
     } = ctx_arg;
     Box::pin(async move {
         let (parent_thunk, ms_thunk) =
-            take_two_thunks("with-timeout", &args, named.as_ref(), call_span)?;
+            take_two_thunks("with-timeout", &args, named.as_ref(), call_span.clone())?;
         let parent_val = materialize(&parent_thunk, Some(&call_span), &ctx).await?;
         let ms_val = materialize(&ms_thunk, Some(&call_span), &ctx).await?;
 
@@ -1476,7 +1498,7 @@ pub(crate) fn builtin_with_deadline(
     } = ctx_arg;
     Box::pin(async move {
         let (parent_thunk, ts_thunk) =
-            take_two_thunks("with-deadline", &args, named.as_ref(), call_span)?;
+            take_two_thunks("with-deadline", &args, named.as_ref(), call_span.clone())?;
         let parent_val = materialize(&parent_thunk, Some(&call_span), &ctx).await?;
         let ts_val = materialize(&ts_thunk, Some(&call_span), &ctx).await?;
 
@@ -1546,7 +1568,7 @@ pub(crate) fn builtin_cancelled_q(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let ctx_thunk = take_one_thunk("cancelled?", &args, named.as_ref(), call_span)?;
+        let ctx_thunk = take_one_thunk("cancelled?", &args, named.as_ref(), call_span.clone())?;
         let ctx_val = materialize(&ctx_thunk, Some(&call_span), &ctx).await?;
 
         match ctx_val {
@@ -1574,7 +1596,7 @@ pub(crate) fn builtin_cancel_task(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let ctx_thunk = take_one_thunk("cancel-task", &args, named.as_ref(), call_span)?;
+        let ctx_thunk = take_one_thunk("cancel-task", &args, named.as_ref(), call_span.clone())?;
         let ctx_val = materialize(&ctx_thunk, Some(&call_span), &ctx).await?;
 
         match ctx_val {
@@ -1815,13 +1837,13 @@ pub(crate) fn builtin_with_context(
     } = ctx_arg;
     Box::pin(async move {
         let (context_thunk, expr_thunk) =
-            take_two_thunks("with-context", &args, named.as_ref(), call_span)?;
+            take_two_thunks("with-context", &args, named.as_ref(), call_span.clone())?;
         let context_val = context_thunk
             .try_get_materialized()
             // force_count=1 guarantees arg 0 is pre-materialized before this builtin runs
             .ok_or_else(|| EvalError::internal(
                 "with-context: context argument not pre-materialized (force_count=1 invariant violated)".to_string(),
-                call_span,
+                call_span.clone(),
             ))?;
 
         let new_cancel = match context_val {

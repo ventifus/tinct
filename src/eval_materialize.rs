@@ -108,29 +108,29 @@ pub(crate) fn attach_materialization_context(
     mat_span: Option<&Span>,
     origin: Option<&str>,
     thunk_span: Span,
-    source_file: Option<&str>,
+    // Source file is now embedded in span.file — this parameter is ignored.
+    _source_file: Option<&str>,
 ) -> Box<EvalError> {
-    let file: Option<std::sync::Arc<str>> = source_file.map(Into::into);
     if let Some(span) = mat_span {
         if err.materialization_span.is_none() {
-            err.materialization_span = Some(*span);
-        } else if err.materialization_span != Some(*span)
-            && !err.stack.iter().any(|f| f.span == *span)
+            err.materialization_span = Some(span.clone());
+        } else if err.materialization_span != Some(span.clone())
+            && !err.stack.iter().any(|f| f.definition_span == *span)
         {
             // Only push a frame if the span differs from the existing
             // materialization span and isn't already in the stack (avoids
             // duplicate frames when the same span propagates through
             // nested materialize calls).
-            err.push_frame_with_file("materialized".to_string(), *span, file.clone());
+            err.push_frame("materialized".to_string(), span.clone());
         }
     }
     if let Some(label) = origin {
         if !err
             .stack
             .iter()
-            .any(|f| f.span == thunk_span && f.label == label)
+            .any(|f| f.definition_span == thunk_span && f.label == label)
         {
-            err.push_frame_with_file(label.to_string(), thunk_span, file);
+            err.push_frame(label.to_string(), thunk_span);
         }
     }
     err
@@ -577,7 +577,7 @@ pub(crate) async fn force_step(
     stack: &mut Vec<Cont>,
     ctx: &Arc<EvalContext>,
 ) -> Action {
-    let thunk_span = thunk.span;
+    let thunk_span = thunk.span.clone();
 
     // Open profiling span if profiling is enabled. The guard closes the span on drop.
     let _profile_guard = ProfilingSpanGuard::new(ctx, thunk);
@@ -585,7 +585,7 @@ pub(crate) async fn force_step(
     // Check continuation stack depth before processing. This prevents resource exhaustion
     // from deeply nested evaluation chains. Checked here (before any continuations are
     // pushed) rather than at every push site for simplicity and performance.
-    if let Err(depth_err) = check_stack_depth(stack, thunk_span) {
+    if let Err(depth_err) = check_stack_depth(stack, thunk_span.clone()) {
         return Action::Continue(Err(depth_err));
     }
 
@@ -600,12 +600,15 @@ pub(crate) async fn force_step(
         let mut should_update_cache = false;
         if let Some(span) = mat_span {
             if cloned.materialization_span.is_none() {
-                cloned.materialization_span = Some(span);
+                cloned.materialization_span = Some(span.clone());
                 should_update_cache = true;
-            } else if cloned.materialization_span != Some(span)
-                && !cloned.stack.iter().any(|f| f.span == span)
+            } else if cloned.materialization_span != Some(span.clone())
+                && !cloned
+                    .stack
+                    .iter()
+                    .any(|f| f.definition_span == span.clone())
             {
-                cloned.push_frame("materialized".to_string(), span);
+                cloned.push_frame("materialized".to_string(), span.clone());
                 should_update_cache = true;
             }
         }
@@ -629,9 +632,9 @@ pub(crate) async fn force_step(
         // Capture the eval_stack for cycle path reconstruction
         let cycle_path = ctx.state.lock().unwrap().eval_stack.clone();
 
-        let mut err = EvalError::circular_dependency(label, thunk.span, cycle_path);
+        let mut err = EvalError::circular_dependency(label, thunk.span.clone(), cycle_path);
         if let Some(span) = mat_span {
-            err = err.with_materialization_span(span);
+            err = err.with_materialization_span(span.clone());
         }
         let err_boxed: Box<EvalError> = err.into();
         thunk.cache_failure_once(&err_boxed);
@@ -670,7 +673,7 @@ pub(crate) async fn force_step(
             &thunk_ctx.state,
             (
                 origin.clone().unwrap_or_else(|| Arc::from("thunk")),
-                thunk_span,
+                thunk_span.clone(),
             ),
         );
 
@@ -700,10 +703,10 @@ pub(crate) async fn force_step(
                     def,
                     args: args.take().expect("args set above"),
                     named: named.take().expect("named set above"),
-                    call_span,
+                    call_span: call_span.clone(),
                     ctx: thunk_ctx,
                     origin,
-                    thunk_span,
+                    thunk_span: thunk_span.clone(),
                     mat_span,
                     arg_idx,
                 })));
@@ -740,10 +743,10 @@ pub(crate) async fn force_step(
                 def,
                 args: args.take().expect("args set above"),
                 named: named.take().expect("named set above"),
-                call_span,
+                call_span: call_span.clone(),
                 ctx: thunk_ctx,
                 origin,
-                thunk_span,
+                thunk_span: thunk_span.clone(),
                 mat_span,
                 arg_idx,
             })));
@@ -763,7 +766,7 @@ pub(crate) async fn force_step(
         let builtin_args = crate::value::BuiltinArgs {
             args: args.as_ref().expect("args set above").clone(),
             named: named.as_ref().expect("named set above").clone(),
-            call_span,
+            call_span: call_span.clone(),
             ctx: Arc::clone(&thunk_ctx),
         };
 
@@ -782,13 +785,13 @@ pub(crate) async fn force_step(
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                         thunk: Arc::clone(thunk),
                         origin,
-                        thunk_span,
-                        mat_span,
+                        thunk_span: thunk_span.clone(),
+                        mat_span: mat_span.clone(),
                         restore: Some(RestoreState::PendingBuiltin {
                             def,
                             args: args.take().expect("args set above"),
                             named: named.take().expect("named set above"),
-                            call_span,
+                            call_span: call_span.clone(),
                             ctx: Arc::clone(&thunk_ctx),
                         }),
                         ctx: Arc::clone(&thunk_ctx),
@@ -797,7 +800,7 @@ pub(crate) async fn force_step(
                     eval_stack_guard.disarm();
                     Action::Materialize {
                         thunk: result_thunk,
-                        mat_span,
+                        mat_span: mat_span.clone(),
                     }
                 }
             }
@@ -806,7 +809,7 @@ pub(crate) async fn force_step(
                     e,
                     mat_span.as_ref(),
                     origin.as_deref(),
-                    thunk_span,
+                    thunk_span.clone(),
                     thunk_ctx.config.source_file.as_deref(),
                 );
                 // eval_stack_guard pops on drop (armed)
@@ -845,7 +848,7 @@ pub(crate) async fn force_step(
             &thunk_ctx.state,
             (
                 origin.clone().unwrap_or_else(|| Arc::from("thunk")),
-                thunk_span,
+                thunk_span.clone(),
             ),
         );
 
@@ -855,11 +858,11 @@ pub(crate) async fn force_step(
                 func_thunk: Arc::clone(&func_thunk),
                 args,
                 named: named.map(Box::new),
-                call_span,
+                call_span: call_span.clone(),
                 caller_env,
                 ctx: thunk_ctx,
                 origin,
-                thunk_span,
+                thunk_span: thunk_span.clone(),
                 mat_span,
                 original_call,
                 tail_hint,
@@ -868,12 +871,12 @@ pub(crate) async fn force_step(
         eval_stack_guard.disarm();
         Action::Materialize {
             thunk: Arc::clone(&func_thunk),
-            mat_span: Some(call_span),
+            mat_span: Some(call_span.clone()),
         }
     } else if let Some((inner, expected, field_path, guard_span, blame_label, default_opt)) =
         thunk.take_guarded()
     {
-        let inner_span = inner.span;
+        let inner_span = inner.span.clone();
         // Always use the outer force_step ctx for GuardedValidate. All thunks in a single
         // evaluation share one EvalContext (same arena/state). The ctx is needed for:
         //   1. Flattening Value::Overlay results (flatten_overlay requires ctx)
@@ -888,7 +891,7 @@ pub(crate) async fn force_step(
             inner: Arc::clone(&inner),
             expected: expected.clone(),
             field_path: field_path.clone(),
-            guard_span,
+            guard_span: guard_span.clone(),
             blame_label: blame_label.clone(),
             default: default_opt.clone(),
         };
@@ -896,11 +899,11 @@ pub(crate) async fn force_step(
             thunk: Arc::clone(thunk),
             expected: expected.clone(),
             field_path,
-            guard_span,
+            guard_span: guard_span.clone(),
             inner_span,
             origin,
-            thunk_span,
-            mat_span,
+            thunk_span: thunk_span.clone(),
+            mat_span: mat_span.clone(),
             ctx: guard_ctx,
             blame_label,
             default: default_opt,
@@ -948,30 +951,30 @@ pub(crate) async fn force_step(
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                         thunk: Arc::clone(thunk),
                         origin,
-                        thunk_span,
-                        mat_span,
+                        thunk_span: thunk_span.clone(),
+                        mat_span: mat_span.clone(),
                         restore: Some(restore),
                         ctx: Arc::clone(&thunk_ctx),
                     })));
                     stack.push(Cont::DotAccessForce(Box::new(DotAccessForceData {
                         field: field.clone(),
-                        access_span: lowered.span,
-                        target_def_span: target_thunk.span,
+                        access_span: lowered.span.clone(),
+                        target_def_span: target_thunk.span.clone(),
                         outer_mat_span: mat_span,
                         ctx: Arc::clone(&thunk_ctx),
                     })));
                     return Action::Materialize {
                         thunk: target_thunk,
-                        mat_span: Some(lowered.span),
+                        mat_span: Some(lowered.span.clone()),
                     };
                 }
                 Err(mut e) => {
-                    e.push_frame(format!("accessing .{field}"), lowered.span);
+                    e.push_frame(format!("accessing .{field}"), lowered.span.clone());
                     let decorated = attach_materialization_context(
                         e,
                         mat_span.as_ref(),
                         origin.as_deref(),
-                        thunk_span,
+                        thunk_span.clone(),
                         thunk_ctx.config.source_file.as_deref(),
                     );
                     if decorated.kind.is_cacheable() {
@@ -998,7 +1001,7 @@ pub(crate) async fn force_step(
                         e,
                         mat_span.as_ref(),
                         origin.as_deref(),
-                        thunk_span,
+                        thunk_span.clone(),
                         thunk_ctx.config.source_file.as_deref(),
                     );
                     if decorated.kind.is_cacheable() {
@@ -1009,26 +1012,26 @@ pub(crate) async fn force_step(
                     return Action::Continue(Err(decorated));
                 }
             };
-            let inner_span = inner_thunk.span;
+            let inner_span = inner_thunk.span.clone();
             stack.push(Cont::Memoize(Box::new(MemoizeData {
                 thunk: Arc::clone(thunk),
                 origin,
-                thunk_span,
-                mat_span,
+                thunk_span: thunk_span.clone(),
+                mat_span: mat_span.clone(),
                 restore: Some(restore),
                 ctx: Arc::clone(&thunk_ctx),
             })));
             stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
                 annotation: Box::new(annotation.clone()),
                 resolved: Box::new(resolved_type.clone()),
-                expr_span: lowered.span,
+                expr_span: lowered.span.clone(),
                 thunk_span: inner_span,
                 env,
                 ctx: Arc::clone(&thunk_ctx),
             })));
             return Action::Materialize {
                 thunk: inner_thunk,
-                mat_span: Some(lowered.span),
+                mat_span: Some(lowered.span.clone()),
             };
         }
 
@@ -1045,8 +1048,8 @@ pub(crate) async fn force_step(
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                         thunk: Arc::clone(thunk),
                         origin,
-                        thunk_span,
-                        mat_span,
+                        thunk_span: thunk_span.clone(),
+                        mat_span: mat_span.clone(),
                         restore: Some(restore),
                         ctx: Arc::clone(&thunk_ctx),
                     })));
@@ -1061,7 +1064,7 @@ pub(crate) async fn force_step(
                     e,
                     mat_span.as_ref(),
                     origin.as_deref(),
-                    thunk_span,
+                    thunk_span.clone(),
                     thunk_ctx.config.source_file.as_deref(),
                 );
                 if decorated.kind.is_cacheable() {
@@ -1108,8 +1111,8 @@ pub(crate) async fn force_step(
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                         thunk: Arc::clone(thunk),
                         origin,
-                        thunk_span,
-                        mat_span,
+                        thunk_span: thunk_span.clone(),
+                        mat_span: mat_span.clone(),
                         restore: Some(RestoreState::CoreExpr {
                             expr: Arc::clone(&core_expr),
                             env: Arc::clone(&env),
@@ -1119,23 +1122,23 @@ pub(crate) async fn force_step(
                     })));
                     stack.push(Cont::DotAccessForce(Box::new(DotAccessForceData {
                         field: field.clone(),
-                        access_span: core_expr.span,
-                        target_def_span: target_thunk.span,
+                        access_span: core_expr.span.clone(),
+                        target_def_span: target_thunk.span.clone(),
                         outer_mat_span: mat_span,
                         ctx: Arc::clone(&thunk_ctx),
                     })));
                     return Action::Materialize {
                         thunk: target_thunk,
-                        mat_span: Some(core_expr.span),
+                        mat_span: Some(core_expr.span.clone()),
                     };
                 }
                 Err(mut e) => {
-                    e.push_frame(format!("accessing .{field}"), core_expr.span);
+                    e.push_frame(format!("accessing .{field}"), core_expr.span.clone());
                     let decorated = attach_materialization_context(
                         e,
                         mat_span.as_ref(),
                         origin.as_deref(),
-                        thunk_span,
+                        thunk_span.clone(),
                         thunk_ctx.config.source_file.as_deref(),
                     );
                     if decorated.kind.is_cacheable() {
@@ -1163,7 +1166,7 @@ pub(crate) async fn force_step(
                         e,
                         mat_span.as_ref(),
                         origin.as_deref(),
-                        thunk_span,
+                        thunk_span.clone(),
                         thunk_ctx.config.source_file.as_deref(),
                     );
                     if decorated.kind.is_cacheable() {
@@ -1174,12 +1177,12 @@ pub(crate) async fn force_step(
                     return Action::Continue(Err(decorated));
                 }
             };
-            let inner_span = inner_thunk.span;
+            let inner_span = inner_thunk.span.clone();
             stack.push(Cont::Memoize(Box::new(MemoizeData {
                 thunk: Arc::clone(thunk),
                 origin,
-                thunk_span,
-                mat_span,
+                thunk_span: thunk_span.clone(),
+                mat_span: mat_span.clone(),
                 restore: Some(RestoreState::CoreExpr {
                     expr: Arc::clone(&core_expr),
                     env: Arc::clone(&env),
@@ -1190,14 +1193,14 @@ pub(crate) async fn force_step(
             stack.push(Cont::TypeAssertCheck(Box::new(TypeAssertCheckData {
                 annotation: Box::new(annotation.clone()),
                 resolved: Box::new(resolved_type.clone()),
-                expr_span: core_expr.span,
+                expr_span: core_expr.span.clone(),
                 thunk_span: inner_span,
                 env,
                 ctx: Arc::clone(&thunk_ctx),
             })));
             return Action::Materialize {
                 thunk: inner_thunk,
-                mat_span: Some(core_expr.span),
+                mat_span: Some(core_expr.span.clone()),
             };
         }
 
@@ -1214,8 +1217,8 @@ pub(crate) async fn force_step(
             stack.push(Cont::Memoize(Box::new(MemoizeData {
                 thunk: Arc::clone(thunk),
                 origin,
-                thunk_span,
-                mat_span,
+                thunk_span: thunk_span.clone(),
+                mat_span: mat_span.clone(),
                 restore: Some(RestoreState::CoreExpr {
                     expr: Arc::clone(&core_expr),
                     env: Arc::clone(&env),
@@ -1232,7 +1235,7 @@ pub(crate) async fn force_step(
                     exprs: Arc::new(exprs.clone()),
                     env: Arc::clone(&env),
                     ctx: Arc::clone(&thunk_ctx),
-                    seq_span: core_expr.span,
+                    seq_span: core_expr.span.clone(),
                 },
             )));
 
@@ -1255,7 +1258,7 @@ pub(crate) async fn force_step(
                         e,
                         mat_span.as_ref(),
                         origin.as_deref(),
-                        thunk_span,
+                        thunk_span.clone(),
                         thunk_ctx.config.source_file.as_deref(),
                     );
                     if decorated.kind.is_cacheable() {
@@ -1271,8 +1274,8 @@ pub(crate) async fn force_step(
             stack.push(Cont::Memoize(Box::new(MemoizeData {
                 thunk: Arc::clone(thunk),
                 origin,
-                thunk_span,
-                mat_span,
+                thunk_span: thunk_span.clone(),
+                mat_span: mat_span.clone(),
                 restore: Some(RestoreState::CoreExpr {
                     expr: Arc::clone(&core_expr),
                     env: Arc::clone(&env),
@@ -1288,14 +1291,14 @@ pub(crate) async fn force_step(
                     arms: Arc::new(arms.clone()),
                     env: Arc::clone(&env),
                     ctx: Arc::clone(&thunk_ctx),
-                    match_span: core_expr.span,
+                    match_span: core_expr.span.clone(),
                 },
             )));
 
             // Materialize the scrutinee
             return Action::Materialize {
                 thunk: scrutinee_thunk,
-                mat_span: Some(scrutinee.span),
+                mat_span: Some(scrutinee.span.clone()),
             };
         }
 
@@ -1310,8 +1313,8 @@ pub(crate) async fn force_step(
                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                     thunk: Arc::clone(thunk),
                     origin,
-                    thunk_span,
-                    mat_span,
+                    thunk_span: thunk_span.clone(),
+                    mat_span: mat_span.clone(),
                     restore: Some(RestoreState::CoreExpr {
                         expr: core_expr,
                         env,
@@ -1329,7 +1332,7 @@ pub(crate) async fn force_step(
                     e,
                     mat_span.as_ref(),
                     origin.as_deref(),
-                    thunk_span,
+                    thunk_span.clone(),
                     thunk_ctx.config.source_file.as_deref(),
                 );
                 if decorated.kind.is_cacheable() {
@@ -1372,7 +1375,13 @@ pub(crate) async fn apply_cont(
             let _eval_stack_guard = EvalStackGuard::inherited(&ctx.state);
             let src_file = ctx.config.source_file.clone();
             let decorated_result = result.map_err(|e| {
-                attach_materialization_context(e, mat_span.as_ref(), origin.as_deref(), thunk_span, src_file.as_deref())
+                attach_materialization_context(
+                    e,
+                    mat_span.as_ref(),
+                    origin.as_deref(),
+                    thunk_span.clone(),
+                    src_file.as_deref(),
+                )
             });
 
             match decorated_result {
@@ -1418,8 +1427,16 @@ pub(crate) async fn apply_cont(
             let eval_stack_guard = EvalStackGuard::inherited(&thunk_ctx.state);
             let source_file_str = thunk_ctx.config.source_file.clone();
             let origin_for_decorate = origin.clone();
+            let thunk_span_for_decorate = thunk_span.clone();
+            let mat_span_for_decorate = mat_span.clone();
             let decorate = move |e| {
-                attach_materialization_context(e, mat_span.as_ref(), origin_for_decorate.as_deref(), thunk_span, source_file_str.as_deref())
+                attach_materialization_context(
+                    e,
+                    mat_span_for_decorate.as_ref(),
+                    origin_for_decorate.as_deref(),
+                    thunk_span_for_decorate.clone(),
+                    source_file_str.as_deref(),
+                )
             };
 
             // Wrap args/named in Option so each exclusive match arm can move them
@@ -1455,7 +1472,7 @@ pub(crate) async fn apply_cont(
                                     positional: args.as_deref().expect("args set above"),
                                     named: named.as_ref().expect("named set above").as_deref(),
                                     default_env: &caller_env,
-                                    call_span,
+                                    call_span: call_span.clone(),
                                     origin: origin.clone(),
                                     ctx: &thunk_ctx,
                                 };
@@ -1478,7 +1495,7 @@ pub(crate) async fn apply_cont(
                                 Err(mut e) => {
                                     e.push_frame(
                                         origin.as_deref().unwrap_or("call").to_string(),
-                                        call_span,
+                                        call_span.clone(),
                                     );
                                     // eval_stack_guard pops on drop (armed)
                                     if e.kind.is_cacheable() {
@@ -1510,7 +1527,7 @@ pub(crate) async fn apply_cont(
                                     positional: args.as_deref().expect("args set above"),
                                     named: named.as_ref().expect("named set above").as_deref(),
                                     default_env: &caller_env, // Use caller's environment for default param evaluation
-                                    call_span,
+                                    call_span: call_span.clone(),
                                     origin: origin.clone(),
                                     ctx: &thunk_ctx,
                                 };
@@ -1527,8 +1544,8 @@ pub(crate) async fn apply_cont(
                                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                                         thunk: Arc::clone(&thunk),
                                         origin,
-                                        thunk_span,
-                                        mat_span,
+                                        thunk_span: thunk_span.clone(),
+                                        mat_span: mat_span.clone(),
                                         restore: Some(restore),
                                         ctx: thunk_ctx,
                                     })));
@@ -1542,7 +1559,7 @@ pub(crate) async fn apply_cont(
                                 Err(mut e) => {
                                     e.push_frame(
                                         origin.as_deref().unwrap_or("call").to_string(),
-                                        call_span,
+                                        call_span.clone(),
                                     );
                                     // eval_stack_guard pops on drop (armed)
                                     if e.kind.is_cacheable() {
@@ -1605,7 +1622,7 @@ pub(crate) async fn apply_cont(
                                 def,
                                 args: args.take().expect("args set above"),
                                 named: named.take().expect("named set above").map(|b| *b),
-                                call_span,
+                                call_span: call_span.clone(),
                                 ctx: thunk_ctx,
                             });
                             return Action::Materialize { thunk, mat_span };
@@ -1618,7 +1635,7 @@ pub(crate) async fn apply_cont(
                             let builtin_args = crate::value::BuiltinArgs {
                                 args: args.as_deref().expect("args set above").to_vec(),
                                 named: named.as_ref().expect("named set above").as_deref().cloned(),
-                                call_span,
+                                call_span: call_span.clone(),
                                 ctx: Arc::clone(&thunk_ctx),
                             };
                             (def.func)(builtin_args).await
@@ -1657,8 +1674,8 @@ pub(crate) async fn apply_cont(
                                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                                         thunk: Arc::clone(&thunk),
                                         origin,
-                                        thunk_span,
-                                        mat_span,
+                                        thunk_span: thunk_span.clone(),
+                                        mat_span: mat_span.clone(),
                                         restore: Some(restore),
                                         ctx: thunk_ctx,
                                     })));
@@ -1751,7 +1768,7 @@ pub(crate) async fn apply_cont(
                         let err = EvalError::type_mismatch(
                             "Function or Builtin",
                             other.type_name(),
-                            call_span,
+                            call_span.clone(),
                         );
                         let decorated = decorate(Box::new(err));
                         // eval_stack_guard pops on drop (armed)
@@ -1763,7 +1780,7 @@ pub(crate) async fn apply_cont(
                                 func: func_thunk,
                                 args: args.take().expect("args set above"),
                                 named: named.take().expect("named set above"),
-                                call_span,
+                                call_span: call_span.clone(),
                                 caller_env,
                                 ctx: thunk_ctx,
                                 original_call: original_call.clone(),
@@ -1810,8 +1827,16 @@ pub(crate) async fn apply_cont(
             } = *data;
             let guard_ctx_file = guard_ctx.config.source_file.clone();
             let origin_for_decorate = origin.clone();
+            let thunk_span_for_decorate = thunk_span.clone();
+            let mat_span_for_decorate = mat_span.clone();
             let decorate = move |e| {
-                attach_materialization_context(e, mat_span.as_ref(), origin_for_decorate.as_deref(), thunk_span, guard_ctx_file.as_deref())
+                attach_materialization_context(
+                    e,
+                    mat_span_for_decorate.as_ref(),
+                    origin_for_decorate.as_deref(),
+                    thunk_span_for_decorate.clone(),
+                    guard_ctx_file.as_deref(),
+                )
             };
 
             match result {
@@ -1821,7 +1846,13 @@ pub(crate) async fn apply_cont(
                     // guard_ctx is Arc<EvalContext> (non-optional); destructured directly from the continuation.
                     let value = match value {
                         Value::Overlay(l, r) => {
-                            match flatten_overlay(&l, &r, "type guard", &guard_ctx, guard_span) {
+                            match flatten_overlay(
+                                &l,
+                                &r,
+                                "type guard",
+                                &guard_ctx,
+                                guard_span.clone(),
+                            ) {
                                 Ok(map) => Value::Dict(map),
                                 Err(e) => {
                                     let e = decorate(e);
@@ -1844,8 +1875,8 @@ pub(crate) async fn apply_cont(
                                 entries,
                                 row.as_ref(),
                                 &mut field_path,
-                                guard_span,
-                                inner_span,
+                                guard_span.clone(),
+                                inner_span.clone(),
                                 &guard_ctx,
                                 default.clone(),
                                 blame_label.clone(),
@@ -1882,7 +1913,7 @@ pub(crate) async fn apply_cont(
                                                 inner: Arc::clone(inner),
                                                 expected: expected.clone(),
                                                 field_path: field_path.clone(),
-                                                guard_span,
+                                                guard_span: guard_span.clone(),
                                                 blame_label: blame_label.clone(),
                                                 default: Some((
                                                     Arc::clone(&default_expr),
@@ -1898,14 +1929,14 @@ pub(crate) async fn apply_cont(
                                                 origin
                                                     .clone()
                                                     .unwrap_or_else(|| Arc::from("thunk")),
-                                                thunk_span,
+                                                thunk_span.clone(),
                                             ),
                                         );
                                         stack.push(Cont::Memoize(Box::new(MemoizeData {
                                             thunk: Arc::clone(&thunk),
                                             origin: Some(Arc::from("default fallback")),
-                                            thunk_span,
-                                            mat_span,
+                                            thunk_span: thunk_span.clone(),
+                                            mat_span: mat_span.clone(),
                                             restore: memoize_restore,
                                             ctx: Arc::clone(&guard_ctx),
                                         })));
@@ -1942,7 +1973,7 @@ pub(crate) async fn apply_cont(
                                         inner: Arc::clone(inner),
                                         expected: expected.clone(),
                                         field_path: field_path.clone(),
-                                        guard_span,
+                                        guard_span: guard_span.clone(),
                                         blame_label: blame_label.clone(),
                                         default: Some((
                                             Arc::clone(&default_expr),
@@ -1956,14 +1987,14 @@ pub(crate) async fn apply_cont(
                                     &guard_ctx.state,
                                     (
                                         origin.clone().unwrap_or_else(|| Arc::from("thunk")),
-                                        thunk_span,
+                                        thunk_span.clone(),
                                     ),
                                 );
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Arc::clone(&thunk),
                                     origin: Some(Arc::from("default fallback")),
-                                    thunk_span,
-                                    mat_span,
+                                    thunk_span: thunk_span.clone(),
+                                    mat_span: mat_span.clone(),
                                     restore: memoize_restore,
                                     ctx: Arc::clone(&guard_ctx),
                                 })));
@@ -1987,13 +2018,14 @@ pub(crate) async fn apply_cont(
                                     format_type_for_assert(&expected)
                                 ),
                                 value.type_name(),
-                                inner_span,
+                                inner_span.clone(),
                             )
-                            .with_materialization_span(guard_span);
+                            .with_materialization_span(guard_span.clone());
                             // Add secondary span if inner value was produced at a different
                             // location than the assertion site (guard_span).
                             if inner_span != guard_span {
-                                err = err.with_secondary_span(inner_span, "value produced here");
+                                err = err
+                                    .with_secondary_span(inner_span.clone(), "value produced here");
                             }
                             // Attach blame label if present (gradual typing boundary)
                             if let Some(ref label) = blame_label {
@@ -2028,7 +2060,7 @@ pub(crate) async fn apply_cont(
                                         inner: Arc::clone(inner),
                                         expected: expected.clone(),
                                         field_path: field_path.clone(),
-                                        guard_span,
+                                        guard_span: guard_span.clone(),
                                         blame_label: blame_label.clone(),
                                         default: Some((
                                             Arc::clone(&default_expr),
@@ -2042,14 +2074,14 @@ pub(crate) async fn apply_cont(
                                     &guard_ctx.state,
                                     (
                                         origin.clone().unwrap_or_else(|| Arc::from("thunk")),
-                                        thunk_span,
+                                        thunk_span.clone(),
                                     ),
                                 );
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Arc::clone(&thunk),
                                     origin: Some(Arc::from("default fallback")),
-                                    thunk_span,
-                                    mat_span,
+                                    thunk_span: thunk_span.clone(),
+                                    mat_span: mat_span.clone(),
                                     restore: memoize_restore,
                                     ctx: Arc::clone(&guard_ctx),
                                 })));
@@ -2073,13 +2105,14 @@ pub(crate) async fn apply_cont(
                                     format_type_for_assert(&expected)
                                 ),
                                 value.type_name(),
-                                inner_span,
+                                inner_span.clone(),
                             )
-                            .with_materialization_span(guard_span);
+                            .with_materialization_span(guard_span.clone());
                             // Add secondary span if inner value was produced at a different
                             // location than the assertion site (guard_span).
                             if inner_span != guard_span {
-                                err = err.with_secondary_span(inner_span, "value produced here");
+                                err = err
+                                    .with_secondary_span(inner_span.clone(), "value produced here");
                             }
                             // Attach blame label if present (gradual typing boundary)
                             if let Some(ref label) = blame_label {
@@ -2126,8 +2159,16 @@ pub(crate) async fn apply_cont(
             let eval_stack_guard = EvalStackGuard::inherited(&thunk_ctx.state);
             let source_file_str = thunk_ctx.config.source_file.clone();
             let origin_for_decorate = origin.clone();
+            let thunk_span_for_decorate = thunk_span.clone();
+            let mat_span_for_decorate = mat_span.clone();
             let decorate = move |e| {
-                attach_materialization_context(e, mat_span.as_ref(), origin_for_decorate.as_deref(), thunk_span, source_file_str.as_deref())
+                attach_materialization_context(
+                    e,
+                    mat_span_for_decorate.as_ref(),
+                    origin_for_decorate.as_deref(),
+                    thunk_span_for_decorate.clone(),
+                    source_file_str.as_deref(),
+                )
             };
 
             // Wrap args/named in Option so each exclusive match arm can move them
@@ -2159,11 +2200,11 @@ pub(crate) async fn apply_cont(
                                 def,
                                 args: args.take().expect("args set above"),
                                 named: named.take().expect("named set above"),
-                                call_span,
+                                call_span: call_span.clone(),
                                 ctx: thunk_ctx,
                                 origin,
-                                thunk_span,
-                                mat_span,
+                                thunk_span: thunk_span.clone(),
+                                mat_span: mat_span.clone(),
                                 arg_idx: next_idx,
                             })));
                             // Next BuiltinForceArg inherits eval_stack pop responsibility
@@ -2202,11 +2243,11 @@ pub(crate) async fn apply_cont(
                             def,
                             args: args.take().expect("args set above"),
                             named: named.take().expect("named set above"),
-                            call_span,
+                            call_span: call_span.clone(),
                             ctx: thunk_ctx,
                             origin,
-                            thunk_span,
-                            mat_span,
+                            thunk_span: thunk_span.clone(),
+                            mat_span: mat_span.clone(),
                             arg_idx: next_idx,
                         })));
                         // Next BuiltinForceArg inherits eval_stack pop responsibility
@@ -2224,7 +2265,7 @@ pub(crate) async fn apply_cont(
                     let builtin_args = crate::value::BuiltinArgs {
                         args: args.as_ref().expect("args set above").clone(),
                         named: named.as_ref().expect("named set above").clone(),
-                        call_span,
+                        call_span: call_span.clone(),
                         ctx: Arc::clone(&thunk_ctx),
                     };
                     match (def.func)(builtin_args).await.map_err(&decorate) {
@@ -2239,13 +2280,13 @@ pub(crate) async fn apply_cont(
                                 stack.push(Cont::Memoize(Box::new(MemoizeData {
                                     thunk: Arc::clone(&thunk),
                                     origin,
-                                    thunk_span,
-                                    mat_span,
+                                    thunk_span: thunk_span.clone(),
+                                    mat_span: mat_span.clone(),
                                     restore: Some(RestoreState::PendingBuiltin {
                                         def,
                                         args: args.take().expect("args set above"),
                                         named: named.take().expect("named set above"),
-                                        call_span,
+                                        call_span: call_span.clone(),
                                         ctx: Arc::clone(&thunk_ctx),
                                     }),
                                     ctx: Arc::clone(&thunk_ctx),
@@ -2269,7 +2310,7 @@ pub(crate) async fn apply_cont(
                                         def,
                                         args: args.take().expect("args set above"),
                                         named: named.take().expect("named set above"),
-                                        call_span,
+                                        call_span: call_span.clone(),
                                         ctx: thunk_ctx,
                                     },
                                 );
@@ -2325,11 +2366,14 @@ pub(crate) async fn apply_cont(
                                 &r,
                                 &format!(".{field_str}"),
                                 &ctx,
-                                access_span,
+                                access_span.clone(),
                             ) {
                                 Ok(map) => Value::Dict(map),
                                 Err(mut e) => {
-                                    e.push_frame(format!("accessing .{field_str}"), access_span);
+                                    e.push_frame(
+                                        format!("accessing .{field_str}"),
+                                        access_span.clone(),
+                                    );
                                     return Action::Continue(Err(e));
                                 }
                             }
@@ -2354,10 +2398,10 @@ pub(crate) async fn apply_cont(
                                     // like a.b.c), otherwise fall back to access_span (the current access).
                                     let thunk = ctx.get_thunk(*thunk_id);
                                     // Apply boundary guards if this access site has a guard registered.
-                                    let thunk = maybe_wrap_guard(thunk, access_span, &ctx);
+                                    let thunk = maybe_wrap_guard(thunk, access_span.clone(), &ctx);
                                     Action::Materialize {
                                         thunk,
-                                        mat_span: outer_mat_span.or(Some(access_span)),
+                                        mat_span: outer_mat_span.or(Some(access_span.clone())),
                                     }
                                 }
                                 None => {
@@ -2369,8 +2413,11 @@ pub(crate) async fn apply_cont(
                                         available_keys,
                                         target_def_span,
                                     )
-                                    .with_materialization_span(access_span);
-                                    err.push_frame(format!("accessing .{field_str}"), access_span);
+                                    .with_materialization_span(access_span.clone());
+                                    err.push_frame(
+                                        format!("accessing .{field_str}"),
+                                        access_span.clone(),
+                                    );
                                     Action::Continue(Err(err.into()))
                                 }
                             }
@@ -2389,14 +2436,17 @@ pub(crate) async fn apply_cont(
                                 Ok(thunk) => {
                                     // Use outer_mat_span for proxy handler results (same as Dict case above).
                                     // Apply boundary guards if this access site has a guard registered.
-                                    let thunk = maybe_wrap_guard(thunk, access_span, &ctx);
+                                    let thunk = maybe_wrap_guard(thunk, access_span.clone(), &ctx);
                                     Action::Materialize {
                                         thunk,
-                                        mat_span: outer_mat_span.or(Some(access_span)),
+                                        mat_span: outer_mat_span.or(Some(access_span.clone())),
                                     }
                                 }
                                 Err(mut e) => {
-                                    e.push_frame(format!("accessing .{field_str}"), access_span);
+                                    e.push_frame(
+                                        format!("accessing .{field_str}"),
+                                        access_span.clone(),
+                                    );
                                     Action::Continue(Err(e))
                                 }
                             }
@@ -2413,7 +2463,7 @@ pub(crate) async fn apply_cont(
                                     stack.push(Cont::DotAccessForce(Box::new(
                                         DotAccessForceData {
                                             field,
-                                            access_span,
+                                            access_span: access_span.clone(),
                                             target_def_span,
                                             outer_mat_span,
                                             ctx: Arc::clone(&ctx),
@@ -2421,7 +2471,7 @@ pub(crate) async fn apply_cont(
                                     )));
                                     Action::Materialize {
                                         thunk: payload_thunk,
-                                        mat_span: Some(access_span),
+                                        mat_span: Some(access_span.clone()),
                                     }
                                 }
                                 None => {
@@ -2433,8 +2483,11 @@ pub(crate) async fn apply_cont(
                                         ),
                                         target_def_span,
                                     )
-                                    .with_materialization_span(access_span);
-                                    err.push_frame(format!("accessing .{field_str}"), access_span);
+                                    .with_materialization_span(access_span.clone());
+                                    err.push_frame(
+                                        format!("accessing .{field_str}"),
+                                        access_span.clone(),
+                                    );
                                     Action::Continue(Err(err.into()))
                                 }
                             }
@@ -2444,12 +2497,13 @@ pub(crate) async fn apply_cont(
                             let field_value = crate::surface_fields::surface_node_get_field(
                                 &node, &field_str, &ctx,
                             );
-                            let thunk = Arc::new(Thunk::new_materialized(field_value, access_span));
+                            let thunk =
+                                Arc::new(Thunk::new_materialized(field_value, access_span.clone()));
                             // Apply boundary guards if this access site has a guard registered.
-                            let thunk = maybe_wrap_guard(thunk, access_span, &ctx);
+                            let thunk = maybe_wrap_guard(thunk, access_span.clone(), &ctx);
                             Action::Materialize {
                                 thunk,
-                                mat_span: outer_mat_span.or(Some(access_span)),
+                                mat_span: outer_mat_span.or(Some(access_span.clone())),
                             }
                         }
                         Value::Program { program: prog, .. } => {
@@ -2462,7 +2516,7 @@ pub(crate) async fn apply_cont(
                                             doc_spanned.node.clone(),
                                         ));
                                         let tid = ctx.alloc_thunk(Arc::new(
-                                            Thunk::new_materialized(doc_val, access_span),
+                                            Thunk::new_materialized(doc_val, access_span.clone()),
                                         ));
                                         map.insert(crate::value::Key::Int(i as i64), tid);
                                     }
@@ -2470,12 +2524,12 @@ pub(crate) async fn apply_cont(
                                 }
                                 _ => Value::Dict(indexmap::IndexMap::new()),
                             };
-                            let thunk = Arc::new(Thunk::new_materialized(val, access_span));
+                            let thunk = Arc::new(Thunk::new_materialized(val, access_span.clone()));
                             // Apply boundary guards if this access site has a guard registered.
-                            let thunk = maybe_wrap_guard(thunk, access_span, &ctx);
+                            let thunk = maybe_wrap_guard(thunk, access_span.clone(), &ctx);
                             Action::Materialize {
                                 thunk,
-                                mat_span: outer_mat_span.or(Some(access_span)),
+                                mat_span: outer_mat_span.or(Some(access_span.clone())),
                             }
                         }
                         Value::Document(doc) => {
@@ -2502,7 +2556,7 @@ pub(crate) async fn apply_cont(
                                         let mut tail_id =
                                             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                                 Value::Dict(indexmap::IndexMap::new()),
-                                                access_span,
+                                                access_span.clone(),
                                             )));
                                         // Wrap elements from second-to-last down to index 1
                                         for node in
@@ -2511,7 +2565,7 @@ pub(crate) async fn apply_cont(
                                             let head_id =
                                                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                                     Value::Expression(std::sync::Arc::clone(node)),
-                                                    access_span,
+                                                    access_span.clone(),
                                                 )));
                                             tail_id =
                                                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
@@ -2519,7 +2573,7 @@ pub(crate) async fn apply_cont(
                                                         head: head_id,
                                                         tail: tail_id,
                                                     },
-                                                    access_span,
+                                                    access_span.clone(),
                                                 )));
                                         }
                                         // First expression is the outermost head
@@ -2528,7 +2582,7 @@ pub(crate) async fn apply_cont(
                                                 Value::Expression(std::sync::Arc::clone(
                                                     &expr_nodes[0],
                                                 )),
-                                                access_span,
+                                                access_span.clone(),
                                             )));
                                         Value::Seq {
                                             head: head_id,
@@ -2542,7 +2596,7 @@ pub(crate) async fn apply_cont(
                                         payload: Some(ctx.alloc_thunk(Arc::new(
                                             Thunk::new_materialized(
                                                 crate::value::string_val(n),
-                                                access_span,
+                                                access_span.clone(),
                                             ),
                                         ))),
                                     },
@@ -2565,12 +2619,12 @@ pub(crate) async fn apply_cont(
                                 }
                                 _ => Value::Dict(indexmap::IndexMap::new()),
                             };
-                            let thunk = Arc::new(Thunk::new_materialized(val, access_span));
+                            let thunk = Arc::new(Thunk::new_materialized(val, access_span.clone()));
                             // Apply boundary guards if this access site has a guard registered.
-                            let thunk = maybe_wrap_guard(thunk, access_span, &ctx);
+                            let thunk = maybe_wrap_guard(thunk, access_span.clone(), &ctx);
                             Action::Materialize {
                                 thunk,
-                                mat_span: outer_mat_span.or(Some(access_span)),
+                                mat_span: outer_mat_span.or(Some(access_span.clone())),
                             }
                         }
                         other => {
@@ -2581,15 +2635,15 @@ pub(crate) async fn apply_cont(
                                 other.type_name(),
                                 target_def_span,
                             )
-                            .with_materialization_span(access_span);
-                            err.push_frame(format!("accessing .{field_str}"), access_span);
+                            .with_materialization_span(access_span.clone());
+                            err.push_frame(format!("accessing .{field_str}"), access_span.clone());
                             Action::Continue(Err(err.into()))
                         }
                     }
                 }
                 Err(mut e) => {
                     // Target materialization failed
-                    e.push_frame(format!("accessing .{field_str}"), access_span);
+                    e.push_frame(format!("accessing .{field_str}"), access_span.clone());
                     Action::Continue(Err(e))
                 }
             }
@@ -2613,7 +2667,13 @@ pub(crate) async fn apply_cont(
                         // Flatten Overlay to Dict before record type assertion.
                         let value = match value {
                             Value::Overlay(l, r) => {
-                                match flatten_overlay(&l, &r, "type assert", &ctx, expr_span) {
+                                match flatten_overlay(
+                                    &l,
+                                    &r,
+                                    "type assert",
+                                    &ctx,
+                                    expr_span.clone(),
+                                ) {
                                     Ok(map) => Value::Dict(map),
                                     Err(e) => return Action::Continue(Err(e)),
                                 }
@@ -2636,16 +2696,16 @@ pub(crate) async fn apply_cont(
                                 });
                             // Construct BlameLabel for TypeAssert boundary
                             let blame_label = Some(crate::error::BlameLabel {
-                                origin_span: thunk_span,  // where the value was produced
-                                boundary_span: expr_span, // where the TypeAssert annotation is
+                                origin_span: thunk_span.clone(),  // where the value was produced
+                                boundary_span: expr_span.clone(), // where the TypeAssert annotation is
                                 polarity: crate::error::BlameParity::Positive,
                             });
                             match validate_and_wrap_record(
                                 entries,
                                 row.as_ref(),
                                 &mut vec![],
-                                expr_span,
-                                thunk_span,
+                                expr_span.clone(),
+                                thunk_span.clone(),
                                 &ctx,
                                 default_opt.clone(),
                                 blame_label,
@@ -2684,12 +2744,14 @@ pub(crate) async fn apply_cont(
                                 let mut err = EvalError::type_assert_failed(
                                     &format_type_for_assert(&expected),
                                     value.type_name(),
-                                    thunk_span,
+                                    thunk_span.clone(),
                                 )
-                                .with_materialization_span(expr_span);
+                                .with_materialization_span(expr_span.clone());
                                 if thunk_span != expr_span {
-                                    err =
-                                        err.with_secondary_span(thunk_span, "value produced here");
+                                    err = err.with_secondary_span(
+                                        thunk_span.clone(),
+                                        "value produced here",
+                                    );
                                 }
                                 Action::Continue(Err(err.into()))
                             }
@@ -2700,8 +2762,8 @@ pub(crate) async fn apply_cont(
                             stack.push(Cont::PredicateCheck(Box::new(PredicateCheckData {
                                 value: value.clone(),
                                 annotation,
-                                expr_span,
-                                thunk_span,
+                                expr_span: expr_span.clone(),
+                                thunk_span: thunk_span.clone(),
                                 env: Arc::clone(&env),
                                 ctx: Arc::clone(&ctx),
                             })));
@@ -2733,11 +2795,12 @@ pub(crate) async fn apply_cont(
                         let mut err = EvalError::type_assert_failed(
                             &format_type_for_assert(&expected),
                             value.type_name(),
-                            thunk_span,
+                            thunk_span.clone(),
                         )
-                        .with_materialization_span(expr_span);
+                        .with_materialization_span(expr_span.clone());
                         if thunk_span != expr_span {
-                            err = err.with_secondary_span(thunk_span, "value produced here");
+                            err =
+                                err.with_secondary_span(thunk_span.clone(), "value produced here");
                         }
                         Action::Continue(Err(err.into()))
                     }
@@ -2816,7 +2879,7 @@ pub(crate) async fn apply_cont(
                                 &r,
                                 "sequential expression",
                                 &ctx,
-                                current_expr.span,
+                                current_expr.span.clone(),
                             ) {
                                 Ok(map) => map,
                                 Err(e) => return Action::Continue(Err(e)),
@@ -2827,7 +2890,7 @@ pub(crate) async fn apply_cont(
                                         format!("sequential expression #{}", idx + 1),
                                         "Dict",
                                         intermediate_value.type_name(),
-                                        current_expr.span,
+                                        current_expr.span.clone(),
                                     ),
                                 )));
                             }
@@ -2869,7 +2932,7 @@ pub(crate) async fn apply_cont(
                             // Force entries one at a time via ForceAndBind continuations.
                             // Pop the first entry; the rest become `remaining` in ForceAndBind.
                             let (first_name, first_thunk) = entries_to_force.remove(0);
-                            let first_span = first_thunk.span;
+                            let first_span = first_thunk.span.clone();
 
                             // The step.env field is a placeholder (parent env) that is never
                             // read — ForceAndBind always reconstructs SequentialStepData with
@@ -2884,7 +2947,7 @@ pub(crate) async fn apply_cont(
 
                             Action::Materialize {
                                 thunk: first_thunk,
-                                mat_span: Some(current_expr.span),
+                                mat_span: Some(current_expr.span.clone()),
                             }
                         }
                     } else {
@@ -2941,7 +3004,7 @@ pub(crate) async fn apply_cont(
                         // More entries remain — force the next one.
                         let mut remaining = remaining;
                         let (next_name, next_thunk) = remaining.remove(0);
-                        let next_span = next_thunk.span;
+                        let next_span = next_thunk.span.clone();
 
                         stack.push(Cont::ForceAndBind(Box::new(ForceAndBindData {
                             name: next_name,
@@ -2983,7 +3046,7 @@ pub(crate) async fn apply_cont(
                             &arm.pattern.node,
                             &scrutinee_value,
                             &env,
-                            &arm.pattern.span,
+                            &arm.pattern.span.clone(),
                             &ctx,
                         ));
 
@@ -3010,7 +3073,7 @@ pub(crate) async fn apply_cont(
                                                 bindings,
                                                 &scrutinee_value,
                                                 &env,
-                                                match_span,
+                                                match_span.clone(),
                                                 &ctx,
                                             ) {
                                                 Some(bound_env) => (bound_env, Arc::clone(body)),
@@ -3044,7 +3107,7 @@ pub(crate) async fn apply_cont(
                                     arms: Arc::clone(&arms),
                                     env: Arc::clone(&env),
                                     ctx: Arc::clone(&ctx),
-                                    match_span,
+                                    match_span: match_span.clone(),
                                     arm_env: Arc::clone(&final_env),
                                     scrutinee_value: scrutinee_value.clone(),
                                     body: Arc::clone(&eval_body),
@@ -3071,7 +3134,7 @@ pub(crate) async fn apply_cont(
                     // No arm matched: non-exhaustive match
                     Action::Continue(Err(Box::new(EvalError::match_exhaustion(
                         scrutinee_value.type_name(),
-                        match_span,
+                        match_span.clone(),
                     ))))
                 }
             }
@@ -3097,24 +3160,24 @@ pub(crate) async fn apply_cont(
                             // Create a thunk for the scrutinee
                             let scrutinee_thunk = Arc::new(Thunk::new_materialized(
                                 scrutinee_value.clone(),
-                                match_span,
+                                match_span.clone(),
                             ));
                             // Create a thunk for the predicate
                             let pred_thunk =
-                                Arc::new(Thunk::new_materialized(guard_value, match_span));
+                                Arc::new(Thunk::new_materialized(guard_value, match_span.clone()));
                             // Create a PendingCall thunk
                             let call_thunk = Arc::new(Thunk::new_pending_call(
                                 pred_thunk,
                                 vec![scrutinee_thunk],
                                 IndexMap::new(),
-                                match_span,
+                                match_span.clone(),
                                 Arc::clone(&arm_env),
-                                match_span,
+                                match_span.clone(),
                                 None,
                                 Arc::clone(&ctx),
                                 Arc::new(Spanned {
                                     node: CoreExpr::Int(0),
-                                    span: match_span,
+                                    span: match_span.clone(),
                                 }),
                             ));
                             // Force the call
@@ -3151,7 +3214,7 @@ pub(crate) async fn apply_cont(
                             arms,
                             env,
                             ctx: Arc::clone(&ctx),
-                            match_span,
+                            match_span: match_span.clone(),
                         })));
                         Action::Continue(Ok(scrutinee_value))
                     }
@@ -3177,24 +3240,28 @@ pub(crate) async fn apply_cont(
                     let predicate_result_value = match predicate_value {
                         Value::Function { .. } | Value::Builtin(_) => {
                             // Create a thunk for the value
-                            let value_thunk =
-                                Arc::new(Thunk::new_materialized(value.clone(), thunk_span));
+                            let value_thunk = Arc::new(Thunk::new_materialized(
+                                value.clone(),
+                                thunk_span.clone(),
+                            ));
                             // Create a thunk for the predicate
-                            let pred_thunk =
-                                Arc::new(Thunk::new_materialized(predicate_value, expr_span));
+                            let pred_thunk = Arc::new(Thunk::new_materialized(
+                                predicate_value,
+                                expr_span.clone(),
+                            ));
                             // Create a PendingCall thunk
                             let call_thunk = Arc::new(Thunk::new_pending_call(
                                 pred_thunk,
                                 vec![value_thunk],
                                 IndexMap::new(),
-                                expr_span,
+                                expr_span.clone(),
                                 Arc::clone(&env),
-                                expr_span,
+                                expr_span.clone(),
                                 None,
                                 Arc::clone(&ctx),
                                 Arc::new(Spanned {
                                     node: CoreExpr::Int(0),
-                                    span: expr_span,
+                                    span: expr_span.clone(),
                                 }),
                             ));
                             // Force the call
@@ -3240,11 +3307,12 @@ pub(crate) async fn apply_cont(
                             let mut err = EvalError::type_assert_failed(
                                 "_ (is: predicate failed)",
                                 value.type_name(),
-                                thunk_span,
+                                thunk_span.clone(),
                             )
-                            .with_materialization_span(expr_span);
+                            .with_materialization_span(expr_span.clone());
                             if thunk_span != expr_span {
-                                err = err.with_secondary_span(thunk_span, "value produced here");
+                                err = err
+                                    .with_secondary_span(thunk_span.clone(), "value produced here");
                             }
                             Action::Continue(Err(err.into()))
                         }
@@ -3293,16 +3361,20 @@ fn eval_case_arm_let_pattern(
 
             // Plain binding: VarRef(name) — bind to scrutinee
             CoreExpr::FreeVar(name) => {
-                let scrutinee_thunk =
-                    Arc::new(Thunk::new_materialized(scrutinee_value.clone(), match_span));
+                let scrutinee_thunk = Arc::new(Thunk::new_materialized(
+                    scrutinee_value.clone(),
+                    match_span.clone(),
+                ));
                 arm_env
                     .write()
                     .unwrap()
                     .insert(name.clone(), scrutinee_thunk);
             }
             CoreExpr::Var { name, .. } => {
-                let scrutinee_thunk =
-                    Arc::new(Thunk::new_materialized(scrutinee_value.clone(), match_span));
+                let scrutinee_thunk = Arc::new(Thunk::new_materialized(
+                    scrutinee_value.clone(),
+                    match_span.clone(),
+                ));
                 arm_env
                     .write()
                     .unwrap()
@@ -3345,7 +3417,7 @@ fn eval_case_arm_let_pattern(
                                                 let payload_thunk =
                                                     Arc::new(Thunk::new_materialized(
                                                         payload_val,
-                                                        match_span,
+                                                        match_span.clone(),
                                                     ));
                                                 arm_env
                                                     .write()
@@ -3376,8 +3448,10 @@ fn eval_case_arm_let_pattern(
                 } else {
                     // Typed binding (no runtime tag check): bind name to scrutinee
                     if name != "_" {
-                        let scrutinee_thunk =
-                            Arc::new(Thunk::new_materialized(scrutinee_value.clone(), match_span));
+                        let scrutinee_thunk = Arc::new(Thunk::new_materialized(
+                            scrutinee_value.clone(),
+                            match_span.clone(),
+                        ));
                         arm_env
                             .write()
                             .unwrap()
@@ -3397,7 +3471,7 @@ fn eval_case_arm_let_pattern(
                         CoreExpr::FreeVar(name) if name != "_" => {
                             let scrutinee_thunk = Arc::new(Thunk::new_materialized(
                                 scrutinee_value.clone(),
-                                match_span,
+                                match_span.clone(),
                             ));
                             arm_env
                                 .write()
@@ -3407,7 +3481,7 @@ fn eval_case_arm_let_pattern(
                         CoreExpr::Var { name, .. } if name != "_" => {
                             let scrutinee_thunk = Arc::new(Thunk::new_materialized(
                                 scrutinee_value.clone(),
-                                match_span,
+                                match_span.clone(),
                             ));
                             arm_env
                                 .write()
@@ -3470,7 +3544,7 @@ pub(crate) async fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<V
                         Some(value) => Action::Continue(Ok(value)),
                         None => Action::Materialize {
                             thunk,
-                            mat_span: Some(expr.span),
+                            mat_span: Some(expr.span.clone()),
                         },
                     },
                     Err(e) => Action::Continue(Err(e)),
@@ -3528,7 +3602,7 @@ mod tests {
         use crate::value::BuiltinFn;
 
         let span = test_span(1, 1, 1, 10);
-        let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span));
+        let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
 
         // Create a dummy builtin function
         let dummy_func: BuiltinFn = |_args| {
@@ -3549,7 +3623,7 @@ mod tests {
             dummy_def,
             args.clone(),
             None,
-            span,
+            span.clone(),
             Some(Arc::from("test_origin")),
             ctx.clone(),
         );
@@ -3589,12 +3663,12 @@ mod tests {
         let caller_env = empty_env();
 
         // Create a PendingCall thunk, then take it to InProgress
-        let func_thunk = Arc::new(Thunk::new_materialized(Value::Int(1), span));
+        let func_thunk = Arc::new(Thunk::new_materialized(Value::Int(1), span.clone()));
         let thunk = Arc::new(Thunk::new_pending_call(
             func_thunk,
             vec![],
             IndexMap::new(),
-            span,
+            span.clone(),
             empty_env(),
             span,
             None,
@@ -3632,12 +3706,12 @@ mod tests {
         }));
         let caller_env = empty_env();
 
-        let func_thunk = Arc::new(Thunk::new_materialized(Value::Int(1), span));
+        let func_thunk = Arc::new(Thunk::new_materialized(Value::Int(1), span.clone()));
         let thunk = Arc::new(Thunk::new_pending_call(
             func_thunk,
             vec![],
             IndexMap::new(),
-            span,
+            span.clone(),
             empty_env(),
             span,
             None,
@@ -3683,12 +3757,17 @@ mod tests {
     #[test]
     fn test_attach_materialization_context_adds_frame() {
         let thunk_span = test_span(1, 1, 1, 10);
-        let err = EvalError::undefined_variable("x".to_string(), None, thunk_span);
+        let err = EvalError::undefined_variable("x".to_string(), thunk_span.clone());
         let mat_span = test_span(10, 5, 10, 6);
         let origin = "test_origin";
 
-        let decorated =
-            attach_materialization_context(err.into(), Some(&mat_span), Some(origin), thunk_span);
+        let decorated = attach_materialization_context(
+            err.into(),
+            Some(&mat_span),
+            Some(origin),
+            thunk_span.clone(),
+            None,
+        );
 
         // Verify materialization_span is set
         assert_eq!(decorated.materialization_span, Some(mat_span));
@@ -3698,7 +3777,7 @@ mod tests {
             decorated
                 .stack
                 .iter()
-                .any(|f| f.label == origin && f.span == thunk_span),
+                .any(|f| f.label == origin && f.definition_span == thunk_span),
             "Expected origin frame with label '{}' and thunk_span, but stack frames were: {:?}",
             origin,
             decorated.stack
@@ -3716,10 +3795,10 @@ mod tests {
         // Create a simple expression that produces an Int
         let value_span = test_span(5, 1, 5, 3); // Line 5: the value production site
         let value_thunk = crate::value::Thunk::new_unevaluated_core(
-            Arc::new(Spanned::new(CoreExpr::Int(42), value_span)),
+            Arc::new(Spanned::new(CoreExpr::Int(42), value_span.clone())),
             test_env(),
             test_ctx(),
-            value_span,
+            value_span.clone(),
         );
 
         // Create a Guarded thunk that expects String but wraps the Int
@@ -3729,7 +3808,7 @@ mod tests {
             Arc::new(value_thunk),
             expected_type,
             Vec::new(),
-            guard_span,
+            guard_span.clone(),
         );
 
         // Try to materialize - should fail
@@ -3766,10 +3845,10 @@ mod tests {
 
         // Create a value at the same location as the guard
         let value_thunk = crate::value::Thunk::new_unevaluated_core(
-            Arc::new(Spanned::new(CoreExpr::Int(42), same_span)),
+            Arc::new(Spanned::new(CoreExpr::Int(42), same_span.clone())),
             test_env(),
             test_ctx(),
-            same_span,
+            same_span.clone(),
         );
 
         // Create a Guarded thunk with the same span for both guard and inner
@@ -3777,7 +3856,7 @@ mod tests {
             Arc::new(value_thunk),
             Type::Str,
             Vec::new(),
-            same_span, // guard_span
+            same_span.clone(), // guard_span
         );
 
         let ctx = test_ctx();
@@ -3803,7 +3882,7 @@ mod tests {
         let ctx = test_ctx();
 
         let thunk = Arc::new(Thunk::new_unevaluated_core(
-            Arc::new(Spanned::new(CoreExpr::Int(42), span)),
+            Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
             env,
             Arc::clone(&ctx),
             span,
@@ -3860,7 +3939,7 @@ mod tests {
         let thunk = Arc::new(Thunk::new_unevaluated_core(
             Arc::new(Spanned::new(
                 CoreExpr::FreeVar("undefined_var".into()),
-                span,
+                span.clone(),
             )),
             env,
             Arc::clone(&ctx),
@@ -3936,18 +4015,18 @@ mod tests {
         let error_thunk = Arc::new(Thunk::new_unevaluated_core(
             Arc::new(Spanned::new(
                 CoreExpr::FreeVar("undefined_var".into()),
-                span,
+                span.clone(),
             )),
             Arc::clone(&env),
             Arc::clone(&ctx),
-            span,
+            span.clone(),
         ));
 
         let error_id = ctx.alloc_thunk(error_thunk);
         let mut dict_map: IndexMap<Key, crate::arena::ThunkId> = IndexMap::new();
         dict_map.insert(Key::String("field".into()), error_id);
         let dict_value = Value::Dict(dict_map);
-        let dict_thunk = Arc::new(Thunk::new_materialized(dict_value, span));
+        let dict_thunk = Arc::new(Thunk::new_materialized(dict_value, span.clone()));
 
         // Insert the dict into the environment
         env.write().unwrap().insert("my_dict".into(), dict_thunk);
@@ -3956,10 +4035,13 @@ mod tests {
         let access_thunk = Arc::new(Thunk::new_unevaluated_core(
             Arc::new(Spanned::new(
                 CoreExpr::DotAccess {
-                    expr: Arc::new(Spanned::new(CoreExpr::FreeVar("my_dict".into()), span)),
+                    expr: Arc::new(Spanned::new(
+                        CoreExpr::FreeVar("my_dict".into()),
+                        span.clone(),
+                    )),
                     field: crate::ast::DotKey::Ident("field".to_string()),
                 },
-                span,
+                span.clone(),
             )),
             env,
             Arc::clone(&ctx),
@@ -4012,7 +4094,7 @@ mod tests {
         let ctx = test_ctx();
 
         // Inner thunk: an Int value that satisfies the Int guard.
-        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span));
+        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
 
         let guarded = Arc::new(Thunk::new_guarded(
             Arc::clone(&inner),
@@ -4050,7 +4132,7 @@ mod tests {
         let env = empty_env();
 
         // Bind a variable in caller's env so the default expr can reference it.
-        let fallback_thunk = Arc::new(Thunk::new_materialized(Value::Int(99), span));
+        let fallback_thunk = Arc::new(Thunk::new_materialized(Value::Int(99), span.clone()));
         env.write()
             .unwrap()
             .insert("fallback_val".into(), fallback_thunk);
@@ -4058,7 +4140,7 @@ mod tests {
         // Inner thunk: a String value — fails the Int guard.
         let inner = Arc::new(Thunk::new_materialized(
             crate::value::string_val("not an int"),
-            span,
+            span.clone(),
         ));
 
         // Default expression: a variable reference to `fallback_val` in caller's env.
@@ -4108,7 +4190,7 @@ mod tests {
         let ctx = test_ctx();
 
         // Inner thunk: a Bool value — fails the Int guard.
-        let inner = Arc::new(Thunk::new_materialized(Value::Bool(true), span));
+        let inner = Arc::new(Thunk::new_materialized(Value::Bool(true), span.clone()));
 
         let guarded = Arc::new(Thunk::new_guarded(
             Arc::clone(&inner),
@@ -4174,10 +4256,10 @@ mod tests {
         // Create an unevaluated arg thunk: evaluates to an empty dict.
         // `CoreExpr::Dict(vec![])` produces `Value::Dict(IndexMap::new())`.
         let unevaluated_arg = Arc::new(Thunk::new_unevaluated_core(
-            Arc::new(Spanned::new(CoreExpr::Dict(vec![]), span)),
+            Arc::new(Spanned::new(CoreExpr::Dict(vec![]), span.clone())),
             empty_env(),
             Arc::clone(&ctx),
-            span,
+            span.clone(),
         ));
 
         // Verify the arg is NOT yet materialized.
@@ -4253,18 +4335,18 @@ mod tests {
 
         // Arg0: unevaluated dict (will be forced and used by builtin_keys).
         let unevaluated_arg0 = Arc::new(Thunk::new_unevaluated_core(
-            Arc::new(Spanned::new(CoreExpr::Dict(vec![]), span)),
+            Arc::new(Spanned::new(CoreExpr::Dict(vec![]), span.clone())),
             empty_env(),
             Arc::clone(&ctx),
-            span,
+            span.clone(),
         ));
 
         // Arg1: unevaluated int (will be force-materialized but not used by builtin_keys).
         let unevaluated_arg1 = Arc::new(Thunk::new_unevaluated_core(
-            Arc::new(Spanned::new(CoreExpr::Int(42), span)),
+            Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
             empty_env(),
             Arc::clone(&ctx),
-            span,
+            span.clone(),
         ));
 
         assert!(
@@ -4385,15 +4467,15 @@ mod deep_tests {
 
                 // Build chain: thunk_0 = Materialized(Int(0))
                 // thunk_i = PendingBuiltin($+, [thunk_{i-1}, 1])
-                let mut prev = Arc::new(Thunk::new_materialized(Value::Int(0), origin));
+                let mut prev = Arc::new(Thunk::new_materialized(Value::Int(0), origin.clone()));
 
                 for _ in 0..2100 {
-                    let one = Arc::new(Thunk::new_materialized(Value::Int(1), origin));
+                    let one = Arc::new(Thunk::new_materialized(Value::Int(1), origin.clone()));
                     let thunk = Arc::new(Thunk::new_pending_builtin(
                         builtin_def,
                         vec![Arc::clone(&prev), one],
                         None,
-                        origin,
+                        origin.clone(),
                         None,
                         Arc::clone(&ctx),
                     ));
@@ -4461,14 +4543,14 @@ mod deep_tests {
                 let build_chain = |def: &crate::value::BuiltinDef,
                                    ctx: &Arc<crate::eval::EvalContext>|
                  -> Arc<Thunk> {
-                    let mut prev = Arc::new(Thunk::new_materialized(Value::Int(0), origin));
+                    let mut prev = Arc::new(Thunk::new_materialized(Value::Int(0), origin.clone()));
                     for _ in 0..2100 {
-                        let one = Arc::new(Thunk::new_materialized(Value::Int(1), origin));
+                        let one = Arc::new(Thunk::new_materialized(Value::Int(1), origin.clone()));
                         let thunk = Arc::new(Thunk::new_pending_builtin(
                             *def,
                             vec![Arc::clone(&prev), one],
                             None,
-                            origin,
+                            origin.clone(),
                             None,
                             Arc::clone(ctx),
                         ));
@@ -4533,7 +4615,7 @@ mod deep_tests {
         // (the "if err.materialization_span.is_none()" branch).
 
         let thunk_span = test_span(1, 1, 1, 10);
-        let err = EvalError::undefined_variable("x".to_string(), None, thunk_span);
+        let err = EvalError::undefined_variable("x".to_string(), thunk_span.clone());
         let mat_span = test_span(10, 5, 10, 6);
         let origin = "test_origin";
 
@@ -4542,12 +4624,13 @@ mod deep_tests {
             Box::new(err),
             Some(&mat_span),
             Some(origin),
-            thunk_span,
+            thunk_span.clone(),
+            None,
         );
 
         assert_eq!(
             decorated.materialization_span,
-            Some(mat_span),
+            Some(mat_span.clone()),
             "materialization_span should be set"
         );
 
@@ -4558,6 +4641,7 @@ mod deep_tests {
             Some(&second_mat_span),
             Some("second_origin"),
             thunk_span,
+            None,
         );
 
         assert_eq!(
@@ -4616,7 +4700,8 @@ fn force_dict_tree_impl<'a>(
 
                     let forced_val = materialize(&thunk, None, ctx).await?;
                     let deep_val = force_dict_tree_impl(&forced_val, ctx, visited).await?;
-                    let deep_thunk = Arc::new(Thunk::new_materialized(deep_val, thunk.span));
+                    let deep_thunk =
+                        Arc::new(Thunk::new_materialized(deep_val, thunk.span.clone()));
                     let deep_id = ctx.alloc_thunk(deep_thunk);
                     new_map.insert(key.clone(), deep_id);
                 }
@@ -4634,8 +4719,10 @@ fn force_dict_tree_impl<'a>(
 
                     let forced_payload = materialize(&payload_thunk, None, ctx).await?;
                     let deep_payload = force_dict_tree_impl(&forced_payload, ctx, visited).await?;
-                    let deep_thunk =
-                        Arc::new(Thunk::new_materialized(deep_payload, payload_thunk.span));
+                    let deep_thunk = Arc::new(Thunk::new_materialized(
+                        deep_payload,
+                        payload_thunk.span.clone(),
+                    ));
                     let deep_id = ctx.alloc_thunk(deep_thunk);
                     Ok(Value::Variant {
                         tag: tag.clone(),
@@ -4655,7 +4742,8 @@ fn force_dict_tree_impl<'a>(
                 } else {
                     let forced_head = materialize(&head_thunk, None, ctx).await?;
                     let deep_head = force_dict_tree_impl(&forced_head, ctx, visited).await?;
-                    let deep_thunk = Arc::new(Thunk::new_materialized(deep_head, head_thunk.span));
+                    let deep_thunk =
+                        Arc::new(Thunk::new_materialized(deep_head, head_thunk.span.clone()));
                     ctx.alloc_thunk(deep_thunk)
                 };
 
@@ -4668,7 +4756,8 @@ fn force_dict_tree_impl<'a>(
                 } else {
                     let forced_tail = materialize(&tail_thunk, None, ctx).await?;
                     let deep_tail = force_dict_tree_impl(&forced_tail, ctx, visited).await?;
-                    let deep_thunk = Arc::new(Thunk::new_materialized(deep_tail, tail_thunk.span));
+                    let deep_thunk =
+                        Arc::new(Thunk::new_materialized(deep_tail, tail_thunk.span.clone()));
                     ctx.alloc_thunk(deep_thunk)
                 };
 

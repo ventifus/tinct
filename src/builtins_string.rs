@@ -50,7 +50,7 @@ pub(crate) fn builtin_str(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("str", named.as_ref(), call_span)?;
+        reject_named("str", named.as_ref(), call_span.clone())?;
 
         // Pure primitive: no typeclass dispatch. Showable instances in stdlib/prelude.llt
         // are type-checker annotations only (same pattern as Addable/builtin-add for arithmetic).
@@ -87,7 +87,7 @@ pub(crate) fn builtin_split(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("split", named.as_ref(), call_span)?;
+        reject_named("split", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -99,7 +99,7 @@ pub(crate) fn builtin_split(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let sep = require_string("split", sep_val, args[0].span)?;
+        let sep = require_string("split", sep_val, args[0].span.clone())?;
 
         // Extract the source Rc<str> from the input string for zero-copy slicing.
         let (input_source, input_start, input_end) = match input_val {
@@ -109,7 +109,7 @@ pub(crate) fn builtin_split(
                     "split".to_string(),
                     "String",
                     input_val.type_name(),
-                    args[1].span,
+                    args[1].span.clone(),
                 )
                 .into());
             }
@@ -147,7 +147,7 @@ pub(crate) fn builtin_split(
                     start: input_start,
                     end: input_start,
                 },
-                call_span,
+                call_span.clone(),
             ));
             map.insert(Key::Int(0), ctx.alloc_thunk(thunk));
 
@@ -161,13 +161,13 @@ pub(crate) fn builtin_split(
                         start: part_start,
                         end: part_end,
                     },
-                    call_span,
+                    call_span.clone(),
                 ));
                 map.insert(
                     Key::Int(i64::try_from(i + 1).map_err(|_| {
                         EvalError::resource_limit_exceeded(
                             "$split: result index too large".to_string(),
-                            call_span,
+                            call_span.clone(),
                         )
                     })?),
                     ctx.alloc_thunk(thunk),
@@ -182,13 +182,13 @@ pub(crate) fn builtin_split(
                     start: input_end,
                     end: input_end,
                 },
-                call_span,
+                call_span.clone(),
             ));
             map.insert(
                 Key::Int(i64::try_from(last_idx).map_err(|_| {
                     EvalError::resource_limit_exceeded(
                         "$split: result index too large".to_string(),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?),
                 ctx.alloc_thunk(thunk),
@@ -202,7 +202,7 @@ pub(crate) fn builtin_split(
                 if part_count >= MAX_SPLIT_PARTS {
                     return Err(EvalError::resource_limit_exceeded(
                         format!("$split: input produces more than {MAX_SPLIT_PARTS} parts"),
-                        call_span,
+                        call_span.clone(),
                     )
                     .into());
                 }
@@ -216,13 +216,13 @@ pub(crate) fn builtin_split(
                         start: part_start,
                         end: part_end,
                     },
-                    call_span,
+                    call_span.clone(),
                 ));
                 map.insert(
                     Key::Int(i64::try_from(part_count).map_err(|_| {
                         EvalError::resource_limit_exceeded(
                             "$split: result index too large".to_string(),
-                            call_span,
+                            call_span.clone(),
                         )
                     })?),
                     ctx.alloc_thunk(thunk),
@@ -236,7 +236,7 @@ pub(crate) fn builtin_split(
             if part_count >= MAX_SPLIT_PARTS {
                 return Err(EvalError::resource_limit_exceeded(
                     format!("$split: input produces more than {MAX_SPLIT_PARTS} parts"),
-                    call_span,
+                    call_span.clone(),
                 )
                 .into());
             }
@@ -248,13 +248,13 @@ pub(crate) fn builtin_split(
                     start: part_start,
                     end: part_end,
                 },
-                call_span,
+                call_span.clone(),
             ));
             map.insert(
                 Key::Int(i64::try_from(part_count).map_err(|_| {
                     EvalError::resource_limit_exceeded(
                         "$split: result index too large".to_string(),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?),
                 ctx.alloc_thunk(thunk),
@@ -280,7 +280,7 @@ pub(crate) fn builtin_replace(
             call_span,
             ctx: _,
         } = ctx_arg;
-        reject_named("replace", named.as_ref(), call_span)?;
+        reject_named("replace", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
@@ -295,9 +295,9 @@ pub(crate) fn builtin_replace(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let pattern = require_string("replace", pattern_val, args[0].span)?;
-        let replacement = require_string("replace", replacement_val, args[1].span)?;
-        let input = require_string("replace", input_val, args[2].span)?;
+        let pattern = require_string("replace", pattern_val, args[0].span.clone())?;
+        let replacement = require_string("replace", replacement_val, args[1].span.clone())?;
+        let input = require_string("replace", input_val, args[2].span.clone())?;
 
         // Pre-check output size to prevent memory exhaustion.
         // Empty pattern inserts replacement between every character.
@@ -322,7 +322,7 @@ pub(crate) fn builtin_replace(
                     MAX_STRING_SIZE / (1024 * 1024),
                     output_len
                 ),
-                call_span,
+                call_span.clone(),
             )
             .into());
         }
@@ -353,8 +353,8 @@ pub(crate) fn builtin_trim(
             call_span,
             ctx,
         } = ctx_arg;
-        let val = expect_one_arg("trim", &args, named.as_ref(), &ctx, call_span)?;
-        let s = require_string("trim", val, args[0].span)?;
+        let val = expect_one_arg("trim", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let s = require_string("trim", val, args[0].span.clone())?;
         ok_val(string_val(s.trim()), call_span)
     })
 }
@@ -373,13 +373,13 @@ pub(crate) fn builtin_str_length(
             call_span,
             ctx,
         } = ctx_arg;
-        let val = expect_one_arg("str-length", &args, named.as_ref(), &ctx, call_span)?;
-        let s = require_string("str-length", val, args[0].span)?;
+        let val = expect_one_arg("str-length", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let s = require_string("str-length", val, args[0].span.clone())?;
         let len = s.chars().count();
         let len_i64 = i64::try_from(len).map_err(|_| {
             EvalError::resource_limit_exceeded(
                 "str-length: string length exceeds i64::MAX".to_string(),
-                call_span,
+                call_span.clone(),
             )
         })?;
         ok_val(Value::Int(len_i64), call_span)
@@ -401,7 +401,7 @@ pub(crate) fn builtin_str_slice(
             call_span,
             ctx: _,
         } = ctx_arg;
-        reject_named("str-slice", named.as_ref(), call_span)?;
+        reject_named("str-slice", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
@@ -425,7 +425,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "String",
                     input_val.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into());
             }
@@ -439,7 +439,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "non-negative Int",
                     &format!("Int({n})"),
-                    args[1].span,
+                    args[1].span.clone(),
                 )
                 .into());
             }
@@ -448,7 +448,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "Int",
                     start_val.type_name(),
-                    args[1].span,
+                    args[1].span.clone(),
                 )
                 .into());
             }
@@ -461,7 +461,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "non-negative Int",
                     &format!("Int({n})"),
-                    args[2].span,
+                    args[2].span.clone(),
                 )
                 .into());
             }
@@ -470,7 +470,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "Int",
                     end_val.type_name(),
-                    args[2].span,
+                    args[2].span.clone(),
                 )
                 .into());
             }
@@ -480,7 +480,7 @@ pub(crate) fn builtin_str_slice(
         if start_idx > end_idx {
             return Err(EvalError::internal(
                 format!("str-slice: start index {start_idx} > end index {end_idx}"),
-                call_span,
+                call_span.clone(),
             )
             .into());
         }
@@ -499,7 +499,7 @@ pub(crate) fn builtin_str_slice(
                 format!(
                     "str-slice: end index {end_idx} out of bounds (string has {char_count} characters)"
                 ),
-                call_span,
+                call_span.clone(),
             )
             .into());
         }
@@ -534,7 +534,7 @@ pub(crate) fn builtin_str_chars(
             call_span,
             ctx,
         } = ctx_arg;
-        let val = expect_one_arg("str-chars", &args, named.as_ref(), &ctx, call_span)?;
+        let val = expect_one_arg("str-chars", &args, named.as_ref(), &ctx, call_span.clone())?;
 
         let (input_source, input_start, input_end) = match val {
             Value::String { source, start, end } => (source, start, end),
@@ -543,7 +543,7 @@ pub(crate) fn builtin_str_chars(
                     "str-chars".to_string(),
                     "String",
                     val.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into());
             }
@@ -560,7 +560,7 @@ pub(crate) fn builtin_str_chars(
         // Build the sequence from the end to the beginning (right-to-left)
         let mut result = Arc::new(Thunk::new_materialized(
             Value::Dict(indexmap::IndexMap::new()),
-            call_span,
+            call_span.clone(),
         ));
 
         for (char_start, char_end) in char_ranges.into_iter().rev() {
@@ -570,7 +570,7 @@ pub(crate) fn builtin_str_chars(
                     start: input_start + char_start,
                     end: input_start + char_end,
                 },
-                call_span,
+                call_span.clone(),
             ));
 
             result = Arc::new(Thunk::new_materialized(
@@ -578,7 +578,7 @@ pub(crate) fn builtin_str_chars(
                     head: ctx.alloc_thunk(head),
                     tail: ctx.alloc_thunk(result),
                 },
-                call_span,
+                call_span.clone(),
             ));
         }
 
@@ -602,7 +602,7 @@ pub(crate) fn builtin_char_code(
             call_span,
             ctx,
         } = ctx_arg;
-        let val = expect_one_arg("char-code", &args, named.as_ref(), &ctx, call_span)?;
+        let val = expect_one_arg("char-code", &args, named.as_ref(), &ctx, call_span.clone())?;
 
         let (input_source, input_start, input_end) = match val {
             Value::String { source, start, end } => (source, start, end),
@@ -611,7 +611,7 @@ pub(crate) fn builtin_char_code(
                     "char-code".to_string(),
                     "String",
                     val.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into());
             }
@@ -682,7 +682,7 @@ mod tests {
         let span = call_span();
         let ctx = test_ctx();
         let result = call_builtin(builtin_split(BuiltinArgs {
-            args: vec![str_thunk(",", span), str_thunk("a,b", span)],
+            args: vec![str_thunk(",", span.clone()), str_thunk("a,b", span.clone())],
             named: no_named(),
             call_span: span,
             ctx: Arc::clone(&ctx),
@@ -702,7 +702,7 @@ mod tests {
         let span = call_span();
         let ctx = test_ctx();
         let result = call_builtin(builtin_split(BuiltinArgs {
-            args: vec![str_thunk("", span), str_thunk("abc", span)],
+            args: vec![str_thunk("", span.clone()), str_thunk("abc", span.clone())],
             named: no_named(),
             call_span: span,
             ctx: Arc::clone(&ctx),
@@ -722,7 +722,7 @@ mod tests {
     fn test_str_no_showable_instance_falls_through() {
         let span = call_span();
         let ctx = test_ctx();
-        let int_thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span));
+        let int_thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
         let result = call_builtin(builtin_str(BuiltinArgs {
             args: vec![int_thunk],
             named: no_named(),
@@ -764,7 +764,7 @@ mod tests {
         let span = call_span();
         let ctx = test_ctx();
         let result = call_builtin(builtin_split(BuiltinArgs {
-            args: vec![str_thunk(",", span)],
+            args: vec![str_thunk(",", span.clone())],
             named: no_named(),
             call_span: span,
             ctx,
@@ -795,7 +795,7 @@ pub(crate) fn builtin_chr(
             call_span,
             ctx,
         } = ctx_arg;
-        let val = expect_one_arg("chr", &args, named.as_ref(), &ctx, call_span)?;
+        let val = expect_one_arg("chr", &args, named.as_ref(), &ctx, call_span.clone())?;
 
         match val {
             Value::Int(n) => {
@@ -813,7 +813,7 @@ pub(crate) fn builtin_chr(
                 "chr".to_string(),
                 "Int",
                 val.type_name(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into()),
         }
@@ -843,8 +843,13 @@ pub(crate) fn builtin_str_bytes(
             ctx,
         } = ctx_arg;
 
-        let val =
-            crate::builtins::expect_one_arg("str-bytes", &args, named.as_ref(), &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg(
+            "str-bytes",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
 
         match val.as_str() {
             Some(s) => ok_val(bytes_val(s.as_bytes()), call_span),
@@ -852,7 +857,7 @@ pub(crate) fn builtin_str_bytes(
                 "str-bytes".to_string(),
                 "String",
                 val.type_name(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into()),
         }
@@ -878,7 +883,7 @@ pub(crate) fn builtin_str_index_of(
             call_span,
             ctx: _,
         } = ctx_arg;
-        reject_named("str-index-of", named.as_ref(), call_span)?;
+        reject_named("str-index-of", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -890,14 +895,14 @@ pub(crate) fn builtin_str_index_of(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let haystack = require_string("str-index-of", haystack_val, args[0].span)?;
-        let needle = require_string("str-index-of", needle_val, args[1].span)?;
+        let haystack = require_string("str-index-of", haystack_val, args[0].span.clone())?;
+        let needle = require_string("str-index-of", needle_val, args[1].span.clone())?;
 
         let index: i64 = match haystack.find(needle.as_str()) {
             Some(byte_idx) => i64::try_from(byte_idx).map_err(|_| {
                 EvalError::resource_limit_exceeded(
                     "str-index-of: byte index exceeds i64::MAX".to_string(),
-                    call_span,
+                    call_span.clone(),
                 )
             })?,
             None => -1,
@@ -921,8 +926,8 @@ pub(crate) fn builtin_trim_start(
             call_span,
             ctx,
         } = ctx_arg;
-        let val = expect_one_arg("trim-start", &args, named.as_ref(), &ctx, call_span)?;
-        let s = require_string("trim-start", val, args[0].span)?;
+        let val = expect_one_arg("trim-start", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let s = require_string("trim-start", val, args[0].span.clone())?;
         ok_val(string_val(s.trim_start()), call_span)
     })
 }
@@ -941,8 +946,8 @@ pub(crate) fn builtin_trim_end(
             call_span,
             ctx,
         } = ctx_arg;
-        let val = expect_one_arg("trim-end", &args, named.as_ref(), &ctx, call_span)?;
-        let s = require_string("trim-end", val, args[0].span)?;
+        let val = expect_one_arg("trim-end", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let s = require_string("trim-end", val, args[0].span.clone())?;
         ok_val(string_val(s.trim_end()), call_span)
     })
 }
@@ -970,8 +975,13 @@ pub(crate) fn builtin_bytes_str(
             ctx,
         } = ctx_arg;
 
-        let val =
-            crate::builtins::expect_one_arg("bytes-str", &args, named.as_ref(), &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg(
+            "bytes-str",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
 
         match val.as_bytes() {
             Some(bytes) => match std::str::from_utf8(bytes) {
@@ -986,7 +996,7 @@ pub(crate) fn builtin_bytes_str(
                 "bytes-str".to_string(),
                 "Bytes",
                 val.type_name(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into()),
         }
@@ -1010,8 +1020,14 @@ pub(crate) fn builtin_str_to_upper_char(
             call_span,
             ctx,
         } = ctx_arg;
-        let val = expect_one_arg("str-to-upper-char", &args, named.as_ref(), &ctx, call_span)?;
-        let s = require_string("str-to-upper-char", val, args[0].span)?;
+        let val = expect_one_arg(
+            "str-to-upper-char",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+        let s = require_string("str-to-upper-char", val, args[0].span.clone())?;
         ok_val(string_val(&s.to_uppercase()), call_span)
     })
 }
@@ -1033,8 +1049,14 @@ pub(crate) fn builtin_str_to_lower_char(
             call_span,
             ctx,
         } = ctx_arg;
-        let val = expect_one_arg("str-to-lower-char", &args, named.as_ref(), &ctx, call_span)?;
-        let s = require_string("str-to-lower-char", val, args[0].span)?;
+        let val = expect_one_arg(
+            "str-to-lower-char",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+        let s = require_string("str-to-lower-char", val, args[0].span.clone())?;
         ok_val(string_val(&s.to_lowercase()), call_span)
     })
 }
@@ -1056,7 +1078,7 @@ pub(crate) fn builtin_str_map_chars(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("str-map-chars", named.as_ref(), call_span)?;
+        reject_named("str-map-chars", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -1069,7 +1091,7 @@ pub(crate) fn builtin_str_map_chars(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let s = require_string("str-map-chars", input_val, args[1].span)?;
+        let s = require_string("str-map-chars", input_val, args[1].span.clone())?;
 
         // For an empty string, return empty string immediately.
         if s.is_empty() {
@@ -1088,7 +1110,10 @@ pub(crate) fn builtin_str_map_chars(
         for ch in s.chars() {
             let ch_str = ch.to_string();
             // Wrap each char as a materialized thunk.
-            let char_thunk = Arc::new(Thunk::new_materialized(string_val(&ch_str), call_span));
+            let char_thunk = Arc::new(Thunk::new_materialized(
+                string_val(&ch_str),
+                call_span.clone(),
+            ));
 
             // Call f(char_thunk) — dispatch on Value::Function vs Value::Builtin.
             let call_result_thunk = match &func_val {
@@ -1106,7 +1131,7 @@ pub(crate) fn builtin_str_map_chars(
                         positional: &pos_args,
                         named: None,
                         default_env: closure_env,
-                        call_span,
+                        call_span: call_span.clone(),
                         origin: Some(Arc::from("str-map-chars")),
                         ctx: &ctx,
                     })?
@@ -1115,7 +1140,7 @@ pub(crate) fn builtin_str_map_chars(
                     let builtin_args = BuiltinArgs {
                         args: vec![Arc::clone(&char_thunk)],
                         named: None,
-                        call_span,
+                        call_span: call_span.clone(),
                         ctx: Arc::clone(&ctx),
                     };
                     crate::async_rt::block_on_anywhere((def.func)(builtin_args))?
@@ -1125,7 +1150,7 @@ pub(crate) fn builtin_str_map_chars(
                         "str-map-chars".to_string(),
                         "Function",
                         other.type_name(),
-                        args[0].span,
+                        args[0].span.clone(),
                     )
                     .into());
                 }
@@ -1133,7 +1158,7 @@ pub(crate) fn builtin_str_map_chars(
 
             // Materialize the result and require it to be a String.
             let mapped_val = materialize_s(&call_result_thunk, Some(&call_span), &ctx)?;
-            let mapped_str = require_string("str-map-chars", mapped_val, call_span)?;
+            let mapped_str = require_string("str-map-chars", mapped_val, call_span.clone())?;
 
             // Guard against excessive output size.
             if result.len() + mapped_str.len() > MAX_STRING_SIZE {
@@ -1142,7 +1167,7 @@ pub(crate) fn builtin_str_map_chars(
                         "str-map-chars: output would exceed {} MB limit",
                         MAX_STRING_SIZE / (1024 * 1024)
                     ),
-                    call_span,
+                    call_span.clone(),
                 )
                 .into());
             }
@@ -1171,7 +1196,7 @@ pub(crate) fn builtin_regex_match(
             call_span,
             ctx: _,
         } = ctx_arg;
-        reject_named("regex-match?", named.as_ref(), call_span)?;
+        reject_named("regex-match?", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -1183,8 +1208,8 @@ pub(crate) fn builtin_regex_match(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let pattern = require_string("regex-match?", pattern_val, args[0].span)?;
-        let haystack = require_string("regex-match?", haystack_val, args[1].span)?;
+        let pattern = require_string("regex-match?", pattern_val, args[0].span.clone())?;
+        let haystack = require_string("regex-match?", haystack_val, args[1].span.clone())?;
 
         match regex::Regex::new(&pattern) {
             Ok(re) => ok_val(Value::Bool(re.is_match(&haystack)), call_span),

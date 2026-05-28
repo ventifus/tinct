@@ -59,7 +59,7 @@ pub(crate) fn builtin_bytes(
                         "bytes".to_string(),
                         "Bytes",
                         val.type_name(),
-                        arg_thunk.span,
+                        arg_thunk.span.clone(),
                     )
                     .into());
                 }
@@ -126,7 +126,7 @@ pub(crate) fn builtin_bytes_find(
                     "bytes-find".to_string(),
                     "Bytes",
                     haystack_val.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into());
             }
@@ -139,7 +139,7 @@ pub(crate) fn builtin_bytes_find(
                     "bytes-find".to_string(),
                     "Bytes",
                     needle_val.type_name(),
-                    args[1].span,
+                    args[1].span.clone(),
                 )
                 .into());
             }
@@ -185,7 +185,7 @@ pub(crate) fn builtin_bytes_of(
             ctx,
         } = ctx_arg;
 
-        let val = expect_one_arg("bytes-of", &args, named.as_ref(), &ctx, call_span)?;
+        let val = expect_one_arg("bytes-of", &args, named.as_ref(), &ctx, call_span.clone())?;
 
         let mut bytes = Vec::new();
 
@@ -345,7 +345,7 @@ pub(crate) fn builtin_bytes_equal(
                     "bytes-equal?".to_string(),
                     "Bytes",
                     val1.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into());
             }
@@ -358,7 +358,7 @@ pub(crate) fn builtin_bytes_equal(
                     "bytes-equal?".to_string(),
                     "Bytes",
                     val2.type_name(),
-                    args[1].span,
+                    args[1].span.clone(),
                 )
                 .into());
             }
@@ -424,7 +424,7 @@ pub(crate) fn builtin_ct_equal(
                     "ct-equal?".to_string(),
                     "Bytes",
                     val1.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into());
             }
@@ -437,7 +437,7 @@ pub(crate) fn builtin_ct_equal(
                     "ct-equal?".to_string(),
                     "Bytes",
                     val2.type_name(),
-                    args[1].span,
+                    args[1].span.clone(),
                 )
                 .into());
             }

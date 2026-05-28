@@ -851,7 +851,7 @@ pub(crate) fn validate_and_wrap_record(
                 thunk_rc,
                 field_type.clone(),
                 nested_path,
-                guard_span,
+                guard_span.clone(),
                 blame_label.clone(),
                 default.clone(),
             ));
@@ -901,7 +901,7 @@ async fn eval_quote_walk(
     env: Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
-    let span = node.span;
+    let span = node.span.clone();
     // Preprocess to handle nested unquotes (rewrites unquote subexpressions)
     let processed_node = eval_quote_preprocess(node, &env, ctx).await?;
 
@@ -925,7 +925,12 @@ fn value_to_surface_node(
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<crate::ast::SurfaceNode>> {
     use crate::ast::{SurfaceExpression, SurfaceNode};
-    let make_node = |expr: SurfaceExpression| Arc::new(SurfaceNode { expr, span });
+    let make_node = |expr: SurfaceExpression| {
+        Arc::new(SurfaceNode {
+            expr,
+            span: span.clone(),
+        })
+    };
     match value {
         Value::Int(n) => Ok(make_node(SurfaceExpression::Int(*n))),
         Value::Float(f) => Ok(make_node(SurfaceExpression::Float(*f))),
@@ -1041,8 +1046,13 @@ fn eval_quote_preprocess<'a>(
         SurfaceNode,
     };
     Box::pin(async move {
-        let span = node.span;
-        let make_node = |expr: SurfaceExpression| Arc::new(SurfaceNode { expr, span });
+        let span = node.span.clone();
+        let make_node = |expr: SurfaceExpression| {
+            Arc::new(SurfaceNode {
+                expr,
+                span: span.clone(),
+            })
+        };
 
         match &node.expr {
             SurfaceExpression::Unquote(inner) => {
@@ -1054,7 +1064,7 @@ fn eval_quote_preprocess<'a>(
                 );
                 let thunk = eval_core_expr(&core, env, ctx).await?;
                 let value = materialize(&thunk, Some(&inner.span), ctx).await?;
-                value_to_surface_node(&value, inner.span, ctx)
+                value_to_surface_node(&value, inner.span.clone(), ctx)
             }
 
             SurfaceExpression::UnquoteSplice(_) => {
@@ -1084,7 +1094,7 @@ fn eval_quote_preprocess<'a>(
                             key: processed_key,
                             value: processed_value,
                         },
-                        entry.span,
+                        entry.span.clone(),
                     ));
                 }
                 Ok(make_node(SurfaceExpression::Dict(processed_entries)))
@@ -1108,12 +1118,15 @@ fn eval_quote_preprocess<'a>(
                             crate::ast::empty_type_annotation_table(),
                         );
                         let thunk = eval_core_expr(&core, env, ctx).await?;
-                        let value = materialize(&thunk, Some(&inner.span), ctx).await?;
+                        let inner_span = inner.span.clone();
+                        let value = materialize(&thunk, Some(&inner_span), ctx).await?;
 
                         // Extract elements from the sequence and convert each to SurfaceNode
-                        let elements = collect_seq_elements(&value, inner.span, ctx).await?;
+                        let elements =
+                            collect_seq_elements(&value, inner_span.clone(), ctx).await?;
                         for elem_value in elements {
-                            let elem_node = value_to_surface_node(&elem_value, inner.span, ctx)?;
+                            let elem_node =
+                                value_to_surface_node(&elem_value, inner_span.clone(), ctx)?;
                             processed_args.push(elem_node);
                         }
                     } else {
@@ -1132,7 +1145,7 @@ fn eval_quote_preprocess<'a>(
                             name: na.node.name.clone(),
                             value: processed_value,
                         },
-                        na.span,
+                        na.span.clone(),
                     ));
                 }
                 Ok(make_node(SurfaceExpression::Call {
@@ -1392,18 +1405,25 @@ fn eval_core_expr<'a>(
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + 'a>> {
     Box::pin(async move {
+        let span = expr.span.clone();
         match &expr.node {
             // Fast path: literals materialize directly without wrapping in Unevaluated
-            CoreExpr::Int(n) => Ok(Arc::new(Thunk::new_materialized(Value::Int(*n), expr.span))),
+            CoreExpr::Int(n) => Ok(Arc::new(Thunk::new_materialized(
+                Value::Int(*n),
+                span.clone(),
+            ))),
             CoreExpr::Float(f) => Ok(Arc::new(Thunk::new_materialized(
                 Value::Float(*f),
-                expr.span,
+                span.clone(),
             ))),
             CoreExpr::Bool(b) => Ok(Arc::new(Thunk::new_materialized(
                 Value::Bool(*b),
-                expr.span,
+                span.clone(),
             ))),
-            CoreExpr::Str(s) => Ok(Arc::new(Thunk::new_materialized(string_val(s), expr.span))),
+            CoreExpr::Str(s) => Ok(Arc::new(Thunk::new_materialized(
+                string_val(s),
+                span.clone(),
+            ))),
 
             // Variable lookup with de Bruijn coordinates (fast path)
             CoreExpr::Var { name, level, slot } => {
@@ -1417,12 +1437,7 @@ fn eval_core_expr<'a>(
                     // Fallback to name-based lookup (for stale slot references)
                     let name_owned = name.clone();
                     env_lock.get(name).ok_or_else(|| {
-                        EvalError::undefined_variable(
-                            name_owned,
-                            ctx.config.source_file.as_deref(),
-                            expr.span,
-                        )
-                        .into()
+                        EvalError::undefined_variable(name_owned, span.clone()).into()
                     })
                 }
             }
@@ -1444,25 +1459,15 @@ fn eval_core_expr<'a>(
                     if let Some(monad_name) = monad_name {
                         let env_lock = env.read().unwrap();
                         return env_lock.get(&monad_name).ok_or_else(|| {
-                            EvalError::undefined_variable(
-                                monad_name,
-                                ctx.config.source_file.as_deref(),
-                                expr.span,
-                            )
-                            .into()
+                            EvalError::undefined_variable(monad_name, span.clone()).into()
                         });
                     }
                 }
                 let name_owned = name.clone();
                 let env_lock = env.read().unwrap();
-                env_lock.get(name).ok_or_else(|| {
-                    EvalError::undefined_variable(
-                        name_owned,
-                        ctx.config.source_file.as_deref(),
-                        expr.span,
-                    )
-                    .into()
-                })
+                env_lock
+                    .get(name)
+                    .ok_or_else(|| EvalError::undefined_variable(name_owned, span.clone()).into())
             }
 
             // DotAccess: wrap as a CoreExpr thunk directly.
@@ -1475,7 +1480,7 @@ fn eval_core_expr<'a>(
                 Arc::new(expr.clone()),
                 Arc::clone(env),
                 Arc::clone(ctx),
-                expr.span,
+                span.clone(),
             ))),
 
             // Sequential: evaluate each expression in order, extending the environment
@@ -1487,7 +1492,7 @@ fn eval_core_expr<'a>(
                 Arc::new(expr.clone()),
                 Arc::clone(env),
                 Arc::clone(ctx),
-                expr.span,
+                span.clone(),
             ))),
 
             // Dict: call eval_dict_core directly with the CoreEntry slice.
@@ -1495,7 +1500,7 @@ fn eval_core_expr<'a>(
             // calls previously required by the round-trip through eval_dict.
             // eval_dict_core now uses Thunk::new_unevaluated_core for non-literal dict entries
             // (UnevaluatedState::CoreExpr), eliminating the per-entry core_expr_to_expr round-trip.
-            CoreExpr::Dict(entries) => eval_dict_core(entries, env, ctx, &expr.span).await,
+            CoreExpr::Dict(entries) => eval_dict_core(entries, env, ctx, &span).await,
 
             // Call: use eval_call_core — no CoreExpr→Expr round-trip for func or named args.
             // Per-argument core_expr_to_expr conversion still occurs inside eval_call_core
@@ -1512,7 +1517,7 @@ fn eval_core_expr<'a>(
                     named_args,
                     env,
                     ctx,
-                    &expr.span,
+                    &span,
                     Arc::new(expr.clone()),
                 )
                 .await
@@ -1563,7 +1568,7 @@ fn eval_core_expr<'a>(
                         env: Arc::clone(env),
                         annotation,
                     },
-                    expr.span,
+                    span.clone(),
                 )))
             }
 
@@ -1574,19 +1579,19 @@ fn eval_core_expr<'a>(
                 Arc::new(expr.clone()),
                 Arc::clone(env),
                 Arc::clone(ctx),
-                expr.span,
+                span.clone(),
             ))),
 
             // Annotated: evaluate as bare string
             CoreExpr::Annotated { name, .. } => Ok(Arc::new(Thunk::new_materialized(
                 string_val(name),
-                expr.span,
+                span.clone(),
             ))),
 
             // Rest: error (only valid in type expressions)
             CoreExpr::Rest(_) => Err(EvalError::internal(
                 "rest marker (...) is only valid inside type expressions".to_string(),
-                expr.span,
+                span.clone(),
             )
             .into()),
 
@@ -1597,7 +1602,7 @@ fn eval_core_expr<'a>(
                 Arc::new(expr.clone()),
                 Arc::clone(env),
                 Arc::clone(ctx),
-                expr.span,
+                span.clone(),
             ))),
 
             // Quote: convert CoreExpr→SurfaceNode and walk with eval_quote_walk.
@@ -1616,63 +1621,63 @@ fn eval_core_expr<'a>(
             // Unquote: error (only valid inside quote)
             CoreExpr::Unquote(_) => Err(EvalError::internal(
                 "unquote is only valid inside [quote ...]".to_string(),
-                expr.span,
+                span.clone(),
             )
             .into()),
 
             // UnquoteSplice: error (only valid inside quote)
             CoreExpr::UnquoteSplice(_) => Err(EvalError::internal(
                 "unquote-splice is only valid inside [quote ...]".to_string(),
-                expr.span,
+                span.clone(),
             )
             .into()),
 
             // PatternDecl: error (not an expression)
             CoreExpr::PatternDecl { .. } => Err(EvalError::internal(
                 "pattern declaration is only valid in instance match arms".to_string(),
-                expr.span,
+                span.clone(),
             )
             .into()),
 
             // LetDecl: error (not an expression)
             CoreExpr::LetDecl { .. } => Err(EvalError::internal(
                 "let declarations are not expressions".to_string(),
-                expr.span,
+                span.clone(),
             )
             .into()),
 
             // CaseArm: error (not an expression)
             CoreExpr::CaseArm { .. } => Err(EvalError::internal(
                 "case arms are not expressions".to_string(),
-                expr.span,
+                span.clone(),
             )
             .into()),
 
             // TypeApp: error (type annotation node)
             CoreExpr::TypeApp { .. } => Err(EvalError::internal(
                 "TypeApp is a type annotation node and cannot be evaluated".to_string(),
-                expr.span,
+                span.clone(),
             )
             .into()),
 
             // Placeholder: error on evaluation
             CoreExpr::Placeholder => Err(EvalError::unimplemented(
                 "placeholder `...` was evaluated — replace with an implementation".to_string(),
-                expr.span,
+                span.clone(),
             )
             .into()),
 
             // Error: propagate as internal error
-            CoreExpr::Error(span) => Err(EvalError::internal(
+            CoreExpr::Error(err_span) => Err(EvalError::internal(
                 format!(
                     "syntax error at {}:{} (cannot evaluate error node)",
-                    span.start.line, span.start.column
+                    err_span.start.line, err_span.start.column
                 ),
-                expr.span,
+                span.clone(),
             )
             .into()),
         }
-        .map(|thunk| maybe_wrap_guard(thunk, expr.span, ctx))
+        .map(|thunk| maybe_wrap_guard(thunk, span, ctx))
     }) // end Box::pin(async move {
 }
 
@@ -1745,7 +1750,7 @@ pub fn materialize<'a>(
     Box::pin(async move {
         // Read origin before checking state (InProgress may not preserve it)
         let origin = thunk.origin.clone();
-        let thunk_span = thunk.span;
+        let thunk_span = thunk.span.clone();
 
         // Fast path: check if already materialized
         if let Some(v) = thunk.try_get_materialized() {
@@ -1768,13 +1773,13 @@ pub fn materialize<'a>(
             if let Some(span) = mat_span {
                 if cloned.materialization_span.is_none() {
                     // First access via Failed path (edge case: error cached without mat_span)
-                    cloned.materialization_span = Some(*span);
+                    cloned.materialization_span = Some(span.clone());
                     should_update_cache = true;
-                } else if cloned.materialization_span != Some(*span)
-                    && !cloned.stack.iter().any(|f| f.span == *span)
+                } else if cloned.materialization_span != Some(span.clone())
+                    && !cloned.stack.iter().any(|f| f.definition_span == *span)
                 {
                     // Different access site: add as stack frame, preserve original mat_span
-                    cloned.push_frame("materialized".to_string(), *span);
+                    cloned.push_frame("materialized".to_string(), span.clone());
                     should_update_cache = true;
                 }
             }
@@ -1794,9 +1799,9 @@ pub fn materialize<'a>(
             let label = origin.as_deref().unwrap_or("thunk");
             // Capture the eval_stack for cycle path reconstruction
             let cycle_path = ctx.state.lock().unwrap().eval_stack.clone();
-            let mut err = EvalError::circular_dependency(label, thunk.span, cycle_path);
+            let mut err = EvalError::circular_dependency(label, thunk.span.clone(), cycle_path);
             if let Some(span) = mat_span {
-                err = err.with_materialization_span(*span);
+                err = err.with_materialization_span(span.clone());
             }
             let err_boxed: Box<EvalError> = err.into();
             thunk.cache_failure_once(&err_boxed);
@@ -1810,7 +1815,15 @@ pub fn materialize<'a>(
 
         let origin_opt: Option<&str> = origin.as_deref();
         let source_file_str: Option<String> = ctx.config.source_file.clone();
-        let decorate = move |e| attach_materialization_context(e, mat_span, origin_opt, thunk_span, source_file_str.as_deref());
+        let decorate = move |e| {
+            attach_materialization_context(
+                e,
+                mat_span,
+                origin_opt,
+                thunk_span.clone(),
+                source_file_str.as_deref(),
+            )
+        };
 
         if let Some((def, args, named, call_span, thunk_ctx)) = thunk.take_pending_builtin() {
             // Pre-materialize strict args before calling the builtin.
@@ -1875,6 +1888,7 @@ pub fn materialize<'a>(
             }
             // `named` is None for internally-created thunks (common case); only $apply
             // passes named args through. Use an empty map ref for the None case.
+            let call_span_for_restore = call_span.clone();
             let builtin_args = crate::value::BuiltinArgs {
                 args,
                 named,
@@ -1898,7 +1912,7 @@ pub fn materialize<'a>(
                         match run(
                             Action::Materialize {
                                 thunk: result_thunk,
-                                mat_span: mat_span.copied(),
+                                mat_span: mat_span.cloned(),
                             },
                             &thunk_ctx,
                         )
@@ -1919,7 +1933,7 @@ pub fn materialize<'a>(
                                             def,
                                             args: args_for_restore,
                                             named: named_for_restore,
-                                            call_span,
+                                            call_span: call_span_for_restore,
                                             ctx: thunk_ctx,
                                         },
                                     );
@@ -1938,7 +1952,7 @@ pub fn materialize<'a>(
                             def,
                             args: args_for_restore,
                             named: named_for_restore,
-                            call_span,
+                            call_span: call_span_for_restore,
                             ctx: thunk_ctx,
                         });
                     }
@@ -1959,7 +1973,7 @@ pub fn materialize<'a>(
             let func_value = match run(
                 Action::Materialize {
                     thunk: Arc::clone(&func_thunk),
-                    mat_span: Some(call_span),
+                    mat_span: Some(call_span.clone()),
                 },
                 &thunk_ctx,
             )
@@ -2004,7 +2018,7 @@ pub fn materialize<'a>(
                         // of whoever triggered materialization. `$apply` diverges: it uses the
                         // closure env as `default_env` so that defaults see the function's own scope.
                         default_env: &caller_env,
-                        call_span,
+                        call_span: call_span.clone(),
                         origin: origin.clone(),
                         ctx: &thunk_ctx,
                     };
@@ -2015,7 +2029,7 @@ pub fn materialize<'a>(
                             match run(
                                 Action::Materialize {
                                     thunk: result_thunk,
-                                    mat_span: mat_span.copied(),
+                                    mat_span: mat_span.cloned(),
                                 },
                                 &thunk_ctx,
                             )
@@ -2036,7 +2050,7 @@ pub fn materialize<'a>(
                                                 func: func_thunk.clone(),
                                                 args: args.clone(),
                                                 named: named.clone().map(Box::new),
-                                                call_span,
+                                                call_span: call_span.clone(),
                                                 caller_env: caller_env.clone(),
                                                 ctx: thunk_ctx.clone(),
                                                 original_call: original_call.clone(),
@@ -2053,7 +2067,7 @@ pub fn materialize<'a>(
                             // need stack traces for debugging. The thunk's span is the
                             // definition site, which is sufficient for successful results.
                             if let Some(label) = origin.as_deref() {
-                                e.push_frame(label.to_string(), call_span);
+                                e.push_frame(label.to_string(), call_span.clone());
                             }
                             if e.kind.is_cacheable() {
                                 thunk.cache_failure_once(&e);
@@ -2122,7 +2136,7 @@ pub fn materialize<'a>(
                                     func: func_thunk.clone(),
                                     args: args.clone(),
                                     named: named.clone().map(Box::new),
-                                    call_span,
+                                    call_span: call_span.clone(),
                                     caller_env: caller_env.clone(),
                                     ctx: thunk_ctx.clone(),
                                     original_call: original_call.clone(),
@@ -2131,6 +2145,7 @@ pub fn materialize<'a>(
                             return Err(e);
                         }
                     }
+                    let call_span_for_restore = call_span.clone();
                     let builtin_args = crate::value::BuiltinArgs {
                         args,
                         named,
@@ -2150,7 +2165,7 @@ pub fn materialize<'a>(
                                 match run(
                                     Action::Materialize {
                                         thunk: result_thunk,
-                                        mat_span: mat_span.copied(),
+                                        mat_span: mat_span.cloned(),
                                     },
                                     &thunk_ctx,
                                 )
@@ -2170,7 +2185,7 @@ pub fn materialize<'a>(
                                                     func: func_thunk.clone(),
                                                     args: args_for_restore,
                                                     named: named_for_restore.map(Box::new),
-                                                    call_span,
+                                                    call_span: call_span_for_restore,
                                                     caller_env: caller_env.clone(),
                                                     ctx: thunk_ctx.clone(),
                                                     original_call: original_call.clone(),
@@ -2190,7 +2205,7 @@ pub fn materialize<'a>(
                                     func: func_thunk.clone(),
                                     args: args_for_restore,
                                     named: named_for_restore.map(Box::new),
-                                    call_span,
+                                    call_span: call_span_for_restore,
                                     caller_env: caller_env.clone(),
                                     ctx: thunk_ctx.clone(),
                                     original_call: original_call.clone(),
@@ -2241,7 +2256,7 @@ pub fn materialize<'a>(
                     let err = EvalError::type_mismatch(
                         "Function or Builtin",
                         other.type_name(),
-                        call_span,
+                        call_span.clone(),
                     );
                     let decorated = decorate(Box::new(err));
                     if decorated.kind.is_cacheable() {
@@ -2268,12 +2283,12 @@ pub fn materialize<'a>(
             // When guard validation fails, the default is evaluated and used as the fallback.
 
             // Capture inner thunk's span before materializing — used as data_span for error reporting
-            let inner_span = inner.span;
+            let inner_span = inner.span.clone();
 
             let result = run(
                 Action::Materialize {
                     thunk: Arc::clone(&inner),
-                    mat_span: mat_span.copied(),
+                    mat_span: mat_span.cloned(),
                 },
                 ctx,
             )
@@ -2291,8 +2306,8 @@ pub fn materialize<'a>(
                                 entries,
                                 row.as_ref(),
                                 &mut field_path,
-                                guard_span,
-                                inner_span,
+                                guard_span.clone(),
+                                inner_span.clone(),
                                 ctx,
                                 default.clone(),
                                 blame_label.clone(),
@@ -2338,7 +2353,7 @@ pub fn materialize<'a>(
                                         let default_value = match run(
                                             Action::Materialize {
                                                 thunk: default_thunk,
-                                                mat_span: mat_span.copied(),
+                                                mat_span: mat_span.cloned(),
                                             },
                                             ctx,
                                         )
@@ -2407,7 +2422,7 @@ pub fn materialize<'a>(
                                 let default_value = match run(
                                     Action::Materialize {
                                         thunk: default_thunk,
-                                        mat_span: mat_span.copied(),
+                                        mat_span: mat_span.cloned(),
                                     },
                                     ctx,
                                 )
@@ -2447,7 +2462,7 @@ pub fn materialize<'a>(
                                     format_type_for_assert(&expected)
                                 ),
                                 value.type_name(),
-                                inner_span,
+                                inner_span.clone(),
                             );
                             // Add secondary span if inner value was produced at a different
                             // location than the assertion site (guard_span).
@@ -2495,7 +2510,7 @@ pub fn materialize<'a>(
                                 let default_value = match run(
                                     Action::Materialize {
                                         thunk: default_thunk,
-                                        mat_span: mat_span.copied(),
+                                        mat_span: mat_span.cloned(),
                                     },
                                     ctx,
                                 )
@@ -2535,7 +2550,7 @@ pub fn materialize<'a>(
                                     format_type_for_assert(&expected)
                                 ),
                                 value.type_name(),
-                                inner_span,
+                                inner_span.clone(),
                             );
                             // Add secondary span if inner value was produced at a different
                             // location than the assertion site (guard_span).
@@ -2583,7 +2598,7 @@ pub fn materialize<'a>(
                 run(
                     Action::Materialize {
                         thunk: result_thunk,
-                        mat_span: mat_span.copied(),
+                        mat_span: mat_span.cloned(),
                     },
                     &thunk_ctx,
                 )
@@ -2629,7 +2644,7 @@ pub fn materialize<'a>(
                 run(
                     Action::Materialize {
                         thunk: result_thunk,
-                        mat_span: mat_span.copied(),
+                        mat_span: mat_span.cloned(),
                     },
                     &thunk_ctx,
                 )
@@ -2707,7 +2722,7 @@ pub fn materialize_sync(
 fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(String, Span)>) {
     match &pattern.node {
         Pattern::Variable(name) => {
-            out.push((name.clone(), pattern.span));
+            out.push((name.clone(), pattern.span.clone()));
         }
         Pattern::Wildcard | Pattern::Literal(_) | Pattern::TypeTag(_) | Pattern::Pin(_) => {
             // No variable bindings
@@ -2773,7 +2788,7 @@ pub(crate) fn check_pattern_linearity(pattern: &Spanned<Pattern>) -> Result<(), 
     let mut seen: HashSet<&str> = HashSet::with_capacity(names.len());
     for (name, span) in &names {
         if !seen.insert(name.as_str()) {
-            return Err(EvalError::duplicate_variable_in_pattern(name, *span));
+            return Err(EvalError::duplicate_variable_in_pattern(name, span.clone()));
         }
     }
     Ok(())
@@ -2800,7 +2815,8 @@ pub(crate) fn match_pattern<'a>(
             Pattern::Variable(name) => {
                 // Variable always matches and binds the value
                 let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
-                let value_thunk = Arc::new(Thunk::new_materialized(value.clone(), *value_span));
+                let value_thunk =
+                    Arc::new(Thunk::new_materialized(value.clone(), value_span.clone()));
                 child_env.write().unwrap().insert(name.clone(), value_thunk);
                 Ok(Some(child_env))
             }
@@ -2867,18 +2883,19 @@ pub(crate) fn match_pattern<'a>(
             Pattern::Pin(name) => {
                 // Pin matches if the variable's value equals the scrutinee value
                 let var_thunk = env.read().unwrap().get(name).ok_or_else(|| {
-                    EvalError::undefined_variable(
-                        name.clone(),
-                        ctx.config.source_file.as_deref(),
-                        *value_span,
-                    )
+                    EvalError::undefined_variable(name.clone(), value_span.clone())
                 })?;
                 let var_value = materialize(&var_thunk, Some(value_span), ctx).await?;
 
                 // Compare values for equality. Dict and Seq require materialization of
                 // their contents, so this is an async operation.
-                let matches =
-                    values_equal(var_value, value.clone(), *value_span, Arc::clone(ctx)).await?;
+                let matches = values_equal(
+                    var_value,
+                    value.clone(),
+                    value_span.clone(),
+                    Arc::clone(ctx),
+                )
+                .await?;
                 if matches {
                     Ok(Some(Arc::clone(env)))
                 } else {
@@ -2959,7 +2976,7 @@ pub(crate) fn match_pattern<'a>(
                             r_id,
                             "dict pattern match",
                             ctx,
-                            *value_span,
+                            value_span.clone(),
                         )?;
                         // Re-use the Value::Dict matching path by recursing with the flattened value.
                         match_pattern(
@@ -3118,7 +3135,7 @@ pub(crate) fn match_pattern<'a>(
                                             Arc::clone(node),
                                             field_name,
                                             Arc::clone(ctx),
-                                            *value_span,
+                                            value_span.clone(),
                                         )));
                                     payload_map
                                         .insert(Key::String(Rc::from(*field_name)), thunk_id);
@@ -3223,7 +3240,7 @@ fn values_equal(a: Value, b: Value, span: Span, ctx: Arc<EvalContext>) -> Values
                     let thunk_b = ctx.get_thunk(id_b);
                     let val_a = materialize(&thunk_a, Some(&span), &ctx).await?;
                     let val_b = materialize(&thunk_b, Some(&span), &ctx).await?;
-                    if !values_equal(val_a, val_b, span, Arc::clone(&ctx)).await? {
+                    if !values_equal(val_a, val_b, span.clone(), Arc::clone(&ctx)).await? {
                         return Ok(false);
                     }
                 }
@@ -3246,7 +3263,7 @@ fn values_equal(a: Value, b: Value, span: Span, ctx: Arc<EvalContext>) -> Values
                 let thunk_hb = ctx.get_thunk(head_b);
                 let val_ha = materialize(&thunk_ha, Some(&span), &ctx).await?;
                 let val_hb = materialize(&thunk_hb, Some(&span), &ctx).await?;
-                if !values_equal(val_ha, val_hb, span, Arc::clone(&ctx)).await? {
+                if !values_equal(val_ha, val_hb, span.clone(), Arc::clone(&ctx)).await? {
                     return Ok(false);
                 }
                 let thunk_ta = ctx.get_thunk(tail_a);
@@ -3360,7 +3377,12 @@ mod tests {
     /// rv2-migrate-annotation migration (Phase 1 stub support).
     fn surf_ann_entry(key: &str, value_expr: SurfaceExpression) -> Spanned<SurfaceEntry> {
         let z = test_span(0, 0, 0, 0);
-        let mk = |expr| Arc::new(SurfaceNode { expr, span: z });
+        let mk = |expr| {
+            Arc::new(SurfaceNode {
+                expr,
+                span: z.clone(),
+            })
+        };
         Spanned::new(
             SurfaceEntry {
                 key: Some(mk(SurfaceExpression::Str(key.into()))),
@@ -3675,21 +3697,26 @@ mod tests {
         // Build via SurfaceNode to bypass parser duplicate-key detection.
         // The evaluator (eval_dict_core) must detect the duplicate key and return E030.
         let z = Span::origin();
-        let mk = |expr: SurfaceExpression| Arc::new(SurfaceNode { expr, span: z });
+        let mk = |expr: SurfaceExpression| {
+            Arc::new(SurfaceNode {
+                expr,
+                span: z.clone(),
+            })
+        };
         let node = mk(SurfaceExpression::Dict(vec![
             Spanned::new(
                 SurfaceEntry {
                     key: Some(mk(SurfaceExpression::Str("x".into()))),
                     value: mk(SurfaceExpression::Int(1)),
                 },
-                z,
+                z.clone(),
             ),
             Spanned::new(
                 SurfaceEntry {
                     key: Some(mk(SurfaceExpression::Str("x".into()))),
                     value: mk(SurfaceExpression::Int(2)),
                 },
-                z,
+                z.clone(),
             ),
         ]));
         let err = eval_for_test(node, empty_env(), &test_ctx()).unwrap_err();
@@ -4320,7 +4347,12 @@ mod tests {
     /// All values must be parseable as surface expressions.
     fn surf_dict(entries: Vec<(&str, &str)>) -> Arc<SurfaceNode> {
         let z = Span::origin();
-        let mk = |expr: SurfaceExpression| Arc::new(SurfaceNode { expr, span: z });
+        let mk = |expr: SurfaceExpression| {
+            Arc::new(SurfaceNode {
+                expr,
+                span: z.clone(),
+            })
+        };
         let surf_entries = entries
             .into_iter()
             .map(|(k, v)| {
@@ -4331,7 +4363,7 @@ mod tests {
                         key: Some(mk(SurfaceExpression::Str(k.into()))),
                         value: val_node,
                     },
-                    z,
+                    z.clone(),
                 )
             })
             .collect();
@@ -4445,7 +4477,7 @@ mod tests {
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("Int".into())),
-                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Int,
             },
             span,
@@ -4469,7 +4501,7 @@ mod tests {
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("String".into())),
-                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
                 resolved_type: Type::Str,
             },
             span,
@@ -4517,7 +4549,7 @@ mod tests {
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
-                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Int,
             },
             span,
@@ -4566,7 +4598,7 @@ mod tests {
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
-                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Int,
             },
             span,
@@ -4591,7 +4623,7 @@ mod tests {
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
-                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Int,
             },
             span,
@@ -4624,10 +4656,10 @@ mod tests {
         let expr_pass = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries_pass)),
-                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
                 resolved_type: Type::Number,
             },
-            span,
+            span.clone(),
         );
         let thunk = eval_core_for_test(expr_pass, empty_env(), &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
@@ -4647,7 +4679,7 @@ mod tests {
         let expr_fail = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries_fail)),
-                expr: Arc::new(Spanned::new(CoreExpr::Str("nope".into()), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("nope".into()), span.clone())),
                 resolved_type: Type::Number,
             },
             span,
@@ -4692,7 +4724,7 @@ mod tests {
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
-                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Int,
             },
             span,
@@ -4782,7 +4814,13 @@ mod tests {
         // A dict with a Bool key expression should fail in eval_key -> value_to_key.
         // Build via SurfaceNode since surface text [true: 1] would parse "true" as a String key.
         let z = Span::origin();
-        let mk = |expr: SurfaceExpression| Arc::new(SurfaceNode { expr, span: z });
+        let zz = z.clone();
+        let mk = move |expr: SurfaceExpression| {
+            Arc::new(SurfaceNode {
+                expr,
+                span: zz.clone(),
+            })
+        };
         let node = mk(SurfaceExpression::Dict(vec![Spanned::new(
             SurfaceEntry {
                 key: Some(mk(SurfaceExpression::Bool(true))),
@@ -4805,7 +4843,13 @@ mod tests {
         // A dict with a Float key expression should fail in eval_key -> value_to_key.
         // Build via SurfaceNode since surface text [3.14: 1] would parse differently.
         let z = Span::origin();
-        let mk = |expr: SurfaceExpression| Arc::new(SurfaceNode { expr, span: z });
+        let zz = z.clone();
+        let mk = move |expr: SurfaceExpression| {
+            Arc::new(SurfaceNode {
+                expr,
+                span: zz.clone(),
+            })
+        };
         let node = mk(SurfaceExpression::Dict(vec![Spanned::new(
             SurfaceEntry {
                 key: Some(mk(SurfaceExpression::Float(3.14))),
@@ -5337,7 +5381,11 @@ mod tests {
         let err = materialize(&inner_thunk, Some(&mat_span), &test_ctx()).unwrap_err();
 
         // Count how many frames have the same span
-        let frame_count = err.stack.iter().filter(|f| f.span == mat_span).count();
+        let frame_count = err
+            .stack
+            .iter()
+            .filter(|f| f.definition_span == mat_span)
+            .count();
         assert!(
             frame_count <= 1,
             "expected at most 1 frame with mat_span, got {frame_count}: {:?}",
@@ -5525,9 +5573,9 @@ mod tests {
             func_thunk,
             vec![arg1, arg2],
             IndexMap::new(),
-            call_span,
+            call_span.clone(),
             empty_env(),
-            call_span,
+            call_span.clone(),
             Some(Arc::from("test-pending-call")),
             Arc::clone(&test_ctx()),
             Arc::new(crate::ast::Spanned {
@@ -5584,9 +5632,9 @@ mod tests {
             func_thunk,
             vec![arg1, arg2],
             IndexMap::new(),
-            call_span,
+            call_span.clone(),
             empty_env(),
-            call_span,
+            call_span.clone(),
             Some(Arc::from("test-pending-call")),
             Arc::clone(&test_ctx()),
             Arc::new(crate::ast::Spanned {
@@ -5629,9 +5677,9 @@ mod tests {
             func_thunk,
             vec![arg],
             IndexMap::new(),
-            call_span,
+            call_span.clone(),
             empty_env(),
-            call_span,
+            call_span.clone(),
             Some(Arc::from("test-pending-call")),
             Arc::clone(&test_ctx()),
             Arc::new(crate::ast::Spanned {
@@ -5669,9 +5717,9 @@ mod tests {
             not_a_function,
             vec![],
             IndexMap::new(),
-            call_span,
+            call_span.clone(),
             empty_env(),
-            call_span,
+            call_span.clone(),
             Some(Arc::from("test-pending-call")),
             Arc::clone(&test_ctx()),
             Arc::new(crate::ast::Spanned {
@@ -5722,9 +5770,9 @@ mod tests {
             func_thunk,
             vec![arg],
             IndexMap::new(),
-            call_span,
+            call_span.clone(),
             empty_env(),
-            call_span,
+            call_span.clone(),
             Some(Arc::from("test-pending-call")),
             Arc::clone(&test_ctx()),
             Arc::new(crate::ast::Spanned {
@@ -5829,9 +5877,9 @@ mod tests {
             func_thunk,
             positional,
             named,
-            call_span,
+            call_span.clone(),
             empty_env(),
-            call_span,
+            call_span.clone(),
             Some(Arc::from("test-pending-call-named")),
             Arc::clone(&test_ctx()),
             Arc::new(crate::ast::Spanned {
@@ -5926,9 +5974,9 @@ mod tests {
             func_thunk,
             positional,
             IndexMap::new(), // no named args - let y use default
-            call_span,
+            call_span.clone(),
             empty_env(),
-            call_span,
+            call_span.clone(),
             Some(Arc::from("test-pending-call-default")),
             Arc::clone(&test_ctx()),
             Arc::new(crate::ast::Spanned {
@@ -6006,24 +6054,24 @@ mod tests {
         // First access with one materialization span
         let span1 = test_span(10, 1, 10, 5);
         let err1 = materialize(&broken_thunk, Some(&span1), &ctx).unwrap_err();
-        assert_eq!(err1.materialization_span, Some(span1));
+        assert_eq!(err1.materialization_span, Some(span1.clone()));
         assert_eq!(err1.stack.len(), 0);
 
         // Second access with a different materialization span should preserve span1
         // and add span2 as a stack frame
         let span2 = test_span(20, 1, 20, 5);
         let err2 = materialize(&broken_thunk, Some(&span2), &ctx).unwrap_err();
-        assert_eq!(err2.materialization_span, Some(span1)); // PRESERVED
+        assert_eq!(err2.materialization_span, Some(span1.clone())); // PRESERVED
         assert_eq!(err2.stack.len(), 1);
         assert_eq!(err2.stack[0].label, "materialized");
-        assert_eq!(err2.stack[0].span, span2);
+        assert_eq!(err2.stack[0].materialization_span, span2.clone());
 
         // Third access with no materialization span returns error with the
         // original materialization_span and the stack frame from the second access
         let err3 = materialize(&broken_thunk, None, &ctx).unwrap_err();
         assert_eq!(err3.materialization_span, Some(span1)); // PRESERVED
         assert_eq!(err3.stack.len(), 1);
-        assert_eq!(err3.stack[0].span, span2);
+        assert_eq!(err3.stack[0].materialization_span, span2);
     }
 
     #[test]
@@ -6140,9 +6188,9 @@ mod tests {
             func_thunk,
             vec![],
             IndexMap::new(),
-            call_span,
+            call_span.clone(),
             empty_env(),
-            call_span,
+            call_span.clone(),
             Some(Arc::from("test-pending-call")),
             Arc::clone(&test_ctx()),
             Arc::new(crate::ast::Spanned {
@@ -6185,9 +6233,9 @@ mod tests {
             bad_func,
             vec![],
             IndexMap::new(),
-            call_span,
+            call_span.clone(),
             empty_env(),
-            call_span,
+            call_span.clone(),
             Some(Arc::from("test-pending-call")),
             Arc::clone(&test_ctx()),
             Arc::new(crate::ast::Spanned {
@@ -6296,7 +6344,7 @@ mod tests {
         let err2 = materialize(&thunk, Some(&span1), &test_ctx()).unwrap_err();
         assert_eq!(
             err2.materialization_span,
-            Some(span1),
+            Some(span1.clone()),
             "mat_span should be set on second access with Some"
         );
 
@@ -6309,7 +6357,7 @@ mod tests {
             "original mat_span should be preserved"
         );
         assert!(
-            err3.stack.iter().any(|f| f.span == span2),
+            err3.stack.iter().any(|f| f.definition_span == span2),
             "span2 should be in stack frames"
         );
     }
@@ -6441,7 +6489,7 @@ mod tests {
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("Int".into())),
-                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
                 resolved_type: Type::Int,
             },
             span,
@@ -6459,7 +6507,7 @@ mod tests {
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("Int".into())),
-                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Int,
             },
             span,
@@ -6480,7 +6528,7 @@ mod tests {
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("Str".into())),
-                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Str,
             },
             span,
@@ -6497,7 +6545,7 @@ mod tests {
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("Any".into())),
-                expr: Arc::new(Spanned::new(CoreExpr::Str("anything".into()), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Str("anything".into()), span.clone())),
                 resolved_type: Type::Top,
             },
             span,
@@ -6514,7 +6562,7 @@ mod tests {
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("Any".into())),
-                expr: Arc::new(Spanned::new(CoreExpr::Int(99), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Int(99), span.clone())),
                 resolved_type: Type::Top,
             },
             span,
@@ -6548,24 +6596,27 @@ mod tests {
                             crate::ast::CoreEntry {
                                 key: Some(Arc::new(Spanned::new(
                                     CoreExpr::Str("name".into()),
-                                    span,
+                                    span.clone(),
                                 ))),
-                                value: Arc::new(Spanned::new(CoreExpr::Str("Alice".into()), span)),
+                                value: Arc::new(Spanned::new(
+                                    CoreExpr::Str("Alice".into()),
+                                    span.clone(),
+                                )),
                             },
-                            span,
+                            span.clone(),
                         ),
                         Spanned::new(
                             crate::ast::CoreEntry {
                                 key: Some(Arc::new(Spanned::new(
                                     CoreExpr::Str("age".into()),
-                                    span,
+                                    span.clone(),
                                 ))),
-                                value: Arc::new(Spanned::new(CoreExpr::Int(30), span)),
+                                value: Arc::new(Spanned::new(CoreExpr::Int(30), span.clone())),
                             },
-                            span,
+                            span.clone(),
                         ),
                     ]),
-                    span,
+                    span.clone(),
                 )),
                 resolved_type: record_type,
             },
@@ -6600,12 +6651,18 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Dict(vec![Spanned::new(
                         crate::ast::CoreEntry {
-                            key: Some(Arc::new(Spanned::new(CoreExpr::Str("name".into()), span))),
-                            value: Arc::new(Spanned::new(CoreExpr::Str("Alice".into()), span)),
+                            key: Some(Arc::new(Spanned::new(
+                                CoreExpr::Str("name".into()),
+                                span.clone(),
+                            ))),
+                            value: Arc::new(Spanned::new(
+                                CoreExpr::Str("Alice".into()),
+                                span.clone(),
+                            )),
                         },
-                        span,
+                        span.clone(),
                     )]),
-                    span,
+                    span.clone(),
                 )),
                 resolved_type: record_type,
             },
@@ -6637,23 +6694,26 @@ mod tests {
                     CoreExpr::Dict(vec![
                         Spanned::new(
                             crate::ast::CoreEntry {
-                                key: Some(Arc::new(Spanned::new(CoreExpr::Str("x".into()), span))),
-                                value: Arc::new(Spanned::new(CoreExpr::Int(1), span)),
+                                key: Some(Arc::new(Spanned::new(
+                                    CoreExpr::Str("x".into()),
+                                    span.clone(),
+                                ))),
+                                value: Arc::new(Spanned::new(CoreExpr::Int(1), span.clone())),
                             },
-                            span,
+                            span.clone(),
                         ),
                         Spanned::new(
                             crate::ast::CoreEntry {
                                 key: Some(Arc::new(Spanned::new(
                                     CoreExpr::Str("extra".into()),
-                                    span,
+                                    span.clone(),
                                 ))),
-                                value: Arc::new(Spanned::new(CoreExpr::Int(2), span)),
+                                value: Arc::new(Spanned::new(CoreExpr::Int(2), span.clone())),
                             },
-                            span,
+                            span.clone(),
                         ),
                     ]),
-                    span,
+                    span.clone(),
                 )),
                 resolved_type: record_type,
             },
@@ -6689,12 +6749,15 @@ mod tests {
                 expr: Arc::new(Spanned::new(
                     CoreExpr::Dict(vec![Spanned::new(
                         crate::ast::CoreEntry {
-                            key: Some(Arc::new(Spanned::new(CoreExpr::Str("x".into()), span))),
-                            value: Arc::new(Spanned::new(CoreExpr::Int(42), span)),
+                            key: Some(Arc::new(Spanned::new(
+                                CoreExpr::Str("x".into()),
+                                span.clone(),
+                            ))),
+                            value: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
                         },
-                        span,
+                        span.clone(),
                     )]),
-                    span,
+                    span.clone(),
                 )),
                 resolved_type: record_type,
             },
@@ -6724,7 +6787,7 @@ mod tests {
         let inner_expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::Simple("Record".into())),
-                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
                 resolved_type: record_type,
             },
             span,
@@ -6772,7 +6835,10 @@ mod tests {
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
-                expr: Arc::new(Spanned::new(CoreExpr::Str("not an int".into()), span)),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Str("not an int".into()),
+                    span.clone(),
+                )),
                 resolved_type: Type::Int,
             },
             span,
@@ -6931,7 +6997,7 @@ mod tests {
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
-                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span)),
+                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
                 resolved_type: record_type,
             },
             span,
@@ -7152,7 +7218,7 @@ mod tests {
             &row,
             &mut field_path,
             guard_span,
-            data_span,
+            data_span.clone(),
             &ctx,
             None,
             None,
@@ -7203,7 +7269,10 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         entries.insert(
             Key::String("x".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Int(1),
+                span.clone(),
+            ))),
         );
         entries.insert(
             Key::String("z".into()),
@@ -7257,7 +7326,7 @@ mod tests {
             &row,
             &mut field_path,
             guard_span,
-            data_span,
+            data_span.clone(),
             &ctx,
             None,
             None,
@@ -7308,7 +7377,7 @@ mod tests {
             Key::Int(0),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val("x".into()),
-                span,
+                span.clone(),
             ))),
         );
         entries.insert(
@@ -7358,7 +7427,7 @@ mod tests {
             Key::Int(0),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val("x".into()),
-                span,
+                span.clone(),
             ))),
         );
         entries.insert(
@@ -7417,7 +7486,7 @@ mod tests {
         // Pre-failed thunks should return their cached error even at high depth,
         // without hitting the depth check.
         let span = test_span(1, 1, 1, 5);
-        let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span));
+        let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
 
         // Force it into Failed state with a cached error
         let err = Box::new(EvalError::type_mismatch("String", "Int", span));
@@ -7447,7 +7516,7 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
 
         // Inner thunk: a materialized Int(42) — passes the Int guard.
-        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span));
+        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
 
         // Wrap it in a Guarded thunk expecting Int.
         let guarded = Arc::new(Thunk::new_guarded(
@@ -7501,7 +7570,10 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
 
         // Inner thunk: a String value — fails the Int guard.
-        let inner = Arc::new(Thunk::new_materialized(string_val("hello".into()), span));
+        let inner = Arc::new(Thunk::new_materialized(
+            string_val("hello".into()),
+            span.clone(),
+        ));
 
         // Wrap it in a Guarded thunk expecting Int.
         let guarded = Arc::new(Thunk::new_guarded(
@@ -7609,7 +7681,10 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
 
         // Base case: Thunk holding Int(chain_len as i64)
-        let base_thunk = Arc::new(Thunk::new_materialized(Value::Int(chain_len as i64), span));
+        let base_thunk = Arc::new(Thunk::new_materialized(
+            Value::Int(chain_len as i64),
+            span.clone(),
+        ));
         env.write()
             .unwrap()
             .insert("base".into(), Arc::clone(&base_thunk));
@@ -7629,7 +7704,7 @@ mod tests {
                 expr,
                 Arc::clone(&env),
                 Arc::clone(&ctx),
-                span,
+                span.clone(),
             ));
             env.write().unwrap().insert(curr_name, thunk);
         }
@@ -7912,12 +7987,12 @@ mod tests {
         let mut err = EvalError::key_not_found("key", vec![], def_span);
 
         // Add the frame once
-        err.push_frame("first access".to_string(), frame_span);
+        err.push_frame("first access".to_string(), frame_span.clone());
         assert_eq!(err.stack.len(), 1, "Should have exactly one frame");
         assert_eq!(err.stack[0].label, "first access");
 
         // Manually check for duplicate before adding (this is what error decoration does)
-        if !err.stack.iter().any(|f| f.span == frame_span) {
+        if !err.stack.iter().any(|f| f.definition_span == frame_span) {
             err.push_frame("second access".to_string(), frame_span);
         }
 
@@ -8085,7 +8160,7 @@ mod tests {
         // SurfaceNode with the guarded span: `42` (Int literal)
         let node = Arc::new(SurfaceNode {
             expr: SurfaceExpression::Int(42),
-            span: guarded_span,
+            span: guarded_span.clone(),
         });
 
         let ctx = ctx_with_guard(guarded_span, Type::Int);
@@ -8114,7 +8189,7 @@ mod tests {
         // SurfaceNode with the guarded span: `"hello"` (String literal)
         let node = Arc::new(SurfaceNode {
             expr: SurfaceExpression::Str("hello".into()),
-            span: guarded_span,
+            span: guarded_span.clone(),
         });
 
         // Guard expects Int — the String value will fail.
@@ -8181,7 +8256,7 @@ mod tests {
 
         let node = Arc::new(SurfaceNode {
             expr: SurfaceExpression::Int(7),
-            span: guarded_span,
+            span: guarded_span.clone(),
         });
 
         let ctx = ctx_with_guard(guarded_span, Type::Int);
@@ -8230,7 +8305,7 @@ mod tests {
             dict_expr,
             empty_env(),
             Arc::clone(&ctx),
-            span,
+            span.clone(),
         ));
 
         // Verify the arg is NOT yet materialized (it is unevaluated).
@@ -8298,7 +8373,7 @@ mod tests {
             dict_expr,
             empty_env(),
             Arc::clone(&ctx),
-            span,
+            span.clone(),
         ));
 
         // Verify the arg is NOT yet materialized.
@@ -8315,16 +8390,19 @@ mod tests {
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
         };
-        let func_thunk = Arc::new(Thunk::new_materialized(Value::Builtin(keys_def), span));
+        let func_thunk = Arc::new(Thunk::new_materialized(
+            Value::Builtin(keys_def),
+            span.clone(),
+        ));
 
         // Create a PendingCall thunk: calls builtin_keys with the unevaluated arg.
         let outer = Arc::new(Thunk::new_pending_call(
             func_thunk,
             vec![Arc::clone(&unevaluated_arg)],
             IndexMap::new(),
-            span,
+            span.clone(),
             empty_env(),
-            span,
+            span.clone(),
             None,
             Arc::clone(&ctx),
             Arc::new(crate::ast::Spanned {

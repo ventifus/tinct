@@ -5,7 +5,15 @@
 use crate::types::Type;
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+
+/// Source file with path and content, shared across all spans from the same file.
+#[derive(Debug, Clone)]
+pub struct SourceFile {
+    pub path: Arc<str>,
+    pub content: Arc<str>,
+}
 
 /// Key type for dot access — either a string field name or an integer index.
 #[derive(Debug, Clone, PartialEq)]
@@ -32,15 +40,38 @@ pub struct Position {
 }
 
 /// Source span (start..end)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct Span {
     pub start: Position,
     pub end: Position,
+    pub file: Option<Arc<SourceFile>>,
+}
+
+// Manual PartialEq, Eq, and Hash implementations that ignore the `file` field.
+// This preserves existing semantics: two spans at the same location are equal
+// regardless of what file they came from.
+impl PartialEq for Span {
+    fn eq(&self, other: &Self) -> bool {
+        self.start == other.start && self.end == other.end
+    }
+}
+
+impl Eq for Span {}
+
+impl Hash for Span {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.start.hash(state);
+        self.end.hash(state);
+    }
 }
 
 impl Span {
     pub fn new(start: Position, end: Position) -> Self {
-        Self { start, end }
+        Self {
+            start,
+            end,
+            file: None,
+        }
     }
 
     /// A synthetic span representing the origin of the source text (offset 0, line 1, column 1).
@@ -53,7 +84,11 @@ impl Span {
             line: 1,
             column: 1,
         };
-        Self::new(pos, pos)
+        Self {
+            start: pos,
+            end: pos,
+            file: None,
+        }
     }
 
     /// Returns true if this span is the synthetic origin span (all zeros / line 1, col 1).
@@ -63,8 +98,8 @@ impl Span {
     /// so keying `boundary_guards` by span would collide across all of them.
     /// `maybe_wrap_guard` skips guarding for origin spans to prevent applying the wrong
     /// type guard to an unrelated synthetic node.
-    pub fn is_origin(self) -> bool {
-        self == Self::origin()
+    pub fn is_origin(&self) -> bool {
+        *self == Self::origin()
     }
 }
 
@@ -710,8 +745,8 @@ impl SurfaceItem {
     /// Get the span of this item.
     pub fn span(&self) -> Span {
         match self {
-            SurfaceItem::Expr(node) => node.span,
-            SurfaceItem::Decl(decl) => decl.span,
+            SurfaceItem::Expr(node) => node.span.clone(),
+            SurfaceItem::Decl(decl) => decl.span.clone(),
         }
     }
 }
@@ -995,11 +1030,12 @@ mod tests {
                 line: 0,
                 column: 0,
             },
+            file: None,
         };
         let mk_node = |expr: SurfaceExpression| -> Arc<SurfaceNode> {
             Arc::new(SurfaceNode {
                 expr,
-                span: zero_span,
+                span: zero_span.clone(),
             })
         };
         let ann = Annotation::PropertyDict(vec![

@@ -480,6 +480,11 @@ impl InstanceEnv {
         self.instances.values()
     }
 
+    /// Return the number of registered instances.
+    pub fn instance_count(&self) -> usize {
+        self.instances.len()
+    }
+
     /// Resolve an instance for the given class and target type.
     /// Attempts to unify each registered instance's head type with the target type.
     /// Returns a freshened instance declaration if found, with method types substituted

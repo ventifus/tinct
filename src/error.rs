@@ -996,26 +996,35 @@ impl fmt::Display for ErrorKind {
     }
 }
 
-/// A single frame in an evaluation stack trace (function name + source location).
+/// A single frame in an evaluation stack trace (function name + source locations).
+///
+/// Carries two spans to support the dual-span error model:
+/// - `definition_span`: where the thunk was defined (the origin of the value being forced)
+/// - `materialization_span`: where the thunk was forced (the call/access site)
+///
+/// Both spans may carry `file: Option<Arc<SourceFile>>` so that rich source snippets
+/// can be rendered directly from the frame without a separate source-file registry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StackFrame {
     pub label: String,
-    pub span: Span,
-    /// Source file where this frame's span originates, if known.
-    pub file: Option<Arc<str>>,
+    /// Where the expression being forced was defined.
+    pub definition_span: Span,
+    /// Where the expression was forced (call/access site).
+    pub materialization_span: Span,
 }
 
 /// Evaluation error with definition-site span, optional materialization-site span,
 /// and a stack trace of enclosing function calls.
+///
+/// Source file information is embedded in each span's `file: Option<Arc<SourceFile>>` field
+/// (populated by the parser for source-backed spans). There is no separate `source_file`
+/// field — use `self.definition_span.file` to obtain the file path and content for rendering.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvalError {
     pub kind: ErrorKind,
     pub definition_span: Span,
     pub materialization_span: Option<Span>,
     pub stack: SmallVec<[StackFrame; 8]>,
-    /// Optional source file name where the error originated.
-    /// When present, displayed as a prefix to the span (e.g., "file.llt:10:5-10:20").
-    pub source_file: Option<Arc<str>>,
     /// Optional secondary span with a label, e.g. "evaluated to Bool" pointing at a value site.
     /// Displayed after the primary error line when present.
     pub secondary_span: Option<(Span, String)>,
@@ -1041,7 +1050,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1057,7 +1065,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1072,18 +1079,42 @@ impl EvalError {
 
     /// Builder for stack frame attachment.
     pub fn with_frame(mut self, label: String, span: Span) -> Self {
-        self.stack.push(StackFrame { label, span, file: None });
+        self.stack.push(StackFrame {
+            label,
+            definition_span: span.clone(),
+            materialization_span: span,
+        });
         self
     }
 
     /// Mutable stack frame push.
     pub fn push_frame(&mut self, label: String, span: Span) {
-        self.stack.push(StackFrame { label, span, file: None });
+        self.stack.push(StackFrame {
+            label,
+            definition_span: span.clone(),
+            materialization_span: span,
+        });
     }
 
-    /// Mutable stack frame push with source file annotation.
-    pub fn push_frame_with_file(&mut self, label: String, span: Span, file: Option<Arc<str>>) {
-        self.stack.push(StackFrame { label, span, file });
+    /// Mutable stack frame push with separate definition and materialization spans.
+    /// Use this when the thunk's definition site differs from the call/access site.
+    pub fn push_frame_dual(
+        &mut self,
+        label: String,
+        definition_span: Span,
+        materialization_span: Span,
+    ) {
+        self.stack.push(StackFrame {
+            label,
+            definition_span,
+            materialization_span,
+        });
+    }
+
+    /// Mutable stack frame push (legacy compatibility — file info is now embedded in spans).
+    /// Delegates to `push_frame` since file path comes from `span.file`.
+    pub fn push_frame_with_file(&mut self, label: String, span: Span, _file: Option<Arc<str>>) {
+        self.push_frame(label, span);
     }
 
     /// Builder for attaching a secondary span label, e.g. `"evaluated to Bool"`.
@@ -1130,7 +1161,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1148,7 +1178,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1165,7 +1194,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1179,7 +1207,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1200,7 +1227,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1216,7 +1242,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1232,7 +1257,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1246,7 +1270,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1260,7 +1283,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1274,7 +1296,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1288,7 +1309,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1302,7 +1322,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1316,7 +1335,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1333,7 +1351,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1347,7 +1364,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1361,7 +1377,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1384,7 +1399,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1398,7 +1412,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1412,7 +1425,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1426,7 +1438,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1440,7 +1451,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1454,7 +1464,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1462,17 +1471,12 @@ impl EvalError {
         }
     }
 
-    pub fn undefined_variable(
-        name: String,
-        source_file: Option<&str>,
-        definition_span: Span,
-    ) -> Self {
+    pub fn undefined_variable(name: String, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::UndefinedVariable { name },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: source_file.map(Arc::from),
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1489,7 +1493,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1506,7 +1509,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1520,7 +1522,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1538,7 +1539,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1546,7 +1546,7 @@ impl EvalError {
         }
     }
 
-    pub fn duplicate_key(key: &str, source_file: Option<&str>, definition_span: Span) -> Self {
+    pub fn duplicate_key(key: &str, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::DuplicateKey {
                 key: key.to_string(),
@@ -1554,7 +1554,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: source_file.map(Arc::from),
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1568,7 +1567,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1584,7 +1582,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1598,7 +1595,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1612,7 +1608,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1626,7 +1621,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1640,7 +1634,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1659,7 +1652,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1682,7 +1674,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1696,7 +1687,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1710,7 +1700,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1733,7 +1722,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1747,7 +1735,6 @@ impl EvalError {
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1763,7 +1750,6 @@ impl EvalError {
             definition_span: span,
             materialization_span: None,
             stack: SmallVec::new(),
-            source_file: None,
             secondary_span: None,
             macro_expansion: None,
             blame: None,
@@ -1780,7 +1766,7 @@ impl EvalError {
 /// is shown, including stdlib internal helpers (-impl, -step, -check, -merge). This is
 /// necessary for diagnosing bugs in macro transformers and stdlib code.
 fn should_display_frame(frame: &StackFrame) -> bool {
-    frame.span != Span::origin()
+    frame.definition_span != Span::origin()
 }
 
 /// Infer a context-appropriate verb for the materialization span label.
@@ -1832,7 +1818,8 @@ fn detect_repeating_period(frames: &[&StackFrame]) -> Option<(usize, usize)> {
         let mut is_repeating = true;
         for i in 0..repeating_range {
             let base_idx = i % period;
-            if frames[i].label != frames[base_idx].label || frames[i].span != frames[base_idx].span
+            if frames[i].label != frames[base_idx].label
+                || frames[i].definition_span != frames[base_idx].definition_span
             {
                 is_repeating = false;
                 break;
@@ -1847,38 +1834,75 @@ fn detect_repeating_period(frames: &[&StackFrame]) -> Option<(usize, usize)> {
     None
 }
 
+/// Format a span location string, prefixing with the file path when available.
+/// Used for both the primary error location and stack frame locations.
+///
+/// When the span carries an embedded `SourceFile`, formats as `"path:line:col-line:col"`.
+/// Otherwise formats as `"line:col-line:col"` (position only).
+fn format_span_location(span: &Span) -> String {
+    if let Some(ref sf) = span.file {
+        format!("{}:{}", sf.path, span)
+    } else {
+        format!("{}", span)
+    }
+}
+
+/// Write a source snippet for a stack frame's span, if the span carries file content.
+/// Outputs `\n   |\n{snippet}` — same style as the primary error snippet but for frames.
+fn write_frame_snippet(f: &mut fmt::Formatter<'_>, span: &Span) -> fmt::Result {
+    if let Some(ref sf) = span.file {
+        if let Some(snippet) = render_span_snippet(&sf.content, span.clone()) {
+            write!(f, "\n   |")?;
+            for line in snippet.lines() {
+                write!(f, "\n{}", line)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Format definition span with optional source file prefix
-        if let Some(ref file) = self.source_file {
-            write!(
-                f,
-                "[{}] {} (defined at {}:{})",
-                self.kind.code(),
-                self.kind,
-                file,
-                self.definition_span
-            )?;
-        } else {
-            write!(
-                f,
-                "[{}] {} (defined at {})",
-                self.kind.code(),
-                self.kind,
-                self.definition_span
-            )?;
-        }
+        // Primary error line: "[Exx] message (defined at file:line:col)"
+        // File path comes from the embedded SourceFile in definition_span, not a separate field.
+        write!(
+            f,
+            "[{}] {} (defined at {})",
+            self.kind.code(),
+            self.kind,
+            format_span_location(&self.definition_span),
+        )?;
+
         // Only show materialization span if it differs from definition span (doc/10-errors.md:820)
+        // Written here (inline on the first line) before the snippet block.
         if let Some(ref mat_span) = self.materialization_span {
             if mat_span != &self.definition_span {
                 let verb = infer_materialization_verb(&self.stack);
-                write!(f, " ({verb} {mat_span})")?;
+                write!(f, " ({verb} {})", format_span_location(mat_span))?;
+            }
+        }
+
+        // Source snippet: rustc-style caret underlining, shown when the span carries source content.
+        // Only rendered when definition_span has an embedded SourceFile (parser-backed spans).
+        // Positioned after the first line so the snippet does not disrupt span location inline text.
+        if let Some(ref sf) = self.definition_span.file {
+            if let Some(snippet) = render_span_snippet(&sf.content, self.definition_span.clone()) {
+                write!(f, "\n  --> {}:{}", sf.path, self.definition_span)?;
+                write!(f, "\n   |")?;
+                // render_span_snippet returns lines like "  N | line" and "  N | ^^^"
+                for line in snippet.lines() {
+                    write!(f, "\n{}", line)?;
+                }
             }
         }
 
         // Secondary span: "evaluated to X" label pointing at a related source location.
         if let Some((ref sec_span, ref sec_label)) = self.secondary_span {
-            write!(f, "\n  note: {sec_label} at {sec_span}")?;
+            write!(
+                f,
+                "\n  note: {sec_label} at {}",
+                format_span_location(sec_span)
+            )?;
         }
 
         // For DepthExceeded errors, detect and elide repeating frame cycles
@@ -1893,8 +1917,9 @@ impl fmt::Display for EvalError {
             if let Some((period, full_repeats)) = detect_repeating_period(&visible_frames) {
                 // Display one period copy
                 for frame in visible_frames.iter().take(period) {
-                    let loc = frame.file.as_deref().map_or_else(|| format!("{}", frame.span), |file| format!("{}:{}", file, frame.span));
+                    let loc = format_span_location(&frame.definition_span);
                     write!(f, "\n  in {} at {}", frame.label, loc)?;
+                    write_frame_snippet(f, &frame.definition_span)?;
                 }
                 // Display summary line
                 let remaining = full_repeats - 1;
@@ -1907,14 +1932,16 @@ impl fmt::Display for EvalError {
                 // Display any tail frames beyond the repeated cycles
                 let tail_start = period * full_repeats;
                 for frame in &visible_frames[tail_start..] {
-                    let loc = frame.file.as_deref().map_or_else(|| format!("{}", frame.span), |file| format!("{}:{}", file, frame.span));
+                    let loc = format_span_location(&frame.definition_span);
                     write!(f, "\n  in {} at {}", frame.label, loc)?;
+                    write_frame_snippet(f, &frame.definition_span)?;
                 }
             } else {
                 // No repeating pattern found - display all frames normally
                 for frame in visible_frames {
-                    let loc = frame.file.as_deref().map_or_else(|| format!("{}", frame.span), |file| format!("{}:{}", file, frame.span));
+                    let loc = format_span_location(&frame.definition_span);
                     write!(f, "\n  in {} at {}", frame.label, loc)?;
+                    write_frame_snippet(f, &frame.definition_span)?;
                 }
             }
         } else {
@@ -1924,8 +1951,9 @@ impl fmt::Display for EvalError {
                     continue;
                 }
 
-                let loc = frame.file.as_deref().map_or_else(|| format!("{}", frame.span), |file| format!("{}:{}", file, frame.span));
+                let loc = format_span_location(&frame.definition_span);
                 write!(f, "\n  in {} at {}", frame.label, loc)?;
+                write_frame_snippet(f, &frame.definition_span)?;
             }
         }
 
@@ -2151,7 +2179,7 @@ mod tests {
     #[test]
     fn test_eval_error_new() {
         let span = test_span(1, 1, 1, 5);
-        let err = EvalError::internal("something broke".to_string(), span);
+        let err = EvalError::internal("something broke".to_string(), span.clone());
         assert_eq!(err.kind.to_string(), "something broke");
         assert_eq!(err.definition_span, span);
         assert_eq!(err.materialization_span, None);
@@ -2163,7 +2191,7 @@ mod tests {
         let def_span = test_span(1, 1, 1, 5);
         let mat_span = test_span(10, 3, 10, 8);
         let err = EvalError::internal("lazy fail".to_string(), def_span)
-            .with_materialization_span(mat_span);
+            .with_materialization_span(mat_span.clone());
         assert_eq!(err.materialization_span, Some(mat_span));
     }
 
@@ -2172,10 +2200,10 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let frame_span = test_span(5, 1, 5, 10);
         let err = EvalError::internal("err".to_string(), span)
-            .with_frame("my_function".to_string(), frame_span);
+            .with_frame("my_function".to_string(), frame_span.clone());
         assert_eq!(err.stack.len(), 1);
         assert_eq!(err.stack[0].label, "my_function");
-        assert_eq!(err.stack[0].span, frame_span);
+        assert_eq!(err.stack[0].definition_span, frame_span);
     }
 
     #[test]
@@ -2250,19 +2278,19 @@ mod tests {
 
         // Push a frame directly
         let frame_span = test_span(5, 1, 5, 10);
-        err.push_frame("first_function".to_string(), frame_span);
+        err.push_frame("first_function".to_string(), frame_span.clone());
 
         assert_eq!(err.stack.len(), 1);
         assert_eq!(err.stack[0].label, "first_function");
-        assert_eq!(err.stack[0].span, frame_span);
+        assert_eq!(err.stack[0].definition_span, frame_span);
 
         // Push a second frame
         let frame2_span = test_span(10, 3, 10, 15);
-        err.push_frame("second_function".to_string(), frame2_span);
+        err.push_frame("second_function".to_string(), frame2_span.clone());
 
         assert_eq!(err.stack.len(), 2);
         assert_eq!(err.stack[1].label, "second_function");
-        assert_eq!(err.stack[1].span, frame2_span);
+        assert_eq!(err.stack[1].definition_span, frame2_span);
     }
 
     #[test]
@@ -3307,21 +3335,21 @@ mod tests {
         let frame3_span = test_span(20, 1, 20, 25);
 
         // Simulate error propagating through dict -> thunk -> builtin chain
-        let err = EvalError::type_mismatch("Int", "String", def_span)
-            .with_materialization_span(mat_span)
-            .with_frame("dict entry 'inner'".to_string(), frame1_span)
-            .with_frame("dict entry 'outer'".to_string(), frame2_span)
-            .with_frame("materialized".to_string(), frame3_span);
+        let err = EvalError::type_mismatch("Int", "String", def_span.clone())
+            .with_materialization_span(mat_span.clone())
+            .with_frame("dict entry 'inner'".to_string(), frame1_span.clone())
+            .with_frame("dict entry 'outer'".to_string(), frame2_span.clone())
+            .with_frame("materialized".to_string(), frame3_span.clone());
 
         assert_eq!(err.definition_span, def_span);
         assert_eq!(err.materialization_span, Some(mat_span));
         assert_eq!(err.stack.len(), 3);
         assert_eq!(err.stack[0].label, "dict entry 'inner'");
-        assert_eq!(err.stack[0].span, frame1_span);
+        assert_eq!(err.stack[0].definition_span, frame1_span);
         assert_eq!(err.stack[1].label, "dict entry 'outer'");
-        assert_eq!(err.stack[1].span, frame2_span);
+        assert_eq!(err.stack[1].definition_span, frame2_span);
         assert_eq!(err.stack[2].label, "materialized");
-        assert_eq!(err.stack[2].span, frame3_span);
+        assert_eq!(err.stack[2].definition_span, frame3_span);
     }
 
     #[test]
@@ -3361,20 +3389,24 @@ mod tests {
         let second_access_span = test_span(8, 1, 8, 10);
 
         let mut err = EvalError::key_not_found("key", vec![], def_span)
-            .with_materialization_span(first_mat_span);
+            .with_materialization_span(first_mat_span.clone());
 
         // Simulate a second access from a different location
         // Should preserve original mat_span and add second access as stack frame
-        assert_eq!(err.materialization_span, Some(first_mat_span));
+        assert_eq!(err.materialization_span, Some(first_mat_span.clone()));
 
         // Manually simulate what attach_materialization_context does
-        if !err.stack.iter().any(|f| f.span == second_access_span) {
-            err.push_frame("materialized".to_string(), second_access_span);
+        if !err
+            .stack
+            .iter()
+            .any(|f| f.definition_span == second_access_span)
+        {
+            err.push_frame("materialized".to_string(), second_access_span.clone());
         }
 
         assert_eq!(err.materialization_span, Some(first_mat_span));
         assert_eq!(err.stack.len(), 1);
-        assert_eq!(err.stack[0].span, second_access_span);
+        assert_eq!(err.stack[0].definition_span, second_access_span);
     }
 
     #[test]
@@ -3385,11 +3417,11 @@ mod tests {
 
         let mut err = EvalError::key_not_found("key", vec![], def_span);
 
-        err.push_frame("first".to_string(), frame_span);
+        err.push_frame("first".to_string(), frame_span.clone());
         assert_eq!(err.stack.len(), 1);
 
         // Manually check for duplicate before adding (this is what attach_materialization_context does)
-        if !err.stack.iter().any(|f| f.span == frame_span) {
+        if !err.stack.iter().any(|f| f.definition_span == frame_span) {
             err.push_frame("second".to_string(), frame_span);
         }
 
@@ -3499,7 +3531,6 @@ mod tests {
                     definition_span: test_span(1, 1, 1, 5),
                     materialization_span: None,
                     stack: SmallVec::new(),
-                    source_file: None,
                     secondary_span: None,
                     macro_expansion: None,
                     blame: None,
@@ -3655,7 +3686,8 @@ mod tests {
         let real_span = test_span(5, 1, 5, 10);
         let impl_frame = StackFrame {
             label: "[map-impl ...]".to_string(),
-            span: real_span,
+            definition_span: real_span.clone(),
+            materialization_span: real_span.clone(),
         };
         assert!(
             should_display_frame(&impl_frame),
@@ -3663,7 +3695,8 @@ mod tests {
         );
         let step_frame = StackFrame {
             label: "[remove-step ...]".to_string(),
-            span: real_span,
+            definition_span: real_span.clone(),
+            materialization_span: real_span.clone(),
         };
         assert!(
             should_display_frame(&step_frame),
@@ -3671,7 +3704,8 @@ mod tests {
         );
         let check_frame = StackFrame {
             label: "[validate-check ...]".to_string(),
-            span: real_span,
+            definition_span: real_span.clone(),
+            materialization_span: real_span.clone(),
         };
         assert!(
             should_display_frame(&check_frame),
@@ -3679,7 +3713,8 @@ mod tests {
         );
         let merge_frame = StackFrame {
             label: "[sort-merge ...]".to_string(),
-            span: real_span,
+            definition_span: real_span.clone(),
+            materialization_span: real_span.clone(),
         };
         assert!(
             should_display_frame(&merge_frame),
@@ -3687,7 +3722,8 @@ mod tests {
         );
         let user_frame = StackFrame {
             label: "[map ...]".to_string(),
-            span: real_span,
+            definition_span: real_span.clone(),
+            materialization_span: real_span,
         };
         assert!(
             should_display_frame(&user_frame),
@@ -3701,7 +3737,8 @@ mod tests {
         // must not be displayed regardless of its label.
         let origin_frame = StackFrame {
             label: "[builtin-fn ...]".to_string(),
-            span: Span::origin(),
+            definition_span: Span::origin(),
+            materialization_span: Span::origin(),
         };
         assert!(
             !should_display_frame(&origin_frame),
@@ -3710,7 +3747,8 @@ mod tests {
         // A frame with a real span and a non-hidden label must be displayed.
         let real_frame = StackFrame {
             label: "[user-fn ...]".to_string(),
-            span: test_span(3, 1, 3, 10),
+            definition_span: test_span(3, 1, 3, 10),
+            materialization_span: test_span(3, 1, 3, 10),
         };
         assert!(
             should_display_frame(&real_frame),
@@ -3725,11 +3763,13 @@ mod tests {
         let frames = vec![
             StackFrame {
                 label: "stdlib-internal".to_string(),
-                span: Span::origin(),
+                definition_span: Span::origin(),
+                materialization_span: Span::origin(),
             },
             StackFrame {
                 label: "[user-fn ...]".to_string(),
-                span: test_span(7, 1, 7, 20),
+                definition_span: test_span(7, 1, 7, 20),
+                materialization_span: test_span(7, 1, 7, 20),
             },
         ];
         assert_eq!(
@@ -3748,7 +3788,7 @@ mod tests {
 
         // Add the same frame 256 times (simulating deep self-recursion)
         for _ in 0..256 {
-            err.push_frame("[f ...]".to_string(), frame_span);
+            err.push_frame("[f ...]".to_string(), frame_span.clone());
         }
 
         let display = format!("{err}");
@@ -3781,8 +3821,8 @@ mod tests {
 
         // Add alternating A/B frames 128 times each (256 total)
         for _ in 0..128 {
-            err.push_frame("[a ...]".to_string(), frame_a_span);
-            err.push_frame("[b ...]".to_string(), frame_b_span);
+            err.push_frame("[a ...]".to_string(), frame_a_span.clone());
+            err.push_frame("[b ...]".to_string(), frame_b_span.clone());
         }
 
         let display = format!("{err}");
@@ -3841,9 +3881,9 @@ mod tests {
 
         // Add 9 identical frames (3 full repetitions of period 3)
         for _ in 0..3 {
-            err.push_frame("[f ...]".to_string(), frame_span);
-            err.push_frame("[f ...]".to_string(), frame_span);
-            err.push_frame("[f ...]".to_string(), frame_span);
+            err.push_frame("[f ...]".to_string(), frame_span.clone());
+            err.push_frame("[f ...]".to_string(), frame_span.clone());
+            err.push_frame("[f ...]".to_string(), frame_span.clone());
         }
 
         // Add a tail frame
@@ -3873,8 +3913,8 @@ mod tests {
         // "[hidden-impl ...]" has a real span, so it IS visible (no suffix filtering).
         // "[origin ...]" has Span::origin(), so it is NOT visible.
         for _ in 0..100 {
-            err.push_frame("[f ...]".to_string(), visible_span);
-            err.push_frame("[hidden-impl ...]".to_string(), visible_span); // real span — visible
+            err.push_frame("[f ...]".to_string(), visible_span.clone());
+            err.push_frame("[hidden-impl ...]".to_string(), visible_span.clone()); // real span — visible
             err.push_frame("[origin ...]".to_string(), Span::origin()); // origin span — hidden
         }
 
@@ -3904,7 +3944,7 @@ mod tests {
 
         // Add many identical frames
         for _ in 0..256 {
-            err.push_frame("[f ...]".to_string(), frame_span);
+            err.push_frame("[f ...]".to_string(), frame_span.clone());
         }
 
         let display = format!("{err}");
@@ -3926,7 +3966,8 @@ mod tests {
         let span = test_span(10, 1, 10, 5);
         let frame = StackFrame {
             label: "[f ...]".to_string(),
-            span,
+            definition_span: span.clone(),
+            materialization_span: span,
         };
         let frames: Vec<&StackFrame> = vec![&frame, &frame, &frame, &frame, &frame];
 
@@ -3945,11 +3986,13 @@ mod tests {
         let span_b = test_span(20, 1, 20, 5);
         let frame_a = StackFrame {
             label: "[a ...]".to_string(),
-            span: span_a,
+            definition_span: span_a.clone(),
+            materialization_span: span_a,
         };
         let frame_b = StackFrame {
             label: "[b ...]".to_string(),
-            span: span_b,
+            definition_span: span_b.clone(),
+            materialization_span: span_b,
         };
         let frames: Vec<&StackFrame> =
             vec![&frame_a, &frame_b, &frame_a, &frame_b, &frame_a, &frame_b];
@@ -3968,7 +4011,8 @@ mod tests {
         let span = test_span(10, 1, 10, 5);
         let frame = StackFrame {
             label: "[f ...]".to_string(),
-            span,
+            definition_span: span.clone(),
+            materialization_span: span,
         };
         let frames: Vec<&StackFrame> = vec![&frame, &frame];
 
@@ -3981,15 +4025,18 @@ mod tests {
         // Different frames: no pattern
         let frame_a = StackFrame {
             label: "[a ...]".to_string(),
-            span: test_span(10, 1, 10, 5),
+            definition_span: test_span(10, 1, 10, 5),
+            materialization_span: test_span(10, 1, 10, 5),
         };
         let frame_b = StackFrame {
             label: "[b ...]".to_string(),
-            span: test_span(20, 1, 20, 5),
+            definition_span: test_span(20, 1, 20, 5),
+            materialization_span: test_span(20, 1, 20, 5),
         };
         let frame_c = StackFrame {
             label: "[c ...]".to_string(),
-            span: test_span(30, 1, 30, 5),
+            definition_span: test_span(30, 1, 30, 5),
+            materialization_span: test_span(30, 1, 30, 5),
         };
         let frames: Vec<&StackFrame> = vec![&frame_a, &frame_b, &frame_c];
 
@@ -4004,7 +4051,8 @@ mod tests {
         let span = test_span(10, 1, 10, 5);
         let frame = StackFrame {
             label: "[f ...]".to_string(),
-            span,
+            definition_span: span.clone(),
+            materialization_span: span,
         };
         let frames: Vec<&StackFrame> = vec![&frame, &frame, &frame, &frame, &frame, &frame];
 
@@ -4027,7 +4075,7 @@ mod tests {
     #[test]
     fn test_eval_error_depth_exceeded_constructor() {
         let span = test_span(1, 1, 1, 10);
-        let err = EvalError::depth_exceeded(256, span);
+        let err = EvalError::depth_exceeded(256, span.clone());
         assert!(matches!(err.kind, ErrorKind::DepthExceeded { limit: 256 }));
         assert_eq!(err.kind.code(), "E040");
         assert_eq!(
@@ -4159,7 +4207,7 @@ mod tests {
     #[test]
     fn test_eval_error_undefined_variable_constructor() {
         let span = test_span(1, 1, 1, 5);
-        let err = EvalError::undefined_variable("myvar".to_string(), None, span);
+        let err = EvalError::undefined_variable("myvar".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::UndefinedVariable { .. }));
         assert_eq!(err.kind.code(), "E002");
         // "myvar" is all lowercase/alphanumeric and not a builtin, so triggers hint
@@ -4222,7 +4270,7 @@ mod tests {
     #[test]
     fn test_eval_error_duplicate_key_constructor() {
         let span = test_span(1, 1, 1, 5);
-        let err = EvalError::duplicate_key("host", None, span);
+        let err = EvalError::duplicate_key("host", span);
         assert!(matches!(err.kind, ErrorKind::DuplicateKey { .. }));
         assert_eq!(err.kind.code(), "E030");
         assert_eq!(err.kind.to_string(), "duplicate key: host");
@@ -4478,6 +4526,7 @@ mod tests {
                 line: 2,
                 column: 4,
             },
+            file: None,
         };
         let snippet = render_span_snippet(source, span).unwrap();
 
@@ -4516,6 +4565,7 @@ mod tests {
                 line: 4,
                 column: 2,
             },
+            file: None,
         };
         let snippet = render_span_snippet(source, span).unwrap();
 
@@ -4610,8 +4660,8 @@ mod tests {
         let origin_span = test_span(3, 5, 3, 10);
         let boundary_span = test_span(5, 1, 5, 15);
         let label = BlameLabel {
-            origin_span,
-            boundary_span,
+            origin_span: origin_span.clone(),
+            boundary_span: boundary_span.clone(),
             polarity: BlameParity::Positive,
         };
         assert_eq!(label.polarity, BlameParity::Positive);
@@ -4719,7 +4769,7 @@ mod tests {
         let span = test_span(5, 10, 5, 20);
         let diag = TypeDiagnostic {
             message: "inferred Unknown type".to_string(),
-            span,
+            span: span.clone(),
             code: "T999",
             level: DiagnosticLevel::Warn,
         };
@@ -4737,5 +4787,226 @@ mod tests {
         assert_eq!(DiagnosticLevel::Err, DiagnosticLevel::Err);
         assert_ne!(DiagnosticLevel::Info, DiagnosticLevel::Warn);
         assert_ne!(DiagnosticLevel::Warn, DiagnosticLevel::Err);
+    }
+
+    // ── Span file-path tests (S-783: spans carry file: Option<Arc<SourceFile>>) ────
+
+    /// Helper: build a Span whose `file` field is populated with a given path.
+    /// The span position itself is (line=3, col=5) → (line=3, col=10).
+    fn span_with_file(path: &str) -> Span {
+        use crate::ast::{Position, SourceFile};
+        Span {
+            start: Position {
+                offset: 10,
+                line: 3,
+                column: 5,
+            },
+            end: Position {
+                offset: 15,
+                line: 3,
+                column: 10,
+            },
+            file: Some(Arc::new(SourceFile {
+                path: Arc::from(path),
+                content: Arc::from(""),
+            })),
+        }
+    }
+
+    #[test]
+    fn test_format_span_location_with_file() {
+        // A span with file: Some("prelude.llt") must format as "prelude.llt:3:5-3:10".
+        // Regression guard: if format_span_location drops the file prefix, this fails.
+        let span = span_with_file("prelude.llt");
+        let location = format_span_location(&span);
+        assert_eq!(
+            location, "prelude.llt:3:5-3:10",
+            "format_span_location must prefix with the file path when span.file is Some"
+        );
+    }
+
+    #[test]
+    fn test_format_span_location_without_file() {
+        // A span with file: None must format as position-only (no file prefix, no panic).
+        // Synthetic spans (Span::origin(), macro-synthesized) always have file: None.
+        let span = test_span(3, 5, 3, 10);
+        let location = format_span_location(&span);
+        assert_eq!(
+            location, "3:5-3:10",
+            "format_span_location must not show a file prefix when span.file is None"
+        );
+        // Verify origin span is also panic-free (extra guard for Span::origin()).
+        let origin_location = format_span_location(&Span::origin());
+        assert!(
+            !origin_location.contains('/'),
+            "origin span location must not contain a file path: {origin_location}"
+        );
+    }
+
+    #[test]
+    fn test_display_error_with_file_in_definition_span() {
+        // When definition_span carries a SourceFile, the error Display line must
+        // include the file path in the "defined at ..." clause.
+        //
+        // Expected: "[E099] oops (defined at prelude.llt:3:5-3:10)"
+        let span = span_with_file("prelude.llt");
+        let err = EvalError::internal("oops".to_string(), span);
+        let display = format!("{err}");
+
+        assert!(
+            display.contains("prelude.llt:"),
+            "error display must contain the source file path; got: {display}"
+        );
+        assert!(
+            display.contains("defined at prelude.llt:3:5-3:10"),
+            "error display must show 'defined at prelude.llt:3:5-3:10'; got: {display}"
+        );
+    }
+
+    #[test]
+    fn test_display_error_synthetic_span_no_panic() {
+        // Span::origin() (file: None) must display gracefully — no panic, no file shown.
+        // Mutation guard: if format_span_location panics on None, this test catches it.
+        let err = EvalError::internal("synthetic error".to_string(), Span::origin());
+        // Must not panic.
+        let display = format!("{err}");
+        assert!(
+            display.contains("[E099]"),
+            "display must include error code; got: {display}"
+        );
+        // Origin span has no file path — no slash, no '.llt', no ':' before the position.
+        // The position itself is "1:1-1:1" (origin) — verify no file prefix.
+        assert!(
+            display.contains("defined at 1:1-1:1"),
+            "synthetic span must show position only without file prefix; got: {display}"
+        );
+        assert!(
+            !display.contains(".llt"),
+            "synthetic span must not show any file path; got: {display}"
+        );
+    }
+
+    #[test]
+    fn test_display_error_materialization_span_with_file() {
+        // When the materialization span carries a different file from the definition span,
+        // both file paths must appear in the Display output.
+        //
+        // Scenario: error defined in "prelude.llt", materialized in "user.llt".
+        let def_span = span_with_file("prelude.llt");
+        let _mat_span = span_with_file("user.llt");
+        // Give mat_span a different position so it differs from def_span.
+        let mat_span = {
+            use crate::ast::{Position, SourceFile};
+            Span {
+                start: Position {
+                    offset: 20,
+                    line: 10,
+                    column: 1,
+                },
+                end: Position {
+                    offset: 25,
+                    line: 10,
+                    column: 6,
+                },
+                file: Some(Arc::new(SourceFile {
+                    path: Arc::from("user.llt"),
+                    content: Arc::from(""),
+                })),
+            }
+        };
+
+        let err = EvalError::internal("prelude error".to_string(), def_span)
+            .with_materialization_span(mat_span);
+        let display = format!("{err}");
+
+        assert!(
+            display.contains("prelude.llt:"),
+            "display must contain the definition file (prelude.llt); got: {display}"
+        );
+        assert!(
+            display.contains("user.llt:"),
+            "display must contain the materialization file (user.llt); got: {display}"
+        );
+        assert!(
+            display.contains("defined at prelude.llt:3:5-3:10"),
+            "definition location must be 'prelude.llt:3:5-3:10'; got: {display}"
+        );
+        assert!(
+            display.contains("user.llt:10:1-10:6"),
+            "materialization location must be 'user.llt:10:1-10:6'; got: {display}"
+        );
+    }
+
+    #[test]
+    fn test_display_error_stack_frame_with_file() {
+        // Stack frames use format_span_location for their "in fn at location" line.
+        // When a frame's definition_span carries a SourceFile, the frame location
+        // must include the file path.
+        //
+        // Scenario: error in user code, stack frame from "prelude.llt".
+        let user_span = test_span(5, 1, 5, 10); // no file: user input without source file
+        let prelude_frame_span = span_with_file("prelude.llt");
+
+        let err = EvalError::internal("inner error".to_string(), user_span)
+            .with_frame("map".to_string(), prelude_frame_span);
+        let display = format!("{err}");
+
+        assert!(
+            display.contains("in map at prelude.llt:3:5-3:10"),
+            "stack frame must show 'in map at prelude.llt:3:5-3:10'; got: {display}"
+        );
+    }
+
+    #[test]
+    fn test_display_error_stack_frame_without_file() {
+        // Stack frames without file-backed spans must show position-only.
+        // Mutation guard: if we accidentally add file prefix for None spans, this fails.
+        let def_span = test_span(1, 1, 1, 5);
+        let frame_span = test_span(7, 3, 7, 15);
+
+        let err = EvalError::internal("error".to_string(), def_span)
+            .with_frame("my_fn".to_string(), frame_span);
+        let display = format!("{err}");
+
+        assert!(
+            display.contains("in my_fn at 7:3-7:15"),
+            "frame without file must show position only 'in my_fn at 7:3-7:15'; got: {display}"
+        );
+        assert!(
+            !display.contains(".llt"),
+            "frame without file must not show a file path; got: {display}"
+        );
+    }
+
+    #[test]
+    fn test_display_error_prelude_frame_user_definition() {
+        // Realistic scenario: user calls map (a prelude function), which internally
+        // errors. The primary error is at a definition site without a file path
+        // (no source-backed span), and the stack frame is from prelude.llt.
+        //
+        // This is the canonical "prelude function backtrace" scenario from S-783:
+        // the frame for `map` should show prelude.llt, not the user's file.
+        let user_def_span = test_span(2, 5, 2, 20); // user code, no file
+        let prelude_map_span = span_with_file("stdlib/prelude.llt");
+
+        let err = EvalError::type_mismatch("Int", "String", user_def_span)
+            .with_frame("map".to_string(), prelude_map_span);
+        let display = format!("{err}");
+
+        // The error itself (E010) is at user code position
+        assert!(
+            display.contains("[E010]"),
+            "must show error code E010; got: {display}"
+        );
+        assert!(
+            display.contains("defined at 2:5-2:20"),
+            "definition must show user span without file; got: {display}"
+        );
+
+        // The stack frame for `map` must name the prelude file
+        assert!(
+            display.contains("in map at stdlib/prelude.llt:"),
+            "prelude frame must show 'stdlib/prelude.llt:' in location; got: {display}"
+        );
     }
 }

@@ -1263,6 +1263,7 @@ mod tests {
                 column: 0,
                 offset: 0,
             },
+            file: None,
         };
         let pat = ast::Pattern::Dict {
             fields: vec![(
@@ -1298,6 +1299,7 @@ mod tests {
                 column: 0,
                 offset: 0,
             },
+            file: None,
         };
         let pat = ast::Pattern::Constructor {
             tag: "Some".to_string(),
@@ -1330,11 +1332,12 @@ mod tests {
                 column: 0,
                 offset: 0,
             },
+            file: None,
         };
         let pat = ast::Pattern::Or(vec![
             Spanned {
                 node: ast::Pattern::TypeTag("Int".to_string()),
-                span,
+                span: span.clone(),
             },
             Spanned {
                 node: ast::Pattern::TypeTag("Float".to_string()),

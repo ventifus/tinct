@@ -242,7 +242,7 @@ impl SurfaceResolver {
                 }
             }
             crate::ast::Annotation::Annotated(_, inner) => {
-                let inner_spanned = Spanned::new(inner.as_ref().clone(), ann.span);
+                let inner_spanned = Spanned::new(inner.as_ref().clone(), ann.span.clone());
                 self.walk_surface_annotation(&inner_spanned);
             }
         }

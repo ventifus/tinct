@@ -83,9 +83,12 @@ fn typecheck_and_merge_stdlib_module(
     source: &str,
     parent_env: &Rc<TypeEnv>,
     env: &mut TypeEnv,
-    _source_path: Option<&str>,
+    source_path: Option<&str>,
 ) -> Result<InferState, ()> {
-    // Parse the module source
+    // Parse the module source. Stdlib modules are embedded source strings, not user files,
+    // so we always use plain parse() without file stamping. File stamping is only for
+    // user-supplied files processed via read_source() in the CLI pipeline.
+    let _ = source_path; // reserved for future use
     let mut program = {
         let parsed = parser::parse(source).map_err(|_| ())?;
         parsed.program.clone()
@@ -244,7 +247,7 @@ fn extract_bindings_fallback_from_node(
                         if target.get_own(&name).is_some() {
                             continue;
                         }
-                        let value_span = entry.node.value.span;
+                        let value_span = entry.node.value.span.clone();
                         let key = (value_span.start.offset, value_span.end.offset);
                         if let Some(ty) = type_map.get(&key) {
                             let sanitized = erase_type_vars(ty);
@@ -434,8 +437,30 @@ pub fn seed_infer_state_from_prelude_cache(state: &mut InferState) {
             for class_decl in class_env.iter_classes() {
                 state.class_env.insert_if_absent(class_decl.clone());
             }
-            // Merge prelude instances into state (skip overlapping instances silently)
+            // Merge prelude instances into state (skip overlapping instances silently).
+            //
+            // Skip instances for classes that have hardcoded support in `satisfies_constraint`
+            // (Equatable, Showable, Comparable, Numeric, Indexable). These are handled by the
+            // hardcoded arms without needing dynamic instance resolution. Seeding them would
+            // cause false-positive overlap errors when user code defines classes with the same
+            // name (e.g., a user-defined `Equatable` class would conflict with the prelude's
+            // seeded Equatable instances even though they belong to different class declarations).
+            //
+            // Only seed instances for dynamically-resolved classes (Appendable, Mappable, and
+            // any user-defined classes in the prelude).
+            const HARDCODED_CONSTRAINT_CLASSES: &[&str] = &[
+                "Equatable",
+                "Showable",
+                "Comparable",
+                "Numeric",
+                "Indexable",
+            ];
             for inst_decl in instance_env.iter_instances() {
+                if HARDCODED_CONSTRAINT_CLASSES.contains(&inst_decl.class_name.as_str()) {
+                    // Skip: handled by satisfies_constraint hardcoded arms.
+                    // Seeding these would cause overlap errors with user-defined same-named classes.
+                    continue;
+                }
                 let _ = state.instance_env.insert(inst_decl.clone());
             }
         }
@@ -581,7 +606,7 @@ fn extract_bindings_from_node_to_vec(
                         _ => None,
                     };
                     if let Some(name) = name {
-                        let value_span = entry.node.value.span;
+                        let value_span = entry.node.value.span.clone();
                         let key = (value_span.start.offset, value_span.end.offset);
                         if let Some(ty) = type_map.get(&key) {
                             let sanitized = erase_type_vars(ty);
@@ -640,7 +665,7 @@ fn collect_include_paths_from_node(
                     if args.len() == 2 {
                         if let SurfaceExpression::VarRef { name: cap_name, .. } = &args[0].expr {
                             if let SurfaceExpression::Str(path) = &args[1].expr {
-                                paths.push((args[1].span, Some(cap_name.clone()), path.clone()));
+                                paths.push((args[1].span.clone(), Some(cap_name.clone()), path.clone()));
                             }
                         }
                     }
@@ -865,8 +890,14 @@ fn resolve_includes(
             }
         };
 
-        // Parse the file
-        let parsed = match parser::parse(&content) {
+        // Build a SourceFile so spans in the parsed AST carry the file name.
+        let sf = Arc::new(crate::ast::SourceFile {
+            path: Arc::from(normalized.to_string_lossy().as_ref()),
+            content: Arc::from(content.as_str()),
+        });
+
+        // Parse the file, stamping all spans with the SourceFile.
+        let parsed = match parser::parse_with_file(&content, sf) {
             Ok(p) => p,
             Err(_) => continue, // Skip unparseable files
         };
@@ -920,7 +951,7 @@ fn resolve_includes(
         env = Rc::new(new_env);
 
         // Store the bindings for this include call's span
-        include_bindings.insert(*span, bindings);
+        include_bindings.insert(span.clone(), bindings);
 
         // Recursively resolve includes from this program.
         // Open the nested file's parent directory via cap_dir to enforce RESOLVE_BENEATH.
@@ -1019,7 +1050,7 @@ fn apply_include_type_to_node(
                     if let SurfaceExpression::VarRef { .. } = &args[0].expr {
                         if let SurfaceExpression::Str(_) = &args[1].expr {
                             // args[1].span is the lookup key used by resolve_includes
-                            let path_span = args[1].span;
+                            let path_span = args[1].span.clone();
                             if let Some(bindings) = include_bindings.get(&path_span) {
                                 // Build a closed Record type from the contributed bindings
                                 let fields: HashMap<String, Type> = bindings
@@ -1454,7 +1485,7 @@ mod tests {
         // We need this span as the key into include_bindings.
         let include_paths = collect_include_paths(&program);
         assert_eq!(include_paths.len(), 1, "expected one include path");
-        let path_span = include_paths[0].0;
+        let path_span = include_paths[0].0.clone();
 
         // Build a fake binding map: path_span → [(name, type)]
         let bindings = vec![
@@ -1535,7 +1566,7 @@ mod tests {
         // Find the path-argument span.
         let include_paths = collect_include_paths(&program);
         assert_eq!(include_paths.len(), 1, "expected one include path");
-        let path_span = include_paths[0].0;
+        let path_span = include_paths[0].0.clone();
 
         let bindings = vec![("read".to_string(), Type::Unknown)];
         let mut include_bindings: HashMap<Span, Vec<(String, Type)>> = HashMap::new();

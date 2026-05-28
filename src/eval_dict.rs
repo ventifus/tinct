@@ -27,7 +27,7 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<Key> {
             end,
         } => Ok(Key::String(Rc::from(&source[*start..*end]))),
         Value::Int(n) => Ok(Key::Int(*n)),
-        _ => Err(EvalError::type_mismatch("String or Int", value.type_name(), *span).into()),
+        _ => Err(EvalError::type_mismatch("String or Int", value.type_name(), span.clone()).into()),
     }
 }
 
@@ -131,7 +131,7 @@ pub(crate) async fn eval_dict_core(
             None => {
                 let k = Key::Int(auto_index);
                 auto_index = auto_index.checked_add(1).ok_or_else(|| {
-                    EvalError::integer_overflow("dict auto-index".to_string(), entry.span)
+                    EvalError::integer_overflow("dict auto-index".to_string(), entry.span.clone())
                 })?;
                 k
             }
@@ -142,19 +142,19 @@ pub(crate) async fn eval_dict_core(
         let thunk = match &entry.node.value.node {
             CoreExpr::Int(n) => Arc::new(Thunk::new_materialized(
                 Value::Int(*n),
-                entry.node.value.span,
+                entry.node.value.span.clone(),
             )),
             CoreExpr::Float(f) => Arc::new(Thunk::new_materialized(
                 Value::Float(*f),
-                entry.node.value.span,
+                entry.node.value.span.clone(),
             )),
             CoreExpr::Bool(b) => Arc::new(Thunk::new_materialized(
                 Value::Bool(*b),
-                entry.node.value.span,
+                entry.node.value.span.clone(),
             )),
             CoreExpr::Str(s) => Arc::new(Thunk::new_materialized(
                 string_val(s),
-                entry.node.value.span,
+                entry.node.value.span.clone(),
             )),
             // Non-literal: use UnevaluatedState::CoreExpr.
             // TODO(future): Thunk::new_unevaluated_core_with_env_id for env_id fast path.
@@ -166,7 +166,7 @@ pub(crate) async fn eval_dict_core(
                         .expect("dict_env present for non-literals"),
                 ),
                 Arc::clone(ctx),
-                entry.node.value.span,
+                entry.node.value.span.clone(),
             )),
         };
 
@@ -200,8 +200,7 @@ pub(crate) async fn eval_dict_core(
             };
             return Err(Box::new(EvalError::duplicate_key(
                 &key_str,
-                ctx.config.source_file.as_deref(),
-                entry.span,
+                entry.span.clone(),
             )));
         }
 
@@ -235,7 +234,7 @@ pub(crate) async fn eval_dict_core(
 
     Ok(Arc::new(Thunk::new_materialized(
         Value::Dict(dict_map),
-        *dict_span,
+        dict_span.clone(),
     )))
 }
 

@@ -1590,7 +1590,7 @@ parse → expand_surface_program → desugar → resolve → typecheck → eval
 3. Calls the macro function with the bound arguments
 4. Converts the result back to AST and re-expands
 
-`[macro name [let params] body]` is processed by the expander: the body is evaluated in a **fresh `EvalContext`** (not shared with the runtime pass — prevents cache pollution and depth budget erosion) that inherits `EvalConfig` (capability flags, `no_fs`). The resulting callable is registered in `MacroEnv`. The `SurfaceExpression::MacroDecl` node is removed from the AST after registration — the typechecker and evaluator never see it. `[defmacro ...]` is a backward-compatible alias that produces the same registration.
+`[macro name [let params] body]` is processed by the expander: the body is evaluated in a **fresh `EvalContext`** (not shared with the runtime pass — prevents cache pollution and depth budget erosion) that inherits `EvalConfig` (capability flags, `no_fs`). The resulting callable is registered in `MacroEnv`. The `SurfaceExpression::MacroDecl` node is removed from the AST after registration — the typechecker and evaluator never see it.
 
 **Termination:** A **shared** depth counter of 100 total across all expansion in a file (not per call-site — a single recursive macro cannot consume the entire budget), plus a total node-count cap of 100k nodes post-expansion to prevent exponential AST blowup.
 

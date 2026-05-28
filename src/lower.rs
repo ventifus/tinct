@@ -30,7 +30,7 @@ pub fn lower(
     res: &ResolutionTable,
     types: &TypeAnnotationTable,
 ) -> Spanned<CoreExpr> {
-    let span = arc.span;
+    let span = arc.span.clone();
     let core_expr = lower_expr(arc, &arc.expr, res, types);
     Spanned::new(core_expr, span)
 }
@@ -96,7 +96,7 @@ fn lower_expr(
                 }
                 let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
                 let value = Arc::new(lower(&se.node.value, res, types));
-                core_entries.push(Spanned::new(CoreEntry { key, value }, se.span));
+                core_entries.push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
             }
             CoreExpr::Dict(core_entries)
         }
@@ -120,7 +120,7 @@ fn lower_expr(
                             name: na.node.name.clone(),
                             value: Arc::new(lower(&na.node.value, res, types)),
                         },
-                        na.span,
+                        na.span.clone(),
                     )
                 })
                 .collect(),
@@ -143,7 +143,7 @@ fn lower_expr(
                             annotation: p.node.annotation.clone(),
                             variadic: p.node.variadic,
                         },
-                        p.span,
+                        p.span.clone(),
                     )
                 })
                 .collect(),
@@ -229,7 +229,7 @@ fn lower_expr(
         // registers them via Pass 0c before evaluation occurs.
         SurfaceExpression::Decl(_) => CoreExpr::Placeholder,
 
-        SurfaceExpression::Error(span) => CoreExpr::Error(*span),
+        SurfaceExpression::Error(span) => CoreExpr::Error(span.clone()),
     }
 }
 
@@ -249,7 +249,7 @@ pub fn core_expr_to_surface_node(
 ) -> Arc<SurfaceNode> {
     Arc::new(SurfaceNode {
         expr: core_expr_to_surface_expr(&expr.node),
-        span: expr.span,
+        span: expr.span.clone(),
     })
 }
 
@@ -287,7 +287,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                             name: na.node.name.clone(),
                             value: core_expr_to_surface_node(&na.node.value),
                         },
-                        na.span,
+                        na.span.clone(),
                     )
                 })
                 .collect(),
@@ -309,7 +309,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                             annotation: p.node.annotation.clone(),
                             variadic: p.node.variadic,
                         },
-                        p.span,
+                        p.span.clone(),
                     )
                 })
                 .collect(),
@@ -358,7 +358,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                             key: e.node.key.as_ref().map(|k| core_expr_to_surface_node(k)),
                             value: core_expr_to_surface_node(&e.node.value),
                         },
-                        e.span,
+                        e.span.clone(),
                     )
                 })
                 .collect(),
@@ -371,7 +371,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             func: core_expr_to_surface_node(func),
             arg: core_expr_to_surface_node(arg),
         },
-        CoreExpr::Error(span) => SurfaceExpression::Error(*span),
+        CoreExpr::Error(span) => SurfaceExpression::Error(span.clone()),
         CoreExpr::Placeholder => SurfaceExpression::Placeholder,
     }
 }
@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn test_lower_int_literal() {
         let span = crate::ast::Span::origin();
-        let node = make_node(SurfaceExpression::Int(42), span);
+        let node = make_node(SurfaceExpression::Int(42), span.clone());
         let res = ResolutionTable::new();
         let types = TypeAnnotationTable::new();
 

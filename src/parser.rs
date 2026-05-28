@@ -159,7 +159,7 @@ fn emit_tmpl_call(
                         {
                             Some(SurfaceItem::Expr(node)) => Arc::new(SurfaceNode {
                                 expr: node.expr.clone(),
-                                span,
+                                span: span.clone(),
                             }),
                             Some(SurfaceItem::Decl(_)) => {
                                 return Err(ParseError {
@@ -167,13 +167,13 @@ fn emit_tmpl_call(
                                         "string interpolation must contain an expression, not a declaration: `{}`",
                                         source
                                     ),
-                                    span: Some(span),
+                                    span: Some(span.clone()),
                                 });
                             }
                             None => {
                                 return Err(ParseError {
                                     message: format!("empty string interpolation: `{}`", source),
-                                    span: Some(span),
+                                    span: Some(span.clone()),
                                 });
                             }
                         };
@@ -187,7 +187,7 @@ fn emit_tmpl_call(
                                 "failed to parse expression inside `${{...}}`: {} (inner error: {})",
                                 source, inner_error.message
                             ),
-                            span: Some(span),
+                            span: Some(span.clone()),
                         });
                     }
                 }
@@ -201,13 +201,13 @@ fn emit_tmpl_call(
             name: "tmpl".to_string(),
             escaped: false,
         },
-        span,
+        span: span.clone(),
     });
 
     let mut args = Vec::with_capacity(1 + expr_args.len());
     args.push(Arc::new(SurfaceNode {
         expr: SurfaceExpression::Str(raw),
-        span,
+        span: span.clone(),
     }));
     args.extend(expr_args);
 
@@ -309,6 +309,7 @@ fn adjust_span(span: Span, base: Position) -> Span {
     Span {
         start: adjust_position(span.start, base),
         end: adjust_position(span.end, base),
+        file: span.file,
     }
 }
 
@@ -318,20 +319,33 @@ fn adjust_surface_entries(
     entries: Vec<Spanned<crate::ast::SurfaceEntry>>,
     base: Position,
 ) -> Vec<Spanned<crate::ast::SurfaceEntry>> {
-    use crate::ast::{SurfaceEntry, SurfaceNode};
+    use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode};
     entries
         .into_iter()
         .map(|se| Spanned {
             span: adjust_span(se.span, base),
             node: SurfaceEntry {
                 key: se.node.key.map(|k| {
+                    // Normalize annotation dict keys: convert VarRef identifiers to Str literals.
+                    // Annotation dict keys from re-parsed prelude annotations (e.g., `return:`,
+                    // `constraint:`, `doc:`, `bind:`) are parsed as identifier VarRef nodes, but
+                    // the type checker expects them as Str literal keys. This normalization ensures
+                    // both user code (may use quoted keys) and prelude code (uses identifier keys)
+                    // are handled uniformly by `resolve_fn_metadata` and `has_fn_key`.
+                    let normalized_expr = match &k.expr {
+                        SurfaceExpression::VarRef {
+                            name,
+                            escaped: false,
+                        } => SurfaceExpression::Str(name.clone()),
+                        other => other.clone(),
+                    };
                     std::sync::Arc::new(SurfaceNode {
-                        span: adjust_span(k.span, base),
-                        expr: k.expr.clone(),
+                        span: adjust_span(k.span.clone(), base),
+                        expr: normalized_expr,
                     })
                 }),
                 value: std::sync::Arc::new(SurfaceNode {
-                    span: adjust_span(se.node.value.span, base),
+                    span: adjust_span(se.node.value.span.clone(), base),
                     expr: se.node.value.expr.clone(),
                 }),
             },
@@ -367,7 +381,7 @@ fn parse_annotation(
         _ => {
             return Err(ParseError {
                 message: "expected @ to start annotation".to_string(),
-                span: Some(tokens[i].span),
+                span: Some(tokens[i].span.clone()),
             });
         }
     }
@@ -383,7 +397,7 @@ fn parse_annotation(
         if let Some(errors) = recovered_errors {
             errors.push(err);
             // Return a placeholder error annotation
-            let placeholder_span = tokens[start_index].span;
+            let placeholder_span = tokens[start_index].span.clone();
             return Ok((
                 Spanned::new(Annotation::Simple("Error".to_string()), placeholder_span),
                 i,
@@ -396,7 +410,7 @@ fn parse_annotation(
 
     match &ann_token.node {
         Token::Identifier(name) => {
-            let name_span = ann_token.span;
+            let name_span = ann_token.span.clone();
             let next_i = i + 1;
 
             // Check for chained annotation: Seq@Int, Map@[String: Int], etc.
@@ -415,6 +429,7 @@ fn parse_annotation(
                     let full_span = Span {
                         start: name_span.start,
                         end: inner_ann.span.end,
+                        file: None,
                     };
 
                     let annotation = Annotation::Annotated(name.clone(), Box::new(inner_ann.node));
@@ -430,7 +445,7 @@ fn parse_annotation(
             // Property dict annotation: @[key: value ...]
             // Find the matching CloseBracket by tracking nesting depth.
             let bracket_start = i;
-            let bracket_start_span = tokens[bracket_start].span;
+            let bracket_start_span = tokens[bracket_start].span.clone();
             let mut depth: usize = 0;
             let mut end_i = bracket_start;
             let mut found = false;
@@ -451,7 +466,7 @@ fn parse_annotation(
             if !found {
                 let err = ParseError {
                     message: "unclosed bracket in property dict annotation".to_string(),
-                    span: Some(bracket_start_span),
+                    span: Some(bracket_start_span.clone()),
                 };
                 if let Some(errors) = recovered_errors {
                     errors.push(err);
@@ -467,6 +482,7 @@ fn parse_annotation(
             let ann_span = Span {
                 start: bracket_start_span.start,
                 end: tokens[end_i].span.end,
+                file: None,
             };
 
             // Extract the source sub-string for this bracket expression.
@@ -481,7 +497,7 @@ fn parse_annotation(
                 Err(e) => {
                     let err = ParseError {
                         message: format!("error in property dict annotation: {}", e.message),
-                        span: Some(ann_span),
+                        span: Some(ann_span.clone()),
                     };
                     if let Some(errors) = recovered_errors {
                         errors.push(err);
@@ -501,7 +517,7 @@ fn parse_annotation(
                 if let Some(SurfaceItem::Decl(_)) = first_doc.node.items.first() {
                     let err = ParseError {
                         message: "property dict annotation must be a dict expression, not a declaration form".to_string(),
-                        span: Some(ann_span),
+                        span: Some(ann_span.clone()),
                     };
                     if let Some(errors) = recovered_errors {
                         errors.push(err);
@@ -551,9 +567,9 @@ fn parse_annotation(
                         let base = bracket_start_span.start;
                         let mut entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
                         // func as first auto-indexed entry
-                        let adjusted_func_span = adjust_span(func.span, base);
+                        let adjusted_func_span = adjust_span(func.span.clone(), base);
                         let func_node = Arc::new(SurfaceNode {
-                            span: adjusted_func_span,
+                            span: adjusted_func_span.clone(),
                             expr: func.expr.clone(),
                         });
                         entries.push(Spanned::new(
@@ -565,9 +581,9 @@ fn parse_annotation(
                         ));
                         // args as subsequent auto-indexed entries
                         for arg in args {
-                            let adjusted_arg_span = adjust_span(arg.span, base);
+                            let adjusted_arg_span = adjust_span(arg.span.clone(), base);
                             let arg_node = Arc::new(SurfaceNode {
-                                span: adjusted_arg_span,
+                                span: adjusted_arg_span.clone(),
                                 expr: arg.expr.clone(),
                             });
                             entries.push(Spanned::new(
@@ -588,7 +604,7 @@ fn parse_annotation(
                             message: format!(
                                 "property dict annotation must be a dict expression, got: {other}"
                             ),
-                            span: Some(ann_span),
+                            span: Some(ann_span.clone()),
                         };
                         if let Some(errors) = recovered_errors {
                             errors.push(err);
@@ -616,7 +632,7 @@ fn parse_annotation(
                     "expected annotation name or bracket dict after @, found {:?}",
                     ann_token.node
                 ),
-                span: Some(ann_token.span),
+                span: Some(ann_token.span.clone()),
             };
             if let Some(errors) = recovered_errors {
                 errors.push(err);
@@ -624,7 +640,10 @@ fn parse_annotation(
                 // Do NOT advance past CloseBracket — the main loop needs to see it to pop the frame.
                 // For other invalid tokens, advance by 1 to avoid infinite loop.
                 return Ok((
-                    Spanned::new(Annotation::Simple("Error".to_string()), ann_token.span),
+                    Spanned::new(
+                        Annotation::Simple("Error".to_string()),
+                        ann_token.span.clone(),
+                    ),
                     if matches!(ann_token.node, Token::CloseBracket) {
                         i
                     } else {
@@ -924,7 +943,7 @@ fn recover_from_bracket_error(
                 // If there are no valid entries, just emit SurfaceExpression::Error.
                 if entries.is_empty() {
                     Arc::new(SurfaceNode {
-                        expr: SurfaceExpression::Error(error_span),
+                        expr: SurfaceExpression::Error(error_span.clone()),
                         span: error_span,
                     })
                 } else {
@@ -935,9 +954,10 @@ fn recover_from_bracket_error(
                                 Span {
                                     start: key.span.start,
                                     end: e.node.value.span.end,
+                                    file: None,
                                 }
                             } else {
-                                e.node.value.span
+                                e.node.value.span.clone()
                             };
                             Spanned::new(e.node, entry_span)
                         })
@@ -948,16 +968,17 @@ fn recover_from_bracket_error(
                         SurfaceEntry {
                             key: None,
                             value: Arc::new(SurfaceNode {
-                                expr: SurfaceExpression::Error(error_span),
-                                span: error_span,
+                                expr: SurfaceExpression::Error(error_span.clone()),
+                                span: error_span.clone(),
                             }),
                         },
-                        error_span,
+                        error_span.clone(),
                     ));
 
                     let dict_span = Span {
                         start: span_start,
                         end: error_span.end,
+                        file: None,
                     };
                     Arc::new(SurfaceNode {
                         expr: SurfaceExpression::Dict(partial_entries),
@@ -1001,7 +1022,7 @@ fn recover_from_bracket_error(
                         match arg {
                             CallArg::Positional(expr) => positional_args.push(expr),
                             CallArg::Named(name, expr) => {
-                                let expr_span = expr.span;
+                                let expr_span = expr.span.clone();
                                 named_args.push(Spanned::new(
                                     SurfaceNamedArg { name, value: expr },
                                     expr_span,
@@ -1016,19 +1037,20 @@ fn recover_from_bracket_error(
                     // If it's just [f] or [call f] with an error, emit plain Error.
                     if !has_args_now {
                         Arc::new(SurfaceNode {
-                            expr: SurfaceExpression::Error(error_span),
+                            expr: SurfaceExpression::Error(error_span.clone()),
                             span: error_span,
                         })
                     } else {
                         // Add the error as a positional argument
                         positional_args.push(Arc::new(SurfaceNode {
-                            expr: SurfaceExpression::Error(error_span),
-                            span: error_span,
+                            expr: SurfaceExpression::Error(error_span.clone()),
+                            span: error_span.clone(),
                         }));
 
                         let call_span = Span {
                             start: span_start,
                             end: error_span.end,
+                            file: None,
                         };
                         Arc::new(SurfaceNode {
                             expr: SurfaceExpression::Call {
@@ -1043,7 +1065,7 @@ fn recover_from_bracket_error(
                 } else {
                     // No function — can't build a call, use plain error
                     Arc::new(SurfaceNode {
-                        expr: SurfaceExpression::Error(error_span),
+                        expr: SurfaceExpression::Error(error_span.clone()),
                         span: error_span,
                     })
                 }
@@ -1052,14 +1074,14 @@ fn recover_from_bracket_error(
                 // For other frame types (Fn, TypeAlias, TypeAssert, Pipe),
                 // we can't meaningfully preserve partial state, so just emit Error.
                 Arc::new(SurfaceNode {
-                    expr: SurfaceExpression::Error(error_span),
+                    expr: SurfaceExpression::Error(error_span.clone()),
                     span: error_span,
                 })
             }
         }
     } else {
         Arc::new(SurfaceNode {
-            expr: SurfaceExpression::Error(error_span),
+            expr: SurfaceExpression::Error(error_span.clone()),
             span: error_span,
         })
     };
@@ -1111,7 +1133,7 @@ fn recover_from_failed_open(
 
     // Push SurfaceExpression::Error into the current top frame (without popping — no frame was pushed).
     let error_expr = Arc::new(SurfaceNode {
-        expr: SurfaceExpression::Error(error_span),
+        expr: SurfaceExpression::Error(error_span.clone()),
         span: error_span,
     });
 
@@ -1197,7 +1219,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
     while i < token_vec.len() {
         let spanned_token = &token_vec[i];
         let token = &spanned_token.node;
-        let span = spanned_token.span;
+        let span = spanned_token.span.clone();
 
         match token {
             Token::OpenBracket => {
@@ -1207,7 +1229,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         message: format!(
                             "maximum nesting depth exceeded (limit: {MAX_PARSE_DEPTH})"
                         ),
-                        span: Some(span),
+                        span: Some(span.clone()),
                     };
                     if !stack.is_empty() {
                         // Recovery: failed to open the bracket (no frame pushed yet).
@@ -1770,7 +1792,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         );
 
                         // Capture the identifier span and value
-                        let func_span = token_vec[i].span;
+                        let func_span = token_vec[i].span.clone();
                         let func_name = name.clone();
 
                         // Consume the identifier token
@@ -1814,12 +1836,14 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 // Pop the frame and construct the AST node
                 let frame = stack.pop().ok_or_else(|| ParseError {
                     message: "unmatched closing bracket".to_string(),
-                    span: Some(span),
+                    span: Some(span.clone()),
                 })?;
 
-                let dict_span = |span_start: Position| Span {
+                let span_end = span.end;
+                let dict_span = move |span_start: Position| Span {
                     start: span_start,
-                    end: span.end,
+                    end: span_end,
+                    file: None,
                 };
 
                 // Helper: recover from a CloseBracket-handler error (frame already popped).
@@ -1828,10 +1852,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 macro_rules! close_bracket_recover {
                     ($err:expr) => {{
                         let err: ParseError = $err;
-                        let error_span = err.span.unwrap_or(span);
+                        let error_span = err.span.clone().unwrap_or_else(|| span.clone());
                         recovered_errors.push(err);
                         let error_expr = Arc::new(SurfaceNode {
-                            expr: SurfaceExpression::Error(error_span),
+                            expr: SurfaceExpression::Error(error_span.clone()),
                             span: error_span,
                         });
                         // Push to parent context (stack has already had the frame popped).
@@ -1856,7 +1880,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         if let Some(key_expr) = pending_key {
                             close_bracket_recover!(ParseError {
                                 message: "key without value: expected `:` and value".to_string(),
-                                span: Some(key_expr.span),
+                                span: Some(key_expr.span.clone()),
                             });
                         } else {
                             // Construct the dict expression
@@ -1869,9 +1893,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                                 Span {
                                                     start: key.span.start,
                                                     end: e.node.value.span.end,
+                                                    file: None,
                                                 }
                                             } else {
-                                                e.node.value.span
+                                                e.node.value.span.clone()
                                             };
                                             Spanned::new(e.node, entry_span)
                                         })
@@ -1912,7 +1937,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 Err(ParseError {
                                     message: "call form requires at least a function expression"
                                         .to_string(),
-                                    span: Some(span),
+                                    span: Some(span.clone()),
                                 })
                             } else {
                                 // Explicit call: func is args[0]
@@ -1922,7 +1947,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                         message: format!(
                                             "call function cannot be a named argument (got `{name}:`)",
                                         ),
-                                        span: Some(span),
+                                        span: Some(span.clone()),
                                     }),
                                 }
                             };
@@ -1946,7 +1971,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                         match arg {
                                             CallArg::Positional(expr) => positional_args.push(expr),
                                             CallArg::Named(name, expr) => {
-                                                let expr_span = expr.span;
+                                                let expr_span = expr.span.clone();
                                                 named_args.push(Spanned::new(
                                                     SurfaceNamedArg { name, value: expr },
                                                     expr_span,
@@ -1986,7 +2011,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         if body.is_empty() {
                             close_bracket_recover!(ParseError {
                                 message: "fn form requires a body expression".to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         }
 
@@ -2026,7 +2051,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             close_bracket_recover!(ParseError {
                                 message: "type-alias form requires at least one type expression"
                                     .to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else {
                             // Multi-entry union: wrap all entries in a single TypeAlias with Union body.
@@ -2040,7 +2065,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 let entries: Vec<Spanned<SurfaceEntry>> = type_exprs
                                     .into_iter()
                                     .map(|e| {
-                                        let entry_span = e.span;
+                                        let entry_span = e.span.clone();
                                         Spanned::new(
                                             SurfaceEntry {
                                                 key: None,
@@ -2086,13 +2111,13 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         (None, _) => {
                             close_bracket_recover!(ParseError {
                                 message: "type-assert form requires an annotation".to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         }
                         (_, None) => {
                             close_bracket_recover!(ParseError {
                                 message: "type-assert form requires an expression".to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         }
                         (Some(annotation), Some(expr)) => {
@@ -2116,7 +2141,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             None => {
                                 close_bracket_recover!(ParseError {
                                     message: "quote form requires an expression".to_string(),
-                                    span: Some(span),
+                                    span: Some(span.clone()),
                                 });
                             }
                             Some(expr) => {
@@ -2141,7 +2166,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             None => {
                                 close_bracket_recover!(ParseError {
                                     message: "unquote form requires an expression".to_string(),
-                                    span: Some(span),
+                                    span: Some(span.clone()),
                                 });
                             }
                             Some(expr) => {
@@ -2167,7 +2192,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 close_bracket_recover!(ParseError {
                                     message: "unquote-splice form requires an expression"
                                         .to_string(),
-                                    span: Some(span),
+                                    span: Some(span.clone()),
                                 });
                             }
                             Some(expr) => {
@@ -2195,18 +2220,18 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         if name.is_none() {
                             close_bracket_recover!(ParseError {
                                 message: "defmacro form requires a name".to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else if params.is_none() {
                             close_bracket_recover!(ParseError {
                                 message: "defmacro form requires a parameter list".to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else if body.is_empty() {
                             close_bracket_recover!(ParseError {
                                 message: "defmacro form requires at least one body expression"
                                     .to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else {
                             // For single-expression bodies, use the expression directly.
@@ -2257,18 +2282,18 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         if name.is_none() {
                             close_bracket_recover!(ParseError {
                                 message: "macro form requires a name".to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else if params.is_none() {
                             close_bracket_recover!(ParseError {
                                 message: "macro form requires a params expression ([let ...])"
                                     .to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else if body.is_none() {
                             close_bracket_recover!(ParseError {
                                 message: "macro form requires a body expression".to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else {
                             #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
@@ -2309,18 +2334,18 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         if pending_key.is_some() {
                             close_bracket_recover!(ParseError {
                                 message: "syntax-class: key without value".to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else if name.is_none() {
                             close_bracket_recover!(ParseError {
                                 message: "syntax-class form requires a name".to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else if pattern.is_none() {
                             close_bracket_recover!(ParseError {
                                 message: "syntax-class form requires a 'pattern:' field"
                                     .to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else {
                             #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
@@ -2361,25 +2386,25 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         if scrutinee.is_none() {
                             close_bracket_recover!(ParseError {
                                 message: "match form requires a scrutinee expression".to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else if pending_pattern_expr.is_some() {
                             close_bracket_recover!(ParseError {
                                 message: "match pattern must be followed by `:` and a body"
                                     .to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else if pending_pattern.is_some() {
                             close_bracket_recover!(ParseError {
                                 message: "match pattern must be followed by a body expression"
                                     .to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else if arms.is_empty() {
                             close_bracket_recover!(ParseError {
                                 message: "match form requires at least one pattern: body pair"
                                     .to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else {
                             #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
@@ -2413,7 +2438,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             close_bracket_recover!(ParseError {
                                 message: "class form has incomplete method (key without value)"
                                     .to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else {
                             // Extract determines, resolver, and injective from structural_metadata dict
@@ -2480,9 +2505,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                             Span {
                                                 start: key.span.start,
                                                 end: e.node.value.span.end,
+                                                file: None,
                                             }
                                         } else {
-                                            e.node.value.span
+                                            e.node.value.span.clone()
                                         };
                                         Spanned::new(e.node, entry_span)
                                     })
@@ -2525,14 +2551,14 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             close_bracket_recover!(ParseError {
                                 message: "instance form has incomplete method (key without value)"
                                     .to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else if pending_arm_pattern.is_some() {
                             close_bracket_recover!(ParseError {
                                 message:
                                     "instance form has incomplete arm (pattern without methods)"
                                         .to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         } else if let Some(class_name_str) = class_name {
                             // Finalize current arm methods by appending to the last arm
@@ -2545,7 +2571,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                         message:
                                             "instance form has orphaned methods without pattern"
                                                 .to_string(),
-                                        span: Some(span),
+                                        span: Some(span.clone()),
                                     });
                                 }
                             }
@@ -2562,9 +2588,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                                     Span {
                                                         start: key.span.start,
                                                         end: e.node.value.span.end,
+                                                        file: None,
                                                     }
                                                 } else {
-                                                    e.node.value.span
+                                                    e.node.value.span.clone()
                                                 };
                                                 Spanned::new(e.node, entry_span)
                                             })
@@ -2610,7 +2637,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         } else {
                             close_bracket_recover!(ParseError {
                                 message: "instance form requires a class name".to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             });
                         }
                     }
@@ -2676,7 +2703,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         close_bracket_recover!(ParseError {
                             message: "pipe operator '|' requires a right-hand expression"
                                 .to_string(),
-                            span: Some(span),
+                            span: Some(span.clone()),
                         });
                     }
                 }
@@ -2696,7 +2723,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         if pending_key.is_none() {
                             Some(ParseError {
                                 message: "`:` without a key (expected key before `:`)".to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             })
                         } else {
                             None // Pending key is set; next expression will be the value
@@ -2709,7 +2736,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         if pending_key.is_none() {
                             Some(ParseError {
                                 message: "`:` without a name (expected bare word before `:` for named arg)".to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             })
                         } else {
                             None // Pending key is set; next expression will be the value
@@ -2723,7 +2750,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             Some(ParseError {
                                 message: "`:` without a method name (expected method: Type)"
                                     .to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             })
                         } else {
                             None // Pending key is set; next expression will be the value
@@ -2755,7 +2782,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             Some(ParseError {
                                 message: "`:` without a method name or pattern (expected method: impl or [pattern ...]: methods)"
                                     .to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             })
                         } else {
                             None // Pending key is set; next expression will be the value
@@ -2770,7 +2797,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             Some(ParseError {
                                 message: "`:` without a pattern (expected pattern: body in match)"
                                     .to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             })
                         } else {
                             // Convert the pending pattern expression to a Pattern.
@@ -2792,7 +2819,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             Some(ParseError {
                                 message: "`:` without a key (expected 'pattern' or 'message' before `:`)"
                                     .to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             })
                         } else {
                             None // Pending key is set; next expression will be the value
@@ -2818,13 +2845,13 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 }
                                 _ => Some(ParseError {
                                     message: "`:` in [let ...] must follow a bare identifier or a binding group `[a b]`".to_string(),
-                                    span: Some(span),
+                                    span: Some(span.clone()),
                                 }),
                             }
                         } else {
                             Some(ParseError {
                                 message: "`:` without a left-hand side in [let ...] form".to_string(),
-                                span: Some(span),
+                                span: Some(span.clone()),
                             })
                         }
                     }
@@ -2832,7 +2859,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         message:
                             "`:` can only appear in dict, call, class, instance, match, or syntax-class forms"
                                 .to_string(),
-                        span: Some(span),
+                        span: Some(span.clone()),
                     }),
                 };
                 if let Some(err) = colon_err {
@@ -2858,7 +2885,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             Token::Int(n) => {
                 let expr = Arc::new(SurfaceNode {
                     expr: SurfaceExpression::Int(*n),
-                    span,
+                    span: span.clone(),
                 });
                 // Check if this integer is a potential dict key (e.g. [0: $x]).
                 // Use peek_next_horizontal: a newline before `:` breaks key detection per spec.
@@ -2897,7 +2924,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             Token::Float(f) => {
                 let expr = Arc::new(SurfaceNode {
                     expr: SurfaceExpression::Float(*f),
-                    span,
+                    span: span.clone(),
                 });
                 if let Err(push_err) = push_value(&mut stack, &mut current_document_items, expr) {
                     if !stack.is_empty() {
@@ -2922,7 +2949,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             Token::BoolLit(b) => {
                 let expr = Arc::new(SurfaceNode {
                     expr: SurfaceExpression::Bool(*b),
-                    span,
+                    span: span.clone(),
                 });
                 if let Err(push_err) = push_value(&mut stack, &mut current_document_items, expr) {
                     if !stack.is_empty() {
@@ -2947,7 +2974,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             Token::QuotedString(s) => {
                 let expr = Arc::new(SurfaceNode {
                     expr: SurfaceExpression::Str(s.clone()),
-                    span,
+                    span: span.clone(),
                 });
                 // Check if this quoted string is a potential dict key (e.g. ["key": value]).
                 // Use peek_next_horizontal: a newline before `:` breaks key detection per spec.
@@ -2986,7 +3013,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             Token::InterpolatedString(parts) => {
                 // Emit [tmpl "raw-template"] call; the [tmpl] macro registered from stdlib/macros.llt
                 // expands this to [str segment1 var1 segment2 ...] at compile time.
-                let expr = emit_tmpl_call(parts, span)?;
+                let expr = emit_tmpl_call(parts, span.clone())?;
                 if let Err(push_err) = push_value(&mut stack, &mut current_document_items, expr) {
                     if !stack.is_empty() {
                         i = recover_from_bracket_error(
@@ -3011,14 +3038,14 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 // Desugar to [unindent "..."]
                 let str_expr = Arc::new(SurfaceNode {
                     expr: SurfaceExpression::Str(s.clone()),
-                    span,
+                    span: span.clone(),
                 });
                 let unindent_ref = Arc::new(SurfaceNode {
                     expr: SurfaceExpression::VarRef {
                         name: "unindent".to_string(),
                         escaped: false,
                     },
-                    span,
+                    span: span.clone(),
                 });
                 let args = vec![str_expr];
                 let expr = Arc::new(SurfaceNode {
@@ -3028,7 +3055,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         named_args: vec![],
                         implied: true,
                     },
-                    span,
+                    span: span.clone(),
                 });
                 if let Err(push_err) = push_value(&mut stack, &mut current_document_items, expr) {
                     if !stack.is_empty() {
@@ -3053,14 +3080,14 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             Token::TripleInterpolatedString(parts) => {
                 // Desugar to [unindent i"..."]
                 // First emit the tmpl call for the interpolated string
-                let tmpl_expr = emit_tmpl_call(parts, span)?;
+                let tmpl_expr = emit_tmpl_call(parts, span.clone())?;
                 // Then wrap it with unindent
                 let unindent_ref = Arc::new(SurfaceNode {
                     expr: SurfaceExpression::VarRef {
                         name: "unindent".to_string(),
                         escaped: false,
                     },
-                    span,
+                    span: span.clone(),
                 });
                 let args = vec![tmpl_expr];
                 let expr = Arc::new(SurfaceNode {
@@ -3070,7 +3097,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         named_args: vec![],
                         implied: true,
                     },
-                    span,
+                    span: span.clone(),
                 });
                 if let Err(push_err) = push_value(&mut stack, &mut current_document_items, expr) {
                     if !stack.is_empty() {
@@ -3112,10 +3139,11 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             let full_span = Span {
                                 start: name_span.start,
                                 end: annotation.span.end,
+                                file: None,
                             };
                             let expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Annotated { name, annotation },
-                                span: full_span,
+                                span: full_span.clone(),
                             });
                             // If the annotated expression is immediately followed by ':', treat
                             // it as a dict key candidate (e.g. [x@Number: 42]) or match pattern
@@ -3196,7 +3224,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             // Dict key: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(s.clone()),
-                                span,
+                                span: span.clone(),
                             });
                             *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
@@ -3208,7 +3236,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ..
                         }) => {
                             // Named arg key — store the string name
-                            *pending_key = Some((s.clone(), span));
+                            *pending_key = Some((s.clone(), span.clone()));
                             last_significant_span = Some(span);
                             i += 1;
                             continue;
@@ -3220,7 +3248,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             // Method name in class: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(s.clone()),
-                                span,
+                                span: span.clone(),
                             });
                             *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
@@ -3234,7 +3262,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             // Method name in instance: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(s.clone()),
-                                span,
+                                span: span.clone(),
                             });
                             *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
@@ -3248,7 +3276,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             // Field name in syntax-class: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(s.clone()),
-                                span,
+                                span: span.clone(),
                             });
                             *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
@@ -3265,7 +3293,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     name: s.clone(),
                                     escaped: false,
                                 },
-                                span,
+                                span: span.clone(),
                             });
                             *pending_pattern_expr = Some(pattern_expr);
                             last_significant_span = Some(span);
@@ -3279,7 +3307,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     name: s.clone(),
                                     escaped: false,
                                 },
-                                span,
+                                span: span.clone(),
                             });
                             if let Err(push_err) =
                                 push_value(&mut stack, &mut current_document_items, expr)
@@ -3310,7 +3338,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             name: s.clone(),
                             escaped: false,
                         },
-                        span,
+                        span: span.clone(),
                     });
                     if let Err(push_err) = push_value(&mut stack, &mut current_document_items, expr)
                     {
@@ -3340,7 +3368,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         name: name.clone(),
                         escaped: true,
                     },
-                    span,
+                    span: span.clone(),
                 });
                 // Check if this VarRef is a potential dict key (followed by colon).
                 // Use peek_next_horizontal: a newline before `:` breaks key detection per spec.
@@ -3381,7 +3409,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 // Determine if this is a trailing or leading comment based on line position
                 // Trailing: comment on the same line as the previous significant token
                 // Leading: comment on a different line (or no previous token)
-                if let Some(prev_span) = last_significant_span {
+                if let Some(prev_span) = last_significant_span.clone() {
                     if prev_span.start.line == span.start.line {
                         // Same line as previous token → trailing comment
                         trailing_comments.insert(prev_span.start.offset, comment_text.clone());
@@ -3430,11 +3458,12 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 let items = std::mem::take(&mut current_document_items);
                 let doc_span = if items.is_empty() {
                     // Empty document: use separator position
-                    span
+                    span.clone()
                 } else {
                     Span {
                         start: items.first().unwrap().span().start,
                         end: items.last().unwrap().span().end,
+                        file: None,
                     }
                 };
                 documents.push(Spanned::new(
@@ -3478,7 +3507,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     if next_doc_expects.is_some() {
                                         return Err(ParseError {
                                             message: "duplicate input type annotation (both %@Type and expects: @Type)".to_string(),
-                                            span: Some(token_vec[i].span),
+                                            span: Some(token_vec[i].span.clone()),
                                         });
                                     }
                                     i += 1; // Move to @ token
@@ -3502,7 +3531,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 } else {
                                     return Err(ParseError {
                                         message: "bare % in section header must be followed by @Type annotation (use '%@Type' to validate pipeline input)".to_string(),
-                                        span: Some(token_vec[i].span),
+                                        span: Some(token_vec[i].span.clone()),
                                     });
                                 }
                             }
@@ -3511,10 +3540,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if next_doc_name.is_some() {
                                 return Err(ParseError {
                                     message: "duplicate section name in header".to_string(),
-                                    span: Some(token_vec[i].span),
+                                    span: Some(token_vec[i].span.clone()),
                                 });
                             }
-                            next_doc_name_span = Some(token_vec[i].span);
+                            next_doc_name_span = Some(token_vec[i].span.clone());
                             next_doc_name = Some(name_after_percent.to_string());
 
                             // Check for @Type annotation on the name (%name@Type - output type)
@@ -3548,7 +3577,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if next_doc_expects.is_some() {
                                 return Err(ParseError {
                                     message: "duplicate expects: pragma in header".to_string(),
-                                    span: Some(token_vec[i].span),
+                                    span: Some(token_vec[i].span.clone()),
                                 });
                             }
                             i += 1;
@@ -3557,9 +3586,9 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 return Err(ParseError {
                                     message: "expected ':' after 'expects' pragma".to_string(),
                                     span: Some(if i < token_vec.len() {
-                                        token_vec[i].span
+                                        token_vec[i].span.clone()
                                     } else {
-                                        token_vec[i - 1].span
+                                        token_vec[i - 1].span.clone()
                                     }),
                                 });
                             }
@@ -3587,7 +3616,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if next_doc_caps.is_some() {
                                 return Err(ParseError {
                                     message: "duplicate caps: pragma in header".to_string(),
-                                    span: Some(token_vec[i].span),
+                                    span: Some(token_vec[i].span.clone()),
                                 });
                             }
                             let caps_start = token_vec[i].span.start;
@@ -3597,9 +3626,9 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 return Err(ParseError {
                                     message: "expected ':' after 'caps' pragma".to_string(),
                                     span: Some(if i < token_vec.len() {
-                                        token_vec[i].span
+                                        token_vec[i].span.clone()
                                     } else {
-                                        token_vec[i - 1].span
+                                        token_vec[i - 1].span.clone()
                                     }),
                                 });
                             }
@@ -3613,9 +3642,9 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                         "expected '[' after 'caps:' — caps must be a dict literal"
                                             .to_string(),
                                     span: Some(if i < token_vec.len() {
-                                        token_vec[i].span
+                                        token_vec[i].span.clone()
                                     } else {
-                                        token_vec[i - 1].span
+                                        token_vec[i - 1].span.clone()
                                     }),
                                 });
                             }
@@ -3628,7 +3657,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 if i >= token_vec.len() {
                                     return Err(ParseError {
                                         message: "unclosed caps dict — expected ']'".to_string(),
-                                        span: Some(token_vec[i - 1].span),
+                                        span: Some(token_vec[i - 1].span.clone()),
                                     });
                                 }
                                 if matches!(&token_vec[i].node, Token::CloseBracket) {
@@ -3647,7 +3676,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     _ => {
                                         return Err(ParseError {
                                             message: "caps entries must start with '%' (e.g., %nc: @NetCap)".to_string(),
-                                            span: Some(token_vec[i].span),
+                                            span: Some(token_vec[i].span.clone()),
                                         });
                                     }
                                 };
@@ -3662,9 +3691,9 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                             cap_name
                                         ),
                                         span: Some(if i < token_vec.len() {
-                                            token_vec[i].span
+                                            token_vec[i].span.clone()
                                         } else {
-                                            token_vec[i - 1].span
+                                            token_vec[i - 1].span.clone()
                                         }),
                                     });
                                 }
@@ -3677,7 +3706,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                             "expected annotation after '%{}:' in caps entry",
                                             cap_name
                                         ),
-                                        span: Some(token_vec[i - 1].span),
+                                        span: Some(token_vec[i - 1].span.clone()),
                                     });
                                 }
                                 match parse_annotation(
@@ -3707,7 +3736,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             if next_doc_stage.is_some() {
                                 return Err(ParseError {
                                     message: "duplicate stage: pragma in header".to_string(),
-                                    span: Some(token_vec[i].span),
+                                    span: Some(token_vec[i].span.clone()),
                                 });
                             }
                             i += 1;
@@ -3716,9 +3745,9 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 return Err(ParseError {
                                     message: "expected ':' after 'stage' pragma".to_string(),
                                     span: Some(if i < token_vec.len() {
-                                        token_vec[i].span
+                                        token_vec[i].span.clone()
                                     } else {
-                                        token_vec[i - 1].span
+                                        token_vec[i - 1].span.clone()
                                     }),
                                 });
                             }
@@ -3737,7 +3766,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                             "unknown stage: '{}' (expected 'type')",
                                             stage_name
                                         ),
-                                        span: Some(token_vec[i].span),
+                                        span: Some(token_vec[i].span.clone()),
                                     });
                                 }
                                 _ => {
@@ -3746,9 +3775,9 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                             "expected stage name after 'stage:' (expected 'type')"
                                                 .to_string(),
                                         span: Some(if i < token_vec.len() {
-                                            token_vec[i].span
+                                            token_vec[i].span.clone()
                                         } else {
-                                            token_vec[i - 1].span
+                                            token_vec[i - 1].span.clone()
                                         }),
                                     });
                                 }
@@ -3760,7 +3789,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 return Err(ParseError {
                                     message: "duplicate output type annotation in header"
                                         .to_string(),
-                                    span: Some(token_vec[i].span),
+                                    span: Some(token_vec[i].span.clone()),
                                 });
                             }
                             match parse_annotation(
@@ -3787,7 +3816,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     "unexpected token in section header: {:?}",
                                     token_vec[i].node
                                 ),
-                                span: Some(token_vec[i].span),
+                                span: Some(token_vec[i].span.clone()),
                             });
                         }
                     }
@@ -3836,7 +3865,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     }
                 } else {
                     // Inside a frame — pop the last value from the current frame
-                    match pop_last_value_from_frame(&mut stack, span) {
+                    match pop_last_value_from_frame(&mut stack, span.clone()) {
                         Ok(t) => t,
                         Err(pop_err) => {
                             i = recover_from_bracket_error(
@@ -3862,7 +3891,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 if i >= token_vec.len() {
                     let err = ParseError {
                         message: "expected field name after '.'".to_string(),
-                        span: Some(span),
+                        span: Some(span.clone()),
                     };
                     if !stack.is_empty() {
                         i = recover_from_bracket_error(
@@ -3886,6 +3915,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         let dot_access_span = Span {
                             start: target.span.start,
                             end: token_vec[i].span.end,
+                            file: None,
                         };
 
                         let spanned_access = Arc::new(SurfaceNode {
@@ -3893,7 +3923,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 expr: target,
                                 field: field_key,
                             },
-                            span: dot_access_span,
+                            span: dot_access_span.clone(),
                         });
 
                         if let Err(push_err) =
@@ -3919,6 +3949,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         let dot_access_span = Span {
                             start: target.span.start,
                             end: token_vec[i].span.end,
+                            file: None,
                         };
 
                         let spanned_access = Arc::new(SurfaceNode {
@@ -3926,7 +3957,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 expr: target,
                                 field: field_key,
                             },
-                            span: dot_access_span,
+                            span: dot_access_span.clone(),
                         });
 
                         if let Err(push_err) =
@@ -3953,7 +3984,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 "expected field name (identifier or integer) after '.', found {:?}",
                                 token_vec[i].node
                             ),
-                            span: Some(token_vec[i].span),
+                            span: Some(token_vec[i].span.clone()),
                         };
                         if !stack.is_empty() {
                             i = recover_from_bracket_error(
@@ -3997,7 +4028,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     }
                 } else {
                     // Inside a frame — pop the last value from the current frame
-                    match pop_last_value_from_frame(&mut stack, span) {
+                    match pop_last_value_from_frame(&mut stack, span.clone()) {
                         Ok(lhs_expr) => lhs_expr,
                         Err(pop_err) => {
                             i = recover_from_bracket_error(
@@ -4070,7 +4101,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         message:
                             "@ annotations outside type-assert or param contexts not yet supported"
                                 .to_string(),
-                        span: Some(span),
+                        span: Some(span.clone()),
                     };
                     if !stack.is_empty() {
                         i = recover_from_bracket_error(
@@ -4112,12 +4143,13 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     let (rest_name, rest_end) = if has_following_identifier {
                         if let Token::Identifier(name) = &token_vec[i].node {
                             let n = name.clone();
-                            let end_span = token_vec[i].span;
+                            let end_span = token_vec[i].span.clone();
                             (
                                 Some(n),
                                 Span {
                                     start: ellipsis_span.start,
                                     end: end_span.end,
+                                    file: None,
                                 },
                             )
                         } else {
@@ -4129,7 +4161,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     let name_advance = if rest_name.is_some() { 1 } else { 0 };
                     let rest_expr = Arc::new(SurfaceNode {
                         expr: SurfaceExpression::Rest(rest_name),
-                        span: rest_end,
+                        span: rest_end.clone(),
                     });
                     if let Err(push_err) =
                         push_value(&mut stack, &mut current_document_items, rest_expr)
@@ -4153,12 +4185,12 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     let err = ParseError {
                         message: "variadic/rest markers not yet supported outside dict context"
                             .to_string(),
-                        span: Some(span),
+                        span: Some(ellipsis_span.clone()),
                     };
                     if !stack.is_empty() {
                         i = recover_from_bracket_error(
                             err,
-                            span,
+                            ellipsis_span,
                             &token_vec,
                             i,
                             &mut stack,
@@ -4172,7 +4204,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     // Outside Dict, no identifier: Expr::Placeholder
                     let placeholder_expr = Arc::new(SurfaceNode {
                         expr: SurfaceExpression::Placeholder,
-                        span: ellipsis_span,
+                        span: ellipsis_span.clone(),
                     });
                     if let Err(push_err) =
                         push_value(&mut stack, &mut current_document_items, placeholder_expr)
@@ -4213,7 +4245,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             // Dict key: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(keyword_str.to_string()),
-                                span,
+                                span: span.clone(),
                             });
                             *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
@@ -4225,7 +4257,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ..
                         }) => {
                             // Named arg key
-                            *pending_key = Some((keyword_str.to_string(), span));
+                            *pending_key = Some((keyword_str.to_string(), span.clone()));
                             last_significant_span = Some(span);
                             i += 1;
                             continue;
@@ -4237,7 +4269,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             // Method name in class: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(keyword_str.to_string()),
-                                span,
+                                span: span.clone(),
                             });
                             *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
@@ -4251,7 +4283,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             // Method name in instance: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(keyword_str.to_string()),
-                                span,
+                                span: span.clone(),
                             });
                             *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
@@ -4265,7 +4297,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             // Field name in syntax-class: SurfaceExpression::Str
                             let key_expr = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(keyword_str.to_string()),
-                                span,
+                                span: span.clone(),
                             });
                             *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
@@ -4284,7 +4316,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     name: keyword_str.to_string(),
                                     escaped: false,
                                 },
-                                span,
+                                span: span.clone(),
                             });
                             *pending_pattern_expr = Some(pattern_expr);
                             last_significant_span = Some(span);
@@ -4298,7 +4330,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     name: keyword_str.to_string(),
                                     escaped: false,
                                 },
-                                span,
+                                span: span.clone(),
                             });
                             if let Err(push_err) =
                                 push_value(&mut stack, &mut current_document_items, expr)
@@ -4329,7 +4361,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             name: keyword_str.to_string(),
                             escaped: false,
                         },
-                        span,
+                        span: span.clone(),
                     });
                     if let Err(push_err) = push_value(&mut stack, &mut current_document_items, expr)
                     {
@@ -4387,6 +4419,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 line: start_pos.line,
                 column: start_pos.column + 1,
             },
+            file: None,
         };
 
         let count = stack.len();
@@ -4426,6 +4459,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 line: 1,
                 column: 1,
             },
+            file: None,
         };
         documents.push(Spanned::new(doc, doc_span));
     } else if !current_document_items.is_empty() {
@@ -4449,6 +4483,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 line: 1,
                 column: 1,
             },
+            file: None,
         };
         documents.push(Spanned::new(doc, doc_span));
     }
@@ -4749,7 +4784,7 @@ fn surface_node_to_pattern(node: Arc<SurfaceNode>) -> Result<Spanned<Pattern>, P
 fn surface_node_to_pattern_with_guard(
     node: Arc<SurfaceNode>,
 ) -> Result<PatternWithGuard, ParseError> {
-    let span = node.span;
+    let span = node.span.clone();
     let (pattern, guard) = match &node.expr {
         // Handle Pipe as or-pattern separator
         SurfaceExpression::Pipe { lhs, rhs } => {
@@ -4882,14 +4917,14 @@ fn surface_node_to_pattern_with_guard(
                             return Err(ParseError {
                                 message: "dict pattern key must be an identifier or string"
                                     .to_string(),
-                                span: Some(k.span),
+                                span: Some(k.span.clone()),
                             });
                         }
                     }
                 } else {
                     return Err(ParseError {
                         message: "dict pattern requires named fields (auto-indexed entries not supported)".to_string(),
-                        span: Some(entry.span),
+                        span: Some(entry.span.clone()),
                     });
                 };
 
@@ -4976,7 +5011,7 @@ fn push_expr_to_parent(
             Some(StackFrame::Dict {
                 ref mut entries, ..
             }) => {
-                let node_span = node.span;
+                let node_span = node.span.clone();
                 entries.push(Spanned::new(
                     SurfaceEntry {
                         key: None,
@@ -5026,7 +5061,7 @@ fn push_expr_to_parent(
                         if !all_valid_params {
                             return Err(ParseError {
                                 message: "fn parameter list contains invalid binding patterns; each entry must be a name, name@Type, ...name, or _ wildcard".to_string(),
-                                span: Some(node.span),
+                                span: Some(node.span.clone()),
                             });
                         }
 
@@ -5042,7 +5077,7 @@ fn push_expr_to_parent(
                             return Err(ParseError {
                                 message: "only one variadic parameter (...name) is allowed per fn"
                                     .to_string(),
-                                span: Some(node.span),
+                                span: Some(node.span.clone()),
                             });
                         }
                         if variadic_count == 1 {
@@ -5054,7 +5089,7 @@ fn push_expr_to_parent(
                                 if !matches!(&last.expr, SurfaceExpression::Rest(Some(_))) {
                                     return Err(ParseError {
                                         message: "variadic parameter (...name) must be the last parameter".to_string(),
-                                        span: Some(node.span),
+                                        span: Some(node.span.clone()),
                                     });
                                 }
                             }
@@ -5072,7 +5107,7 @@ fn push_expr_to_parent(
                                             annotation: None,
                                             variadic: false,
                                         },
-                                        binding.span,
+                                        binding.span.clone(),
                                     ));
                                 }
                                 SurfaceExpression::Annotated { name, annotation } => {
@@ -5083,7 +5118,7 @@ fn push_expr_to_parent(
                                             annotation: Some(annotation.clone()),
                                             variadic: false,
                                         },
-                                        binding.span,
+                                        binding.span.clone(),
                                     ));
                                 }
                                 SurfaceExpression::Rest(Some(name)) => {
@@ -5094,7 +5129,7 @@ fn push_expr_to_parent(
                                             annotation: None,
                                             variadic: true,
                                         },
-                                        binding.span,
+                                        binding.span.clone(),
                                     ));
                                 }
                                 SurfaceExpression::Placeholder => {
@@ -5114,7 +5149,7 @@ fn push_expr_to_parent(
                             message: "fn parameter list must use [let ...] form (e.g. [fn [let x y] body]); \
                                       [fn [x y] body] without `let` is no longer valid"
                                 .to_string(),
-                            span: Some(node.span),
+                            span: Some(node.span.clone()),
                         });
                     }
                 }
@@ -5197,7 +5232,7 @@ fn push_expr_to_parent(
                                     (e.g. [type [let a b] Body]); \
                                     [type [a b] Body] without `let` is no longer valid"
                                     .to_string(),
-                                span: Some(node.span),
+                                span: Some(node.span.clone()),
                             });
                         }
                     }
@@ -5215,7 +5250,7 @@ fn push_expr_to_parent(
                 if type_assert_expr.is_some() {
                     return Err(ParseError {
                         message: "type-assert form can only have one expression".to_string(),
-                        span: Some(node.span),
+                        span: Some(node.span.clone()),
                     });
                 }
                 *type_assert_expr = Some(node);
@@ -5228,7 +5263,7 @@ fn push_expr_to_parent(
                 if quote_expr.is_some() {
                     return Err(ParseError {
                         message: "quote form can only have one expression".to_string(),
-                        span: Some(node.span),
+                        span: Some(node.span.clone()),
                     });
                 }
                 *quote_expr = Some(node);
@@ -5241,7 +5276,7 @@ fn push_expr_to_parent(
                 if unquote_expr.is_some() {
                     return Err(ParseError {
                         message: "unquote form can only have one expression".to_string(),
-                        span: Some(node.span),
+                        span: Some(node.span.clone()),
                     });
                 }
                 *unquote_expr = Some(node);
@@ -5254,7 +5289,7 @@ fn push_expr_to_parent(
                 if unquote_splice_expr.is_some() {
                     return Err(ParseError {
                         message: "unquote-splice form can only have one expression".to_string(),
-                        span: Some(node.span),
+                        span: Some(node.span.clone()),
                     });
                 }
                 *unquote_splice_expr = Some(node);
@@ -5279,7 +5314,7 @@ fn push_expr_to_parent(
                         Err(ParseError {
                             message: "defmacro declaration requires a name (bare identifier)"
                                 .to_string(),
-                            span: Some(node.span),
+                            span: Some(node.span.clone()),
                         })
                     }
                 } else if params.is_none() {
@@ -5311,7 +5346,7 @@ fn push_expr_to_parent(
                         Err(ParseError {
                             message: "macro declaration requires a name (bare identifier)"
                                 .to_string(),
-                            span: Some(node.span),
+                            span: Some(node.span.clone()),
                         })
                     }
                 } else if params.is_none() {
@@ -5323,7 +5358,7 @@ fn push_expr_to_parent(
                         Err(ParseError {
                             message: "macro declaration params must be a LetDecl ([let ...])"
                                 .to_string(),
-                            span: Some(node.span),
+                            span: Some(node.span.clone()),
                         })
                     }
                 } else if body.is_none() {
@@ -5335,7 +5370,7 @@ fn push_expr_to_parent(
                         message:
                             "macro declaration expects exactly 3 arguments: name, params, body"
                                 .to_string(),
-                        span: Some(node.span),
+                        span: Some(node.span.clone()),
                     })
                 }
             }
@@ -5358,7 +5393,7 @@ fn push_expr_to_parent(
                         Err(ParseError {
                             message: "syntax-class declaration requires a name (bare identifier)"
                                 .to_string(),
-                            span: Some(node.span),
+                            span: Some(node.span.clone()),
                         })
                     }
                 } else if pending_key.is_some() {
@@ -5370,7 +5405,7 @@ fn push_expr_to_parent(
                                 if pattern.is_some() {
                                     return Err(ParseError {
                                         message: "syntax-class: duplicate 'pattern' key".to_string(),
-                                        span: Some(node.span),
+                                        span: Some(node.span.clone()),
                                     });
                                 }
                                 *pattern = Some(node);
@@ -5380,7 +5415,7 @@ fn push_expr_to_parent(
                                 if message.is_some() {
                                     return Err(ParseError {
                                         message: "syntax-class: duplicate 'message' key".to_string(),
-                                        span: Some(node.span),
+                                        span: Some(node.span.clone()),
                                     });
                                 }
                                 if let SurfaceExpression::Str(s) = &node.expr {
@@ -5390,7 +5425,7 @@ fn push_expr_to_parent(
                                     Err(ParseError {
                                         message: "syntax-class 'message' value must be a string literal"
                                             .to_string(),
-                                        span: Some(node.span),
+                                        span: Some(node.span.clone()),
                                     })
                                 }
                             }
@@ -5399,13 +5434,13 @@ fn push_expr_to_parent(
                                     "syntax-class: unknown key '{}' (expected 'pattern' or 'message')",
                                     key_name
                                 ),
-                                span: Some(key.span),
+                                span: Some(key.span.clone()),
                             }),
                         }
                     } else {
                         Err(ParseError {
                             message: "syntax-class keys must be bare identifiers".to_string(),
-                            span: Some(key.span),
+                            span: Some(key.span.clone()),
                         })
                     }
                 } else {
@@ -5436,11 +5471,11 @@ fn push_expr_to_parent(
                     if pending_pattern_expr.is_some() || pending_pattern.is_some() {
                         return Err(ParseError {
                             message: "match pattern must be followed by `:` and a body before a [case ...] arm".to_string(),
-                            span: Some(node.span),
+                            span: Some(node.span.clone()),
                         });
                     }
                     arms.push(SurfaceMatchArm {
-                        pattern: Spanned::new(Pattern::Wildcard, node.span),
+                        pattern: Spanned::new(Pattern::Wildcard, node.span.clone()),
                         guard: None,
                         body: node,
                     });
@@ -5463,7 +5498,7 @@ fn push_expr_to_parent(
                     // pending_pattern_expr is set but not converted yet — error
                     Err(ParseError {
                         message: "match pattern must be followed by `:` and a body".to_string(),
-                        span: Some(node.span),
+                        span: Some(node.span.clone()),
                     })
                 }
             }
@@ -5510,7 +5545,7 @@ fn push_expr_to_parent(
                             Err(ParseError {
                                 message: "class declaration requires [let ClassName ...] form"
                                     .to_string(),
-                                span: Some(node.span),
+                                span: Some(node.span.clone()),
                             })
                         }
                     }
@@ -5527,7 +5562,7 @@ fn push_expr_to_parent(
                             message:
                                 "unexpected expression in class form (expected method: Type entries or structural metadata dict)"
                                     .to_string(),
-                            span: Some(node.span),
+                            span: Some(node.span.clone()),
                         }),
                     }
                 } else {
@@ -5537,7 +5572,7 @@ fn push_expr_to_parent(
                         message:
                             "unexpected expression in class form (expected method: Type entries)"
                                 .to_string(),
-                        span: Some(node.span),
+                        span: Some(node.span.clone()),
                     })
                 }
             }
@@ -5560,7 +5595,7 @@ fn push_expr_to_parent(
                             message:
                                 "instance form expects class name (VarRef) after 'instance' keyword"
                                     .to_string(),
-                            span: Some(node.span),
+                            span: Some(node.span.clone()),
                         }),
                     }
                 } else if pending_arm_pattern.is_none() {
@@ -5575,7 +5610,7 @@ fn push_expr_to_parent(
                         message:
                             "unexpected expression in instance form (expected colon after pattern)"
                                 .to_string(),
-                        span: Some(node.span),
+                        span: Some(node.span.clone()),
                     })
                 }
             }
@@ -5602,6 +5637,7 @@ fn push_expr_to_parent(
                     let combined_span = Span {
                         start: key_node.span.start,
                         end: node.span.end,
+                        file: None,
                     };
 
                     // Detect structural test: RHS is an uppercase VarRef (constructor name).
@@ -5626,11 +5662,11 @@ fn push_expr_to_parent(
                         (SurfaceExpression::VarRef { name: key_name, .. }, Some(ctor_name)) => {
                             let sentinel_key = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str("_constructor".to_string()),
-                                span: node.span,
+                                span: node.span.clone(),
                             });
                             let ctor_val = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str(ctor_name),
-                                span: node.span,
+                                span: node.span.clone(),
                             });
                             let ann = Spanned::new(
                                 Annotation::PropertyDict(vec![Spanned::new(
@@ -5638,9 +5674,9 @@ fn push_expr_to_parent(
                                         key: Some(sentinel_key),
                                         value: ctor_val,
                                     },
-                                    node.span,
+                                    node.span.clone(),
                                 )]),
-                                node.span,
+                                node.span.clone(),
                             );
                             let annotated = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Annotated {
@@ -5684,7 +5720,7 @@ fn push_expr_to_parent(
                         // Only valid when LHS is a bare VarRef (not a nested binding group).
                         (SurfaceExpression::VarRef { name: key_name, .. }, None) => {
                             // Represent as Annotated { name: key_name, annotation: PropertyDict([default: node]) }
-                            let key_span = key_node.span;
+                            let key_span = key_node.span.clone();
                             let surf_key = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Str("default".to_string()),
                                 span: key_span,
@@ -5695,9 +5731,9 @@ fn push_expr_to_parent(
                                         key: Some(surf_key),
                                         value: Arc::clone(&node),
                                     },
-                                    node.span,
+                                    node.span.clone(),
                                 )]),
-                                combined_span,
+                                combined_span.clone(),
                             );
                             let annotated = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::Annotated {
@@ -5716,7 +5752,7 @@ fn push_expr_to_parent(
                         (SurfaceExpression::LetDecl { .. }, None) => {
                             return Err(ParseError {
                                 message: "binding group `[...]` before `:` requires a constructor name (uppercase identifier) for multi-payload structural test".to_string(),
-                                span: Some(node.span),
+                                span: Some(node.span.clone()),
                             });
                         }
 
@@ -5725,7 +5761,7 @@ fn push_expr_to_parent(
                             return Err(ParseError {
                                 message: "unexpected form before `:` in [let ...] binding"
                                     .to_string(),
-                                span: Some(key_node.span),
+                                span: Some(key_node.span.clone()),
                             });
                         }
                     }
@@ -5750,7 +5786,7 @@ fn push_expr_to_parent(
                     Err(ParseError {
                         message: "case form can only have two expressions (pattern and body)"
                             .to_string(),
-                        span: Some(node.span),
+                        span: Some(node.span.clone()),
                     })
                 }
             }
@@ -5760,6 +5796,7 @@ fn push_expr_to_parent(
                 let pipe_span = Span {
                     start: *span_start,
                     end: node.span.end,
+                    file: None,
                 };
                 stack.pop(); // Remove the Pipe frame
 
@@ -5803,7 +5840,7 @@ fn push_value(
                     if seen_keys.contains(&key_str) {
                         return Err(ParseError {
                             message: format!("duplicate key \"{}\"", key_str),
-                            span: Some(key.span),
+                            span: Some(key.span.clone()),
                         });
                     }
                     seen_keys.insert(key_str);
@@ -5812,6 +5849,7 @@ fn push_value(
                 let entry_span = crate::ast::Span {
                     start: key.span.start,
                     end: node.span.end,
+                    file: None,
                 };
                 entries.push(Spanned::new(
                     SurfaceEntry {
@@ -5822,7 +5860,7 @@ fn push_value(
                 ));
             } else {
                 // Auto-indexed entry
-                let node_span = node.span;
+                let node_span = node.span.clone();
                 entries.push(Spanned::new(
                     SurfaceEntry {
                         key: None,
@@ -5872,6 +5910,7 @@ fn push_value(
                 let entry_span = crate::ast::Span {
                     start: key.span.start,
                     end: node.span.end,
+                    file: None,
                 };
                 methods.push(Spanned::new(
                     SurfaceEntry {
@@ -5885,14 +5924,14 @@ fn push_value(
                 // ClassDecl expects keyed entries only (method names)
                 Err(ParseError {
                     message: "class methods must have names (e.g., `eq: Type`)".to_string(),
-                    span: Some(node.span),
+                    span: Some(node.span.clone()),
                 })
             }
         }
         Some(StackFrame::InstanceDecl {
             ref class_name,
             ref mut current_arm_methods,
-            arms: _,
+            ref arms,
             ref mut pending_key,
             ref pending_arm_pattern,
             ..
@@ -5905,6 +5944,7 @@ fn push_value(
                 let entry_span = crate::ast::Span {
                     start: key.span.start,
                     end: node.span.end,
+                    file: None,
                 };
                 current_arm_methods.push(Spanned::new(
                     SurfaceEntry {
@@ -5914,8 +5954,27 @@ fn push_value(
                     entry_span,
                 ));
                 Ok(())
+            } else if pending_arm_pattern.is_none() && !arms.is_empty() {
+                // An arm was set up (via colon), and a methods dict `[method: impl ...]` arrived.
+                // Expand the dict entries directly into current_arm_methods so they are collected
+                // per-arm. This handles the prelude's instance syntax where methods are in a
+                // separate bracket: `[instance Cls [pattern]: [method1: impl1  method2: impl2]]`.
+                //
+                // Without this arm, the dict would be stored as `pending_arm_pattern` (wrong),
+                // and the close-bracket handler would emit "instance form has incomplete arm
+                // (pattern without methods)" — causing parse errors for all prelude instances.
+                if let SurfaceExpression::Dict(entries) = &node.expr {
+                    for entry in entries {
+                        current_arm_methods.push(entry.clone());
+                    }
+                    Ok(())
+                } else {
+                    // Non-dict expression after arm setup: treat as new arm pattern for
+                    // multi-arm instances (e.g., `[instance Cls [patA]: methods [patB]: methods]`).
+                    push_expr_to_parent(stack, current_document_items, node)
+                }
             } else if pending_arm_pattern.is_none() {
-                // No pending arm pattern yet — this expression is a pattern (e.g., PatternDecl).
+                // No arms set up yet — this expression is a pattern (e.g., PatternDecl).
                 // Delegate to push_expr_to_parent which sets pending_arm_pattern.
                 push_expr_to_parent(stack, current_document_items, node)
             } else {
@@ -5923,7 +5982,7 @@ fn push_value(
                 Err(ParseError {
                     message: "instance methods must have names (e.g., `eq: [fn [let x y] ...]`)"
                         .to_string(),
-                    span: Some(node.span),
+                    span: Some(node.span.clone()),
                 })
             }
         }
@@ -5962,12 +6021,12 @@ pub fn parse_surface_expression(input: &str) -> Result<Arc<SurfaceNode>, ParseEr
             // produces the canonical rendering matching Expr Display for the same forms.
             Ok(Arc::new(SurfaceNode {
                 expr: SurfaceExpression::Decl(Box::new(decl.node.clone())),
-                span: decl.span,
+                span: decl.span.clone(),
             }))
         }
         None => Err(ParseError {
             message: "no items in first document".to_string(),
-            span: Some(first_doc.span),
+            span: Some(first_doc.span.clone()),
         }),
     }
 }
@@ -6023,7 +6082,7 @@ pub fn format_parse_error(err: &ParseError, source: &str, file_name: &str) -> St
         return format!("error: {}", err.message);
     }
 
-    let span = err.span.unwrap();
+    let span = err.span.clone().unwrap();
     let line = span.start.line;
     let col = span.start.column;
 
@@ -6040,6 +6099,305 @@ pub fn format_parse_error(err: &ParseError, source: &str, file_name: &str) -> St
     }
 
     out
+}
+
+/// Stamp every `Span.file` field in a `SurfaceNode` tree with the given `SourceFile`.
+///
+/// Uses `Arc::make_mut` to avoid cloning nodes that are not shared (the parser
+/// always produces fresh `Arc<SurfaceNode>` nodes with a single owner at creation
+/// time, so `make_mut` never clones in practice).
+fn stamp_node(node: &mut Arc<SurfaceNode>, file: &Arc<SourceFile>) {
+    let n = Arc::make_mut(node);
+    n.span.file = Some(Arc::clone(file));
+    stamp_expr(&mut n.expr, file);
+}
+
+/// Stamp all spans inside a `SurfaceExpression`.
+fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
+    match expr {
+        SurfaceExpression::Int(_)
+        | SurfaceExpression::Float(_)
+        | SurfaceExpression::Bool(_)
+        | SurfaceExpression::Str(_)
+        | SurfaceExpression::VarRef { .. }
+        | SurfaceExpression::Rest(_)
+        | SurfaceExpression::Placeholder => {}
+
+        SurfaceExpression::Error(span) => {
+            span.file = Some(Arc::clone(file));
+        }
+
+        SurfaceExpression::DotAccess { expr, .. } => {
+            stamp_node(expr, file);
+        }
+
+        SurfaceExpression::Pipe { lhs, rhs } => {
+            stamp_node(lhs, file);
+            stamp_node(rhs, file);
+        }
+
+        SurfaceExpression::Sequential(nodes) => {
+            for n in nodes {
+                stamp_node(n, file);
+            }
+        }
+
+        SurfaceExpression::Dict(entries) => {
+            for entry in entries {
+                entry.span.file = Some(Arc::clone(file));
+                if let Some(key) = &mut entry.node.key {
+                    stamp_node(key, file);
+                }
+                stamp_node(&mut entry.node.value, file);
+            }
+        }
+
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            stamp_node(func, file);
+            for arg in args {
+                stamp_node(arg, file);
+            }
+            for named in named_args {
+                named.span.file = Some(Arc::clone(file));
+                stamp_node(&mut named.node.value, file);
+            }
+        }
+
+        SurfaceExpression::Fn {
+            return_ann,
+            params,
+            body,
+            ..
+        } => {
+            if let Some(ann) = return_ann {
+                stamp_annotation_spanned(ann, file);
+            }
+            for param in params {
+                param.span.file = Some(Arc::clone(file));
+                if let Some(ann) = &mut param.node.annotation {
+                    stamp_annotation_spanned(ann, file);
+                }
+            }
+            stamp_node(body, file);
+        }
+
+        SurfaceExpression::TypeAssert { annotation, expr } => {
+            stamp_annotation_spanned(annotation, file);
+            stamp_node(expr, file);
+        }
+
+        SurfaceExpression::Annotated { annotation, .. } => {
+            stamp_annotation_spanned(annotation, file);
+        }
+
+        SurfaceExpression::Match { scrutinee, arms } => {
+            stamp_node(scrutinee, file);
+            for arm in arms {
+                stamp_pattern_spanned(&mut arm.pattern, file);
+                if let Some(guard) = &mut arm.guard {
+                    stamp_node(guard, file);
+                }
+                stamp_node(&mut arm.body, file);
+            }
+        }
+
+        SurfaceExpression::Quote(inner)
+        | SurfaceExpression::Unquote(inner)
+        | SurfaceExpression::UnquoteSplice(inner) => {
+            stamp_node(inner, file);
+        }
+
+        SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
+            for b in bindings {
+                stamp_node(b, file);
+            }
+        }
+
+        SurfaceExpression::CaseArm { pattern, body } => {
+            stamp_node(pattern, file);
+            stamp_node(body, file);
+        }
+
+        SurfaceExpression::TypeApp { func, arg } => {
+            stamp_node(func, file);
+            stamp_node(arg, file);
+        }
+
+        SurfaceExpression::Decl(decl) => {
+            stamp_decl(decl, file);
+        }
+    }
+}
+
+/// Stamp all spans inside a `SurfaceDeclaration`.
+fn stamp_decl(decl: &mut SurfaceDeclaration, file: &Arc<SourceFile>) {
+    match decl {
+        SurfaceDeclaration::TypeAlias { body, .. } => {
+            stamp_node(body, file);
+        }
+        SurfaceDeclaration::ClassDecl {
+            methods,
+            determines,
+            resolver,
+            ..
+        } => {
+            for entry in methods {
+                entry.span.file = Some(Arc::clone(file));
+                if let Some(key) = &mut entry.node.key {
+                    stamp_node(key, file);
+                }
+                stamp_node(&mut entry.node.value, file);
+            }
+            for d in determines {
+                stamp_node(d, file);
+            }
+            if let Some(r) = resolver {
+                stamp_node(r, file);
+            }
+        }
+        SurfaceDeclaration::InstanceDecl { arms, .. } => {
+            for (pattern, entries) in arms {
+                stamp_node(pattern, file);
+                for entry in entries {
+                    entry.span.file = Some(Arc::clone(file));
+                    if let Some(key) = &mut entry.node.key {
+                        stamp_node(key, file);
+                    }
+                    stamp_node(&mut entry.node.value, file);
+                }
+            }
+        }
+        SurfaceDeclaration::DefMacro { params, body, .. }
+        | SurfaceDeclaration::MacroDecl { params, body, .. } => {
+            stamp_node(params, file);
+            stamp_node(body, file);
+        }
+        SurfaceDeclaration::SyntaxClass { pattern, .. } => {
+            stamp_node(pattern, file);
+        }
+        SurfaceDeclaration::Splice(nodes) => {
+            for n in nodes {
+                stamp_node(n, file);
+            }
+        }
+    }
+}
+
+/// Stamp the `span.file` on a `Spanned<Annotation>` and recurse into the annotation.
+fn stamp_annotation_spanned(ann: &mut Spanned<Annotation>, file: &Arc<SourceFile>) {
+    ann.span.file = Some(Arc::clone(file));
+    stamp_annotation(&mut ann.node, file);
+}
+
+/// Stamp all spans inside an `Annotation`.
+fn stamp_annotation(ann: &mut Annotation, file: &Arc<SourceFile>) {
+    match ann {
+        Annotation::Simple(_) | Annotation::Annotated(_, _) => {}
+        Annotation::PropertyDict(entries) => {
+            for entry in entries {
+                entry.span.file = Some(Arc::clone(file));
+                if let Some(key) = &mut entry.node.key {
+                    stamp_node(key, file);
+                }
+                stamp_node(&mut entry.node.value, file);
+            }
+        }
+    }
+}
+
+/// Stamp the `span.file` on a `Spanned<Pattern>` and recurse into the pattern.
+fn stamp_pattern_spanned(pat: &mut Spanned<Pattern>, file: &Arc<SourceFile>) {
+    pat.span.file = Some(Arc::clone(file));
+    stamp_pattern(&mut pat.node, file);
+}
+
+/// Stamp all spans inside a `Pattern`.
+fn stamp_pattern(pat: &mut Pattern, file: &Arc<SourceFile>) {
+    match pat {
+        Pattern::Wildcard
+        | Pattern::Variable(_)
+        | Pattern::Literal(_)
+        | Pattern::TypeTag(_)
+        | Pattern::Pin(_) => {}
+
+        Pattern::Dict { fields, .. } => {
+            for (_, sub) in fields {
+                stamp_pattern_spanned(sub, file);
+            }
+        }
+
+        Pattern::Seq { head, tail } => {
+            stamp_pattern_spanned(head, file);
+            stamp_pattern_spanned(tail, file);
+        }
+
+        Pattern::Constructor { binding, .. } => {
+            if let Some(b) = binding {
+                stamp_pattern_spanned(b, file);
+            }
+        }
+
+        Pattern::Or(alts) => {
+            for alt in alts {
+                stamp_pattern_spanned(alt, file);
+            }
+        }
+    }
+}
+
+/// Stamp the `file` field on every span in a `SurfaceProgram` in place.
+///
+/// This is the entry point used by `parse_with_file` after calling `parse()`.
+pub fn stamp_spans_with_file(program: &mut SurfaceProgram, file: &Arc<SourceFile>) {
+    for doc in &mut program.documents {
+        doc.span.file = Some(Arc::clone(file));
+        // Stamp document-level annotation spans
+        if let Some(ann) = &mut doc.node.output_type {
+            stamp_annotation_spanned(ann, file);
+        }
+        if let Some(ann) = &mut doc.node.expects {
+            stamp_annotation_spanned(ann, file);
+        }
+        if let Some(caps) = &mut doc.node.caps {
+            caps.span.file = Some(Arc::clone(file));
+            for (_, ann) in &mut caps.node {
+                stamp_annotation(ann, file);
+            }
+        }
+        for item in &mut doc.node.items {
+            match item {
+                SurfaceItem::Expr(node) => {
+                    stamp_node(node, file);
+                }
+                SurfaceItem::Decl(decl) => {
+                    decl.span.file = Some(Arc::clone(file));
+                    stamp_decl(&mut decl.node, file);
+                }
+            }
+        }
+    }
+}
+
+/// Parse tinct source and stamp every span with the given `SourceFile`.
+///
+/// Equivalent to calling `parse(source)` followed by `stamp_spans_with_file`.
+/// Use this when you have a `SourceFile` handle for the input (e.g., after reading
+/// from a file path or stdin) and want error diagnostics to include the file name.
+pub fn parse_with_file(source: &str, file: Arc<SourceFile>) -> Result<ParseOutput, ParseError> {
+    let mut output = parse(source)?;
+    stamp_spans_with_file(&mut output.program, &file);
+    // Also stamp any recovered-error spans
+    for err in &mut output.errors {
+        if let Some(span) = &mut err.span {
+            span.file = Some(Arc::clone(&file));
+        }
+    }
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -7535,7 +7893,7 @@ mod tests {
         match &items[0].expr {
             SurfaceExpression::Fn { params, .. } => {
                 assert_eq!(params.len(), 1);
-                let param_span = params[0].span;
+                let param_span = params[0].span.clone();
                 assert_eq!(
                     param_span.start.offset, 9,
                     "expected param span to start at offset 9 ('x'), got {}",
@@ -7642,7 +8000,7 @@ mod tests {
                 // Inner dict should also have correct line/column (line 2, after "outer: ")
                 match &entries[0].node.value.expr {
                     SurfaceExpression::Dict(_) => {
-                        let inner_span = entries[0].node.value.span;
+                        let inner_span = entries[0].node.value.span.clone();
                         assert_eq!(
                             inner_span.start.line, 2,
                             "Inner dict should start on line 2"

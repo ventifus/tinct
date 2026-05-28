@@ -16,7 +16,7 @@ tinct run --profile spans.json program.llt
 jq -s '.' spans.json | tinct run -i json scripts/profile/materialize.llt
 ```
 
-`src/profiling.rs` uses `#[derive(serde::Serialize)]` on `SpanRecord` and `serde_json::to_string_pretty`. The `describe` command uses `serde_json::json!()` macros. Between tinct programs, there is no streaming mode at all: connecting two programs requires full serialization to JSON and full deserialization back, buffering the entire dataset before the downstream program sees any of it.
+`src/profiling.rs` writes NDJSON via `to_ndjson_line()` — a manual JSON serializer (serde was already removed by the `json-remove-serde-dep` sprint). Between tinct programs, there is no streaming mode at all: connecting two programs requires full serialization to JSON and full deserialization back, buffering the entire dataset before the downstream program sees any of it.
 
 ### What's Missing
 
@@ -34,13 +34,13 @@ jq -s '.' spans.json | tinct run -i json scripts/profile/materialize.llt
 
 **Output formatters are just tinct programs.** `-o stream` is `stdlib/cli/out/stream.llt` — a concurrent tinct task that drains the emit channel, forces the lazy return value, and serializes both. Users write their own output formatters following the same three-step contract. No hardcoded magic in `emit` or the evaluator.
 
-**serde_json disappears from the profiling path.** The background flush thread writes span records with `format_span_tinct` — fixed-schema string formatting with no derive macros and no dependencies. `Arc<EvalContext>` does not need to be shared with the thread.
+**serde_json disappears from the profiling path.** The background flush thread constructs a `Value::Dict` from each `SpanRecord` and calls `val.to_tinct(None)` — the same path as any other caller. No special fast path, no derive macros, no dependencies. `to_tinct` takes `Option<&Arc<EvalContext>>`; `None` is valid for scalar-only dicts since EvalContext is only needed for Function closure substitution.
 
 **External tools are not required.** The profiling pipeline becomes:
 
 ```sh
-tinct run --profile spans.llt program.llt
-tinct run -i stream scripts/profile/materialize.llt < spans.llt
+tinct run --profile spans.llt-stream program.llt
+tinct run -i stream scripts/profile/materialize.llt < spans.llt-stream
 ```
 
 **Any readable or writable source works.** `BufRead`/`Write` are the only requirements: stdin, a file, a named pipe, or a TCP connection.
@@ -55,20 +55,61 @@ An expression is *stdlib-closed* if every free variable in it refers to a stdlib
 
 The SCN algorithm is defined by cases:
 
+**Serializable values** — have a complete, round-trippable SCN representation:
+
 | Value | SCN |
 |-------|-----|
 | `Int(n)` | `n` |
 | `Float(f)` | `f` |
 | `Bool(b)` | `true` / `false` |
-| `String(s)` | `"s"` with standard escapes (`\\` `\"` `\n` `\t`) |
+| `String(s)` | `"s"` with standard escapes (`\\` `\"` `\n` `\t`) — always single-line quoted; `to-tinct` never emits `"""` triple-quoted strings |
+| `Decimal(d)` | `d` (decimal literal) |
+| `BigInt(n)` | `n` (integer literal) |
+| `Bytes(b)` | `[bytes [0: b₀  1: b₁  ...]]` using the `bytes` stdlib constructor |
+| `Timestamp(t)` | `[timestamp-nanos t]` — `t` is nanoseconds since UTC epoch; lossless round-trip. Requires new `timestamp-nanos` builtin (same pattern as `duration-nanos`) |
+| `Duration(d)` | `[duration-nanos d]` — exact round-trip using existing constructor; `d` is nanoseconds |
 | `Dict([])` | `[]` |
 | `Dict(entries)` | `[k: SCN(v)  ...]` for each entry |
+| `Overlay(l, r)` | `[k: SCN(v)  ...]` — flattened to Dict before serialization |
 | `Seq { head, tail }` | `[SCN(head) \| SCN(tail)]` |
-| `Builtin(name)` | `name` — builtins are always stdlib |
-| `Function(params, body, env)` | `[fn [let params] body']` where body' substitutes each non-stdlib free variable `x` with `SCN(env.lookup(x))` |
-| `Handle` / `*Cap` | `[]` with stderr warning |
+| `Builtin(b)` | `b.name` — builtins are always stdlib; serialize by name string |
+| `Variant(tag, None)` | `tag` — nullary constructor |
+| `Variant(tag, Some(payload))` | `[tag SCN(payload)]` |
+| `Expression(node)` | the tinct source text of the node, produced by `fmt_expression` in `src/surface_fmt.rs` — a SurfaceNode → tinct text unparser (see note below) |
 
-For an unevaluated thunk with expression E and environment env: substitute each non-stdlib free variable in E with `SCN(env.lookup(var))`. Stdlib references are left as-is; non-stdlib function calls are rewritten by inlining, not by forcing.
+**`Expression` serialization note.** `fmt_expression(node: &Arc<SurfaceNode>) -> String` in `src/surface_fmt.rs` is a SurfaceNode → tinct source text unparser — essentially a tinct pretty-printer. It must handle all `SurfaceExpression` variants (Int, Float, Bool, Str, VarRef, Dict, Seq, Call, Fn, DotAccess, Match, Pipe, Quote, etc.) and produce tinct source text that `[load s]` can parse back to an equivalent AST. No such serializer currently exists; implementing it is a dependency of this sprint. The parse↔unparse co-location design in `src/surface_fmt.rs` directly supports this: `fmt_expression` is the unparse direction of the parser, and they should be developed together.
+
+**Non-serializable values.** `Value::to_tinct` returns an error for any value for which it cannot construct a stdlib-closed tinct expression. This is not a blacklist — it is a consequence of the match: some arms have something to emit and some don't. Values with no tinct representation include atomic capabilities (DirCap, NetCap, ClockCap — created by the runtime at the CLI boundary, no tinct constructor exists), values derived from capabilities (Handle, WriteHandle, QuicSession, Http2Session, Http3Session, QuicDatagramHandle, DatagramHandle — their constructors require a capability argument that is itself unexpressible as tinct source), live async runtime objects (Task, Channel, Context, Builder — opaque Rust state), and `Uri` — currently an opaque Rust object with no tinct constructor (`builtin_uri` returns a `Value::Dict` of components, not `Value::Uri`; already non-serializable in the JSON path at `lib.rs:793`). `Uri` should be a tinct-native data structure rather than an opaque Rust value, but this is deferred to lib-net-v3 which will redesign the networking layer. Silently substituting `[]` for these would produce incorrect downstream behavior far from the serialization site; an immediate error is correct.
+
+**`Function`** is serializable when the `CoreExpr` body is walkable (always the case for user-defined functions). See §Functions — complete design for the substitution and capture-avoidance algorithm. Functions produced by dynamic `eval` with no resolvable env may require conservative `[]` fallback.
+
+**Functions — complete design.** `CoreExpr::Var` retains the original string `name` alongside de Bruijn coordinates (`level`, `slot`) — `src/ast.rs:901`. `CoreExpr::FreeVar(String)` (`src/ast.rs:907`) is the lowering fallback for names that could not be resolved to de Bruijn coordinates (include-introduced bindings, macro transformer bodies, wildcard match arm variables). Both are name-keyed references resolved against the environment at runtime. `CoreExpr::Fn` stores `params: Vec<Spanned<CoreParam>>` where each `CoreParam` also has `name: String` — `src/ast.rs:982`. The `CoreExpr` body tree is therefore fully walkable by name; no additional source-recovery infrastructure is needed.
+
+`fmt_fn` for `Value::Function { params, body, env, .. }`:
+
+1. **Identify non-stdlib free variables** — walk the `CoreExpr` body. For each `Var { name, .. }` or `FreeVar(name)` (treated identically — de Bruijn coordinates are irrelevant to the SCN walker): if `name` is a current-scope param name, it is a binding reference (leave as `name`); if `name` is in `stdlib_env`, it is a stdlib reference (leave as `name`); otherwise it is a captured user-env binding that must be substituted.
+2. **Substitute** — for each captured name `x`, replace all `Var { name: x, .. }` and `FreeVar(x)` occurrences in the body with the inline SCN: `SCN(env.lookup(x))`. For nested `CoreExpr::Fn` nodes, extend the param scope before recursing.
+3. **Capture avoidance** — before substituting, check whether any param name `p` appears free in any `SCN(env.lookup(x))`. If so, alpha-rename `p` to a fresh gensym name (`ℊꜱʏᴍ⧼p⧽N` form — prefix U+210A ℊ followed by small-caps SYM, then the original param name and a counter) in both the param list and all `Var { name: p, .. }` and `FreeVar(p)` binding references in the body. This is the Barendregt convention applied mechanically. The `ℊꜱʏᴍ` prefix characters (U+210A, U+A731, U+028F, U+1D0D) are all Unicode Letter-category and valid tinct identifier characters, so the SCN output remains parseable; a collision requires the user to deliberately type these Unicode codepoints, making accidental collision practically impossible.
+4. **Serialize** — emit `[fn [let params'] body']` using the substituted, possibly alpha-renamed body.
+
+No changes to `FnAnnotation` or `src/value.rs` are required.
+
+**`src/surface_fmt.rs` addition:** `fn fmt_fn(params: &[Param], body: &Arc<Spanned<CoreExpr>>, env: &Environment, ctx: &Arc<EvalContext>) -> Result<String, String>` — implements steps 1–4. (`Param` is the type stored in `Value::Function.params: Rc<Vec<Param>>`; nested `CoreExpr::Fn` nodes inside the body use `CoreParam`, which has the same fields.) Stdlib membership check: `ctx.config.stdlib_env.read().unwrap().lookup(name).is_some()`.
+
+**Cyclic values.** `to-tinct` forces eagerly. A cyclic value graph (e.g., a lazy recursive `Seq` with `xs: [cons 1 xs]`) will hit the InProgress sentinel during SCN traversal and produce a cycle error — the same behavior as `to-json`. Cyclic structures cannot be serialized to the stream format.
+
+For an unevaluated thunk with expression E and environment env: substitute each non-stdlib free variable in E with `SCN(env.lookup(var))`. This requires forcing the binding — if a free-variable binding diverges (infinite recursion, blocking I/O), `to-tinct` will hang on that binding.
+
+**Capture avoidance in substitution.** When substituting `SCN(env.lookup(x))` into an expression containing a lambda `[fn [let p] body]`, if `p` appears free in `SCN(env.lookup(x))`, the substitution would capture `p`. The fix is alpha-renaming: before substituting, check each lambda param `p` against the free variables of all substitution values; if a conflict exists, rename `p` to a fresh gensym name (`ℊꜱʏᴍ⧼p⧽N` form — e.g. `ℊꜱʏᴍ⧼p⧽0`, `ℊꜱʏᴍ⧼foo⧽1`) in both the binding position and all references in the body. The `ℊꜱʏᴍ` prefix (U+210A SCRIPT SMALL G + U+A731 LATIN LETTER SMALL CAPITAL S + U+028F LATIN LETTER SMALL CAPITAL Y + U+1D0D LATIN LETTER SMALL CAPITAL M) is composed of Unicode Letter-category characters and is therefore a valid tinct identifier, keeping the SCN output parseable. A name collision requires a user to deliberately type these codepoints — accidental collision is practically impossible. This is the standard Barendregt hygiene convention applied mechanically during SCN construction.
+
+**Gensym convention — design note.** This whatif changes the output format of the `[gensym ...]` builtin (`src/builtins_meta.rs:595`) from `:prefix:N` (e.g. `:foo:0`) to `ℊꜱʏᴍprefixN` (e.g. `ℊꜱʏᴍ⧼foo⧽0`). The old `:p:N` format used `:` as a delimiter, which is a lexer-denylist character (`Token::Colon`) — correct for unforgeability but wrong when the output must be parseable source text, as it is for SCN. The new format uses the prefix `ℊꜱʏᴍ` (U+210A SCRIPT SMALL G + U+A731 LATIN LETTER SMALL CAPITAL S + U+028F LATIN LETTER SMALL CAPITAL Y + U+1D0D LATIN LETTER SMALL CAPITAL M) — all Unicode Letter-category characters and therefore valid tinct identifiers. Collision requires deliberate IME input of these codepoints.
+
+This change affects all callers of `[gensym ...]`:
+- `stdlib/macros.llt` `do-desugar-inferred`: `[gensym "do-infer"]` produces `:do-infer:N` → will produce `ℊꜱʏᴍ⧼do-infer⧽N`. The runtime sentinel check in `src/eval.rs` (`name.starts_with(":do-infer:")`) must be updated to `name.starts_with("ℊꜱʏᴍ⧼do-infer⧽")`.
+- `src/eval_pipeline.rs` uses its own `__nominal_input_N` format (not `[gensym]`) — should be migrated to `ℊꜱʏᴍ⧼nominal-input⧽N` for consistency.
+- Any macro that calls `[gensym]` or `[gensym prefix]` automatically picks up the new format with no change needed.
+
+The `ℊꜱʏᴍ` prefix is the canonical convention for all compiler-generated identifiers in tinct going forward: macro hygiene, ANF intermediate names, CPS variables, and SCN capture-avoiding renames all use this prefix.
 
 **Example — the filter case:**
 
@@ -108,6 +149,8 @@ emit@[doc: "Emit a value to the output channel"]:
 
 `%emit` is injected by the CLI into every program's environment before evaluation. `emit v` sends `v` to that channel; the formatter on the other end decides how to serialize it. Call sites are agnostic to the serializer — they just `emit`.
 
+**Strictness note.** `[send %emit v]` materializes `v` before putting it on the channel (`builtin_send` at `src/builtins_async.rs:402`). This means `emit` is a strictness point: the emitted value is fully forced at call time, not at serialization time. The structural transfer claim in the SCN section refers to the `to-tinct` output format preserving callable structure (e.g., a forced `Value::Function` or `Value::Variant`), not to thunks travelling lazily across the channel.
+
 The CLI wires the user program's `%emit` to the output program's `%emit`, and injects `%stdout` (a writable handle) into the output program:
 
 ```text
@@ -121,11 +164,11 @@ user program  ──%emit──▶  output program  ──%stdout──▶  actu
 
 The CLI injects `%stdout` as a writable handle into every output program. Output programs are **emit consumers** — they receive from `%emit` and write to `%stdout`. They never call `emit` themselves.
 
-When no `-o` flag is given, the default output program is `stdlib/cli/out/none.llt`: it drains `%emit` discarding all values, and forces `%` discarding all elements. Programs evaluate fully (side effects and `emit` calls fire normally) but nothing is printed. Output requires an explicit `-o` flag.
+**`%emit` is always injected.** `%emit` is part of the bootstrap environment — always present alongside `%libdir`, `%cwd` etc. — so `emit` never fails with "undefined variable" in any context. The default output program is `stdlib/cli/out/none.llt`: it drains `%emit` discarding all values, and forces `%` discarding all elements. Programs evaluate fully (side effects and `emit` calls fire normally) but nothing is printed. Output requires an explicit `-o` flag.
 
 ### `to-tinct` — the SCN function
 
-`to-tinct` is a new prelude function backed by a Rust implementation (`value_to_tinct` in `src/stream.rs`). It takes any tinct value and returns its SCN as a String:
+`to-tinct` is a new prelude function backed by `Value::to_tinct(ctx)` — an inherent method on `Value` in `src/value.rs` that dispatches to per-type formatters in `src/surface_fmt.rs` (expression-level: Dict, Seq, Variant, Function, Expression) and `src/lexer.rs` (token-level: Int, Float, Bool, String, Decimal, BigInt, Bytes). It takes any tinct value and returns its SCN as a String:
 
 ```tinct
 [to-tinct [filter [fn [let x] [> x 42]] items]]
@@ -136,11 +179,50 @@ When no `-o` flag is given, the default output program is `stdlib/cli/out/none.l
 
 ### Streaming Input — `stdlib/codecs/stream.llt`
 
-The stream codec is implemented entirely in tinct, composing three existing primitives:
+The stream codec is implemented entirely in tinct, composing existing primitives:
 
 - `str-chars s` — already in prelude; returns a lazy Seq of single-character strings
 - `lines handle` — already in prelude; returns a lazy Seq of line strings from a readable handle
-- `eval string` — already a builtin; evaluates a tinct string in the stdlib environment
+- `parse-string s` — **new builtin required** (see design note below); parses a tinct source string to `[Seq Expression]`
+
+**Design note — `eval` does not accept String.** The `eval` builtin takes `[Seq Expression]` (AST node values), not a String (`src/builtins_meta.rs:1592`). The stream codec cannot use `[map eval ...]` directly on balanced-expr strings.
+
+**Resolution: compose `load` + `expand` + field access — no new builtin needed.**
+
+`load` already accepts a source **string** (the file content, not a path — `src/builtins_meta.rs:1408`). `[expand [load s]]` returns `Value::Program`. Field access on `Value::Program` and `Value::Document` is implemented in the evaluator (`src/eval_materialize.rs:2461-2533`):
+
+- `program.documents` → `[Seq Document]` — changed from integer-keyed Dict to Seq by this whatif (see §`src/eval_materialize.rs` below)
+- `document.expressions` → `[Seq Expression]` (already a Seq; the evaluator comment notes: "builtin_eval expects [Seq Expression]")
+
+The SCN single-expression-per-record invariant (every `to-tinct` output is a single-line bracket expression) means each `[expand [load s]]` call produces exactly one document containing exactly one expression. `flat-map` is therefore the wrong combinator for the stream path — its variable-arity generality never fires, and its eager `reduce`-based implementation would force the entire stdin Seq before yielding a single output element, defeating streaming.
+
+The correct combinator is `map` with a `parse-expr` helper that extracts the single expression directly:
+
+```tinct
+# parse-expr — extract the single Expression from a single-record SCN string.
+# Relies on the SCN invariant: one balanced expression per line → one document,
+# one expression. Not valid for multi-document or multi-expression programs.
+parse-expr: [fn [let s]
+  [head [head [expand [load s]].documents].expressions]]
+```
+
+The stream input formatter then becomes:
+
+```tinct
+[map stream.parse-expr
+  [stream.balanced-exprs [lines %stdin]]]
+```
+
+`map` over a lazy Seq is lazy: each element is thunked, the head forces only the first record, and the tail is deferred until the consumer demands it. This is true O(1)-memory streaming.
+
+`program-exprs` is still provided in the codec for callers that load multi-document files and need all expressions:
+
+```tinct
+program-exprs: [fn [let prog]
+  [flat-map [fn [let doc] doc.expressions] prog.documents]]
+```
+
+But it is not used on the stream critical path. No new Rust builtin required. `load` + `expand` + `parse-expr` is the full parse-and-expand pipeline for SCN records.
 
 The codec provides two functions:
 
@@ -168,32 +250,43 @@ bracket-count: [fn@Int [let s@String]
 **`balanced-exprs`** — groups a Seq of strings into complete balanced tinct expressions, skipping blank lines, comment lines, and `---` separators:
 
 ```tinct
-balanced-exprs: [fn [let lines]
-  [letrec [
-    scan: [fn [let ls acc depth]
-      [if [= [] ls]
-        [if [= "" [trim acc]] []
-          [cons acc []]]
-        [let line [head ls]
-        [let rest [tail ls]
-        [let t    [trim line]
-        [if [or [= "" t] [starts-with? "#" t] [= "---" t]]
-          [scan rest acc depth]
-          [let d [+ depth [bracket-count line]]
-          [let a [str acc line "\n"]
-          [if [and [<= d 0] [not [= "" [trim a]]]]
-            [cons a [scan rest "" 0]]
-            [scan rest a d]]]]]]]]]
-  ]
-  [scan lines "" 0]]]
+# Two-dict encapsulation pattern — scan is a private helper, not exported.
+[
+  scan: [fn [let ls acc depth]
+    [if [= [] ls]
+      [if [= "" [trim acc]] []
+        [cons acc []]]
+      [let line [head ls]
+      [let rest [tail ls]
+      [let t    [trim line]
+      [if [or [= "" t] [starts-with? "#" t] [= "---" t]]
+        [scan rest acc depth]
+        [let d [+ depth [bracket-count line]]
+        [let a [str acc line "\n"]
+        [if [and [<= d 0] [not [= "" [trim a]]]]
+          [cons a [scan rest "" 0]]
+          [scan rest a d]]]]]]]]]
+]
+[
+  balanced-exprs: [fn [let lines]
+    [scan lines "" 0]]
+]
 ```
 
-The complete `stdlib/codecs/stream.llt` exports both:
+**Constraint: SCN records are single-line bracket expressions.** `balanced-exprs` skips lines that are blank, start with `#` (comment), or equal `---` (document separator). This is safe because `to-tinct` always emits records as single-line dict expressions (`[k: v  ...]`) that can never start with `---`. The `---` skip is a parser-convenience for interactive use, not a semantic decision.
+
+**Depth constraint: `balanced-exprs` accumulates at most ~256 consecutive non-blank lines per expression** before hitting `MAX_EVAL_DEPTH`. The `[scan rest acc depth]` accumulating branch (for multi-line expressions) is a direct recursive call — each continuation of a partially-parsed expression adds one frame. For SCN streams from `to-tinct`, this is not a concern: every record is a single line, so `bracket-count` returns depth 0 after each line and the accumulating branch is never taken (only the blank-line skip branch and the `[cons a ...]` emit branch are used). For general multi-line tinct program input piped via `-i stream`, expressions spanning more than ~256 lines will fail with a depth error. This is an accepted scope constraint: `-i stream` is designed for SCN records, not for parsing arbitrary multi-line tinct programs.
+
+**Constraint: `bracket-count` handles only single-line strings.** The `bracket-count` function tracks bracket depth, in-string state, and comment state character by character. It correctly handles single-quoted strings (`"..."`) including escaped quotes. It does **not** handle triple-quoted strings (`"""..."""`) — a `[` or `]` inside a triple-quoted string would be miscounted. The stream format therefore constrains `to-tinct` to never emit `"""` triple-quoted strings in its output (the SCN table above uses single-line `"..."` quoting exclusively). Any extension that allows triple-quoted strings in SCN output would also require rewriting `bracket-count` with a triple-quote state machine.
+
+The complete `stdlib/codecs/stream.llt` exports three functions:
 
 ```tinct
 [
-  bracket-count: ...   # as above
-  balanced-exprs: ...  # as above
+  bracket-count:  ...   # as above
+  balanced-exprs: ...   # as above
+  parse-expr:     ...   # as above
+  program-exprs:  ...   # as above — for multi-document use, not the stream critical path
 ]
 ```
 
@@ -201,14 +294,15 @@ The complete `stdlib/codecs/stream.llt` exports both:
 
 ```tinct
 # Stream input formatter
-# Reads %stdin as a lazy Seq of tinct expressions, evaluated in stdlib env.
+# Reads %stdin as a truly lazy Seq of tinct expressions, one per SCN record.
 [
   stream: [include %libdir "codecs/stream.llt"]
-  [map eval [stream.balanced-exprs [lines %stdin]]]
+  [map stream.parse-expr
+    [stream.balanced-exprs [lines %stdin]]]
 ]
 ```
 
-`---` separators are skipped by `balanced-exprs`. EOF terminates the Seq. Each element is evaluated by `eval` in the stdlib environment — full tinct, no restricted subset.
+`---` separators are skipped by `balanced-exprs`. EOF terminates the Seq. Each balanced expression string is passed to `stream.parse-expr` which calls `[expand [load s]]` (parse + macro expansion) and extracts the single `Expression` node. `map` over a lazy Seq is lazy — only one record is parsed and expanded at a time, as the consumer demands elements. The result is a `[Seq Expression]` — the pipeline input (`%`) to the user program.
 
 ### Streaming Output: `emit`, `%emit`, and the Output Program Contract
 
@@ -243,9 +337,10 @@ The three responsibilities:
   # 1. Drain the emit channel concurrently.
   #    Values arrive here as the user program evaluates and calls [emit v].
   drain: [task
-    [loop-select
-      [recv %emit [fn [let v]
-        [write %stdout [to-tinct v]]]]]]
+    [try
+      [loop-select [context] [[%emit [fn [let v]
+        [write %stdout [to-tinct v]]]]] identity]
+      [fn [let _] []]]]
 
   # 2. Force the return value to drive the lazy evaluation cascade.
   #    Non-nil elements of a Seq return value are also serialized.
@@ -268,9 +363,10 @@ The three responsibilities:
 ```tinct
 [
   drain: [task
-    [loop-select
-      [recv %emit [fn [let v]
-        [write %stdout [to-json v]]]]]]
+    [try
+      [loop-select [context] [[%emit [fn [let v]
+        [write %stdout [to-json v]]]]] identity]
+      [fn [let _] []]]]
 
   [if [seq? %]
     [each [fn [let x]
@@ -298,7 +394,7 @@ A user writing a custom output formatter follows the same contract: start a `dra
 ```
 
 ```sh
-tinct run -i stream -o stream filter.llt < spans.llt \
+tinct run -i stream -o stream filter.llt < spans.llt-stream \
   | tinct run -i stream analyze.llt
 ```
 
@@ -306,69 +402,67 @@ tinct run -i stream -o stream filter.llt < spans.llt \
 
 ```sh
 # Lazy tinct → tinct pipeline
-tinct run -i stream -o stream filter.llt < spans.llt \
+tinct run -i stream -o stream filter.llt < spans.llt-stream \
   | tinct run -i stream analyze.llt
 
 # Stream → jq: use -o json for NDJSON-compatible output
-tinct run -i stream -o json filter.llt < spans.llt | jq .stall-us
+tinct run -i stream -o json filter.llt < spans.llt-stream | jq .stall-us
 
 # Custom output formatter: user writes their own
-tinct run -i stream -o my-formatter filter.llt < spans.llt
+tinct run -i stream -o my-formatter filter.llt < spans.llt-stream
 
 # Profiling: Rust writer → tinct reader
-tinct run --profile spans.llt program.llt
-tinct run -i stream scripts/profile/materialize.llt < spans.llt
+tinct run --profile spans.llt-stream program.llt
+tinct run -i stream scripts/profile/materialize.llt < spans.llt-stream
 ```
 
 Each `-o stream | -i stream` stage receives stdlib-closed expressions, evaluates them, and returns a new Seq for the next formatter to process. Structure flows through the pipeline rather than being collapsed at each boundary.
 
 ### Rust-Side Serializer
 
-For Rust programs writing stream records (profiling, describe), `format_span_tinct` is the degenerate case of SCN: a dict of scalar values has no free variables and is trivially stdlib-closed.
+The canonical tinct formatting functions live in `src/lexer.rs` (token-level) and `src/surface_fmt.rs` (expression-level). `Value::to_tinct` dispatches to these; all Rust code that produces tinct text goes through `Value::to_tinct`.
 
 ```rust
-// src/stream.rs
+// src/lexer.rs — token-level formatters, co-located with the corresponding parsers.
+// These define the canonical tinct literal syntax in both directions.
+pub fn fmt_int(n: i64) -> String { ... }
+pub fn fmt_float(f: f64) -> Result<String, String> { ... }  // errors on NaN/Inf
+pub fn fmt_bool(b: bool) -> &'static str { ... }
+pub fn fmt_string(s: &str) -> String { ... }
+pub fn fmt_decimal(d: &Decimal) -> String { ... }
+pub fn fmt_bigint(n: &BigInt) -> String { ... }
+pub fn fmt_bytes(b: &[u8]) -> String { ... }
 
-fn write_tinct_str(s: &str, buf: &mut String) {
-    buf.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"'  => buf.push_str("\\\""),
-            '\\' => buf.push_str("\\\\"),
-            '\n' => buf.push_str("\\n"),
-            '\t' => buf.push_str("\\t"),
-            c    => buf.push(c),
+// src/surface_fmt.rs — expression-level formatters, co-located with the grammar.
+// Intended to converge with the parser as the parse/unparse pair for each form.
+pub fn fmt_dict(map: &IndexMap<Key, ThunkId>, ctx: Option<&Arc<EvalContext>>) -> Result<String, String> { ... }
+pub fn fmt_seq(head: ThunkId, tail: ThunkId, ctx: Option<&Arc<EvalContext>>) -> Result<String, String> { ... }
+pub fn fmt_variant(tag: &str, payload: Option<ThunkId>, ctx: Option<&Arc<EvalContext>>) -> Result<String, String> { ... }
+pub fn fmt_fn(params: &[Param], body: &Arc<Spanned<CoreExpr>>, env: &Environment, ctx: &Arc<EvalContext>) -> Result<String, String> { ... }
+pub fn fmt_expression(node: &Arc<SurfaceNode>) -> String { ... }
+
+// src/value.rs — inherent method, dispatches to the above.
+// ctx is Option: None is valid when the caller guarantees no Function values are present
+// (e.g. profiling path serializing scalar dicts). Function serialization requires Some(ctx)
+// for stdlib membership checks.
+impl Value {
+    pub fn to_tinct(&self, ctx: Option<&Arc<EvalContext>>) -> Result<String, String> {
+        match self {
+            Value::Int(n)    => Ok(fmt_int(*n)),
+            Value::Float(f)  => fmt_float(*f),
+            Value::Dict(map) => fmt_dict(map, ctx),
+            // ... all serializable cases
+            Value::Function { .. } => match ctx {
+                Some(ctx) => fmt_fn(..., ctx),
+                None      => Err("Function serialization requires EvalContext".into()),
+            },
+            _                => Err(format!("no tinct representation for {}", self.type_name())),
         }
     }
-    buf.push('"');
-}
-
-fn write_tinct_opt(val: Option<impl Display>, none: &str, buf: &mut String) {
-    match val {
-        Some(v) => buf.push_str(&v.to_string()),
-        None    => buf.push_str(none),
-    }
-}
-
-// General SCN serializer for Value — used by `to-tinct` builtin.
-// Closure reconstruction (Value::Function) is handled by walking the body
-// expression and substituting non-stdlib env bindings.
-pub fn value_to_tinct(val: &Value, ctx: &Arc<EvalContext>) -> String { ... }
-
-// Schema-specific fast path for profiling — no Value allocation.
-pub fn format_span_tinct(s: &SpanRecord) -> String {
-    let mut buf = String::new();
-    buf.push_str("[id: ");
-    buf.push_str(&s.id.to_string());
-    buf.push_str("  materialize-parent: ");
-    write_tinct_opt(s.materialize_parent, "[]", &mut buf);
-    // ... all 14 fields ...
-    buf.push(']');
-    buf
 }
 ```
 
-`format_span_tinct` requires no `EvalContext` — the background flush thread calls it directly and appends to the open file handle.
+The profiling flush thread constructs a `Value::Dict` from each `SpanRecord` and calls `val.to_tinct(None)`. Same code path as the `to-tinct` builtin — no special-casing, no drift possible.
 
 ## What Would Change
 
@@ -376,30 +470,76 @@ pub fn format_span_tinct(s: &SpanRecord) -> String {
 
 **Current:** Nothing.
 
-**Proposed:** `bracket-count` and `balanced-exprs` as defined above. Pure tinct — no new Rust builtins. Both functions are independently useful for REPL-like tools, syntax highlighters, and custom stream parsers.
+**Proposed:** `bracket-count`, `balanced-exprs`, and `program-exprs` as defined above. Pure tinct — no new Rust builtins. All three functions are independently useful for REPL-like tools, syntax highlighters, and custom stream parsers.
 
-**Impact:** New file, ~40 lines.
+```tinct
+# program-exprs — extract [Seq Expression] from a Value::Program.
+# Uses existing field access: program.documents → [Seq Document],
+# document.expressions → [Seq Expression].
+program-exprs: [fn@[return: Unknown  doc: """
+Extract all expression nodes from a parsed program as a flat Seq of Expression values.
+
+Iterates over all documents in the program and collects their expression items,
+flattening across document boundaries into a single lazy Seq.
+Used by the stream input formatter to convert parsed stream records to eval-ready nodes.
+"""] [let prog]
+  [flat-map [fn [let doc] doc.expressions] prog.documents]]
+```
+
+The complete `stdlib/codecs/stream.llt` exports all three:
+
+```tinct
+[
+  bracket-count:  ...   # as above
+  balanced-exprs: ...   # as above
+  parse-expr:     ...   # as above — SCN critical path (map, lazy)
+  program-exprs:  ...   # as above — multi-document use (flat-map, eager)
+]
+```
+
+**Impact:** New file, ~65 lines.
 
 ### `stdlib/cli/in/stream.llt` (new)
 
 **Current:** Nothing.
 
-**Proposed:** `[map eval [stream.balanced-exprs [lines %stdin]]]` — one expression, no new builtins. Activated by `-i stream`.
+**Proposed:** `[map stream.parse-expr [stream.balanced-exprs [lines %stdin]]]` — pure tinct, no new builtins. `parse-expr` in `stdlib/codecs/stream.llt` calls `[expand [load s]]` and extracts the single `Expression` from the resulting `Value::Program`. `map` over a lazy Seq is lazy — records are parsed one at a time as the consumer demands them, giving true O(1)-memory streaming. Activated by `-i stream`.
 
 **Impact:** New file, ~4 lines.
+
+### `stdlib/cli/in/json.llt` (rewrite)
+
+**Current:** `[json.from-json %stdin]` — reads all of stdin and parses it as a single JSON value.
+
+**Proposed:** Rewritten to a streaming JSON reader using `balanced-objects` in `stdlib/codecs/json.llt`. Reads `%stdin` as a lazy Seq of balanced JSON objects — each read yields the next complete JSON value by counting `{`/`}` and `[`/`]` brackets (accounting for string literals), yielding when depth returns to 0. This is the JSON analogue of `balanced-exprs` in the stream codec. Produces `[Seq Value]` — each element is a parsed tinct value. Handles both NDJSON (one object per line) and pretty-printed multi-document JSON streams (objects spanning multiple lines) naturally.
+
+`stdlib/codecs/json.llt` gains a `balanced-objects` function: reads lines from a handle, accumulates until JSON bracket depth returns to 0, yields the accumulated string, passes it to `from-json`. Uses the same state-machine approach as `balanced-exprs` but with `{`/`}` and `[`/`]` both counting (JSON has no `#` comments; string handling identical to tinct: `"..."` with `\` escapes).
+
+**Impact:** Rewrite of `stdlib/cli/in/json.llt` (~4 lines). New `balanced-objects` function added to `stdlib/codecs/json.llt` (~25 lines).
+
+### `stdlib/cli/in/ndjson.llt` (deleted)
+
+**Current:** Reads `%stdin` line-by-line, parses each non-empty line as JSON, produces `[Seq Value]`.
+
+**Proposed:** Deleted. `-i json` with the `balanced-objects` reader handles NDJSON naturally (each line is a complete JSON object, depth returns to 0 after each line). `-i ndjson` is fully redundant.
 
 ### `stdlib/cli/out/` — all formatters rewritten
 
 Every existing output formatter follows the old contract: receive `%`, compute a String, return it; the CLI materializes and prints. All must be rewritten to the new contract: drain `%emit`, force `%`, emit each serialized value, await.
 
-The shared rewrite pattern — substituting only the serializer. Output programs are emit consumers: they receive from `%emit` and write to `%stdout`. They never call `emit`:
+The shared rewrite pattern — substituting only the serializer. Output programs are emit consumers: they receive from `%emit` and write to `%stdout`. They never call `emit`.
+
+**`loop-select` calling convention:** `loop-select` takes three arguments: `ctx` (a context), `sources` (a `[Seq [Channel Fn]]` — each element is a `[channel handler]` pair), and `handler` (a function applied to each received value, usually `identity`). The drain loop must wrap `loop-select` in `[try ...]` to catch the "all channels closed" error that fires when the sender drops — this is normal termination, not a failure.
+
+`loop-select` is exported from prelude (its implementation moves from `stdlib/async.llt` into prelude when async.llt is merged).
 
 ```tinct
 [
   drain: [task
-    [loop-select
-      [recv %emit [fn [let v]
-        [write %stdout [SERIALIZER v]]]]]]
+    [try
+      [loop-select [context] [[%emit [fn [let v]
+        [write %stdout [SERIALIZER v]]]]] identity]
+      [fn [let _] []]]]
 
   [if [seq? %]
     [each [fn [let x]
@@ -416,9 +556,9 @@ The shared rewrite pattern — substituting only the serializer. Output programs
 
 **`stdlib/cli/out/stream.llt` (new)** — `SERIALIZER = to-tinct`. One new file, ~15 lines.
 
-**`stdlib/cli/out/json.llt` (rewrite)** — `SERIALIZER = to-json`. Currently `[call $builtin-to-json %]`, returning a String. Rewritten to the concurrent contract. Produces NDJSON: one JSON value per emit, one JSON value per Seq element from the return value.
+**`stdlib/cli/out/json.llt` (rewrite)** — `SERIALIZER = to-json`. Currently `[call $builtin-to-json %]`, returning a String. Rewritten to the concurrent contract. Produces one compact JSON value per emit record and per Seq element from the return value, each followed by a newline — compatible with NDJSON consumers and `jq` streaming.
 
-**`stdlib/cli/out/json-pretty.llt` (rewrite)** — same as json but with `to-json-pretty`. Produces pretty-printed NDJSON.
+**`stdlib/cli/out/json-pretty.llt` (rewrite)** — `SERIALIZER = to-json-pretty`. Writes one full pretty-printed JSON object per emit record and per Seq element, each separated by a blank line. Not NDJSON — each record spans multiple lines. Intended for human-readable output, not machine pipelines.
 
 **`stdlib/cli/out/raw.llt` (rewrite)** — currently: if String return → write it; if Seq → `[join "\n" %]`; else error. New: `SERIALIZER = [fn [let v] [if [str? v] v [str v]]]` — emit each received value as its string representation. The explicit Seq-error is removed; Seq elements arrive naturally through the drain loop.
 
@@ -426,7 +566,17 @@ The shared rewrite pattern — substituting only the serializer. Output programs
 
 **`stdlib/cli/out/yaml.llt` (rewrite)** — currently inline formatter returning `[yaml %]` string. Rewritten: inline `yaml` function definition remains; `SERIALIZER = yaml`. Each emitted/returned value is formatted as YAML and written.
 
-**`stdlib/cli/out/csv.llt` (rewrite)** — currently `[csv %]`. Note: CSV has no natural per-record form (the header depends on knowing all rows). The rewrite emits a header line from the first received record, then data lines for all subsequent records — enabling true streaming CSV from a Seq. SERIALIZER is replaced by a stateful header-tracking approach.
+**`stdlib/cli/out/csv.llt` (rewrite)** — currently `[csv %]`. CSV has no natural per-record form since the header depends on knowing the column names. The streaming rewrite handles this as follows:
+
+1. Pull the **first record** explicitly from `%emit` via `[recv %emit]` (wrapped in `try` to handle an empty channel). If the channel is already closed (no emitted values), fall through to `%`.
+2. Extract **column headers** from the first record's keys using `[keys first]`. This establishes the column order for the entire output.
+3. Write the **header line**: `key1,key2,...\n`
+4. Write the **first data row** immediately.
+5. **Drain remaining `%emit` records** via `loop-select`, writing each as a data row using the captured column order (extra keys ignored, missing keys produce empty cells).
+6. **Force `%`** — if it is a Seq, write each non-nil element as a data row; if it is a scalar dict, write it as a data row.
+7. **Await** the drain task.
+
+Column order is fixed at step 2 and never changes. Records that don't match the column set (wrong keys) write empty cells for missing columns rather than erroring, so heterogeneous streams produce valid (if sparse) CSV. If no records arrive from either `%emit` or `%`, no output is written (no header either).
 
 **`stdlib/cli/out/toml.llt` (rewrite)** — currently `[toml %]`. Rewritten to `SERIALIZER = toml`.
 
@@ -438,10 +588,15 @@ The shared rewrite pattern — substituting only the serializer. Output programs
 # stdlib/cli/out/none.llt
 [
   drain: [task
-    [loop-select
-      [recv %emit [fn [let v] []]]]]
+    [try
+      [loop-select [context] [[%emit [fn [let v] []]]] identity]
+      [fn [let _] []]]]
 
-  [each [fn [let x] []] %]   # force % to drive evaluation cascade
+  # Force % to drive the evaluation cascade (for side effects).
+  # Guard against non-Seq %: each errors on scalars; use seq?/dict? to branch.
+  [if [or [seq? %] [dict? %]]
+    [each [fn [let x] []] %]
+    []]
 
   [await drain]
 ]
@@ -453,86 +608,182 @@ The shared rewrite pattern — substituting only the serializer. Output programs
 
 **Current:** No `to-tinct` function.
 
-**Proposed:** `to-tinct: builtin-to-tinct` — prelude wrapper over `value_to_tinct` Rust function in `src/stream.rs`. Returns the SCN of any value as a String. No mode magic — it is a plain function callable anywhere.
+**Proposed:** `to-tinct: builtin-to-tinct` — prelude wrapper over `Value::to_tinct(ctx)` in `src/value.rs`. Returns the SCN of any value as a String. No mode magic — it is a plain function callable anywhere.
 
 **Impact:** New builtin registration + prelude entry.
+
+### `src/eval_materialize.rs` — `program.documents` field access
+
+**Current:** `program.documents` returns `Value::Dict` with integer keys (`Key::Int(0)`, `Key::Int(1)`, …).
+
+**Proposed:** Return `Value::Seq` — a linked-list cons chain of `Value::Document` nodes, using the same construction pattern already used by `document.expressions` (lines 2508–2533). The Rust-side `prog.documents` struct field (`Vec<Spanned<Document>>`) is unchanged — only the tinct value returned by field access changes.
+
+```rust
+// src/eval_materialize.rs — replace the Dict-building loop for "documents":
+"documents" => {
+    let docs = &prog.documents;
+    if docs.is_empty() {
+        Value::Dict(indexmap::IndexMap::new()) // empty [] sentinel
+    } else {
+        // Build Seq tail from last element back to index 1 (same pattern as document.expressions).
+        let mut tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Dict(indexmap::IndexMap::new()), // end sentinel
+            access_span.clone(),
+        )));
+        for doc_spanned in docs.iter().rev().take(docs.len() - 1) {
+            let head_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Document(Arc::new(doc_spanned.node.clone())),
+                access_span.clone(),
+            )));
+            tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Seq { head: head_id, tail: tail_id },
+                access_span.clone(),
+            )));
+        }
+        // First document is the outermost head.
+        let head_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Document(Arc::new(docs[0].node.clone())),
+            access_span.clone(),
+        )));
+        Value::Seq { head: head_id, tail: tail_id }
+    }
+}
+```
+
+**Impact:** Minimal — one match arm in `eval_materialize.rs`. No Rust callers use `program.documents` as a tinct Value; all Rust-side accesses use the underlying `Vec` directly via struct field access.
+
+### `src/surface_fmt.rs` (new)
+
+**Current:** Nothing.
+
+**Proposed:** Expression-level tinct formatters, co-located with the grammar so the parse/unparse pair for each tinct expression form is visible together. Intended to converge with `src/parser.rs` over time as the canonical parse↔format definition for each form.
+
+- `fmt_dict`, `fmt_seq`, `fmt_variant`, `fmt_fn`, `fmt_expression` — as described in §Rust-Side Serializer above.
+- `fmt_fn` implements the closure SCN algorithm (steps 1–4): free-variable identification, env substitution, capture-avoiding gensym rename, serialization.
+
+Token-level formatters (`fmt_int`, `fmt_float`, `fmt_string`, etc.) live in `src/lexer.rs` alongside the corresponding parse logic. This is the canonical location for the tinct literal format in both directions.
+
+**Impact:** New file, ~120 lines.
+
+### `src/value.rs` — `Value::to_tinct` method
+
+**Current:** No `to_tinct` method.
+
+**Proposed:** Add `pub fn to_tinct(&self, ctx: &Arc<EvalContext>) -> Result<String, String>` as an inherent method on `Value`. Dispatches to `src/lexer.rs` formatters for token-level types and `src/surface_fmt.rs` formatters for expression-level types. The catch-all arm `_ => Err(format!("no tinct representation for {}", self.type_name()))` handles all values for which no stdlib-closed tinct expression exists — no explicit list of non-serializable types required.
+
+**Impact:** ~30 lines added to `src/value.rs`.
 
 ### `src/stream.rs` (new)
 
 **Current:** Nothing.
 
-**Proposed:** `value_to_tinct(val: &Value, ctx: &Arc<EvalContext>) -> String` (the general SCN serializer), `format_span_tinct(s: &SpanRecord) -> String` (the profiling fast path), and string helper functions (`write_tinct_str`, `write_tinct_opt`). `bracket_count` in `src/repl.rs` becomes `pub(crate)` for reference but is not used by this module — `bracket-count` is implemented in tinct.
+**Proposed:** The `builtin-to-tinct` builtin registration, which calls `val.to_tinct(ctx)`.
 
-**Impact:** New file, ~150 lines.
+**Impact:** New file, ~20 lines.
+
 
 ### `src/main.rs` — emit channel wiring and deletion of special-case output paths
 
 **Current:** Three separate code paths all do materialization and serialization in Rust:
 
-1. **`run_eval` output path (~line 2252):** When `-o` is present, materializes the formatter's return value, asserts it is a `Value::String`, and prints it directly. Comment: *"the pipeline's last expression is an output formatter that returns a String."* The formatter is expected to return a fully-rendered String.
+1. **`run_eval` output path:** When `-o` is present, materializes the formatter's return value, asserts it is a `Value::String`, and prints it directly. The formatter is expected to return a fully-rendered String.
 
-2. **`run_literate_eval` (~line 2941):** Always materializes the return value, calls `visit_value(&val, &eval_ctx, 0, &JsonVisitor, ...)`, then `serde_json::to_string_pretty`. Comment: *"Always serialize to JSON (emit is purely additive)."*
+2. **`run_literate_eval` (~line 2941):** Always materializes the return value, calls `visit_value(&val, &eval_ctx, 0, &JsonVisitor, ...)`, then `json_pretty_print`. Comment: *"Always serialize to JSON (emit is purely additive)."*
 
-3. **`run_literate_weave` per-block (~line 3305):** Same `visit_value` + `JsonVisitor` + `serde_json::to_string` per block. Comment: *"Always serialize the result to JSON (emit is additive)."*
+3. **`run_literate_weave` per-block (~line 3296):** Same `visit_value` + `JsonVisitor` pattern per block. Comment: *"Always serialize the result to JSON (emit is additive)."*
 
 All three embed the assumption that the CLI is responsible for output serialization and that `emit` is a side-effect bolted on top. All three must be deleted.
 
-**Proposed:** The CLI creates `%emit` and `%emit` channels, injects them into both the user program and the output formatter, and spawns both as concurrent tasks. The CLI's job after launching is to wait for both tasks to complete — nothing more. No materialization, no serialization, no String assertion.
+**Proposed:** The CLI creates a `%emit` channel, injects it into both the user program and the output formatter, and spawns both as `spawn_local` tasks (same `LocalSet` — required because `Arc<Thunk>` is `!Send`). The CLI waits for both tasks to complete. No materialization, no serialization, no String assertion.
+
+**`%emit` channel wiring (concrete):**
+
+```rust
+// In run_eval (before pipeline loop):
+let (emit_inner) = {
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    Arc::new(ChannelInner { sender: tx, receiver: Mutex::new(rx), capacity: 64 })
+};
+let emit_val = Value::Channel(Arc::clone(&emit_inner));
+let emit_thunk = Arc::new(Thunk::new_materialized(emit_val, Span::origin()));
+env.write().unwrap().insert("%emit".to_string(), emit_thunk);
+// Both user program and output formatter share the same Arc<ChannelInner>.
+// User program calls send (uses sender), output formatter calls recv (uses receiver).
+```
+
+**`%stdout` injection (formatter-only):**
+
+`%stdout` is a writable `Handle` injected into only the output formatter stage via a child-env overlay:
+
+```rust
+// Create formatter env as a child of the shared env, adding %stdout
+let formatter_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
+let stdout_handle = Value::Handle { caps: {Writable, Text}, write_inner: Some(stdout), ... };
+formatter_env.write().unwrap().insert("%stdout".to_string(), stdout_thunk);
+// Run formatter with formatter_env; user program uses shared env (no %stdout).
+```
+
+**Channel capacity (64):** The `%emit` channel is bounded at 64 slots. This provides backpressure — if the formatter writes slower than the program emits, `[send %emit v]` suspends. With `spawn_local` cooperative scheduling this cannot deadlock: when the sender suspends on a full channel, Tokio yields to the drain task which consumes a value, making room. 64 is small enough to bound memory use (at most 64 materialized `Value`s queued) and large enough to amortize task-switch overhead. An unbounded channel would risk accumulating all emitted values in memory for slow formatters. A configurable size adds unnecessary API surface.
+
+**Concurrent tasks:** Both user program and formatter run as `tokio::task::spawn_local` on the same `LocalSet`. This is required — `Value` is `!Send` (multiple variants contain `Rc<...>`: `Rc<Vec<Param>>` in `Value::Function`, `Rc<str>` in string keys, `Rc<cap_std::fs::Dir>` in `DirCap`, etc.), so `spawn` would fail to compile. `spawn_local` on the same `LocalSet` allows sharing `Arc<ChannelInner>` via the emit channel.
 
 Specifically deleted:
 
 - The `--eval` flag and its handling (`force_eval` branch in `run_eval`) — redundant with the default `none.llt` output program
 - The `Value::String` match + `print!` in `run_eval` (and the associated error for non-String formatter return)
-- The `materialize` + `visit_value` + `serde_json::to_string_pretty` block in `run_literate_eval`
-- The `visit_value` + `serde_json::to_string` block in `run_literate_weave`
+- The `materialize` + `visit_value` + `json_pretty_print` block in `run_literate_eval`
+- The `visit_value` + `JsonVisitor` block in `run_literate_weave`
 - The `JsonVisitor` and `visit_value` imports in `main.rs` (no longer needed in CLI paths)
-- The `serde_json::to_string_pretty` / `serde_json::to_string` calls in all output paths
 
 `run_literate_eval` and `run_literate_weave` gain the same channel-wiring treatment as `run_eval`.
 
 **Impact:** Moderate — replaces the sequential "eval → materialize → print" model with "eval + formatter as concurrent tasks". The output formatters (`cli/out/*.llt`) become the sole owners of serialization and stdout writing.
 
-**Note on `--eval`:** The `--eval` flag is made redundant by this model — running without `-o` already uses `none.llt`, which drains `%emit` and forces `%` without writing anything. `--eval` must be removed from the CLI and all documentation.
+**Note on `--eval` and the forcing guarantee.** The `--eval` flag is made redundant by this model — running without `-o` uses `none.llt`, which drains `%emit` and forces `%` (including all Seq elements) without writing anything. `--eval` must be removed from the CLI and all documentation.
+
+**Behavior change acknowledged:** In the current model, a program can `tinct run program.llt` without `-o` and the return value is never forced (lazy, no output). After this change, running without `-o` always forces `%` (via `none.llt`'s `[each [fn [let x] []] %]`). There is no way to "run a program and produce no output and force nothing" — the closest is an explicit `tinct run -o none program.llt` which also forces. This is intentional: the new model requires `%` to be forced to drive the evaluation cascade (for side effects and `emit` calls); a program whose return value is deliberately lazy and unused should simply not return a Seq, or should be written to terminate without a meaningful `%`. If this is a real use case, it requires a dedicated `--no-force` flag, which is out of scope for this sprint.
 
 ### `src/profiling.rs`
 
-**Current:** `#[derive(serde::Serialize)]` on `SpanRecord`; `snapshot_to_json_string` calls `serde_json::to_string_pretty`.
+**Current:** Already serde-free. `SpanRecord` uses `#[derive(Debug, Clone)]` only. The background flush thread calls `to_ndjson_line()` directly.
 
-**Proposed:** Remove `#[derive(serde::Serialize)]`. Replace `snapshot_to_json_string` with `format_span_tinct`. Background flush thread is self-contained.
+**Proposed:** Replace `to_ndjson_line()` with: construct a `Value::Dict` from each `SpanRecord`, call `val.to_tinct(None)`. The `None` ctx is valid because `SpanRecord` fields are scalars only — no Function values. The NDJSON path is deleted; `--profile` always writes `.llt-stream`. Analysis scripts use `-i stream` exclusively.
 
-**Impact:** Minor — contained to `src/profiling.rs` and the flush thread in `src/main.rs`.
+**Impact:** Minor — `to_ndjson_line()` and `to_json_object_pretty()` removed. The flush thread and snapshot path both migrate to stream format through the canonical `Value::to_tinct` path.
 
 ### `scripts/profile/` and `justfile`
 
-**Current:** Profile targets pipe through `jq -s '.'` before `tinct run -i json`.
+**Current:** Profile targets write `spans.ndjson` and use `-i ndjson`.
 
-**Proposed:**
+**Proposed:** Migrate fully to stream format. NDJSON profiling path deleted.
 
 ```sh
-tinct run --profile spans.llt program.llt
-tinct run -i stream scripts/profile/materialize.llt < spans.llt
+tinct run --profile spans.llt-stream program.llt
+tinct run -i stream scripts/profile/materialize.llt < spans.llt-stream
 ```
 
-`jq` dependency removed. Analysis script headers updated.
-
-**Impact:** Minor — justfile only; script logic unchanged.
+**Impact:** Minor — justfile targets updated; NDJSON profiling path removed.
 
 ### `doc/12-tooling.md`
 
-**Current:** References `spans.json` and `jq -s '.'`.
+**Current:** Profiling section references `spans.ndjson` and `-i ndjson`. Output formatter section describes the old String-return contract. Input formatter section describes `-i json` as single-value and `-i ndjson` as a separate mode.
 
-**Proposed:** Updated to `.llt` extension and `-i stream`. NDJSON/jq workaround removed.
+**Proposed:** Rewrite the output formatter contract section to describe the new `%emit`/`%stdout` concurrent model. Update `-i json` documentation to describe streaming balanced-object reading. Remove `-i ndjson` (deleted). Add `-i stream` and `-o stream`. Note that `to-tinct` is available for custom serializers. Also update `doc/08-evaluation.md` (emit semantics) and `doc/09-documents.md` (pipeline model).
 
-**Impact:** Minor — documentation update.
+**Impact:** Moderate — two sections rewritten, one section added.
 
 ## Prerequisites
 
-Every primitive used by the input formatter (`str-chars`, `lines`, `eval`, `map`, `filter`, `starts-with?`, `trim`, `str`, `reduce`) already exists. The stream codec is pure tinct. The output formatter uses `loop-select`, `recv`, and channel primitives from the async concurrency layer; `send` and `channel` are already registered builtins.
+**Async prelude wrappers.** The output formatters call `task`, `await`, `send`, `recv`, `select-once`, `cancelled?`, `context`, and `loop-select` as bare names. These are all exported from `stdlib/prelude.llt` — the async builtins as wrappers over their `builtin-*` stable aliases, and `loop-select` as a tinct function defined in prelude (merged from the former `stdlib/async.llt`).
 
-The `json-remove-serde-dep` sprint depends on this: `src/profiling.rs` is the last significant serde_json user after the other json-* sprints complete.
+**Other primitives** (`str-chars`, `lines`, `load`, `expand`, `map`, `flat-map`, `filter`, `starts-with?`, `trim`, `str`, `reduce`, `write`, `each`, `seq?`, `dict?`) are exported from `stdlib/prelude.llt`. (`write` requires B-168 — rename `"write"` to `"builtin-write"` in `src/builtins.rs` and add `write: builtin-write` to prelude, following the same pattern as the async builtin-privacy sprint.) No new Rust builtins are required for the stream codec — `program-exprs` is pure tinct using existing `program.documents` and `document.expressions` field access.
+
+**`serde_json` dependency.** `src/profiling.rs` is already serde-free (the `json-remove-serde-dep` sprint closed as completed). The `serde_json` dependency remains in the LSP feature only, where it is architecturally required. This whatif has no serde_json dependency.
+
+**Doc chapters.** In addition to `doc/12-tooling.md`, the `emit` model change, `%emit`/`%stdout` injection, and output program contract require updates to `doc/08-evaluation.md` (§Macro Expansion Pipeline and §emit semantics) and `doc/09-documents.md` (§Pipeline model).
 
 ## References
 
 - Peyton Jones, S. (1987). *The Implementation of Functional Programming Languages.* Prentice Hall. — Lazy I/O: a Seq whose spine is driven by the consumer; the model for the lazy `tail` thunk in the stream reader. Partial evaluation by specialization: the formal model for the SCN closure case.
 - Jones, N.D., Gomard, C.K., and Sestoft, P. (1993). *Partial Evaluation and Automatic Program Generation.* Prentice Hall. — Binding-time analysis; the formal basis for the SCN algorithm's treatment of closures and free variable substitution.
-- ndjson.org (2014). *Newline Delimited JSON.* — The streaming JSON convention; `-o json` with `[emit [to-json v]]` produces NDJSON as a bridge to JSON-aware downstream tools.
+- ndjson.org (2014). *Newline Delimited JSON.* — The streaming JSON convention; `-o json` produces one compact JSON value per record (NDJSON-compatible). `-i json` handles both NDJSON and multi-line JSON streams via balanced bracket counting.

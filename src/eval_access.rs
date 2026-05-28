@@ -22,7 +22,7 @@ pub(crate) async fn invoke_proxy_handler(
     // access clones the materialized Value. Consider eager materialization in
     // builtin_proxy for hot proxy access.
     let handler_val = materialize(handler, Some(access_span), ctx).await?;
-    let key_arg = Arc::new(Thunk::new_materialized(key_val, *access_span));
+    let key_arg = Arc::new(Thunk::new_materialized(key_val, access_span.clone()));
     match handler_val {
         Value::Function {
             params,
@@ -37,7 +37,7 @@ pub(crate) async fn invoke_proxy_handler(
                 positional: &[key_arg],
                 named: None,
                 default_env: &closure_env,
-                call_span: *access_span,
+                call_span: access_span.clone(),
                 origin: Some(Arc::from("proxy field access")),
                 ctx,
             })
@@ -47,14 +47,14 @@ pub(crate) async fn invoke_proxy_handler(
             def,
             vec![key_arg],
             None,
-            *access_span,
+            access_span.clone(),
             Some(Arc::from("proxy field access")),
             Arc::clone(ctx),
         ))),
         _ => Err(EvalError::type_mismatch(
             "Function or Builtin",
             handler_val.type_name(),
-            *access_span,
+            access_span.clone(),
         )
         .into()),
     }

@@ -29,7 +29,7 @@ pub(crate) fn builtin_uri(
             ctx,
         } = ctx_arg;
 
-        let val = expect_one_arg("uri", &args, named.as_ref(), &ctx, call_span)?;
+        let val = expect_one_arg("uri", &args, named.as_ref(), &ctx, call_span.clone())?;
         let s = match val {
             Value::String {
                 ref source,
@@ -48,7 +48,7 @@ pub(crate) fn builtin_uri(
             // scheme (lowercase)
             dict.insert(
                 Key::String("scheme".into()),
-                ctx.alloc_thunk(ok_val(string_val(parsed.scheme()), call_span)?),
+                ctx.alloc_thunk(ok_val(string_val(parsed.scheme()), call_span.clone())?),
             );
 
             // username (split from userinfo)
@@ -59,7 +59,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 Key::String("username".into()),
-                ctx.alloc_thunk(ok_val(username, call_span)?),
+                ctx.alloc_thunk(ok_val(username, call_span.clone())?),
             );
 
             // password (split from userinfo)
@@ -69,7 +69,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 Key::String("password".into()),
-                ctx.alloc_thunk(ok_val(password, call_span)?),
+                ctx.alloc_thunk(ok_val(password, call_span.clone())?),
             );
 
             // host (null for non-hierarchical; strip IPv6 brackets)
@@ -79,7 +79,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 Key::String("host".into()),
-                ctx.alloc_thunk(ok_val(host, call_span)?),
+                ctx.alloc_thunk(ok_val(host, call_span.clone())?),
             );
 
             // port (null if not specified)
@@ -89,13 +89,13 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 Key::String("port".into()),
-                ctx.alloc_thunk(ok_val(port, call_span)?),
+                ctx.alloc_thunk(ok_val(port, call_span.clone())?),
             );
 
             // path (always present per RFC 3986)
             dict.insert(
                 Key::String("path".into()),
-                ctx.alloc_thunk(ok_val(string_val(parsed.path()), call_span)?),
+                ctx.alloc_thunk(ok_val(string_val(parsed.path()), call_span.clone())?),
             );
 
             // query (null if absent)
@@ -105,7 +105,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 Key::String("query".into()),
-                ctx.alloc_thunk(ok_val(query, call_span)?),
+                ctx.alloc_thunk(ok_val(query, call_span.clone())?),
             );
 
             // fragment (null if absent)
@@ -115,7 +115,7 @@ pub(crate) fn builtin_uri(
             };
             dict.insert(
                 Key::String("fragment".into()),
-                ctx.alloc_thunk(ok_val(fragment, call_span)?),
+                ctx.alloc_thunk(ok_val(fragment, call_span.clone())?),
             );
 
             return ok_val(Value::Dict(dict), call_span);
@@ -138,14 +138,17 @@ pub(crate) fn builtin_uri(
 
         dict.insert(
             Key::String("scheme".into()),
-            ctx.alloc_thunk(ok_val(string_val(&scheme.to_lowercase()), call_span)?),
+            ctx.alloc_thunk(ok_val(
+                string_val(&scheme.to_lowercase()),
+                call_span.clone(),
+            )?),
         );
 
         // Non-hierarchical URIs: all null for userinfo/host/port
         for key in ["username", "password", "host", "port"] {
             dict.insert(
                 Key::String(key.into()),
-                ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), call_span)?),
+                ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), call_span.clone())?),
             );
         }
 
@@ -154,14 +157,14 @@ pub(crate) fn builtin_uri(
         // For urn:isbn:123, path is "isbn:123"
         dict.insert(
             Key::String("path".into()),
-            ctx.alloc_thunk(ok_val(string_val(rest), call_span)?),
+            ctx.alloc_thunk(ok_val(string_val(rest), call_span.clone())?),
         );
 
         // query and fragment: null (non-hierarchical URIs typically don't have these)
         for key in ["query", "fragment"] {
             dict.insert(
                 Key::String(key.into()),
-                ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), call_span)?),
+                ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), call_span.clone())?),
             );
         }
 
@@ -183,7 +186,7 @@ pub(crate) fn builtin_url(
             ctx,
         } = ctx_arg;
 
-        let val = expect_one_arg("url", &args, named.as_ref(), &ctx, call_span)?;
+        let val = expect_one_arg("url", &args, named.as_ref(), &ctx, call_span.clone())?;
         let s = match val {
             Value::String {
                 ref source,
@@ -195,8 +198,9 @@ pub(crate) fn builtin_url(
             }
         };
 
-        let parsed = url::Url::parse(s)
-            .map_err(|e| EvalError::uri_parse_error(format!("invalid URL: {}", e), call_span))?;
+        let parsed = url::Url::parse(s).map_err(|e| {
+            EvalError::uri_parse_error(format!("invalid URL: {}", e), call_span.clone())
+        })?;
 
         // Reject non-hierarchical URIs (no authority)
         if parsed.host_str().is_none() {
@@ -212,7 +216,7 @@ pub(crate) fn builtin_url(
         // scheme (lowercase)
         dict.insert(
             Key::String("scheme".into()),
-            ctx.alloc_thunk(ok_val(string_val(parsed.scheme()), call_span)?),
+            ctx.alloc_thunk(ok_val(string_val(parsed.scheme()), call_span.clone())?),
         );
 
         // username (split from userinfo)
@@ -223,7 +227,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             Key::String("username".into()),
-            ctx.alloc_thunk(ok_val(username, call_span)?),
+            ctx.alloc_thunk(ok_val(username, call_span.clone())?),
         );
 
         // password (split from userinfo)
@@ -233,13 +237,16 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             Key::String("password".into()),
-            ctx.alloc_thunk(ok_val(password, call_span)?),
+            ctx.alloc_thunk(ok_val(password, call_span.clone())?),
         );
 
         // host (always present for URLs; unwrap is safe)
         dict.insert(
             Key::String("host".into()),
-            ctx.alloc_thunk(ok_val(string_val(parsed.host_str().unwrap()), call_span)?),
+            ctx.alloc_thunk(ok_val(
+                string_val(parsed.host_str().unwrap()),
+                call_span.clone(),
+            )?),
         );
 
         // port (default to scheme default if not specified)
@@ -250,7 +257,7 @@ pub(crate) fn builtin_url(
         });
         dict.insert(
             Key::String("port".into()),
-            ctx.alloc_thunk(ok_val(Value::Int(i64::from(port)), call_span)?),
+            ctx.alloc_thunk(ok_val(Value::Int(i64::from(port)), call_span.clone())?),
         );
 
         // path (always present per RFC 3986; default to "/" if empty)
@@ -261,7 +268,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             Key::String("path".into()),
-            ctx.alloc_thunk(ok_val(string_val(path), call_span)?),
+            ctx.alloc_thunk(ok_val(string_val(path), call_span.clone())?),
         );
 
         // query (null if absent)
@@ -271,7 +278,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             Key::String("query".into()),
-            ctx.alloc_thunk(ok_val(query, call_span)?),
+            ctx.alloc_thunk(ok_val(query, call_span.clone())?),
         );
 
         // fragment (null if absent)
@@ -281,7 +288,7 @@ pub(crate) fn builtin_url(
         };
         dict.insert(
             Key::String("fragment".into()),
-            ctx.alloc_thunk(ok_val(fragment, call_span)?),
+            ctx.alloc_thunk(ok_val(fragment, call_span.clone())?),
         );
 
         ok_val(Value::Dict(dict), call_span)
@@ -303,7 +310,7 @@ pub(crate) fn builtin_urn(
             ctx,
         } = ctx_arg;
 
-        let val = expect_one_arg("urn", &args, named.as_ref(), &ctx, call_span)?;
+        let val = expect_one_arg("urn", &args, named.as_ref(), &ctx, call_span.clone())?;
         let s = match val {
             Value::String {
                 ref source,
@@ -369,11 +376,11 @@ pub(crate) fn builtin_urn(
 
         dict.insert(
             Key::String("nid".into()),
-            ctx.alloc_thunk(ok_val(string_val(nid), call_span)?),
+            ctx.alloc_thunk(ok_val(string_val(nid), call_span.clone())?),
         );
         dict.insert(
             Key::String("nss".into()),
-            ctx.alloc_thunk(ok_val(string_val(nss), call_span)?),
+            ctx.alloc_thunk(ok_val(string_val(nss), call_span.clone())?),
         );
 
         // r-component (null if absent)
@@ -383,7 +390,7 @@ pub(crate) fn builtin_urn(
         };
         dict.insert(
             Key::String("r-component".into()),
-            ctx.alloc_thunk(ok_val(r_val, call_span)?),
+            ctx.alloc_thunk(ok_val(r_val, call_span.clone())?),
         );
 
         // q-component (null if absent)
@@ -393,7 +400,7 @@ pub(crate) fn builtin_urn(
         };
         dict.insert(
             Key::String("q-component".into()),
-            ctx.alloc_thunk(ok_val(q_val, call_span)?),
+            ctx.alloc_thunk(ok_val(q_val, call_span.clone())?),
         );
 
         // fragment (null if absent)
@@ -403,7 +410,7 @@ pub(crate) fn builtin_urn(
         };
         dict.insert(
             Key::String("fragment".into()),
-            ctx.alloc_thunk(ok_val(frag_val, call_span)?),
+            ctx.alloc_thunk(ok_val(frag_val, call_span.clone())?),
         );
 
         ok_val(Value::Dict(dict), call_span)

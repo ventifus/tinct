@@ -59,7 +59,7 @@ fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
         node: CoreExpr::Call {
             func: Arc::new(Spanned {
                 node: CoreExpr::Int(0),
-                span,
+                span: span.clone(),
             }),
             args: vec![],
             named_args: vec![],
@@ -83,8 +83,13 @@ pub(crate) fn builtin_force(
             call_span,
             ctx,
         } = ctx_arg;
-        let forced =
-            crate::builtins::expect_one_arg("materialize", &args, named.as_ref(), &ctx, call_span)?;
+        let forced = crate::builtins::expect_one_arg(
+            "materialize",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
         ok_val(forced, call_span)
     })
 }
@@ -101,8 +106,14 @@ pub(crate) fn builtin_raise(
             call_span,
             ctx,
         } = ctx_arg;
-        let val = crate::builtins::expect_one_arg("raise", &args, named.as_ref(), &ctx, call_span)?;
-        let msg = require_string("raise", val, args[0].span)?;
+        let val = crate::builtins::expect_one_arg(
+            "raise",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+        let msg = require_string("raise", val, args[0].span.clone())?;
         Err(EvalError::user_error(msg.to_string(), call_span).into())
     })
 }
@@ -122,7 +133,7 @@ pub(crate) fn builtin_macro_error(
         } = ctx_arg;
 
         // Reject named arguments
-        crate::builtins::reject_named("builtin-macro-error", named.as_ref(), call_span)?;
+        crate::builtins::reject_named("builtin-macro-error", named.as_ref(), call_span.clone())?;
 
         // Expect exactly 2 arguments
         if args.len() != 2 {
@@ -140,7 +151,7 @@ pub(crate) fn builtin_macro_error(
                     "builtin-macro-error".to_string(),
                     "Dict (span)",
                     other.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into());
             }
@@ -150,7 +161,7 @@ pub(crate) fn builtin_macro_error(
         let msg_val = args[1]
             .try_get_materialized()
             .expect("pre-materialized by force_count=2");
-        let message = require_string("builtin-macro-error", msg_val, args[1].span)?;
+        let message = require_string("builtin-macro-error", msg_val, args[1].span.clone())?;
 
         // Helper to extract a dict field and materialize it
         let get_dict =
@@ -158,7 +169,7 @@ pub(crate) fn builtin_macro_error(
                 let field_id = parent.get(&Key::String(field.into())).ok_or_else(|| {
                     EvalError::user_error(
                         format!("builtin-macro-error: span dict missing '{}' field", field),
-                        args[0].span,
+                        args[0].span.clone(),
                     )
                 })?;
                 let field_thunk = ctx.get_thunk(*field_id);
@@ -169,7 +180,7 @@ pub(crate) fn builtin_macro_error(
                         format!("builtin-macro-error (span.{})", field),
                         "Dict",
                         other.type_name(),
-                        field_thunk.span,
+                        field_thunk.span.clone(),
                     )
                     .into()),
                 }
@@ -181,7 +192,7 @@ pub(crate) fn builtin_macro_error(
                 let field_id = parent.get(&Key::String(field.into())).ok_or_else(|| {
                     EvalError::user_error(
                         format!("builtin-macro-error: {} missing '{}' field", context, field),
-                        args[0].span,
+                        args[0].span.clone(),
                     )
                 })?;
                 let field_thunk = ctx.get_thunk(*field_id);
@@ -193,14 +204,14 @@ pub(crate) fn builtin_macro_error(
                             "builtin-macro-error: {}.{} must be non-negative, got {}",
                             context, field, n
                         ),
-                        field_thunk.span,
+                        field_thunk.span.clone(),
                     )
                     .into()),
                     other => Err(EvalError::type_mismatch_ctx(
                         format!("builtin-macro-error ({}.{})", context, field),
                         "Int",
                         other.type_name(),
-                        field_thunk.span,
+                        field_thunk.span.clone(),
                     )
                     .into()),
                 }
@@ -251,7 +262,7 @@ pub(crate) fn builtin_try(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("try", named.as_ref(), call_span)?;
+        reject_named("try", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
@@ -271,7 +282,7 @@ pub(crate) fn builtin_try(
                         "try".to_string(),
                         "zero-argument function",
                         &format!("{}-parameter function", params.len()),
-                        call_span,
+                        call_span.clone(),
                     )
                     .into());
                 }
@@ -291,7 +302,7 @@ pub(crate) fn builtin_try(
                     Arc::clone(&body),
                     call_env,
                     Arc::clone(&ctx),
-                    body.span,
+                    body.span.clone(),
                 ));
                 materialize(&body_thunk, Some(&call_span), &ctx).await
             }
@@ -299,7 +310,7 @@ pub(crate) fn builtin_try(
                 let builtin_args = BuiltinArgs {
                     args: vec![],
                     named: None,
-                    call_span,
+                    call_span: call_span.clone(),
                     ctx: Arc::clone(&ctx),
                 };
                 match (def.func)(builtin_args).await {
@@ -312,7 +323,7 @@ pub(crate) fn builtin_try(
                     "try".to_string(),
                     "Function",
                     func_val.type_name(),
-                    call_span,
+                    call_span.clone(),
                 )
                 .into())
             }
@@ -321,7 +332,7 @@ pub(crate) fn builtin_try(
         match call_result {
             Ok(val) => {
                 // Success: return Value::Variant { tag: "Ok", payload: Some(value) }
-                let payload_thunk_id = ctx.alloc_thunk(ok_val(val, call_span)?);
+                let payload_thunk_id = ctx.alloc_thunk(ok_val(val, call_span.clone())?);
                 ok_val(
                     Value::Variant {
                         tag: "Ok".to_string(),
@@ -342,7 +353,7 @@ pub(crate) fn builtin_try(
                 }
                 // Error: return Value::Variant { tag: "Error", payload: Some(message) }
                 let msg_thunk_id =
-                    ctx.alloc_thunk(ok_val(string_val(&e.kind.to_string()), call_span)?);
+                    ctx.alloc_thunk(ok_val(string_val(&e.kind.to_string()), call_span.clone())?);
                 ok_val(
                     Value::Variant {
                         tag: "Error".to_string(),
@@ -372,7 +383,7 @@ pub(crate) fn builtin_until(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("until", named.as_ref(), call_span)?;
+        reject_named("until", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
@@ -387,12 +398,12 @@ pub(crate) fn builtin_until(
                 Arc::clone(&pred_thunk),
                 vec![Arc::clone(&val_thunk)],
                 IndexMap::new(),
-                call_span,
+                call_span.clone(),
                 Arc::clone(&ctx.config.stdlib_env),
-                val_thunk.span,
+                val_thunk.span.clone(),
                 Some(Arc::from("until")),
                 Arc::clone(&ctx),
-                synthetic_call_expr(call_span),
+                synthetic_call_expr(call_span.clone()),
             ));
 
             let pred_val = materialize(&pred_result, Some(&call_span), &ctx).await?;
@@ -408,18 +419,18 @@ pub(crate) fn builtin_until(
                         Arc::clone(&f_thunk),
                         vec![val_thunk],
                         IndexMap::new(),
-                        call_span,
+                        call_span.clone(),
                         Arc::clone(&ctx.config.stdlib_env),
-                        call_span,
+                        call_span.clone(),
                         Some(Arc::from("until")),
                         Arc::clone(&ctx),
-                        synthetic_call_expr(call_span),
+                        synthetic_call_expr(call_span.clone()),
                     ));
 
                     // Eagerly materialize f(val) and re-wrap as a thunk for the next iteration
                     // This breaks the thunk chain and prevents stack overflow
                     let f_val = materialize(&f_result, Some(&call_span), &ctx).await?;
-                    val_thunk = Arc::new(Thunk::new_materialized(f_val, call_span));
+                    val_thunk = Arc::new(Thunk::new_materialized(f_val, call_span.clone()));
                 }
                 _ => {
                     return Err(EvalError::type_mismatch_ctx(
@@ -448,7 +459,7 @@ pub(crate) fn builtin_apply_impl(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("apply", named.as_ref(), call_span)?;
+        reject_named("apply", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -460,8 +471,13 @@ pub(crate) fn builtin_apply_impl(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let arg_dict =
-            crate::builtins::require_dict("apply", args_val, args[1].span, &ctx, call_span)?;
+        let arg_dict = crate::builtins::require_dict(
+            "apply",
+            args_val,
+            args[1].span.clone(),
+            &ctx,
+            call_span.clone(),
+        )?;
 
         // Split dict entries: integer-keyed → positional, string-keyed → named
         let mut int_entries: Vec<(i64, Arc<Thunk>)> = Vec::with_capacity(arg_dict.len());
@@ -608,7 +624,7 @@ pub(crate) fn builtin_gensym(
             ctx: _,
         } = ctx_arg;
 
-        reject_named("gensym", named.as_ref(), call_span)?;
+        reject_named("gensym", named.as_ref(), call_span.clone())?;
 
         // Accept 0 or 1 positional arguments
         let prefix = if args.is_empty() {
@@ -672,9 +688,9 @@ pub(crate) fn builtin_macro_injects(
             &args,
             named.as_ref(),
             &ctx,
-            call_span,
+            call_span.clone(),
         )?;
-        let macro_name = require_string("macro-injects", macro_name_val, args[0].span)?;
+        let macro_name = require_string("macro-injects", macro_name_val, args[0].span.clone())?;
 
         // Look up the macro in the inject map
         match ctx.config.macro_injects_map.get(&macro_name) {
@@ -696,8 +712,13 @@ pub(crate) fn builtin_decimal(
             call_span,
             ctx,
         } = ctx_arg;
-        let val =
-            crate::builtins::expect_one_arg("decimal", &args, named.as_ref(), &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg(
+            "decimal",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
         match val {
             Value::String {
                 ref source,
@@ -732,8 +753,13 @@ pub(crate) fn builtin_big_int(
             call_span,
             ctx,
         } = ctx_arg;
-        let val =
-            crate::builtins::expect_one_arg("big-int", &args, named.as_ref(), &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg(
+            "big-int",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
         match val {
             Value::Int(n) => ok_val(Value::BigInt(num_bigint::BigInt::from(n)), call_span),
             Value::String {
@@ -771,8 +797,13 @@ pub(crate) fn builtin_type_of(
             call_span,
             ctx,
         } = ctx_arg;
-        let val =
-            crate::builtins::expect_one_arg("type-of", &args, named.as_ref(), &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg(
+            "type-of",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
         let name = match val.type_name() {
             "Builtin" => "Function",
             other => other,
@@ -802,9 +833,9 @@ pub(crate) fn builtin_ast_of(
         } = ctx_arg;
 
         // Reject named args and ensure exactly 1 arg
-        crate::builtins::reject_named("ast-of", named.as_ref(), call_span)?;
+        crate::builtins::reject_named("ast-of", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span.clone()).into());
         }
 
         let thunk = &args[0];
@@ -818,14 +849,14 @@ pub(crate) fn builtin_ast_of(
                 crate::value::Key::String("type".into()),
                 ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("pending-builtin"),
-                    call_span,
+                    call_span.clone(),
                 ))),
             );
             entries.insert(
                 crate::value::Key::String("name".into()),
                 ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val(def.name),
-                    call_span,
+                    call_span.clone(),
                 ))),
             );
             return Ok(Arc::new(crate::value::Thunk::new_materialized(
@@ -841,7 +872,7 @@ pub(crate) fn builtin_ast_of(
                 crate::value::Key::String("type".into()),
                 ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("pending-call"),
-                    call_span,
+                    call_span.clone(),
                 ))),
             );
             return Ok(Arc::new(crate::value::Thunk::new_materialized(
@@ -857,14 +888,14 @@ pub(crate) fn builtin_ast_of(
                 crate::value::Key::String("type".into()),
                 ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("thunk"),
-                    call_span,
+                    call_span.clone(),
                 ))),
             );
             entries.insert(
                 crate::value::Key::String("state".into()),
                 ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("guarded"),
-                    call_span,
+                    call_span.clone(),
                 ))),
             );
             return Ok(Arc::new(crate::value::Thunk::new_materialized(
@@ -880,14 +911,14 @@ pub(crate) fn builtin_ast_of(
                 crate::value::Key::String("type".into()),
                 ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("thunk"),
-                    call_span,
+                    call_span.clone(),
                 ))),
             );
             entries.insert(
                 crate::value::Key::String("state".into()),
                 ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("in-progress"),
-                    call_span,
+                    call_span.clone(),
                 ))),
             );
             return Ok(Arc::new(crate::value::Thunk::new_materialized(
@@ -903,21 +934,21 @@ pub(crate) fn builtin_ast_of(
                 crate::value::Key::String("type".into()),
                 ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("thunk"),
-                    call_span,
+                    call_span.clone(),
                 ))),
             );
             entries.insert(
                 crate::value::Key::String("state".into()),
                 ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("failed"),
-                    call_span,
+                    call_span.clone(),
                 ))),
             );
             entries.insert(
                 crate::value::Key::String("error".into()),
                 ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val(&err.kind.to_string()),
-                    call_span,
+                    call_span.clone(),
                 ))),
             );
             return Ok(Arc::new(crate::value::Thunk::new_materialized(
@@ -956,7 +987,7 @@ pub(crate) fn builtin_ast_of(
                         crate::value::Key::String("type".into()),
                         ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                             string_val("function"),
-                            call_span,
+                            call_span.clone(),
                         ))),
                     );
 
@@ -966,7 +997,7 @@ pub(crate) fn builtin_ast_of(
                         .map(|p| {
                             ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                                 string_val(&p.name),
-                                call_span,
+                                call_span.clone(),
                             )))
                         })
                         .collect();
@@ -975,12 +1006,12 @@ pub(crate) fn builtin_ast_of(
                         let params_seq = param_names.into_iter().rev().fold(
                             ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                                 crate::value::Value::Dict(IndexMap::new()),
-                                call_span,
+                                call_span.clone(),
                             ))),
                             |tail, head| {
                                 ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                                     crate::value::Value::Seq { head, tail },
-                                    call_span,
+                                    call_span.clone(),
                                 )))
                             },
                         );
@@ -994,7 +1025,7 @@ pub(crate) fn builtin_ast_of(
                                 crate::value::Key::String("doc".into()),
                                 ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                                     string_val(doc_str),
-                                    call_span,
+                                    call_span.clone(),
                                 ))),
                             );
                         }
@@ -1008,7 +1039,7 @@ pub(crate) fn builtin_ast_of(
                         crate::value::Key::String("type".into()),
                         ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                             string_val(other.type_name()),
-                            call_span,
+                            call_span.clone(),
                         ))),
                     );
                     entries
@@ -1021,14 +1052,14 @@ pub(crate) fn builtin_ast_of(
                 crate::value::Key::String("type".into()),
                 ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("thunk"),
-                    call_span,
+                    call_span.clone(),
                 ))),
             );
             entries.insert(
                 crate::value::Key::String("state".into()),
                 ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
                     string_val("placeholder"),
-                    call_span,
+                    call_span.clone(),
                 ))),
             );
             entries
@@ -1051,11 +1082,16 @@ pub(crate) fn builtin_llt_repr(
             call_span,
             ctx,
         } = ctx_arg;
-        let val =
-            crate::builtins::expect_one_arg("llt-repr", &args, named.as_ref(), &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg(
+            "llt-repr",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
         // value_to_display_string materializes nested values on demand via visit_value
-        let display_str = crate::value_to_display_string(&val, &ctx, call_span)
-            .map_err(|e| EvalError::internal(format!("llt-repr: {}", e.kind), call_span))?;
+        let display_str = crate::value_to_display_string(&val, &ctx, call_span.clone())
+            .map_err(|e| EvalError::internal(format!("llt-repr: {}", e.kind), call_span.clone()))?;
         ok_val(string_val(&display_str), call_span)
     })
 }
@@ -1071,8 +1107,13 @@ pub(crate) fn builtin_tag_of(
             call_span,
             ctx,
         } = ctx_arg;
-        let val =
-            crate::builtins::expect_one_arg("tag-of", &args, named.as_ref(), &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg(
+            "tag-of",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
         match val {
             Value::Variant { tag, .. } => ok_val(string_val(&tag), call_span),
             // runtime-v2: Value::Expression supports tag-of via surface_expr_tag
@@ -1110,7 +1151,7 @@ pub(crate) fn builtin_variant(
             call_span,
             ctx,
         } = ctx_arg;
-        crate::builtins::reject_named("variant", named.as_ref(), call_span)?;
+        crate::builtins::reject_named("variant", named.as_ref(), call_span.clone())?;
 
         match args.len() {
             1 => {
@@ -1192,7 +1233,7 @@ pub(crate) fn builtin_variant(
                             // Wrap as Variant so dict_to_surface_node can extract the tag
                             let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                 deep_payload,
-                                call_span,
+                                call_span.clone(),
                             )));
                             let variant_val = Value::Variant {
                                 tag: tag.to_string(),
@@ -1212,7 +1253,7 @@ pub(crate) fn builtin_variant(
                                         },
                                         e.message
                                     ),
-                                            call_span,
+                                            call_span.clone(),
                                         ))
                                     })?;
                             ok_val(Value::Expression(surface_node), call_span)
@@ -1314,9 +1355,14 @@ pub(crate) fn builtin_blake3(
             call_span,
             ctx,
         } = ctx_arg;
-        let val =
-            crate::builtins::expect_one_arg("blake3", &args, named.as_ref(), &ctx, call_span)?;
-        let s = require_string("blake3", val, args[0].span)?;
+        let val = crate::builtins::expect_one_arg(
+            "blake3",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+        let s = require_string("blake3", val, args[0].span.clone())?;
         let hex = blake3_hex(s.as_bytes());
         ok_val(string_val(hex.as_str()), call_span)
     })
@@ -1345,7 +1391,7 @@ pub(crate) fn builtin_cap_identity(
             &args,
             named.as_ref(),
             &ctx,
-            call_span,
+            call_span.clone(),
         )?;
 
         let dir = match &val {
@@ -1354,16 +1400,19 @@ pub(crate) fn builtin_cap_identity(
                 if revoked.get() {
                     return Err(EvalError::internal(
                         "cap-identity: capability has been revoked".to_string(),
-                        call_span,
+                        call_span.clone(),
                     )
                     .into());
                 }
                 Rc::clone(inner)
             }
             _ => {
-                return Err(
-                    EvalError::type_mismatch("DirCap", val.type_name(), args[0].span).into(),
-                );
+                return Err(EvalError::type_mismatch(
+                    "DirCap",
+                    val.type_name(),
+                    args[0].span.clone(),
+                )
+                .into());
             }
         };
 
@@ -1376,7 +1425,7 @@ pub(crate) fn builtin_cap_identity(
             let meta = dir.open(".").and_then(|f| f.metadata()).map_err(|e| {
                 EvalError::internal(
                     format!("cap-identity: failed to stat directory: {e}"),
-                    call_span,
+                    call_span.clone(),
                 )
             })?;
             format!("{}:{}", meta.dev(), meta.ino())
@@ -1432,14 +1481,14 @@ pub(crate) fn builtin_load(
             }
             let name_hint = if let Some(name_thunk) = named_map.get("name") {
                 let name_val = materialize(name_thunk, Some(&call_span), &ctx).await?; // H2: conditional (only when name: named arg present)
-                let name_str = require_string("load", name_val, name_thunk.span)?;
+                let name_str = require_string("load", name_val, name_thunk.span.clone())?;
                 Some(name_str)
             } else {
                 None
             };
             let expected_hash = if let Some(hash_thunk) = named_map.get("hash") {
                 let hash_val = materialize(hash_thunk, Some(&call_span), &ctx).await?; // H2: conditional (only when hash: named arg present)
-                let hash_str = require_string("load", hash_val, hash_thunk.span)?;
+                let hash_str = require_string("load", hash_val, hash_thunk.span.clone())?;
                 Some(hash_str)
             } else {
                 None
@@ -1453,7 +1502,7 @@ pub(crate) fn builtin_load(
         let source_val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let source = require_string("load", source_val, args[0].span)?;
+        let source = require_string("load", source_val, args[0].span.clone())?;
 
         // Use name hint for error messages
         let display_name = name_hint.as_deref().unwrap_or("<load>");
@@ -1479,7 +1528,11 @@ pub(crate) fn builtin_load(
 
         // Parse
         let parsed = crate::parser::parse(&source).map_err(|e| {
-            EvalError::include_parse_failed(display_name.to_string(), e.to_string(), call_span)
+            EvalError::include_parse_failed(
+                display_name.to_string(),
+                e.to_string(),
+                call_span.clone(),
+            )
         })?;
 
         // load returns the raw parsed SurfaceProgram with empty tables.
@@ -1512,7 +1565,7 @@ pub(crate) fn builtin_expand(
             call_span,
             ctx,
         } = ctx_arg;
-        crate::builtins::reject_named("expand", named.as_ref(), call_span)?;
+        crate::builtins::reject_named("expand", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
@@ -1537,7 +1590,7 @@ pub(crate) fn builtin_expand(
                 .map_err(|e| {
                     EvalError::user_error(
                         format!("expand: macro expansion error: {}", e.kind),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?;
                 // Desugar $_ patterns introduced by macros.
@@ -1630,7 +1683,11 @@ pub(crate) fn builtin_eval(
             // Flatten Overlay to Dict before processing env bindings
             let env_val = match env_val {
                 Value::Overlay(l, r) => Value::Dict(crate::builtins::flatten_overlay(
-                    &l, &r, "eval", &ctx, call_span,
+                    &l,
+                    &r,
+                    "eval",
+                    &ctx,
+                    call_span.clone(),
                 )?),
                 other => other,
             };
@@ -1904,11 +1961,11 @@ pub(crate) fn builtin_eval_types(
                 Arc::clone(&types_table),
                 Arc::clone(&final_env),
                 Arc::clone(&ctx),
-                call_span,
+                call_span.clone(),
             ));
             let surface_thunk_id = ctx.alloc_thunk(surface_thunk);
 
-            let tail_thunk_id = ctx.alloc_thunk(ok_val(result_seq, call_span)?);
+            let tail_thunk_id = ctx.alloc_thunk(ok_val(result_seq, call_span.clone())?);
             result_seq = Value::Seq {
                 head: surface_thunk_id,
                 tail: tail_thunk_id,
@@ -1940,9 +1997,9 @@ pub(crate) fn builtin_include_cache_get(
             &args,
             named.as_ref(),
             &ctx,
-            call_span,
+            call_span.clone(),
         )?;
-        let key = require_string("include-cache-get", val, args[0].span)?;
+        let key = require_string("include-cache-get", val, args[0].span.clone())?;
 
         let entry = ctx
             .state
@@ -2004,7 +2061,7 @@ pub(crate) fn builtin_include_cache_put(
             ctx,
         } = ctx_arg;
 
-        reject_named("include-cache-put", named.as_ref(), call_span)?;
+        reject_named("include-cache-put", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -2012,7 +2069,7 @@ pub(crate) fn builtin_include_cache_put(
         let key_val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let key = require_string("include-cache-put", key_val, args[0].span)?;
+        let key = require_string("include-cache-put", key_val, args[0].span.clone())?;
 
         // The second arg is the entry variant: [Missing], [Pending], or [Cached value]
         let entry_val = args[1]
@@ -2031,7 +2088,7 @@ pub(crate) fn builtin_include_cache_put(
                                 "include-cache-put".to_string(),
                                 "[Cached value]",
                                 "[Cached]",
-                                args[1].span,
+                                args[1].span.clone(),
                             )
                             .into())
                         }
@@ -2047,7 +2104,7 @@ pub(crate) fn builtin_include_cache_put(
                         "include-cache-put".to_string(),
                         "[Missing] | [Pending] | [Cached value]",
                         &format!("[{other}]"),
-                        args[1].span,
+                        args[1].span.clone(),
                     )
                     .into())
                 }
@@ -2057,7 +2114,7 @@ pub(crate) fn builtin_include_cache_put(
                     "include-cache-put".to_string(),
                     "[Missing] | [Pending] | [Cached value]",
                     entry_val.type_name(),
-                    args[1].span,
+                    args[1].span.clone(),
                 )
                 .into())
             }
@@ -2109,15 +2166,18 @@ pub(crate) fn builtin_validate(
         } = ctx_arg;
 
         // Expect exactly 2 args: schema, data
-        let (schema, data) = expect_two_args("validate", &args, named.as_ref(), &ctx, call_span)?;
+        let (schema, data) =
+            expect_two_args("validate", &args, named.as_ref(), &ctx, call_span.clone())?;
 
         // Schema must be a Dict
         let schema_dict = match schema {
             Value::Dict(ref d) => d.clone(),
             Value::Overlay(..) => {
                 // Materialize Overlay to Dict before validation
-                let schema_thunk_id =
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(schema.clone(), call_span)));
+                let schema_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    schema.clone(),
+                    call_span.clone(),
+                )));
                 let schema_thunk = ctx.get_thunk(schema_thunk_id);
                 let materialized = materialize(&schema_thunk, Some(&call_span), &ctx).await?;
                 match materialized {
@@ -2144,7 +2204,14 @@ pub(crate) fn builtin_validate(
 
         // Collect violations
         let mut violations = Vec::new();
-        validate_value(&schema_dict, &data, "", &mut violations, &ctx, call_span)?;
+        validate_value(
+            &schema_dict,
+            &data,
+            "",
+            &mut violations,
+            &ctx,
+            call_span.clone(),
+        )?;
 
         if violations.is_empty() {
             // Success: return data unchanged
@@ -2402,7 +2469,7 @@ fn validate_value(
                                 &field_path,
                                 violations,
                                 ctx,
-                                span,
+                                span.clone(),
                             )?;
                         } else if is_required {
                             violations.push((field_path, "required field is missing".to_string()));
@@ -2428,7 +2495,14 @@ fn validate_value(
                         } else {
                             format!("{}[{}]", path, idx)
                         };
-                        validate_value(items_schema, &val, &item_path, violations, ctx, span)?;
+                        validate_value(
+                            items_schema,
+                            &val,
+                            &item_path,
+                            violations,
+                            ctx,
+                            span.clone(),
+                        )?;
                     }
                 }
                 Value::Seq { .. } => {
@@ -2458,7 +2532,7 @@ fn validate_value(
                                     &item_path,
                                     violations,
                                     ctx,
-                                    span,
+                                    span.clone(),
                                 )?;
 
                                 let tail_thunk = ctx.get_thunk(*tail);

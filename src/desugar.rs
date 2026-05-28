@@ -67,8 +67,8 @@ fn inject_adt_constructors_document(doc: &mut SurfaceDocument) {
 }
 
 fn inject_adt_constructors_node(node: Arc<SurfaceNode>) -> Arc<SurfaceNode> {
-    let span = node.span;
-    let new_expr = inject_adt_constructors_expr(&node.expr, span);
+    let span = node.span.clone();
+    let new_expr = inject_adt_constructors_expr(&node.expr, span.clone());
     if std::ptr::eq(&new_expr as *const _, &node.expr as *const _) {
         // No change — return original Arc (avoids clone)
         return node;
@@ -107,7 +107,7 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
                                 }
                                 let key_node = Arc::new(SurfaceNode {
                                     expr: SurfaceExpression::Str(ctor_name.clone()),
-                                    span: syn_span,
+                                    span: syn_span.clone(),
                                 });
                                 // Build [variant "CtorName"] as a Call expression
                                 let variant_fn = Arc::new(SurfaceNode {
@@ -115,11 +115,11 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
                                         name: "variant".to_string(),
                                         escaped: false,
                                     },
-                                    span: syn_span,
+                                    span: syn_span.clone(),
                                 });
                                 let tag_arg = Arc::new(SurfaceNode {
                                     expr: SurfaceExpression::Str(ctor_name),
-                                    span: syn_span,
+                                    span: syn_span.clone(),
                                 });
                                 let call_expr = SurfaceExpression::Call {
                                     func: Arc::clone(&variant_fn),
@@ -129,14 +129,14 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
                                 };
                                 let value_node = Arc::new(SurfaceNode {
                                     expr: call_expr,
-                                    span: syn_span,
+                                    span: syn_span.clone(),
                                 });
                                 new_entries.push(Spanned::new(
                                     SurfaceEntry {
                                         key: Some(key_node),
                                         value: value_node,
                                     },
-                                    syn_span,
+                                    syn_span.clone(),
                                 ));
                             }
                         }
@@ -155,7 +155,7 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
                         key: new_key,
                         value: new_value,
                     },
-                    se.span,
+                    se.span.clone(),
                 ));
             }
 
@@ -215,7 +215,7 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
                             name: na.node.name.clone(),
                             value: new_val,
                         },
-                        na.span,
+                        na.span.clone(),
                     )
                 })
                 .collect();
@@ -479,7 +479,7 @@ fn is_direct_underscore_surface(expr: &SurfaceExpression) -> bool {
 /// Mutates `node` in place. The generated Fn node inherits the outer expression's span,
 /// preserving the original inner expression's span structure for the body.
 fn wrap_surface_in_lambda(node: &mut Arc<SurfaceNode>) {
-    let span = node.span;
+    let span = node.span.clone();
     // Clone the Arc to preserve the original node as the body
     let body = Arc::clone(node);
 
@@ -492,7 +492,7 @@ fn wrap_surface_in_lambda(node: &mut Arc<SurfaceNode>) {
                     annotation: None,
                     variadic: false,
                 },
-                span,
+                span.clone(),
             )],
             body,
             desugared: true,
@@ -710,7 +710,7 @@ fn desugar_pipe_surface(node: &mut Arc<SurfaceNode>) {
                         name: name.clone(),
                         escaped: *escaped,
                     },
-                    span: rhs.span,
+                    span: rhs.span.clone(),
                 }),
                 args: vec![lhs],
                 named_args: vec![],

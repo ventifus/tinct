@@ -1414,7 +1414,7 @@ impl Thunk {
                     def,
                     args,
                     named,
-                    call_span: span,
+                    call_span: span.clone(),
                     ctx,
                 })),
                 result: tokio::sync::OnceCell::new(),
@@ -1499,7 +1499,7 @@ impl Thunk {
                     inner,
                     expected,
                     field_path,
-                    guard_span,
+                    guard_span: guard_span.clone(),
                     blame_label,
                     default,
                 })),
@@ -1520,7 +1520,7 @@ impl Thunk {
 
     /// Return the source span where this thunk was created.
     pub fn definition_span(&self) -> Span {
-        self.span
+        self.span.clone()
     }
 
     /// Restore unevaluated state after a non-cacheable error.
@@ -1543,8 +1543,9 @@ impl Thunk {
     ///
     /// This method **clones** the unevaluated state from `self` rather than taking it.
     /// `UnevaluatedState` derives `Clone`; all constituent fields are `Arc<>` (cheap
-    /// reference-count increments), `Vec<Arc<Thunk>>`, `Span` (Copy), or other `Clone`
-    /// types. The original thunk is left intact and continues to be evaluatable normally.
+    /// reference-count increments), `Vec<Arc<Thunk>>`, `Span` (Clone via Arc<SourceFile>),
+    /// or other `Clone` types. The original thunk is left intact and continues to be
+    /// evaluatable normally.
     pub(crate) fn with_replaced_ctx(
         &self,
         new_ctx: Arc<crate::eval::EvalContext>,
@@ -1640,7 +1641,7 @@ impl Thunk {
                 unevaluated: Mutex::new(Some(new_state)),
                 result: tokio::sync::OnceCell::new(),
             },
-            span: self.span,
+            span: self.span.clone(),
             origin: self.origin.clone(),
             create_parent: self.create_parent,
             create_time_us: self.create_time_us,
@@ -2299,7 +2300,10 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
         let seq = Value::Seq {
-            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span))),
+            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Int(42),
+                span.clone(),
+            ))),
             tail: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 span,
@@ -2313,7 +2317,10 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
         let seq = Value::Seq {
-            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
+            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Int(1),
+                span.clone(),
+            ))),
             tail: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 span,
@@ -2328,7 +2335,10 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
         let seq = Value::Seq {
-            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
+            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Int(1),
+                span.clone(),
+            ))),
             tail: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 span,
@@ -2343,7 +2353,10 @@ mod tests {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
         let seq = Value::Seq {
-            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(42), span))),
+            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Int(42),
+                span.clone(),
+            ))),
             tail: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Dict(IndexMap::new()),
                 span,
@@ -2389,7 +2402,7 @@ mod tests {
     fn test_environment_get_shadow() {
         let mut parent = Environment::new();
         let span = test_span(1, 1, 1, 5);
-        let parent_thunk = Arc::new(Thunk::new_materialized(Value::Int(1), span));
+        let parent_thunk = Arc::new(Thunk::new_materialized(Value::Int(1), span.clone()));
         parent.insert("x".into(), Arc::clone(&parent_thunk));
 
         let parent_rc = Arc::new(RwLock::new(parent));
@@ -2417,7 +2430,7 @@ mod tests {
     fn test_thunk_debug_unevaluated_state() {
         // Verify that Debug output works for an Unevaluated thunk without panicking.
         let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
         let env = Arc::new(RwLock::new(Environment::new()));
         let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
 
@@ -2474,7 +2487,10 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         map.insert(
             Key::String("x".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Int(1),
+                span.clone(),
+            ))),
         );
         map.insert(
             Key::Int(0),
@@ -2559,7 +2575,10 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         map.insert(
             Key::String("x".into()),
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(1), span))),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Int(1),
+                span.clone(),
+            ))),
         );
         map.insert(
             Key::Int(0),
@@ -2630,7 +2649,7 @@ mod tests {
 
         // Create a thunk that captures ctx1
         let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
         let env = Arc::new(RwLock::new(Environment::new()));
         let thunk = Thunk::new_unevaluated_core(
             Arc::clone(&expr),
@@ -2739,16 +2758,16 @@ mod tests {
                 env: Arc::new(RwLock::new(Environment::new())),
                 annotation: None,
             },
-            span,
+            span.clone(),
         ));
 
         let thunk = Thunk::new_pending_call(
             Arc::clone(&func_thunk),
             vec![],
             IndexMap::new(),
-            span,
+            span.clone(),
             Arc::new(RwLock::new(Environment::new())), // caller_env
-            span,
+            span.clone(),
             Some(Arc::from("test call")),
             Arc::clone(&ctx1),
             Arc::new(crate::ast::Spanned {
@@ -2839,7 +2858,7 @@ mod tests {
     #[test]
     fn test_thunk_new_guarded_state() {
         let span = test_span(1, 1, 1, 5);
-        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span));
+        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
         let thunk = Thunk::new_guarded(
             Arc::clone(&inner),
             Type::Int,
@@ -2861,7 +2880,7 @@ mod tests {
     #[test]
     fn test_take_guarded_returns_components() {
         let span = test_span(1, 1, 1, 5);
-        let inner = Arc::new(Thunk::new_materialized(Value::Int(99), span));
+        let inner = Arc::new(Thunk::new_materialized(Value::Int(99), span.clone()));
         let thunk = Thunk::new_guarded(Arc::clone(&inner), Type::Int, vec!["x".to_string()], span);
 
         let result = thunk.take_guarded();
@@ -2912,7 +2931,7 @@ mod tests {
     #[test]
     fn test_thunk_new_guarded_fields() {
         let span = test_span(1, 1, 1, 5);
-        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span));
+        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
         let thunk = Arc::new(Thunk::new_guarded(
             Arc::clone(&inner),
             Type::Int,
@@ -2934,7 +2953,7 @@ mod tests {
         // the full guard validation path (parse→eval→materialize) is covered
         // by test_guarded_thunk_preserves_inner_origin in eval.rs.
         let span = test_span(1, 1, 1, 5);
-        let inner = Arc::new(Thunk::new_materialized(Value::Int(100), span));
+        let inner = Arc::new(Thunk::new_materialized(Value::Int(100), span.clone()));
         let thunk = Thunk::new_guarded(Arc::clone(&inner), Type::Int, vec![], span);
 
         // Verify initial state is Guarded
@@ -3044,7 +3063,7 @@ mod tests {
             error_def,
             vec![],
             None,
-            span,
+            span.clone(),
             Some(Arc::from("test")),
             Arc::clone(&ctx),
         );
@@ -3103,9 +3122,9 @@ mod tests {
         // Failed thunk: cache_failure_once() sets the error; get_cached_error() must return Some.
         // Start from Unevaluated so the OnceCell result is unset, then transition to Failed.
         let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
         let env = Arc::new(RwLock::new(Environment::new()));
-        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
+        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span.clone());
         let err = crate::error::EvalError::internal("sentinel error".into(), span);
         thunk.cache_failure_once(&err);
 
@@ -3136,7 +3155,7 @@ mod tests {
     #[test]
     fn test_get_cached_error_unevaluated_returns_none() {
         let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
         let env = Arc::new(RwLock::new(Environment::new()));
         let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
         assert!(
@@ -3149,7 +3168,7 @@ mod tests {
     fn test_get_cached_error_in_progress_returns_none() {
         // InProgress: take_core_expr() transitions to InProgress; result not yet set.
         let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
         let env = Arc::new(RwLock::new(Environment::new()));
         let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
         let _taken = thunk.take_core_expr(); // transitions to InProgress
@@ -3165,7 +3184,7 @@ mod tests {
     fn test_is_in_progress_true_after_take_core_expr() {
         // After take_core_expr(), thunk is InProgress: is_in_progress() must return true.
         let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
         let env = Arc::new(RwLock::new(Environment::new()));
         let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
         thunk.take_core_expr(); // transitions to InProgress
@@ -3178,7 +3197,7 @@ mod tests {
     #[test]
     fn test_is_in_progress_false_for_unevaluated() {
         let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
         let env = Arc::new(RwLock::new(Environment::new()));
         let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
         assert!(
@@ -3201,9 +3220,9 @@ mod tests {
     fn test_is_in_progress_false_for_failed() {
         // Start from Unevaluated so cache_failure_once() can write to the OnceCell.
         let span = test_span(1, 1, 1, 5);
-        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span));
+        let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
         let env = Arc::new(RwLock::new(Environment::new()));
-        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
+        let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span.clone());
         let err = crate::error::EvalError::internal("test".into(), span);
         thunk.cache_failure_once(&err);
         assert!(
@@ -3215,7 +3234,7 @@ mod tests {
     #[test]
     fn test_is_in_progress_false_for_guarded() {
         let span = test_span(1, 1, 1, 5);
-        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span));
+        let inner = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
         let thunk = Thunk::new_guarded(Arc::clone(&inner), Type::Int, vec![], span);
         assert!(
             !thunk.is_in_progress(),
@@ -3231,7 +3250,7 @@ mod tests {
         // without interference. In the new Mutex-based ThunkInner design, each thunk
         // holds its own Mutex so there is no shared-lock contention between distinct thunks.
         let span = test_span(1, 1, 1, 5);
-        let thunk1 = Thunk::new_materialized(Value::Int(1), span);
+        let thunk1 = Thunk::new_materialized(Value::Int(1), span.clone());
         let thunk2 = Thunk::new_materialized(Value::Int(2), span);
 
         // First access: verify thunk1 is materialized.

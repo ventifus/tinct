@@ -78,7 +78,7 @@ pub fn hover_at(
                     ),
                     SurfaceItem::Decl(decl) => hover_at_declaration(
                         &decl.node,
-                        decl.span,
+                        decl.span.clone(),
                         block_offset,
                         &block_type_map,
                         &block_scheme_map,
@@ -118,7 +118,7 @@ pub fn hover_at(
                 ),
                 SurfaceItem::Decl(decl) => hover_at_declaration(
                     &decl.node,
-                    decl.span,
+                    decl.span.clone(),
                     offset,
                     &doc.type_map,
                     &doc.scheme_map,
@@ -238,7 +238,7 @@ fn hover_at_surface_node(
     include_graph: &crate::lsp::document::IncludeGraph,
     doc_url: &Uri,
 ) -> Option<String> {
-    if !span_contains(node.span, offset) {
+    if !span_contains(node.span.clone(), offset) {
         return None;
     }
 
@@ -257,25 +257,55 @@ fn hover_at_surface_node(
             };
             Some(format!(
                 "Variable: {display}{}{}",
-                type_suffix(node.span, type_map, scheme_map, include_graph, doc_url),
+                type_suffix(
+                    node.span.clone(),
+                    type_map,
+                    scheme_map,
+                    include_graph,
+                    doc_url
+                ),
                 doc_suffix(name, doc_map)
             ))
         }
         SurfaceExpression::Int(n) => Some(format!(
             "Int literal: {n}{}",
-            type_suffix(node.span, type_map, scheme_map, include_graph, doc_url)
+            type_suffix(
+                node.span.clone(),
+                type_map,
+                scheme_map,
+                include_graph,
+                doc_url
+            )
         )),
         SurfaceExpression::Float(f) => Some(format!(
             "Float literal: {f}{}",
-            type_suffix(node.span, type_map, scheme_map, include_graph, doc_url)
+            type_suffix(
+                node.span.clone(),
+                type_map,
+                scheme_map,
+                include_graph,
+                doc_url
+            )
         )),
         SurfaceExpression::Bool(b) => Some(format!(
             "Bool literal: {b}{}",
-            type_suffix(node.span, type_map, scheme_map, include_graph, doc_url)
+            type_suffix(
+                node.span.clone(),
+                type_map,
+                scheme_map,
+                include_graph,
+                doc_url
+            )
         )),
         SurfaceExpression::Str(s) => Some(format!(
             "String literal: {s:?}{}",
-            type_suffix(node.span, type_map, scheme_map, include_graph, doc_url)
+            type_suffix(
+                node.span.clone(),
+                type_map,
+                scheme_map,
+                include_graph,
+                doc_url
+            )
         )),
 
         SurfaceExpression::DotAccess {
@@ -296,7 +326,13 @@ fn hover_at_surface_node(
             .or_else(|| {
                 Some(format!(
                     "Field access: .{field}{}",
-                    type_suffix(node.span, type_map, scheme_map, include_graph, doc_url)
+                    type_suffix(
+                        node.span.clone(),
+                        type_map,
+                        scheme_map,
+                        include_graph,
+                        doc_url
+                    )
                 ))
             })
         }
@@ -304,7 +340,7 @@ fn hover_at_surface_node(
         SurfaceExpression::Dict(entries) => {
             for entry in entries {
                 if let Some(ref key) = entry.node.key {
-                    if span_contains(key.span, offset) {
+                    if span_contains(key.span.clone(), offset) {
                         // Cursor is on a binding key — show "name (type)\n\ndoc" so
                         // the user sees both the binding name and its bound type.
                         // Extract the display name from the key, covering all key forms.
@@ -318,7 +354,7 @@ fn hover_at_surface_node(
                         };
                         if let Some(display) = display_name {
                             let ty = type_suffix(
-                                entry.node.value.span,
+                                entry.node.value.span.clone(),
                                 type_map,
                                 scheme_map,
                                 include_graph,
@@ -411,7 +447,7 @@ fn hover_at_surface_node(
         SurfaceExpression::Fn { params, body, .. } => {
             // Check if hover is on a parameter name (approximate).
             for param in params {
-                if span_contains(param.span, offset) {
+                if span_contains(param.span.clone(), offset) {
                     return Some(format!(
                         "Parameter: {}{}",
                         param.node.name,
@@ -463,7 +499,13 @@ fn hover_at_surface_node(
                 Some(format!(
                     "Type assertion: @{}{}",
                     annotation.node,
-                    type_suffix(node.span, type_map, scheme_map, include_graph, doc_url)
+                    type_suffix(
+                        node.span.clone(),
+                        type_map,
+                        scheme_map,
+                        include_graph,
+                        doc_url
+                    )
                 ))
             })
         }
@@ -472,7 +514,13 @@ fn hover_at_surface_node(
             "Annotated: {}@{}{}",
             name,
             annotation.node,
-            type_suffix(node.span, type_map, scheme_map, include_graph, doc_url)
+            type_suffix(
+                node.span.clone(),
+                type_map,
+                scheme_map,
+                include_graph,
+                doc_url
+            )
         )),
 
         SurfaceExpression::Rest(name) => {
@@ -611,12 +659,24 @@ fn hover_at_surface_node(
 
         SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => Some(format!(
             "Placeholder expression (`...`){}",
-            type_suffix(node.span, type_map, scheme_map, include_graph, doc_url)
+            type_suffix(
+                node.span.clone(),
+                type_map,
+                scheme_map,
+                include_graph,
+                doc_url
+            )
         )),
 
         SurfaceExpression::TypeApp { .. } => Some(format!(
             "Type application{}",
-            type_suffix(node.span, type_map, scheme_map, include_graph, doc_url)
+            type_suffix(
+                node.span.clone(),
+                type_map,
+                scheme_map,
+                include_graph,
+                doc_url
+            )
         )),
 
         SurfaceExpression::Error(error_span) => Some(format!(
@@ -829,7 +889,7 @@ pub(crate) fn key_name(key_node: &Arc<SurfaceNode>) -> Option<&str> {
 /// Returns `None` if no `VarRef` is found at the offset, or if the offset
 /// points to a literal, error node, or other non-reference expression.
 fn name_at_offset(node: &Arc<SurfaceNode>, offset: usize) -> Option<String> {
-    if !span_contains(node.span, offset) {
+    if !span_contains(node.span.clone(), offset) {
         return None;
     }
 
@@ -929,7 +989,7 @@ fn find_key_definition(node: &Arc<SurfaceNode>, name: &str) -> Option<Span> {
             for entry in entries {
                 if let Some(ref key) = entry.node.key {
                     if key_name(key) == Some(name) {
-                        return Some(key.span);
+                        return Some(key.span.clone());
                     }
                 }
                 // Recurse into the value.
@@ -1474,7 +1534,7 @@ pub fn diagnostics_for(
 
 fn parse_error_to_diagnostic(err: &ParseError, source: &str) -> Diagnostic {
     // ParseError may or may not have a span; use a default range if none.
-    let range = if let Some(span) = err.span {
+    let range = if let Some(span) = err.span.clone() {
         llt_span_to_lsp_range(&span, source)
     } else {
         // Default to line 0, character 0.
@@ -1560,7 +1620,7 @@ fn eval_error_to_diagnostic(err: &crate::error::EvalError, source: &str, uri: &U
         let mut related: Vec<DiagnosticRelatedInformation> = Vec::new();
 
         // Materialization span: where the lazy value was forced.
-        if let Some(mat_span) = err.materialization_span {
+        if let Some(mat_span) = err.materialization_span.clone() {
             if mat_span != err.definition_span {
                 let mat_range = llt_span_to_lsp_range(&mat_span, source);
                 let snippet = render_span_snippet(source, mat_span)
@@ -1580,11 +1640,11 @@ fn eval_error_to_diagnostic(err: &crate::error::EvalError, source: &str, uri: &U
         for frame in &err.stack {
             // Skip synthetic (Span::origin()) frames — they are stdlib/builtin internals
             // that pollute user-facing traces.
-            if frame.span.start.offset == 0 && frame.span.end.offset == 0 {
+            if frame.definition_span.start.offset == 0 && frame.definition_span.end.offset == 0 {
                 continue;
             }
-            let frame_range = llt_span_to_lsp_range(&frame.span, source);
-            let snippet = render_span_snippet(source, frame.span)
+            let frame_range = llt_span_to_lsp_range(&frame.definition_span, source);
+            let snippet = render_span_snippet(source, frame.definition_span.clone())
                 .map(|s| format!("\n{s}"))
                 .unwrap_or_default();
             related.push(DiagnosticRelatedInformation {
@@ -1864,6 +1924,7 @@ mod tests {
                 line: 1,
                 column: 8,
             },
+            file: None,
         };
         let mat_span = Span {
             start: Position {
@@ -1876,6 +1937,7 @@ mod tests {
                 line: 2,
                 column: 6,
             },
+            file: None,
         };
 
         let err =
@@ -1928,6 +1990,7 @@ mod tests {
                 line: 1,
                 column: 11,
             },
+            file: None,
         };
 
         // No materialization span set, no stack frames.
@@ -3195,6 +3258,7 @@ fn collect_definition_key_edits(
                                         line: key.span.start.line,
                                         column: key.span.start.column + kname.len(),
                                     },
+                                    file: None,
                                 };
                                 llt_span_to_lsp_range(&name_span, source)
                             }
@@ -3314,7 +3378,7 @@ pub fn inlay_hints_for(doc: &DocumentState) -> Vec<lsp_types::InlayHint> {
                         }
 
                         // Look up the inferred type for the value span.
-                        let value_span = entry.node.value.span;
+                        let value_span = entry.node.value.span.clone();
                         let span_key = (value_span.start.offset, value_span.end.offset);
 
                         let type_str: Option<String> =
@@ -3435,7 +3499,7 @@ fn collect_dict_keys_in_scope(
 ) {
     use lsp_types::{CompletionItem, CompletionItemKind};
 
-    if !span_contains(node.span, offset) {
+    if !span_contains(node.span.clone(), offset) {
         return;
     }
 
@@ -3626,7 +3690,7 @@ fn extract_names_from_expr(
 /// The active argument index is computed by counting how many positional args
 /// start before the cursor position.
 fn find_enclosing_call(node: &Arc<SurfaceNode>, offset: usize) -> Option<((usize, usize), usize)> {
-    if !span_contains(node.span, offset) {
+    if !span_contains(node.span.clone(), offset) {
         return None;
     }
 

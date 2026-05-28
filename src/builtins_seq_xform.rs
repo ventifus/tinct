@@ -29,7 +29,7 @@ fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
         node: CoreExpr::Call {
             func: Arc::new(Spanned {
                 node: CoreExpr::Int(0), // placeholder, never evaluated
-                span,
+                span: span.clone(),
             }),
             args: vec![],
             named_args: vec![],
@@ -55,7 +55,7 @@ pub(crate) fn builtin_map(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("map", named.as_ref(), call_span)?;
+        reject_named("map", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -66,13 +66,15 @@ pub(crate) fn builtin_map(
             .expect("pre-materialized by force_count/pos_strictness");
         // Flatten Overlay to Dict before dispatch.
         let xs = match xs {
-            Value::Overlay(l, r) => Value::Dict(flatten_overlay(&l, &r, "map", &ctx, call_span)?),
+            Value::Overlay(l, r) => {
+                Value::Dict(flatten_overlay(&l, &r, "map", &ctx, call_span.clone())?)
+            }
             // Bytes: treat as Seq of Int byte values
             Value::Bytes {
                 ref source,
                 start,
                 end,
-            } => bytes_to_seq(&source[start..end], call_span, &ctx),
+            } => bytes_to_seq(&source[start..end], call_span.clone(), &ctx),
             other => other,
         };
 
@@ -86,12 +88,12 @@ pub(crate) fn builtin_map(
                         Arc::clone(&f_thunk),
                         vec![Arc::clone(&value_thunk)],
                         IndexMap::new(),
-                        call_span,
+                        call_span.clone(),
                         Arc::clone(&ctx.config.stdlib_env),
-                        value_thunk.span,
+                        value_thunk.span.clone(),
                         Some(Arc::from("map")),
                         Arc::clone(&ctx),
-                        synthetic_call_expr(call_span),
+                        synthetic_call_expr(call_span.clone()),
                     ));
                     new_map.insert(key.clone(), ctx.alloc_thunk(pending_call));
                 }
@@ -105,12 +107,12 @@ pub(crate) fn builtin_map(
                     Arc::clone(&f_thunk),
                     vec![Arc::clone(&head_thunk)],
                     IndexMap::new(),
-                    call_span,
+                    call_span.clone(),
                     Arc::clone(&ctx.config.stdlib_env),
-                    head_thunk.span,
+                    head_thunk.span.clone(),
                     Some(Arc::from("map head")),
                     Arc::clone(&ctx),
-                    synthetic_call_expr(call_span),
+                    synthetic_call_expr(call_span.clone()),
                 ));
                 let tail_args = vec![Arc::clone(&f_thunk), Arc::clone(&tail_thunk)];
                 let new_tail = Arc::new(Thunk::new_pending_builtin(
@@ -127,7 +129,7 @@ pub(crate) fn builtin_map(
                     ),
                     tail_args,
                     None,
-                    call_span,
+                    call_span.clone(),
                     Some(Arc::from("call $map")),
                     Arc::clone(&ctx),
                 ));
@@ -166,7 +168,7 @@ pub(crate) fn builtin_filter(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("filter", named.as_ref(), call_span)?;
+        reject_named("filter", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -178,14 +180,14 @@ pub(crate) fn builtin_filter(
         // Flatten Overlay to Dict before dispatch.
         let xs = match xs {
             Value::Overlay(l, r) => {
-                Value::Dict(flatten_overlay(&l, &r, "filter", &ctx, call_span)?)
+                Value::Dict(flatten_overlay(&l, &r, "filter", &ctx, call_span.clone())?)
             }
             // Bytes: treat as Seq of Int byte values
             Value::Bytes {
                 ref source,
                 start,
                 end,
-            } => bytes_to_seq(&source[start..end], call_span, &ctx),
+            } => bytes_to_seq(&source[start..end], call_span.clone(), &ctx),
             other => other,
         };
 
@@ -204,7 +206,7 @@ pub(crate) fn builtin_filter(
                 // IndexMap (O(n)) — each step's materialize() call is still O(1) because
                 // the thunk is already in Materialized state.
                 let dict_thunk = Arc::clone(&args[1]);
-                let idx_thunk = ok_val(Value::Int(0), call_span)?;
+                let idx_thunk = ok_val(Value::Int(0), call_span.clone())?;
 
                 let filter_args = vec![Arc::clone(&pred_thunk), dict_thunk, idx_thunk];
 
@@ -334,12 +336,12 @@ pub(crate) fn builtin_filter_dict_step(
                 Arc::clone(&pred_thunk),
                 vec![Arc::clone(&value_thunk)],
                 IndexMap::new(),
-                call_span,
+                call_span.clone(),
                 Arc::clone(&ctx.config.stdlib_env),
-                value_thunk.span,
+                value_thunk.span.clone(),
                 Some(Arc::from("filter-dict pred")),
                 Arc::clone(&ctx),
-                synthetic_call_expr(call_span),
+                synthetic_call_expr(call_span.clone()),
             ));
             let pred_result = materialize(&pred_call, None, &ctx).await?;
 
@@ -358,7 +360,7 @@ pub(crate) fn builtin_filter_dict_step(
 
             if passes {
                 // Include this value; defer the rest lazily
-                let next_idx_thunk = ok_val(Value::Int(idx_int + 1), call_span)?;
+                let next_idx_thunk = ok_val(Value::Int(idx_int + 1), call_span.clone())?;
                 let tail_args = vec![
                     Arc::clone(&pred_thunk),
                     Arc::clone(&dict_thunk),
@@ -368,7 +370,7 @@ pub(crate) fn builtin_filter_dict_step(
                     builtin!("builtin-filter", builtin_filter_dict_step, [], 3),
                     tail_args,
                     None,
-                    call_span,
+                    call_span.clone(),
                     Some(Arc::from("call $filter")),
                     Arc::clone(&ctx),
                 ));
@@ -429,12 +431,12 @@ pub(crate) fn builtin_filter_seq_step(
                         Arc::clone(&pred_thunk),
                         vec![Arc::clone(&head_thunk)],
                         IndexMap::new(),
-                        call_span,
+                        call_span.clone(),
                         Arc::clone(&ctx.config.stdlib_env),
-                        head_thunk.span,
+                        head_thunk.span.clone(),
                         Some(Arc::from("filter-seq pred")),
                         Arc::clone(&ctx),
-                        synthetic_call_expr(call_span),
+                        synthetic_call_expr(call_span.clone()),
                     ));
                     let pred_result = materialize(&pred_call, None, &ctx).await?;
 
@@ -458,7 +460,7 @@ pub(crate) fn builtin_filter_seq_step(
                             builtin!("builtin-filter", builtin_filter_seq_step),
                             tail_args,
                             None,
-                            call_span,
+                            call_span.clone(),
                             Some(Arc::from("call $filter")),
                             Arc::clone(&ctx),
                         ));
@@ -503,7 +505,7 @@ pub(crate) fn builtin_take(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("take", named.as_ref(), call_span)?;
+        reject_named("take", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -538,7 +540,7 @@ pub(crate) fn builtin_take(
                 ref source,
                 start,
                 end,
-            } => bytes_to_seq(&source[start..end], call_span, &ctx),
+            } => bytes_to_seq(&source[start..end], call_span.clone(), &ctx),
             other => other,
         };
         match xs {
@@ -555,7 +557,7 @@ pub(crate) fn builtin_take(
                 // Seq: head = seq head, tail = take(n-1, seq tail)
                 let tail_thunk = ctx.get_thunk(tail);
                 let tail_args = vec![
-                    ok_val(Value::Int(n_int - 1), call_span)?,
+                    ok_val(Value::Int(n_int - 1), call_span.clone())?,
                     Arc::clone(&tail_thunk),
                 ];
                 let new_tail = Arc::new(Thunk::new_pending_builtin(
@@ -572,7 +574,7 @@ pub(crate) fn builtin_take(
                     ),
                     tail_args,
                     None,
-                    call_span,
+                    call_span.clone(),
                     Some(Arc::from("call $take")),
                     Arc::clone(&ctx),
                 ));
@@ -611,7 +613,7 @@ pub(crate) fn builtin_drop(
             call_span,
             ctx,
         } = ctx_arg;
-        reject_named("drop", named.as_ref(), call_span)?;
+        reject_named("drop", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -646,7 +648,7 @@ pub(crate) fn builtin_drop(
                 ref source,
                 start,
                 end,
-            } => bytes_to_seq(&source[start..end], call_span, &ctx),
+            } => bytes_to_seq(&source[start..end], call_span.clone(), &ctx),
             other => other,
         };
         match xs {
@@ -661,7 +663,10 @@ pub(crate) fn builtin_drop(
             }
             Value::Seq { head: _, tail } => {
                 // Seq: use lazy step function to drop remaining elements
-                let n_minus_1 = Arc::new(Thunk::new_materialized(Value::Int(n_int - 1), call_span));
+                let n_minus_1 = Arc::new(Thunk::new_materialized(
+                    Value::Int(n_int - 1),
+                    call_span.clone(),
+                ));
                 let tail_thunk = ctx.get_thunk(tail);
                 let step_args = vec![n_minus_1, Arc::clone(&tail_thunk)];
                 Ok(Arc::new(Thunk::new_pending_builtin(
@@ -729,7 +734,10 @@ pub(crate) fn builtin_drop_seq_step(
             }
             Value::Seq { head: _, tail } => {
                 // Drop this element, continue with tail
-                let n_minus_1 = Arc::new(Thunk::new_materialized(Value::Int(n_int - 1), call_span));
+                let n_minus_1 = Arc::new(Thunk::new_materialized(
+                    Value::Int(n_int - 1),
+                    call_span.clone(),
+                ));
                 let tail_thunk = ctx.get_thunk(tail);
                 let step_args = vec![n_minus_1, Arc::clone(&tail_thunk)];
                 Ok(Arc::new(Thunk::new_pending_builtin(

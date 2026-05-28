@@ -119,14 +119,20 @@ pub(crate) fn builtin_emit(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = crate::builtins::expect_one_arg("emit", &args, named.as_ref(), &ctx, call_span)?;
-        let s = require_string("emit", val, args[0].span)?;
+        let val = crate::builtins::expect_one_arg(
+            "emit",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+        let s = require_string("emit", val, args[0].span.clone())?;
 
         // Write to stdout
         use std::io::Write;
         std::io::stdout()
             .write_all(s.as_bytes())
-            .map_err(|e| EvalError::user_error(format!("emit failed: {e}"), call_span))?;
+            .map_err(|e| EvalError::user_error(format!("emit failed: {e}"), call_span.clone()))?;
 
         // Return null (empty dict)
         ok_val(Value::Dict(IndexMap::new()), call_span)
@@ -146,8 +152,9 @@ pub(crate) fn builtin_env(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val = crate::builtins::expect_one_arg("env", &args, named.as_ref(), &ctx, call_span)?;
-        let name = require_string("env", val, args[0].span)?;
+        let val =
+            crate::builtins::expect_one_arg("env", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let name = require_string("env", val, args[0].span.clone())?;
 
         // Check env_allowed
         // None = unrestricted (all allowed), Some(set) = only those in the set
@@ -198,9 +205,9 @@ pub(crate) fn builtin_open(
     Box::pin(async move {
         // Require at least 3 args: DirCap, String path, and at least one flag/mode
         if args.len() < 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+            return Err(EvalError::arity_mismatch(3, args.len(), call_span.clone()).into());
         }
-        reject_named("open", named.as_ref(), call_span)?;
+        reject_named("open", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -210,9 +217,9 @@ pub(crate) fn builtin_open(
             .expect("pre-materialized by pos_strictness[1]=Seq");
 
         // Extract DirCap and permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "open", args[0].span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "open", args[0].span.clone())?;
 
-        let path = require_string("open", path_val, args[1].span)?;
+        let path = require_string("open", path_val, args[1].span.clone())?;
 
         // Parse flags from args[2..]
         let mut caps = HashMap::new();
@@ -233,7 +240,7 @@ pub(crate) fn builtin_open(
                             return Err(EvalError::user_error(
                                 "open: cannot specify Readable with Writable or Appendable flags"
                                     .to_string(),
-                                call_span,
+                                call_span.clone(),
                             )
                             .into());
                         }
@@ -244,7 +251,7 @@ pub(crate) fn builtin_open(
                         if has_readable {
                             return Err(EvalError::user_error(
                                 "open: cannot specify both Readable and Writable flags".to_string(),
-                                call_span,
+                                call_span.clone(),
                             )
                             .into());
                         }
@@ -256,7 +263,7 @@ pub(crate) fn builtin_open(
                             return Err(EvalError::user_error(
                                 "open: cannot specify both Readable and Appendable flags"
                                     .to_string(),
-                                call_span,
+                                call_span.clone(),
                             )
                             .into());
                         }
@@ -267,7 +274,7 @@ pub(crate) fn builtin_open(
                         if has_text {
                             return Err(EvalError::user_error(
                                 "open: cannot specify both Binary and Text flags".to_string(),
-                                call_span,
+                                call_span.clone(),
                             )
                             .into());
                         }
@@ -278,7 +285,7 @@ pub(crate) fn builtin_open(
                         if has_binary {
                             return Err(EvalError::user_error(
                                 "open: cannot specify both Binary and Text flags".to_string(),
-                                call_span,
+                                call_span.clone(),
                             )
                             .into());
                         }
@@ -295,7 +302,7 @@ pub(crate) fn builtin_open(
                                 "open: unknown capability flag '{}' (expected Readable, Writable, Appendable, Binary, Text, or Seekable)",
                                 other
                             ),
-                            call_span,
+                            call_span.clone(),
                         )
                         .into());
                     }
@@ -305,7 +312,7 @@ pub(crate) fn builtin_open(
                         "open".to_string(),
                         "Variant (capability flag)",
                         other.type_name(),
-                        flag_arg.span,
+                        flag_arg.span.clone(),
                     )
                     .into());
                 }
@@ -317,20 +324,26 @@ pub(crate) fn builtin_open(
             return Err(EvalError::user_error(
                 "open: must specify at least one of Readable, Writable, or Appendable flags"
                     .to_string(),
-                call_span,
+                call_span.clone(),
             )
             .into());
         }
 
         // Check DirCap permissions based on mode
         if has_readable {
-            check_perm(perms, "Readable", perms.readable, "open", call_span)?;
+            check_perm(perms, "Readable", perms.readable, "open", call_span.clone())?;
         }
         if has_writable {
-            check_perm(perms, "Writable", perms.writable, "open", call_span)?;
+            check_perm(perms, "Writable", perms.writable, "open", call_span.clone())?;
         }
         if has_appendable {
-            check_perm(perms, "Appendable", perms.appendable, "open", call_span)?;
+            check_perm(
+                perms,
+                "Appendable",
+                perms.appendable,
+                "open",
+                call_span.clone(),
+            )?;
         }
 
         // Default to Text encoding if neither Binary nor Text specified
@@ -346,7 +359,7 @@ pub(crate) fn builtin_open(
             let file = dir.open(&path).map_err(|e| {
                 EvalError::user_error(
                     format!("open: failed to open file '{}': {}", path, e),
-                    call_span,
+                    call_span.clone(),
                 )
             })?;
 
@@ -356,7 +369,7 @@ pub(crate) fn builtin_open(
                 let seek_file = file.try_clone().map_err(|e| {
                     EvalError::user_error(
                         format!("open: failed to clone file handle for seeking: {}", e),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?;
                 Some(Rc::new(std::cell::RefCell::new(
@@ -375,7 +388,7 @@ pub(crate) fn builtin_open(
                     write_inner: None,
                     seek_inner,
                     raw_tcp: None,
-                    creation_span: call_span,
+                    creation_span: call_span.clone(),
                 },
                 call_span,
             )
@@ -389,7 +402,7 @@ pub(crate) fn builtin_open(
                 .map_err(|e| {
                     EvalError::user_error(
                         format!("open: failed to open file '{}' for writing: {}", path, e),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?;
 
@@ -409,7 +422,7 @@ pub(crate) fn builtin_open(
                 .map_err(|e| {
                     EvalError::user_error(
                         format!("open: failed to open file '{}' for appending: {}", path, e),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?;
 
@@ -456,14 +469,14 @@ pub(crate) fn builtin_narrow(
         if args.len() < 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("narrow", named.as_ref(), call_span)?;
+        reject_named("narrow", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Seq");
 
         // Extract DirCap and current permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "narrow", args[0].span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "narrow", args[0].span.clone())?;
 
         // Check if second arg is a String (subtree narrowing) or Variant (permission restriction)
         let second_arg_val = args[1]
@@ -480,13 +493,13 @@ pub(crate) fn builtin_narrow(
                 .into());
             }
 
-            let subpath = require_string("narrow", second_arg_val, args[1].span)?;
+            let subpath = require_string("narrow", second_arg_val, args[1].span.clone())?;
 
             // Open subdirectory (RESOLVE_BENEATH applies to subpath)
             let narrowed = dir.open_dir(&subpath).map_err(|e| {
                 EvalError::user_error(
                     format!("narrow: failed to open subdirectory '{}': {}", subpath, e),
-                    call_span,
+                    call_span.clone(),
                 )
             })?;
 
@@ -534,7 +547,7 @@ pub(crate) fn builtin_narrow(
                                 "narrow: unknown capability flag '{}' (expected Readable, Statable, Listable, Writable, Appendable, Deletable, Renameable, Symlinkable, PosixPermissions, ExtendedAttributes)",
                                 other
                             ),
-                            call_span,
+                            call_span.clone(),
                         )
                         .into());
                         }
@@ -544,7 +557,7 @@ pub(crate) fn builtin_narrow(
                             "narrow".to_string(),
                             "Variant (capability flag) or String (subpath)",
                             other.type_name(),
-                            flag_arg.span,
+                            flag_arg.span.clone(),
                         )
                         .into());
                     }
@@ -569,70 +582,70 @@ pub(crate) fn builtin_narrow(
             if requested.readable && !perms.readable {
                 return Err(EvalError::user_error(
                     "narrow: source DirCap does not have Readable permission".to_string(),
-                    call_span,
+                    call_span.clone(),
                 )
                 .into());
             }
             if requested.statable && !perms.statable {
                 return Err(EvalError::user_error(
                     "narrow: source DirCap does not have Statable permission".to_string(),
-                    call_span,
+                    call_span.clone(),
                 )
                 .into());
             }
             if requested.listable && !perms.listable {
                 return Err(EvalError::user_error(
                     "narrow: source DirCap does not have Listable permission".to_string(),
-                    call_span,
+                    call_span.clone(),
                 )
                 .into());
             }
             if requested.writable && !perms.writable {
                 return Err(EvalError::user_error(
                     "narrow: source DirCap does not have Writable permission".to_string(),
-                    call_span,
+                    call_span.clone(),
                 )
                 .into());
             }
             if requested.appendable && !perms.appendable {
                 return Err(EvalError::user_error(
                     "narrow: source DirCap does not have Appendable permission".to_string(),
-                    call_span,
+                    call_span.clone(),
                 )
                 .into());
             }
             if requested.deletable && !perms.deletable {
                 return Err(EvalError::user_error(
                     "narrow: source DirCap does not have Deletable permission".to_string(),
-                    call_span,
+                    call_span.clone(),
                 )
                 .into());
             }
             if requested.renameable && !perms.renameable {
                 return Err(EvalError::user_error(
                     "narrow: source DirCap does not have Renameable permission".to_string(),
-                    call_span,
+                    call_span.clone(),
                 )
                 .into());
             }
             if requested.symlinkable && !perms.symlinkable {
                 return Err(EvalError::user_error(
                     "narrow: source DirCap does not have Symlinkable permission".to_string(),
-                    call_span,
+                    call_span.clone(),
                 )
                 .into());
             }
             if requested.posix_permissions && !perms.posix_permissions {
                 return Err(EvalError::user_error(
                     "narrow: source DirCap does not have PosixPermissions permission".to_string(),
-                    call_span,
+                    call_span.clone(),
                 )
                 .into());
             }
             if requested.extended_attributes && !perms.extended_attributes {
                 return Err(EvalError::user_error(
                     "narrow: source DirCap does not have ExtendedAttributes permission".to_string(),
-                    call_span,
+                    call_span.clone(),
                 )
                 .into());
             }
@@ -650,7 +663,7 @@ pub(crate) fn builtin_narrow(
                 "narrow".to_string(),
                 "String (subpath) or Variant (capability flag)",
                 second_arg_val.type_name(),
-                args[1].span,
+                args[1].span.clone(),
             )
             .into())
         }
@@ -670,8 +683,13 @@ pub(crate) fn builtin_revocable(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val =
-            crate::builtins::expect_one_arg("revocable", &args, named.as_ref(), &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg(
+            "revocable",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
 
         // Extract DirCap and preserve permissions
         let (dir, perms) = match val {
@@ -690,7 +708,7 @@ pub(crate) fn builtin_revocable(
                     "revocable".to_string(),
                     "DirCap",
                     other.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
@@ -723,8 +741,13 @@ pub(crate) fn builtin_revoke_cap(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let val =
-            crate::builtins::expect_one_arg("revoke-cap", &args, named.as_ref(), &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg(
+            "revoke-cap",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
 
         // Extract RevocableDirCap
         match val {
@@ -736,7 +759,7 @@ pub(crate) fn builtin_revoke_cap(
                 "revoke-cap".to_string(),
                 "RevocableDirCap",
                 other.type_name(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into()),
         }
@@ -757,7 +780,7 @@ pub(crate) fn builtin_connect(
         ctx: _,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("connect", named.as_ref(), call_span)?;
+        reject_named("connect", named.as_ref(), call_span.clone())?;
 
         // Force args[1] (Transport tag) first — this is a STRICTNESS POINT
         // Minimum 2 args: cap and transport
@@ -787,7 +810,7 @@ pub(crate) fn builtin_connect(
                     "connect".to_string(),
                     "Transport variant (e.g., Tcp, Udp)",
                     other.type_name(),
-                    args[1].span,
+                    args[1].span.clone(),
                 )
                 .into())
             }
@@ -899,19 +922,19 @@ pub(crate) fn builtin_connect(
                             "connect".to_string(),
                             "NetCap",
                             other.type_name(),
-                            args[0].span,
+                            args[0].span.clone(),
                         )
                         .into())
                     }
                 };
 
-                let host = require_string("connect", host_val, args[2].span)?;
+                let host = require_string("connect", host_val, args[2].span.clone())?;
                 let port = match port_val {
                     Value::Int(n) if (1..=65535).contains(&n) => n as u16,
                     Value::Int(_) => {
                         return Err(EvalError::user_error(
                             "connect: port must be 1-65535".to_string(),
-                            args[3].span,
+                            args[3].span.clone(),
                         )
                         .into())
                     }
@@ -920,7 +943,7 @@ pub(crate) fn builtin_connect(
                             "connect".to_string(),
                             "Int",
                             other.type_name(),
-                            args[3].span,
+                            args[3].span.clone(),
                         )
                         .into())
                     }
@@ -928,7 +951,8 @@ pub(crate) fn builtin_connect(
 
                 // Check NetCap allowlist before connecting
                 // Returns Some(ip) if we need to connect to a resolved IP (DNS rebinding mitigation)
-                let resolved_ip = check_net_cap_allowlist(&entries, &host, Some(port), call_span)?;
+                let resolved_ip =
+                    check_net_cap_allowlist(&entries, &host, Some(port), call_span.clone())?;
 
                 // Open TCP connection
                 // If DNS resolution was required, connect to the resolved IP to mitigate DNS rebinding
@@ -940,7 +964,7 @@ pub(crate) fn builtin_connect(
                 let stream = std::net::TcpStream::connect(&addr).map_err(|e| {
                     EvalError::user_error(
                         format!("connect: failed to connect to {}: {}", addr, e),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?;
 
@@ -948,7 +972,7 @@ pub(crate) fn builtin_connect(
                 let write_stream = stream.try_clone().map_err(|e| {
                     EvalError::user_error(
                         format!("connect: failed to clone TcpStream for write half: {}", e),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?;
 
@@ -956,7 +980,7 @@ pub(crate) fn builtin_connect(
                 let raw_tcp_stream = stream.try_clone().map_err(|e| {
                     EvalError::user_error(
                         format!("connect: failed to clone TcpStream for raw_tcp: {}", e),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?;
 
@@ -983,7 +1007,7 @@ pub(crate) fn builtin_connect(
                         write_inner,
                         seek_inner: None,
                         raw_tcp: Some(Rc::new(RefCell::new(Some(raw_tcp_stream)))),
-                        creation_span: call_span,
+                        creation_span: call_span.clone(),
                     },
                     call_span,
                 )
@@ -999,9 +1023,9 @@ pub(crate) fn builtin_connect(
                         .expect("pre-materialized by pos_strictness[2]=Seq");
 
                     // Extract DirCap for path validation (Unix socket)
-                    let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;
+                    let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span.clone())?;
 
-                    let path = require_string("connect", path_val, args[2].span)?;
+                    let path = require_string("connect", path_val, args[2].span.clone())?;
 
                     // Validate path is relative (no absolute paths or '..' traversal)
                     if path.starts_with('/') || path.contains("..") {
@@ -1022,7 +1046,7 @@ pub(crate) fn builtin_connect(
                     let dir_path = std::fs::read_link(&proc_path).map_err(|e| {
                         EvalError::user_error(
                             format!("connect: failed to resolve DirCap path: {}", e),
-                            call_span,
+                            call_span.clone(),
                         )
                     })?;
                     let full_path = dir_path.join(&path);
@@ -1035,7 +1059,7 @@ pub(crate) fn builtin_connect(
                                     "connect: failed to connect to Unix socket '{}': {}",
                                     path, e
                                 ),
-                                call_span,
+                                call_span.clone(),
                             )
                         })?;
 
@@ -1043,7 +1067,7 @@ pub(crate) fn builtin_connect(
                     let write_stream = stream.try_clone().map_err(|e| {
                         EvalError::user_error(
                             format!("connect: failed to clone UnixStream for write half: {}", e),
-                            call_span,
+                            call_span.clone(),
                         )
                     })?;
 
@@ -1070,7 +1094,7 @@ pub(crate) fn builtin_connect(
                             write_inner,
                             seek_inner: None,
                             raw_tcp: None, // Not TCP
-                            creation_span: call_span,
+                            creation_span: call_span.clone(),
                         },
                         call_span,
                     )
@@ -1103,19 +1127,19 @@ pub(crate) fn builtin_connect(
                             "connect".to_string(),
                             "NetCap",
                             other.type_name(),
-                            args[0].span,
+                            args[0].span.clone(),
                         )
                         .into())
                     }
                 };
 
-                let host = require_string("connect", host_val, args[2].span)?;
+                let host = require_string("connect", host_val, args[2].span.clone())?;
                 let port = match port_val {
                     Value::Int(n) if (1..=65535).contains(&n) => n as u16,
                     Value::Int(_) => {
                         return Err(EvalError::user_error(
                             "connect: port must be 1-65535".to_string(),
-                            args[3].span,
+                            args[3].span.clone(),
                         )
                         .into())
                     }
@@ -1124,14 +1148,15 @@ pub(crate) fn builtin_connect(
                             "connect".to_string(),
                             "Int",
                             other.type_name(),
-                            args[3].span,
+                            args[3].span.clone(),
                         )
                         .into())
                     }
                 };
 
                 // Check NetCap allowlist before connecting
-                let resolved_ip = check_net_cap_allowlist(&entries, &host, Some(port), call_span)?;
+                let resolved_ip =
+                    check_net_cap_allowlist(&entries, &host, Some(port), call_span.clone())?;
 
                 let addr = if let Some(ip) = resolved_ip {
                     format!("{}:{}", ip, port)
@@ -1143,7 +1168,7 @@ pub(crate) fn builtin_connect(
                 let socket = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| {
                     EvalError::user_error(
                         format!("connect: failed to bind UDP socket: {}", e),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?;
 
@@ -1151,7 +1176,7 @@ pub(crate) fn builtin_connect(
                 socket.connect(&addr).map_err(|e| {
                     EvalError::user_error(
                         format!("connect: failed to connect UDP socket to {}: {}", addr, e),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?;
 
@@ -1159,7 +1184,7 @@ pub(crate) fn builtin_connect(
                 ok_val(
                     Value::DatagramHandle {
                         socket: DatagramSocket::Udp(Rc::new(RefCell::new(socket))),
-                        creation_span: call_span,
+                        creation_span: call_span.clone(),
                     },
                     call_span,
                 )
@@ -1175,9 +1200,9 @@ pub(crate) fn builtin_connect(
                         .expect("pre-materialized by pos_strictness[2]=Seq");
 
                     // Extract DirCap for path validation (Unix socket)
-                    let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span)?;
+                    let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span.clone())?;
 
-                    let path = require_string("connect", path_val, args[2].span)?;
+                    let path = require_string("connect", path_val, args[2].span.clone())?;
 
                     // Validate path is relative (no absolute paths or '..' traversal)
                     if path.starts_with('/') || path.contains("..") {
@@ -1197,7 +1222,7 @@ pub(crate) fn builtin_connect(
                     let dir_path = std::fs::read_link(&proc_path).map_err(|e| {
                         EvalError::user_error(
                             format!("connect: failed to resolve DirCap path: {}", e),
-                            call_span,
+                            call_span.clone(),
                         )
                     })?;
                     let full_path = dir_path.join(&path);
@@ -1207,7 +1232,7 @@ pub(crate) fn builtin_connect(
                     let socket = std::os::unix::net::UnixDatagram::bind("").map_err(|e| {
                         EvalError::user_error(
                             format!("connect: failed to autobind Unix datagram socket: {}", e),
-                            call_span,
+                            call_span.clone(),
                         )
                     })?;
 
@@ -1218,7 +1243,7 @@ pub(crate) fn builtin_connect(
                                 "connect: failed to connect Unix datagram socket to '{}': {}",
                                 path, e
                             ),
-                            call_span,
+                            call_span.clone(),
                         )
                     })?;
 
@@ -1226,7 +1251,7 @@ pub(crate) fn builtin_connect(
                     ok_val(
                         Value::DatagramHandle {
                             socket: DatagramSocket::UnixDgram(Rc::new(RefCell::new(socket))),
-                            creation_span: call_span,
+                            creation_span: call_span.clone(),
                         },
                         call_span,
                     )
@@ -1428,14 +1453,14 @@ pub(crate) fn builtin_string_handle(
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
-        reject_named("string-handle", named.as_ref(), call_span)?;
+        reject_named("string-handle", named.as_ref(), call_span.clone())?;
 
         // Get string value (pre-materialized by Strictness::Seq)
         let val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Seq");
 
-        let s = require_string("string-handle", val, args[0].span)?;
+        let s = require_string("string-handle", val, args[0].span.clone())?;
 
         // Create Cursor as reader
         let cursor = std::io::Cursor::new(s.into_bytes());
@@ -1453,7 +1478,7 @@ pub(crate) fn builtin_string_handle(
                 write_inner: None,
                 seek_inner: None,
                 raw_tcp: None,
-                creation_span: call_span,
+                creation_span: call_span.clone(),
             },
             call_span,
         )
@@ -1491,7 +1516,7 @@ pub(crate) fn builtin_read_line(
             &args,
             named.as_ref(),
             &ctx_arg.ctx,
-            call_span,
+            call_span.clone(),
         )?;
 
         // Extract Handle
@@ -1502,7 +1527,7 @@ pub(crate) fn builtin_read_line(
                     "builtin-read-line".to_string(),
                     "Handle",
                     other.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
@@ -1564,10 +1589,10 @@ pub(crate) fn builtin_read_chunk(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("builtin-read-chunk", named.as_ref(), call_span)?;
+        reject_named("builtin-read-chunk", named.as_ref(), call_span.clone())?;
 
         // First arg: Handle
-        let handle_val = materialize(&args[0], Some(&call_span), &ctx)?;
+        let handle_val = materialize(&args[0], Some(&call_span), &ctx)?; // H1: force_count migration pending
         let handle = match handle_val {
             Value::Handle { inner, .. } => Rc::clone(&inner),
             other => {
@@ -1582,7 +1607,7 @@ pub(crate) fn builtin_read_chunk(
         };
 
         // Second arg: Int (chunk size)
-        let size_val = materialize(&args[1], Some(&call_span), &ctx)?;
+        let size_val = materialize(&args[1], Some(&call_span), &ctx)?; // H1: force_count migration pending
         let n = match size_val {
             Value::Int(i) => i,
             other => {
@@ -1654,7 +1679,7 @@ pub(crate) fn builtin_write(
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
-        reject_named("write", named.as_ref(), call_span)?;
+        reject_named("write", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -1667,18 +1692,24 @@ pub(crate) fn builtin_write(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "write", args[0].span)?;
-        check_perm(perms, "Writable", perms.writable, "write", call_span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "write", args[0].span.clone())?;
+        check_perm(
+            perms,
+            "Writable",
+            perms.writable,
+            "write",
+            call_span.clone(),
+        )?;
 
-        let path = require_string("write", path_val, args[1].span)?;
-        let content = require_string("write", content_val, args[2].span)?;
+        let path = require_string("write", path_val, args[1].span.clone())?;
+        let content = require_string("write", content_val, args[2].span.clone())?;
 
         // Open file for writing (create or truncate)
         use std::io::Write;
         let mut file = dir.create(&path).map_err(|e| {
             EvalError::user_error(
                 format!("write: failed to create file '{}': {}", path, e),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -1686,7 +1717,7 @@ pub(crate) fn builtin_write(
         file.write_all(content.as_bytes()).map_err(|e| {
             EvalError::user_error(
                 format!("write: failed to write to '{}': {}", path, e),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -1714,7 +1745,7 @@ pub(crate) fn builtin_write_atomic(
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
-        reject_named("write-atomic", named.as_ref(), call_span)?;
+        reject_named("write-atomic", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -1727,11 +1758,17 @@ pub(crate) fn builtin_write_atomic(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "write-atomic", args[0].span)?;
-        check_perm(perms, "Writable", perms.writable, "write-atomic", call_span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "write-atomic", args[0].span.clone())?;
+        check_perm(
+            perms,
+            "Writable",
+            perms.writable,
+            "write-atomic",
+            call_span.clone(),
+        )?;
 
-        let path = require_string("write-atomic", path_val, args[1].span)?;
-        let content = require_string("write-atomic", content_val, args[2].span)?;
+        let path = require_string("write-atomic", path_val, args[1].span.clone())?;
+        let content = require_string("write-atomic", content_val, args[2].span.clone())?;
 
         // Generate a unique temp filename in the same directory as the target
         // Use process ID and a random suffix to avoid collisions
@@ -1752,7 +1789,7 @@ pub(crate) fn builtin_write_atomic(
                     "write-atomic: failed to create temp file '{}': {}",
                     temp_name, e
                 ),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -1762,7 +1799,7 @@ pub(crate) fn builtin_write_atomic(
                     "write-atomic: failed to write to temp file '{}': {}",
                     temp_name, e
                 ),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -1773,7 +1810,7 @@ pub(crate) fn builtin_write_atomic(
                     "write-atomic: failed to sync temp file '{}': {}",
                     temp_name, e
                 ),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -1789,7 +1826,7 @@ pub(crate) fn builtin_write_atomic(
                     "write-atomic: failed to rename temp file to '{}': {}",
                     path, e
                 ),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -1816,7 +1853,7 @@ pub(crate) fn builtin_cap_data(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("cap-data", named.as_ref(), call_span)?;
+        reject_named("cap-data", named.as_ref(), call_span.clone())?;
 
         let handle_val = args[0]
             .try_get_materialized()
@@ -1834,13 +1871,13 @@ pub(crate) fn builtin_cap_data(
                     "cap-data".to_string(),
                     "Handle or WriteHandle",
                     other.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
         };
 
-        let cap_name = require_string("cap-data", cap_name_val, args[1].span)?;
+        let cap_name = require_string("cap-data", cap_name_val, args[1].span.clone())?;
 
         // Lookup capability — return empty dict (Null) on miss so callers can use null?
         match caps.get(&cap_name) {
@@ -1870,7 +1907,7 @@ pub(crate) fn builtin_write_handle(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("write-handle", named.as_ref(), call_span)?;
+        reject_named("write-handle", named.as_ref(), call_span.clone())?;
 
         let handle_val = args[0]
             .try_get_materialized()
@@ -1914,7 +1951,7 @@ pub(crate) fn builtin_write_handle(
                     "write-handle".to_string(),
                     "WriteHandle or bidirectional Handle",
                     "read-only Handle",
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
@@ -1923,7 +1960,7 @@ pub(crate) fn builtin_write_handle(
                     "write-handle".to_string(),
                     "WriteHandle or bidirectional Handle",
                     other.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
@@ -1947,14 +1984,14 @@ pub(crate) fn builtin_write_handle(
                         "write-handle".to_string(),
                         "Bytes (Binary handle)",
                         other.type_name(),
-                        args[1].span,
+                        args[1].span.clone(),
                     )
                     .into())
                 }
             }
         } else {
             // Content must be String (Text encoding)
-            let s = require_string("write-handle", content_val, args[1].span)?;
+            let s = require_string("write-handle", content_val, args[1].span.clone())?;
             s.as_bytes().to_vec()
         };
 
@@ -1962,12 +1999,18 @@ pub(crate) fn builtin_write_handle(
         match &kind {
             HandleKind::Write { inner, .. } => {
                 inner.borrow_mut().write_all(&bytes).map_err(|e| {
-                    EvalError::user_error(format!("write-handle: write failed: {}", e), call_span)
+                    EvalError::user_error(
+                        format!("write-handle: write failed: {}", e),
+                        call_span.clone(),
+                    )
                 })?;
             }
             HandleKind::Bidirectional { write_inner, .. } => {
                 write_inner.borrow_mut().write_all(&bytes).map_err(|e| {
-                    EvalError::user_error(format!("write-handle: write failed: {}", e), call_span)
+                    EvalError::user_error(
+                        format!("write-handle: write failed: {}", e),
+                        call_span.clone(),
+                    )
                 })?;
             }
         }
@@ -1992,7 +2035,7 @@ pub(crate) fn builtin_write_handle(
                     write_inner: Some(Rc::clone(&write_inner)),
                     seek_inner: None,
                     raw_tcp: None,
-                    creation_span: call_span,
+                    creation_span: call_span.clone(),
                 },
                 call_span,
             ),
@@ -2013,7 +2056,13 @@ pub(crate) fn builtin_flush(
             ctx,
         } = ctx_arg;
 
-        let val = crate::builtins::expect_one_arg("flush", &args, named.as_ref(), &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg(
+            "flush",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
 
         use std::io::Write;
         match val {
@@ -2022,7 +2071,7 @@ pub(crate) fn builtin_flush(
                 ref caps,
             } => {
                 inner.borrow_mut().flush().map_err(|e| {
-                    EvalError::user_error(format!("flush: flush failed: {}", e), call_span)
+                    EvalError::user_error(format!("flush: flush failed: {}", e), call_span.clone())
                 })?;
                 ok_val(
                     Value::WriteHandle {
@@ -2039,7 +2088,7 @@ pub(crate) fn builtin_flush(
                 ..
             } => {
                 w.borrow_mut().flush().map_err(|e| {
-                    EvalError::user_error(format!("flush: flush failed: {}", e), call_span)
+                    EvalError::user_error(format!("flush: flush failed: {}", e), call_span.clone())
                 })?;
                 ok_val(
                     Value::Handle {
@@ -2048,7 +2097,7 @@ pub(crate) fn builtin_flush(
                         write_inner: Some(Rc::clone(w)),
                         seek_inner: None,
                         raw_tcp: None,
-                        creation_span: call_span,
+                        creation_span: call_span.clone(),
                     },
                     call_span,
                 )
@@ -2059,14 +2108,14 @@ pub(crate) fn builtin_flush(
                 "flush".to_string(),
                 "WriteHandle or bidirectional Handle",
                 "read-only Handle",
-                args[0].span,
+                args[0].span.clone(),
             )
             .into()),
             other => Err(EvalError::type_mismatch_ctx(
                 "flush".to_string(),
                 "WriteHandle or bidirectional Handle",
                 other.type_name(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into()),
         }
@@ -2087,13 +2136,19 @@ pub(crate) fn builtin_close(
             ctx,
         } = ctx_arg;
 
-        let val = crate::builtins::expect_one_arg("close", &args, named.as_ref(), &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg(
+            "close",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
 
         use std::io::Write;
         match val {
             Value::WriteHandle { inner, .. } => {
                 inner.borrow_mut().flush().map_err(|e| {
-                    EvalError::user_error(format!("close: flush failed: {}", e), call_span)
+                    EvalError::user_error(format!("close: flush failed: {}", e), call_span.clone())
                 })?;
             }
             Value::Handle {
@@ -2101,7 +2156,7 @@ pub(crate) fn builtin_close(
                 ..
             } => {
                 w.borrow_mut().flush().map_err(|e| {
-                    EvalError::user_error(format!("close: flush failed: {}", e), call_span)
+                    EvalError::user_error(format!("close: flush failed: {}", e), call_span.clone())
                 })?;
             }
             Value::Handle {
@@ -2111,7 +2166,7 @@ pub(crate) fn builtin_close(
                     "close".to_string(),
                     "WriteHandle or bidirectional Handle",
                     "read-only Handle",
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
@@ -2120,7 +2175,7 @@ pub(crate) fn builtin_close(
                     "close".to_string(),
                     "WriteHandle or bidirectional Handle",
                     other.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
@@ -2147,7 +2202,7 @@ pub(crate) fn builtin_raw_create(
             ctx: _,
         } = ctx_arg;
 
-        reject_named("raw-create", named.as_ref(), call_span)?;
+        reject_named("raw-create", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -2160,12 +2215,18 @@ pub(crate) fn builtin_raw_create(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "raw-create", args[0].span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "raw-create", args[0].span.clone())?;
 
         // Check Writable permission
-        check_perm(perms, "Writable", perms.writable, "raw-create", call_span)?;
+        check_perm(
+            perms,
+            "Writable",
+            perms.writable,
+            "raw-create",
+            call_span.clone(),
+        )?;
 
-        let path = require_string("raw-create", path_val, args[1].span)?;
+        let path = require_string("raw-create", path_val, args[1].span.clone())?;
 
         // Open file for writing (create/truncate)
         use cap_std::fs::OpenOptions;
@@ -2177,7 +2238,7 @@ pub(crate) fn builtin_raw_create(
             .map_err(|e| {
                 EvalError::user_error(
                     format!("raw-create: failed to create file '{}': {}", path, e),
-                    call_span,
+                    call_span.clone(),
                 )
             })?;
 
@@ -2216,7 +2277,7 @@ pub(crate) fn builtin_seek(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("seek", named.as_ref(), call_span)?;
+        reject_named("seek", named.as_ref(), call_span.clone())?;
 
         let handle_val = args[0]
             .try_get_materialized()
@@ -2233,7 +2294,7 @@ pub(crate) fn builtin_seek(
                     "seek".to_string(),
                     "Int",
                     other.type_name(),
-                    args[1].span,
+                    args[1].span.clone(),
                 )
                 .into())
             }
@@ -2252,7 +2313,7 @@ pub(crate) fn builtin_seek(
                 if !caps.contains_key("Seekable") {
                     return Err(EvalError::user_error(
                         "seek: Handle does not have Seekable capability".to_string(),
-                        args[0].span,
+                        args[0].span.clone(),
                     )
                     .into());
                 }
@@ -2264,7 +2325,7 @@ pub(crate) fn builtin_seek(
                         return Err(EvalError::user_error(
                             "seek: Handle has Seekable capability but no seek interface"
                                 .to_string(),
-                            args[0].span,
+                            args[0].span.clone(),
                         )
                         .into())
                     }
@@ -2279,7 +2340,10 @@ pub(crate) fn builtin_seek(
                     .borrow_mut()
                     .seek(std::io::SeekFrom::Start(offset as u64))
                     .map_err(|e| {
-                        EvalError::user_error(format!("seek: seek failed: {}", e), call_span)
+                        EvalError::user_error(
+                            format!("seek: seek failed: {}", e),
+                            call_span.clone(),
+                        )
                     })?;
 
                 // Now seek the inner BufReader by downcasting
@@ -2294,13 +2358,13 @@ pub(crate) fn builtin_seek(
                         .map_err(|e| {
                             EvalError::user_error(
                                 format!("seek: inner buffer seek failed: {}", e),
-                                call_span,
+                                call_span.clone(),
                             )
                         })?;
                 } else {
                     return Err(EvalError::user_error(
                         "seek: failed to downcast BufRead to BufReader<File>".to_string(),
-                        call_span,
+                        call_span.clone(),
                     )
                     .into());
                 }
@@ -2314,7 +2378,7 @@ pub(crate) fn builtin_seek(
                         write_inner: write_inner.clone(),
                         seek_inner: Some(Rc::clone(seek_handle)),
                         raw_tcp: None,
-                        creation_span: call_span,
+                        creation_span: call_span.clone(),
                     },
                     call_span,
                 )
@@ -2323,7 +2387,7 @@ pub(crate) fn builtin_seek(
                 "seek".to_string(),
                 "Handle",
                 other.type_name(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into()),
         }
@@ -2344,8 +2408,13 @@ pub(crate) fn builtin_seek_end(
             ctx,
         } = ctx_arg;
 
-        let val =
-            crate::builtins::expect_one_arg("seek-end", &args, named.as_ref(), &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg(
+            "seek-end",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
 
         // Extract Handle and check for Seekable capability
         match val {
@@ -2360,7 +2429,7 @@ pub(crate) fn builtin_seek_end(
                 if !caps.contains_key("Seekable") {
                     return Err(EvalError::user_error(
                         "seek-end: Handle does not have Seekable capability".to_string(),
-                        args[0].span,
+                        args[0].span.clone(),
                     )
                     .into());
                 }
@@ -2372,7 +2441,7 @@ pub(crate) fn builtin_seek_end(
                         return Err(EvalError::user_error(
                             "seek-end: Handle has Seekable capability but no seek interface"
                                 .to_string(),
-                            args[0].span,
+                            args[0].span.clone(),
                         )
                         .into())
                     }
@@ -2386,7 +2455,10 @@ pub(crate) fn builtin_seek_end(
                     .borrow_mut()
                     .seek(std::io::SeekFrom::End(0))
                     .map_err(|e| {
-                        EvalError::user_error(format!("seek-end: seek failed: {}", e), call_span)
+                        EvalError::user_error(
+                            format!("seek-end: seek failed: {}", e),
+                            call_span.clone(),
+                        )
                     })?;
 
                 // Now seek the inner BufReader by downcasting
@@ -2398,13 +2470,13 @@ pub(crate) fn builtin_seek_end(
                     buf_reader.seek(std::io::SeekFrom::End(0)).map_err(|e| {
                         EvalError::user_error(
                             format!("seek-end: inner buffer seek failed: {}", e),
-                            call_span,
+                            call_span.clone(),
                         )
                     })?;
                 } else {
                     return Err(EvalError::user_error(
                         "seek-end: failed to downcast BufRead to BufReader<File>".to_string(),
-                        call_span,
+                        call_span.clone(),
                     )
                     .into());
                 }
@@ -2418,7 +2490,7 @@ pub(crate) fn builtin_seek_end(
                         write_inner: write_inner.clone(),
                         seek_inner: Some(Rc::clone(seek_handle)),
                         raw_tcp: None,
-                        creation_span: call_span,
+                        creation_span: call_span.clone(),
                     },
                     call_span,
                 )
@@ -2427,7 +2499,7 @@ pub(crate) fn builtin_seek_end(
                 "seek-end".to_string(),
                 "Handle",
                 other.type_name(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into()),
         }
@@ -2448,8 +2520,13 @@ pub(crate) fn builtin_position(
             ctx,
         } = ctx_arg;
 
-        let val =
-            crate::builtins::expect_one_arg("position", &args, named.as_ref(), &ctx, call_span)?;
+        let val = crate::builtins::expect_one_arg(
+            "position",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
 
         // Extract Handle and check for Seekable capability
         match val {
@@ -2462,7 +2539,7 @@ pub(crate) fn builtin_position(
                 if !caps.contains_key("Seekable") {
                     return Err(EvalError::user_error(
                         "position: Handle does not have Seekable capability".to_string(),
-                        args[0].span,
+                        args[0].span.clone(),
                     )
                     .into());
                 }
@@ -2474,7 +2551,7 @@ pub(crate) fn builtin_position(
                         return Err(EvalError::user_error(
                             "position: Handle has Seekable capability but no seek interface"
                                 .to_string(),
-                            args[0].span,
+                            args[0].span.clone(),
                         )
                         .into())
                     }
@@ -2485,7 +2562,7 @@ pub(crate) fn builtin_position(
                 let pos = seek_handle.borrow_mut().stream_position().map_err(|e| {
                     EvalError::user_error(
                         format!("position: failed to get position: {}", e),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?;
 
@@ -2495,7 +2572,7 @@ pub(crate) fn builtin_position(
                 "position".to_string(),
                 "Handle",
                 other.type_name(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into()),
         }
@@ -2520,7 +2597,7 @@ pub(crate) fn builtin_list_dir(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("list-dir", named.as_ref(), call_span)?;
+        reject_named("list-dir", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -2530,16 +2607,22 @@ pub(crate) fn builtin_list_dir(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "list-dir", args[0].span)?;
-        check_perm(perms, "Listable", perms.listable, "list-dir", call_span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "list-dir", args[0].span.clone())?;
+        check_perm(
+            perms,
+            "Listable",
+            perms.listable,
+            "list-dir",
+            call_span.clone(),
+        )?;
 
-        let path = require_string("list-dir", path_val, args[1].span)?;
+        let path = require_string("list-dir", path_val, args[1].span.clone())?;
 
         // Read directory entries
         let entries = dir.read_dir(&path).map_err(|e| {
             EvalError::user_error(
                 format!("list-dir: failed to read directory '{}': {}", path, e),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -2549,7 +2632,7 @@ pub(crate) fn builtin_list_dir(
             let entry = entry.map_err(|e| {
                 EvalError::user_error(
                     format!("list-dir: failed to read directory entry: {}", e),
-                    call_span,
+                    call_span.clone(),
                 )
             })?;
 
@@ -2557,7 +2640,7 @@ pub(crate) fn builtin_list_dir(
             let metadata = entry.metadata().map_err(|e| {
                 EvalError::user_error(
                     format!("list-dir: failed to read metadata for '{}': {}", name, e),
-                    call_span,
+                    call_span.clone(),
                 )
             })?;
 
@@ -2588,19 +2671,22 @@ pub(crate) fn builtin_list_dir(
             let mut dict = IndexMap::new();
             dict.insert(
                 Key::String("name".into()),
-                ctx.alloc_thunk(ok_val(string_val(&name), call_span)?),
+                ctx.alloc_thunk(ok_val(string_val(&name), call_span.clone())?),
             );
             dict.insert(
                 Key::String("type".into()),
-                ctx.alloc_thunk(ok_val(string_val(file_type), call_span)?),
+                ctx.alloc_thunk(ok_val(string_val(file_type), call_span.clone())?),
             );
             dict.insert(
                 Key::String("size".into()),
-                ctx.alloc_thunk(ok_val(Value::Int(metadata.len() as i64), call_span)?),
+                ctx.alloc_thunk(ok_val(
+                    Value::Int(metadata.len() as i64),
+                    call_span.clone(),
+                )?),
             );
             dict.insert(
                 Key::String("mtime".into()),
-                ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span)?),
+                ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span.clone())?),
             );
 
             entry_values.push(Value::Dict(dict));
@@ -2609,8 +2695,8 @@ pub(crate) fn builtin_list_dir(
         // Build a sequence from the collected entries
         let mut seq = Value::Dict(IndexMap::new()); // Null (end of seq)
         for entry in entry_values.into_iter().rev() {
-            let head_id = ctx.alloc_thunk(ok_val(entry, call_span)?);
-            let tail_id = ctx.alloc_thunk(ok_val(seq, call_span)?);
+            let head_id = ctx.alloc_thunk(ok_val(entry, call_span.clone())?);
+            let tail_id = ctx.alloc_thunk(ok_val(seq, call_span.clone())?);
             seq = Value::Seq {
                 head: head_id,
                 tail: tail_id,
@@ -2639,7 +2725,7 @@ pub(crate) fn builtin_stat(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("stat", named.as_ref(), call_span)?;
+        reject_named("stat", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -2649,16 +2735,16 @@ pub(crate) fn builtin_stat(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "stat", args[0].span)?;
-        check_perm(perms, "Statable", perms.statable, "stat", call_span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "stat", args[0].span.clone())?;
+        check_perm(perms, "Statable", perms.statable, "stat", call_span.clone())?;
 
-        let path = require_string("stat", path_val, args[1].span)?;
+        let path = require_string("stat", path_val, args[1].span.clone())?;
 
         // Get metadata
         let metadata = dir.metadata(&path).map_err(|e| {
             EvalError::user_error(
                 format!("stat: failed to get metadata for '{}': {}", path, e),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -2698,35 +2784,41 @@ pub(crate) fn builtin_stat(
         let mut dict = IndexMap::new();
         dict.insert(
             Key::String("name".into()),
-            ctx.alloc_thunk(ok_val(string_val(&path), call_span)?),
+            ctx.alloc_thunk(ok_val(string_val(&path), call_span.clone())?),
         );
         dict.insert(
             Key::String("type".into()),
-            ctx.alloc_thunk(ok_val(string_val(file_type), call_span)?),
+            ctx.alloc_thunk(ok_val(string_val(file_type), call_span.clone())?),
         );
         dict.insert(
             Key::String("size".into()),
-            ctx.alloc_thunk(ok_val(Value::Int(metadata.len() as i64), call_span)?),
+            ctx.alloc_thunk(ok_val(
+                Value::Int(metadata.len() as i64),
+                call_span.clone(),
+            )?),
         );
         dict.insert(
             Key::String("mtime".into()),
-            ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span)?),
+            ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span.clone())?),
         );
         dict.insert(
             Key::String("mode".into()),
-            ctx.alloc_thunk(ok_val(Value::Int(mode), call_span)?),
+            ctx.alloc_thunk(ok_val(Value::Int(mode), call_span.clone())?),
         );
         dict.insert(
             Key::String("is-dir".into()),
-            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_dir()), call_span)?),
+            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_dir()), call_span.clone())?),
         );
         dict.insert(
             Key::String("is-file".into()),
-            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_file()), call_span)?),
+            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_file()), call_span.clone())?),
         );
         dict.insert(
             Key::String("is-symlink".into()),
-            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_symlink()), call_span)?),
+            ctx.alloc_thunk(ok_val(
+                Value::Bool(metadata.is_symlink()),
+                call_span.clone(),
+            )?),
         );
 
         ok_val(Value::Dict(dict), call_span)
@@ -2751,7 +2843,7 @@ pub(crate) fn builtin_exists(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("exists", named.as_ref(), call_span)?;
+        reject_named("exists", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -2761,16 +2853,22 @@ pub(crate) fn builtin_exists(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "exists", args[0].span)?;
-        check_perm(perms, "Statable", perms.statable, "exists", call_span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "exists", args[0].span.clone())?;
+        check_perm(
+            perms,
+            "Statable",
+            perms.statable,
+            "exists",
+            call_span.clone(),
+        )?;
 
-        let path = require_string("exists", path_val, args[1].span)?;
+        let path = require_string("exists", path_val, args[1].span.clone())?;
 
         // Check existence
         let exists = dir.try_exists(&path).map_err(|e| {
             EvalError::user_error(
                 format!("exists: failed to check path '{}': {}", path, e),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -2795,7 +2893,7 @@ pub(crate) fn builtin_stat_symlink(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("stat-symlink", named.as_ref(), call_span)?;
+        reject_named("stat-symlink", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -2805,16 +2903,22 @@ pub(crate) fn builtin_stat_symlink(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "stat-symlink", args[0].span)?;
-        check_perm(perms, "Statable", perms.statable, "stat-symlink", call_span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "stat-symlink", args[0].span.clone())?;
+        check_perm(
+            perms,
+            "Statable",
+            perms.statable,
+            "stat-symlink",
+            call_span.clone(),
+        )?;
 
-        let path = require_string("stat-symlink", path_val, args[1].span)?;
+        let path = require_string("stat-symlink", path_val, args[1].span.clone())?;
 
         // Get metadata without following symlinks
         let metadata = dir.symlink_metadata(&path).map_err(|e| {
             EvalError::user_error(
                 format!("stat-symlink: failed to get metadata for '{}': {}", path, e),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -2854,35 +2958,41 @@ pub(crate) fn builtin_stat_symlink(
         let mut dict = IndexMap::new();
         dict.insert(
             Key::String("name".into()),
-            ctx.alloc_thunk(ok_val(string_val(&path), call_span)?),
+            ctx.alloc_thunk(ok_val(string_val(&path), call_span.clone())?),
         );
         dict.insert(
             Key::String("type".into()),
-            ctx.alloc_thunk(ok_val(string_val(file_type), call_span)?),
+            ctx.alloc_thunk(ok_val(string_val(file_type), call_span.clone())?),
         );
         dict.insert(
             Key::String("size".into()),
-            ctx.alloc_thunk(ok_val(Value::Int(metadata.len() as i64), call_span)?),
+            ctx.alloc_thunk(ok_val(
+                Value::Int(metadata.len() as i64),
+                call_span.clone(),
+            )?),
         );
         dict.insert(
             Key::String("mtime".into()),
-            ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span)?),
+            ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span.clone())?),
         );
         dict.insert(
             Key::String("mode".into()),
-            ctx.alloc_thunk(ok_val(Value::Int(mode), call_span)?),
+            ctx.alloc_thunk(ok_val(Value::Int(mode), call_span.clone())?),
         );
         dict.insert(
             Key::String("is-dir".into()),
-            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_dir()), call_span)?),
+            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_dir()), call_span.clone())?),
         );
         dict.insert(
             Key::String("is-file".into()),
-            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_file()), call_span)?),
+            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_file()), call_span.clone())?),
         );
         dict.insert(
             Key::String("is-symlink".into()),
-            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_symlink()), call_span)?),
+            ctx.alloc_thunk(ok_val(
+                Value::Bool(metadata.is_symlink()),
+                call_span.clone(),
+            )?),
         );
 
         ok_val(Value::Dict(dict), call_span)
@@ -2907,7 +3017,7 @@ pub(crate) fn builtin_copy_file(
         if args.len() != 4 {
             return Err(EvalError::arity_mismatch(4, args.len(), call_span).into());
         }
-        reject_named("copy-file", named.as_ref(), call_span)?;
+        reject_named("copy-file", named.as_ref(), call_span.clone())?;
 
         let src_dir_val = args[0]
             .try_get_materialized()
@@ -2923,27 +3033,29 @@ pub(crate) fn builtin_copy_file(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract src DirCap and check permissions
-        let (src_dir, src_perms) = extract_dir_cap(&src_dir_val, "copy-file", args[0].span)?;
+        let (src_dir, src_perms) =
+            extract_dir_cap(&src_dir_val, "copy-file", args[0].span.clone())?;
         check_perm(
             src_perms,
             "Readable",
             src_perms.readable,
             "copy-file",
-            call_span,
+            call_span.clone(),
         )?;
 
         // Extract dst DirCap and check permissions
-        let (dst_dir, dst_perms) = extract_dir_cap(&dst_dir_val, "copy-file", args[2].span)?;
+        let (dst_dir, dst_perms) =
+            extract_dir_cap(&dst_dir_val, "copy-file", args[2].span.clone())?;
         check_perm(
             dst_perms,
             "Writable",
             dst_perms.writable,
             "copy-file",
-            call_span,
+            call_span.clone(),
         )?;
 
-        let src_path = require_string("copy-file", src_path_val, args[1].span)?;
-        let dst_path = require_string("copy-file", dst_path_val, args[3].span)?;
+        let src_path = require_string("copy-file", src_path_val, args[1].span.clone())?;
+        let dst_path = require_string("copy-file", dst_path_val, args[3].span.clone())?;
 
         // Copy file using cap-std's efficient kernel-level copy
         src_dir.copy(&src_path, dst_dir, &dst_path).map_err(|e| {
@@ -2952,7 +3064,7 @@ pub(crate) fn builtin_copy_file(
                     "copy-file: failed to copy '{}' to '{}': {}",
                     src_path, dst_path, e
                 ),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -2978,7 +3090,7 @@ pub(crate) fn builtin_symlink(
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
-        reject_named("symlink", named.as_ref(), call_span)?;
+        reject_named("symlink", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -2991,17 +3103,17 @@ pub(crate) fn builtin_symlink(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "symlink", args[0].span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "symlink", args[0].span.clone())?;
         check_perm(
             perms,
             "Symlinkable",
             perms.symlinkable,
             "symlink",
-            call_span,
+            call_span.clone(),
         )?;
 
-        let target = require_string("symlink", target_val, args[1].span)?;
-        let link_path = require_string("symlink", link_path_val, args[2].span)?;
+        let target = require_string("symlink", target_val, args[1].span.clone())?;
+        let link_path = require_string("symlink", link_path_val, args[2].span.clone())?;
 
         // Create symlink (platform-specific)
         #[cfg(unix)]
@@ -3011,7 +3123,7 @@ pub(crate) fn builtin_symlink(
                     "symlink: failed to create symlink '{}' -> '{}': {}",
                     link_path, target, e
                 ),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -3024,7 +3136,7 @@ pub(crate) fn builtin_symlink(
                 Err(e) => {
                     return Err(EvalError::user_error(
                         format!("symlink: cannot stat target '{}': {}", target, e),
-                        call_span,
+                        call_span.clone(),
                     )
                     .into());
                 }
@@ -3040,7 +3152,7 @@ pub(crate) fn builtin_symlink(
                         "symlink: failed to create symlink '{}' -> '{}': {}",
                         link_path, target, e
                     ),
-                    call_span,
+                    call_span.clone(),
                 )
             })?;
         }
@@ -3049,7 +3161,7 @@ pub(crate) fn builtin_symlink(
         {
             return Err(EvalError::user_error(
                 "symlink: not supported on this platform".to_string(),
-                call_span,
+                call_span.clone(),
             )
             .into());
         }
@@ -3077,7 +3189,7 @@ pub(crate) fn builtin_set_permissions(
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
-        reject_named("set-permissions", named.as_ref(), call_span)?;
+        reject_named("set-permissions", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -3090,16 +3202,16 @@ pub(crate) fn builtin_set_permissions(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "set-permissions", args[0].span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "set-permissions", args[0].span.clone())?;
         check_perm(
             perms,
             "PosixPermissions",
             perms.posix_permissions,
             "set-permissions",
-            call_span,
+            call_span.clone(),
         )?;
 
-        let path = require_string("set-permissions", path_val, args[1].span)?;
+        let path = require_string("set-permissions", path_val, args[1].span.clone())?;
 
         // Extract mode as Int
         let mode = match mode_val {
@@ -3109,7 +3221,7 @@ pub(crate) fn builtin_set_permissions(
                     "set-permissions".to_string(),
                     "Int",
                     other.type_name(),
-                    args[2].span,
+                    args[2].span.clone(),
                 )
                 .into());
             }
@@ -3123,7 +3235,7 @@ pub(crate) fn builtin_set_permissions(
             if !(0..=0o7777).contains(&mode) {
                 return Err(EvalError::user_error(
                     format!("set-permissions: mode {} out of range (0-0o7777)", mode),
-                    call_span,
+                    call_span.clone(),
                 )
                 .into());
             }
@@ -3135,7 +3247,7 @@ pub(crate) fn builtin_set_permissions(
                         "set-permissions: failed to set permissions on '{}': {}",
                         path, e
                     ),
-                    call_span,
+                    call_span.clone(),
                 )
             })?;
         }
@@ -3144,7 +3256,7 @@ pub(crate) fn builtin_set_permissions(
         {
             return Err(EvalError::user_error(
                 "set-permissions: only supported on Unix-like systems".to_string(),
-                call_span,
+                call_span.clone(),
             )
             .into());
         }
@@ -3173,7 +3285,7 @@ pub(crate) fn builtin_get_xattr(
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
-        reject_named("get-xattr", named.as_ref(), call_span)?;
+        reject_named("get-xattr", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -3186,23 +3298,23 @@ pub(crate) fn builtin_get_xattr(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "get-xattr", args[0].span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "get-xattr", args[0].span.clone())?;
         check_perm(
             perms,
             "ExtendedAttributes",
             perms.extended_attributes,
             "get-xattr",
-            call_span,
+            call_span.clone(),
         )?;
 
-        let path = require_string("get-xattr", path_val, args[1].span)?;
-        let attr_name = require_string("get-xattr", name_val, args[2].span)?;
+        let path = require_string("get-xattr", path_val, args[1].span.clone())?;
+        let attr_name = require_string("get-xattr", name_val, args[2].span.clone())?;
 
         // Get the file via DirCap
         let file = dir.open(&path).map_err(|e| {
             EvalError::user_error(
                 format!("get-xattr: failed to open file '{}': {}", path, e),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -3274,7 +3386,7 @@ pub(crate) fn builtin_set_xattr(
         if args.len() != 4 {
             return Err(EvalError::arity_mismatch(4, args.len(), call_span).into());
         }
-        reject_named("set-xattr", named.as_ref(), call_span)?;
+        reject_named("set-xattr", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -3290,18 +3402,24 @@ pub(crate) fn builtin_set_xattr(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "set-xattr", args[0].span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "set-xattr", args[0].span.clone())?;
         check_perm(
             perms,
             "ExtendedAttributes",
             perms.extended_attributes,
             "set-xattr",
-            call_span,
+            call_span.clone(),
         )?;
-        check_perm(perms, "Writable", perms.writable, "set-xattr", call_span)?;
+        check_perm(
+            perms,
+            "Writable",
+            perms.writable,
+            "set-xattr",
+            call_span.clone(),
+        )?;
 
-        let path = require_string("set-xattr", path_val, args[1].span)?;
-        let attr_name = require_string("set-xattr", name_val, args[2].span)?;
+        let path = require_string("set-xattr", path_val, args[1].span.clone())?;
+        let attr_name = require_string("set-xattr", name_val, args[2].span.clone())?;
 
         // Extract value as Bytes
         let value_bytes = match value_val {
@@ -3311,7 +3429,7 @@ pub(crate) fn builtin_set_xattr(
                     "set-xattr".to_string(),
                     "Bytes",
                     other.type_name(),
-                    args[3].span,
+                    args[3].span.clone(),
                 )
                 .into())
             }
@@ -3321,7 +3439,7 @@ pub(crate) fn builtin_set_xattr(
         let file = dir.open(&path).map_err(|e| {
             EvalError::user_error(
                 format!("set-xattr: failed to open file '{}': {}", path, e),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -3337,7 +3455,7 @@ pub(crate) fn builtin_set_xattr(
                     "set-xattr: failed to set attribute '{}' on '{}': {}",
                     attr_name, path, e
                 ),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -3379,7 +3497,7 @@ pub(crate) fn builtin_remove_xattr(
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
-        reject_named("remove-xattr", named.as_ref(), call_span)?;
+        reject_named("remove-xattr", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -3392,24 +3510,30 @@ pub(crate) fn builtin_remove_xattr(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "remove-xattr", args[0].span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "remove-xattr", args[0].span.clone())?;
         check_perm(
             perms,
             "ExtendedAttributes",
             perms.extended_attributes,
             "remove-xattr",
-            call_span,
+            call_span.clone(),
         )?;
-        check_perm(perms, "Writable", perms.writable, "remove-xattr", call_span)?;
+        check_perm(
+            perms,
+            "Writable",
+            perms.writable,
+            "remove-xattr",
+            call_span.clone(),
+        )?;
 
-        let path = require_string("remove-xattr", path_val, args[1].span)?;
-        let attr_name = require_string("remove-xattr", name_val, args[2].span)?;
+        let path = require_string("remove-xattr", path_val, args[1].span.clone())?;
+        let attr_name = require_string("remove-xattr", name_val, args[2].span.clone())?;
 
         // Get the file via DirCap
         let file = dir.open(&path).map_err(|e| {
             EvalError::user_error(
                 format!("remove-xattr: failed to open file '{}': {}", path, e),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -3471,7 +3595,7 @@ pub(crate) fn builtin_list_xattrs(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("list-xattrs", named.as_ref(), call_span)?;
+        reject_named("list-xattrs", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -3481,22 +3605,22 @@ pub(crate) fn builtin_list_xattrs(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "list-xattrs", args[0].span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "list-xattrs", args[0].span.clone())?;
         check_perm(
             perms,
             "ExtendedAttributes",
             perms.extended_attributes,
             "list-xattrs",
-            call_span,
+            call_span.clone(),
         )?;
 
-        let path = require_string("list-xattrs", path_val, args[1].span)?;
+        let path = require_string("list-xattrs", path_val, args[1].span.clone())?;
 
         // Get the file via DirCap
         let file = dir.open(&path).map_err(|e| {
             EvalError::user_error(
                 format!("list-xattrs: failed to open file '{}': {}", path, e),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -3512,7 +3636,7 @@ pub(crate) fn builtin_list_xattrs(
                     "list-xattrs: failed to list attributes on '{}': {}",
                     path, e
                 ),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -3529,8 +3653,8 @@ pub(crate) fn builtin_list_xattrs(
         // Build a Seq from the list
         let mut seq = Value::Dict(IndexMap::new()); // Null (end of seq)
         for name_val in name_values.into_iter().rev() {
-            let head_id = ctx.alloc_thunk(ok_val(name_val, call_span)?);
-            let tail_id = ctx.alloc_thunk(ok_val(seq, call_span)?);
+            let head_id = ctx.alloc_thunk(ok_val(name_val, call_span.clone())?);
+            let tail_id = ctx.alloc_thunk(ok_val(seq, call_span.clone())?);
             seq = Value::Seq {
                 head: head_id,
                 tail: tail_id,
@@ -3572,7 +3696,7 @@ pub(crate) fn builtin_make_dir(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("make-dir", named.as_ref(), call_span)?;
+        reject_named("make-dir", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -3582,16 +3706,22 @@ pub(crate) fn builtin_make_dir(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "make-dir", args[0].span)?;
-        check_perm(perms, "Writable", perms.writable, "make-dir", call_span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "make-dir", args[0].span.clone())?;
+        check_perm(
+            perms,
+            "Writable",
+            perms.writable,
+            "make-dir",
+            call_span.clone(),
+        )?;
 
-        let path = require_string("make-dir", path_val, args[1].span)?;
+        let path = require_string("make-dir", path_val, args[1].span.clone())?;
 
         // Create directory (and parents)
         dir.create_dir_all(&path).map_err(|e| {
             EvalError::user_error(
                 format!("make-dir: failed to create directory '{}': {}", path, e),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -3617,7 +3747,7 @@ pub(crate) fn builtin_remove(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("remove", named.as_ref(), call_span)?;
+        reject_named("remove", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -3627,10 +3757,16 @@ pub(crate) fn builtin_remove(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "remove", args[0].span)?;
-        check_perm(perms, "Deletable", perms.deletable, "remove", call_span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "remove", args[0].span.clone())?;
+        check_perm(
+            perms,
+            "Deletable",
+            perms.deletable,
+            "remove",
+            call_span.clone(),
+        )?;
 
-        let path = require_string("remove", path_val, args[1].span)?;
+        let path = require_string("remove", path_val, args[1].span.clone())?;
 
         // Try to remove as file first, then as directory
         if let Err(file_err) = dir.remove_file(&path) {
@@ -3640,7 +3776,7 @@ pub(crate) fn builtin_remove(
                         "remove: failed to remove '{}' (as file: {}, as dir: {})",
                         path, file_err, dir_err
                     ),
-                    call_span,
+                    call_span.clone(),
                 )
             })?;
         }
@@ -3666,7 +3802,7 @@ pub(crate) fn builtin_rename(
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
-        reject_named("rename", named.as_ref(), call_span)?;
+        reject_named("rename", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -3679,11 +3815,17 @@ pub(crate) fn builtin_rename(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "rename", args[0].span)?;
-        check_perm(perms, "Renameable", perms.renameable, "rename", call_span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "rename", args[0].span.clone())?;
+        check_perm(
+            perms,
+            "Renameable",
+            perms.renameable,
+            "rename",
+            call_span.clone(),
+        )?;
 
-        let old_path = require_string("rename", old_path_val, args[1].span)?;
-        let new_path = require_string("rename", new_path_val, args[2].span)?;
+        let old_path = require_string("rename", old_path_val, args[1].span.clone())?;
+        let new_path = require_string("rename", new_path_val, args[2].span.clone())?;
 
         // Rename (both source and dest are in the same DirCap)
         dir.rename(&old_path, dir, &new_path).map_err(|e| {
@@ -3692,7 +3834,7 @@ pub(crate) fn builtin_rename(
                     "rename: failed to rename '{}' to '{}': {}",
                     old_path, new_path, e
                 ),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -3719,7 +3861,7 @@ pub(crate) fn builtin_link(
         if args.len() != 3 {
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
-        reject_named("link", named.as_ref(), call_span)?;
+        reject_named("link", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -3732,11 +3874,11 @@ pub(crate) fn builtin_link(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "link", args[0].span)?;
-        check_perm(perms, "Writable", perms.writable, "link", call_span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "link", args[0].span.clone())?;
+        check_perm(perms, "Writable", perms.writable, "link", call_span.clone())?;
 
-        let existing_path = require_string("link", existing_path_val, args[1].span)?;
-        let link_path = require_string("link", link_path_val, args[2].span)?;
+        let existing_path = require_string("link", existing_path_val, args[1].span.clone())?;
+        let link_path = require_string("link", link_path_val, args[2].span.clone())?;
 
         // Create hard link
         dir.hard_link(&existing_path, dir, &link_path)
@@ -3746,7 +3888,7 @@ pub(crate) fn builtin_link(
                         "link: failed to create hard link from '{}' to '{}': {}",
                         existing_path, link_path, e
                     ),
-                    call_span,
+                    call_span.clone(),
                 )
             })?;
 
@@ -3771,7 +3913,7 @@ pub(crate) fn builtin_read_link(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("read-link", named.as_ref(), call_span)?;
+        reject_named("read-link", named.as_ref(), call_span.clone())?;
 
         let dir_val = args[0]
             .try_get_materialized()
@@ -3781,16 +3923,22 @@ pub(crate) fn builtin_read_link(
             .expect("pre-materialized by force_count/pos_strictness");
 
         // Extract DirCap and check permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "read-link", args[0].span)?;
-        check_perm(perms, "Readable", perms.readable, "read-link", call_span)?;
+        let (dir, perms) = extract_dir_cap(&dir_val, "read-link", args[0].span.clone())?;
+        check_perm(
+            perms,
+            "Readable",
+            perms.readable,
+            "read-link",
+            call_span.clone(),
+        )?;
 
-        let path = require_string("read-link", path_val, args[1].span)?;
+        let path = require_string("read-link", path_val, args[1].span.clone())?;
 
         // Read symlink target
         let target = dir.read_link(&path).map_err(|e| {
             EvalError::user_error(
                 format!("read-link: failed to read symlink '{}': {}", path, e),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -3894,7 +4042,7 @@ fn build_tls_config(
                     "tls-connect opts.no-system-roots".to_string(),
                     "Bool",
                     other.type_name(),
-                    opts_span,
+                    opts_span.clone(),
                 )
                 .into())
             }
@@ -3917,7 +4065,7 @@ fn build_tls_config(
                     "tls-connect: failed to load system CA roots: {}",
                     error_msgs.join("; ")
                 ),
-                opts_span,
+                opts_span.clone(),
             )
             .into());
         }
@@ -3926,7 +4074,7 @@ fn build_tls_config(
             root_store.add(cert).map_err(|e| {
                 EvalError::user_error(
                     format!("tls-connect: failed to add system CA cert: {}", e),
-                    opts_span,
+                    opts_span.clone(),
                 )
             })?;
         }
@@ -3945,7 +4093,7 @@ fn build_tls_config(
                         "tls-connect opts.mozilla-roots".to_string(),
                         "Bool",
                         other.type_name(),
-                        opts_span,
+                        opts_span.clone(),
                     )
                     .into())
                 }
@@ -3962,7 +4110,7 @@ fn build_tls_config(
     if let Some(thunk_id) = opts_dict.get(&crate::value::Key::String("ca-bundle".into())) {
         let thunk = ctx.get_thunk(*thunk_id);
         let handle_val = materialize(&thunk, Some(&opts_span), ctx)?;
-        let pem_bytes = slurp_handle_bytes(&handle_val, opts_span)?;
+        let pem_bytes = slurp_handle_bytes(&handle_val, opts_span.clone())?;
 
         let mut cursor = std::io::Cursor::new(pem_bytes);
         let certs = rustls_pemfile::certs(&mut cursor)
@@ -3970,7 +4118,7 @@ fn build_tls_config(
             .map_err(|e| {
                 EvalError::user_error(
                     format!("tls-connect: failed to parse CA bundle PEM: {}", e),
-                    opts_span,
+                    opts_span.clone(),
                 )
             })?;
 
@@ -3978,7 +4126,7 @@ fn build_tls_config(
             root_store.add(cert).map_err(|e| {
                 EvalError::user_error(
                     format!("tls-connect: failed to add CA bundle cert: {}", e),
-                    opts_span,
+                    opts_span.clone(),
                 )
             })?;
         }
@@ -3993,7 +4141,7 @@ fn build_tls_config(
             return Err(EvalError::user_error(
                 "tls-connect: both client-cert and client-key must be provided for mTLS"
                     .to_string(),
-                opts_span,
+                opts_span.clone(),
             )
             .into());
         }
@@ -4010,8 +4158,8 @@ fn build_tls_config(
         let key_thunk = ctx.get_thunk(*key_thunk_id);
         let key_handle = materialize(&key_thunk, Some(&opts_span), ctx)?;
 
-        let cert_pem = slurp_handle_bytes(&cert_handle, opts_span)?;
-        let key_pem = slurp_handle_bytes(&key_handle, opts_span)?;
+        let cert_pem = slurp_handle_bytes(&cert_handle, opts_span.clone())?;
+        let key_pem = slurp_handle_bytes(&key_handle, opts_span.clone())?;
 
         let mut cert_cursor = std::io::Cursor::new(cert_pem);
         let certs = rustls_pemfile::certs(&mut cert_cursor)
@@ -4019,7 +4167,7 @@ fn build_tls_config(
             .map_err(|e| {
                 EvalError::user_error(
                     format!("tls-connect: failed to parse client cert PEM: {}", e),
-                    opts_span,
+                    opts_span.clone(),
                 )
             })?;
 
@@ -4028,13 +4176,13 @@ fn build_tls_config(
             .map_err(|e| {
                 EvalError::user_error(
                     format!("tls-connect: failed to parse client key PEM: {}", e),
-                    opts_span,
+                    opts_span.clone(),
                 )
             })?
             .ok_or_else(|| {
                 EvalError::user_error(
                     "tls-connect: no private key found in client-key PEM".to_string(),
-                    opts_span,
+                    opts_span.clone(),
                 )
             })?;
 
@@ -4044,7 +4192,7 @@ fn build_tls_config(
             .map_err(|e| {
                 EvalError::user_error(
                     format!("tls-connect: failed to configure client certificate: {}", e),
-                    opts_span,
+                    opts_span.clone(),
                 )
             })?
     } else {
@@ -4164,7 +4312,7 @@ fn validate_spki_pins(
                     "tls-connect opts.pins".to_string(),
                     "Seq of SpkiPin",
                     other.type_name(),
-                    span,
+                    span.clone(),
                 )
                 .into())
             }
@@ -4179,14 +4327,14 @@ fn validate_spki_pins(
     let peer_certs = conn.peer_certificates().ok_or_else(|| {
         EvalError::user_error(
             "tls-connect: no peer certificates available for SPKI pin validation".to_string(),
-            span,
+            span.clone(),
         )
     })?;
 
     if peer_certs.is_empty() {
         return Err(EvalError::user_error(
             "tls-connect: peer certificate list is empty".to_string(),
-            span,
+            span.clone(),
         )
         .into());
     }
@@ -4209,7 +4357,7 @@ fn validate_spki_pins(
                     "tls-connect opts.pins element".to_string(),
                     "SpkiPin dict",
                     other.type_name(),
-                    span,
+                    span.clone(),
                 )
                 .into())
             }
@@ -4220,7 +4368,7 @@ fn validate_spki_pins(
             .ok_or_else(|| {
                 EvalError::user_error(
                     "tls-connect: SpkiPin missing 'algorithm' field".to_string(),
-                    span,
+                    span.clone(),
                 )
             })?;
         let algorithm_thunk = ctx.get_thunk(*algorithm_thunk_id);
@@ -4231,7 +4379,7 @@ fn validate_spki_pins(
             .ok_or_else(|| {
                 EvalError::user_error(
                     "tls-connect: SpkiPin missing 'fingerprint' field".to_string(),
-                    span,
+                    span.clone(),
                 )
             })?;
         let fingerprint_thunk = ctx.get_thunk(*fingerprint_thunk_id);
@@ -4244,7 +4392,7 @@ fn validate_spki_pins(
                     "tls-connect opts.pins.algorithm".to_string(),
                     "HashAlgorithm variant",
                     other.type_name(),
-                    span,
+                    span.clone(),
                 )
                 .into())
             }
@@ -4257,14 +4405,14 @@ fn validate_spki_pins(
                     "tls-connect opts.pins.fingerprint".to_string(),
                     "Bytes",
                     other.type_name(),
-                    span,
+                    span.clone(),
                 )
                 .into())
             }
         };
 
         // Compute hash of certificate using the specified algorithm
-        let computed_hash = compute_spki_hash(leaf_cert.as_ref(), &algorithm_tag, span)?;
+        let computed_hash = compute_spki_hash(leaf_cert.as_ref(), &algorithm_tag, span.clone())?;
 
         if computed_hash == expected_fingerprint {
             matched = true;
@@ -4291,7 +4439,7 @@ fn compute_spki_hash(cert_der: &[u8], algorithm: &str, span: Span) -> EvalResult
     let (_, cert) = x509_parser::parse_x509_certificate(cert_der).map_err(|e| {
         EvalError::user_error(
             format!("tls-connect: failed to parse certificate: {}", e),
-            span,
+            span.clone(),
         )
     })?;
 
@@ -4432,15 +4580,15 @@ fn extract_sans(
 
     // Convert Vec<Value> to a Seq by building from right to left
     // End of Seq is an empty Dict
-    let mut result = ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), span)?);
+    let mut result = ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), span.clone())?);
     for val in sans_list.into_iter().rev() {
-        let head_thunk = ctx.alloc_thunk(ok_val(val, span)?);
+        let head_thunk = ctx.alloc_thunk(ok_val(val, span.clone())?);
         result = ctx.alloc_thunk(ok_val(
             Value::Seq {
                 head: head_thunk,
                 tail: result,
             },
-            span,
+            span.clone(),
         )?);
     }
 
@@ -4473,7 +4621,7 @@ pub(crate) fn builtin_tls_layer(
             )
             .into());
         }
-        reject_named("tls-layer", named.as_ref(), call_span)?;
+        reject_named("tls-layer", named.as_ref(), call_span.clone())?;
 
         let handle_val = args[0]
             .try_get_materialized()
@@ -4485,7 +4633,7 @@ pub(crate) fn builtin_tls_layer(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let sni = require_string("tls-layer", sni_val, args[1].span)?;
+        let sni = require_string("tls-layer", sni_val, args[1].span.clone())?;
 
         // Extract Handle and its raw_tcp
         let (raw_tcp_slot, caps, creation_span) = match handle_val {
@@ -4504,7 +4652,7 @@ pub(crate) fn builtin_tls_layer(
                 return Err(EvalError::user_error(
                 "tls-layer: handle does not have a raw TCP stream (not created by connect cap Tcp)"
                     .to_string(),
-                call_span,
+                call_span.clone(),
             )
             .with_secondary_span(creation_span, "handle created here")
             .into());
@@ -4514,7 +4662,7 @@ pub(crate) fn builtin_tls_layer(
                     "tls-layer".to_string(),
                     "Handle",
                     other.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
@@ -4524,7 +4672,7 @@ pub(crate) fn builtin_tls_layer(
         if !caps.contains_key("Stream") {
             return Err(EvalError::user_error(
                 "tls-layer: handle must have Stream capability".to_string(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into());
         }
@@ -4535,20 +4683,20 @@ pub(crate) fn builtin_tls_layer(
             EvalError::user_error(
                 "tls-layer: raw TCP stream already consumed by a previous tls-layer call"
                     .to_string(),
-                call_span,
+                call_span.clone(),
             )
             .with_secondary_span(creation_span, "handle created here")
         })?;
 
         // Build TLS config
-        let tls_config = build_tls_config(&opts_val, args[2].span, &ctx)?;
+        let tls_config = build_tls_config(&opts_val, args[2].span.clone(), &ctx)?;
 
         // Create TLS connection
         let server_name = rustls::pki_types::ServerName::try_from(sni.clone())
             .map_err(|e| {
                 EvalError::user_error(
                     format!("tls-layer: invalid server name '{}': {}", sni, e),
-                    args[1].span,
+                    args[1].span.clone(),
                 )
             })?
             .to_owned();
@@ -4558,7 +4706,7 @@ pub(crate) fn builtin_tls_layer(
                 |e| {
                     EvalError::user_error(
                         format!("tls-layer: failed to create TLS connection: {}", e),
-                        call_span,
+                        call_span.clone(),
                     )
                 },
             )?;
@@ -4570,7 +4718,10 @@ pub(crate) fn builtin_tls_layer(
         {
             use std::io::Write;
             shared_stream.borrow_mut().flush().map_err(|e| {
-                EvalError::user_error(format!("tls-layer: TLS handshake failed: {}", e), call_span)
+                EvalError::user_error(
+                    format!("tls-layer: TLS handshake failed: {}", e),
+                    call_span.clone(),
+                )
             })?;
         }
 
@@ -4579,7 +4730,12 @@ pub(crate) fn builtin_tls_layer(
             if let Some(pins_thunk_id) = opts_map.get(&crate::value::Key::String("pins".into())) {
                 let pins_thunk = ctx.get_thunk(*pins_thunk_id);
                 let pins_val = materialize(&pins_thunk, Some(&call_span), &ctx)?;
-                validate_spki_pins(&shared_stream.borrow().conn, &pins_val, call_span, &ctx)?;
+                validate_spki_pins(
+                    &shared_stream.borrow().conn,
+                    &pins_val,
+                    call_span.clone(),
+                    &ctx,
+                )?;
             }
         }
 
@@ -4592,7 +4748,7 @@ pub(crate) fn builtin_tls_layer(
                     // Clone the cert DER bytes before dropping the borrow
                     let cert_der = certs[0].clone();
                     drop(stream_borrow);
-                    extract_cert_info(&cert_der, call_span, &ctx)?
+                    extract_cert_info(&cert_der, call_span.clone(), &ctx)?
                 } else {
                     Value::Dict(IndexMap::new()) // No cert
                 }
@@ -4631,7 +4787,7 @@ pub(crate) fn builtin_tls_layer(
                 write_inner,
                 seek_inner: None,
                 raw_tcp: None, // Consumed by this operation
-                creation_span: call_span,
+                creation_span: call_span.clone(),
             },
             call_span,
         )
@@ -4657,7 +4813,7 @@ pub(crate) fn builtin_tls_peer_cert(
             &args,
             named.as_ref(),
             &ctx,
-            call_span,
+            call_span.clone(),
         )?;
 
         // Extract Handle and check for Tls capability
@@ -4668,7 +4824,7 @@ pub(crate) fn builtin_tls_peer_cert(
                     "tls-peer-cert".to_string(),
                     "Handle",
                     other.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
@@ -4678,7 +4834,7 @@ pub(crate) fn builtin_tls_peer_cert(
             EvalError::user_error(
                 "tls-peer-cert: handle must have Tls capability (created by tls-connect)"
                     .to_string(),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -4692,7 +4848,7 @@ pub(crate) fn builtin_tls_peer_cert(
                     dict.get(&Key::String("_raw_der".into())).ok_or_else(|| {
                         EvalError::user_error(
                             "tls-peer-cert: TLS capability missing _raw_der field".to_string(),
-                            call_span,
+                            call_span.clone(),
                         )
                     })?;
 
@@ -4706,7 +4862,7 @@ pub(crate) fn builtin_tls_peer_cert(
                             "tls-peer-cert".to_string(),
                             "Bytes",
                             other.type_name(),
-                            call_span,
+                            call_span.clone(),
                         )
                         .into())
                     }
@@ -4716,7 +4872,7 @@ pub(crate) fn builtin_tls_peer_cert(
                 let (_, cert) = x509_parser::parse_x509_certificate(cert_der).map_err(|e| {
                     EvalError::user_error(
                         format!("tls-peer-cert: failed to parse certificate: {}", e),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?;
 
@@ -4733,7 +4889,7 @@ pub(crate) fn builtin_tls_peer_cert(
                 let not_after = cert.tbs_certificate.validity.not_after.timestamp();
 
                 // Extract SANs (Subject Alternative Names)
-                let sans = extract_sans(&cert, call_span, &ctx)?;
+                let sans = extract_sans(&cert, call_span.clone(), &ctx)?;
 
                 // Compute SPKI SHA-256 hash
                 let spki_der = cert.tbs_certificate.subject_pki.raw;
@@ -4747,27 +4903,27 @@ pub(crate) fn builtin_tls_peer_cert(
                 let mut cert_info = IndexMap::new();
                 cert_info.insert(
                     Key::String("subject".into()),
-                    ctx.alloc_thunk(ok_val(string_val(&subject), call_span)?),
+                    ctx.alloc_thunk(ok_val(string_val(&subject), call_span.clone())?),
                 );
                 cert_info.insert(
                     Key::String("issuer".into()),
-                    ctx.alloc_thunk(ok_val(string_val(&issuer), call_span)?),
+                    ctx.alloc_thunk(ok_val(string_val(&issuer), call_span.clone())?),
                 );
                 cert_info.insert(
                     Key::String("sans".into()),
-                    ctx.alloc_thunk(ok_val(sans, call_span)?),
+                    ctx.alloc_thunk(ok_val(sans, call_span.clone())?),
                 );
                 cert_info.insert(
                     Key::String("not-before".into()),
-                    ctx.alloc_thunk(ok_val(Value::Int(not_before), call_span)?),
+                    ctx.alloc_thunk(ok_val(Value::Int(not_before), call_span.clone())?),
                 );
                 cert_info.insert(
                     Key::String("not-after".into()),
-                    ctx.alloc_thunk(ok_val(Value::Int(not_after), call_span)?),
+                    ctx.alloc_thunk(ok_val(Value::Int(not_after), call_span.clone())?),
                 );
                 cert_info.insert(
                     Key::String("spki-sha256".into()),
-                    ctx.alloc_thunk(ok_val(string_val(&spki_hex), call_span)?),
+                    ctx.alloc_thunk(ok_val(string_val(&spki_hex), call_span.clone())?),
                 );
 
                 ok_val(Value::Dict(cert_info), call_span)
@@ -4802,7 +4958,7 @@ mod tests {
         let span = dummy_span();
 
         // Allowed host:port → Ok
-        let result = check_net_cap_allowlist(&entries, "api.example.com", Some(443), span);
+        let result = check_net_cap_allowlist(&entries, "api.example.com", Some(443), span.clone());
         assert!(
             result.is_ok(),
             "api.example.com:443 should be allowed, got: {:?}",
@@ -4810,7 +4966,7 @@ mod tests {
         );
 
         // Denied host (different hostname, same port) → Err
-        let result = check_net_cap_allowlist(&entries, "evil.example.com", Some(443), span);
+        let result = check_net_cap_allowlist(&entries, "evil.example.com", Some(443), span.clone());
         assert!(result.is_err(), "evil.example.com:443 should be denied");
         let msg = result.unwrap_err().kind.to_string().to_string();
         assert!(
@@ -4819,7 +4975,7 @@ mod tests {
         );
 
         // Denied port (correct host, wrong port) → Err
-        let result = check_net_cap_allowlist(&entries, "api.example.com", Some(80), span);
+        let result = check_net_cap_allowlist(&entries, "api.example.com", Some(80), span.clone());
         assert!(
             result.is_err(),
             "api.example.com:80 should be denied (only port 443 is allowed)"
@@ -4827,8 +4983,12 @@ mod tests {
 
         // Any allowlist → allows everything
         let any_entries = vec![NetCapEntry::Any];
-        let result =
-            check_net_cap_allowlist(&any_entries, "anything.example.com", Some(1234), span);
+        let result = check_net_cap_allowlist(
+            &any_entries,
+            "anything.example.com",
+            Some(1234),
+            span.clone(),
+        );
         assert!(
             result.is_ok(),
             "NetCapEntry::Any should allow any host:port"
@@ -4969,7 +5129,7 @@ pub(crate) fn builtin_quic_session(
             ctx,
         } = ctx_arg;
 
-        reject_named("quic-session", named.as_ref(), call_span)?;
+        reject_named("quic-session", named.as_ref(), call_span.clone())?;
 
         if args.len() != 4 {
             return Err(EvalError::user_error(
@@ -5004,20 +5164,20 @@ pub(crate) fn builtin_quic_session(
                     "quic-session".to_string(),
                     "NetCap",
                     other.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
         };
 
-        let host_str = require_string("quic-session", host_val, args[1].span)?;
+        let host_str = require_string("quic-session", host_val, args[1].span.clone())?;
 
         let port = match port_val {
             Value::Int(n) if (1..=65535).contains(&n) => n as u16,
             Value::Int(_) => {
                 return Err(EvalError::user_error(
                     "quic-session: port must be 1–65535".to_string(),
-                    args[2].span,
+                    args[2].span.clone(),
                 )
                 .into())
             }
@@ -5026,14 +5186,15 @@ pub(crate) fn builtin_quic_session(
                     "quic-session".to_string(),
                     "Int",
                     other.type_name(),
-                    args[2].span,
+                    args[2].span.clone(),
                 )
                 .into())
             }
         };
 
         // Validate against NetCap allowlist (DNS-rebinding mitigation)
-        let resolved_ip = check_net_cap_allowlist(&entries, &host_str, Some(port), call_span)?;
+        let resolved_ip =
+            check_net_cap_allowlist(&entries, &host_str, Some(port), call_span.clone())?;
 
         // Determine server address for connection
         let server_addr: SocketAddr = if let Some(ip) = resolved_ip {
@@ -5045,21 +5206,21 @@ pub(crate) fn builtin_quic_session(
                 .map_err(|e| {
                     EvalError::user_error(
                         format!("quic-session: failed to resolve '{}': {}", host_str, e),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?
                 .next()
                 .ok_or_else(|| {
                     EvalError::user_error(
                         format!("quic-session: no addresses for '{}'", host_str),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?
         };
 
         // Build rustls ClientConfig, then adapt it for QUIC via quinn's rustls adapter.
         // ALPN defaults to "h3" for QUIC sessions (RFC 9114 §3.1).
-        let mut tls_config = build_tls_config(&opts_val, args[3].span, &ctx)?;
+        let mut tls_config = build_tls_config(&opts_val, args[3].span.clone(), &ctx)?;
 
         // Override ALPN to h3 unless caller specified explicit alpn in opts.
         // build_tls_config sets alpn_protocols to ["http/1.1"] by default; replace with h3.
@@ -5075,7 +5236,7 @@ pub(crate) fn builtin_quic_session(
             quinn::crypto::rustls::QuicClientConfig::try_from(tls_config).map_err(|e| {
                 EvalError::user_error(
                     format!("quic-session: TLS config not suitable for QUIC: {}", e),
-                    call_span,
+                    call_span.clone(),
                 )
             })?;
 
@@ -5086,7 +5247,7 @@ pub(crate) fn builtin_quic_session(
         let mut endpoint = quinn::Endpoint::client(bind_addr).map_err(|e| {
             EvalError::user_error(
                 format!("quic-session: failed to create QUIC endpoint: {}", e),
-                call_span,
+                call_span.clone(),
             )
         })?;
         endpoint.set_default_client_config(client_config);
@@ -5100,7 +5261,7 @@ pub(crate) fn builtin_quic_session(
                 .await
                 .map_err(|e| format!("quic-session: handshake failed: {}", e))
         })
-        .map_err(|msg| EvalError::user_error(msg, call_span))?;
+        .map_err(|msg| EvalError::user_error(msg, call_span.clone()))?;
 
         ok_val(Value::QuicSession(Rc::new(connection)), call_span)
     })
@@ -5123,7 +5284,7 @@ pub(crate) fn builtin_quic_open_stream(
             ctx: _,
         } = ctx_arg;
 
-        reject_named("quic-open-stream", named.as_ref(), call_span)?;
+        reject_named("quic-open-stream", named.as_ref(), call_span.clone())?;
 
         if args.len() != 1 {
             return Err(EvalError::user_error(
@@ -5147,7 +5308,7 @@ pub(crate) fn builtin_quic_open_stream(
                     "quic-open-stream".to_string(),
                     "QuicSession",
                     other.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
@@ -5157,7 +5318,7 @@ pub(crate) fn builtin_quic_open_stream(
         let (send, recv) = crate::async_rt::block_on(conn.open_bi()).map_err(|e| {
             EvalError::user_error(
                 format!("quic-open-stream: failed to open stream: {}", e),
-                call_span,
+                call_span.clone(),
             )
         })?;
 
@@ -5187,7 +5348,7 @@ pub(crate) fn builtin_quic_open_stream(
                 write_inner,
                 seek_inner: None,
                 raw_tcp: None,
-                creation_span: call_span,
+                creation_span: call_span.clone(),
             },
             call_span,
         )
@@ -5216,7 +5377,7 @@ pub(crate) fn builtin_quic_open_datagram(
             ctx: _,
         } = ctx_arg;
 
-        reject_named("quic-open-datagram", named.as_ref(), call_span)?;
+        reject_named("quic-open-datagram", named.as_ref(), call_span.clone())?;
 
         if args.len() != 1 {
             return Err(EvalError::user_error(
@@ -5239,7 +5400,7 @@ pub(crate) fn builtin_quic_open_datagram(
                     "quic-open-datagram".to_string(),
                     "QuicSession",
                     other.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
@@ -5274,7 +5435,7 @@ pub(crate) fn builtin_http2_session(
             ctx: _,
         } = ctx_arg;
 
-        reject_named("http2-session", named.as_ref(), call_span)?;
+        reject_named("http2-session", named.as_ref(), call_span.clone())?;
 
         if args.len() != 3 {
             return Err(EvalError::user_error(
@@ -5307,19 +5468,19 @@ pub(crate) fn builtin_http2_session(
                     "http2-session".to_string(),
                     "NetCap",
                     other.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
         };
 
-        let base_url = require_string("http2-session", url_val, args[1].span)?;
+        let base_url = require_string("http2-session", url_val, args[1].span.clone())?;
 
         // Parse the base_url to extract host and port for cap validation.
         // We need a host for the allowlist check. Parse scheme://host[:port].
-        let (host, port) = parse_origin_host_port(&base_url, call_span)?;
+        let (host, port) = parse_origin_host_port(&base_url, call_span.clone())?;
 
-        check_net_cap_allowlist(&entries, &host, port, call_span)?;
+        check_net_cap_allowlist(&entries, &host, port, call_span.clone())?;
 
         // Build the async reqwest client. Use rustls TLS (already the default via
         // the "rustls" feature flag in Cargo.toml with default-features = false).
@@ -5338,7 +5499,7 @@ pub(crate) fn builtin_http2_session(
             .map_err(|e| {
                 EvalError::user_error(
                     format!("http2-session: failed to build HTTP client: {}", e),
-                    call_span,
+                    call_span.clone(),
                 )
             })?;
 
@@ -5418,7 +5579,7 @@ pub(crate) fn builtin_http3_session(
             ctx: _,
         } = ctx_arg;
 
-        reject_named("http3-session", named.as_ref(), call_span)?;
+        reject_named("http3-session", named.as_ref(), call_span.clone())?;
 
         if args.len() != 1 {
             return Err(EvalError::user_error(
@@ -5442,7 +5603,7 @@ pub(crate) fn builtin_http3_session(
                     "http3-session".to_string(),
                     "QuicSession",
                     other.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
@@ -5462,7 +5623,7 @@ pub(crate) fn builtin_http3_session(
             crate::async_rt::block_on(h3::client::builder().build(h3_conn)).map_err(|e| {
                 EvalError::user_error(
                     format!("http3-session: HTTP/3 handshake failed: {}", e),
-                    call_span,
+                    call_span.clone(),
                 )
             })?;
 
@@ -5516,7 +5677,7 @@ pub(crate) fn builtin_http_request(
             ctx,
         } = ctx_arg;
 
-        reject_named("http-request", named.as_ref(), call_span)?;
+        reject_named("http-request", named.as_ref(), call_span.clone())?;
 
         if args.len() != 5 {
             return Err(EvalError::user_error(
@@ -5546,9 +5707,9 @@ pub(crate) fn builtin_http_request(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let method_str = require_string("http-request", method_val, args[1].span)?;
-        let path_str = require_string("http-request", path_val, args[2].span)?;
-        let body_str = require_string("http-request", body_val, args[4].span)?;
+        let method_str = require_string("http-request", method_val, args[1].span.clone())?;
+        let path_str = require_string("http-request", path_val, args[2].span.clone())?;
+        let body_str = require_string("http-request", body_val, args[4].span.clone())?;
 
         // Collect request headers from the Dict argument.
         // Each value is a ThunkId in the arena — resolve and materialize to extract the string.
@@ -5562,8 +5723,11 @@ pub(crate) fn builtin_http_request(
                     };
                     let thunk = ctx.thunk_arena.lock().unwrap().get(*val_id).clone();
                     let val_materialized = materialize(&thunk, Some(&call_span), &ctx)?;
-                    let val_str =
-                        require_string("http-request header value", val_materialized, call_span)?;
+                    let val_str = require_string(
+                        "http-request header value",
+                        val_materialized,
+                        call_span.clone(),
+                    )?;
                     out.push((key_str, val_str));
                 }
                 out
@@ -5573,7 +5737,7 @@ pub(crate) fn builtin_http_request(
                     "http-request".to_string(),
                     "Dict",
                     other.type_name(),
-                    args[3].span,
+                    args[3].span.clone(),
                 )
                 .into())
             }
@@ -5606,7 +5770,7 @@ pub(crate) fn builtin_http_request(
                 "http-request".to_string(),
                 "Http2Session or Http3Session",
                 other.type_name(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into()),
         }
@@ -5641,7 +5805,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let path_str = config.path_str;
     let req_headers = config.req_headers;
     let body_str = config.body_str;
-    let span = config.span;
+    let span = config.span.clone();
     let ctx = config.ctx;
     // Build the full URL: base_url + path_str.
     // If path_str starts with http:// or https://, use it as-is (absolute URL).
@@ -5695,7 +5859,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
             Ok(s) => s.to_string(),
             Err(_) => String::from_utf8_lossy(value.as_bytes()).into_owned(),
         };
-        headers_map.insert(k, ctx.alloc_thunk(ok_val(string_val(&v), span)?));
+        headers_map.insert(k, ctx.alloc_thunk(ok_val(string_val(&v), span.clone())?));
     }
 
     // Collect body as a String (UTF-8, lossy).
@@ -5716,15 +5880,15 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let mut inner = IndexMap::new();
     inner.insert(
         crate::value::Key::String("status".into()),
-        ctx.alloc_thunk(ok_val(Value::Int(status), span)?),
+        ctx.alloc_thunk(ok_val(Value::Int(status), span.clone())?),
     );
     inner.insert(
         crate::value::Key::String("headers".into()),
-        ctx.alloc_thunk(ok_val(Value::Dict(headers_map), span)?),
+        ctx.alloc_thunk(ok_val(Value::Dict(headers_map), span.clone())?),
     );
     inner.insert(
         crate::value::Key::String("body".into()),
-        ctx.alloc_thunk(ok_val(string_val(&body_string), span)?),
+        ctx.alloc_thunk(ok_val(string_val(&body_string), span.clone())?),
     );
     ok_val(Value::Dict(inner), span)
 }
@@ -5821,7 +5985,7 @@ fn http_request_h3(
                 String::from_utf8_lossy(value.as_bytes()).into_owned()
             }
         };
-        headers_map.insert(k, ctx.alloc_thunk(ok_val(string_val(&v), span)?));
+        headers_map.insert(k, ctx.alloc_thunk(ok_val(string_val(&v), span.clone())?));
     }
 
     // Collect response body DATA frames.
@@ -5855,15 +6019,15 @@ fn http_request_h3(
     let mut inner = IndexMap::new();
     inner.insert(
         crate::value::Key::String("status".into()),
-        ctx.alloc_thunk(ok_val(Value::Int(status), span)?),
+        ctx.alloc_thunk(ok_val(Value::Int(status), span.clone())?),
     );
     inner.insert(
         crate::value::Key::String("headers".into()),
-        ctx.alloc_thunk(ok_val(Value::Dict(headers_map), span)?),
+        ctx.alloc_thunk(ok_val(Value::Dict(headers_map), span.clone())?),
     );
     inner.insert(
         crate::value::Key::String("body".into()),
-        ctx.alloc_thunk(ok_val(string_val(&body_string), span)?),
+        ctx.alloc_thunk(ok_val(string_val(&body_string), span.clone())?),
     );
 
     // Return {status: Int, headers: Dict, body: String} — callers use builtin-try for wrapping.
@@ -5895,7 +6059,7 @@ pub(crate) fn builtin_icmp_ping(
             ctx,
         } = ctx_arg;
 
-        reject_named("icmp-ping", named.as_ref(), call_span)?;
+        reject_named("icmp-ping", named.as_ref(), call_span.clone())?;
 
         if args.len() != 3 {
             return Err(EvalError::user_error(
@@ -5926,20 +6090,20 @@ pub(crate) fn builtin_icmp_ping(
                     "icmp-ping".to_string(),
                     "NetCap",
                     other.type_name(),
-                    args[0].span,
+                    args[0].span.clone(),
                 )
                 .into())
             }
         };
 
-        let host = require_string("icmp-ping", host_val, args[1].span)?;
+        let host = require_string("icmp-ping", host_val, args[1].span.clone())?;
 
         let timeout_ms = match timeout_val {
             Value::Int(n) if n >= 0 => n,
             Value::Int(_) => {
                 return Err(EvalError::user_error(
                     "icmp-ping: timeout-ms must be a non-negative integer".to_string(),
-                    args[2].span,
+                    args[2].span.clone(),
                 )
                 .into())
             }
@@ -5948,7 +6112,7 @@ pub(crate) fn builtin_icmp_ping(
                     "icmp-ping".to_string(),
                     "Int",
                     other.type_name(),
-                    args[2].span,
+                    args[2].span.clone(),
                 )
                 .into())
             }
@@ -5956,7 +6120,7 @@ pub(crate) fn builtin_icmp_ping(
 
         // Validate host against NetCap allowlist (ICMP has no port, pass None)
         // This fires before any socket operations.
-        check_net_cap_allowlist(&entries, &host, None, call_span)?;
+        check_net_cap_allowlist(&entries, &host, None, call_span.clone())?;
 
         // Perform platform-specific ping and return result dict
         icmp_ping_impl(&host, timeout_ms, call_span, &ctx)
@@ -5969,7 +6133,7 @@ fn icmp_err_val(msg: String, span: Span, ctx: &crate::eval::EvalContext) -> Eval
     let mut result = IndexMap::new();
     result.insert(
         Key::String("err".into()),
-        ctx.alloc_thunk(ok_val(string_val(&msg), span)?),
+        ctx.alloc_thunk(ok_val(string_val(&msg), span.clone())?),
     );
     ok_val(Value::Dict(result), span)
 }
@@ -5985,13 +6149,13 @@ fn icmp_ok_val(
     let mut inner = IndexMap::new();
     inner.insert(
         Key::String("latency-ms".into()),
-        ctx.alloc_thunk(ok_val(Value::Int(latency_ms), span)?),
+        ctx.alloc_thunk(ok_val(Value::Int(latency_ms), span.clone())?),
     );
     // Outer dict: {ok: {latency-ms: Int}}
     let mut result = IndexMap::new();
     result.insert(
         Key::String("ok".into()),
-        ctx.alloc_thunk(ok_val(Value::Dict(inner), span)?),
+        ctx.alloc_thunk(ok_val(Value::Dict(inner), span.clone())?),
     );
     ok_val(Value::Dict(result), span)
 }
@@ -6259,7 +6423,7 @@ pub(crate) fn builtin_send_datagram(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("send-datagram", named.as_ref(), call_span)?;
+        reject_named("send-datagram", named.as_ref(), call_span.clone())?;
 
         let handle_val = args[0]
             .try_get_materialized()
@@ -6277,7 +6441,7 @@ pub(crate) fn builtin_send_datagram(
                     "send-datagram".to_string(),
                     "String or Bytes",
                     other.type_name(),
-                    args[1].span,
+                    args[1].span.clone(),
                 )
                 .into())
             }
@@ -6294,7 +6458,7 @@ pub(crate) fn builtin_send_datagram(
                 crate::async_rt::block_on(conn.send_datagram_wait(payload)).map_err(|e| {
                     EvalError::user_error(
                         format!("send-datagram: QUIC datagram send failed: {}", e),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?;
                 ok_val(Value::Dict(IndexMap::new()), call_span)
@@ -6309,7 +6473,10 @@ pub(crate) fn builtin_send_datagram(
                     DatagramSocket::UnixDgram(s) => s.borrow().send(&data_bytes),
                 }
                 .map_err(|e| {
-                    EvalError::user_error(format!("send-datagram: send failed: {}", e), call_span)
+                    EvalError::user_error(
+                        format!("send-datagram: send failed: {}", e),
+                        call_span.clone(),
+                    )
                 })?;
                 ok_val(Value::Dict(IndexMap::new()), call_span)
             }
@@ -6318,7 +6485,7 @@ pub(crate) fn builtin_send_datagram(
                 "send-datagram".to_string(),
                 "DatagramHandle or QuicDatagramHandle",
                 other.type_name(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into()),
         }
@@ -6346,7 +6513,7 @@ pub(crate) fn builtin_recv_datagram(
             &args,
             named.as_ref(),
             &ctx,
-            call_span,
+            call_span.clone(),
         )?;
 
         use crate::value::Key;
@@ -6363,9 +6530,9 @@ pub(crate) fn builtin_recv_datagram(
                 let mut dict = IndexMap::new();
                 dict.insert(
                     Key::String("data".into()),
-                    ctx.alloc_thunk(ok_val(data_bytes, call_span)?),
+                    ctx.alloc_thunk(ok_val(data_bytes, call_span.clone())?),
                 );
-                ok_val(Value::Dict(dict), call_span)
+                ok_val(Value::Dict(dict), call_span.clone())
             };
 
         match val {
@@ -6376,7 +6543,7 @@ pub(crate) fn builtin_recv_datagram(
                 let payload = crate::async_rt::block_on(conn.read_datagram()).map_err(|e| {
                     EvalError::user_error(
                         format!("recv-datagram: QUIC datagram recv failed: {}", e),
-                        call_span,
+                        call_span.clone(),
                     )
                 })?;
                 make_data_dict(payload.to_vec(), &ctx)
@@ -6393,7 +6560,10 @@ pub(crate) fn builtin_recv_datagram(
                     DatagramSocket::UnixDgram(s) => s.borrow().recv(&mut buf),
                 }
                 .map_err(|e| {
-                    EvalError::user_error(format!("recv-datagram: recv failed: {}", e), call_span)
+                    EvalError::user_error(
+                        format!("recv-datagram: recv failed: {}", e),
+                        call_span.clone(),
+                    )
                 })?;
                 buf.truncate(n);
                 make_data_dict(buf, &ctx)
@@ -6403,7 +6573,7 @@ pub(crate) fn builtin_recv_datagram(
                 "recv-datagram".to_string(),
                 "DatagramHandle or QuicDatagramHandle",
                 other.type_name(),
-                args[0].span,
+                args[0].span.clone(),
             )
             .into()),
         }

@@ -10,7 +10,7 @@ The macro system unifies tinct's syntactic sugar under a single, user-extensible
 - **Zero-cost abstraction** — macros that expand to inline code avoid thunk creation, eliminating per-call overhead for strict operations
 - **Self-hosting path** — reduces the Rust surface area by expressing syntactic transformations in tinct itself
 
-`[macro ...]` is the primary macro form. `[defmacro ...]` is retained as a backward-compatible alias.
+`[macro ...]` is the macro form.
 
 ## Interaction with Lazy Evaluation
 
@@ -106,9 +106,6 @@ Macros are tinct functions that receive AST-as-data and return AST-as-data. tinc
 
 [macro when [let pred body]
   [quote [if [unquote pred] [unquote body] []]]]
-
-# [defmacro ...] is a legacy alias for [macro ...]:
-# [defmacro when [let pred body] [quote [if [unquote pred] [unquote body] []]]]
 ```
 
 ### Expansion Pipeline
@@ -117,7 +114,7 @@ Macros are tinct functions that receive AST-as-data and return AST-as-data. tinc
 source → parse → expand_surface_program → desugar → resolve → typecheck → eval
 ```
 
-- `[macro name [let params] body]` registers a compile-time function (`[defmacro ...]` is a legacy alias)
+- `[macro name [let params] body]` registers a compile-time function
 - When `[name arg1 arg2 ...]` appears in source, the expander quotes the arguments (converts each AST node to a typed `Expr` variant value) and calls the macro function with the quoted forms
 - The macro function returns a `Value::Expression` (or a dict convertible to AST) representing the expanded code
 - The expander converts the result back to AST and continues expansion
@@ -169,11 +166,11 @@ Macros defined in an included file are available to the includer **only when usi
 
 ### Parser / Grammar
 
-`src/parser.rs` recognizes three new keywords: `macro` (produces `SurfaceDeclaration::MacroDecl`), `syntax-class` (produces `SurfaceDeclaration::SyntaxClass`), and `splice` (produces `SurfaceDeclaration::Splice` in dict context). `[defmacro ...]` is a backward-compatible alias producing the same `SurfaceDeclaration::MacroDecl` node. Macro invocations are syntactically identical to function calls — the expander distinguishes them by name lookup against registered macros. No change to expression parsing.
+`src/parser.rs` recognizes three keywords: `macro` (produces `SurfaceDeclaration::MacroDecl`), `syntax-class` (produces `SurfaceDeclaration::SyntaxClass`), and `splice` (produces `SurfaceDeclaration::Splice` in dict context). Macro invocations are syntactically identical to function calls — the expander distinguishes them by name lookup against registered macros. No change to expression parsing.
 
 ### AST
 
-`src/parser.rs` (AST types) gains `SurfaceExpression::MacroDecl` (the primary `[macro ...]` form) and `SurfaceExpression::DefMacro` (deprecated alias), plus `SurfaceExpression::Quote`/`SurfaceExpression::Unquote`/`SurfaceExpression::UnquoteSplice` variants. `src/surface_convert.rs` defines a stable `SurfaceExpression -> Value::Variant` projection (`surface_program_to_dict`) and its inverse (`dict_to_surface_node`). The schema is a public API surface — schema changes break existing macros.
+`src/parser.rs` (AST types) has `SurfaceDeclaration::MacroDecl` for `[macro ...]`, plus `SurfaceExpression::Quote`/`SurfaceExpression::Unquote`/`SurfaceExpression::UnquoteSplice` variants. `src/surface_convert.rs` defines a stable `SurfaceExpression -> Value::Variant` projection (`surface_program_to_dict`) and its inverse (`dict_to_surface_node`). The schema is a public API surface — schema changes break existing macros.
 
 ### Evaluator
 

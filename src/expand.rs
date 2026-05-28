@@ -305,6 +305,7 @@ async fn register_stdlib_macros_from_env(
     // nodes are intercepted by the syntax-fn transformer.
     if let Some(transformer) = stdlib_env.read().unwrap().get("syntax-fn") {
         let span = crate::ast::Span::origin();
+        let span_clone = span.clone();
         let bindings: Vec<Arc<SurfaceNode>> = [("p-params", false), ("macro-body", false)]
             .iter()
             .map(|(name, variadic)| {
@@ -316,14 +317,18 @@ async fn register_stdlib_macros_from_env(
                         escaped: false,
                     }
                 };
-                Arc::new(SurfaceNode { expr, span })
+                Arc::new(SurfaceNode {
+                    expr,
+                    span: span_clone.clone(),
+                })
             })
             .collect();
         let params_node = Arc::new(SurfaceNode {
             expr: crate::ast::SurfaceExpression::LetDecl { bindings },
-            span,
+            span: span_clone.clone(),
         });
-        let _ = env_macro.register_macro("fn".to_string(), transformer, params_node, None, span);
+        let _ =
+            env_macro.register_macro("fn".to_string(), transformer, params_node, None, span_clone);
     }
 }
 
@@ -350,6 +355,7 @@ fn register_stdlib_macro_by_name(
     // This is used by expand_macro_call_surface for syntax-class annotation validation;
     // since stdlib macros have no annotations, validation is always a no-op.
     let span = crate::ast::Span::origin();
+    let span_clone = span.clone();
     let bindings: Vec<Arc<SurfaceNode>> = param_specs
         .iter()
         .map(|(name, variadic)| {
@@ -361,12 +367,15 @@ fn register_stdlib_macro_by_name(
                     escaped: false,
                 }
             };
-            Arc::new(SurfaceNode { expr, span })
+            Arc::new(SurfaceNode {
+                expr,
+                span: span_clone.clone(),
+            })
         })
         .collect();
     let params_node = Arc::new(SurfaceNode {
         expr: SurfaceExpression::LetDecl { bindings },
-        span,
+        span: span_clone.clone(),
     });
 
     let _ = env_macro.register_macro(
@@ -374,7 +383,7 @@ fn register_stdlib_macro_by_name(
         transformer,
         params_node,
         None, // no inject: default
-        span,
+        span_clone,
     );
 }
 
@@ -544,7 +553,7 @@ fn expand_surface_expr<'a>(
         if ee_depth > 10_000 {
             return Err(EvalError::resource_limit_exceeded(
                 format!("macro expansion: AST recursion depth {ee_depth} exceeds limit (10000)"),
-                node.span,
+                node.span.clone(),
             )
             .into());
         }
@@ -571,7 +580,7 @@ async fn expand_surface_expr_inner(
 ) -> EvalResult<Arc<SurfaceNode>> {
     use crate::ast::SurfaceExpression;
 
-    let span = node.span;
+    let span = node.span.clone();
     match &node.expr {
         // Declaration nodes pass through (registered during pre-scan; not emitted post-expansion)
         SurfaceExpression::Decl(_) => Ok(Arc::clone(node)),
@@ -599,7 +608,7 @@ async fn expand_surface_expr_inner(
                     &macro_name,
                     args,
                     named_args,
-                    span,
+                    span.clone(),
                     None, // expression position — no dict key
                     env,
                     ctx,
@@ -636,7 +645,7 @@ async fn expand_surface_expr_inner(
                             name: na.node.name.clone(),
                             value: expanded_value,
                         },
-                        na.span,
+                        na.span.clone(),
                     ));
                 }
                 Ok(Arc::new(SurfaceNode {
@@ -713,7 +722,7 @@ async fn expand_surface_expr_inner(
                                     &macro_name,
                                     args,
                                     named_args,
-                                    value_node.span,
+                                    value_node.span.clone(),
                                     dict_key_str.as_deref(),
                                     env,
                                     ctx,
@@ -753,7 +762,7 @@ async fn expand_surface_expr_inner(
                                         // Register via native surface path
                                         register_surface_macro_decl(
                                             inner_decl.as_ref(),
-                                            form.span,
+                                            form.span.clone(),
                                             env,
                                             ctx,
                                             stdlib_env,
@@ -780,7 +789,7 @@ async fn expand_surface_expr_inner(
                                                             key: None,
                                                             value: re_expanded,
                                                         },
-                                                        entry.span,
+                                                        entry.span.clone(),
                                                     ));
                                                 }
                                             }
@@ -790,7 +799,7 @@ async fn expand_surface_expr_inner(
                                                     key: None,
                                                     value: re_expanded,
                                                 },
-                                                entry.span,
+                                                entry.span.clone(),
                                             ));
                                         }
                                     }
@@ -803,7 +812,7 @@ async fn expand_surface_expr_inner(
                                         key: None,
                                         value: re_expanded,
                                     },
-                                    entry.span,
+                                    entry.span.clone(),
                                 ));
                             }
                         }
@@ -821,7 +830,7 @@ async fn expand_surface_expr_inner(
                         key: expanded_key,
                         value: expanded_value,
                     },
-                    entry.span,
+                    entry.span.clone(),
                 ));
             }
             Ok(Arc::new(SurfaceNode {
@@ -1143,6 +1152,7 @@ async fn expand_macro_call_surface(
         .into());
     }
 
+    let call_span_clone = call_span.clone();
     let call_site_id = if call_span == Span::origin() {
         CallSiteId::Synthetic(next_synthetic_id())
     } else {
@@ -1159,7 +1169,7 @@ async fn expand_macro_call_surface(
     let params_pattern = macro_metadata.params.clone();
     let inject_default = macro_metadata.inject_default.clone();
 
-    env.enter_expansion(call_site_id, call_span)?;
+    env.enter_expansion(call_site_id, call_span_clone.clone())?;
     let guard = ExpansionGuard {
         expander: env,
         call_site_id,
@@ -1185,7 +1195,7 @@ async fn expand_macro_call_surface(
                         &annotation.node,
                         param_name,
                         macro_name,
-                        call_span,
+                        call_span_clone.clone(),
                         guard.expander,
                     )?;
                 }
@@ -1204,7 +1214,10 @@ async fn expand_macro_call_surface(
     let mut positional_thunks: Vec<Arc<Thunk>> = Vec::with_capacity(args.len());
     for arg in args {
         let arg_val = Value::Expression(Arc::clone(arg));
-        positional_thunks.push(Arc::new(Thunk::new_materialized(arg_val, call_span)));
+        positional_thunks.push(Arc::new(Thunk::new_materialized(
+            arg_val,
+            call_span_clone.clone(),
+        )));
     }
 
     // Thread inject: binding
@@ -1218,14 +1231,17 @@ async fn expand_macro_call_surface(
                 name: binding_name.clone(),
                 escaped: false,
             },
-            span: call_span,
+            span: call_span_clone.clone(),
         });
         let binding_val = Value::Expression(binding_node);
-        positional_thunks.push(Arc::new(Thunk::new_materialized(binding_val, call_span)));
+        positional_thunks.push(Arc::new(Thunk::new_materialized(
+            binding_val,
+            call_span_clone.clone(),
+        )));
     }
 
     // Materialize the transformer
-    let transformer_val = eval::materialize(&transformer, Some(&call_span), ctx)
+    let transformer_val = eval::materialize(&transformer, Some(&call_span_clone), ctx)
         .await
         .map_err(|e| {
             EvalError::user_error(
@@ -1233,7 +1249,7 @@ async fn expand_macro_call_surface(
                     "macro '{}' transformer failed to evaluate: {}",
                     macro_name, e.kind
                 ),
-                call_span,
+                call_span_clone.clone(),
             )
         })?;
 
@@ -1253,13 +1269,13 @@ async fn expand_macro_call_surface(
                 closure_env,
                 default_env: closure_env,
                 ctx,
-                call_span,
+                call_span: call_span_clone.clone(),
                 origin: Some(Arc::from(format!("macro:{}", macro_name).as_str())),
             };
             invoke_function(&call_ctx).await.map_err(|e| {
                 EvalError::user_error(
                     format!("macro '{}' transformer call failed: {}", macro_name, e.kind),
-                    call_span,
+                    call_span_clone.clone(),
                 )
             })?
         }
@@ -1270,13 +1286,13 @@ async fn expand_macro_call_surface(
                     macro_name,
                     other.type_name()
                 ),
-                call_span,
+                call_span_clone.clone(),
             )
             .into());
         }
     };
 
-    let result_val = eval::materialize(&result_thunk, Some(&call_span), ctx)
+    let result_val = eval::materialize(&result_thunk, Some(&call_span_clone), ctx)
         .await
         .map_err(|e| {
             let mut err = EvalError::user_error(
@@ -1284,12 +1300,15 @@ async fn expand_macro_call_surface(
                     "macro '{}' expansion result failed to evaluate: {}",
                     macro_name, e.kind
                 ),
-                call_span,
+                call_span_clone.clone(),
             );
             for frame in &e.stack {
-                err.push_frame_with_file(frame.label.clone(), frame.span, frame.file.clone());
+                err.push_frame(frame.label.clone(), frame.definition_span.clone());
             }
-            err.push_frame_with_file(format!("in expansion of `{}`", macro_name), call_span, Some(file!().into()));
+            err.push_frame(
+                format!("in expansion of `{}`", macro_name),
+                call_span_clone.clone(),
+            );
             err
         })?;
 
@@ -1303,7 +1322,10 @@ async fn expand_macro_call_surface(
             // Fallback path: macro returned Dict/Variant, need deep materialization + conversion
             // dict_to_surface_node expects all nested values to be pre-materialized (uses try_get_materialized)
             let deep_result = force_dict_tree(&result_val, ctx).await.map_err(|mut e| {
-                e.push_frame(format!("in expansion of `{}`", macro_name), call_span);
+                e.push_frame(
+                    format!("in expansion of `{}`", macro_name),
+                    call_span_clone.clone(),
+                );
                 e
             })?;
 
@@ -1320,7 +1342,7 @@ async fn expand_macro_call_surface(
                         },
                         e.message
                     ),
-                    call_span,
+                    call_span_clone.clone(),
                 )
             })?
         }
@@ -1331,7 +1353,7 @@ async fn expand_macro_call_surface(
                     macro_name,
                     other.type_name()
                 ),
-                call_span,
+                call_span_clone.clone(),
             )
             .into());
         }
@@ -1340,16 +1362,16 @@ async fn expand_macro_call_surface(
     if expanded_node.span == Span::origin() {
         expanded_node = Arc::new(SurfaceNode {
             expr: expanded_node.expr.clone(),
-            span: call_span,
+            span: call_span_clone.clone(),
         });
     }
 
     // Record provenance
     guard.expander.provenance.insert(
-        SpanKey::from(call_span),
+        SpanKey::from(call_span_clone.clone()),
         MacroProvenance {
             macro_name: macro_name.to_string(),
-            call_site_span: call_span,
+            call_site_span: call_span_clone.clone(),
         },
     );
 
@@ -1425,7 +1447,7 @@ async fn register_surface_macro_decl(
                                         annotation: None,
                                         variadic: false,
                                     },
-                                    b.span,
+                                    b.span.clone(),
                                 ));
                             }
                             SurfaceExpression::Annotated {
@@ -1438,7 +1460,7 @@ async fn register_surface_macro_decl(
                                         annotation: Some(annotation.clone()),
                                         variadic: false,
                                     },
-                                    b.span,
+                                    b.span.clone(),
                                 ));
                             }
                             SurfaceExpression::Rest(Some(n)) => {
@@ -1448,7 +1470,7 @@ async fn register_surface_macro_decl(
                                         annotation: None,
                                         variadic: true,
                                     },
-                                    b.span,
+                                    b.span.clone(),
                                 ));
                             }
                             SurfaceExpression::Rest(None) => {} // anonymous spread
@@ -1465,7 +1487,7 @@ async fn register_surface_macro_decl(
                             annotation: None,
                             variadic: false,
                         },
-                        params.span,
+                        params.span.clone(),
                     )]
                 }
             };
@@ -1479,7 +1501,7 @@ async fn register_surface_macro_decl(
                         annotation: None,
                         variadic: false,
                     },
-                    params.span,
+                    params.span.clone(),
                 ));
             }
 
@@ -1487,7 +1509,7 @@ async fn register_surface_macro_decl(
             let transformer_value = crate::eval::eval_surface_fn(
                 all_fn_params,
                 body,
-                decl_span,
+                decl_span.clone(),
                 Arc::clone(stdlib_env),
                 ctx,
             )?;
@@ -1516,7 +1538,7 @@ async fn register_surface_macro_decl(
                                 annotation: None,
                                 variadic: false,
                             },
-                            b.span,
+                            b.span.clone(),
                         )),
                         SurfaceExpression::Annotated {
                             name: n,
@@ -1527,7 +1549,7 @@ async fn register_surface_macro_decl(
                                 annotation: Some(annotation.clone()),
                                 variadic: false,
                             },
-                            b.span,
+                            b.span.clone(),
                         )),
                         SurfaceExpression::Rest(Some(rest_name)) => Some(Spanned::new(
                             Param {
@@ -1535,7 +1557,7 @@ async fn register_surface_macro_decl(
                                 annotation: None,
                                 variadic: true,
                             },
-                            b.span,
+                            b.span.clone(),
                         )),
                         SurfaceExpression::Rest(None) => None,
                         _ => Some(Spanned::new(
@@ -1544,7 +1566,7 @@ async fn register_surface_macro_decl(
                                 annotation: None,
                                 variadic: false,
                             },
-                            b.span,
+                            b.span.clone(),
                         )),
                     })
                     .collect(),
@@ -1555,7 +1577,7 @@ async fn register_surface_macro_decl(
             let transformer_value = crate::eval::eval_surface_fn(
                 param_vec,
                 body,
-                decl_span,
+                decl_span.clone(),
                 Arc::clone(stdlib_env),
                 ctx,
             )?;
@@ -1611,7 +1633,7 @@ fn pre_scan_surface_document<'a>(
                 crate::ast::SurfaceItem::Decl(decl_spanned) => {
                     register_surface_macro_decl(
                         &decl_spanned.node,
-                        decl_spanned.span,
+                        decl_spanned.span.clone(),
                         env,
                         ctx,
                         stdlib_env,
@@ -1669,7 +1691,7 @@ fn pre_scan_surface_expr<'a>(
                                     env,
                                     &ctx,
                                     &stdlib_env,
-                                    node.span,
+                                    node.span.clone(),
                                 )
                                 .await;
                             }
@@ -1690,7 +1712,14 @@ fn pre_scan_surface_expr<'a>(
 
             // Embedded declaration inside an expression context — register if it is a macro/syntax-class
             SurfaceExpression::Decl(decl) => {
-                register_surface_macro_decl(decl.as_ref(), node.span, env, &ctx, &stdlib_env).await
+                register_surface_macro_decl(
+                    decl.as_ref(),
+                    node.span.clone(),
+                    env,
+                    &ctx,
+                    &stdlib_env,
+                )
+                .await
             }
 
             // Compound expressions — recurse into children
@@ -1835,8 +1864,14 @@ async fn pre_scan_follow_libdir_include(
         Err(_) => return,
     };
 
-    // Parse the file
-    let parsed = match crate::parser::parse(&source) {
+    // Build a SourceFile so spans in the parsed AST carry the file name.
+    let sf = Arc::new(crate::ast::SourceFile {
+        path: Arc::from(file_name),
+        content: Arc::from(source.as_str()),
+    });
+
+    // Parse the file, stamping all spans with the SourceFile.
+    let parsed = match crate::parser::parse_with_file(&source, sf) {
         Ok(f) => f,
         Err(_) => return,
     };

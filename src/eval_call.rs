@@ -70,7 +70,7 @@ pub(crate) async fn eval_call_core(
                 Arc::clone(arg),
                 Arc::clone(env),
                 Arc::clone(ctx),
-                arg.span,
+                arg.span.clone(),
             ))
         })
         .collect();
@@ -87,7 +87,7 @@ pub(crate) async fn eval_call_core(
                     Arc::clone(&na.node.value),
                     Arc::clone(env),
                     Arc::clone(ctx),
-                    na.node.value.span,
+                    na.node.value.span.clone(),
                 )),
             );
         }
@@ -99,9 +99,9 @@ pub(crate) async fn eval_call_core(
         func_thunk,
         pos_thunks.into_vec(),
         named_thunks,
-        *call_span,
+        call_span.clone(),
         Arc::clone(env), // caller_env: used for default param evaluation
-        *call_span,
+        call_span.clone(),
         func_label_core(&func_expr.node),
         Arc::clone(ctx),
         original_call,
@@ -150,19 +150,21 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
     if let Some(tag_thunk) = variant_tag_thunk {
         // Validate: variant constructors take exactly one positional argument, no named args
         if ctx.positional.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, ctx.positional.len(), ctx.call_span).into());
+            return Err(
+                EvalError::arity_mismatch(1, ctx.positional.len(), ctx.call_span.clone()).into(),
+            );
         }
 
         if ctx.named.is_some_and(|n| !n.is_empty()) {
             return Err(EvalError::named_arg_rejected(
                 "variant constructor".to_string(),
-                ctx.call_span,
+                ctx.call_span.clone(),
             )
             .into());
         }
 
         // Extract the tag from the marker
-        let tag_value = materialize(&tag_thunk, Some(&ctx.call_span), ctx.ctx).await?;
+        let tag_value = materialize(&tag_thunk, Some(&ctx.call_span.clone()), ctx.ctx).await?;
         let tag = match tag_value {
             Value::String {
                 ref source,
@@ -172,7 +174,7 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
             _ => {
                 return Err(EvalError::internal(
                     "variant constructor tag must be a string".to_string(),
-                    ctx.call_span,
+                    ctx.call_span.clone(),
                 )
                 .into());
             }
@@ -187,7 +189,10 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
             payload: Some(payload_id),
         };
 
-        return Ok(Arc::new(Thunk::new_materialized(variant, ctx.call_span)));
+        return Ok(Arc::new(Thunk::new_materialized(
+            variant,
+            ctx.call_span.clone(),
+        )));
     }
 
     // Normal function invocation
@@ -205,7 +210,7 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
         Arc::clone(ctx.body),
         call_env,
         Arc::clone(ctx.ctx),
-        ctx.call_span,
+        ctx.call_span.clone(),
     );
     if let Some(ref label) = ctx.origin {
         thunk = thunk.with_origin(Arc::clone(label));
@@ -276,9 +281,11 @@ pub(crate) async fn bind_args_thunks(
             let covered_positionally = i < positional.len();
             let covered_by_name = named.map(|n| n.contains_key(&param.name)).unwrap_or(false);
             if !covered_positionally && !covered_by_name {
-                return Err(
-                    EvalError::missing_required_param(param.name.clone(), *call_span).into(),
-                );
+                return Err(EvalError::missing_required_param(
+                    param.name.clone(),
+                    call_span.clone(),
+                )
+                .into());
             }
         }
     }
@@ -291,7 +298,9 @@ pub(crate) async fn bind_args_thunks(
         } else {
             ArityBound::Exact(max_positional)
         };
-        return Err(EvalError::arity_mismatch_bound(expected, positional.len(), *call_span).into());
+        return Err(
+            EvalError::arity_mismatch_bound(expected, positional.len(), call_span.clone()).into(),
+        );
     }
 
     // BIND-POSITIONAL: Bind args to params following C-PRIORITY chain
@@ -308,7 +317,7 @@ pub(crate) async fn bind_args_thunks(
             // Empty ResolutionTable is correct: the default expression uses FreeVar name-based
             // lookup in default_env (the caller's environment), which is semantically equivalent
             // to the old eval(Rc::new(surface_node_to_expr(node)), ...) path.
-            let span = default_node.span;
+            let span = default_node.span.clone();
             Arc::new(Thunk::new_surface(
                 default_node,
                 crate::ast::empty_resolution_table_arc(),
@@ -342,7 +351,7 @@ pub(crate) async fn bind_args_thunks(
                     // C-NO-OVERLAP: named arg targets a positionally-bound parameter
                     return Err(Box::new(EvalError::named_arg_conflict(
                         name.clone(),
-                        *call_span,
+                        call_span.clone(),
                     )));
                 }
                 Some(_) => {
@@ -358,7 +367,7 @@ pub(crate) async fn bind_args_thunks(
                     return Err(Box::new(EvalError::unknown_named_arg(
                         name.clone(),
                         valid_params,
-                        *call_span,
+                        call_span.clone(),
                     )));
                 }
             }
@@ -374,7 +383,7 @@ pub(crate) async fn bind_args_thunks(
         // Nil sentinel: empty dict is the standard end-of-Seq marker.
         let nil = Arc::new(Thunk::new_materialized(
             Value::Dict(IndexMap::new()),
-            *call_span,
+            call_span.clone(),
         ));
         let seq_thunk = variadic_args.iter().rev().fold(nil, |tail, head_arg| {
             let head_id = ctx.alloc_thunk(Arc::clone(head_arg));
@@ -384,7 +393,7 @@ pub(crate) async fn bind_args_thunks(
                     head: head_id,
                     tail: tail_id,
                 },
-                *call_span,
+                call_span.clone(),
             ))
         });
         call_env

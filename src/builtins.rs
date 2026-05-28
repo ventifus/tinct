@@ -122,8 +122,11 @@ pub(crate) fn bytes_to_seq(bytes: &[u8], span: Span, ctx: &Arc<crate::eval::Eval
     // Build from the right so we don't need a separate pass.
     let mut acc: Value = Value::Dict(IndexMap::new());
     for &byte in bytes.iter().rev() {
-        let head = Arc::new(Thunk::new_materialized(Value::Int(i64::from(byte)), span));
-        let tail = Arc::new(Thunk::new_materialized(acc, span));
+        let head = Arc::new(Thunk::new_materialized(
+            Value::Int(i64::from(byte)),
+            span.clone(),
+        ));
+        let tail = Arc::new(Thunk::new_materialized(acc, span.clone()));
         acc = Value::Seq {
             head: ctx.alloc_thunk(head),
             tail: ctx.alloc_thunk(tail),
@@ -250,7 +253,7 @@ pub(crate) fn flatten_overlay(
 
     while let Some(thunk_id) = work_stack.pop() {
         let thunk = ctx.thunk_arena.lock().unwrap().get(thunk_id).clone();
-        let span = thunk.span;
+        let span = thunk.span.clone();
         let val = materialize(&thunk, Some(&call_span), ctx)?;
         match val {
             Value::Dict(map) => {
@@ -457,15 +460,17 @@ fn float_to_int_builtin(
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> EvalResult<Arc<Thunk>> {
-    let val = expect_one_arg(name, args, named, ctx, call_span)?;
+    let val = expect_one_arg(name, args, named, ctx, call_span.clone())?;
     match val {
         Value::Int(n) => ok_val(Value::Int(n), call_span),
         Value::Float(f) => {
             if !f.is_finite() {
-                return Err(EvalError::float_not_finite(name.to_string(), f, args[0].span).into());
+                return Err(
+                    EvalError::float_not_finite(name.to_string(), f, args[0].span.clone()).into(),
+                );
             }
             ok_val(
-                Value::Int(checked_f64_to_i64(name, op(f), call_span)?),
+                Value::Int(checked_f64_to_i64(name, op(f), call_span.clone())?),
                 call_span,
             )
         }
@@ -473,7 +478,7 @@ fn float_to_int_builtin(
             name.to_string(),
             "Int or Float",
             other.type_name(),
-            args[0].span,
+            args[0].span.clone(),
         )
         .into()),
     }
@@ -535,8 +540,8 @@ fn builtin_to_int(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResul
         return Box::pin(async move { Err(EvalError::arity_mismatch(1, 0, call_span).into()) });
     }
     Box::pin(async move {
-        let val = expect_one_arg("to-int", &args, named.as_ref(), &ctx, call_span)?;
-        let arg0_span = args[0].span;
+        let val = expect_one_arg("to-int", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let arg0_span = args[0].span.clone();
         let s = require_string("to-int", val, arg0_span)?;
         match s.parse::<i64>() {
             Ok(n) => ok_val(Value::Int(n), call_span),
@@ -566,8 +571,8 @@ fn builtin_to_float(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalRes
         return Box::pin(async move { Err(EvalError::arity_mismatch(1, 0, call_span).into()) });
     }
     Box::pin(async move {
-        let val = expect_one_arg("to-float", &args, named.as_ref(), &ctx, call_span)?;
-        let arg0_span = args[0].span;
+        let val = expect_one_arg("to-float", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let arg0_span = args[0].span.clone();
         let s = require_string("to-float", val, arg0_span)?;
         match s.parse::<f64>() {
             Ok(f) if f.is_finite() => ok_val(Value::Float(f), call_span),
@@ -654,7 +659,7 @@ fn builtin_first(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("first", named.as_ref(), call_span)?;
+        reject_named("first", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
@@ -697,7 +702,13 @@ fn builtin_first(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult
                 ok_val(Value::Int(i64::from(byte)), call_span)
             }
             other => {
-                let map = require_dict("first", other, args[0].span, &ctx, call_span)?;
+                let map = require_dict(
+                    "first",
+                    other,
+                    args[0].span.clone(),
+                    &ctx,
+                    call_span.clone(),
+                )?;
                 if map.is_empty() {
                     return Err(EvalError::empty_collection("first".to_string(), call_span).into());
                 }
@@ -726,7 +737,7 @@ fn builtin_last(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("last", named.as_ref(), call_span)?;
+        reject_named("last", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
@@ -770,7 +781,8 @@ fn builtin_last(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
                 ok_val(Value::Int(i64::from(byte)), call_span)
             }
             other => {
-                let map = require_dict("last", other, args[0].span, &ctx, call_span)?;
+                let map =
+                    require_dict("last", other, args[0].span.clone(), &ctx, call_span.clone())?;
                 if map.is_empty() {
                     return Err(EvalError::empty_collection("last".to_string(), call_span).into());
                 }
@@ -800,7 +812,7 @@ fn builtin_rest(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("rest", named.as_ref(), call_span)?;
+        reject_named("rest", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
@@ -817,13 +829,13 @@ fn builtin_rest(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
             })
             .await;
         }
-        let map = require_dict("rest", val, args[0].span, &ctx, call_span)?;
+        let map = require_dict("rest", val, args[0].span.clone(), &ctx, call_span.clone())?;
 
         // Skip the first entry (index 0 by insertion order), reindex rest as 0..n-1.
         let mut result = IndexMap::with_capacity(map.len().saturating_sub(1));
         for (new_idx, (_old_key, thunk)) in map.into_iter().skip(1).enumerate() {
             let new_key = Key::Int(i64::try_from(new_idx).map_err(|_| {
-                EvalError::internal("collection index overflow".to_string(), call_span)
+                EvalError::internal("collection index overflow".to_string(), call_span.clone())
             })?);
             result.insert(new_key, thunk);
         }
@@ -849,7 +861,7 @@ fn builtin_cons(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("cons", named.as_ref(), call_span)?;
+        reject_named("cons", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -868,7 +880,13 @@ fn builtin_cons(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
             })
             .await;
         }
-        let map = require_dict("cons", xs_val, args[1].span, &ctx, call_span)?;
+        let map = require_dict(
+            "cons",
+            xs_val,
+            args[1].span.clone(),
+            &ctx,
+            call_span.clone(),
+        )?;
 
         let mut result = IndexMap::with_capacity(map.len() + 1);
         // Insert the new element at key 0.
@@ -877,7 +895,7 @@ fn builtin_cons(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
         // Insert existing entries reindexed as 1..n.
         for (new_idx, (_old_key, thunk_id)) in map.into_iter().enumerate() {
             let new_key = Key::Int(i64::try_from(new_idx + 1).map_err(|_| {
-                EvalError::internal("collection index overflow".to_string(), call_span)
+                EvalError::internal("collection index overflow".to_string(), call_span.clone())
             })?);
             result.insert(new_key, thunk_id);
         }
@@ -901,21 +919,27 @@ fn builtin_reverse(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResu
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("reverse", named.as_ref(), call_span)?;
+        reject_named("reverse", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
         let val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Spine");
-        let map = require_dict("reverse", val, args[0].span, &ctx, call_span)?;
+        let map = require_dict(
+            "reverse",
+            val,
+            args[0].span.clone(),
+            &ctx,
+            call_span.clone(),
+        )?;
 
         let mut result = IndexMap::with_capacity(map.len());
         // Collect values in reverse insertion order.
         let entries: Vec<_> = map.into_iter().collect();
         for (new_idx, (_old_key, thunk)) in entries.into_iter().rev().enumerate() {
             let new_key = Key::Int(i64::try_from(new_idx).map_err(|_| {
-                EvalError::internal("collection index overflow".to_string(), call_span)
+                EvalError::internal("collection index overflow".to_string(), call_span.clone())
             })?);
             result.insert(new_key, thunk);
         }
@@ -989,7 +1013,7 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("sort", named.as_ref(), call_span)?;
+        reject_named("sort", named.as_ref(), call_span.clone())?;
 
         // Accept 1 arg (dict only) or 2 args (comparator, dict)
         if args.len() != 1 && args.len() != 2 {
@@ -1003,7 +1027,7 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
             let cmp_val = args[0]
                 .try_get_materialized()
                 .expect("pre-materialized by pos_strictness[0]=Spine");
-            let arg0_span = args[0].span;
+            let arg0_span = args[0].span.clone();
             match cmp_val {
                 Value::Function { .. } | Value::Builtin(_) => (Some((cmp_val, arg0_span)), 1),
                 other => {
@@ -1020,18 +1044,18 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
             (None, 0)
         };
 
-        let dict_span = args[dict_arg_idx].span;
+        let dict_span = args[dict_arg_idx].span.clone();
         let val = args[dict_arg_idx]
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[dict_arg_idx]=Spine");
-        let map = require_dict("sort", val, dict_span, &ctx, call_span)?;
+        let map = require_dict("sort", val, dict_span, &ctx, call_span.clone())?;
 
         // Materialize all values so we can compare them.
         let mut pairs: Vec<(Value, Span)> = Vec::with_capacity(map.len());
         for (_key, thunk_id) in &map {
             let thunk = ctx.get_thunk(*thunk_id);
             let mat = materialize(&thunk, Some(&call_span), &ctx)?;
-            pairs.push((mat, thunk.span));
+            pairs.push((mat, thunk.span.clone()));
         }
 
         // Sort using comparator or natural ordering. Collect any comparison error.
@@ -1045,8 +1069,8 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
                 }
 
                 // Create thunks for the two values to pass to the comparator
-                let a_thunk = Arc::new(Thunk::new_materialized(a.clone(), *a_span));
-                let b_thunk = Arc::new(Thunk::new_materialized(b.clone(), *b_span));
+                let a_thunk = Arc::new(Thunk::new_materialized(a.clone(), a_span.clone()));
+                let b_thunk = Arc::new(Thunk::new_materialized(b.clone(), b_span.clone()));
                 let pos_args = vec![a_thunk, b_thunk];
 
                 // Call the comparator function
@@ -1064,7 +1088,7 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
                             positional: &pos_args,
                             named: None,
                             default_env: closure_env,
-                            call_span,
+                            call_span: call_span.clone(),
                             origin: Some(Arc::from("sort")),
                             ctx: &ctx,
                         }) {
@@ -1083,7 +1107,7 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
                         let builtin_args = BuiltinArgs {
                             args: pos_args,
                             named: None,
-                            call_span,
+                            call_span: call_span.clone(),
                             ctx: Arc::clone(&ctx),
                         };
                         let fut = (def.func)(builtin_args);
@@ -1100,7 +1124,7 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
                             "sort".to_string(),
                             "Function",
                             cmp_val.type_name(),
-                            cmp_span,
+                            cmp_span.clone(),
                         )));
                         return std::cmp::Ordering::Equal;
                     }
@@ -1115,7 +1139,7 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
                             "sort".to_string(),
                             "Bool",
                             other.type_name(),
-                            result_thunk.span,
+                            result_thunk.span.clone(),
                         )));
                         std::cmp::Ordering::Equal
                     }
@@ -1131,7 +1155,7 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
                 if sort_error.is_some() {
                     return std::cmp::Ordering::Equal;
                 }
-                match compare_values(a, b, call_span) {
+                match compare_values(a, b, call_span.clone()) {
                     Ok(ord) => ord,
                     Err(e) => {
                         sort_error = Some(e);
@@ -1149,7 +1173,7 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
         let mut result = IndexMap::with_capacity(pairs.len());
         for (new_idx, (mat_val, orig_span)) in pairs.into_iter().enumerate() {
             let new_key = Key::Int(i64::try_from(new_idx).map_err(|_| {
-                EvalError::internal("collection index overflow".to_string(), call_span)
+                EvalError::internal("collection index overflow".to_string(), call_span.clone())
             })?);
             let thunk = Arc::new(Thunk::new_materialized(mat_val, orig_span));
             let thunk_id = ctx.alloc_thunk(thunk);
@@ -1167,7 +1191,7 @@ fn builtin_proxy(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("proxy", named.as_ref(), call_span)?;
+        reject_named("proxy", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
@@ -2198,7 +2222,13 @@ fn load_stdlib_module(
     env: &Arc<RwLock<Environment>>,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<(), Box<crate::error::EvalError>> {
-    let parsed = crate::parser::parse(source).map_err(|e| {
+    // Stamp spans with the module filename so runtime backtraces show
+    // "prelude.llt:1234:5" instead of bare "1234:5".
+    let sf = std::sync::Arc::new(crate::ast::SourceFile {
+        path: std::sync::Arc::from(module_name),
+        content: std::sync::Arc::from(source),
+    });
+    let parsed = crate::parser::parse_with_file(source, sf).map_err(|e| {
         crate::error::EvalError::internal(format!("{module_name} parse error: {e}"), Span::origin())
     })?;
 
@@ -2360,14 +2390,24 @@ fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvWit
     // Load prelude — provides all public stdlib functions.
     // All builtins are accessible via the parent env chain.
     let prelude_source = include_str!("../stdlib/prelude.llt");
-    load_stdlib_module(prelude_source, "prelude", &stdlib_env, &bootstrap_ctx)?;
+    load_stdlib_module(
+        prelude_source,
+        "stdlib/prelude.llt",
+        &stdlib_env,
+        &bootstrap_ctx,
+    )?;
 
     // User code now only sees what prelude exports — no direct access to Rust builtins.
 
     // Load macros — exports tmpl-transformer and helpers used by expand_surface_program.
     // Loaded after prelude so macro helpers can reference prelude functions.
     let macros_source = include_str!("../stdlib/macros.llt");
-    load_stdlib_module(macros_source, "macros", &stdlib_env, &bootstrap_ctx)?;
+    load_stdlib_module(
+        macros_source,
+        "stdlib/macros.llt",
+        &stdlib_env,
+        &bootstrap_ctx,
+    )?;
 
     // Keep the arena alive: bootstrap_ctx is dropped here, but its arena holds all
     // ThunkIds allocated during prelude/macros loading. Callers that need to share
@@ -2446,16 +2486,20 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
 
             let dict = match val {
                 Value::Dict(map) => map,
-                Value::Overlay(l_id, r_id) => {
-                    flatten_overlay(&l_id, &r_id, "type-stage prelude", &bootstrap_ctx, doc.span)?
-                }
+                Value::Overlay(l_id, r_id) => flatten_overlay(
+                    &l_id,
+                    &r_id,
+                    "type-stage prelude",
+                    &bootstrap_ctx,
+                    doc.span.clone(),
+                )?,
                 other => {
                     return Err(crate::error::EvalError::internal(
                         format!(
                             "type-stage document must evaluate to a Dict, got {}",
                             other.type_name()
                         ),
-                        doc.span,
+                        doc.span.clone(),
                     )
                     .into())
                 }
@@ -4693,7 +4737,7 @@ mod tests {
         // through a lazy overlay by materializing and comparing values.
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 5);
-        let left_thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span));
+        let left_thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
         let right_thunk = Arc::new(Thunk::new_materialized(Value::Int(99), span));
 
         let mut left = IndexMap::new();
@@ -8053,7 +8097,7 @@ mod tests {
         let call_span_val = test_span(10, 1, 10, 30); // Where the $if call is
 
         let args = vec![
-            thunk_with_span(Value::Int(1), condition_span),
+            thunk_with_span(Value::Int(1), condition_span.clone()),
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];
@@ -8096,7 +8140,7 @@ mod tests {
         let same_span = test_span(1, 1, 1, 10);
 
         let args = vec![
-            thunk_with_span(Value::Int(1), same_span),
+            thunk_with_span(Value::Int(1), same_span.clone()),
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];

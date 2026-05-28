@@ -166,7 +166,7 @@ pub async fn format_source_tinct_with_dir(
                 } => Ok(source[start..end].to_string()),
                 _ => {
                     let display_str =
-                        crate::value_to_display_string(&ok_val, &ctx, payload_thunk.span)
+                        crate::value_to_display_string(&ok_val, &ctx, payload_thunk.span.clone())
                             .unwrap_or_else(|_| "<error displaying value>".to_string());
                     Err(format!("formatter Ok value is not a string: {display_str}"))
                 }
@@ -178,7 +178,7 @@ pub async fn format_source_tinct_with_dir(
                 let err_val = eval::materialize(&err_thunk, None, &ctx)
                     .await
                     .map_err(|e| format!("formatter Error materialize error: {e}"))?;
-                crate::value_to_display_string(&err_val, &ctx, err_thunk.span)
+                crate::value_to_display_string(&err_val, &ctx, err_thunk.span.clone())
                     .unwrap_or_else(|_| "<error displaying value>".to_string())
             } else {
                 "(no message)".to_string()
@@ -187,7 +187,7 @@ pub async fn format_source_tinct_with_dir(
         }
         _ => {
             let display_str =
-                crate::value_to_display_string(&result_val, &ctx, formatter_thunk.span)
+                crate::value_to_display_string(&result_val, &ctx, formatter_thunk.span.clone())
                     .unwrap_or_else(|_| "<error displaying value>".to_string());
             Err(format!(
                 "formatter returned non-Result value: {display_str}"
@@ -1241,7 +1241,7 @@ impl<'a> Formatter<'a> {
                 self.output.push_str(name);
                 self.output.push('@');
                 // Create a temporary Spanned wrapper for the inner annotation
-                let inner_spanned = Spanned::new(inner.as_ref().clone(), annotation.span);
+                let inner_spanned = Spanned::new(inner.as_ref().clone(), annotation.span.clone());
                 self.format_annotation(&inner_spanned);
             }
         }

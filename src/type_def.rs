@@ -2008,30 +2008,30 @@ pub fn check_kind_wellformed(
         }
         Type::Seq(elem) => check_kind_wellformed(elem, kind_env, span),
         Type::Map(key, val) => {
-            check_kind_wellformed(key, kind_env, span)?;
+            check_kind_wellformed(key, kind_env, span.clone())?;
             check_kind_wellformed(val, kind_env, span)
         }
         Type::Function { params, ret, .. } => {
             for (_name, param_ty) in params {
-                check_kind_wellformed(param_ty, kind_env, span)?;
+                check_kind_wellformed(param_ty, kind_env, span.clone())?;
             }
             check_kind_wellformed(ret, kind_env, span)
         }
         Type::Record(row) => {
             for field_ty in row.fields.values() {
-                check_kind_wellformed(field_ty, kind_env, span)?;
+                check_kind_wellformed(field_ty, kind_env, span.clone())?;
             }
             Ok(())
         }
         Type::Union(members) | Type::Intersection(members) => {
             for member in members {
-                check_kind_wellformed(member, kind_env, span)?;
+                check_kind_wellformed(member, kind_env, span.clone())?;
             }
             Ok(())
         }
         Type::Negation(inner) => check_kind_wellformed(inner, kind_env, span),
         Type::App(func, arg) => {
-            check_kind_wellformed(func, kind_env, span)?;
+            check_kind_wellformed(func, kind_env, span.clone())?;
             check_kind_wellformed(arg, kind_env, span)
         }
         Type::Operator(name) => {
@@ -2052,13 +2052,13 @@ pub fn check_kind_wellformed(
         }
         Type::TypeStageApp { fn_name: _, args } => {
             for arg in args {
-                check_kind_wellformed(arg, kind_env, span)?;
+                check_kind_wellformed(arg, kind_env, span.clone())?;
             }
             Ok(())
         }
         Type::NominalVariant { tag: _, fields } => {
             for field_ty in fields.fields.values() {
-                check_kind_wellformed(field_ty, kind_env, span)?;
+                check_kind_wellformed(field_ty, kind_env, span.clone())?;
             }
             Ok(())
         }
