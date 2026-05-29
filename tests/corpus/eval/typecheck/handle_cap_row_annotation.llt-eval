@@ -1,0 +1,25 @@
+# Handle[cap_row] annotation forms resolve to Handle(CapType) not Union or Unknown.
+#
+# Tests annotation forms for Handle with a capability row argument:
+#   1. h@Handle@DirCap     — subscript in parameter annotation (resolve_annotated)
+#   2. h@Handle@NetCap     — same for NetCap
+#   3. [Handle DirCap] in fn@[return: ...] — type-dict position (resolve_type_dict)
+#
+# Functions are defined but not called — tests that annotations type-check cleanly.
+# Previously [Handle DirCap] fell through to Union(Handle(Unknown), DirCap) in
+# resolve_type_dict, causing incorrect type inference.
+
+[
+  # Form 1+2: h@Handle@DirCap and h@Handle@NetCap as parameter annotations (subscript form)
+  use-dir: [fn [let h@Handle@DirCap] h]
+  use-net: [fn [let h@Handle@NetCap] h]
+
+  # Form 3: [Handle DirCap] in return type position (fn metadata dict).
+  # Previously broken: resolved to Union(Handle(Unknown), DirCap) instead of Handle(DirCap).
+  passthru-dir: [fn@[return: [Handle DirCap]] [let h@Handle@DirCap] h]
+
+  always-true: true
+]
+
+=== out
+Dict({"use-dir": Function(h), "use-net": Function(h), "passthru-dir": Function(h), "always-true": Bool(true)})

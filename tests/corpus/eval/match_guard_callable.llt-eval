@@ -1,0 +1,17 @@
+# Match guard as a callable function — the guard is invoked with the scrutinee.
+# Previously this used block_on_anywhere(materialize(call_thunk)) in MatchGuardCheck,
+# which caused nested async context issues. The iterative fix pushes a CEK continuation
+# and returns Action::Materialize instead.
+[
+    positive?: [fn [let n] [> n 0]]
+
+    result: [match 5
+        x@[is: positive?]: "positive"
+        _:                  "non-positive"]
+]
+
+---
+
+%.result
+=== out
+String("positive")

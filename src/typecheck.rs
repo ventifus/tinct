@@ -389,13 +389,11 @@ fn typecheck_surface_document(
     for item in &doc.items {
         if let SurfaceItem::Decl(decl_spanned) = item {
             match &decl_spanned.node {
-                SurfaceDeclaration::TypeAlias { params: _, body: _ } => {
-                    // Register type alias directly into env
-                    // Note: top-level [type ...] declarations don't have a name; they're
-                    // typically used as `MyType: [type ...]` dict entries. For now, skip
-                    // standalone [type ...] declarations at the top level.
-                    // TODO: Once we support named type declarations ([type MyType [...]]),
-                    // extract the name and register here.
+                SurfaceDeclaration::TypeAlias { .. } => {
+                    // Standalone [type ...] declarations at the top level have no name
+                    // (the name comes from the dict key in `MyType: [type ...]` form).
+                    // Unnamed type alias decls are skipped here; named aliases in Dict
+                    // expressions are registered in the pre-pass above.
                 }
                 SurfaceDeclaration::ClassDecl {
                     name,
@@ -1930,7 +1928,10 @@ pub(crate) fn infer_surface_expr(
                 // Only store when scheme collection is enabled and the scheme is polymorphic
                 // (has constraints or quantified type vars — monomorphic schemes show the
                 // same info via type_map and don't need the extra constraint display).
-                if !scheme.constraints.is_empty() || !scheme.type_vars.is_empty() {
+                if !scheme.constraints.is_empty()
+                    || !scheme.type_vars.is_empty()
+                    || !scheme.kind_vars.is_empty()
+                {
                     if let Some(ref mut smap) = state.scheme_map {
                         let key = (node.span.start.offset, node.span.end.offset);
                         smap.insert(key, scheme.clone());
@@ -2298,9 +2299,14 @@ pub(crate) fn infer_surface_expr(
                 }
 
                 match env.get(name) {
-                    Some(scheme) if !scheme.type_vars.is_empty() => {
+                    Some(scheme)
+                        if !scheme.type_vars.is_empty() || !scheme.kind_vars.is_empty() =>
+                    {
                         // Record scheme for LSP hover
-                        if !scheme.constraints.is_empty() || !scheme.type_vars.is_empty() {
+                        if !scheme.constraints.is_empty()
+                            || !scheme.type_vars.is_empty()
+                            || !scheme.kind_vars.is_empty()
+                        {
                             if let Some(ref mut smap) = state.scheme_map {
                                 let key = (func.span.start.offset, func.span.end.offset);
                                 smap.insert(key, scheme.clone());
@@ -4619,15 +4625,17 @@ fn check_dot_access(
         if let Some(scheme) = env.get(name) {
             if let Some(ref inner_schemes) = scheme.inner_schemes {
                 if let Some(field_scheme) = inner_schemes.get(field_str) {
-                    // TODO(type-system-cleanup T013 Task 3): Thread origin info here.
-                    // origin_name should be the field access expression (e.g., "record.field"),
-                    // origin_span should be the field key span (field_str position).
+                    // Thread origin info for T013 diagnostics: origin_name is the dot-access
+                    // expression (e.g., "record.field"), origin_span is the whole access span.
+                    // (No separate field-key span is available from DotKey; the whole-expression
+                    // span is the closest approximation.)
+                    let origin_name = format!("{}.{}", name, field_str);
                     let instantiated = instantiate_scheme(
                         field_scheme,
                         state.level,
                         state,
-                        None, // TODO: pass field access origin
-                        None, // TODO: pass field key span
+                        Some(origin_name.as_str()),
+                        Some(span.clone()),
                     );
                     return Ok(instantiated);
                 }
@@ -4799,6 +4807,9 @@ fn check_call_with_scheme(
     //
     // Thread origin info: func_name provides the function name for T013 diagnostics,
     // ensuring "argument to `g` has unconstrained type" messages cite the callee name.
+    // Record the constraint count before instantiation so we can update origin_span on
+    // the new constraints to per-argument spans after argument unification (T013 Task 4).
+    let constraints_start = state.constraints.len();
     let func_ty = instantiate_scheme(
         scheme,
         state.level,
@@ -4902,6 +4913,18 @@ fn check_call_with_scheme(
                 } else {
                     params.len()
                 };
+                // T013 Task 4: Pre-collect the type vars in each param type so we can update
+                // constraint origin_span to per-argument spans after unification. Collecting
+                // before the loop avoids borrow-checker conflicts with the state borrows inside.
+                let param_vars_per_idx: Vec<HashSet<String>> = params
+                    .iter()
+                    .take(non_variadic_param_count)
+                    .map(|(_, param_ty)| {
+                        let mut vars = HashSet::new();
+                        param_ty.collect_type_vars(&mut vars);
+                        vars
+                    })
+                    .collect();
                 for (idx, ((_, param_ty), arg_ty)) in params
                     .iter()
                     .take(non_variadic_param_count)
@@ -4927,6 +4950,37 @@ fn check_call_with_scheme(
                     // so we only propagate unification errors from non-Error args.
                     if let Err(e) = unify(param_ty, arg_ty, &mut subst, state, span.clone()) {
                         arg_errors.get_or_insert_with(Vec::new).push(e);
+                    }
+                }
+                // T013 Task 4: Update constraint origin_span to per-argument span.
+                // instantiate_scheme set origin_span to func_span for all constraints. Here
+                // we refine that to the individual argument span: for each constraint whose
+                // vars appear in param[i]'s type, set origin_span to args[i].span.
+                // First-argument-wins for type vars shared across multiple params.
+                let mut var_to_arg_span: HashMap<String, Span> =
+                    HashMap::with_capacity(param_vars_per_idx.len() * 2);
+                for (idx, param_vars) in param_vars_per_idx.iter().enumerate() {
+                    if idx < args.len() {
+                        for var in param_vars {
+                            var_to_arg_span
+                                .entry(var.clone())
+                                .or_insert_with(|| args[idx].span.clone());
+                        }
+                    }
+                }
+                if !var_to_arg_span.is_empty() {
+                    for c in state.constraints[constraints_start..].iter_mut() {
+                        if let crate::type_class::Constraint::Class {
+                            vars, origin_span, ..
+                        } = c
+                        {
+                            // Find the arg span for this constraint's vars. first-match wins
+                            // (preserves the lowest argument index for shared type vars).
+                            let best_span = vars.iter().find_map(|v| var_to_arg_span.get(v));
+                            if let Some(new_span) = best_span {
+                                *origin_span = Some(new_span.clone());
+                            }
+                        }
                     }
                 }
                 // Check variadic args: if the function is variadic, unify all arg_types starting at
@@ -5738,12 +5792,23 @@ fn typecheck_case_arm(
                                         params.remove(0).1 // payload type is the single param's type
                                     }
                                     Type::Function { params, .. } if params.is_empty() => {
-                                        // Nullary constructor — no payload; binding a name to payload
-                                        // of a nullary constructor is a type error per unified-bindings.md.
-                                        // However, we emit a warning instead of an error to be gradual:
-                                        // the runtime will soft-skip this arm anyway.
-                                        // TODO(unified-bindings-structural-tests Task 5): add dead-arm warning
-                                        // "nullary constructor has no payload; use [let _: Constructor] instead"
+                                        // Nullary constructor — no payload; binding a name is a
+                                        // type error per unified-bindings.md (§Constructor Structural Tests):
+                                        // a nullary constructor carries no value to bind. The runtime
+                                        // soft-skips this arm (the tag check passes but payload
+                                        // extraction finds nothing). Emit T019 to guide the user.
+                                        if name != "_" {
+                                            state.diagnostics.push(crate::error::TypeDiagnostic {
+                                                message: format!(
+                                                    "nullary constructor `{constructor_name}` has no payload; \
+                                                     `{name}` cannot be bound — use `[let _: {constructor_name}]` \
+                                                     to match without binding"
+                                                ),
+                                                span: binding.span.clone(),
+                                                code: "T019",
+                                                level: crate::error::DiagnosticLevel::Warn,
+                                            });
+                                        }
                                         Type::Unknown
                                     }
                                     _ => {
@@ -5753,15 +5818,23 @@ fn typecheck_case_arm(
                                     }
                                 }
                             } else {
-                                // Constructor not in scope — type error
-                                // (The runtime will also fail at eval time if the var is not bound.)
-                                // For now, use Unknown so type-checking can continue.
-                                // TODO(unified-bindings-structural-tests Task 3): issue "undefined
-                                // constructor: X" error here instead of silently using Unknown.
+                                // Constructor not in scope — emit a T018 warning so the user
+                                // learns about the typo/missing definition. The runtime will also
+                                // soft-skip this arm (the tag will never match), so the program
+                                // is safe to evaluate. Payload type falls back to Unknown.
+                                state.diagnostics.push(crate::error::TypeDiagnostic {
+                                    message: format!(
+                                        "undefined constructor `{constructor_name}` in structural test; \
+                                         no variable with this name is in scope — the arm will never match"
+                                    ),
+                                    span: binding.span.clone(),
+                                    code: "T018",
+                                    level: crate::error::DiagnosticLevel::Warn,
+                                });
                                 Type::Unknown
                             };
 
-                            // TODO(unified-bindings-structural-tests Task 5): Dead-arm warning.
+                            // Future work — intersection dead-arm warning (new T-code TBD):
                             // When `name@AnnotationType: Constructor` is supported by the parser
                             // (requires extending the Colon handler to also handle Annotated nodes
                             // as LHS, not just VarRef), add a dead-arm check here:
@@ -5772,10 +5845,10 @@ fn typecheck_case_arm(
                             // This requires:
                             //   1. Parser support for `name@Type: Constructor` (Annotated as LHS)
                             //   2. normalize_intersection returning Type::Never for disjoint types
-                            //   3. A Type::Never variant or equivalent (currently intersections
-                            //      of disjoint types return Top or Unknown, not Never)
-                            // The runtime is not affected (it only checks the constructor tag);
-                            // the warning is purely a static dead-code diagnostic.
+                            //   3. A Type::Never variant (intersections of disjoint types currently
+                            //      return Top or Unknown rather than Never)
+                            // The runtime is unaffected (it only checks the constructor tag);
+                            // this warning is purely a static dead-code diagnostic.
 
                             if name != "_" {
                                 arm_env.insert(name.clone(), payload_ty);
@@ -6682,8 +6755,9 @@ fn scan_explicit_unknown_t011(
 
 /// Scan for type quality issues (Unknown types, over-broad annotations).
 ///
-/// Emits diagnostics at base level (Info/Warn). The CLI/LSP layer WILL apply a `--strict` bump
-/// once the type-warning channel is wired (TODO — escalation is not yet implemented).
+/// Emits diagnostics at base level (Info/Warn). In `--strict` mode the CLI bumps
+/// each diagnostic's level via `DiagnosticLevel::bump()` and treats any resulting
+/// `Err`-level diagnostic as fatal (see `main.rs` run/fmt/lint handlers).
 /// This is called at the end of type checking to produce advisory notifications.
 ///
 /// Accepts `&SurfaceProgram` — walks the Surface AST natively via `SurfaceExpression`.
@@ -7829,6 +7903,7 @@ mod tests {
                 constraints: vec![],
                 body: Type::Int,
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -9070,20 +9145,28 @@ mod tests {
 
     #[test]
     fn test_bare_fn_annotation_resolves_to_any() {
-        // `@Fn` in parameter position resolves to Type::Unknown (not a concrete Function
-        // type), so that higher-order functions annotated with @Fn don't produce false
-        // type errors when unified with concrete function types.
+        // `@Fn` in parameter position resolves to `Function { params: [], ret: Top, variadic: true }`
+        // — the top of the function lattice. This represents "any callable" and allows unification
+        // with concrete function types (e.g. `Fn(Int, Str) -> Bool`), while still enforcing
+        // callability at TypeAssert boundaries (e.g. `[@Fn 42]` correctly fails).
         // [fn [f@Fn] $f] should infer without type errors.
         let ty = infer("[fn [let f@Fn] $f]");
-        // The outer lambda infers as a Function type whose first parameter is Type::Unknown
-        // (the @Fn annotation must resolve to Any, not a pseudo-Function type).
+        // The outer lambda infers as a Function type whose first parameter is the
+        // variadic-zero-param Function type (representing "any callable").
         match ty {
             Type::Function { params, .. } => {
-                // HKT: bare @Fn annotation resolves to Unknown (deferred until higher-kinded types)
+                // @Fn annotation resolves to Function { params: [], ret: Top, variadic: true }
                 assert_eq!(
                     params,
-                    vec![(Some("f".to_string()), Type::Unknown)],
-                    "@Fn param must resolve to Type::Unknown, not a pseudo-Function type"
+                    vec![(
+                        Some("f".to_string()),
+                        Type::Function {
+                            params: vec![],
+                            ret: Box::new(Type::Top),
+                            variadic: true,
+                        }
+                    )],
+                    "@Fn param must resolve to Function{{params: [], ret: Top, variadic: true}}"
                 );
             }
             other => panic!("expected Function, got {other}"),
@@ -15296,6 +15379,7 @@ mod tests {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -15911,10 +15995,8 @@ Note: Takes a list of condition-result pairs.
         for doc in &parsed.program.documents {
             for item in &doc.node.items {
                 if let crate::ast::SurfaceItem::Expr(node) = item {
-                    // Look for a dict with a "cond" entry
                     if let SurfaceExpression::Dict(entries) = &node.expr {
                         for entry in entries {
-                            // Check if this entry has key "cond"
                             let is_cond = entry
                                 .node
                                 .key
@@ -15922,22 +16004,20 @@ Note: Takes a list of condition-result pairs.
                                 .map(|k| match &k.expr {
                                     SurfaceExpression::VarRef { name, .. } => name == "cond",
                                     SurfaceExpression::Annotated { name, .. } => name == "cond",
+                                    SurfaceExpression::Str(s) => s == "cond",
                                     _ => false,
                                 })
                                 .unwrap_or(false);
                             if is_cond {
-                                // Found cond entry. Check its annotation.
                                 if let SurfaceExpression::Fn {
                                     return_ann: Some(ann),
                                     ..
                                 } = &entry.node.value.expr
                                 {
-                                    eprintln!("cond return_ann: {:?}", ann.node);
                                     if let crate::ast::Annotation::PropertyDict(entries) = &ann.node
                                     {
                                         for e in entries {
-                                            if let Some(k) = &e.node.key {
-                                                eprintln!("  key expr: {:?}", k.expr);
+                                            if e.node.key.is_some() {
                                                 found_cond = true;
                                             }
                                         }
@@ -15955,10 +16035,12 @@ Note: Takes a list of condition-result pairs.
     #[test]
     fn test_prelude_typecheck_cond_isolation() {
         // Type-check the prelude to find what error cond produces.
-        // Uses typecheck_source to get all errors including for cond.
+        // Uses typecheck_source_errors_only which loads the prelude env via build_prelude_env().
         let _prelude_source = include_str!("../stdlib/prelude.llt");
         // Only type-check the cond-specific part to understand the error
-        // Simplified version of cond from the prelude:
+        // Simplified version of cond from the prelude.
+        // NOTE: Use `if` (the public alias) instead of `builtin-if` (the internal name).
+        // The prelude env exposes `if`, not `builtin-if`.
         let simplified_prelude_cond = r#"
 [
 cond-impl: [fn@Any [let pairs@Dict i@Int] i]
@@ -15966,11 +16048,11 @@ cond-check: [fn@Any [let pairs@Dict i@Int condition result] result]
 when: [fn@[return: [a Null]  doc: """
 Evaluate body if predicate is true.
 Example: [when true "result"] => "result"
-"""] [let pred body@a] [builtin-if pred body []]]
+"""] [let pred body@a] [if pred body []]]
 unless: [fn@[return: [a Null]  doc: """
 Evaluate body if predicate is false.
 Example: [unless false "result"] => "result"
-"""] [let pred body@a] [builtin-if pred [] body]]
+"""] [let pred body@a] [if pred [] body]]
 cond: [fn@[return: [a Null]  doc: """
 Multi-branch conditional.
 Example: [cond [[[> x 10] "big"] [[> x 0] "positive"] [true "other"]]]

@@ -237,6 +237,19 @@ pub fn eval_source(input: &str) -> Result<String, String> {
 /// When `no_fs` is `true`, filesystem operations (like `include`) are disabled.
 /// Primarily used for corpus tests that verify the `IncludeForbidden` error path.
 pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, String> {
+    #[cfg(test)]
+    {
+        thread_local! {
+            static EVAL_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+        }
+        EVAL_COUNT.with(|c| {
+            let n = c.get() + 1;
+            c.set(n);
+            if n % 500 == 0 {
+                builtins::clear_stdlib_cache();
+            }
+        });
+    }
     let parsed = parse(input).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve_surface_program -> typecheck -> eval.
     // Use expand_surface_program (not expand_macros) so that SurfaceItem::Decl macro
@@ -288,13 +301,11 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // Use create_stdlib_env_with_arena so the eval context shares the stdlib's ThunkArena.
     // Without arena sharing, dot access on stdlib dicts (e.g., `result.bind`) resolves
     // ThunkIds from the stdlib's bootstrap_ctx arena via the eval ctx's empty arena,
-    // causing an index-out-of-bounds panic. The shared arena contains all ThunkIds
-    // allocated during prelude and macros.llt loading.
+    // causing an index-out-of-bounds panic.
     let (env, stdlib_arena) =
         builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
     // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
     let type_stage_env = build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
-    // Create evaluation context (current directory, configurable sandbox)
     let base_dir_path = std::env::current_dir()
         .ok()
         .and_then(|d| d.canonicalize().ok())
@@ -434,7 +445,7 @@ pub fn eval_source_with_cap_net(
 
     let (env, stdlib_arena) =
         builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
-    // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
+    // Build type-stage environment BEFORE clone_for_child — it may add thunks to the stdlib arena.
     let type_stage_env = build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
 
     let base_dir_path = std::env::current_dir()
@@ -1755,11 +1766,15 @@ mod tests {
 
     /// Helper: run the full eval pipeline (parse, eval, materialize, to JSON string).
     fn eval_to_json(source: &str) -> String {
-        eval_to_json_with_input(source, None)
+        eval_to_json_with_input(source, None, None)
     }
 
-    /// Helper: run the full eval pipeline with optional stdin input injection.
-    fn eval_to_json_with_input(source: &str, stdin_input: Option<Arc<Thunk>>) -> String {
+    fn eval_to_json_with_input(
+        source: &str,
+        stdin_input: Option<Arc<Thunk>>,
+        external_ctx: Option<Arc<eval::EvalContext>>,
+    ) -> String {
+        builtins::clear_stdlib_cache();
         let parsed = parse(source).expect("parse failed");
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
@@ -1767,8 +1782,25 @@ mod tests {
         let (_type_errors, type_annotation_table, _inferred) =
             typecheck::typecheck_surface_program_annotation_table(&program);
         let type_annotation_table = std::sync::Arc::new(type_annotation_table);
-        let env = builtins::create_stdlib_env().expect("stdlib failed");
-        let ctx = test_ctx();
+
+        let (env, ctx) = if let Some(ext_ctx) = external_ctx {
+            let env = ext_ctx.config.stdlib_env.clone();
+            (env, ext_ctx)
+        } else {
+            let (env, stdlib_arena) =
+                builtins::create_stdlib_env_with_arena().expect("stdlib failed");
+            let base_dir = test_util::test_caps().root.try_clone().unwrap();
+            let type_stage_env = build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
+            let ctx = eval::EvalContext::new_sharing_arena(
+                base_dir,
+                Arc::clone(&env),
+                type_stage_env,
+                false,
+                stdlib_arena,
+                std::collections::HashMap::new(),
+            );
+            (env, ctx)
+        };
 
         let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file_with_input(
             &program,
@@ -1813,29 +1845,26 @@ mod tests {
             ]),
             &ctx,
         );
-        let result = eval_to_json_with_input("[greeting: %.name]", Some(input));
+        let result = eval_to_json_with_input("[greeting: %.name]", Some(input), Some(ctx));
         assert_eq!(result, "{\"greeting\":\"Alice\"}");
     }
 
     #[test]
     fn test_pipeline_stdin_json_array() {
-        // Access the 0th element of the pipeline array via get builtin
-        // Bracket access removed — use [get 0 %] instead of %[0]
         let ctx = test_ctx();
         let input = make_test_value(
             TestJson::Array(vec![TestJson::Int(1), TestJson::Int(2), TestJson::Int(3)]),
             &ctx,
         );
-        let result = eval_to_json_with_input("[first: [get 0 %]]", Some(input));
+        let result = eval_to_json_with_input("[first: [get 0 %]]", Some(input), Some(ctx));
         assert_eq!(result, "{\"first\":1}");
     }
 
     #[test]
     fn test_pipeline_stdin_json_passthrough() {
-        // When % is the whole output, it should pass through
         let ctx = test_ctx();
         let input = make_test_value(TestJson::Object(vec![("x", TestJson::Int(42))]), &ctx);
-        let result = eval_to_json_with_input("%", Some(input));
+        let result = eval_to_json_with_input("%", Some(input), Some(ctx));
         assert_eq!(result, "{\"x\":42}");
     }
 
@@ -1853,7 +1882,7 @@ mod tests {
         let ctx = test_ctx();
         let input = make_test_value(TestJson::Object(vec![("val", TestJson::Int(10))]), &ctx);
         let source = "[result: %.val]\n---\n[wrapped: %.result]";
-        let result = eval_to_json_with_input(source, Some(input));
+        let result = eval_to_json_with_input(source, Some(input), Some(ctx));
         assert_eq!(result, "{\"wrapped\":10}");
     }
 
@@ -2414,17 +2443,19 @@ mod tests {
     /// chr-class-instance: FD consistency check fires for conflicting instance arms.
     /// Two arms with same determining positions (Int, Int) but different determined types
     /// (Int vs Float) must produce a "consistency violation" type error.
+    ///
+    /// Regression: the original test had `[fn [x y] ...]` (missing `let`), producing a
+    /// parse error that shadowed the consistency violation. Fixed to use `[fn [let x y] ...]`.
     #[test]
-    #[ignore = "class/instance inside dict values still not fully working — FD consistency check not firing"]
     fn test_instance_fd_consistency_violation() {
         let input = r#"[
   TestAdd: [class [let TestAdd a b c] [determines: [[[a b] c]]]
     op: [Fn@c [a b]]]
   TestAddInst: [instance TestAdd
     [pattern [a@Int b@Int c@Int]]:
-      op: [fn [x y] [+ x y]]
+      op: [fn [let x y] [+ x y]]
     [pattern [a@Int b@Int c@Float]]:
-      op: [fn [x y] [+ x y]]]
+      op: [fn [let x y] [+ x y]]]
   result: 42
 ]"#;
         let result = typecheck_source_errors_only(input);

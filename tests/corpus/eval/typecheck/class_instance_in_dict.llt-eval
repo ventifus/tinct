@@ -1,0 +1,24 @@
+# Class and instance declarations as dict entry values.
+# Verifies that class/instance expressions inside dict literals work after the
+# runtime-v2 CoreExpr migration. The declarations are processed by the type checker
+# (Pass 0c) and skipped at runtime (they have no runtime value — correct behavior).
+[
+  # Define a simple class as a dict value
+  MyClass: [class [let MyClass a]
+    my-method: [Fn@a [a]]]
+
+  # Define an instance as a dict value
+  MyClassInt: [instance MyClass [pattern [a@Int]]:
+    my-method: [fn [let x] [+ x 1]]]
+
+  # Use the class in a constrained function
+  use-myclass: [fn [let x] [+ x 10]]
+
+  result: [use-myclass 5]
+]
+
+---
+
+%.result
+=== out
+Int(15)

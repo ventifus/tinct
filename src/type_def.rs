@@ -244,23 +244,20 @@ impl PartialEq for Type {
             (Type::Error, Type::Error) => true,
             (Type::DirCap, Type::DirCap) => true,
             (Type::NetCap, Type::NetCap) => true,
-            // TODO(handle-partialeq-limitation): Handle capability row comparison uses
-            // structural equality (cap1 == cap2), which can fail when capability rows
-            // contain TypeVars that should unify but have different names.
+            // Handle: structural equality on the capability row.
             //
-            // Example: Handle(TypeVar("a", 0)) != Handle(TypeVar("b", 0)) even though
-            // the two types might be unifiable in the type checker's substitution context.
-            //
-            // A proper fix requires bidirectional subtyping (Handle[C1] <: Handle[C2] iff
-            // C1 <: C2), but PartialEq doesn't have access to the unification engine or
-            // substitution context. This limitation affects:
-            // - Type normalization (identical types may not be deduplicated)
-            // - HashMap/HashSet usage with Type keys (false negatives in lookups)
-            //
-            // Does NOT affect type checking soundness: unification (src/type_unify.rs)
-            // uses `unify()` which recursively unifies capability rows via substitution,
-            // not PartialEq. PartialEq is only used for fast-path equality checks and
-            // data structure operations, where false negatives are safe (conservative).
+            // Two Handle types are equal iff their capability rows are structurally
+            // identical (including TypeVar names). PartialEq does not have access to
+            // the active Substitution, so it cannot resolve TypeVar aliases — two
+            // capability rows that differ only in TypeVar names (e.g., TypeVar("a")
+            // vs TypeVar("b")) will compare as unequal even if the vars are unified
+            // in the current substitution context. This is correct PartialEq
+            // semantics: equality is determined by structural identity, not
+            // substitution-aware equivalence. Unification uses `unify()` which
+            // recursively unifies capability rows via substitution; PartialEq is only
+            // used for fast-path identity checks where false negatives are safe
+            // (conservative: two handles that might be equivalent are treated as
+            // distinct rather than silently collapsing).
             (Type::Handle(cap1), Type::Handle(cap2)) => cap1 == cap2,
             (Type::Uri, Type::Uri) => true,
             (Type::Timestamp, Type::Timestamp) => true,

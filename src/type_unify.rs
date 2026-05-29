@@ -536,47 +536,54 @@ fn improve_functional_dependency_inner(
         // 3. Resolver classes: type-stage function normalization
         // 4. General MPTC: InstanceEnv lookup
 
-        // Special case: Indexable on Record/Union types uses direct field lookup
-        // instead of instance registration (records are structural, not nominal).
+        // Special case: Indexable on Record/Union/Intersection/Top types uses
+        // resolve_has_field for field lookup instead of instance registration.
+        // Records are structural (not nominal), so they don't register instances —
+        // instead, resolve_has_field applies [HAS-FIELD-REC], [HAS-FIELD-UNION],
+        // [HAS-FIELD-INTER], and [HAS-FIELD-TOP] rules from type_unify.rs.
         let indexable_record_result = if class == "Indexable" && det_types.len() == 2 {
             let container_ty = &det_types[0].2;
             let key_ty = &det_types[1].2;
 
             match (container_ty, key_ty) {
-                (Type::Record(row), Type::StringLiteral(field_name)) => {
-                    // Direct field lookup for Record + StringLiteral key.
-                    // Missing fields return Unknown for graceful degradation — the access
-                    // is valid at runtime (returns null), so a hard type error would be
-                    // too strict. Alternative: state.fresh_type_var() to enable inference
-                    // (e.g., constrain the record to have that field), but this risks
-                    // confusing error messages when the field genuinely doesn't exist.
-                    // TODO(type-system-cleanup): Revisit when row polymorphism supports
-                    // open records with explicit row variables in user annotations.
-                    Some(row.fields.get(field_name).cloned().unwrap_or(Type::Unknown))
-                }
-                (Type::Record(_), Type::Str) => {
-                    // Str key (from promoted StringLiteral) — can't resolve statically
-                    Some(Type::Unknown)
+                (
+                    Type::Record(_) | Type::Intersection(_) | Type::Top,
+                    Type::StringLiteral(field_name),
+                ) => {
+                    // Route through resolve_has_field to apply [HAS-FIELD-REC],
+                    // [HAS-FIELD-INTER], and [HAS-FIELD-TOP] rules.
+                    // Missing fields in Record case: gradual degradation to Unknown
+                    // (the access is valid at runtime — returns null).
+                    let label = Label::Concrete(field_name.clone());
+                    match resolve_has_field(&label, container_ty, state, span.clone(), 0) {
+                        Ok(field_ty) => Some(field_ty),
+                        Err(_) => Some(Type::Unknown),
+                    }
                 }
                 (Type::Union(members), Type::StringLiteral(field_name)) => {
                     // [HAS-FIELD-UNION]: distribute field lookup across union members.
                     // [get key (A | B)] → get(key, A) | get(key, B)
                     // Each member that has the field contributes its field type.
-                    // Members without the field contribute Unknown (graceful degradation).
-                    // Same rationale as Record case above: Unknown allows runtime null
-                    // access without hard type errors.
+                    // Members that don't support field access (or lack the field)
+                    // contribute Unknown — gradual degradation allows runtime null.
+                    let label = Label::Concrete(field_name.clone());
                     let field_types: Vec<Type> = members
                         .iter()
-                        .map(|member| match member {
-                            Type::Record(row) => {
-                                row.fields.get(field_name).cloned().unwrap_or(Type::Unknown)
-                            }
-                            _ => Type::Unknown,
+                        .map(|member| {
+                            resolve_has_field(&label, member, state, span.clone(), 1)
+                                .unwrap_or(Type::Unknown)
                         })
                         .collect();
                     Some(Type::normalize_union(field_types))
                 }
-                _ => None, // Not a Record/Union case — fall through to general logic
+                (
+                    Type::Record(_) | Type::Union(_) | Type::Intersection(_) | Type::Top,
+                    Type::Str,
+                ) => {
+                    // Str key (from promoted StringLiteral) — can't resolve statically
+                    Some(Type::Unknown)
+                }
+                _ => None, // Not a Record/Union/Intersection/Top case — fall through to general logic
             }
         } else {
             None

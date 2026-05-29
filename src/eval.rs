@@ -158,8 +158,8 @@ pub struct EvalState {
     pub class_registry: HashMap<String, RuntimeClassDecl>,
     /// Runtime instance registry: (class_name, type_tags) -> instance_dict
     /// Stores materialized method dictionaries for each instance.
-    /// class_name is interned via `intern_class_name` (&'static str); type_tags is a
-    /// Vec<String> (from Value::type_name() on determining-position args) for MPTC support.
+    /// class_name is &'static str; type_tags is a Vec<String> (from Value::type_name()
+    /// on determining-position args) for MPTC support.
     pub instance_registry: HashMap<(&'static str, Vec<String>), Arc<Thunk>>,
     /// O(1) set of class names that have at least one registered instance.
     /// Updated in sync with `instance_registry`. Used by builtins (e.g. `+`, `str`)
@@ -184,9 +184,6 @@ pub struct RuntimeClassDecl {
     /// Used to truncate instance_registry keys so they match try_dispatch_method lookups.
     pub num_determining: usize,
 }
-
-// TODO(chr-instances-gaps): implement extract_instance_type_tags using Arc<SurfaceNode>
-// when instance registration is wired up for runtime MPTC dispatch.
 
 /// Evaluation infrastructure context: separates session config from variable bindings.
 ///
@@ -865,25 +862,6 @@ pub(crate) fn validate_and_wrap_record(
     Ok(new_entries)
 }
 
-/// Intern a runtime class name string as a `&'static str`.
-/// Known typeclass names return a compile-time literal (zero allocation).
-/// Unknown names are leaked — bounded by the number of distinct class declarations
-/// in user code, which is small in practice.
-// TODO(chr-instances-gaps): wire up instance_registry insertion so this function is called.
-#[allow(dead_code)]
-fn intern_class_name(name: &str) -> &'static str {
-    match name {
-        "Addable" => "Addable",
-        "Subtractable" => "Subtractable",
-        "Multipliable" => "Multipliable",
-        "Divisible" => "Divisible",
-        "Equatable" => "Equatable",
-        "Comparable" => "Comparable",
-        "Showable" => "Showable",
-        other => Box::leak(other.to_string().into_boxed_str()),
-    }
-}
-
 /// Check if an identifier starts with an uppercase letter.
 pub(crate) fn is_constructor_name(name: &str) -> bool {
     name.chars().next().is_some_and(|c| c.is_uppercase())
@@ -1503,8 +1481,6 @@ fn eval_core_expr<'a>(
             CoreExpr::Dict(entries) => eval_dict_core(entries, env, ctx, &span).await,
 
             // Call: use eval_call_core — no CoreExpr→Expr round-trip for func or named args.
-            // Per-argument core_expr_to_expr conversion still occurs inside eval_call_core
-            // (tracked by the TODO(parts-e) comments in eval_call.rs).
             CoreExpr::Call {
                 func,
                 args,
@@ -1687,9 +1663,9 @@ fn eval_core_expr<'a>(
 /// to get a result thunk. eval_core_expr is private to this module, so this thin
 /// wrapper exposes it for the CEK machine without making eval_core_expr fully pub.
 ///
-/// TODO(parts-e): when eval_core_expr is moved into a dedicated eval_core.rs module
-/// and the CEK machine is co-located with it, this wrapper can be removed and
-/// eval_core_expr called directly.
+/// Moving eval_core_expr to a dedicated eval_core.rs was investigated (T-694) and deferred:
+/// the function depends on maybe_wrap_guard, eval_quote_walk, and other eval.rs internals
+/// that are too entangled to extract cleanly without a much larger reorganization.
 #[inline]
 pub(crate) fn eval_core_expr_pub<'a>(
     expr: &'a crate::ast::Spanned<crate::ast::CoreExpr>,
@@ -8610,6 +8586,62 @@ mod tests {
             result.is_ok(),
             "same name in different arms must not trigger linearity error; got: {:?}",
             result.err()
+        );
+    }
+
+    #[test]
+    fn test_match_guard_callable_iterative() {
+        // Guard expressed as a callable is now driven through the CEK machine
+        // iteratively (MatchGuardCheck with callable_invoked flag) rather than
+        // via block_on_anywhere. Verify basic correctness: positive? guard passes
+        // for 5, falls through to wildcard for -1.
+        //
+        // Uses eval_source_with_config (no_fs=true) so we can write a full
+        // multi-binding document without needing the filesystem/stdlib.
+        let src_pos = "[
+            positive?: [fn [let n] [> n 0]]
+            result: [match 5  x@[is: positive?]: \"pos\"  _: \"other\"]
+        ]";
+        let result_pos =
+            crate::eval_source_with_config(src_pos, true).expect("eval must not error");
+        assert!(
+            result_pos.contains("String(\"pos\")"),
+            "guard callable should pass for positive: {result_pos:?}"
+        );
+
+        // Guard fails for negative input — wildcard arm fires
+        let src_neg = "[
+            positive?: [fn [let n] [> n 0]]
+            result: [match -1  x@[is: positive?]: \"pos\"  _: \"other\"]
+        ]";
+        let result_neg =
+            crate::eval_source_with_config(src_neg, true).expect("eval must not error");
+        assert!(
+            result_neg.contains("String(\"other\")"),
+            "guard callable should fail for negative: {result_neg:?}"
+        );
+    }
+
+    #[test]
+    fn test_match_deep_does_not_stack_overflow() {
+        // Deeply nested match dispatched iteratively through the CEK machine
+        // (Cont::MatchDispatch with .await on match_pattern). Previously each level
+        // called block_on_anywhere() creating nested async contexts that overflowed
+        // the stack at ~50 levels. The iterative fix keeps async state on the heap.
+        //
+        // This exercises: recursive fn -> match 0 -> arm body -> recursive call,
+        // 100 levels of match dispatch driven through the CEK continuation stack.
+        let src = "[
+            depth-match: [fn [let n]
+                [match n
+                    0:   \"done\"
+                    _:   [depth-match [- n 1]]]]
+            result: [depth-match 100]
+        ]";
+        let result = crate::eval_source_with_config(src, true).expect("eval must not error");
+        assert!(
+            result.contains("String(\"done\")"),
+            "deep match should terminate with 'done': {result:?}"
         );
     }
 }

@@ -1,0 +1,22 @@
+# Deeply nested match expressions must not exhaust the Rust stack.
+# Previously, each level of match used block_on_anywhere() in the MatchDispatch
+# continuation, which caused recursive async context nesting and stack overflow
+# for depths > ~50. The iterative fix (.await in apply_cont) keeps all
+# async state on the heap, allowing arbitrary nesting depth.
+#
+# This test builds 100 levels of nested match by chaining through a recursive
+# function — each call dispatches a match and recurses into the arm body.
+[
+    depth-match: [fn [let n]
+        [match n
+            0:   "done"
+            _:   [depth-match [- n 1]]]]
+
+    result: [depth-match 100]
+]
+
+---
+
+%.result
+=== out
+String("done")

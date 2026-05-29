@@ -1,0 +1,11 @@
+# T018 warning: structural test references a constructor name not in scope.
+# [let v: Bogus] — 'Bogus' is not defined anywhere, so T018 is emitted.
+# At runtime the arm soft-skips (the tag can never match), so the wildcard fires.
+[value: [Ok 42]]
+[match value
+  [case [let v: Bogus] [str "bogus " v]]
+  [case [let _]        "fallthrough"]]
+=== out
+String("fallthrough")
+=== warn
+undefined constructor `Bogus`

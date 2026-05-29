@@ -267,19 +267,15 @@ pub(crate) fn resolve_annotated(
         crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
         Ok(ty)
     } else if name == "Handle" {
-        // Handle@[Readable] or Handle@SomeCapType — subscript form for capability row.
+        // Handle@SomeCapType — subscript form for capability row in parameter annotations.
         //
-        // The inner annotation is interpreted as the capability row argument.
-        // Example: `h@Handle@[Readable]` → Handle(Record { readable: {} })
-        //          `h@Handle@[Readable Writable]` → Handle(Record { readable: {}, writable: {} })
+        // The inner annotation is the capability row argument. Examples:
+        //   h@Handle@DirCap         → Handle(DirCap)
+        //   h@Handle@NetCap         → Handle(NetCap)
+        //   h@Handle@[Readable]     → Handle(Record { readable: {} })
+        //   h@Handle@Unknown        → Handle(Unknown)  (gradual handle)
         //
-        // TODO: when parser supports Handle[cap_row] in annotation position (tracked
-        // in test-coverage-cycle311), update this to resolve the cap_row from the
-        // argument instead of falling back to Unknown for unrecognized annotation forms.
-        //
-        // For now, resolve the inner annotation as a type. If the inner type is a
-        // Record or type alias that represents capabilities, it is used directly as
-        // the capability row.
+        // Resolve the inner annotation as a type and wrap in Handle.
         let cap_type = resolve_annotation(
             &annotation.node,
             env,
@@ -301,6 +297,20 @@ pub(crate) fn resolve_annotated(
     }
 }
 
+/// Extract the string key name from a dict key expression.
+///
+/// Accepts both `SurfaceExpression::Str("key")` (string literal, user code) and
+/// `SurfaceExpression::VarRef { name: "key" }` (identifier, prelude annotations re-parsed via parse()).
+/// Returns `None` for any other expression form.
+#[allow(dead_code)]
+fn extract_key_name(key_expr: &Arc<SurfaceNode>) -> Option<&str> {
+    match &key_expr.expr {
+        SurfaceExpression::Str(s) => Some(s.as_str()),
+        SurfaceExpression::VarRef { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
+}
+
 /// Resolve a function metadata dict `fn@[return: ... constraint: ... doc: ...]`.
 ///
 /// Processes keys in fixed order:
@@ -312,20 +322,6 @@ pub(crate) fn resolve_annotated(
 /// 5. `doc:` — extracts string literal, returned as Option<String>
 ///
 /// Returns (return_type, doc_string).
-#[allow(dead_code)]
-/// Extract the string key name from a dict key expression.
-///
-/// Accepts both `SurfaceExpression::Str("key")` (string literal, user code) and
-/// `SurfaceExpression::VarRef { name: "key" }` (identifier, prelude annotations re-parsed via parse()).
-/// Returns `None` for any other expression form.
-fn extract_key_name(key_expr: &Arc<SurfaceNode>) -> Option<&str> {
-    match &key_expr.expr {
-        SurfaceExpression::Str(s) => Some(s.as_str()),
-        SurfaceExpression::VarRef { name, .. } => Some(name.as_str()),
-        _ => None,
-    }
-}
-
 pub(crate) fn resolve_fn_metadata(
     entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
@@ -1313,17 +1309,15 @@ pub(crate) fn resolve_annotation(
                     }
                 }
                 "Handle" => {
-                    // @Handle@[Readable] or @Handle@CapType — parameterized handle type.
+                    // @Handle@CapType — parameterized handle type in TypeAssert/annotation context.
                     //
                     // The inner annotation is the capability row argument. Examples:
+                    //   @Handle@DirCap            → Handle(DirCap)
+                    //   @Handle@NetCap            → Handle(NetCap)
                     //   @Handle@[Readable]        → Handle(Record { readable: {} })
-                    //   @Handle@[Readable Writable] → Handle(Record { readable: {}, writable: {} })
                     //   @Handle@Unknown           → Handle(Unknown)  (gradual handle)
                     //
                     // Resolve the inner annotation as a capability type and wrap in Handle.
-                    //
-                    // TODO: when parser supports Handle[cap_row] in annotation position (tracked
-                    // in test-coverage-cycle311), update to synthesize cap_row from the argument.
                     let cap_type =
                         resolve_annotation(inner, env, span, state, ann_mapping, row_ann_mapping)?;
                     Ok(Type::Handle(Box::new(cap_type)))
@@ -1785,11 +1779,9 @@ pub(crate) fn resolve_type_name(
         // Bare @Handle — no capability row argument. Resolves to Handle(Unknown),
         // which is the gradual "any handle" type. This is correct for unannotated
         // handle parameters where the caller doesn't know (or care about) the
-        // capability row.
-        //
-        // TODO: when parser supports Handle[cap_row] in annotation position (tracked
-        // in test-coverage-cycle311), update resolve_annotated to synthesize cap_row
-        // from the argument instead of defaulting to Unknown here.
+        // capability row. Parameterized forms (`h@Handle@DirCap`, `[Handle DirCap]`,
+        // `@Handle@DirCap`) resolve through resolve_annotated/resolve_annotation/
+        // resolve_type_dict respectively and never reach this bare-name path.
         "Handle" => Ok(Type::Handle(Box::new(Type::Unknown))),
         "Null" => Ok(Type::Record(Row {
             fields: HashMap::new(),
@@ -2414,8 +2406,18 @@ pub(crate) fn resolve_type_expr(
                     row_ann_mapping,
                 )
             } else {
+                // For all other parameterized type annotations in type-expression position
+                // (e.g., `Handle@DirCap`, `Seq@Int`, `Map@[key: Str value: Int]` inline),
+                // reconstruct the `Annotation::Annotated(name, inner)` and dispatch through
+                // `resolve_annotation` which handles `"Handle"`, `"Seq"`, `"Map"`, etc.
+                //
+                // Previously this called `resolve_annotation(&annotation.node, ...)` which
+                // dropped `name` entirely and resolved only the inner annotation — losing
+                // the Handle wrapper for `Handle@DirCap`, Seq wrapper for `Seq@Int`, etc.
+                let full_ann =
+                    Annotation::Annotated(name.clone(), Box::new(annotation.node.clone()));
                 resolve_annotation(
-                    &annotation.node,
+                    &full_ann,
                     env,
                     node.span.clone(),
                     state,
@@ -2659,6 +2661,37 @@ pub(crate) fn resolve_type_expr(
                             ));
                         }
                     }
+                    "Handle" => {
+                        // [Handle CapType] → Handle(CapType) in implied-call position.
+                        //
+                        // When `[Handle DirCap]` is parsed as an implied call rather than a Dict
+                        // (which happens when the value appears inside an annotation's value slot,
+                        // e.g. `fn@[return: [Handle DirCap]]`), handle it here so it produces
+                        // Handle(DirCap) rather than failing with "alias expects 0 params, got 1".
+                        //
+                        // Examples:
+                        //   [Handle DirCap]  → Handle(DirCap)
+                        //   [Handle NetCap]  → Handle(NetCap)
+                        //   [Handle Unknown] → Handle(Unknown)  (gradual)
+                        if args.len() == 1 {
+                            let cap_ty = resolve_type_expr(
+                                &args[0],
+                                env,
+                                state,
+                                ann_mapping,
+                                row_ann_mapping,
+                            )?;
+                            return Ok(Type::Handle(Box::new(cap_ty)));
+                        } else if args.is_empty() {
+                            // Bare [Handle] in call position — gradual handle
+                            return Ok(Type::Handle(Box::new(Type::Unknown)));
+                        } else {
+                            return Err(TypeError::new(
+                                "Handle requires 0 or 1 type argument (the capability row)",
+                                node.span.clone(),
+                            ));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -2896,6 +2929,39 @@ pub(crate) fn resolve_type_dict(
                             } else {
                                 return Err(TypeError::new(
                                     "Map requires 1 or 2 type arguments",
+                                    span,
+                                ));
+                            }
+                        }
+                        "Handle" => {
+                            // [Handle CapType] → Handle(CapType)
+                            //
+                            // Parameterized handle type in dict/type-expression position.
+                            // The capability row argument is the second positional entry.
+                            //
+                            // Examples:
+                            //   [Handle DirCap]     → Handle(DirCap)
+                            //   [Handle NetCap]     → Handle(NetCap)
+                            //   [Handle Unknown]    → Handle(Unknown)  (gradual handle)
+                            //   [Handle]            → Handle(Unknown)  (bare — no cap_row)
+                            //
+                            // This mirrors the `@Handle@CapType` subscript form handled in
+                            // `resolve_annotation` and `resolve_annotated`.
+                            if entries.len() == 2 {
+                                let cap_ty = resolve_type_expr(
+                                    &entries[1].node.value,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?;
+                                return Ok(Type::Handle(Box::new(cap_ty)));
+                            } else if entries.len() == 1 {
+                                // Bare [Handle] — gradual handle accepting any capability.
+                                return Ok(Type::Handle(Box::new(Type::Unknown)));
+                            } else {
+                                return Err(TypeError::new(
+                                    "Handle requires 0 or 1 type argument (the capability row)",
                                     span,
                                 ));
                             }

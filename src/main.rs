@@ -1562,16 +1562,24 @@ fn run_eval(
     // any reference to `%libdir` in the program will fail with "undefined variable".
     // Phase 1: resolve %libdir from the binary's location, --libdir-path override, or a well-known relative path.
     // If resolution fails, %libdir is not injected (stdlib is embedded at compile time anyway).
-    let resolved_libdir_path: Option<std::path::PathBuf> = if !no_libdir && !no_fs {
-        resolve_libdir_path(libdir_path.as_deref())
-    } else {
-        None
-    };
+    // Inject %libdir when: not explicitly suppressed (--no-libdir), AND either:
+    //   - filesystem access is enabled (!no_fs), OR
+    //   - an output formatter is requested: formatters are system components that need
+    //     %libdir to load stdlib codecs (e.g., codecs/json.llt). This is safe because
+    //     %libdir gives read-only access to the stdlib directory only.
+    let needs_libdir_for_formatter = output.is_some();
+    let resolved_libdir_path: Option<std::path::PathBuf> =
+        if !no_libdir && (!no_fs || needs_libdir_for_formatter) {
+            resolve_libdir_path(libdir_path.as_deref())
+        } else {
+            None
+        };
     // libdir_rc_for_ctx: the same Dir is shared with the EvalContext so that
     // the self-hosted `include` (prelude.llt) can inject `%libdir` into nested
-    // includes without calling open_ambient_dir again. None when --no-libdir or --no-fs is set.
+    // includes without calling open_ambient_dir again. None when --no-libdir is set
+    // and no output formatter is requested.
     let mut libdir_rc_for_ctx: Option<Arc<cap_std::fs::Dir>> = None;
-    if !no_libdir && !no_fs {
+    if !no_libdir && (!no_fs || needs_libdir_for_formatter) {
         use tinct::Value;
         if let Some(ref path) = resolved_libdir_path {
             if let Ok(libdir_std) =
@@ -1594,7 +1602,6 @@ fn run_eval(
             }
             // If the dir can't be opened, silently skip — stdlib is embedded anyway.
         }
-        // TODO(io-phase2): --libdir-path PATH override for custom installations
     }
 
     // Inject --cap-fs NAME=PATH[:MODE] entries into the root environment as `%NAME`.
@@ -2138,14 +2145,42 @@ fn run_eval(
                 }
             }
             // Emit type quality diagnostics (T010/T011 Unknown, T012 overbroad, T013 ambiguous, …).
-            // These are advisory and never block evaluation, even in --strict mode.
+            // In --strict mode, bump each diagnostic's level and treat Err-level diagnostics
+            // as fatal (they escalate Info→Warn→Err under --strict).
             if !type_diagnostics.is_empty() {
                 let diag_file_name = match stage {
                     PipelineStage::File(fp) => fp.as_str(),
                     PipelineStage::Expr(_) => "<expr>",
                 };
+                let mut has_fatal_diag = false;
                 for d in &type_diagnostics {
-                    eprintln!("{}", format_type_diagnostic(d, &source, diag_file_name));
+                    let effective = if strict {
+                        use tinct::DiagnosticLevel;
+                        let bumped_level = d.level.bump();
+                        // Emit with the bumped level
+                        let bumped = tinct::TypeDiagnostic {
+                            level: bumped_level,
+                            message: d.message.clone(),
+                            span: d.span.clone(),
+                            code: d.code,
+                        };
+                        if bumped_level == DiagnosticLevel::Err {
+                            has_fatal_diag = true;
+                        }
+                        bumped
+                    } else {
+                        d.clone()
+                    };
+                    eprintln!(
+                        "{}",
+                        format_type_diagnostic(&effective, &source, diag_file_name)
+                    );
+                }
+                if strict && has_fatal_diag {
+                    return Err(
+                        "type checking failed — type warnings escalated to errors by --strict"
+                            .to_string(),
+                    );
                 }
             }
 
@@ -2423,9 +2458,35 @@ async fn run_fmt(
         }
 
         // Emit type quality diagnostics (T010/T011 Unknown, T012 overbroad, T013 ambiguous, …).
-        // These are advisory warnings and do not block formatting even in --strict mode.
-        for d in &fmt_diagnostics {
-            eprintln!("{}", format_type_diagnostic(d, &source, file_path));
+        // In --strict mode, bump each diagnostic's level and treat Err-level diagnostics
+        // as fatal (they escalate Info→Warn→Err under --strict).
+        {
+            use tinct::DiagnosticLevel;
+            let mut has_fatal_diag = false;
+            for d in &fmt_diagnostics {
+                let effective = if strict {
+                    let bumped_level = d.level.bump();
+                    let bumped = tinct::TypeDiagnostic {
+                        level: bumped_level,
+                        message: d.message.clone(),
+                        span: d.span.clone(),
+                        code: d.code,
+                    };
+                    if bumped_level == DiagnosticLevel::Err {
+                        has_fatal_diag = true;
+                    }
+                    bumped
+                } else {
+                    d.clone()
+                };
+                eprintln!("{}", format_type_diagnostic(&effective, &source, file_path));
+            }
+            if strict && has_fatal_diag {
+                return Err(
+                    "type checking failed — type warnings escalated to errors by --strict"
+                        .to_string(),
+                );
+            }
         }
     }
 
@@ -2552,13 +2613,31 @@ fn run_lint(
         all_messages.push(tinct::format_type_error(e, &source, file_path));
     }
 
+    // In --strict mode, bump each diagnostic's level before display (Info→Warn, Warn→Err),
+    // then treat Err-level diagnostics as fatal. Mirrors run_eval and run_fmt behavior.
+    let mut has_fatal_diag = false;
     for d in &diagnostics {
-        all_messages.push(format_type_diagnostic(d, &source, file_path));
+        let effective = if strict {
+            use tinct::DiagnosticLevel;
+            let bumped_level = d.level.bump();
+            if bumped_level == DiagnosticLevel::Err {
+                has_fatal_diag = true;
+            }
+            tinct::TypeDiagnostic {
+                level: bumped_level,
+                message: d.message.clone(),
+                span: d.span.clone(),
+                code: d.code,
+            }
+        } else {
+            d.clone()
+        };
+        all_messages.push(format_type_diagnostic(&effective, &source, file_path));
     }
 
-    // Type errors always fatal; diagnostics (warnings) fatal only with --strict
+    // Type errors always fatal; diagnostics (warnings) fatal only with --strict (at Err level)
     let fatal_count = if strict {
-        all_messages.len()
+        type_errors.len() + if has_fatal_diag { 1 } else { 0 }
     } else {
         type_errors.len()
     };
@@ -4019,8 +4098,6 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
                     doc_contract.push(("type".to_string(), DescribeJson::Str(type_name.clone())));
                 }
                 tinct::Annotation::PropertyDict(entries) => {
-                    // TODO(rv2-migrate-annotation Phase 6): restore PropertyDict JSON serialization
-                    // using SurfaceExpression. Stubbed for Phase 1 compilation.
                     let mut fields: Vec<(String, DescribeJson)> = Vec::new();
                     for entry in entries {
                         if let Some(ref key_node) = entry.node.key {
@@ -4744,13 +4821,42 @@ Fix for type assertion: update the annotation to match the runtime type, or
 fix the expression to produce the declared type."
         }
 
+        "T018" => {
+            "\
+T018: Undefined constructor in structural test (type checker)
+
+A [case [let v: ConstructorName] body] arm references a constructor name that
+is not defined in any enclosing scope. The arm will never match at runtime
+because the constructor tag cannot be produced if the constructor is unknown.
+
+Common causes:
+  - Typo in the constructor name (e.g., `Ok` vs `Ok_`).
+  - The type whose constructors are being matched is not in scope.
+  - The constructor belongs to a different variant type than the scrutinee.
+
+Fix: check the spelling of the constructor name, ensure the type is imported,
+and verify the scrutinee's type has a constructor with that name."
+        }
+
+        "T019" => {
+            "\
+T019: Nullary constructor used as payload-binding structural test (type checker)
+
+A [case [let v: ConstructorName] body] arm attempts to bind v to the payload
+of a nullary constructor (one that carries no value). Since a nullary constructor
+has no payload, v can never be bound, and this arm is structurally dead.
+
+Fix: use [let _: ConstructorName] to match the constructor tag without binding,
+or use a constructor that carries a payload if you need to extract a value."
+        }
+
         _ => {
             return Err(format!(
                 "unknown error code: {code}\n\
-                 Run 'tinct explain <code>' with a valid code, e.g. E001 through E099 or T000-T004.\n\
+                 Run 'tinct explain <code>' with a valid code, e.g. E001 through E099 or T000-T004, T018, T019.\n\
                  Known codes: E001, E002, E010, E011, E020-E024, E030-E036, \
                  E040, E042-E043, E050-E057, E060, E063, E070, E080, E090, E099, \
-                 T000, T001, T002, T003, T004."
+                 T000, T001, T002, T003, T004, T018, T019."
             ));
         }
     };

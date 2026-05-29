@@ -157,7 +157,6 @@ pub(crate) enum RestoreState {
     },
     /// Restore a Surface thunk for non-cacheable errors (e.g., DepthExceeded).
     /// Holds the raw SurfaceNode so the thunk can be re-lowered on retry.
-    /// TODO(future): store already-lowered CoreExpr to avoid re-lowering on retry.
     Surface {
         node: std::sync::Arc<crate::ast::SurfaceNode>,
         res: std::sync::Arc<crate::ast::ResolutionTable>,
@@ -384,6 +383,10 @@ pub(crate) struct MatchGuardCheckData {
     pub(crate) scrutinee_value: Value,
     /// The arm body to evaluate if guard passes
     pub(crate) body: Arc<Spanned<CoreExpr>>,
+    /// True when the guard was a callable and has already been invoked via the CEK machine.
+    /// On the second entry into MatchGuardCheck, `result` is the call's return value
+    /// and truthiness is checked directly without re-invoking.
+    pub(crate) callable_invoked: bool,
 }
 
 /// Payload for Cont::PredicateCheck. Boxed to keep the Cont enum ≤96 bytes.
@@ -399,6 +402,10 @@ pub(crate) struct PredicateCheckData {
     /// Environment for evaluating the default expression if predicate fails
     pub(crate) env: Arc<RwLock<Environment>>,
     pub(crate) ctx: Arc<EvalContext>,
+    /// True when the predicate was a callable and has already been invoked via the CEK machine.
+    /// On the second entry into PredicateCheck, `result` is the call's return value
+    /// and truthiness is checked directly without re-invoking.
+    pub(crate) callable_invoked: bool,
 }
 
 /// Continuation variants for iterative materialization. Each represents
@@ -918,8 +925,6 @@ pub(crate) async fn force_step(
         //
         // The round-trip here is: SurfaceNode → lower() → Spanned<CoreExpr> → eval_core_expr()
         // → Arc<Thunk>. The lower() call is done here; the result is a CoreExpr thunk.
-        // TODO(future): pre-lower Surface thunks at creation time (store as CoreExpr) to avoid
-        // re-lowering on each DepthExceeded retry.
         //
         // After lower() we call eval_core_expr() to get a result thunk, then push a Memoize
         // continuation and return Action::Materialize to force the result thunk iteratively.
@@ -1035,8 +1040,8 @@ pub(crate) async fn force_step(
             };
         }
 
-        // TODO(future): eval_core_expr may recurse for complex CoreExpr variants (Sequential,
-        // Match) — those need their own CEK continuation variants to be fully iterative.
+        // Remaining CoreExpr variants (Call, Dict, Quote, etc.) fall through to eval_core_expr_pub.
+        // Sequential and Match are handled inline above (lines ~1214 and ~1257) via CEK continuations.
         match crate::eval::eval_core_expr_pub(&lowered, &env, &thunk_ctx).await {
             Ok(result_thunk) => {
                 // Fast path: if eval_core_expr already produced a materialized thunk
@@ -2766,6 +2771,7 @@ pub(crate) async fn apply_cont(
                                 thunk_span: thunk_span.clone(),
                                 env: Arc::clone(&env),
                                 ctx: Arc::clone(&ctx),
+                                callable_invoked: false,
                             })));
                             Action::EvalCore {
                                 expr: Arc::new(crate::lower::lower(
@@ -3039,18 +3045,19 @@ pub(crate) async fn apply_cont(
                     for i in arm_idx..arms.len() {
                         let arm = &arms[i];
 
-                        // Try the pattern (this is async, so we need to spawn a sub-action)
-                        // For now, we'll block on pattern matching since it's typically fast
-                        // TODO: Make pattern matching iterative too
-                        let matched_env_result = crate::async_rt::block_on_anywhere(match_pattern(
+                        // Try the pattern. Since apply_cont is async, we can .await directly
+                        // here without block_on_anywhere — this keeps async state on the heap
+                        // rather than the Rust stack, preventing stack overflow on deeply
+                        // nested patterns.
+                        let matched_env = match match_pattern(
                             &arm.pattern.node,
                             &scrutinee_value,
                             &env,
                             &arm.pattern.span.clone(),
                             &ctx,
-                        ));
-
-                        let matched_env = match matched_env_result {
+                        )
+                        .await
+                        {
                             Ok(opt) => opt,
                             Err(e) => return Action::Continue(Err(e)),
                         };
@@ -3075,7 +3082,9 @@ pub(crate) async fn apply_cont(
                                                 &env,
                                                 match_span.clone(),
                                                 &ctx,
-                                            ) {
+                                            )
+                                            .await
+                                            {
                                                 Some(bound_env) => (bound_env, Arc::clone(body)),
                                                 None => {
                                                     // Structural test failed — soft skip to next arm
@@ -3111,6 +3120,7 @@ pub(crate) async fn apply_cont(
                                     arm_env: Arc::clone(&final_env),
                                     scrutinee_value: scrutinee_value.clone(),
                                     body: Arc::clone(&eval_body),
+                                    callable_invoked: false,
                                 })));
 
                                 // Evaluate the guard
@@ -3149,23 +3159,25 @@ pub(crate) async fn apply_cont(
                 arm_env,
                 scrutinee_value,
                 body,
+                callable_invoked,
             } = *data;
 
             match result {
                 Err(e) => Action::Continue(Err(e)),
                 Ok(guard_value) => {
-                    // PM1: If the guard is callable, invoke it with the scrutinee
-                    let guard_value = match guard_value {
-                        Value::Function { .. } | Value::Builtin(_) => {
+                    // PM1: If the guard is callable and we haven't yet invoked it, do so
+                    // iteratively via the CEK machine rather than block_on_anywhere.
+                    if !callable_invoked {
+                        if let Value::Function { .. } | Value::Builtin(_) = &guard_value {
                             // Create a thunk for the scrutinee
                             let scrutinee_thunk = Arc::new(Thunk::new_materialized(
                                 scrutinee_value.clone(),
                                 match_span.clone(),
                             ));
-                            // Create a thunk for the predicate
+                            // Create a thunk for the guard callable
                             let pred_thunk =
                                 Arc::new(Thunk::new_materialized(guard_value, match_span.clone()));
-                            // Create a PendingCall thunk
+                            // Create a PendingCall thunk for guard(scrutinee)
                             let call_thunk = Arc::new(Thunk::new_pending_call(
                                 pred_thunk,
                                 vec![scrutinee_thunk],
@@ -3180,20 +3192,29 @@ pub(crate) async fn apply_cont(
                                     span: match_span.clone(),
                                 }),
                             ));
-                            // Force the call
-                            match crate::async_rt::block_on_anywhere(materialize(
-                                &call_thunk,
-                                Some(&match_span),
-                                &ctx,
-                            )) {
-                                Ok(v) => v,
-                                Err(e) => return Action::Continue(Err(e)),
-                            }
+                            // Push MatchGuardCheck again with callable_invoked=true to receive
+                            // the call result, then return Materialize to drive the call
+                            // iteratively through the CEK loop (no block_on_anywhere).
+                            stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
+                                arm_idx,
+                                arms,
+                                env,
+                                ctx: Arc::clone(&ctx),
+                                match_span: match_span.clone(),
+                                arm_env,
+                                scrutinee_value,
+                                body,
+                                callable_invoked: true,
+                            })));
+                            return Action::Materialize {
+                                thunk: call_thunk,
+                                mat_span: Some(match_span),
+                            };
                         }
-                        other => other,
-                    };
+                    }
 
-                    // Check if the guard is truthy
+                    // Check if the guard result is truthy (guard_value is either a non-callable,
+                    // or the result of invoking the callable guard via the CEK machine above).
                     let is_truthy = match &guard_value {
                         Value::Bool(b) => *b,
                         Value::Dict(map) => !map.is_empty(),
@@ -3230,26 +3251,27 @@ pub(crate) async fn apply_cont(
                 thunk_span,
                 env,
                 ctx,
+                callable_invoked,
             } = *data;
 
             match result {
                 Err(e) => Action::Continue(Err(e)),
                 Ok(predicate_value) => {
-                    // If the predicate is callable, invoke it with the value as argument
-                    // (mirroring match guard logic at MatchGuardCheck)
-                    let predicate_result_value = match predicate_value {
-                        Value::Function { .. } | Value::Builtin(_) => {
-                            // Create a thunk for the value
+                    // If the predicate is callable and we haven't yet invoked it, do so
+                    // iteratively via the CEK machine rather than block_on_anywhere.
+                    if !callable_invoked {
+                        if let Value::Function { .. } | Value::Builtin(_) = &predicate_value {
+                            // Create a thunk for the value being checked
                             let value_thunk = Arc::new(Thunk::new_materialized(
                                 value.clone(),
                                 thunk_span.clone(),
                             ));
-                            // Create a thunk for the predicate
+                            // Create a thunk for the predicate callable
                             let pred_thunk = Arc::new(Thunk::new_materialized(
                                 predicate_value,
                                 expr_span.clone(),
                             ));
-                            // Create a PendingCall thunk
+                            // Create a PendingCall thunk for predicate(value)
                             let call_thunk = Arc::new(Thunk::new_pending_call(
                                 pred_thunk,
                                 vec![value_thunk],
@@ -3264,21 +3286,28 @@ pub(crate) async fn apply_cont(
                                     span: expr_span.clone(),
                                 }),
                             ));
-                            // Force the call
-                            match crate::async_rt::block_on_anywhere(materialize(
-                                &call_thunk,
-                                Some(&expr_span),
-                                &ctx,
-                            )) {
-                                Ok(v) => v,
-                                Err(e) => return Action::Continue(Err(e)),
-                            }
+                            // Push PredicateCheck again with callable_invoked=true to receive
+                            // the call result, then return Materialize to drive the call
+                            // iteratively through the CEK loop (no block_on_anywhere).
+                            stack.push(Cont::PredicateCheck(Box::new(PredicateCheckData {
+                                value,
+                                annotation,
+                                expr_span: expr_span.clone(),
+                                thunk_span,
+                                env,
+                                ctx: Arc::clone(&ctx),
+                                callable_invoked: true,
+                            })));
+                            return Action::Materialize {
+                                thunk: call_thunk,
+                                mat_span: Some(expr_span),
+                            };
                         }
-                        other => other,
-                    };
+                    }
 
-                    // Check if the predicate result is truthy
-                    let is_truthy = match &predicate_result_value {
+                    // Check if the predicate result is truthy (predicate_value is either a
+                    // non-callable, or the result of invoking the callable predicate above).
+                    let is_truthy = match &predicate_value {
                         Value::Bool(b) => *b,
                         Value::Dict(map) => !map.is_empty(),
                         _ => true,
@@ -3337,9 +3366,10 @@ pub(crate) async fn apply_cont(
 ///   - `LetDecl { bindings }`: multi-payload group (incomplete; bind names to scrutinee)
 /// - Returns `Some(new_env)` if all bindings succeed, `None` if any structural test fails
 ///
-/// This function is synchronous (blocks on payload materialization) because pattern matching
-/// is already synchronous in the existing MatchDispatch continuation.
-fn eval_case_arm_let_pattern(
+/// This function is async so that payload materialization (for constructor structural tests)
+/// uses `.await` on the CEK machine's async executor rather than `block_on_anywhere`, which
+/// could exhaust the Rust async call stack for deeply nested patterns.
+async fn eval_case_arm_let_pattern(
     bindings: &[crate::ast::Spanned<CoreExpr>],
     scrutinee_value: &Value,
     env: &Arc<RwLock<Environment>>,
@@ -3406,13 +3436,12 @@ fn eval_case_arm_let_pattern(
                             if name != "_" {
                                 match payload {
                                     Some(payload_id) => {
-                                        // Get the payload thunk and materialize it so we have the value
+                                        // Get the payload thunk and materialize it so we have the value.
+                                        // Use .await instead of block_on_anywhere to keep
+                                        // async state on the heap, not the Rust call stack.
                                         let raw_thunk = ctx.get_thunk(*payload_id);
-                                        match crate::async_rt::block_on_anywhere(materialize(
-                                            &raw_thunk,
-                                            Some(&match_span),
-                                            ctx,
-                                        )) {
+                                        match materialize(&raw_thunk, Some(&match_span), ctx).await
+                                        {
                                             Ok(payload_val) => {
                                                 let payload_thunk =
                                                     Arc::new(Thunk::new_materialized(

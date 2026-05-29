@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{Span, SurfaceExpression, SurfaceNode, SurfaceProgram};
-use crate::desugar; // TODO(parts-e): remove when desugar.rs is deleted (blocked on evaluator CoreExpr migration)
+use crate::desugar;
 use crate::expand;
 use crate::parser;
 use crate::resolve;

@@ -1255,15 +1255,15 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 // is the announcement that makes this safe: a reader sees `[let [a b]: Pair]`
                 // and knows `[a b]` is a binding group because `[let ...]` is in scope.
                 //
-                // Note: This rule fires BEFORE the `match next_token { ... }` block, so it
-                // intercepts ALL nested brackets inside a LetDecl frame — including `[let ...]`.
-                // For `[let [let a b]]`, the inner `[` triggers this rule (pushes nested LetDecl),
-                // and then `let` is processed as VarRef("let") inside the inner LetDecl.
-                // This is a known limitation: deeply nested `[let [let ...]]` does not work as
-                // expected. The typical use case `[let [a b]: Pair]` works correctly.
-                // TODO(unified-bindings): If needed, add a check here for Token::Let as next_token
-                // and forward to the normal Token::Let arm instead of the context-sensitive rule.
-                if matches!(stack.last(), Some(StackFrame::LetDecl { .. })) {
+                // Exception: if the nested bracket starts with `let` (i.e., `[let [let ...]]`),
+                // fall through to the standard Token::Let dispatch so the inner bracket becomes
+                // a proper LetDecl frame rather than a binding-pattern group. This allows
+                // destructuring patterns that themselves introduce let-binding sublists.
+                // Peek at next non-whitespace/non-newline token for form classification.
+                // Used both for the LetDecl nesting guard and the form classifier below.
+                let next_token = peek_next_significant(&token_vec, i);
+                let next_is_let = matches!(next_token, Some((Token::Let, _)));
+                if matches!(stack.last(), Some(StackFrame::LetDecl { .. })) && !next_is_let {
                     // Push a nested LetDecl for multi-payload destructuring.
                     // The pending_key for the outer LetDecl (set by the colon handler) will
                     // be consumed when this inner LetDecl closes and gets pushed as a node.
@@ -1275,9 +1275,6 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     i += 1; // Consume the OpenBracket
                     continue;
                 }
-
-                // Peek at next non-whitespace/non-newline token for form classification
-                let next_token = peek_next_significant(&token_vec, i);
 
                 match next_token {
                     Some((Token::Identifier(s), keyword_idx))
@@ -8971,6 +8968,68 @@ mod tests {
                 ));
             }
             _ => panic!("expected Expr item"),
+        }
+    }
+
+    /// Regression test: `[let [let x y]]` — nested `[let ...]` inside a `[let ...]` context.
+    ///
+    /// Before the Token::Let fix, when inside a LetDecl frame the context-sensitive rule fired
+    /// for ANY `[`, including `[let ...]`. This caused the `let` keyword of the inner bracket
+    /// to be processed as VarRef("let"), producing `LetDecl { bindings: ["let", x, y] }` —
+    /// a three-element LetDecl with "let" as the first binding.
+    ///
+    /// After the fix: when `next_is_let` is true, the context-sensitive rule is skipped and
+    /// the standard Token::Let dispatch fires instead. The inner `[let x y]` becomes a proper
+    /// LetDecl { bindings: [x, y] }, which is then the sole binding of the outer LetDecl.
+    #[test]
+    fn test_let_nested_let_inner_is_proper_letdecl() {
+        // [let [let x y]] — outer LetDecl with one binding: an inner LetDecl
+        let output = parse("[let [let x y]]").expect("parse failed");
+        assert!(
+            output.errors.is_empty(),
+            "expected no parse errors for [let [let x y]], got: {:?}",
+            output.errors
+        );
+        let items = surf_items(&output.program.documents[0].node);
+        assert_eq!(items.len(), 1, "expected one top-level expression");
+
+        // Outer LetDecl
+        match &items[0].expr {
+            SurfaceExpression::LetDecl { bindings } => {
+                assert_eq!(
+                    bindings.len(),
+                    1,
+                    "outer LetDecl should have exactly 1 binding (the inner [let x y]), got {:?}",
+                    bindings.iter().map(|b| &b.expr).collect::<Vec<_>>()
+                );
+                // The sole binding must be an inner LetDecl (not VarRef("let"))
+                match &bindings[0].expr {
+                    SurfaceExpression::LetDecl {
+                        bindings: inner_bindings,
+                    } => {
+                        assert_eq!(
+                            inner_bindings.len(),
+                            2,
+                            "inner LetDecl should have 2 bindings (x, y), got {:?}",
+                            inner_bindings.iter().map(|b| &b.expr).collect::<Vec<_>>()
+                        );
+                        match &inner_bindings[0].expr {
+                            SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "x"),
+                            other => panic!("expected VarRef('x'), got {other:?}"),
+                        }
+                        match &inner_bindings[1].expr {
+                            SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "y"),
+                            other => panic!("expected VarRef('y'), got {other:?}"),
+                        }
+                    }
+                    other => panic!(
+                        "expected inner LetDecl as sole binding of outer LetDecl; \
+                         before the Token::Let fix this would be VarRef(\"let\") followed by x,y. \
+                         Got: {other:?}"
+                    ),
+                }
+            }
+            other => panic!("expected outer LetDecl, got {other:?}"),
         }
     }
 }

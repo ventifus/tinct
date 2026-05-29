@@ -4341,11 +4341,7 @@ fn validate_spki_pins(
 
     let leaf_cert = &peer_certs[0];
 
-    // Extract SPKI from certificate and compute hashes
-    // For simplicity, we'll compute the hash of the entire DER-encoded certificate's SPKI field
-    // This requires parsing the certificate, which is complex
-    // For now, we'll use a simpler approach: hash the raw certificate bytes
-    // TODO: Properly extract SPKI field from X.509 certificate
+    // Extract SPKI from certificate and compute hashes (RFC 7469 compliant)
 
     // Validate at least one pin matches
     let mut matched = false;

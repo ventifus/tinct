@@ -38,11 +38,13 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<Key> {
 // Non-literal entries use Thunk::new_unevaluated_core (UnevaluatedState::CoreExpr) —
 // no CoreExpr→Expr round-trip for dict values.
 //
-// Note: TypeAlias constructor pre-computation is OMITTED intentionally.
-// CoreExpr::Dict entries never contain CoreExpr::TypeAlias (declaration forms
-// become CoreExpr::Error during expr_to_core_expr / lowering). The TypeAlias
-// pre-pass from the old eval_dict is dead code post-E1; tracked as a pre-existing
-// regression in TODO.md (runtime-v2-fix-class-instance-in-dict).
+// Note: TypeAlias / ClassDecl / InstanceDecl declaration forms in dict value position
+// are handled at compile time (type checker Pass 0c, typecheck_dict.rs) and skipped
+// at runtime via `continue` in lower.rs (SurfaceExpression::Decl match arm). They
+// produce no runtime entry — this is correct behavior. The type checker registers
+// class/instance declarations found inside dicts before the SCC inference loop, so
+// all declarations are visible regardless of order. FD consistency checks fire
+// correctly for class/instance inside dict values (fixed in B-164).
 // ============================================================================
 
 /// Returns `true` if a dict key expression is "static" — i.e., its name is known at compile
@@ -157,7 +159,6 @@ pub(crate) async fn eval_dict_core(
                 entry.node.value.span.clone(),
             )),
             // Non-literal: use UnevaluatedState::CoreExpr.
-            // TODO(future): Thunk::new_unevaluated_core_with_env_id for env_id fast path.
             _ => Arc::new(Thunk::new_unevaluated_core(
                 Arc::clone(&entry.node.value),
                 Arc::clone(

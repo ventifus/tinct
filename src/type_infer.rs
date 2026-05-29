@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::ast::Span;
 use crate::types::{ClassDecl, ClassEnv, Constraint, InstanceEnv, Kind, Type};
 
-/// Polymorphic type scheme: ∀ type_vars. constraints => body
+/// Polymorphic type scheme: ∀ type_vars kind_vars. constraints => body
 /// Used for let-bound polymorphism (Damas-Milner) and type class constraints.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeScheme {
@@ -17,10 +17,20 @@ pub struct TypeScheme {
     pub type_vars: Vec<String>,
     /// Type class constraints on quantified variables (e.g., [Equatable a, Numeric b])
     pub constraints: Vec<Constraint>,
-    /// Body type (may contain type_vars)
+    /// Body type (may contain type_vars and kind_vars)
     pub body: Type,
     /// Quantified label variables (for HasField constraints with label polymorphism)
     pub label_vars: Vec<String>,
+    /// Kinded quantified variables: pairs of (name, Kind) for variables that must
+    /// instantiate as something other than Type::TypeVar. Currently used for
+    /// Kind::Operator variables, which instantiate as Type::Operator(fresh_name)
+    /// rather than Type::TypeVar(fresh_name, level). This enables builtin TypeSchemes
+    /// like ∀(f: Operator) a b. Mappable f ⇒ (a→b)→f a→f b where f must not be
+    /// confused with a monomorphic type variable.
+    ///
+    /// Variables listed here must NOT also appear in `type_vars` — they are dispatched
+    /// separately during instantiate_scheme. Kind::Type variables should go in `type_vars`.
+    pub kind_vars: Vec<(String, Kind)>,
     /// Optional documentation string (extracted from doc: annotations)
     pub doc: Option<String>,
     /// Nested schemes for function parameters (used for higher-rank types)
@@ -35,6 +45,7 @@ impl TypeScheme {
             constraints: Vec::new(),
             body: ty,
             label_vars: Vec::new(),
+            kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
         }
@@ -135,9 +146,9 @@ pub struct InferState {
     pub do_infer_resolutions: HashMap<String, String>,
     /// Source names for type variables: internal TypeVar name → user-visible source name.
     /// When a function parameter `x` has an inferred TypeVar `_t42`, this maps `"_t42"` → `"x"`.
-    /// Used by T013 diagnostics to report "ambiguous type variable 'x' (internal: _t42)" instead
-    /// of just "_t42", improving readability for users who don't care about internal names.
-    /// Only populated for parameters and let-bindings where a source name exists.
+    /// Used by T013 diagnostics to report "ambiguous type variable 'x'" (the internal _tN
+    /// name is hidden — it is noise for users). Only populated for parameters and let-bindings
+    /// where a source name exists.
     pub type_var_source_names: HashMap<String, String>,
     /// Deduplication set for T013 ambiguous constraint warnings: (TypeVar name, Span) pairs.
     /// Prevents emitting duplicate T013 warnings when the same ambiguous TypeVar is encountered
@@ -355,11 +366,9 @@ impl InferState {
         };
         instance_env.insert(seq_instance).unwrap();
 
-        // KNOWN ISSUE: Record instance for Indexable is complex because the value type
-        // depends on the specific field accessed, which requires HasField-style resolution.
-        // For now, we rely on check_get special-case handling for Record types until
-        // the HasField constraint can be integrated with Indexable FD improvement.
-        // TODO: Wire Record case through resolve_has_field in type_unify.rs FD improvement.
+        // Record/Union/Intersection/Top types for Indexable are handled via resolve_has_field
+        // in improve_functional_dependency_inner (type_unify.rs). No instance registration
+        // needed — records are structural, so [HAS-FIELD-*] rules apply directly.
 
         Self {
             name_counter: 0,
@@ -416,8 +425,8 @@ impl InferState {
 
     /// Create a fresh type variable with an associated source name for better diagnostics.
     /// The source_name is typically a function parameter name or let-binding name.
-    /// Used for T013 warnings to report "ambiguous type variable 'x' (internal: _t42)"
-    /// instead of just "_t42".
+    /// Used for T013 warnings to report "ambiguous type variable 'x'" (hiding the internal
+    /// _tN name which is noise for users).
     pub fn fresh_type_var_with_source(&mut self, source_name: impl Into<String>) -> Type {
         let internal_name = format!("_t{}", self.name_counter);
         self.name_counter = self.name_counter.saturating_add(1);

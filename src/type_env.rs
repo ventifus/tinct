@@ -170,6 +170,13 @@ fn rename_single_type_var_in_row(row: &Row, old_name: &str, fresh_name: &str, le
 
 /// Instantiate a type scheme by creating fresh type variables at the given level.
 /// Used for VAR-POLY: when a polymorphic binding is referenced, create fresh instances.
+///
+/// Variables in `scheme.type_vars` are instantiated as `Type::TypeVar(fresh, level)`.
+/// Variables in `scheme.kind_vars` with `Kind::Operator` are instantiated as
+/// `Type::Operator(fresh)` and registered in `state.kind_env` with `Kind::Operator`,
+/// enabling them to unify with type constructor applications via UNIFY-OPERATOR.
+/// Variables in `scheme.kind_vars` with `Kind::Label` are treated identically to
+/// label_vars (registered in `state.kind_env` with `Kind::Label`).
 pub fn instantiate_scheme(
     scheme: &TypeScheme,
     level: u32,
@@ -177,7 +184,7 @@ pub fn instantiate_scheme(
     origin_name: Option<&str>,
     origin_span: Option<Span>,
 ) -> Type {
-    if scheme.type_vars.is_empty() {
+    if scheme.type_vars.is_empty() && scheme.kind_vars.is_empty() {
         // Monomorphic scheme: return body directly
         return scheme.body.clone();
     }
@@ -185,9 +192,10 @@ pub fn instantiate_scheme(
     // Build variable renaming map (old names -> fresh names)
     let mut var_renaming: HashMap<String, String> = HashMap::new();
 
-    // Fast path: single type variable -- avoid building Substitution (HashMap + apply HashSet).
+    // Fast path: single regular type variable with no kind_vars --
+    // avoid building Substitution (HashMap + apply HashSet).
     // Inline rename is allocation-free aside from the string format for the fresh name.
-    if scheme.type_vars.len() == 1 {
+    if scheme.type_vars.len() == 1 && scheme.kind_vars.is_empty() {
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter = state.name_counter.saturating_add(1);
         state.levels.insert(fresh_name.clone(), level);
@@ -264,10 +272,14 @@ pub fn instantiate_scheme(
         return rename_single_type_var(&scheme.body, &scheme.type_vars[0], &fresh_name, level);
     }
 
-    // General path: multiple type variables -- build a full Substitution.
+    // General path: multiple type variables and/or kind_vars -- build a full Substitution.
+    // Total capacity is type_vars + kind_vars (each kind_var also gets a renaming entry).
+    let total_vars = scheme.type_vars.len() + scheme.kind_vars.len();
     let renaming = Substitution {
-        type_map: std::cell::RefCell::new(HashMap::with_capacity(scheme.type_vars.len())),
+        type_map: std::cell::RefCell::new(HashMap::with_capacity(total_vars)),
     };
+
+    // Instantiate regular type variables as Type::TypeVar.
     for var in &scheme.type_vars {
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter = state.name_counter.saturating_add(1);
@@ -284,7 +296,37 @@ pub fn instantiate_scheme(
         }
     }
 
-    // Copy constraints with renamed variables
+    // Instantiate kinded variables according to their kind.
+    // Kind::Operator → Type::Operator(fresh_name), registered in kind_env.
+    // Kind::Label    → Type::TypeVar(fresh_name, level), registered in kind_env as Label.
+    // Kind::Type     → Type::TypeVar(fresh_name, level) (same as a regular type_var).
+    for (var, kind) in &scheme.kind_vars {
+        let fresh_name = format!("_t{}", state.name_counter);
+        state.name_counter = state.name_counter.saturating_add(1);
+        state.levels.insert(fresh_name.clone(), level);
+        var_renaming.insert(var.clone(), fresh_name.clone());
+
+        let instantiated_type = match kind {
+            Kind::Operator => {
+                // Register in kind_env so that resolve_type_expr and UNIFY-OPERATOR
+                // recognise the fresh variable as a type constructor, not a type.
+                state.kind_env.insert(fresh_name.clone(), Kind::Operator);
+                Type::Operator(fresh_name.clone())
+            }
+            Kind::Label => {
+                state.kind_env.insert(fresh_name.clone(), Kind::Label);
+                Type::TypeVar(fresh_name.clone(), level)
+            }
+            Kind::Type => Type::TypeVar(fresh_name.clone(), level),
+        };
+
+        renaming
+            .type_map
+            .borrow_mut()
+            .insert(var.clone(), instantiated_type);
+    }
+
+    // Copy constraints with renamed variables (from both type_vars and kind_vars)
     for constraint in &scheme.constraints {
         match constraint {
             Constraint::Class {
@@ -394,22 +436,20 @@ pub fn generalize(level: u32, ty: &Type, state: &mut InferState) -> TypeScheme {
 /// is bound in the snapshot to a non-TypeVar, non-Operator type.
 ///
 /// `source_names` maps internal TypeVar names to user-visible source names (e.g., `"_t42"` → `"x"`).
-/// When present, diagnostics report "ambiguous type variable 'x' (internal: _t42)" for better readability.
+/// When present, diagnostics report "ambiguous type variable 'x'" (without the internal name noise).
 ///
 /// `emitted` deduplicates warnings: tracks (TypeVar name, Span) pairs already warned about.
-// TODO(type-system-cleanup T013 Task 4): Track argument-level span on constraints.
-// When instantiate_scheme is called during argument type-checking, the per-argument
-// span is available at the call site. Store it on Constraint::Class as origin_span.
-// Currently origin_span is set to the VarRef span (the whole function-name span),
-// not the individual argument's span.
+//
+// Task 4: DONE — constraint origin_span is updated to per-argument span in check_call_with_scheme
+// (typecheck.rs) by collecting (param type vars → arg span) pairs during the argument loop and
+// patching state.constraints[constraints_start..] after unification.
 //
 // Task 5: DONE — origin_name/origin_span are now used when present (see match arm below).
 // Emits "argument to `{name}` has unconstrained type — {class} constraint will be silently dropped"
 // and uses origin_span as the diagnostic span when available.
 //
-// TODO(type-system-cleanup T013 Task 6): Update format_var_name fallback below.
-// When origin info is NOT available, show the scheme's quantified name (e.g., 'a')
-// without the "(internal: _tN)" suffix — the internal name is noise for users.
+// Task 6: DONE — format_var_name now shows just the source name (e.g., 'a') without the
+// "(internal: _tN)" suffix — the internal name is noise for users.
 //
 // Task 7: DONE — unit tests added in test_t013_origin_name_message_format and
 // test_t013_fallback_message_format; corpus test in
@@ -429,10 +469,13 @@ fn emit_ambiguous_constraint_diagnostics(
             .unwrap_or(false)
     };
 
-    // Format a variable name with source name if available
+    // Format a variable name with source name if available.
+    // When a source name is known (e.g., the scheme's quantified name 'a'), show just
+    // that name — the internal _tN name is noise for users. When no source name is
+    // available, show the internal name as a last resort.
     let format_var_name = |var: &str| -> String {
         if let Some(source_name) = source_names.get(var) {
-            format!("'{}' (internal: {})", source_name, var)
+            format!("'{}'", source_name)
         } else {
             format!("'{}'", var)
         }
@@ -585,6 +628,7 @@ pub fn generalize_with_doc(
             constraints: Vec::new(),
             body: ty.clone(),
             label_vars: Vec::new(),
+            kind_vars: Vec::new(),
             doc,
             inner_schemes: None,
         };
@@ -628,6 +672,7 @@ pub fn generalize_with_doc(
             constraints: Vec::new(),
             body: ty.clone(),
             label_vars: Vec::new(),
+            kind_vars: Vec::new(),
             doc,
             inner_schemes: None,
         }
@@ -676,10 +721,11 @@ pub fn generalize_with_doc(
                 .unwrap_or(false)
         };
 
-        // Helper: format a variable name with source name if available
+        // Helper: format a variable name with source name if available.
+        // Show just the source name — the internal _tN name is noise for users.
         let format_var_name = |var: &str| -> String {
             if let Some(source_name) = state.type_var_source_names.get(var) {
-                format!("'{}' (internal: {})", source_name, var)
+                format!("'{}'", source_name)
             } else {
                 format!("'{}'", var)
             }
@@ -880,6 +926,7 @@ pub fn generalize_with_doc(
             constraints: generalizable_constraints,
             body: ty.clone(),
             label_vars,
+            kind_vars: Vec::new(),
             doc,
             inner_schemes: None,
         }
@@ -1338,6 +1385,18 @@ impl TypeEnv {
             resolver_injective: false,
         });
 
+        // Mappable: higher-kinded type class (Kind::Operator) for map/fmap.
+        // Instances: MappableSeq (Seq), MappableDict (Dict) — registered in prelude.llt.
+        // No FDs: single-param class, constraint resolution via instance lookup only.
+        let _mappable_class = Arc::new(ClassDecl {
+            name: "Mappable".to_string(),
+            params: vec![("f".to_string(), Kind::Operator)],
+            superclasses: vec![],
+            determines: vec![],
+            resolver: None,
+            resolver_injective: false,
+        });
+
         // Addition: Addable a b c => a -> b -> c
         // Multi-parameter type class with functional dependency (a,b) → c
         env.insert_scheme(
@@ -1359,6 +1418,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -1384,6 +1444,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -1409,6 +1470,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -1434,6 +1496,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -1454,6 +1517,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -1474,6 +1538,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -1494,6 +1559,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -1514,6 +1580,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -1534,6 +1601,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -1651,6 +1719,7 @@ impl TypeEnv {
                     variadic: true,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -2048,6 +2117,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -2094,6 +2164,85 @@ impl TypeEnv {
             Type::Function {
                 params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Top),
+                variadic: false,
+            },
+        );
+        // eval: evaluate a Document/Program/Seq of expressions with optional env/input.
+        // Named args: env:, %:, program: — all optional. Return type is Unknown.
+        // Registered here so prelude functions that call [eval ...] (e.g., eval-document-runtime)
+        // type-check correctly. Without this, include, eval-document-pipeline, etc. get Type::Error.
+        env.insert(
+            "eval".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Unknown)],
+                ret: Box::new(Type::Unknown),
+                variadic: true, // accepts optional named args (env:, %:, program:)
+            },
+        );
+        // eval-types: evaluate the type-stage of a Document/Program.
+        env.insert(
+            "eval-types".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Unknown)],
+                ret: Box::new(Type::Unknown),
+                variadic: true,
+            },
+        );
+        // load: parse tinct source text into a Program value.
+        // Required so inject_builtin_aliases can create "builtin-load" from "load",
+        // enabling the prelude's `load: builtin-load` definition to typecheck.
+        // Named args: name:, hash: — optional.
+        env.insert(
+            "load".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Str)],
+                ret: Box::new(Type::Unknown), // Returns a Program (AST value)
+                variadic: true,
+            },
+        );
+        // expand: macro-expand and desugar a Program value.
+        // Required so inject_builtin_aliases can create "builtin-expand" from "expand".
+        env.insert(
+            "expand".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Unknown)],
+                ret: Box::new(Type::Unknown), // Returns expanded Program
+                variadic: false,
+            },
+        );
+        // blake3: compute blake3 hash of a string. Returns a hex string.
+        env.insert(
+            "blake3".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Str)],
+                ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
+        // cap-identity: return a stable string identity for a DirCap (for cache keys).
+        env.insert(
+            "cap-identity".to_string(),
+            Type::Function {
+                params: vec![(None, Type::DirCap)],
+                ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
+        // include-cache-get: look up a content-addressed include result. Returns [Missing]/[Pending]/[Cached v].
+        env.insert(
+            "include-cache-get".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Str)],
+                ret: Box::new(Type::Unknown),
+                variadic: false,
+            },
+        );
+        // include-cache-put: store/update a content-addressed include result.
+        env.insert(
+            "include-cache-put".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Str), (None, Type::Unknown)],
+                ret: Box::new(Type::Unknown),
                 variadic: false,
             },
         );
@@ -2474,9 +2623,18 @@ impl TypeEnv {
                 params: vec![
                     (None, Type::Handle(Box::new(Type::Unknown))),
                     (None, Type::Str),
-                    // TODO(unknown-elimination): opts is an open record {alpn?: Seq(Str), ...}.
-                    // Use an open Record with RowVar tail once opts-dict pattern is established.
-                    (None, Type::Top), // opts dict — any record or null
+                    // BAS width subtyping: opts is typed as {} (empty closed record).
+                    // Any caller dict with fields {alpn?, no-system-roots?, mozilla-roots?,
+                    // ca-bundle?, client-cert?, client-key?, pins?} satisfies {} via
+                    // BAS conjunction elimination — no optional-field syntax needed.
+                    // All opts fields are read via `if let Some(...)` in build_tls_config,
+                    // so no field is structurally required.
+                    (
+                        None,
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
+                    ), // opts dict
                 ],
                 // Legitimately Unknown: TLS layer wraps an existing handle and preserves its
                 // capabilities. Without dependent types (Handle[C1] → Handle[C1]), we cannot
@@ -2512,8 +2670,16 @@ impl TypeEnv {
                     (None, Type::NetCap), // cap
                     (None, Type::Str),    // host
                     (None, Type::Int),    // port
-                    // TODO(unknown-elimination): opts is an open record {alpn?: Seq(Str), cert?: ...}.
-                    (None, Type::Top), // opts dict — any record or null
+                    // BAS width subtyping: opts is typed as {} (empty closed record).
+                    // Any caller dict with TLS fields {alpn?, no-system-roots?, mozilla-roots?,
+                    // ca-bundle?, client-cert?, client-key?, pins?} satisfies {} automatically.
+                    // quic-session delegates to build_tls_config which reads all fields optionally.
+                    (
+                        None,
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
+                    ), // opts dict
                 ],
                 ret: Box::new(Type::QuicSession),
                 variadic: false,
@@ -2542,8 +2708,16 @@ impl TypeEnv {
                 params: vec![
                     (None, Type::NetCap), // capability
                     (None, Type::Str),    // base_url (scheme://host:port)
-                    // TODO(unknown-elimination): opts is an open record.
-                    (None, Type::Top), // opts dict — any record or null
+                    // BAS width subtyping: opts is typed as {} (empty closed record).
+                    // The opts param is currently reserved for future use (ca, client cert,
+                    // timeouts); the runtime ignores its value entirely. Any record satisfies {}
+                    // via BAS width subtyping, so callers may pass any dict without type errors.
+                    (
+                        None,
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
+                    ), // opts dict (reserved)
                 ],
                 ret: Box::new(Type::Http2Session),
                 variadic: false,
@@ -2554,8 +2728,9 @@ impl TypeEnv {
             Type::Function {
                 params: vec![
                     (None, Type::QuicSession), // QUIC session
-                    // TODO(unknown-elimination): opts is an open record.
-                    (None, Type::Top), // opts dict — any record or null
+                                               // No opts param: the runtime builtin_http3_session expects exactly 1
+                                               // argument (the quic_session). A second opts param was previously declared
+                                               // here but does not exist at the runtime call site.
                 ],
                 ret: Box::new(Type::Http3Session),
                 variadic: false,
@@ -2571,18 +2746,19 @@ impl TypeEnv {
                     ), // Http2Session or Http3Session
                     (None, Type::Str), // method
                     (None, Type::Str), // path
-                    // TODO(unknown-elimination): headers is {Str: Str} — a Map(Str,Str).
-                    (None, Type::Top), // headers dict — any record or null
-                    // TODO(unknown-elimination): body is Bytes | Null.
+                    // headers: Record({}) via BAS width subtyping — accepts any dict, including
+                    // the empty dict [] (Null). Callers pass any record satisfying {}; extra
+                    // fields (header names) are always allowed. Map(Str,Str) is not used because
+                    // [] infers as Record{} at the type level and Record{} is not a subtype of
+                    // Map(Str,Str) in the current type system (no Record→Map coercion rule).
                     (
                         None,
-                        Type::normalize_union(vec![
-                            Type::Bytes,
-                            Type::Record(Row {
-                                fields: HashMap::new(),
-                            }), // Null
-                        ]),
-                    ), // body
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
+                    ), // headers
+                    // body: Str — runtime calls require_string(body_val), so body must be Str.
+                    (None, Type::Str), // body
                 ],
                 ret: Box::new(Type::Record(Row {
                     fields: HashMap::from([
@@ -2591,7 +2767,9 @@ impl TypeEnv {
                             "headers".to_string(),
                             Type::Map(Box::new(Type::Str), Box::new(Type::Str)),
                         ),
-                        ("body".to_string(), Type::Bytes),
+                        // body: Str — runtime produces string_val(&body_string) via
+                        // String::from_utf8_lossy. Response body is always a Str, not Bytes.
+                        ("body".to_string(), Type::Str),
                     ]),
                 })),
                 variadic: false,
@@ -2826,6 +3004,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -2842,6 +3021,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -2860,6 +3040,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -2880,8 +3061,24 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
+            },
+        );
+        // builtin-build-dict: Unknown → Record({})
+        // Takes a Seq of {key: K, value: V} entry pairs (produced by each-kv, take, drop, etc.)
+        // and returns a Dict. Used by slice, flatten, pick, remove, and other dict-building
+        // prelude functions. Registered here so the prelude's `build-dict: builtin-build-dict`
+        // definition gives `build-dict` a proper function type rather than Type::Error.
+        env.insert(
+            "builtin-build-dict".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Unknown)],
+                ret: Box::new(Type::Record(Row {
+                    fields: HashMap::new(),
+                })),
+                variadic: false,
             },
         );
         env.insert(
@@ -2922,6 +3119,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -2972,21 +3170,36 @@ impl TypeEnv {
         );
 
         // Sequences: transforms
-        // map: truly needs HKT (∀f a b. Mappable f ⇒ (a→b)→f a→f b) — requires Type::App/Operator
-        // resolution not yet ready. Dual-dispatch at runtime (Dict|Seq), Unknown for now.
-        // TODO(unknown-elimination): Replace with Mappable f => (a → b) → f a → f b once
-        // instance resolution works.
-        env.insert(
+        // map: ∀a b. (a → b) → Unknown → Seq b
+        // The collection parameter accepts any Mappable (Seq or Dict), but the Mappable
+        // constraint resolution (HKT via kind_vars) requires UNIFY-OPERATOR which is not
+        // yet implemented. Using Unknown for now to avoid false type errors for dict callers.
+        // TODO(map-hkt): upgrade to ∀(f: Operator) a b. Mappable f ⇒ (a → b) → f a → f b
+        //   once unification of App(Operator_var, concrete) is implemented.
+        env.insert_scheme(
             "map".to_string(),
-            Type::Function {
-                params: vec![
-                    (None, Type::Top), // callback: any function
-                    // Genuinely unknown: collection is Dict or Seq, can't express yet
-                    (None, Type::Unknown),
-                ],
-                // Genuinely unknown: returns same shape as input (HKT needed for precision)
-                ret: Box::new(Type::Unknown),
-                variadic: false,
+            TypeScheme {
+                type_vars: vec!["a".to_string(), "b".to_string()],
+                kind_vars: vec![],
+                constraints: vec![],
+                body: Type::Function {
+                    params: vec![
+                        (
+                            Some("fn".to_string()),
+                            Type::Function {
+                                params: vec![(None, Type::TypeVar("a".to_string(), 0))],
+                                ret: Box::new(Type::TypeVar("b".to_string(), 0)),
+                                variadic: false,
+                            },
+                        ),
+                        (Some("xs".to_string()), Type::Unknown),
+                    ],
+                    ret: Box::new(Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
+                    variadic: false,
+                },
+                label_vars: vec![],
+                doc: None,
+                inner_schemes: None,
             },
         );
         // filter: ∀a. (a → Bool) → Seq a → Seq a
@@ -3017,6 +3230,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -3071,6 +3285,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -3108,6 +3323,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -3148,6 +3364,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -3168,12 +3385,16 @@ impl TypeEnv {
                 variadic: false,
             },
         );
-        // builtin-sort: Dict -> Dict (natural ordering)
-        //            OR (a -> a -> Bool) -> Dict -> Dict (custom comparator)
-        // Variadic to accept both 1-arg and 2-arg call forms without arity errors.
-        // First param is Top (accepts either Dict or comparator Fn).
-        // TODO(unknown-elimination): Replace with two overloaded TypeSchemes or a union param
-        // once the type system supports overloaded/multi-arity signatures cleanly.
+        // builtin-sort: Dict → Dict (natural ordering)
+        //            OR (a → a → Bool) → Dict → Dict (custom comparator)
+        // Two overloaded arities: [sort dict] or [sort cmp-fn dict].
+        // The variadic Top-param signature is the correct conservative representation:
+        //   - No Unknown is used (Top is the lattice ceiling, not the gradual escape hatch).
+        //   - TypeEnv has no overload mechanism, so both call forms share one signature.
+        //   - variadic: true permits both 1-arg and 2-arg calls without arity errors.
+        //   - The first positional param (Top) accepts either the Dict or a comparator Fn.
+        // Precise overloads (two TypeSchemes or union param) require type system extensions
+        // (overloaded dispatch or union-typed params with narrowing) tracked separately.
         env.insert(
             "builtin-sort".to_string(),
             Type::Function {
@@ -3349,6 +3570,7 @@ impl TypeEnv {
                         variadic: false,
                     },
                     label_vars: vec![],
+                    kind_vars: Vec::new(),
                     doc: None,
                     inner_schemes: None,
                 },
@@ -3382,6 +3604,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -3588,6 +3811,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -3606,6 +3830,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -3690,6 +3915,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -3715,6 +3941,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -3747,6 +3974,7 @@ impl TypeEnv {
                     variadic: false,
                 },
                 label_vars: vec![],
+                kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
             },
@@ -3817,7 +4045,6 @@ impl TypeEnv {
             ("builtin-each", "each"),
             ("builtin-each-key", "each-key"),
             ("builtin-each-kv", "each-kv"),
-            ("builtin-build-dict", "build-dict"),
             ("builtin-floor", "floor"),
             ("builtin-round", "round"),
             ("builtin-to-float", "to-float"),
@@ -3842,6 +4069,11 @@ impl TypeEnv {
             ("builtin-list-dir", "list-dir"),
             ("builtin-load", "load"),
             ("builtin-expand", "expand"),
+            ("builtin-eval", "eval"),
+            ("builtin-blake3", "blake3"),
+            ("builtin-cap-identity", "cap-identity"),
+            ("builtin-include-cache-get", "include-cache-get"),
+            ("builtin-include-cache-put", "include-cache-put"),
             // builtin-privacy-operators-and-io sprint: new builtin-* → bare-name mappings
             ("builtin-replace", "replace"),
             ("builtin-str-chars", "str-chars"),
@@ -4672,6 +4904,118 @@ mod help_suggestion_tests {
         assert_eq!(
             diag.span, call_span,
             "expected fallback span to be call_span"
+        );
+    }
+
+    /// A TypeScheme with a `kind_vars` entry of `Kind::Operator` must instantiate
+    /// to `Type::Operator(fresh_name)`, not `Type::TypeVar(fresh_name, level)`.
+    ///
+    /// Concretely: the scheme `∀(f: Operator) a. f a` should produce
+    /// `App(Operator("_t0"), TypeVar("_t1", 1))` when instantiated at level 1,
+    /// and the fresh Operator name must be registered in `state.kind_env` so that
+    /// subsequent UNIFY-OPERATOR and KIND-OPERATOR rules can recognise it as a
+    /// type constructor rather than a monomorphic type variable.
+    ///
+    /// Mutation resistance: if `instantiate_scheme` treated `kind_vars` variables
+    /// like regular `type_vars`, it would produce `TypeVar("_t0", 1)` instead of
+    /// `Operator("_t0")`, and the `kind_env` entry would be absent — both
+    /// assertions below would fail.
+    #[test]
+    fn test_instantiate_scheme_kind_var_operator_produces_type_operator() {
+        use crate::types::{InferState, Kind, Type};
+
+        let mut state = InferState::new();
+        state.level = 1;
+
+        // Build the scheme body: App(Operator("f"), TypeVar("a", 0))
+        // representing the type `f a` where f is Operator-kinded.
+        let scheme_body = Type::App(
+            Box::new(Type::Operator("f".to_string())),
+            Box::new(Type::TypeVar("a".to_string(), 0)),
+        );
+
+        // Construct a scheme: ∀(f: Operator) a. f a
+        let scheme = TypeScheme {
+            type_vars: vec!["a".to_string()],
+            kind_vars: vec![("f".to_string(), Kind::Operator)],
+            constraints: vec![],
+            body: scheme_body,
+            label_vars: vec![],
+            doc: None,
+            inner_schemes: None,
+        };
+
+        let instantiated = instantiate_scheme(&scheme, state.level, &mut state, None, None);
+
+        // The instantiated type must be App(Operator(fresh_f), TypeVar(fresh_a, 1)).
+        match instantiated {
+            Type::App(ref f_ty, ref a_ty) => {
+                // f must instantiate to Type::Operator, not Type::TypeVar.
+                match f_ty.as_ref() {
+                    Type::Operator(fresh_f) => {
+                        // The fresh Operator name must be registered in kind_env with Kind::Operator.
+                        assert_eq!(
+                            state.kind_env.get(fresh_f.as_str()),
+                            Some(&Kind::Operator),
+                            "fresh Operator name '{}' must be in kind_env with Kind::Operator",
+                            fresh_f
+                        );
+                        // Levels map should contain the fresh name so level-based
+                        // generalization can track it.
+                        assert!(
+                            state.levels.contains_key(fresh_f.as_str()),
+                            "fresh Operator name '{}' must be registered in state.levels",
+                            fresh_f
+                        );
+                    }
+                    other => panic!("expected Type::Operator for kind_var 'f', got {:?}", other),
+                }
+                // a must instantiate to Type::TypeVar.
+                match a_ty.as_ref() {
+                    Type::TypeVar(fresh_a, lv) => {
+                        assert_eq!(*lv, 1, "TypeVar level must match instantiation level");
+                        // a must NOT be in kind_env as Operator (it's a regular type var).
+                        assert_ne!(
+                            state.kind_env.get(fresh_a.as_str()),
+                            Some(&Kind::Operator),
+                            "regular type_var 'a' must not be Kind::Operator in kind_env"
+                        );
+                    }
+                    other => panic!(
+                        "expected Type::TypeVar for regular type_var 'a', got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!("expected App(Operator, TypeVar), got {:?}", other),
+        }
+    }
+
+    /// A monomorphic TypeScheme (both `type_vars` and `kind_vars` empty) must return
+    /// its body directly without incrementing the name counter.
+    ///
+    /// Mutation resistance: if the early-exit check in `instantiate_scheme` only tested
+    /// `type_vars.is_empty()` (not `kind_vars.is_empty()`), a scheme with only `kind_vars`
+    /// would incorrectly skip freshening. Conversely, an empty scheme must skip allocation.
+    #[test]
+    fn test_instantiate_scheme_empty_kind_vars_monomorphic_no_freshening() {
+        use crate::types::{InferState, Type};
+
+        let mut state = InferState::new();
+        let counter_before = state.name_counter;
+
+        let scheme = TypeScheme::mono(Type::Int);
+
+        let result = instantiate_scheme(&scheme, state.level, &mut state, None, None);
+
+        assert_eq!(
+            result,
+            Type::Int,
+            "monomorphic scheme must return body unchanged"
+        );
+        assert_eq!(
+            state.name_counter, counter_before,
+            "monomorphic instantiation must not increment name_counter"
         );
     }
 }
