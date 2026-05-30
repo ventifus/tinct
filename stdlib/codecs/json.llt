@@ -45,12 +45,22 @@ json-span: [fn [let s@Span]
        ",\"end-line\":"    [str s.end-line]
        ",\"end-col\":"     [str s.end-col] "}"]]
 
+# Check if a dict is array-like: all keys are non-negative integers (serializes as JSON array).
+json-array-like?: [fn [let d@Dict]
+  [reduce [fn [let acc pair] [and acc [int? pair.key]]] true [entries d]]]
+
+# Sort entries by integer key for correct array ordering.
+json-sort-entries-by-key: [fn [let d@Dict]
+  [sort-by [fn [let a b] [< a.key b.key]] [entries d]]]
+
 to-json-dict: [fn [let d@Dict]
-  [str "{"
-    [join ","
-      [map [fn [let pair] [str [json-string pair[0]] ":" [to-json pair[1]]]]
-           [entries d]]]
-    "}"]]
+  [if [json-array-like? d]
+    [str "[" [join "," [map [fn [let pair] [to-json pair.value]] [json-sort-entries-by-key d]]] "]"]
+    [str "{"
+      [join ","
+        [map [fn [let pair] [str [json-string [str pair.key]] ":" [to-json pair.value]]]
+             [entries d]]]
+      "}"]]]
 
 to-json-seq: [fn [let s]
   [str "[" [join "," [map to-json [collect s]]] "]"]]
@@ -70,15 +80,23 @@ to-json-pretty-dict-nonempty: [fn [let d@Dict depth@Int]
   [next-indent:    [make-indent [+ depth 1]]]
   [pairs: [map [fn [let pair]
                  [str "\n" next-indent
-                   [json-string pair[0]] ": "
-                   [to-json-pretty-impl pair[1] [+ depth 1]]]]
+                   [json-string [str pair.key]] ": "
+                   [to-json-pretty-impl pair.value [+ depth 1]]]]
                [entries d]]]
   [str "{" [join "," pairs] "\n" current-indent "}"]]
 
-to-json-pretty-dict: [fn [let d@Dict depth@Int]
+to-json-pretty-array-like: [fn [let d@Dict depth@Int]
+  [sorted: [json-sort-entries-by-key d]]
   [if [= [length d] 0]
-    "{}"
-    [to-json-pretty-dict-nonempty d depth]]]
+    "[]"
+    [to-json-pretty-seq-nonempty [map [fn [let pair] pair.value] sorted] depth]]]
+
+to-json-pretty-dict: [fn [let d@Dict depth@Int]
+  [if [json-array-like? d]
+    [to-json-pretty-array-like d depth]
+    [if [= [length d] 0]
+      "{}"
+      [to-json-pretty-dict-nonempty d depth]]]]
 
 to-json-pretty-seq-nonempty: [fn [let collected depth@Int]
   [current-indent: [make-indent depth]]

@@ -4,7 +4,7 @@
   "scopeName": "source.llt",
   "patterns": [
     { "include": "#comment" },
-    { "include": "#document-separator" },
+    { "include": "#document-header" },
     { "include": "#istring" },
     { "include": "#string" },
     { "include": "#number" },
@@ -23,9 +23,24 @@
       "name": "comment.line.number-sign.llt",
       "match": "#.*$"
     },
-    "document-separator": {
-      "name": "keyword.other.document-separator.llt",
-      "match": "^---$"
+    "document-header": {
+      "begin": "^(---)",
+      "end": "$",
+      "beginCaptures": {
+        "1": { "name": "keyword.other.document-separator.llt" }
+      },
+      "patterns": [
+        {
+          "match": "\\b(stage|caps|expects|uses)\\b(?=\\s*:)",
+          "captures": {
+            "1": { "name": "keyword.other.document-header-key.llt" }
+          }
+        },
+        { "include": "#pipeline-ref" },
+        { "include": "#string" },
+        { "include": "#type-annotation" },
+        { "include": "#bracket" }
+      ]
     },
     "istring": {
       "name": "string.quoted.double.llt",

@@ -10,7 +10,8 @@
 //!
 //! Extracted from `builtins.rs` to keep that file manageable.
 //!
-//! Registration in `standard_builtins()` and `create_root_env()` remains in `builtins.rs`.
+//! Registration is via `core_builtins()` in `src/builtins_core.rs`, dispatched by
+//! `builtin_module("core")` in `src/builtins.rs`.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -1517,10 +1518,11 @@ pub(crate) fn builtin_float(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builtins::create_root_env;
     use crate::error::ErrorKind;
     use crate::test_util::test_span;
+    use crate::value::Environment;
     use crate::value::{BuiltinArgs, Thunk, Value};
+    use std::sync::RwLock;
 
     fn thunk(val: Value) -> Arc<Thunk> {
         Arc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5)))
@@ -1536,13 +1538,15 @@ mod tests {
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let root_env = create_root_env();
-        crate::eval::EvalContext::new(
-            base_dir,
-            Arc::clone(&root_env),
-            Arc::clone(&root_env),
-            false,
-        )
+        let env = Arc::new(RwLock::new(Environment::new()));
+        if let Some(defs) = crate::builtins::builtin_module("core") {
+            for def in defs {
+                let name = def.name.to_string();
+                let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
+                env.write().unwrap().insert(name, thunk);
+            }
+        }
+        crate::eval::EvalContext::new_empty(base_dir, env, false)
     }
 
     /// Drive an async builtin to completion synchronously in tests.

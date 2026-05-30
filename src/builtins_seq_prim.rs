@@ -6,7 +6,8 @@
 //! All five functions follow the standard `BuiltinFn` signature:
 //! `fn(BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>>`
 //!
-//! Registration in `standard_builtins()` remains in `builtins.rs`.
+//! Registration is via `core_builtins()` in `src/builtins_core.rs`, dispatched by
+//! `builtin_module("core")` in `src/builtins.rs`.
 
 use std::future::Future;
 use std::pin::Pin;

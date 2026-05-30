@@ -4487,12 +4487,13 @@ mod deep_tests {
                 let ctx = test_ctx();
                 let origin = Span::origin();
 
-                // Get the $+ builtin definition directly from the standard builtins list
+                // Get the $+ builtin definition directly from the core builtins list
                 // (not from stdlib_env, which wraps arithmetic ops with operator dispatch).
-                let builtin_def = crate::builtins::standard_builtins()
+                let builtin_def = crate::builtins::builtin_module("core")
+                    .expect("core module must exist")
                     .into_iter()
                     .find(|b| b.name == "+")
-                    .expect("$+ must exist in standard_builtins()");
+                    .expect("$+ must exist in builtin_module(\"core\")");
 
                 // Build chain: thunk_0 = Materialized(Int(0))
                 // thunk_i = PendingBuiltin($+, [thunk_{i-1}, 1])
@@ -4563,10 +4564,11 @@ mod deep_tests {
                 let ctx = test_ctx();
                 let origin = Span::origin();
 
-                let builtin_def = crate::builtins::standard_builtins()
+                let builtin_def = crate::builtins::builtin_module("core")
+                    .expect("core module must exist")
                     .into_iter()
                     .find(|b| b.name == "+")
-                    .expect("$+ must exist in standard_builtins()");
+                    .expect("$+ must exist in builtin_module(\"core\")");
 
                 // Helper: build a 2100-deep PendingBuiltin thunk chain.
                 let build_chain = |def: &crate::value::BuiltinDef,

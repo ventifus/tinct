@@ -69,7 +69,7 @@
   DivResult: [fn [let a b] [kind: "named" name: "Float"]]
 
   # IncludeCacheEntry: three-state variant for the content-addressed include cache.
-  # Used by include-cache-get and include-cache-put Rust primitives.
+  # Used by builtin-include-cache-get and builtin-include-cache-put Rust primitives.
   # [Missing]      — not yet loaded (or previously failed)
   # [Pending]      — currently being evaluated (circular if seen again)
   # [Cached value] — previously evaluated result
@@ -2133,188 +2133,90 @@ type-of@[doc: "Return the type name of a value as a String"]: builtin-type-of
 
 # Capability operations
 narrow@[doc: "Narrow a capability to a subset of operations"]: builtin-narrow
+revocable@[doc: "Wrap a DirCap in a revocable wrapper"]: builtin-revocable
+revoke-cap@[doc: "Revoke a RevocableDirCap"]: builtin-revoke-cap
 
 # I/O / parsing
-
-# JSON serializer (pure tinct implementation — no Rust primitive needed)
-# Serializes primitive values (Int, Float, Bool, String, Dict, Seq, Null) to
-# compact JSON strings. AST Variant values (Program/Document/Expression) from
-# codecs/json.llt are supported when loaded separately. Unknown types produce "null".
-#
-# Helper: escape special characters in a JSON string value
-to-json-escape: [fn [let s@String]
-  [replace "\t" "\\t"
-  [replace "\r" "\\r"
-  [replace "\n" "\\n"
-  [replace "\"" "\\\""
-  [replace "\\" "\\\\" s]]]]]]
-
-# Helper: wrap a string value in JSON quotes with escaping
-to-json-string: [fn [let s@String]
-  [str "\"" [to-json-escape s] "\""]]
-
-# Helper: check if a dict is array-like (all keys are consecutive integers 0..n-1).
-# Array-like dicts are serialized as JSON arrays. Named dicts are serialized as objects.
-# keys returns an integer-keyed dict (not a Seq), so pass directly to all?.
-to-json-array-like?: [fn [let d]
-  [all? [fn [let k] [int? k]] [keys d]]]
-
-# Helper: serialize an array-like dict to [v0, v1, ...] preserving insertion order.
-# values returns an integer-keyed dict of the values; map to-json serializes each.
-to-json-array-from-dict: [fn [let d]
-  [str "[" [join "," [map to-json [values d]]] "]"]]
-
-# Helper: serialize a named dict to {"key":value,...}
-# entries returns a Seq of [key: k  value: v] dicts.
-to-json-named-dict: [fn [let d]
-  [str "{"
-    [join ","
-      [map [fn [let entry]
-             [str [to-json-string [str entry.key]] ":" [to-json entry.value]]]
-           [entries d]]]
-    "}"]]
-
-# Helper: serialize a dict — array-like dicts become JSON arrays.
-to-json-dict-impl: [fn [let d]
-  [if [to-json-array-like? d]
-    [to-json-array-from-dict d]
-    [to-json-named-dict d]]]
-
-# Helper: accumulate Seq elements into a list for JSON serialization.
-# Handles malformed Seqs (non-Seq tails) by stopping at the last valid element.
-to-json-seq-elems: [fn [let s acc]
-  [cond [
-    [[= s []]      acc]
-    [[seq? s]      [to-json-seq-elems [tail s] [append acc [to-json [head s]]]]]
-    [true          [append acc [to-json s]]]]]]
-
-# Helper: serialize a Seq to [v0, v1, ...]
-# Handles both proper Seqs (tail is always Seq or []) and malformed ones
-# (where tail is a non-Seq non-null value — included as the last element).
-to-json-seq-impl: [fn [let s]
-  [str "[" [join "," [to-json-seq-elems s []]] "]"]]
-
-# Public: serialize any tinct value to compact JSON string.
-# Handles: Int, Float, Bool, String, Null ([]), Dict, Seq.
-# Unknown/unserializable types produce "null".
-to-json@[doc: "Serialize a tinct value to a compact JSON string.
-Handles Int, Float, Bool, String, Null ([]), Dict, and Seq values.
-Proxy values raise an error (cannot serialize to JSON).
-Other unserializable values (Fn, Handle, Task, etc.) produce null."]:
-  [fn [let v]
-    [cond [
-      [[= v []]     "null"]
-      [[bool? v]    [if v "true" "false"]]
-      [[int? v]     [str v]]
-      [[float? v]   [str v]]
-      [[str? v]     [to-json-string v]]
-      [[seq? v]     [to-json-seq-impl v]]
-      [[dict? v]    [to-json-dict-impl v]]
-      [[proxy? v]   [error "cannot serialize Proxy to JSON"]]
-      [true         "null"]]]]
-
-# Helper: build indent string (depth * 2 spaces)
-to-json-pretty-indent-impl: [fn [let depth@Int acc@String]
-  [if [= depth 0]
-    acc
-    [to-json-pretty-indent-impl [- depth 1] [str acc "  "]]]]
-
-to-json-pretty-indent: [fn [let depth@Int]
-  [to-json-pretty-indent-impl depth ""]]
-
-# Helper: serialize an array-like dict to JSON array with indentation (non-empty case)
-to-json-pretty-array-from-dict-nonempty: [fn [let d depth@Int]
-  [vals: [values d]]
-  [current-indent: [to-json-pretty-indent depth]]
-  [next-indent:    [to-json-pretty-indent [+ depth 1]]]
-  [items: [map [fn [let entry]
-                 [str "\n" next-indent [to-json-pretty-impl entry.value depth]]]
-               [entries vals]]]
-  [str "[" [join "," items] "\n" current-indent "]"]]
-
-# Helper: serialize an array-like dict to JSON array with indentation
-to-json-pretty-array-from-dict: [fn [let d depth@Int]
-  [vals: [values d]]
-  [builtin-if [empty? vals]
-    "[]"
-    [to-json-pretty-array-from-dict-nonempty d depth]]]
-
-# Helper: serialize a named dict to JSON object with indentation
-to-json-pretty-named-dict: [fn [let d depth@Int]
-  [current-indent: [to-json-pretty-indent depth]]
-  [next-indent:    [to-json-pretty-indent [+ depth 1]]]
-  [pairs: [map [fn [let entry]
-                 [str "\n" next-indent
-                   [to-json-string [str entry.key]] ": "
-                   [to-json-pretty-impl entry.value [+ depth 1]]]]
-               [entries d]]]
-  [str "{" [join "," pairs] "\n" current-indent "}"]]
-
-# Helper: serialize a dict with indentation (array-like → array, otherwise → object)
-to-json-pretty-dict-impl: [fn [let d depth@Int]
-  [if [empty? d]
-    "{}"
-    [if [to-json-array-like? d]
-      [to-json-pretty-array-from-dict d depth]
-      [to-json-pretty-named-dict d depth]]]]
-
-# Helper: serialize a Seq with indentation
-to-json-pretty-seq-elems: [fn [let s depth@Int acc]
-  [cond [
-    [[= s []]  acc]
-    [[seq? s]  [to-json-pretty-seq-elems
-                 [tail s]
-                 depth
-                 [append acc [to-json-pretty-impl [head s] depth]]]]
-    [true      [append acc [to-json-pretty-impl s depth]]]]]]
-
-to-json-pretty-seq-impl: [fn [let s depth@Int]
-  [elems: [to-json-pretty-seq-elems s depth []]]
-  [if [empty? elems]
-    "[]"
-    [current-indent: [to-json-pretty-indent depth]]
-    [next-indent:    [to-json-pretty-indent [+ depth 1]]]
-    [items: [map [fn [let item]
-                   [str "\n" next-indent item]]
-                 [values elems]]]
-    [str "[" [join "," items] "\n" current-indent "]"]]]
-
-# Helper: serialize any value with indentation (internal recursive impl)
-to-json-pretty-impl: [fn [let v depth@Int]
-  [cond [
-    [[= v []]     "null"]
-    [[bool? v]    [if v "true" "false"]]
-    [[int? v]     [str v]]
-    [[float? v]   [str v]]
-    [[str? v]     [to-json-string v]]
-    [[seq? v]     [to-json-pretty-seq-impl v [+ depth 1]]]
-    [[dict? v]    [to-json-pretty-dict-impl v depth]]
-    [[proxy? v]   [error "cannot serialize Proxy to JSON"]]
-    [true         "null"]]]]
-
-# Public: serialize any tinct value to a pretty-printed JSON string with 2-space indentation.
-# Handles: Int, Float, Bool, String, Null ([]), Dict, Seq.
-# Unknown/unserializable types produce "null".
-# Empty dicts render as {}, empty arrays as [] (compact, no newlines).
-to-json-pretty@[doc: "Serialize a tinct value to a pretty-printed JSON string with 2-space indentation.
-Handles Int, Float, Bool, String, Null ([]), Dict, and Seq values.
-Proxy values raise an error (cannot serialize to JSON).
-Other unserializable values (Fn, Handle, Task, etc.) produce null.
-Empty dicts render as {}, empty arrays as [] (compact, no newlines)."]:
-  [fn [let v]
-    [to-json-pretty-impl v 0]]
+# JSON serialization: use [include %libdir "codecs/json.llt"] for to-json and from-json.
 
 # String trimming
 trim@[doc: "Remove leading and trailing whitespace from a string"]: builtin-trim
 
-# I/O primitives (used directly by user code and samples)
+# ============================================================================
+# I/O Primitives (B-168: builtin-privacy I/O renaming)
+# ============================================================================
+#
+# All I/O builtins are now registered under builtin-* names and re-exported
+# here so user code can access them with bare names.
+
+# Core I/O operations
 emit@[doc: "Emit a string to stdout without a trailing newline"]: builtin-emit
 env@[doc: "Read an environment variable by name; returns null if unset"]: builtin-env
+open@[doc: "Open a file under a DirCap. Returns a Handle."]: builtin-open
 list-dir@[doc: "List directory entries under a DirCap. Returns a Seq of {name: String, type: String} dicts."]: builtin-list-dir
 
-# Meta primitives: load/expand for AST introspection.
+# Filesystem operations
+write@[doc: "Write a string to a file under a DirCap"]: builtin-write
+write-atomic@[doc: "Atomically write a string to a file (via temp file + rename)"]: builtin-write-atomic
+write-handle@[doc: "Write to a WriteHandle, returns the handle for chaining"]: builtin-write-handle
+flush@[doc: "Flush a WriteHandle buffer"]: builtin-flush
+close@[doc: "Close a WriteHandle"]: builtin-close
+stat@[doc: "Get file metadata under a DirCap"]: builtin-stat
+exists@[doc: "Check if a path exists under a DirCap"]: builtin-exists
+stat-symlink@[doc: "Get symlink metadata (does not follow the link)"]: builtin-stat-symlink
+copy-file@[doc: "Copy a file from source to destination under DirCaps"]: builtin-copy-file
+symlink@[doc: "Create a symbolic link"]: builtin-symlink
+set-permissions@[doc: "Set file permissions (Unix mode)"]: builtin-set-permissions
+make-dir@[doc: "Create a directory under a DirCap"]: builtin-make-dir
+rename@[doc: "Rename a file or directory"]: builtin-rename
+link@[doc: "Create a hard link"]: builtin-link
+read-link@[doc: "Read the target of a symbolic link"]: builtin-read-link
+
+# Extended attributes (xattrs)
+get-xattr@[doc: "Get an extended attribute value"]: builtin-get-xattr
+set-xattr@[doc: "Set an extended attribute"]: builtin-set-xattr
+remove-xattr@[doc: "Remove an extended attribute"]: builtin-remove-xattr
+list-xattrs@[doc: "List all extended attribute names"]: builtin-list-xattrs
+
+# Low-level file operations
+raw-create@[doc: "Create a file with specific permissions"]: builtin-raw-create
+seek@[doc: "Seek to an offset in a file handle"]: builtin-seek
+seek-end@[doc: "Seek to end of file"]: builtin-seek-end
+position@[doc: "Get current file position"]: builtin-position
+
+# Network I/O
+connect@[doc: "Open a TCP/UDP connection under a NetCap"]: builtin-connect
+tls-layer@[doc: "Layer TLS over a connection"]: builtin-tls-layer
+tls-peer-cert@[doc: "Extract TLS peer certificate metadata"]: builtin-tls-peer-cert
+send-datagram@[doc: "Send a datagram packet (UDP/Unix datagram)"]: builtin-send-datagram
+recv-datagram@[doc: "Receive a datagram packet"]: builtin-recv-datagram
+
+# Handle utilities
+string-handle@[doc: "Create a readable Handle from a string"]: builtin-string-handle
+
+# Meta primitives: load/expand/eval for AST introspection and meta-programming.
 load@[doc: "Parse tinct source text into a Program value. Named arg name: sets the display path for error spans."]: builtin-load
 expand@[doc: "Macro-expand and desugar a Program value. Returns an expanded Program."]: builtin-expand
+eval@[doc: "Evaluate a sequence of expressions. Optional named args: env: (environment), %: (pipeline input), program: (parent program context)."]: builtin-eval
+eval-types@[doc: "Evaluate expressions in the type-stage environment"]: builtin-eval-types
+blake3@[doc: "Compute the BLAKE3 cryptographic hash of a string, returning a hex-encoded digest."]: builtin-blake3
+cap-identity@[doc: "Return a stable string identity for a DirCap (used for content-addressed caching keys)."]: builtin-cap-identity
+
+# ============================================================================
+# Builder Primitives (B-168: builtin-privacy I/O renaming)
+# ============================================================================
+#
+# Transient mutable builders for efficient dict construction. All registered
+# as builtin-* and re-exported here.
+
+make-builder@[doc: "Create a new empty transient builder"]: builtin-make-builder
+builder-set@[doc: "Set a key in a builder (mutating)"]: builtin-builder-set
+builder-delete@[doc: "Delete a key from a builder (mutating)"]: builtin-builder-delete
+builder-finish@[doc: "Finish a builder, returning an immutable dict"]: builtin-builder-finish
+builder-snapshot@[doc: "Create a snapshot dict from a builder without finishing it"]: builtin-builder-snapshot
+builder-has?@[doc: "Check if a key exists in a builder"]: builtin-builder-has?
+builder-get@[doc: "Get a value from a builder (errors if missing)"]: builtin-builder-get
+builder-get-or@[doc: "Get a value from a builder with a default"]: builtin-builder-get-or
 
 # ============================================================================
 # String Primitives (builtin-privacy-operators-and-io sprint)
@@ -2602,9 +2504,9 @@ Example: [tag-of [variant "Red"]] => "Red"
 Note: Returns the tag string for a variant value. Errors on non-variant values.
 """] [let value] [builtin-tag-of value]]
 
-# Note: builtin-variant is pre-injected into the bootstrap env by create_root_env()
-# as an alias for the Rust `variant` builtin (1 or 2 args). macros.llt accesses it
-# via the parent environment chain — no re-export needed here.
+# Note: builtin-variant is registered in the flat stdlib_env via core_builtins()
+# (called by create_root_env(), which pre-populates stdlib_env before prelude loads).
+# macros.llt accesses it from stdlib_env directly — no re-export needed here.
 
 variant: [fn@[return: Variant  doc: """
 Construct a tagged variant value.
@@ -2714,7 +2616,7 @@ Example:
 # These functions implement the include and document evaluation pipeline in
 # tinct, replacing the former monolithic Rust `builtin_include`. They use
 # the eight thin Rust primitives: load, expand, eval, eval-types, blake3,
-# cap-identity, include-cache-get, include-cache-put.
+# cap-identity, builtin-include-cache-get, builtin-include-cache-put.
 #
 # Design:
 #   eval-document-runtime  — evaluate one Runtime-stage document
@@ -2734,7 +2636,7 @@ Example:
 
 # IncludeCacheEntry runtime variant constructors.
 # Also declared in the type-stage section for the type namespace, but the
-# variant constructors must be in scope at runtime for include-cache-put/get.
+# variant constructors must be in scope at runtime for builtin-include-cache-put/get.
 IncludeCacheEntry: [type [Missing] [Pending] [Cached Any]]
 
 # Re-export IncludeCacheEntry variant constructors
@@ -2823,7 +2725,7 @@ Returns the last document's result.
 include-cache-success: [fn@[return: Any  doc: """
 Store include result in cache and return it. Internal helper for include.
 """] [let hash result]
-  [include-cache-put hash [Cached result]]
+  [builtin-include-cache-put hash [Cached result]]
   result]
 
 # include-cache-failure: reset cache entry on error and re-raise.
@@ -2831,7 +2733,7 @@ Store include result in cache and return it. Internal helper for include.
 include-cache-failure: [fn@[return: Never  doc: """
 Reset include cache entry on error and re-raise. Internal helper for include.
 """] [let hash e]
-  [include-cache-put hash Missing]
+  [builtin-include-cache-put hash Missing]
   [raise e]]
 
 # include-evaluate-and-cache: evaluate a file and memoize it.
@@ -2846,7 +2748,7 @@ hash:           content cache key (blake3(cap-identity + "|" + source))
 cap:            DirCap — passed as %include-dir; included files start with % = []
 integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
 """] [let source path hash cap integrity-hash@[default: []]]
-  [include-cache-put hash Pending]
+  [builtin-include-cache-put hash Pending]
   [program: [if [null? integrity-hash]
     [load source name: path]
     [load source name: path hash: integrity-hash]]]
@@ -2877,7 +2779,7 @@ Included files start with % = [] (fresh pipeline input).
 """] [let cap@DirCap path@String integrity-hash@[default: []]]
   [source: [join "\n" [collect [lines [open cap path Readable]]]]]
   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
-  [match [include-cache-get hash]
+  [match [builtin-include-cache-get hash]
     [Cached result]: result
     Pending:         [error [str "circular include: " path]]
     Missing:         [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
@@ -2908,10 +2810,6 @@ Same semantics as --- within a file, applied across multiple files.
         pwd]]
     initial
     files]]
-
-# Wrap a String as a readable Handle backed by in-memory Cursor.
-# Enables uniform codec APIs that accept Handle as primary input.
-string-handle@[doc: "Wrap a String as a readable Handle (backed by in-memory Cursor)"]: string-handle
 
 # Lazily read lines from a Handle. Returns a Seq of String, one per line.
 # Strips trailing newline. Returns empty Seq when EOF reached.

@@ -458,7 +458,7 @@ Strictness travels with the value. When the evaluator encounters `Value::Builtin
 
 #### Registration
 
-`standard_builtins()` returns `Vec<BuiltinDef>`. The `builtin!` macro gains an optional third argument for the strictness array. `builtin!("name", fn)` without the array implies all-`Id`. Because `pos_strictness` is `&'static [Strictness]`, the macro must expand the slice to a `const` item (not a temporary) to satisfy the `'static` lifetime bound:
+`core_builtins()` (in `builtins_core.rs`) returns `Vec<BuiltinDef>` for the core module; `builtin_module("core")` in `builtins.rs` dispatches to it. The `builtin!` macro gains an optional third argument for the strictness array. `builtin!("name", fn)` without the array implies all-`Id`. Because `pos_strictness` is `&'static [Strictness]`, the macro must expand the slice to a `const` item (not a temporary) to satisfy the `'static` lifetime bound:
 
 ```rust
 // macro expansion for builtin!("+", builtin_add, [Seq, Seq]):
@@ -566,7 +566,7 @@ The stdlib defines 12 LLT wrapper functions for the shadowable operators (`$<`, 
 
 These costs are negligible for ordinary use but can accumulate in tight recursive loops that use operator builtins via their `$`-prefixed names (e.g., `[call $reduce $+ 0 $list]`).
 
-**Prelude internal optimization:** The prelude itself uses `$builtin-add`, `$builtin-sub`, etc. (the raw Rust-native builtins registered in `standard_builtins()`) rather than the LLT wrapper aliases. This avoids the wrapper overhead for stdlib-internal implementations. User code that needs maximum throughput in hot paths can do the same.
+**Prelude internal optimization:** The prelude itself uses `$builtin-add`, `$builtin-sub`, etc. (the raw Rust-native builtins registered via `builtin_module("core")` / `core_builtins()`) rather than the LLT wrapper aliases. This avoids the wrapper overhead for stdlib-internal implementations. User code that needs maximum throughput in hot paths can do the same.
 
 ### Performance Characteristics
 

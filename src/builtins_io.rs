@@ -1,4 +1,4 @@
-//! Filesystem and network I/O builtins: open, write, write-atomic, connect, builtin-read-line, builtin-read-chunk.
+//! Filesystem and network I/O builtins: open, write, write-atomic, connect, builtin-read-line, builtin-read-chunk, builtin-read-all.
 //!
 //! These builtins provide capability-based access to filesystems and networks,
 //! implementing object-capability security through DirCap and NetCap values.
@@ -27,6 +27,7 @@
 //! **I/O helpers:**
 //! - `builtin-read-line`: Read a single line from a Handle (Text mode, returns String or [] on EOF)
 //! - `builtin-read-chunk`: Read n bytes from a Handle (returns Bytes or [] on EOF)
+//! - `builtin-read-all`: Read all bytes from a Handle to EOF, returns as String
 //! - `emit`: Write to stdout and suppress JSON output
 //! - `env`: Read environment variables
 //!
@@ -38,7 +39,8 @@
 //!
 //! Extracted from `builtins.rs` to keep that file manageable.
 //!
-//! Registration in `standard_builtins()` and `create_root_env()` remains in `builtins.rs`.
+//! Registration is via `core_builtins()` in `src/builtins_core.rs`, dispatched by
+//! `builtin_module("core")` in `src/builtins.rs`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -58,7 +60,7 @@ use crate::value::{string_val, BuiltinArgs, DirPerms, Thunk, Value};
 
 /// Extract DirCap from a Value, checking revocation and returning (dir, perms).
 /// Used by all DirCap-consuming builtins.
-fn extract_dir_cap<'a>(
+pub(crate) fn extract_dir_cap<'a>(
     val: &'a Value,
     builtin_name: &str,
     span: Span,
@@ -1280,7 +1282,7 @@ pub(crate) fn builtin_connect(
 /// Check if a connection to host:port is allowed by the NetCap allowlist.
 /// Returns Ok(None) for hostname-only match, Ok(Some(ip)) for IP-based match requiring DNS resolution.
 /// For host-only transports (ICMP), pass port=None — HostPort entries won't match, but Hostname/Glob/CIDR will.
-fn check_net_cap_allowlist(
+pub(crate) fn check_net_cap_allowlist(
     entries: &[crate::value::NetCapEntry],
     host: &str,
     port: Option<u16>,
@@ -1654,6 +1656,73 @@ pub(crate) fn builtin_read_chunk(
             }
             Err(e) => Err(EvalError::user_error(
                 format!("builtin-read-chunk: read failed: {}", e),
+                call_span,
+            )
+            .into()),
+        }
+    })
+}
+
+/// `builtin-read-all`: Read all bytes from a Handle to EOF, returning content as a String.
+///
+/// Takes a single Handle argument (text-mode or binary-mode) and reads until EOF using
+/// `read_to_string`. Returns the complete content as a String value.
+///
+/// This is an internal primitive used by the include pipeline (`prelude`'s `include` function
+/// reads file content via `builtin-read-all` directly). It is NOT exported from
+/// `stdlib/prelude.llt`.
+///
+/// # Errors
+///
+/// - Type mismatch: argument is not a Handle
+/// - Read error: underlying I/O failure during `read_to_string`
+/// - Encoding error: binary Handle content is not valid UTF-8
+/// Registered via `builtin!("builtin-read-all", ...)` in `core_builtins()` (builtins_core.rs).
+/// T-736 (S-786) will wire prelude's include pipeline to call it.
+pub(crate) fn builtin_read_all(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        // Expect exactly 1 positional arg: Handle (pre-materialized by Strictness::Seq).
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+        reject_named("builtin-read-all", named.as_ref(), call_span.clone())?;
+
+        let val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
+
+        // Extract the inner BufRead from a Handle.
+        let handle = match val {
+            Value::Handle { inner, .. } => inner,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-read-all".to_string(),
+                    "Handle",
+                    other.type_name(),
+                    args[0].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        use std::io::Read;
+        let mut content = String::new();
+        // read_to_string reads until EOF; errors on invalid UTF-8.
+        let read_result = handle.borrow_mut().read_to_string(&mut content);
+
+        match read_result {
+            Ok(_) => ok_val(string_val(&content), call_span),
+            Err(e) => Err(EvalError::user_error(
+                format!("builtin-read-all: read failed: {}", e),
                 call_span,
             )
             .into()),
@@ -4002,7 +4071,7 @@ impl std::io::Write for TlsWriter {
 }
 
 /// Build a rustls ClientConfig from the opts dict
-fn build_tls_config(
+pub(crate) fn build_tls_config(
     opts_val: &Value,
     opts_span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
@@ -4286,7 +4355,7 @@ fn slurp_handle_bytes(val: &Value, span: Span) -> EvalResult<Vec<u8>> {
 }
 
 /// Validate SPKI pins against the peer certificate
-fn validate_spki_pins(
+pub(crate) fn validate_spki_pins(
     conn: &rustls::ClientConnection,
     pins_val: &Value,
     span: Span,

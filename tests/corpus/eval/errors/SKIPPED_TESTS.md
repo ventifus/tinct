@@ -40,7 +40,7 @@ The corpus test format doesn't support multi-file scenarios, and the `# no_fs` d
 
 **Reason**: `cap-identity` returns a `"dev:ino"` string from `fstat` on a DirCap's O_DIRECTORY fd. Exercising it requires a real DirCap, which the corpus test harness (with `# no_fs`) does not provide.
 
-**Alternative**: The builtin is registered in `standard_builtins()` and its implementation is covered indirectly by the `include-cache-get`/`include-cache-put` tests which depend on it for cache keying.
+**Alternative**: The builtin is registered via `core_builtins()` / `builtin_module("core")` and its implementation is covered indirectly by the `include-cache-get`/`include-cache-put` tests which depend on it for cache keying.
 
 ## Include errors E050, E051, E053, E054
 

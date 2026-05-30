@@ -7,7 +7,8 @@
 //!
 //! Extracted from `builtins.rs` to keep that file manageable.
 //!
-//! Registration in `standard_builtins()` remains in `builtins.rs`.
+//! Registration is via `core_builtins()` in `src/builtins_core.rs`, dispatched by
+//! `builtin_module("core")` in `src/builtins.rs`.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -116,7 +117,7 @@ pub(crate) fn builtin_map(
                 ));
                 let tail_args = vec![Arc::clone(&f_thunk), Arc::clone(&tail_thunk)];
                 let new_tail = Arc::new(Thunk::new_pending_builtin(
-                    // Must match the standard_builtins() registration: force_count=1 forces
+                    // Must match the core_builtins() registration: force_count=1 forces
                     // args[0] (the function), and Spine on args[1] forces the tail sequence.
                     // Without force_count here, builtin_map would panic at its
                     // `args[1].try_get_materialized().expect("pre-materialized by force_count/pos_strictness")`
@@ -561,13 +562,13 @@ pub(crate) fn builtin_take(
                     Arc::clone(&tail_thunk),
                 ];
                 let new_tail = Arc::new(Thunk::new_pending_builtin(
-                    // Must match the standard_builtins() registration: force_count=2 forces
+                    // Must match the core_builtins() registration: force_count=2 forces
                     // args[0] (the count) and args[1] (the sequence).
                     // args[0] is already Materialized (ok_val above), but args[1] (tail_thunk)
                     // may be unevaluated. Without force_count here, builtin_take would panic at
                     // `args[1].try_get_materialized().expect("pre-materialized by force_count/pos_strictness")`.
                     builtin!(
-                        "take",
+                        "builtin-take",
                         builtin_take,
                         [Strictness::Seq, Strictness::Spine],
                         2

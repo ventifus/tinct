@@ -1,11 +1,12 @@
-# JSON Compact Formatter — uses the prelude's to-json function.
+# JSON Compact Formatter — uses to-json from stdlib/codecs/json.llt.
 #
 # Serializes the pipeline input (%) to a compact JSON string using the
-# to-json function from stdlib/prelude.llt.
+# to-json function from the JSON codec.
 #
 # Handles: Int, Float, Bool, String, Dict, Seq, Null ([]).
 # Unserializable values (Fn, Handle, Task, etc.) produce null.
 #
 # Returns a String (the formatted JSON output). No emit calls.
 
-[call $to-json %]
+[json: [include %libdir "codecs/json.llt"]]
+[call $json.to-json %]

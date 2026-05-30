@@ -306,7 +306,7 @@ fn test_eval_corpus() {
     // drop at thread exit requires significant stack space (100+ MB in debug mode).
     // 512MB chosen to give comfortable headroom as the stdlib prelude grows over time.
     let result = std::thread::Builder::new()
-        .stack_size(512 * 1024 * 1024) // 512MB — debug-mode stdlib cleanup needs ~100MB; extra headroom for prelude growth
+        .stack_size(256 * 1024 * 1024) // 256MB — debug-mode stdlib cleanup needs ~100MB; extra headroom for prelude growth
         .spawn(move || {
             run_corpus_dir(&corpus_dir, &[type_errors_dir.as_path()], |test| {
                 // Clear the stdlib cache before each test to prevent memory accumulation.
@@ -314,6 +314,14 @@ fn test_eval_corpus() {
                 // iterations, preventing the ThunkArena from being freed. After ~500 iterations
                 // in an 8GB container, cumulative memory growth causes OOM/SIGKILL.
                 tinct::clear_stdlib_cache();
+                // Return freed heap pages to the OS. Without this, glibc malloc retains
+                // freed pages in thread-local pools, causing RSS to grow across tests even
+                // though each test's env+arena is freed. The 512MB stack thread + accumulated
+                // malloc pools can exceed the 10GB container limit.
+                #[cfg(target_os = "linux")]
+                unsafe {
+                    libc::malloc_trim(0);
+                }
 
                 // Eval pipeline: eval_source_with_config() + typecheck_source()
                 let eval_result = if test.cap_net.is_empty() {
@@ -429,7 +437,7 @@ fn test_typecheck_corpus() {
 ///
 /// Unlike `test_typecheck_error_corpus` (which targets `tests/corpus/invalid/type_errors/`),
 /// this runner exercises type errors in the eval corpus directory. Files may use stdlib
-/// builtins since `TypeEnv::with_builtins()` provides type signatures for all builtins.
+/// builtins since `build_builtins_type_env()` provides type signatures for all builtins.
 ///
 /// The type checker is advisory at runtime (eval always proceeds), but this corpus ensures
 /// we can write regression tests that assert specific type errors are detected.
@@ -656,7 +664,7 @@ fn test_typecheck_warnings_corpus() {
 /// fail type checking with the expected error substring.
 ///
 /// Companion to `test_typecheck_corpus`. Builtin type signatures are available via
-/// `TypeEnv::with_builtins()`, so corpus files may exercise builtins.
+/// `build_builtins_type_env()`, so corpus files may exercise builtins.
 #[test]
 fn test_typecheck_error_corpus() {
     let corpus_dir =

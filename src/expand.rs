@@ -482,8 +482,37 @@ pub async fn expand_surface_program(
             Err(e) => return Err(e),
         }
     } else {
-        let env = builtins::create_root_env();
-        let ctx = EvalContext::new_empty(base_dir, Arc::clone(&env), no_fs);
+        // Invariant: depth > 0 means we are inside a depth == 0 call that already
+        // bootstrapped the stdlib and cached it in CACHED_STDLIB_ENV. The cached env
+        // MUST be present — if it isn't, something has gone wrong in the call stack
+        // (e.g., a re-entrant expand_surface_program call without an enclosing depth == 0
+        // context). Using create_root_env() here would be wrong: it produces a bare
+        // builtin-only env without prelude functions, causing macro bodies to fail on any
+        // prelude call. Using new_empty() with a stdlib env would also violate the arena
+        // invariant (stdlib ThunkIds are invalid in a fresh arena). Both bugs are silent
+        // and hard to diagnose, so we assert the invariant explicitly.
+        let env = CACHED_STDLIB_ENV.with(|c| {
+            c.borrow().as_ref().cloned().unwrap_or_else(|| {
+                unreachable!(
+                    "expand_surface_program at depth {} but CACHED_STDLIB_ENV is None; \
+                     re-entrant expansion must always be nested inside a depth == 0 call \
+                     that has already populated the cache",
+                    depth
+                )
+            })
+        });
+        let arena = builtins::new_arena_with_stdlib_snapshot()
+            .expect("STDLIB_ARENA_CACHE must be populated when CACHED_STDLIB_ENV is Some");
+        let type_stage_env =
+            crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
+        let ctx = EvalContext::new_sharing_arena(
+            base_dir,
+            Arc::clone(&env),
+            type_stage_env,
+            no_fs,
+            arena,
+            HashMap::new(),
+        );
         (env, ctx)
     };
     let ctx = Rc::new(ctx);

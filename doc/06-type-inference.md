@@ -786,7 +786,7 @@ When a constraint `C(τ)` is checked and τ is a compound BAS type, propagation 
 
 ### Constraint Generation and Checking
 
-1. **Builtin registration** (`TypeEnv::with_builtins`): Overloaded builtins are registered with constrained type schemes:
+1. **Builtin registration** (`build_builtins_type_env()` in `builtins.rs`): Overloaded builtins are registered with constrained type schemes:
 
    ```text
    =  : Equatable a => a → a → Bool

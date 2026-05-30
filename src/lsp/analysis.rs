@@ -3420,7 +3420,7 @@ pub fn inlay_hints_for(doc: &DocumentState) -> Vec<lsp_types::InlayHint> {
 ///
 /// Returns a list of completion items including:
 /// - Dict entry keys visible at the cursor position (from ALL containing scopes)
-/// - Builtin function names from `standard_builtins()`
+/// - Builtin function names from `builtin_module()` (core, datetime, net)
 /// - Prelude function names from the stdlib environment
 ///
 /// # Implementation notes
@@ -3593,8 +3593,9 @@ fn builtin_completions() -> &'static [lsp_types::CompletionItem] {
     static BUILTIN_ITEMS: OnceLock<Vec<CompletionItem>> = OnceLock::new();
 
     BUILTIN_ITEMS.get_or_init(|| {
-        crate::builtins::standard_builtins()
+        ["core", "datetime", "net"]
             .iter()
+            .flat_map(|m| crate::builtins::builtin_module(m).unwrap_or_default())
             .map(|def| CompletionItem {
                 label: def.name.to_string(),
                 kind: Some(CompletionItemKind::FUNCTION),
@@ -3621,8 +3622,9 @@ fn prelude_completions() -> &'static [lsp_types::CompletionItem] {
         let mut seen = HashSet::new();
 
         // Build builtin set once for O(1) lookups
-        let builtin_names: HashSet<&str> = crate::builtins::standard_builtins()
+        let builtin_names: HashSet<&str> = ["core", "datetime", "net"]
             .iter()
+            .flat_map(|m| crate::builtins::builtin_module(m).unwrap_or_default())
             .map(|def| def.name)
             .collect();
 

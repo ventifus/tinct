@@ -1678,9 +1678,7 @@ fn no_fs_flag_and_timeout_flag_conjunctive_enforcement() {
 
 #[test]
 fn eval_proxy_json_serialization_error() {
-    // Proxy values cannot be serialized to JSON. This test verifies that when
-    // a Proxy is returned by the evaluator, the CLI exits with an error when
-    // trying to convert the result to JSON output.
+    // Proxy values are serialized to null by to-json (unserializable types → null).
     let (path, _dir) = write_temp_llt("proxy_json_serialization", "[call $proxy [fn [k] $k]]");
     let output = Command::new(tinct_bin())
         .args(["run", "-o", "json", path.to_str().unwrap()])
@@ -1688,19 +1686,15 @@ fn eval_proxy_json_serialization_error() {
         .expect("failed to run tinct");
 
     assert!(
-        !output.status.success(),
-        "expected non-zero exit code when serializing Proxy to JSON"
+        output.status.success(),
+        "expected exit 0 — Proxy serializes as null in to-json; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(
-        output.status.code(),
-        Some(1),
-        "expected exit code 1 (error) when serializing Proxy to JSON"
-    );
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("cannot serialize Proxy to JSON") || stderr.contains("E099"),
-        "expected error message about Proxy JSON serialization, got: {stderr}"
+        stdout.trim(),
+        "null",
+        "expected 'null' for Proxy serialization, got: {stdout}"
     );
 }
 
@@ -1731,7 +1725,7 @@ fn json_serialization_function_produces_null() {
 fn json_serialization_seq_produces_array() {
     // Seqs serialized via to-json (codecs/json.llt) produce a JSON array.
     // to-json-seq collects the sequence and serializes each element.
-    let (path, _dir) = write_temp_llt("json_ser_seq", "[seq 1 10]");
+    let (path, _dir) = write_temp_llt("json_ser_seq", "[range 1 10]");
     let output = Command::new(tinct_bin())
         .args(["run", "-o", "json", path.to_str().unwrap()])
         .output()
@@ -2089,7 +2083,6 @@ fn cap_file_no_mode_defaults_to_r() {
             "-o",
             "json",
             "--no-cwd",
-            "--no-libdir",
             "--cap-file",
             &format!("cfg={}", file_str),
             main.to_str().unwrap(),
@@ -4422,7 +4415,6 @@ fn cap_file_readable_lines() {
             "-o",
             "json",
             "--no-cwd",
-            "--no-libdir",
             "--cap-file",
             &format!("cfg={}:r", data_path.to_str().unwrap()),
             llt_path.to_str().unwrap(),

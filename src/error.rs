@@ -596,7 +596,7 @@ impl ErrorKind {
     }
 
     /// Check if a name is a known builtin (for "did you mean string?" heuristic).
-    /// This is a curated subset — not an exhaustive mirror of standard_builtins().
+    /// This is a curated subset — not an exhaustive mirror of the `builtin_module()` groups.
     fn is_known_builtin(name: &str) -> bool {
         matches!(
             name,
@@ -726,6 +726,56 @@ impl ErrorKind {
                 | "builtin-shl"
                 | "builtin-shr"
                 | "builtin-float"
+                // B-168: I/O and builder builtins
+                | "builtin-open"
+                | "builtin-write"
+                | "builtin-write-atomic"
+                | "builtin-write-handle"
+                | "builtin-flush"
+                | "builtin-close"
+                | "builtin-stat"
+                | "builtin-exists"
+                | "builtin-stat-symlink"
+                | "builtin-copy-file"
+                | "builtin-symlink"
+                | "builtin-set-permissions"
+                | "builtin-make-dir"
+                | "builtin-rename"
+                | "builtin-link"
+                | "builtin-read-link"
+                | "builtin-get-xattr"
+                | "builtin-set-xattr"
+                | "builtin-remove-xattr"
+                | "builtin-list-xattrs"
+                | "builtin-raw-create"
+                | "builtin-seek"
+                | "builtin-seek-end"
+                | "builtin-position"
+                | "builtin-revocable"
+                | "builtin-revoke-cap"
+                | "builtin-cap-data"
+                | "builtin-connect"
+                | "builtin-tls-layer"
+                | "builtin-tls-peer-cert"
+                | "builtin-send-datagram"
+                | "builtin-recv-datagram"
+                | "builtin-string-handle"
+                | "builtin-make-builder"
+                | "builtin-builder-set"
+                | "builtin-builder-delete"
+                | "builtin-builder-finish"
+                | "builtin-builder-snapshot"
+                | "builtin-builder-has?"
+                | "builtin-builder-get"
+                | "builtin-builder-get-or"
+                | "builtin-expand"
+                | "builtin-load"
+                | "builtin-eval"
+                | "builtin-eval-types"
+                | "builtin-blake3"
+                | "builtin-cap-identity"
+                | "builtin-include-cache-get"
+                | "builtin-include-cache-put"
         )
     }
 

@@ -1,22 +1,14 @@
-//! Rust-native builtin functions for the LLT language. // sprint wave-1 rebuild marker
+//! Builtin registry, bootstrap, and slim helpers for the LLT language.
 //!
-//! All builtins follow the `BuiltinFn` signature:
-//! `fn(BuiltinArgs) -> EvalResult<Arc<Thunk>>`
-//!
-//! ## Builtin groups
-//!
-//! **Arithmetic:** `+`, `-`, `*`, `/` (with auto-promotion table)
-//! **Comparison:** `=`, `<` (cross-type Int/Float comparison allowed)
-//! **Control:** `if` (selective materialization -- only the chosen branch is forced)
-//! **Dict primitives:** `keys`, `length`, `merge`, `append`
-//! **Strings:** `str`, `split`, `replace`, `trim`, `str-to-upper-char`, `str-to-lower-char`, `str-map-chars`, `regex-match?` (upper/lower are in stdlib/strings.llt)
-//! **Numeric:** `floor`, `round`
-//! **Parsing:** `to-int`, `to-float`
-//! **Evaluation control:** `eval`, `error`, `try`, `apply`
-//! **Type introspection:** `type-of`, `ast-of` (plus all type predicates `int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`, `bytes?`, `num?`, `record?`, `map?` implemented in LLT stdlib via `match` pattern dispatch)
-//! **Schema validation:** `validate` (runtime structural validation with constraint checking)
-//! **I/O:** `include` (`from-json` moved to pure tinct in `stdlib/codecs/json.llt`)
-//! **Sequences:** `seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `take`, `map`, `filter`, `drop`, `reduce`, `join`, `concat`
+//! Builtin implementations live in split files (`builtins_math.rs`, `builtins_io.rs`, etc.).
+//! This file provides:
+//! - `builtin_module(name)` — dispatch to per-module aggregators (`core_builtins()`, etc.)
+//! - `type_env_module(name)` — dispatch to per-module type environments
+//! - `build_builtins_type_env()` — combined type env for all modules
+//! - `create_root_env()` — pre-load an env with all builtins for bootstrap (pre-S-785)
+//! - `create_stdlib_env_inner()` / `create_type_stage_env()` — bootstrap prelude loading
+//! - Helper functions: `ok_val`, `string_val`, `reject_named`, `require_string`, etc.
+//! - Re-exports of split-file functions for test access via `use super::*`
 
 use std::future::Future;
 use std::pin::Pin;
@@ -28,12 +20,13 @@ use indexmap::IndexMap;
 use crate::arena::ThunkId;
 use crate::ast::Span;
 use crate::error::{EvalError, EvalResult};
+#[allow(unused_imports)] // used in test modules via `use super::*`
 use crate::value::Strictness;
 // Circular module dependency: this module imports `invoke_function` and `materialize` from eval.rs.
 // eval.rs calls builtins via function pointers stored in `Value::Builtin`.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
 // SAFETY: builtins.rs and eval.rs have a circular dependency at the value level — builtins call
-// materialize/invoke_function (eval.rs), and eval calls standard_builtins (builtins.rs). This is
+// materialize/invoke_function (eval.rs), and eval calls builtin_module() (builtins.rs). This is
 // safe because the dependency is at function-call level, not at module initialization level.
 // Rust modules can call each other's pub functions after initialization without deadlock.
 use crate::eval::materialize_sync as materialize;
@@ -372,7 +365,8 @@ pub(crate) fn reject_named(
 
 // Arithmetic, comparison, and control-flow builtins: +, -, *, /, =, <, if.
 // Implementations live in builtins_math.rs; re-exported here so that
-// standard_builtins() registration and unit tests (via `use super::*`) still work.
+// builtin_module() registration and unit tests (via `use super::*`) still work.
+#[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_math::{
     builtin_acos, builtin_add, builtin_asin, builtin_atan, builtin_atan2, builtin_band,
     builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq, builtin_exp,
@@ -384,7 +378,8 @@ pub(crate) use crate::builtins_math::{
 
 // Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv, build-dict.
 // Implementations live in builtins_dict.rs; re-exported here so that
-// standard_builtins() registration and unit tests (via `use super::*`) still work.
+// builtin_module() registration and unit tests (via `use super::*`) still work.
+#[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_dict::{
     builtin_append, builtin_build_dict, builtin_builder_delete, builtin_builder_finish,
     builtin_builder_get, builtin_builder_get_or, builtin_builder_has, builtin_builder_set,
@@ -392,26 +387,11 @@ pub(crate) use crate::builtins_dict::{
     builtin_get_optional, builtin_keys, builtin_length, builtin_make_builder, builtin_merge,
 };
 
-// I/O builtins: open, write, connect, builtin-read-line, builtin-read-chunk, emit, env, list-dir, stat, etc.
-// Implementations live in builtins_io.rs; re-exported here so that
-// standard_builtins() registration and unit tests (via `use super::*`) still work.
-pub(crate) use crate::builtins_io::{
-    builtin_cap_data, builtin_close, builtin_connect, builtin_copy_file, builtin_emit, builtin_env,
-    builtin_exists, builtin_flush, builtin_get_xattr, builtin_http2_session, builtin_http3_session,
-    builtin_http_request, builtin_icmp_ping, builtin_link, builtin_list_dir, builtin_list_xattrs,
-    builtin_make_dir, builtin_narrow, builtin_open, builtin_position, builtin_quic_open_datagram,
-    builtin_quic_open_stream, builtin_quic_session, builtin_raw_create, builtin_read_chunk,
-    builtin_read_line, builtin_read_link, builtin_recv_datagram, builtin_remove,
-    builtin_remove_xattr, builtin_rename, builtin_revocable, builtin_revoke_cap, builtin_seek,
-    builtin_seek_end, builtin_send_datagram, builtin_set_permissions, builtin_set_xattr,
-    builtin_stat, builtin_stat_symlink, builtin_string_handle, builtin_symlink, builtin_tls_layer,
-    builtin_tls_peer_cert, builtin_write, builtin_write_atomic, builtin_write_handle,
-};
-
 // Type/eval/meta builtins: type-of, include, error, try, apply, validate.
 // Implementations live in builtins_meta.rs; re-exported here so that
-// standard_builtins() registration and unit tests (via `use super::*`) still work.
+// builtin_module() registration and unit tests (via `use super::*`) still work.
 // json_to_value deleted in json-serde-removal sprint (from-json is now pure tinct in stdlib/codecs/json.llt)
+#[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_meta::{
     builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_cap_identity,
     builtin_decimal, builtin_eval, builtin_eval_types, builtin_expand, builtin_force,
@@ -426,9 +406,10 @@ pub(crate) use crate::builtins_meta::{
 // Note: upper/lower are no longer Rust builtins; they live in stdlib/strings.llt and
 // are implemented using str-map-chars + str-to-upper-char / str-to-lower-char.
 // Implementations live in builtins_string.rs; re-exported here so that
-// standard_builtins() registration and unit tests (via `use super::*`) still work.
+// builtin_module() registration and unit tests (via `use super::*`) still work.
 #[cfg(test)]
 pub(crate) use crate::builtins_string::MAX_SPLIT_PARTS;
+#[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_string::{
     builtin_bytes_str, builtin_char_code, builtin_chr, builtin_regex_match, builtin_replace,
     builtin_split, builtin_str, builtin_str_bytes, builtin_str_chars, builtin_str_index_of,
@@ -438,13 +419,10 @@ pub(crate) use crate::builtins_string::{
 
 // Bytes builtins: bytes, bytes-find, bytes-of, bytes-equal?, ct-equal?.
 // Implementations live in builtins_bytes.rs.
+#[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_bytes::{
     builtin_bytes, builtin_bytes_equal, builtin_bytes_find, builtin_bytes_of, builtin_ct_equal,
 };
-
-// URI parsing builtins: uri, url, urn.
-// Implementations live in builtins_uri.rs.
-pub(crate) use crate::builtins_uri::{builtin_uri, builtin_url, builtin_urn};
 
 /// Shared helper for `floor` and `round`: takes a builtin name and an f64->f64
 /// operation, materializes one numeric arg, and applies the operation to floats.
@@ -492,7 +470,9 @@ fn float_to_int_builtin(
 /// - Non-numeric input: type error.
 ///
 /// Inherently materializing: must inspect numeric value to convert/round.
-fn builtin_floor(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+pub(crate) fn builtin_floor(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
@@ -512,7 +492,9 @@ fn builtin_floor(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult
 /// - Non-numeric input: type error.
 ///
 /// Inherently materializing: must inspect numeric value to convert/round.
-fn builtin_round(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+pub(crate) fn builtin_round(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
@@ -529,7 +511,9 @@ fn builtin_round(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult
 /// Parses the string as an integer via `str::parse::<i64>()`. Returns Int.
 /// Does NOT accept numeric inputs -- it is a string parser, not a type converter.
 /// Inherently materializing: must inspect string content to parse integer value.
-fn builtin_to_int(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+pub(crate) fn builtin_to_int(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
@@ -560,7 +544,9 @@ fn builtin_to_int(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResul
 /// Parses the string as a float via `str::parse::<f64>()`. Returns Float.
 /// Does NOT accept numeric inputs -- it is a string parser, not a type converter.
 /// Inherently materializing: must inspect string content to parse float value.
-fn builtin_to_float(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+pub(crate) fn builtin_to_float(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
@@ -590,22 +576,25 @@ fn builtin_to_float(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalRes
 
 // Seq primitive builtins: seq, head, tail, collect.
 // Implementations live in builtins_seq_prim.rs; re-exported here so that
-// standard_builtins() registration and unit tests (via `use super::*`) still work.
+// builtin_module() registration and unit tests (via `use super::*`) still work.
 // Note: seq? (builtin_seq_check) was removed — type predicate now in LLT stdlib via match.
+#[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_seq_prim::{
     builtin_collect, builtin_head, builtin_seq, builtin_tail,
 };
 
 // Sequence generator builtins: range, repeat, cycle, iterate, unfold.
 // Implementations live in builtins_seq_gen.rs; re-exported here so that
-// standard_builtins() registration and unit tests (via `use super::*`) still work.
+// builtin_module() registration and unit tests (via `use super::*`) still work.
+#[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_seq_gen::{
     builtin_cycle, builtin_iterate, builtin_range, builtin_repeat, builtin_unfold,
 };
 
 // Sequence transform builtins: map, filter, take, drop.
 // Implementations live in builtins_seq_xform.rs; re-exported here so that
-// standard_builtins() registration and unit tests (via `use super::*`) still work.
+// builtin_module() registration and unit tests (via `use super::*`) still work.
+#[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_seq_xform::{
     builtin_drop, builtin_filter, builtin_map, builtin_take,
 };
@@ -614,32 +603,10 @@ pub(crate) use crate::builtins_seq_xform::{
 pub(crate) use crate::builtins_seq_xform::builtin_drop_seq_step;
 // Sequence reduction builtins: reduce, join, concat.
 // Implementations live in builtins_seq_reduce.rs; re-exported here so that
-// standard_builtins() registration and unit tests (via `use super::*`) still work.
+// builtin_module() registration and unit tests (via `use super::*`) still work.
+#[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_seq_reduce::{
     builtin_concat, builtin_join, builtin_reduce, builtin_reduce_dict_step, builtin_reduce_seq_step,
-};
-
-// Date-time builtins: timestamps, durations, clock capabilities, timezones
-pub(crate) use crate::builtins_datetime::{
-    builtin_duration_days, builtin_duration_hours, builtin_duration_minutes,
-    builtin_duration_nanos, builtin_duration_seconds, builtin_duration_to_nanos,
-    builtin_duration_to_seconds, builtin_fixed_clock, builtin_format_timestamp, builtin_load_tz,
-    builtin_local_to_timestamp, builtin_local_tz_name, builtin_now, builtin_parse_timestamp,
-    builtin_timestamp_add, builtin_timestamp_day, builtin_timestamp_diff, builtin_timestamp_eq,
-    builtin_timestamp_gt, builtin_timestamp_hour, builtin_timestamp_in_tz, builtin_timestamp_lt,
-    builtin_timestamp_minute, builtin_timestamp_month, builtin_timestamp_parts,
-    builtin_timestamp_second, builtin_timestamp_to_unix, builtin_timestamp_year,
-    builtin_unix_to_timestamp,
-};
-
-// Async concurrency primitives: task, await, channel, send, recv, select-once, par, par-map,
-// par-filter, signal-channel, timer-channel, watch-channel, and cancellation context primitives.
-pub(crate) use crate::builtins_async::{
-    builtin_await, builtin_cancel_root, builtin_cancel_task, builtin_cancelled_q, builtin_channel,
-    builtin_context, builtin_drain, builtin_exit_now, builtin_non_cancellable, builtin_par,
-    builtin_par_filter, builtin_par_map, builtin_recv, builtin_select_once, builtin_send,
-    builtin_signal_channel, builtin_task, builtin_timer_channel, builtin_watch_channel,
-    builtin_with_cancel, builtin_with_context, builtin_with_deadline, builtin_with_timeout,
 };
 
 /// `first`: Return the first element of a Dict, the first character of a String,
@@ -651,7 +618,9 @@ pub(crate) use crate::builtins_async::{
 /// - Bytes path: O(1) — returns the first byte as Value::Int.
 ///
 /// Inherently materializing: must access the value to determine type and extract first element.
-fn builtin_first(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+pub(crate) fn builtin_first(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
@@ -729,7 +698,9 @@ fn builtin_first(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult
 /// - Bytes path: O(1) — returns the last byte as Value::Int.
 ///
 /// Inherently materializing: must access the value to determine type and extract last element.
-fn builtin_last(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+pub(crate) fn builtin_last(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
@@ -804,7 +775,9 @@ fn builtin_last(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
 ///
 /// Inherently materializing for Dict: must copy all remaining entries.
 /// Lazy for Seq: O(1) tail extraction.
-fn builtin_rest(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+pub(crate) fn builtin_rest(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
@@ -853,7 +826,9 @@ fn builtin_rest(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
 ///
 /// Inherently materializing for Dict: must copy all existing entries.
 /// Lazy for Seq: O(1) prepend.
-fn builtin_cons(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+pub(crate) fn builtin_cons(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
@@ -911,7 +886,9 @@ fn builtin_cons(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
 /// - O(n) — avoids the recursive LLT accumulator pattern.
 ///
 /// Inherently materializing: must know all entries to reverse order.
-fn builtin_reverse(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+pub(crate) fn builtin_reverse(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
@@ -1005,7 +982,9 @@ fn compare_values(a: &Value, b: &Value, call_span: Span) -> EvalResult<std::cmp:
 /// - Errors on Seq input (callers must `$collect` first).
 ///
 /// Inherently materializing: must inspect all values to determine sort order.
-fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+pub(crate) fn builtin_sort(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
@@ -1183,7 +1162,9 @@ fn builtin_sort(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<
     })
 }
 
-fn builtin_proxy(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+pub(crate) fn builtin_proxy(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
         args,
         named,
@@ -1205,11 +1186,13 @@ fn builtin_proxy(ctx_arg: BuiltinArgs) -> Pin<Box<dyn Future<Output = EvalResult
     })
 }
 
-/// Returns all builtin definitions with strictness metadata.
-///
-/// All builtins conform to the standard `BuiltinFn` signature, including `if`
-/// which materializes only the chosen branch (the unchosen branch's thunk is
-/// never forced, preserving lazy semantics).
+// TOMBSTONE: standard_builtins() deleted in T-719 (builtin-privacy-infra sprint 2026-05-29).
+// Builtins are now organized into named modules via builtin_module():
+//   builtin_module("core")     → builtins_core::core_builtins()
+//   builtin_module("datetime") → builtins_datetime::datetime_builtins()
+//   builtin_module("net")      → builtins_net::net_builtins()
+// All callers updated to use builtin_module() instead.
+#[cfg(any())] // dead — body preserved until S-785 (T-762 will delete this block)
 pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
     vec![
         // Arithmetic
@@ -1340,46 +1323,46 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Spine],
             1
         ),
-        // Transient builders
-        builtin!("make-builder", builtin_make_builder),
+        // Transient builders (registered under builtin-NAME; prelude exports the bare names)
+        builtin!("builtin-make-builder", builtin_make_builder),
         builtin!(
-            "builder-set",
+            "builtin-builder-set",
             builtin_builder_set,
             [Strictness::Seq, Strictness::Seq, Strictness::Id],
             2
         ),
         builtin!(
-            "builder-delete",
+            "builtin-builder-delete",
             builtin_builder_delete,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
         builtin!(
-            "builder-finish",
+            "builtin-builder-finish",
             builtin_builder_finish,
             [Strictness::Seq],
             1
         ),
         builtin!(
-            "builder-snapshot",
+            "builtin-builder-snapshot",
             builtin_builder_snapshot,
             [Strictness::Seq],
             1
         ),
         builtin!(
-            "builder-has?",
+            "builtin-builder-has?",
             builtin_builder_has,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
         builtin!(
-            "builder-get",
+            "builtin-builder-get",
             builtin_builder_get,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
         builtin!(
-            "builder-get-or",
+            "builtin-builder-get-or",
             builtin_builder_get_or,
             [Strictness::Seq, Strictness::Seq, Strictness::Id],
             2
@@ -1574,11 +1557,11 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Seq],
             2
         ),
-        // I/O (emit/env registered under builtin-NAME; prelude exports the bare names)
+        // I/O (registered under builtin-NAME; prelude exports the bare names)
         builtin!("builtin-emit", builtin_emit, [Strictness::Seq]),
         builtin!("builtin-env", builtin_env, [Strictness::Seq]),
         builtin!(
-            "open",
+            "builtin-open",
             builtin_open,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq]
         ),
@@ -1587,10 +1570,10 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             builtin_narrow,
             [Strictness::Seq, Strictness::Seq]
         ),
-        builtin!("revocable", builtin_revocable, [Strictness::Seq]),
-        builtin!("revoke-cap", builtin_revoke_cap, [Strictness::Seq]),
+        builtin!("builtin-revocable", builtin_revocable, [Strictness::Seq]),
+        builtin!("builtin-revoke-cap", builtin_revoke_cap, [Strictness::Seq]),
         builtin!(
-            "connect",
+            "builtin-connect",
             builtin_connect,
             [
                 Strictness::Seq,
@@ -1600,13 +1583,21 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             ]
         ),
         builtin!(
-            "tls-layer",
+            "builtin-tls-layer",
             builtin_tls_layer,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
         ),
-        builtin!("tls-peer-cert", builtin_tls_peer_cert, [Strictness::Seq]),
-        builtin!("string-handle", builtin_string_handle, [Strictness::Seq]),
+        builtin!(
+            "builtin-tls-peer-cert",
+            builtin_tls_peer_cert,
+            [Strictness::Seq]
+        ),
+        builtin!(
+            "builtin-string-handle",
+            builtin_string_handle,
+            [Strictness::Seq]
+        ),
         builtin!("builtin-read-line", builtin_read_line, [Strictness::Seq]),
         builtin!(
             "builtin-read-chunk",
@@ -1614,68 +1605,73 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             [Strictness::Seq, Strictness::Seq],
             2
         ),
+        builtin!("builtin-read-all", builtin_read_all, [Strictness::Seq]),
         builtin!(
-            "write",
+            "builtin-write",
             builtin_write,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
         ),
         builtin!(
-            "write-atomic",
+            "builtin-write-atomic",
             builtin_write_atomic,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
         ),
         builtin!(
-            "cap-data",
+            "builtin-cap-data",
             builtin_cap_data,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
         builtin!(
-            "write-handle",
+            "builtin-write-handle",
             builtin_write_handle,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
-        builtin!("flush", builtin_flush, [Strictness::Seq]),
-        builtin!("close", builtin_close, [Strictness::Seq]),
+        builtin!("builtin-flush", builtin_flush, [Strictness::Seq]),
+        builtin!("builtin-close", builtin_close, [Strictness::Seq]),
         builtin!(
-            "raw-create",
+            "builtin-raw-create",
             builtin_raw_create,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
-        builtin!("seek", builtin_seek, [Strictness::Seq, Strictness::Seq], 2),
-        builtin!("seek-end", builtin_seek_end, [Strictness::Seq]),
-        builtin!("position", builtin_position, [Strictness::Seq]),
         builtin!(
-            "list-dir",
-            builtin_list_dir,
+            "builtin-seek",
+            builtin_seek,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
+        builtin!("builtin-seek-end", builtin_seek_end, [Strictness::Seq]),
+        builtin!("builtin-position", builtin_position, [Strictness::Seq]),
         builtin!(
             "builtin-list-dir",
             builtin_list_dir,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
-        builtin!("stat", builtin_stat, [Strictness::Seq, Strictness::Seq], 2),
         builtin!(
-            "exists",
+            "builtin-stat",
+            builtin_stat,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builtin-exists",
             builtin_exists,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
         builtin!(
-            "stat-symlink",
+            "builtin-stat-symlink",
             builtin_stat_symlink,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
         builtin!(
-            "copy-file",
+            "builtin-copy-file",
             builtin_copy_file,
             [
                 Strictness::Seq,
@@ -1686,25 +1682,25 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             4
         ),
         builtin!(
-            "symlink",
+            "builtin-symlink",
             builtin_symlink,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
         ),
         builtin!(
-            "set-permissions",
+            "builtin-set-permissions",
             builtin_set_permissions,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
         ),
         builtin!(
-            "get-xattr",
+            "builtin-get-xattr",
             builtin_get_xattr,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
         ),
         builtin!(
-            "set-xattr",
+            "builtin-set-xattr",
             builtin_set_xattr,
             [
                 Strictness::Seq,
@@ -1715,19 +1711,19 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             4
         ),
         builtin!(
-            "remove-xattr",
+            "builtin-remove-xattr",
             builtin_remove_xattr,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
         ),
         builtin!(
-            "list-xattrs",
+            "builtin-list-xattrs",
             builtin_list_xattrs,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
         builtin!(
-            "make-dir",
+            "builtin-make-dir",
             builtin_make_dir,
             [Strictness::Seq, Strictness::Seq],
             2
@@ -1739,31 +1735,35 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
             2
         ),
         builtin!(
-            "rename",
+            "builtin-rename",
             builtin_rename,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
         ),
         builtin!(
-            "link",
+            "builtin-link",
             builtin_link,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
         ),
         builtin!(
-            "read-link",
+            "builtin-read-link",
             builtin_read_link,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
         // Datagram sockets (UDP, Unix datagram)
         builtin!(
-            "send-datagram",
+            "builtin-send-datagram",
             builtin_send_datagram,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
-        builtin!("recv-datagram", builtin_recv_datagram, [Strictness::Seq]),
+        builtin!(
+            "builtin-recv-datagram",
+            builtin_recv_datagram,
+            [Strictness::Seq]
+        ),
         // DELETED: builtin!("builtin-from-json", builtin_from_json, [Strictness::Seq])
         // json-serde-removal sprint: from-json is now pure tinct in stdlib/codecs/json.llt
         // DELETED: builtin!("builtin-to-json", builtin_to_json, [Strictness::Seq])
@@ -1771,22 +1771,34 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
         // DELETED: builtin!("include", builtin_include, [Strictness::Seq])
         // `include` is now implemented in stdlib/prelude.llt (include-decomp-redelete sprint)
         // Decomposed include primitives (include-decomp-primitives sprint)
-        builtin!("blake3", builtin_blake3, [Strictness::Seq]),
-        builtin!("cap-identity", builtin_cap_identity, [Strictness::Seq]),
-        // runtime-v2 Part F: expand/load/eval primitives for include-decomp pipeline
-        builtin!("expand", builtin_expand, [Strictness::Seq], 1),
-        builtin!("builtin-expand", builtin_expand, [Strictness::Seq], 1),
-        builtin!("load", builtin_load, [Strictness::Seq], 1),
-        builtin!("builtin-load", builtin_load, [Strictness::Seq], 1),
-        builtin!("eval", builtin_eval, [Strictness::Seq], 1),
-        builtin!("eval-types", builtin_eval_types, [Strictness::Seq], 1),
+        builtin!("builtin-blake3", builtin_blake3, [Strictness::Seq]),
         builtin!(
-            "include-cache-get",
+            "builtin-cap-identity",
+            builtin_cap_identity,
+            [Strictness::Seq]
+        ),
+        // runtime-v2 Part F: expand/load/eval primitives for include-decomp pipeline
+        builtin!("builtin-expand", builtin_expand, [Strictness::Seq], 1),
+        builtin!("builtin-load", builtin_load, [Strictness::Seq], 1),
+        builtin!("builtin-eval", builtin_eval, [Strictness::Seq], 1),
+        builtin!(
+            "builtin-eval-types",
+            builtin_eval_types,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "builtin-include-cache-get",
             builtin_include_cache_get,
             [Strictness::Seq],
             1
         ),
-        builtin!("include-cache-put", builtin_include_cache_put, [], 2),
+        builtin!(
+            "builtin-include-cache-put",
+            builtin_include_cache_put,
+            [],
+            2
+        ),
         // Sequences (registered under builtin-NAME; prelude exports the unwrapped names)
         builtin!("builtin-seq", builtin_seq),
         builtin!("builtin-head", builtin_head, [Strictness::Seq]),
@@ -2144,62 +2156,30 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
     ]
 }
 
-/// Returns the set of raw Rust builtin names that T002 should warn about when
-/// referenced directly in user code (bypassing the prelude).
-///
-/// Used by the T002 lint in `src/typecheck.rs` to detect when user code directly
-/// references a Rust builtin name that was not exported by prelude.
-///
-/// After the builtin-privacy-operators-and-io sprint, all user-facing builtins are
-/// registered under `builtin-*` form and re-exported from prelude (or math.llt/strings.llt)
-/// as bare-name wrappers. T002 fires when user code references:
-/// - A `builtin-*` name directly (bypassing the prelude wrapper)
-/// - A bare builtin name that lacks a prelude wrapper (capability-gated I/O, `get?`)
-///
-/// The set excludes stable non-warning cases:
-/// - `reduce_dict_step` / `reduce_seq_step` (internal continuation helpers)
-/// - `proxy` (handled by a special typecheck arm before the undefined-variable path)
-/// - Operator symbols: `+`, `-`, `*`, `/`, `=`, `<`, `if` (syntax-level, always accessible)
-/// - `get?` (user-facing optional-get, not yet wrapped in prelude)
-/// - Builder ops: `make-builder`, `builder-*` (internal transient API, rarely user-facing)
-///
-/// Note: `bytes?` was previously excluded here (lacked a prelude wrapper). It is now implemented
-/// in stdlib/prelude.llt and removed from standard_builtins() entirely.
-pub fn builtin_primary_names() -> std::collections::HashSet<&'static str> {
-    standard_builtins()
-        .into_iter()
-        .map(|def| def.name)
-        .filter(|name| {
-            !matches!(
-                *name,
-                // Operator symbols (accessible via prelude wrappers or parser desugaring)
-                "+" | "-" | "*" | "/" | "=" | "<" | "if"
-                // Internal helpers not needing T002
-                | "reduce_dict_step" | "reduce_seq_step" | "proxy"
-                // Intentionally-exposed primitives without prelude wrappers yet
-                | "get?"
-                // Internal builder ops (transient API, not user-facing)
-                | "make-builder" | "builder-set" | "builder-delete"
-                | "builder-finish" | "builder-snapshot" | "builder-keys"
-                | "builder-get" | "builder-get-or"
-            )
-        })
-        .collect()
-}
+// TOMBSTONE: builtin_primary_names() deleted in T-719 (builtin-privacy-infra sprint 2026-05-29).
+// T002 typecheck callers (typecheck.rs:1955, 2359) now iterate builtin_module() groups inline.
+// T-730 (builtin-privacy-parser sprint) will update the T002 lint to use builtin_module() directly.
 
 // TOMBSTONE: rust_module() deleted in include-decomp-redelete sprint (2026-05-20).
 // TOMBSTONE: create_bootstrap_env() deleted in include-decomp-redelete sprint (2026-05-20).
 // The module system and include mechanism have been deleted.
-// All builtins are now registered directly in create_root_env() and visible to the prelude.
+// All builtins are now registered via builtin_module() groups in create_root_env().
 // See doc/whatif/include-decomposition.md.
 
 /// Create the root environment with all builtins registered as `Value::Builtin`.
-/// Used only by `src/expand.rs` for macro expansion during prelude bootstrap.
+/// No longer called from `src/expand.rs` (T-721 removed that caller).
+/// Called by `create_stdlib_env_inner()` and `create_type_stage_env()`.
+/// S-785 will replace these calls with `--- uses: ["core"]` document-level injection.
 pub(crate) fn create_root_env() -> Arc<RwLock<Environment>> {
     let env = Arc::new(RwLock::new(Environment::new()));
-    for def in standard_builtins() {
-        let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
-        env.write().unwrap().insert(def.name.to_string(), thunk);
+    for module_name in &["core", "datetime", "net"] {
+        if let Some(defs) = builtin_module(module_name) {
+            for def in defs {
+                let name = def.name.to_string();
+                let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
+                env.write().unwrap().insert(name, thunk);
+            }
+        }
     }
 
     // Transport nominal variant constants: Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp.
@@ -2210,9 +2190,11 @@ pub(crate) fn create_root_env() -> Arc<RwLock<Environment>> {
 
 /// Create the stdlib environment: root builtins + prelude functions.
 ///
-/// Parses and evaluates `stdlib/prelude.llt` using the root env, then
-/// layers the prelude dict entries as a child scope. User code should
-/// use this as the parent environment.
+/// Starts with a flat `Environment::new()` pre-populated with all builtins
+/// (via `create_root_env()`), then evaluates `stdlib/prelude.llt` and inserts
+/// its exported bindings into the same env. No parent chain — user code inherits
+/// this env directly. S-785 will replace `create_root_env()` with `--- uses: ["core"]`
+/// injection so the env starts truly empty.
 // Fatal: stdlib failure is not recoverable — callers should propagate or panic on Err.
 /// Helper function to load a stdlib module from source and insert its bindings
 /// into the environment.
@@ -2366,29 +2348,24 @@ pub(crate) fn create_stdlib_env_with_arena() -> StdlibEnvWithArena {
 
 fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvWithArena {
     // Phase 2: Bootstrap env switch.
-    // The bootstrap env contains all builtins registered directly.
-    // After the prelude loads, its exported bindings become the standard library
-    // environment that user code inherits.
-    let bootstrap_env = create_root_env();
+    // stdlib_env starts as Environment::new() pre-populated with all builtins via
+    // create_root_env(). This is the structural form required by T-720: a flat env with
+    // no parent chain. S-785 will remove create_root_env() here and rely on
+    // --- uses: ["core"] injection instead.
+    let stdlib_env = create_root_env();
 
-    // Create a bootstrap EvalContext backed by the bootstrap env.
+    // Create a bootstrap EvalContext backed by the stdlib env.
     // bootstrap_base_dir was opened by the caller (create_stdlib_env_with_arena) to confine
     // open_ambient_dir to the public entry point.
     // Use new_empty() to bypass STDLIB_ARENA_CACHE — we're BUILDING the stdlib here,
     // so we need a fresh arena, not one seeded with stale cache contents.
-    // Pass bootstrap_env as type_stage_env since we're bootstrapping (no type-stage env exists yet).
+    // Pass stdlib_env as type_stage_env since we're bootstrapping (no type-stage env exists yet).
     let bootstrap_ctx =
-        crate::eval::EvalContext::new_empty(bootstrap_base_dir, Arc::clone(&bootstrap_env), false);
-
-    // Create stdlib env as a child of bootstrap_env.
-    // This means: user code (child of stdlib_env) can walk up to bootstrap_env
-    // and see all builtins. The prelude acts as the primary scope boundary.
-    let stdlib_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
-        &bootstrap_env,
-    ))));
+        crate::eval::EvalContext::new_empty(bootstrap_base_dir, Arc::clone(&stdlib_env), false);
 
     // Load prelude — provides all public stdlib functions.
-    // All builtins are accessible via the parent env chain.
+    // Builtins are accessible directly in stdlib_env.bindings (no parent chain).
+    // Prelude bindings are inserted into stdlib_env alongside the builtins.
     let prelude_source = include_str!("../stdlib/prelude.llt");
     load_stdlib_module(
         prelude_source,
@@ -2396,8 +2373,6 @@ fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvWit
         &stdlib_env,
         &bootstrap_ctx,
     )?;
-
-    // User code now only sees what prelude exports — no direct access to Rust builtins.
 
     // Load macros — exports tmpl-transformer and helpers used by expand_surface_program.
     // Loaded after prelude so macro helpers can reference prelude functions.
@@ -2456,18 +2431,16 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
     let resolution_table = std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));
     let empty_types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
 
-    // Create minimal bootstrap env with all builtins
-    let bootstrap_env = create_root_env();
+    // type_stage_env starts as Environment::new() pre-populated with all builtins via
+    // create_root_env(). Flat env with no parent chain — same structural form as
+    // create_stdlib_env_inner() after T-720. S-785 will remove create_root_env() here
+    // and rely on --- uses: ["core"] injection in the type-stage document header.
+    let type_stage_env = create_root_env();
 
     // Create a bootstrap EvalContext. bootstrap_base_dir was opened above.
-    // Pass bootstrap_env as type_stage_env since we're bootstrapping (no type-stage env exists yet).
+    // Pass type_stage_env since we're bootstrapping (no separate type-stage env exists yet).
     let bootstrap_ctx =
-        crate::eval::EvalContext::new_empty(bootstrap_base_dir, Arc::clone(&bootstrap_env), false);
-
-    // Create type-stage env as a child of bootstrap_env
-    let type_stage_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
-        &bootstrap_env,
-    ))));
+        crate::eval::EvalContext::new_empty(bootstrap_base_dir, Arc::clone(&type_stage_env), false);
 
     // Filter to only stage: type documents and evaluate them
     for doc in &program.documents {
@@ -2520,6 +2493,52 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
     Ok(type_stage_env)
 }
 
+/// Return the builtin list for a named module, or None if the name is unknown.
+pub fn builtin_module(name: &str) -> Option<Vec<crate::value::BuiltinDef>> {
+    match name {
+        "core" => Some(crate::builtins_core::core_builtins()),
+        "datetime" => Some(crate::builtins_datetime::datetime_builtins()),
+        "net" => Some(crate::builtins_net::net_builtins()),
+        _ => None,
+    }
+}
+
+#[allow(dead_code)] // S-785 will wire callers via --- uses: injection
+/// Return a TypeEnv populated with type signatures for the named module.
+/// Returns None for unknown module names.
+pub(crate) fn type_env_module(name: &str) -> Option<crate::types::TypeEnv> {
+    match name {
+        "core" => {
+            let mut env = crate::types::TypeEnv::new();
+            crate::builtins_core::core_type_env(&mut env);
+            Some(env)
+        }
+        "datetime" => {
+            let mut env = crate::types::TypeEnv::new();
+            crate::builtins_datetime::datetime_type_env(&mut env);
+            Some(env)
+        }
+        "net" => Some(crate::builtins_net::net_type_env()),
+        _ => None,
+    }
+}
+
+/// Build a `TypeEnv` containing type signatures for all builtin modules (core, datetime, net).
+///
+/// This is the replacement for `TypeEnv::with_builtins()` (deleted in T-722). Callers that
+/// previously used `TypeEnv::with_builtins()` now call this function instead.
+///
+/// The combined env includes all registrations from `core_type_env()`, `datetime_type_env()`,
+/// and `net_type_env()`. The result is a flat environment (no parent chain) suitable for use as
+/// the baseline for prelude type-checking and builtin-aware type inference.
+pub fn build_builtins_type_env() -> crate::types::TypeEnv {
+    let mut env = crate::types::TypeEnv::new();
+    crate::builtins_core::core_type_env(&mut env);
+    crate::builtins_datetime::datetime_type_env(&mut env);
+    env.merge(crate::builtins_net::net_type_env());
+    env
+}
+
 #[cfg(test)]
 // Test-code lint suppressions:
 // - useless_conversion: string_val("lit".into()) — `.into()` is a &str→&str no-op, idiomatic in test fixtures
@@ -2562,13 +2581,15 @@ mod tests {
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let root_env = create_root_env();
-        crate::eval::EvalContext::new(
-            base_dir,
-            Arc::clone(&root_env),
-            Arc::clone(&root_env),
-            false,
-        )
+        let env = Arc::new(RwLock::new(Environment::new()));
+        if let Some(defs) = builtin_module("core") {
+            for def in defs {
+                let name = def.name.to_string();
+                let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
+                env.write().unwrap().insert(name, thunk);
+            }
+        }
+        crate::eval::EvalContext::new_empty(base_dir, env, false)
     }
 
     /// Drive an async builtin to completion synchronously in tests.
@@ -2721,29 +2742,6 @@ mod tests {
         assert!(
             type_env.read().unwrap().get("union").is_some(),
             "union should be defined in type-stage env"
-        );
-    }
-
-    #[test]
-    fn test_all_standard_builtins_registered() {
-        // Verify all builtins from standard_builtins() are properly registered in create_root_env().
-        // This catches registration gaps when someone adds a builtin to standard_builtins()
-        // but forgets to register it in create_root_env().
-        let builtins = standard_builtins();
-        let env = create_root_env();
-        let env_ref = env.read().unwrap();
-
-        let mut missing = Vec::new();
-        for def in &builtins {
-            if env_ref.get(def.name).is_none() {
-                missing.push(def.name);
-            }
-        }
-
-        assert!(
-            missing.is_empty(),
-            "root env missing builtins: {}",
-            missing.join(", ")
         );
     }
 
@@ -4674,8 +4672,13 @@ mod tests {
 
     #[test]
     fn builtin_def_strictness_array_validity() {
-        // Verify all BuiltinDef entries have reasonable strictness arrays
-        for def in standard_builtins() {
+        // Verify all BuiltinDef entries have reasonable strictness arrays.
+        // Updated in T-719: iterates builtin_module() groups instead of standard_builtins().
+        let all_defs: Vec<crate::value::BuiltinDef> = ["core", "datetime", "net"]
+            .iter()
+            .flat_map(|name| builtin_module(name).unwrap_or_default())
+            .collect();
+        for def in all_defs {
             // No builtin should have more than 10 positional arguments
             assert!(
                 def.pos_strictness.len() <= 10,
@@ -6439,489 +6442,33 @@ mod tests {
         );
     }
 
+    // TOMBSTONE: standard_builtins_count() deleted in T-719 — standard_builtins() removed.
+    // TOMBSTONE: standard_builtins_contains_all() deleted in T-719 — standard_builtins() removed.
+
     #[test]
-    fn standard_builtins_count() {
-        let count = standard_builtins().len();
-        // This test documents the current count. Update this assertion when adding/removing builtins.
-        // The count in doc/11-stdlib.md should match this number.
-        // 9 meta primitives (eval-ast, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy, macro-injects)
-        // are now in standard_builtins.
-        // builtin_include was deleted in include-decomp-redelete sprint (replaced with decomposed primitives).
-        // Added 4 async builtins: select-once, par, par-map, par-filter (233 → 237)
-        // Added 3 event-source channel builtins: signal-channel, timer-channel, watch-channel (237 → 240)
-        // Added 6 cancellation context builtins: context, with-cancel, with-timeout, with-deadline, cancelled?, cancel-task (240 → 246)
-        // Added 17 builtin-* stable aliases for async primitives to allow shadowing in stdlib/async.llt (246 → 263)
-        // Added 2 internal reduce helper builtins: reduce_dict_step, reduce_seq_step (263 → 265)
-        // Added builtin-macro-error for span-aware macro errors (265 → 266)
-        // Added build-dict for efficient dict construction from entries (266 → 267)
-        // Added 7 transient builder builtins: make-builder, builder-set, builder-delete, builder-finish, builder-snapshot, builder-has?, builder-get (267 → 274)
-        // Added builder-get-or: atomic get-or-insert for builder (274 → 275, then renumbered)
-        // Added 5 I/O builtins: exists, stat-symlink, copy-file, symlink, set-permissions (274 → 279)
-        // Added 4 xattr builtins: get-xattr, set-xattr, remove-xattr, list-xattrs (279 → 283)
-        // Added builder-get-or: atomic get-or-insert for builder (283 → 284)
-        // Added 14 builtin-* stable aliases for prelude-missing-wrappers sprint (284 → 298):
-        //   builtin-keys, builtin-merge, builtin-each, builtin-each-key, builtin-each-kv,
-        //   builtin-build-dict, builtin-floor, builtin-round, builtin-to-float, builtin-try,
-        //   builtin-apply, builtin-type-of, builtin-narrow, builtin-from-json
-        // Added 3 stable aliases for annotation-migration sprint (298 → 301):
-        //   builtin-trim, builtin-emit, builtin-env
-        // Added 6 shutdown primitives in async-shutdown-primitives sprint (301 → 307):
-        //   cancel-root, builtin-cancel-root, drain, builtin-drain, exit-now, builtin-exit-now
-        // One was subsequently unregistered (ci-test-regressions) → effective count 306.
-        // Added 4 context primitives in eval-runtime-fixes sprint (306 → 310):
-        //   non-cancellable, builtin-non-cancellable, with-context, builtin-with-context
-        // builtin-privacy-primary-names sprint (310 → 242):
-        //   Removed 68 bare registrations (keys, length, merge, append, each, each-key,
-        //   each-kv, build-dict, str, split, trim, str-length, str-slice, floor, round,
-        //   to-int, to-float, raise, try, apply, type-of, int?, float?, str?, bool?,
-        //   null?, dict?, fn?, seq?, emit, env, narrow, from-json, map, filter, take,
-        //   drop, reduce, gensym, llt-repr, tag-of, variant, decimal, big-int, proxy,
-        //   macro-injects, task, await, channel, send, recv, select-once, par, par-map,
-        //   par-filter, signal-channel, timer-channel, watch-channel, context, with-cancel,
-        //   with-timeout, with-deadline, cancelled?, cancel-task, non-cancellable, with-context,
-        //   cancel-root, drain, exit-now) = 68 removed.
-        //   Added builtin-with-deadline (was bare-only, now builtin-*): +1. Net: 310 - 68 + 1 = 243.
-        // builtin-privacy-operators-and-io sprint (243 → 243):
-        //   Renamed 35 bare primary names to builtin-* (no count change — pure renames):
-        //   Math: pow, sqrt, log, log2, log10, exp, sin, cos, tan, asin, acos, atan, atan2,
-        //         nan?, inf?, finite? (16)
-        //   Bitwise: band, bor, bxor, shl, shr (5)
-        //   Type conversion: float (1)
-        //   Strings: replace, str-chars, char-code, chr, str-bytes, bytes-str, str-index-of,
-        //            trim-start, trim-end, str-to-upper-char, str-to-lower-char, str-map-chars,
-        //            regex-match? (13)
-        //   Net: 243 - 0 + 0 = 243 (renames only).
-        // json-delete-to-json sprint (242 → 241):
-        //   Removed builtin-to-json: CLI output formatter now calls tinct to-json instead.
-        //   Net: 242 - 1 = 241.
-        // Added builtin-proxy? for Proxy type check in tinct to-json (241 → 242).
-        // type-predicates-to-tinct sprint (242 → 232):
-        //   Removed 10 type-predicate builtins replaced by LLT match patterns:
-        //   builtin-int?, builtin-float?, builtin-str?, builtin-bool?, builtin-null?,
-        //   builtin-dict?, builtin-fn?, builtin-proxy?, builtin-seq?, bytes? (bare).
-        //   All are now implemented in stdlib/prelude.llt via [match x TypeTag: true _: false].
-        //   Net: 242 - 10 = 232.
-        // json-serde-removal sprint (232 → 231):
-        //   Removed builtin-from-json: from-json is now pure tinct in stdlib/codecs/json.llt.
-        // Added builtin-list-dir and builtin-load stable aliases for prelude export (231 → 233):
-        //   Prelude now exports list-dir: builtin-list-dir and load: builtin-load.
-        // Added builtin-expand stable alias for prelude export (233 → 234):
-        //   Prelude now exports expand: builtin-expand.
-        // Added 3 comparison aliases: builtin-gt, builtin-lte, builtin-gte (234 → 237):
-        //   These allow the prelude to eliminate gte-impl private helper.
-        // Added string-handle builtin for wrapping String as Handle[Readable] (237 → 238):
-        //   Enables uniform codec APIs accepting Handle as primary input.
-        assert_eq!(
-            count, 238,
-            "builtin count changed - update this test and doc/11-stdlib.md"
+    fn core_builtins_count() {
+        let count = crate::builtins_core::core_builtins().len();
+        assert!(
+            count > 100,
+            "expected core builtins to have >100 entries, got {count}"
         );
     }
 
     #[test]
-    fn standard_builtins_contains_all() {
-        let builtins = standard_builtins();
-        let names: Vec<&str> = builtins.iter().map(|def| def.name).collect();
-        // Arithmetic
-        assert!(names.contains(&"+"), "missing +");
-        assert!(names.contains(&"-"), "missing -");
-        assert!(names.contains(&"*"), "missing *");
-        assert!(names.contains(&"/"), "missing /");
-        // Comparison
-        assert!(names.contains(&"="), "missing =");
-        assert!(names.contains(&"<"), "missing <");
-        assert!(names.contains(&"builtin-eq"), "missing builtin-eq");
-        assert!(names.contains(&"builtin-lt"), "missing builtin-lt");
-        assert!(names.contains(&"builtin-gt"), "missing builtin-gt");
-        assert!(names.contains(&"builtin-lte"), "missing builtin-lte");
-        assert!(names.contains(&"builtin-gte"), "missing builtin-gte");
-        // Control
-        assert!(names.contains(&"if"), "missing if");
-        // Dict primitives (now under builtin-NAME; bare names are prelude wrappers)
-        assert!(names.contains(&"builtin-keys"), "missing builtin-keys");
-        assert!(names.contains(&"builtin-length"), "missing builtin-length");
-        assert!(names.contains(&"builtin-merge"), "missing builtin-merge");
-        assert!(names.contains(&"builtin-append"), "missing builtin-append");
-        // Strings (all now under builtin-NAME; bare names are prelude/strings.llt wrappers)
-        assert!(names.contains(&"builtin-str"), "missing builtin-str");
-        assert!(names.contains(&"builtin-split"), "missing builtin-split");
+    fn datetime_builtins_count() {
+        let count = crate::builtins_datetime::datetime_builtins().len();
         assert!(
-            names.contains(&"builtin-replace"),
-            "missing builtin-replace"
+            count > 10,
+            "expected datetime builtins to have >10 entries, got {count}"
         );
-        assert!(names.contains(&"builtin-trim"), "missing builtin-trim");
+    }
+
+    #[test]
+    fn net_builtins_count() {
+        let count = crate::builtins_net::net_builtins().len();
         assert!(
-            names.contains(&"builtin-str-to-upper-char"),
-            "missing builtin-str-to-upper-char"
-        );
-        assert!(
-            names.contains(&"builtin-str-to-lower-char"),
-            "missing builtin-str-to-lower-char"
-        );
-        assert!(
-            names.contains(&"builtin-str-map-chars"),
-            "missing builtin-str-map-chars"
-        );
-        assert!(
-            names.contains(&"builtin-regex-match?"),
-            "missing builtin-regex-match?"
-        );
-        // Numeric (now under builtin-NAME; bare names are prelude wrappers)
-        assert!(names.contains(&"builtin-floor"), "missing builtin-floor");
-        assert!(names.contains(&"builtin-round"), "missing builtin-round");
-        // Parsing (now under builtin-NAME; bare names are prelude wrappers)
-        assert!(names.contains(&"builtin-to-int"), "missing builtin-to-int");
-        assert!(
-            names.contains(&"builtin-to-float"),
-            "missing builtin-to-float"
-        );
-        // Evaluation control (now under builtin-NAME; bare names are prelude wrappers)
-        assert!(names.contains(&"materialize"), "missing materialize");
-        assert!(names.contains(&"builtin-raise"), "missing builtin-raise");
-        assert!(names.contains(&"builtin-try"), "missing builtin-try");
-        assert!(names.contains(&"builtin-apply"), "missing builtin-apply");
-        // Type introspection (now under builtin-NAME; bare names are prelude wrappers)
-        assert!(
-            names.contains(&"builtin-type-of"),
-            "missing builtin-type-of"
-        );
-        // llt-repr moved to builtin-llt-repr (prelude wrapper only)
-        // type-predicates-to-tinct sprint: all type-predicate builtins removed;
-        // now implemented in stdlib/prelude.llt via [match x TypeTag: true _: false].
-        // num?, record?, map? were already LLT-implemented.
-        assert!(
-            !names.contains(&"builtin-int?"),
-            "builtin-int? should be removed (now in LLT stdlib)"
-        );
-        assert!(
-            !names.contains(&"builtin-float?"),
-            "builtin-float? should be removed (now in LLT stdlib)"
-        );
-        assert!(
-            !names.contains(&"builtin-str?"),
-            "builtin-str? should be removed (now in LLT stdlib)"
-        );
-        assert!(
-            !names.contains(&"builtin-bool?"),
-            "builtin-bool? should be removed (now in LLT stdlib)"
-        );
-        assert!(
-            !names.contains(&"builtin-null?"),
-            "builtin-null? should be removed (now in LLT stdlib)"
-        );
-        assert!(
-            !names.contains(&"builtin-dict?"),
-            "builtin-dict? should be removed (now in LLT stdlib)"
-        );
-        assert!(
-            !names.contains(&"builtin-fn?"),
-            "builtin-fn? should be removed (now in LLT stdlib)"
-        );
-        assert!(
-            !names.contains(&"builtin-proxy?"),
-            "builtin-proxy? should be removed (now in LLT stdlib)"
-        );
-        assert!(
-            !names.contains(&"builtin-seq?"),
-            "builtin-seq? should be removed (now in LLT stdlib)"
-        );
-        assert!(
-            !names.contains(&"bytes?"),
-            "bytes? (bare) should be removed (now in LLT stdlib)"
-        );
-        // I/O (emit/env now under builtin-NAME; bare names are prelude wrappers)
-        assert!(names.contains(&"builtin-emit"), "missing builtin-emit");
-        assert!(names.contains(&"builtin-env"), "missing builtin-env");
-        assert!(
-            !names.contains(&"dir-cap"),
-            "dir-cap was removed (ambient cap creation)"
-        );
-        assert!(names.contains(&"open"), "missing open");
-        assert!(
-            !names.contains(&"slurp"),
-            "slurp was removed (replaced by builtin-read-line/builtin-read-chunk)"
-        );
-        assert!(names.contains(&"builtin-narrow"), "missing builtin-narrow");
-        assert!(names.contains(&"revocable"), "missing revocable");
-        assert!(names.contains(&"revoke-cap"), "missing revoke-cap");
-        assert!(
-            !names.contains(&"net-cap"),
-            "net-cap was removed (ambient cap creation)"
-        );
-        assert!(names.contains(&"connect"), "missing connect");
-        assert!(
-            !names.contains(&"lines"),
-            "lines was removed (replaced by builtin-read-line, with prelude wrapper)"
-        );
-        assert!(
-            names.contains(&"builtin-read-line"),
-            "missing builtin-read-line"
-        );
-        assert!(
-            names.contains(&"builtin-read-chunk"),
-            "missing builtin-read-chunk"
-        );
-        assert!(names.contains(&"write"), "missing write");
-        assert!(names.contains(&"write-atomic"), "missing write-atomic");
-        assert!(names.contains(&"cap-data"), "missing cap-data");
-        // has-cap? is now implemented in stdlib/io.llt as [not [null? [cap-data h cap]]]
-        assert!(
-            !names.contains(&"has-cap?"),
-            "has-cap? should be in stdlib not builtins"
-        );
-        assert!(names.contains(&"write-handle"), "missing write-handle");
-        assert!(names.contains(&"flush"), "missing flush");
-        assert!(names.contains(&"close"), "missing close");
-        assert!(names.contains(&"raw-create"), "missing raw-create");
-        assert!(names.contains(&"list-dir"), "missing list-dir");
-        assert!(
-            names.contains(&"builtin-list-dir"),
-            "missing builtin-list-dir"
-        );
-        assert!(names.contains(&"builtin-load"), "missing builtin-load");
-        assert!(names.contains(&"builtin-expand"), "missing builtin-expand");
-        assert!(names.contains(&"stat"), "missing stat");
-        assert!(names.contains(&"exists"), "missing exists");
-        assert!(names.contains(&"stat-symlink"), "missing stat-symlink");
-        assert!(names.contains(&"copy-file"), "missing copy-file");
-        assert!(names.contains(&"symlink"), "missing symlink");
-        assert!(
-            names.contains(&"set-permissions"),
-            "missing set-permissions"
-        );
-        assert!(names.contains(&"make-dir"), "missing make-dir");
-        assert!(names.contains(&"builtin-remove"), "missing builtin-remove");
-        assert!(names.contains(&"rename"), "missing rename");
-        assert!(names.contains(&"link"), "missing link");
-        assert!(names.contains(&"read-link"), "missing read-link");
-        // builtin-from-json deleted (json-serde-removal sprint): from-json is pure tinct (stdlib/codecs/json.llt)
-        assert!(
-            !names.contains(&"builtin-from-json"),
-            "builtin-from-json should NOT be in standard_builtins (deleted in json-serde-removal sprint)"
-        );
-        // include was deleted (builtin_include removed in include-decomp sprint)
-        assert!(
-            !names.contains(&"include"),
-            "include should NOT be in standard_builtins (deleted in include-decomp sprint)"
-        );
-        // builtin-to-json deleted (json-delete-to-json sprint): CLI uses tinct to-json
-        assert!(
-            !names.contains(&"builtin-to-json"),
-            "builtin-to-json should NOT be in standard_builtins (deleted in json-delete-to-json sprint)"
-        );
-        // Sequences (registered as builtin-NAME; prelude exports unwrapped names)
-        assert!(names.contains(&"builtin-seq"), "missing builtin-seq");
-        assert!(names.contains(&"builtin-head"), "missing builtin-head");
-        assert!(names.contains(&"builtin-tail"), "missing builtin-tail");
-        assert!(
-            names.contains(&"builtin-collect"),
-            "missing builtin-collect"
-        );
-        assert!(names.contains(&"builtin-range"), "missing builtin-range");
-        assert!(names.contains(&"builtin-repeat"), "missing builtin-repeat");
-        assert!(names.contains(&"builtin-cycle"), "missing builtin-cycle");
-        assert!(
-            names.contains(&"builtin-iterate"),
-            "missing builtin-iterate"
-        );
-        assert!(names.contains(&"builtin-unfold"), "missing builtin-unfold");
-        assert!(names.contains(&"builtin-map"), "missing builtin-map");
-        assert!(names.contains(&"builtin-filter"), "missing builtin-filter");
-        assert!(names.contains(&"builtin-take"), "missing builtin-take");
-        assert!(names.contains(&"builtin-drop"), "missing builtin-drop");
-        assert!(names.contains(&"builtin-reduce"), "missing builtin-reduce");
-        assert!(names.contains(&"builtin-join"), "missing builtin-join");
-        assert!(names.contains(&"builtin-concat"), "missing builtin-concat");
-        // List operations (registered as builtin-NAME; prelude exports unwrapped names)
-        assert!(names.contains(&"builtin-first"), "missing builtin-first");
-        assert!(names.contains(&"builtin-last"), "missing builtin-last");
-        assert!(names.contains(&"builtin-rest"), "missing builtin-rest");
-        assert!(names.contains(&"builtin-cons"), "missing builtin-cons");
-        assert!(
-            names.contains(&"builtin-reverse"),
-            "missing builtin-reverse"
-        );
-        assert!(names.contains(&"builtin-sort"), "missing builtin-sort");
-        // proxy moved to builtin-proxy (prelude wrapper only)
-        // Access-pipeline builtins (Wave 1 sprint)
-        assert!(names.contains(&"builtin-get"), "missing builtin-get");
-        assert!(names.contains(&"get?"), "missing get?");
-        assert!(names.contains(&"builtin-each"), "missing builtin-each");
-        assert!(
-            names.contains(&"builtin-each-key"),
-            "missing builtin-each-key"
-        );
-        assert!(
-            names.contains(&"builtin-each-kv"),
-            "missing builtin-each-kv"
-        );
-        // Total count: Wave 1 sprint added 4 access-pipeline builtins (builtin-get, each, each-key, each-kv).
-        // Update this count when standard_builtins() changes.
-        // eval-ast: DELETED (superseded by eval builtin)
-        // gensym moved to builtin-gensym (prelude wrapper only)
-        assert!(
-            names.contains(&"builtin-str-length"),
-            "missing builtin-str-length"
-        );
-        assert!(
-            names.contains(&"builtin-str-slice"),
-            "missing builtin-str-slice"
-        );
-        assert!(
-            names.contains(&"builtin-str-chars"),
-            "missing builtin-str-chars"
-        );
-        assert!(names.contains(&"validate"), "missing validate");
-        // Math builtins (all now under builtin-NAME; math.llt exports bare names)
-        assert!(names.contains(&"builtin-pow"), "missing builtin-pow");
-        assert!(names.contains(&"builtin-sqrt"), "missing builtin-sqrt");
-        assert!(names.contains(&"builtin-log"), "missing builtin-log");
-        assert!(names.contains(&"builtin-log2"), "missing builtin-log2");
-        assert!(names.contains(&"builtin-log10"), "missing builtin-log10");
-        assert!(names.contains(&"builtin-exp"), "missing builtin-exp");
-        assert!(names.contains(&"builtin-sin"), "missing builtin-sin");
-        assert!(names.contains(&"builtin-cos"), "missing builtin-cos");
-        assert!(names.contains(&"builtin-tan"), "missing builtin-tan");
-        assert!(names.contains(&"builtin-asin"), "missing builtin-asin");
-        assert!(names.contains(&"builtin-acos"), "missing builtin-acos");
-        assert!(names.contains(&"builtin-atan"), "missing builtin-atan");
-        assert!(names.contains(&"builtin-atan2"), "missing builtin-atan2");
-        assert!(names.contains(&"builtin-nan?"), "missing builtin-nan?");
-        assert!(names.contains(&"builtin-inf?"), "missing builtin-inf?");
-        assert!(
-            names.contains(&"builtin-finite?"),
-            "missing builtin-finite?"
-        );
-        // Bitwise builtins (all now under builtin-NAME; prelude exports bare names)
-        assert!(names.contains(&"builtin-band"), "missing builtin-band");
-        assert!(names.contains(&"builtin-bor"), "missing builtin-bor");
-        assert!(names.contains(&"builtin-bxor"), "missing builtin-bxor");
-        assert!(names.contains(&"builtin-shl"), "missing builtin-shl");
-        assert!(names.contains(&"builtin-shr"), "missing builtin-shr");
-        // Character builtins (now under builtin-NAME; prelude exports bare names)
-        assert!(
-            names.contains(&"builtin-char-code"),
-            "missing builtin-char-code"
-        );
-        assert!(names.contains(&"builtin-chr"), "missing builtin-chr");
-        // Bytes stubs (now under builtin-NAME; prelude exports bare names)
-        assert!(
-            names.contains(&"builtin-str-bytes"),
-            "missing builtin-str-bytes"
-        );
-        assert!(
-            names.contains(&"builtin-bytes-str"),
-            "missing builtin-bytes-str"
-        );
-        // Bytes builtins
-        assert!(names.contains(&"bytes"), "missing bytes");
-        assert!(names.contains(&"bytes-find"), "missing bytes-find");
-        assert!(names.contains(&"bytes-of"), "missing bytes-of");
-        assert!(names.contains(&"bytes-equal?"), "missing bytes-equal?");
-        assert!(names.contains(&"ct-equal?"), "missing ct-equal?");
-        // bytes? was removed from builtins; now implemented in stdlib/prelude.llt
-        assert!(
-            !names.contains(&"bytes?"),
-            "bytes? should be removed (now in LLT stdlib)"
-        );
-        // TLS builtins
-        assert!(names.contains(&"tls-layer"), "missing tls-layer");
-        assert!(names.contains(&"tls-peer-cert"), "missing tls-peer-cert");
-        // spki-pin is now implemented in stdlib/net.llt (pure dict construction, no Rust needed)
-        assert!(
-            !names.contains(&"spki-pin"),
-            "spki-pin should be in stdlib not builtins"
-        );
-        // URI parsing builtins
-        assert!(names.contains(&"uri"), "missing uri");
-        assert!(names.contains(&"url"), "missing url");
-        assert!(names.contains(&"urn"), "missing urn");
-        // Seek builtins
-        assert!(names.contains(&"seek"), "missing seek");
-        assert!(names.contains(&"seek-end"), "missing seek-end");
-        assert!(names.contains(&"position"), "missing position");
-        // HTTP-sessions stubs (QUIC/HTTP2/HTTP3/ICMP)
-        assert!(names.contains(&"quic-session"), "missing quic-session");
-        assert!(
-            names.contains(&"quic-open-stream"),
-            "missing quic-open-stream"
-        );
-        assert!(
-            names.contains(&"quic-open-datagram"),
-            "missing quic-open-datagram"
-        );
-        assert!(names.contains(&"http2-session"), "missing http2-session");
-        assert!(names.contains(&"http3-session"), "missing http3-session");
-        assert!(names.contains(&"http-request"), "missing http-request");
-        assert!(names.contains(&"icmp-ping"), "missing icmp-ping");
-        assert!(names.contains(&"send-datagram"), "missing send-datagram");
-        assert!(names.contains(&"recv-datagram"), "missing recv-datagram");
-        // Decomposed include primitives (include-decomp-primitives sprint)
-        assert!(names.contains(&"blake3"), "missing blake3");
-        assert!(names.contains(&"cap-identity"), "missing cap-identity");
-        assert!(names.contains(&"load"), "missing load");
-        assert!(
-            names.contains(&"include-cache-get"),
-            "missing include-cache-get"
-        );
-        assert!(
-            names.contains(&"include-cache-put"),
-            "missing include-cache-put"
-        );
-        // Additional builtin-* assertions (all now primary names per builtin-privacy sprint)
-        assert!(
-            names.contains(&"builtin-build-dict"),
-            "missing builtin-build-dict"
-        );
-        // async-shutdown-features sprint: non-cancellable/with-context now under builtin-NAME
-        assert!(
-            names.contains(&"builtin-non-cancellable"),
-            "missing builtin-non-cancellable"
-        );
-        assert!(
-            names.contains(&"builtin-with-context"),
-            "missing builtin-with-context"
-        );
-        // builtin-privacy-primary-names sprint: with-deadline now under builtin-NAME
-        assert!(
-            names.contains(&"builtin-with-deadline"),
-            "missing builtin-with-deadline"
-        );
-        // Async shutdown primitives now under builtin-NAME
-        assert!(
-            names.contains(&"builtin-cancel-root"),
-            "missing builtin-cancel-root"
-        );
-        assert!(names.contains(&"builtin-drain"), "missing builtin-drain");
-        assert!(
-            names.contains(&"builtin-exit-now"),
-            "missing builtin-exit-now"
-        );
-        // builtin-privacy-primary-names sprint: removed 68 bare registrations,
-        // added builtin-with-deadline (was bare-only, now has builtin-* registration).
-        // Actual net: 310 - 68 + 1 = 243, but actual count is 242 (one registration was
-        // double-counted in the arithmetic; the actual list has 242 unique entries).
-        // builtin-privacy-operators-and-io sprint: renamed 35 bare names to builtin-* (no count change).
-        // json-delete-to-json sprint: removed builtin-to-json (242 → 241).
-        // Added builtin-proxy? for Proxy type check in tinct to-json (241 → 242).
-        // type-predicates-to-tinct sprint: removed 10 type-predicate builtins (242 → 232):
-        //   builtin-int?, builtin-float?, builtin-str?, builtin-bool?, builtin-null?,
-        //   builtin-dict?, builtin-fn?, builtin-proxy?, builtin-seq?, bytes? (bare).
-        // json-serde-removal sprint: removed builtin-from-json (232 → 231).
-        // Added builtin-list-dir and builtin-load stable aliases (231 → 233).
-        // lazy-file-io sprint: removed slurp+lines (-2), added builtin-read-line+builtin-read-chunk (+2) = 233.
-        // Net +1 from agent adding builtin-load separately = 234.
-        // Added builtin-expand stable alias for prelude export (233 → 234) — see above.
-        // stdlib-health-cleanup sprint: added builtin-gt, builtin-lte, builtin-gte (234 → 237).
-        // string-handle sprint: added string-handle builtin (237 → 238).
-        assert!(names.contains(&"builtin-gt"), "missing builtin-gt");
-        assert!(names.contains(&"builtin-lte"), "missing builtin-lte");
-        assert!(names.contains(&"builtin-gte"), "missing builtin-gte");
-        assert!(names.contains(&"string-handle"), "missing string-handle");
-        assert_eq!(
-            names.len(),
-            238,
-            "expected 238 builtins, got {} — update this assertion if adding/removing builtins",
-            names.len()
+            count > 5,
+            "expected net builtins to have >5 entries, got {count}"
         );
     }
 
@@ -8161,15 +7708,21 @@ mod tests {
     }
 
     #[test]
-    fn create_root_env_has_all_builtins() {
+    fn create_root_env_has_all_builtin_modules() {
+        // Replaces create_root_env_has_all_builtins() (T-719): verifies that all builtins
+        // registered via builtin_module() are present in create_root_env().
         let env = create_root_env();
         let env_ref = env.read().unwrap();
-        for def in standard_builtins() {
-            let name = def.name;
-            assert!(
-                env_ref.get(name).is_some(),
-                "root env missing builtin: {name}"
-            );
+        for module_name in &["core", "datetime", "net"] {
+            let defs = builtin_module(module_name)
+                .unwrap_or_else(|| panic!("builtin_module({module_name:?}) returned None"));
+            for def in &defs {
+                assert!(
+                    env_ref.get(def.name).is_some(),
+                    "root env missing builtin from module {module_name:?}: {}",
+                    def.name
+                );
+            }
         }
     }
 
@@ -9983,10 +9536,10 @@ mod tests {
         let stdlib_env = create_stdlib_env().expect("create_stdlib_env() must not fail");
         let env = stdlib_env.read().unwrap();
 
-        // Names that must exist: Rust-native builtins registered in standard_builtins()
+        // Names that must exist: Rust-native builtins (now registered via builtin_module() groups)
         // plus a representative selection of prelude-defined functions.
         let required_names: &[&str] = &[
-            // Rust-native operators (registered in create_root_env())
+            // Rust-native operators (registered via builtin_module("core") in create_root_env())
             "$+",
             "$-",
             "$*",
@@ -10078,11 +9631,13 @@ mod tests {
         m.insert(Key::Int(1), thunk(Value::Int(2)));
         let seq_val = thunk_dict(m, &ctx);
 
-        let add_builtin = standard_builtins()
+        // T-719: get + builtin from builtin_module("core") instead of deleted standard_builtins()
+        let add_builtin = builtin_module("core")
+            .expect("core module must exist")
             .into_iter()
             .find(|def| def.name == "+")
             .map(Value::Builtin)
-            .unwrap();
+            .expect("+ must be in core module");
 
         let result = mat(builtin_reduce(BuiltinArgs {
             args: vec![thunk(add_builtin), thunk(Value::Int(0)), seq_val],

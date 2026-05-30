@@ -72,14 +72,19 @@ pub(crate) mod builtins_seq_reduce;
 pub(crate) mod builtins_seq_xform;
 // String builtins: str, split, replace, upper, lower, trim.
 pub(crate) mod builtins_string;
-// URI parsing builtins: uri, url, urn.
+// URI parsing builtins: uri, url, urn. (implementation lives here; accessed via builtins_net)
 pub(crate) mod builtins_uri;
+// Net builtins: connect, tls-layer, tls-peer-cert, quic-*, http*-session, http-request,
+// icmp-ping, and URI builtins (uri, url, urn). Re-exports from builtins_io.rs and builtins_uri.rs.
+pub(crate) mod builtins_net;
 // Bytes builtins: bytes, bytes-find, bytes-of, bytes-equal?, ct-equal?.
 pub(crate) mod builtins_bytes;
 // Date-time builtins: timestamps, durations, clock capabilities, timezones.
 pub(crate) mod builtins_datetime;
 // Async concurrency primitives: task, await, channel, send, recv.
 pub(crate) mod builtins_async;
+// Aggregator for the "core" native module: core_builtins() collects all split files.
+pub(crate) mod builtins_core;
 // $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
 // Macro expansion (pre-desugar AST transformation).

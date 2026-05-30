@@ -302,7 +302,7 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     let prelude_source = include_str!("../stdlib/prelude.llt");
 
     // Type-check prelude
-    let mut builtins_env = TypeEnv::with_builtins();
+    let mut builtins_env = crate::builtins::build_builtins_type_env();
     // Inject capability types into builtins_env for prelude type-checking
     builtins_env.insert("%cwd".to_string(), crate::types::Type::DirCap);
     builtins_env.insert("%libdir".to_string(), crate::types::Type::DirCap);
@@ -403,7 +403,7 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     }
 
     // Propagate capability type aliases from the builtins env to the user-facing env.
-    // These are registered in TypeEnv::with_builtins() (e.g. NetCap, DirCap, Handle, Url)
+    // These are registered in build_builtins_type_env() (e.g. NetCap, DirCap, Handle, Url)
     // and must be available for @NetCap / @DirCap / @Handle annotations in user code.
     // merge_env_bindings_into only copies value bindings; type aliases require this pass.
     let aliases: Vec<(String, TypeAlias)> = builtins_env
@@ -930,7 +930,7 @@ fn resolve_includes(
         // mirrors how `build_prelude_env_inner()` type-checks prelude.llt.
         // For %cwd files (user includes), use the accumulated user env as normal.
         let typecheck_env = if cap_name.as_deref() == Some("%libdir") {
-            let mut benv = TypeEnv::with_builtins();
+            let mut benv = crate::builtins::build_builtins_type_env();
             benv.insert("%cwd".to_string(), crate::types::Type::DirCap);
             benv.insert("%libdir".to_string(), crate::types::Type::DirCap);
             benv.inject_builtin_aliases();
@@ -1257,17 +1257,18 @@ mod tests {
             "filter should be in prelude exports"
         );
         //
-        // Raw network I/O builtins that are NOT exported by prelude should be absent.
-        // These test the boundary: user code should not see raw TCP/QUIC primitives.
-        // http2-session and connect are registered in standard_builtins() but not re-exported
-        // by prelude, so they should be absent in the user-facing TypeEnv.
+        // Prelude exports `connect` (as a wrapper around `builtin-connect`), so it SHOULD
+        // appear in the user-facing TypeEnv. Verify this.
+        assert!(
+            env.get("connect").is_some(),
+            "connect SHOULD be in prelude env — prelude.llt re-exports it as a wrapper"
+        );
+        // Raw net session builtins that are NOT exported by prelude should be absent.
+        // These test the boundary: user code should not see raw HTTP/QUIC session primitives
+        // that only net.llt exposes via explicit [include libdir "net.llt"].
         assert!(
             env.get("http2-session").is_none(),
-            "http2-session should NOT be in prelude env — raw I/O builtin not exported by prelude"
-        );
-        assert!(
-            env.get("connect").is_none(),
-            "connect should NOT be in prelude env — raw I/O builtin not exported by prelude"
+            "http2-session should NOT be in prelude env — requires explicit [include libdir \"net.llt\"]"
         );
     }
 
@@ -1380,7 +1381,7 @@ mod tests {
     /// file is silently ignored and the original environment is returned unmodified.
     #[test]
     fn resolve_includes_missing_file_returns_base() {
-        let base_env = Rc::new(TypeEnv::with_builtins());
+        let base_env = Rc::new(crate::builtins::build_builtins_type_env());
         let include_paths = vec![(
             Span::origin(),
             Some("%cwd".to_string()),

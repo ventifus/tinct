@@ -158,12 +158,17 @@ impl ReplSession {
             .map_err(|e| format!("cannot open current directory: {e}"))?;
         let type_stage_env =
             crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
+        // Each REPL session gets its own child arena (via clone_for_child) so thunks from
+        // this session don't accumulate in the cached stdlib parent arena.
+        let session_arena = Arc::new(std::sync::Mutex::new(
+            stdlib_arena.lock().unwrap().clone_for_child(),
+        ));
         let ctx = crate::eval::EvalContext::new_sharing_arena(
             base_dir,
             Arc::clone(&stdlib_env),
             type_stage_env,
             false,
-            stdlib_arena,
+            session_arena,
             std::collections::HashMap::new(), // REPL doesn't track macro injects yet
         );
 
@@ -988,27 +993,22 @@ mod tests {
 
     #[test]
     fn test_session_depth_exhaustion() {
-        // Return freed heap pages to the OS before spawning the large-stack thread.
-        // The test suite accumulates malloc fragments from previous tests; malloc_trim
-        // compacts the heap so the 128MB stack allocation doesn't push RSS over the
-        // container memory limit.
-        #[cfg(target_os = "linux")]
-        unsafe {
-            libc::malloc_trim(0);
-        }
-        // 256 levels of LLT recursion needs more than the default 8MB Rust stack.
+        // Non-tail-recursive function: the [+ 1 ...] wrapper prevents TCO,
+        // so the continuation stack grows until MAX_CONTINUATION_STACK (2048).
+        // Tail-recursive calls are optimized by the CEK machine and don't
+        // exhaust the continuation stack — that's correct TCO behavior.
         let result = std::thread::Builder::new()
-            .stack_size(128 * 1024 * 1024) // 128MB — debug-mode materialize() needs ~100MB at 256 levels
+            .stack_size(128 * 1024 * 1024) // 128MB — debug-mode needs large stack for deep continuations
             .spawn(|| {
                 let mut session = ReplSession::new().unwrap();
-                eval_input_sync(&mut session, "[f: [fn [let x] [f [+ x 1]]]]").unwrap();
+                eval_input_sync(&mut session, "[f: [fn [let x] [+ 1 [f [+ x 1]]]]]").unwrap();
                 eval_input_sync(&mut session, "[f 0]").unwrap_err()
             })
             .unwrap()
             .join()
             .unwrap();
         assert!(
-            result.contains("depth"),
+            result.contains("depth") || result.contains("limit"),
             "expected depth exhaustion error, got: {result}"
         );
     }

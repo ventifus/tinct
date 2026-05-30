@@ -495,7 +495,7 @@ The `EvalError` struct uses a structured `ErrorKind` enum with domain-specific v
 3. **Error codes** — stable identifiers (E001–E099) enable `tinct explain` and documentation linking.
 4. **Multi-format rendering** — error data is separated from presentation, supporting JSON output, LSP diagnostics, and format-independent rendering.
 
-The structured error model is fully implemented. The builtins in `standard_builtins()` and the corpus error tests comprehensively exercise the error variants.
+The structured error model is fully implemented. The builtins registered via `core_builtins()` / `builtin_module("core")` and the corpus error tests comprehensively exercise the error variants.
 
 ### Design: `ErrorKind` Enum
 

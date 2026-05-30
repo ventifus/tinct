@@ -1,6 +1,6 @@
 # What If: Unify Type-Checker and Runtime Type Judgments
 
-**State:** Accepted — 2026-05-25
+**State:** Completed — 2026-05-28
 
 What would it take to make tinct's static type-checking path and its runtime type-checking path derive from a single source of truth?
 

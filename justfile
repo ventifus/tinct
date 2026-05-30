@@ -19,10 +19,19 @@ project_name := "tinct"
 # Propagate TIMEOUT env var to podman as --timeout=N (seconds), or omit if unset
 timeout_flag := if env_var_or_default("TIMEOUT", "") != "" { " --timeout=" + env_var_or_default("TIMEOUT", "") } else { "" }
 
+# Container memory limit applied via --memory.
+# Also used to compute tinct's --max-memory (RLIMIT_AS) at 95% of this value.
+container_memory := "10g"
+
+# 95% of container_memory in bytes for tinct --max-memory.
+# 10g (binary) = 10 × 2³⁰ = 10,737,418,240 bytes; × 0.95 = 10,200,547,328.
+# Update both when container_memory changes.
+tinct_max_memory := "10200547328"
+
 # Common container run flags
 # target/ is a bind mount so binaries land on the host (symlinkable from ~/.local/bin)
 # cargo registry cache stays a named volume — no need to expose it on the host
-run_flags := "--rm --memory 10g" + timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
+run_flags := "--rm --memory " + container_memory + timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
 
 # Default recipe - show available commands
 default:
@@ -191,7 +200,7 @@ fmt:
 
 # Run a tinct file
 run-file FILE:
-    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- run {{FILE}}
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- run --max-memory {{tinct_max_memory}} {{FILE}}
 
 # Clean build artifacts
 clean:
@@ -285,13 +294,13 @@ version:
 versions:
     {{container}} run {{run_flags}} --network=host \
         -e RUST_VERSION={{rust_version}} \
-        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --bin tinct -- run --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 --profile samples/versions-spans.ndjson samples/versions.llt && cargo run --bin tinct -- run -i ndjson -o json --strict scripts/profile/trace.llt < samples/versions-spans.ndjson > samples/versions-trace.json"
+        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --bin tinct -- run --max-memory {{tinct_max_memory}} --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 --profile samples/versions-spans.ndjson samples/versions.llt && cargo run --bin tinct -- run --max-memory {{tinct_max_memory}} -i ndjson -o json --strict scripts/profile/trace.llt < samples/versions-spans.ndjson > samples/versions-trace.json"
 
 # Generate stdlib API reference from @[doc: "..."] annotations.
 # Writes one file per module to doc/lib/<module>.md.
 # The module index is now maintained manually in doc/11-stdlib.md §Supplemental Module Reference.
 docgen:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "mkdir -p doc/lib && cargo run --bin tinct -- run --strict --cap-fs docdir=doc/lib:w scripts/docgen.llt"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "mkdir -p doc/lib && cargo run --bin tinct -- run --max-memory {{tinct_max_memory}} --strict --cap-fs docdir=doc/lib:w scripts/docgen.llt"
 
 # Weave tinct code block outputs into doc/*.md (living documentation).
 # Updates the === out / === warn / === info sections inside each ```tinct block.
@@ -372,9 +381,9 @@ clean-all: clean-images clean-volumes
 
 # Profile a tinct file and show materialization hotspots
 profile FILE:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- run --profile /tmp/spans.ndjson {{FILE}} && cargo run --release -- run -i ndjson scripts/profile/materialize.llt < /tmp/spans.ndjson"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- run --max-memory {{tinct_max_memory}} --profile /tmp/spans.ndjson {{FILE}} && cargo run --release -- run --max-memory {{tinct_max_memory}} -i ndjson scripts/profile/materialize.llt < /tmp/spans.ndjson"
 
 # Profile a tinct file and output Perfetto trace
 profile-trace FILE:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- run --profile /tmp/spans.ndjson {{FILE}} && cargo run --release -- run -i ndjson -o json scripts/profile/trace.llt < /tmp/spans.ndjson"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- run --max-memory {{tinct_max_memory}} --profile /tmp/spans.ndjson {{FILE}} && cargo run --release -- run --max-memory {{tinct_max_memory}} -i ndjson -o json scripts/profile/trace.llt < /tmp/spans.ndjson"
 

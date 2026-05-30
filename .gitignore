@@ -27,6 +27,7 @@ Cargo.lock
 # Development scratch files (use .tmp/ instead)
 test_*.llt
 test_float_bug.rs
+samples/*json
 
 # Fuzzing (cargo-fuzz artifacts — corpus and crashes can be large)
 /fuzz/target/

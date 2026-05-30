@@ -1905,6 +1905,32 @@ fn extract_param_indices(
     Ok(indices)
 }
 
+/// T002 lint helper: returns true if `name` is a known Rust builtin name from any
+/// registered module (`builtin_module("core")`, `"datetime"`, `"net"`).
+///
+/// Used by the undefined-variable arm of `infer_surface_expr` to detect when user code
+/// directly references a Rust builtin name that was not exported by prelude.
+///
+/// Replaces `builtin_primary_names()` (deleted in T-719). The exclusion logic from the
+/// old `builtin_primary_names()` filter (operators, `get?`, builder ops) is preserved:
+/// those names still appear in `builtin_module("core")` but prelude exports them, so they
+/// won't reach the undefined-variable arm in normal user code anyway.
+///
+/// T-730 will refine this to use per-document `--- uses:` declarations instead.
+fn is_known_builtin_name(name: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+    static KNOWN: OnceLock<HashSet<String>> = OnceLock::new();
+    let known = KNOWN.get_or_init(|| {
+        ["core", "datetime", "net"]
+            .iter()
+            .flat_map(|m| crate::builtins::builtin_module(m).unwrap_or_default())
+            .map(|def| def.name.to_string())
+            .collect()
+    });
+    known.contains(name)
+}
+
 /// Type-infer a SurfaceNode expression.
 ///
 /// Natively walks SurfaceExpression variants without converting to Expr.
@@ -1951,11 +1977,10 @@ pub(crate) fn infer_surface_expr(
                         "  = note: `{name}` could not be defined because its definition at {}:{} failed type checking",
                         cause_span.start.line, cause_span.start.column
                     ));
-                } else if !state.in_prelude_load
-                    && crate::builtins::builtin_primary_names().contains(name.as_str())
-                {
+                } else if !state.in_prelude_load && is_known_builtin_name(name.as_str()) {
                     // T002: raw Rust builtin referenced directly in user code.
                     // The name is known to the runtime but was not exported by prelude.
+                    // T-730 will refine this to use per-document --- uses: declarations.
                     err.notes.push(format!(
                         "  = note: `{name}` is a Rust builtin that is not exported by the prelude\n  = help: use the prelude-exported wrapper instead, or load a stdlib module via [include %libdir \"<module>.llt\"]"
                     ));
@@ -2355,10 +2380,10 @@ pub(crate) fn infer_surface_expr(
                                     "  = note: `{name}` could not be defined because its definition at {}:{} failed type checking",
                                     cause_span.start.line, cause_span.start.column
                                 ));
-                            } else if !state.in_prelude_load
-                                && crate::builtins::builtin_primary_names().contains(name.as_str())
+                            } else if !state.in_prelude_load && is_known_builtin_name(name.as_str())
                             {
                                 // T002: raw Rust builtin referenced directly in user code.
+                                // T-730 will refine this to use per-document --- uses: declarations.
                                 err.notes.push(format!(
                                     "  = note: `{name}` is a Rust builtin that is not exported by the prelude\n  = help: use the prelude-exported wrapper instead, or load a stdlib module via [include %libdir \"<module>.llt\"]"
                                 ));
@@ -3551,7 +3576,7 @@ fn check_surface_expr(
 /// - Example: `[open cap path Readable Text]` → `Handle[__cap_flag_readable __cap_flag_text]`
 /// - Unknown flags or runtime-computed flag variables → `Handle(Unknown)` (gradual fallback)
 ///
-/// The capability row structure matches the singleton records registered in TypeEnv::with_builtins():
+/// The capability row structure matches the singleton records registered in build_builtins_type_env():
 /// each flag name maps to an empty record `Type::Record(Row { fields: {} })` keyed by
 /// `"__cap_flag_<name>"`. This matches the `cap_flag(name)` helper in type_env.rs.
 ///
@@ -6955,10 +6980,10 @@ mod tests {
         // Populate PRELUDE_INSTANCE_CACHE so Equatable/Comparable/Showable/etc. instances are
         // available via dynamic resolution (no longer hardcoded in satisfies_constraint).
         // We call build_prelude_env() for the side-effect of populating the cache, but still
-        // use TypeEnv::with_builtins() as the type environment so tests that override
+        // use build_builtins_type_env() as the type environment so tests that override
         // prelude functions (e.g., [and: [fn ...]] [has?: [fn ...]]) work correctly.
         let _ = crate::imports::build_prelude_env();
-        let env = Rc::new(TypeEnv::with_builtins());
+        let env = Rc::new(crate::builtins::build_builtins_type_env());
         let mut state = InferState::new();
         crate::imports::seed_infer_state_from_prelude_cache(&mut state);
         let mut table = TypeAnnotationTable::new();
@@ -7034,7 +7059,7 @@ mod tests {
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
         let mut env = if with_builtins {
-            Rc::new(TypeEnv::with_builtins())
+            Rc::new(crate::builtins::build_builtins_type_env())
         } else {
             Rc::new(TypeEnv::new())
         };
@@ -7936,13 +7961,13 @@ mod tests {
     #[test]
     fn test_builtin_range_returns_seq_int() {
         // Regression test for type-seq sprint: $builtin-range should return Type::Seq(Int).
-        // TypeEnv::with_builtins() registers builtin-range as Fn(Int, Int) -> Seq(Int).
+        // build_builtins_type_env() registers builtin-range as Fn(Int, Int) -> Seq(Int).
         // (The user-facing $range wrapper lives in prelude.llt and is not present here.)
         let input = "[result: [call $builtin-range 0 10]]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
 
-        let env = Rc::new(TypeEnv::with_builtins());
+        let env = Rc::new(crate::builtins::build_builtins_type_env());
         let mut state = InferState::new();
         let mut table = TypeAnnotationTable::new();
         let empty_pipeline = Type::Record(Row {
@@ -7978,12 +8003,12 @@ mod tests {
     #[test]
     fn test_builtin_keys_returns_seq_str() {
         // Regression test for type-seq sprint: $keys should return Type::Seq(Str).
-        // TypeEnv::with_builtins() registers keys as Fn(Record) -> Seq(Str).
+        // build_builtins_type_env() registers keys as Fn(Record) -> Seq(Str).
         let input = "[d: [a: 1  b: 2]]\n[result: [call $keys $d]]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
 
-        let mut env = Rc::new(TypeEnv::with_builtins());
+        let mut env = Rc::new(crate::builtins::build_builtins_type_env());
         let mut state = InferState::new();
         let mut table = TypeAnnotationTable::new();
         let mut named_types: HashMap<String, Type> = HashMap::new();
@@ -8029,12 +8054,12 @@ mod tests {
     #[test]
     fn test_builtin_plus_does_not_return_seq() {
         // Negative test: $+ returns a numeric type (Numeric a => a -> a -> a), not Seq.
-        // TypeEnv::with_builtins() registers + as Numeric a => a -> a -> a.
+        // build_builtins_type_env() registers + as Numeric a => a -> a -> a.
         let input = "[result: [call $+ 1 2]]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
 
-        let env = Rc::new(TypeEnv::with_builtins());
+        let env = Rc::new(crate::builtins::build_builtins_type_env());
         let mut state = InferState::new();
         let mut table = TypeAnnotationTable::new();
         let empty_pipeline = Type::Record(Row {
@@ -8163,13 +8188,13 @@ mod tests {
     #[test]
     fn test_builtin_collect_returns_record_not_seq() {
         // $builtin-collect returns Record (open row), not Seq.
-        // TypeEnv::with_builtins() registers builtin-collect as Fn(Seq(Any)) -> Record({...}).
+        // build_builtins_type_env() registers builtin-collect as Fn(Seq(Any)) -> Record({...}).
         // (The user-facing $collect and $range wrappers live in prelude.llt and are not present here.)
         let input = "[s: [call $builtin-range 0 5]]\n[result: [call $builtin-collect $s]]";
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
 
-        let mut env = Rc::new(TypeEnv::with_builtins());
+        let mut env = Rc::new(crate::builtins::build_builtins_type_env());
         let mut state = InferState::new();
         let mut table = TypeAnnotationTable::new();
         let mut named_types: HashMap<String, Type> = HashMap::new();
@@ -12333,7 +12358,7 @@ mod tests {
         // Covers: $builtin-seq, $builtin-repeat, $builtin-cycle, $builtin-iterate, $builtin-unfold, $take
         // NOTE: $builtin-seq takes (head, tail) args — it's the primitive Seq cons operation.
         // The user-facing wrappers ($seq, $range, $repeat, $cycle, $iterate, $unfold) live in
-        // prelude.llt and are not present when using TypeEnv::with_builtins() alone.
+        // prelude.llt and are not present when using build_builtins_type_env() alone.
         let input = r#"
             [some_seq: [call $builtin-range 0 10]]
             [seq_result: [call $builtin-seq 1 $some_seq]]
@@ -12346,7 +12371,7 @@ mod tests {
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);
 
-        let env = Rc::new(TypeEnv::with_builtins());
+        let env = Rc::new(crate::builtins::build_builtins_type_env());
         let mut state = InferState::new();
         let mut table = TypeAnnotationTable::new();
         let empty_pipeline = Type::Record(Row {
@@ -13144,7 +13169,7 @@ mod tests {
             .unwrap()
             .program;
         crate::desugar::desugar_surface_program(&mut program);
-        let env = Rc::new(TypeEnv::with_builtins());
+        let env = Rc::new(crate::builtins::build_builtins_type_env());
         let mut state = InferState::new();
         let mut type_map = TypeMap::new();
         let mut table = TypeAnnotationTable::new();
@@ -13472,7 +13497,7 @@ mod tests {
         // constructor patterns [Ok v] / [Error msg]. Top avoids triggering coverage
         // checking (infer_match only runs exhaustiveness when scrutinee is Type::Union).
         // See builtin-type-audit sprint: try return type (TODO.md)
-        let env = TypeEnv::with_builtins();
+        let env = crate::builtins::build_builtins_type_env();
         let scheme = env.get("try").expect("try builtin not found in env");
         match &scheme.body {
             Type::Function { ret, .. } => {
@@ -14489,7 +14514,7 @@ mod tests {
         // [builtin-get key map] where map : Map[String Int] should return Int.
         // Seed TypeEnv directly with m : Map[String Int] since there is no Map literal syntax in LLT.
         // Resolved by check_get special case: Map(K, V) → V without needing Indexable FD lookup.
-        let mut base_env = TypeEnv::with_builtins();
+        let mut base_env = crate::builtins::build_builtins_type_env();
         base_env.insert(
             "m".to_string(),
             Type::Map(Box::new(Type::Str), Box::new(Type::Int)),
@@ -14529,7 +14554,7 @@ mod tests {
         // [get? key map] where map : Map[String Int] should return Int|Null.
         // Note: get? uses the Indexable scheme directly (not check_get), so Map FD behavior
         // depends on lookup_mptc. Seed TypeEnv directly with m : Map[String Int].
-        let mut base_env = TypeEnv::with_builtins();
+        let mut base_env = crate::builtins::build_builtins_type_env();
         base_env.insert(
             "m".to_string(),
             Type::Map(Box::new(Type::Str), Box::new(Type::Int)),
@@ -14639,10 +14664,10 @@ mod tests {
     #[test]
     fn test_get_question_mark_registered_in_builtins() {
         // get? should be resolvable from the builtin environment without error.
-        let env = Rc::new(TypeEnv::with_builtins());
+        let env = Rc::new(crate::builtins::build_builtins_type_env());
         assert!(
             env.get("get?").is_some(),
-            "get? should be registered in TypeEnv::with_builtins()"
+            "get? should be registered in build_builtins_type_env()"
         );
     }
 
@@ -14756,7 +14781,7 @@ mod tests {
     #[test]
     fn test_split_returns_seq_str_type() {
         // split is typed as Seq[Str] in TypeEnv, not Unknown.
-        let env = Rc::new(TypeEnv::with_builtins());
+        let env = Rc::new(crate::builtins::build_builtins_type_env());
         let split_scheme = env.get("split").expect("split should be registered");
         match &split_scheme.body {
             Type::Function { ret, .. } => {
@@ -14789,7 +14814,7 @@ mod tests {
     fn test_get_union_distribution() {
         // [get "port" (A | B)] → type is A.port | B.port
         // Create two record types with different field types
-        let mut base_env = TypeEnv::with_builtins();
+        let mut base_env = crate::builtins::build_builtins_type_env();
         let mut fields_a = HashMap::new();
         fields_a.insert("port".to_string(), Type::Int);
         let mut fields_b = HashMap::new();
@@ -15323,9 +15348,11 @@ mod tests {
             .program;
         crate::desugar::desugar_surface_program(&mut program);
         let _ = crate::imports::build_prelude_env(); // populate PRELUDE_INSTANCE_CACHE
-                                                     // Use TypeEnv::with_builtins() so `+` (a builtin) is in scope.
-        let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-            typecheck_surface_program(&program, Rc::new(TypeEnv::with_builtins()));
+                                                     // Use build_builtins_type_env() so `+` (a builtin) is in scope.
+        let (errors, _type_map, _doc_map, _scheme_map, diagnostics) = typecheck_surface_program(
+            &program,
+            Rc::new(crate::builtins::build_builtins_type_env()),
+        );
 
         assert!(
             errors.is_empty(),
@@ -15772,7 +15799,7 @@ mod tests {
 
     // -- check_arithmetic / check_div: arithmetic return-type refinement --
 
-    /// Helper: type-check a single-document with `TypeEnv::with_builtins()` and return
+    /// Helper: type-check a single-document with `build_builtins_type_env()` and return
     /// the type of the named field. Panics if the field is absent or parsing fails.
     fn infer_with_builtins(input: &str, field: &str) -> Type {
         let env = doc_env_with_builtins(input);
@@ -15785,7 +15812,7 @@ mod tests {
     #[test]
     fn test_arithmetic_add_int_int_returns_int() {
         // [+ 1 2]: both args are IntLiteral → refined to Int (not Number)
-        // Uses TypeEnv::with_builtins() which has `+` with Addable FD.
+        // Uses build_builtins_type_env() which has `+` with Addable FD.
         let ty = infer_with_builtins("[x: [+ 1 2]]", "x");
         assert!(
             matches!(ty, Type::Int | Type::IntLiteral(_)),

@@ -1,6 +1,6 @@
 # Helper functions (scope chain -- not in output)
 [
-    double: [fn [let x] [* x 2]]
+    double: [fn [let x@Number] [* x 2]]
 ]
 
 # Data output

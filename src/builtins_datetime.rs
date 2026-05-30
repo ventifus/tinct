@@ -6,6 +6,7 @@
 //!
 //! See doc/whatif/lib-datetime.md for the full specification.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -15,8 +16,12 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::Span;
+use crate::builtins::builtin;
 use crate::error::{EvalError, EvalResult};
-use crate::value::{string_val, BuiltinArgs, ClockCapInner, Key, Thunk, Value};
+use crate::types::{Row, Type, TypeEnv};
+use crate::value::{
+    string_val, BuiltinArgs, BuiltinDef, ClockCapInner, Key, Strictness, Thunk, Value,
+};
 
 /// Helper to create a boxed EvalError from a message.
 fn dt_err(msg: impl Into<String>, span: Span) -> Box<EvalError> {
@@ -1357,4 +1362,366 @@ pub fn builtin_local_tz_name(
             call_span,
         )))
     })
+}
+
+/// Return all datetime `BuiltinDef` entries for the `"datetime"` module.
+///
+/// Called by `builtin_module("datetime")` in `src/builtins.rs` (wired in T-718).
+pub fn datetime_builtins() -> Vec<BuiltinDef> {
+    vec![
+        builtin!(
+            "parse-timestamp",
+            builtin_parse_timestamp,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "format-timestamp",
+            builtin_format_timestamp,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "timestamp->unix",
+            builtin_timestamp_to_unix,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "unix->timestamp",
+            builtin_unix_to_timestamp,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!("now", builtin_now, [Strictness::Seq], 1),
+        builtin!("fixed-clock", builtin_fixed_clock, [Strictness::Seq], 1),
+        builtin!(
+            "timestamp-add",
+            builtin_timestamp_add,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "timestamp-diff",
+            builtin_timestamp_diff,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "timestamp<?",
+            builtin_timestamp_lt,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "timestamp>?",
+            builtin_timestamp_gt,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "timestamp=?",
+            builtin_timestamp_eq,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "timestamp-year",
+            builtin_timestamp_year,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "timestamp-month",
+            builtin_timestamp_month,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!("timestamp-day", builtin_timestamp_day, [Strictness::Seq], 1),
+        builtin!(
+            "timestamp-hour",
+            builtin_timestamp_hour,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "timestamp-minute",
+            builtin_timestamp_minute,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "timestamp-second",
+            builtin_timestamp_second,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "timestamp-parts",
+            builtin_timestamp_parts,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "duration-nanos",
+            builtin_duration_nanos,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "duration-seconds",
+            builtin_duration_seconds,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "duration-minutes",
+            builtin_duration_minutes,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "duration-hours",
+            builtin_duration_hours,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!("duration-days", builtin_duration_days, [Strictness::Seq], 1),
+        builtin!(
+            "duration->seconds",
+            builtin_duration_to_seconds,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "duration->nanos",
+            builtin_duration_to_nanos,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "load-tz",
+            builtin_load_tz,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "timestamp-in-tz",
+            builtin_timestamp_in_tz,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!("local->timestamp", builtin_local_to_timestamp, [], 7),
+        builtin!("local-tz-name", builtin_local_tz_name, [Strictness::Seq], 1),
+    ]
+}
+
+/// Inject all datetime type signatures into `env`.
+///
+/// Provides the datetime section of the former `TypeEnv::with_builtins()` (deleted in T-722).
+/// Called by `type_env_module("datetime")` in `src/builtins.rs` and (via delegation)
+/// by `build_builtins_type_env()`. Add new datetime builtins here.
+pub fn datetime_type_env(env: &mut TypeEnv) {
+    // parse-timestamp: String → Timestamp
+    env.insert(
+        "parse-timestamp".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Timestamp),
+            variadic: false,
+        },
+    );
+    // format-timestamp: Timestamp → String
+    env.insert(
+        "format-timestamp".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Timestamp)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+        },
+    );
+    // timestamp->unix: Timestamp → Int
+    env.insert(
+        "timestamp->unix".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Timestamp)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+        },
+    );
+    // unix->timestamp: Int → Timestamp
+    env.insert(
+        "unix->timestamp".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int)],
+            ret: Box::new(Type::Timestamp),
+            variadic: false,
+        },
+    );
+    // now: ClockCap → Timestamp
+    env.insert(
+        "now".to_string(),
+        Type::Function {
+            params: vec![(None, Type::ClockCap)],
+            ret: Box::new(Type::Timestamp),
+            variadic: false,
+        },
+    );
+    // fixed-clock: Timestamp → ClockCap
+    env.insert(
+        "fixed-clock".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Timestamp)],
+            ret: Box::new(Type::ClockCap),
+            variadic: false,
+        },
+    );
+    // timestamp-add: Timestamp → Duration → Timestamp
+    env.insert(
+        "timestamp-add".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Timestamp), (None, Type::Duration)],
+            ret: Box::new(Type::Timestamp),
+            variadic: false,
+        },
+    );
+    // timestamp-diff: Timestamp → Timestamp → Duration
+    env.insert(
+        "timestamp-diff".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Timestamp), (None, Type::Timestamp)],
+            ret: Box::new(Type::Duration),
+            variadic: false,
+        },
+    );
+    // timestamp<?, timestamp>?, timestamp=?: Timestamp → Timestamp → Bool
+    for name in ["timestamp<?", "timestamp>?", "timestamp=?"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Timestamp), (None, Type::Timestamp)],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+            },
+        );
+    }
+    // timestamp-year, -month, -day, -hour, -minute, -second: Timestamp → Int
+    for name in [
+        "timestamp-year",
+        "timestamp-month",
+        "timestamp-day",
+        "timestamp-hour",
+        "timestamp-minute",
+        "timestamp-second",
+    ] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Timestamp)],
+                ret: Box::new(Type::Int),
+                variadic: false,
+            },
+        );
+    }
+    // timestamp-parts: Timestamp → {year: Int, month: Int, day: Int, hour: Int, minute: Int, second: Int}
+    env.insert(
+        "timestamp-parts".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Timestamp)],
+            ret: Box::new(Type::Record(Row {
+                fields: HashMap::from([
+                    ("year".to_string(), Type::Int),
+                    ("month".to_string(), Type::Int),
+                    ("day".to_string(), Type::Int),
+                    ("hour".to_string(), Type::Int),
+                    ("minute".to_string(), Type::Int),
+                    ("second".to_string(), Type::Int),
+                ]),
+            })),
+            variadic: false,
+        },
+    );
+    // duration-nanos, -seconds, -minutes, -hours, -days: Int → Duration
+    for name in [
+        "duration-nanos",
+        "duration-seconds",
+        "duration-minutes",
+        "duration-hours",
+        "duration-days",
+    ] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Int)],
+                ret: Box::new(Type::Duration),
+                variadic: false,
+            },
+        );
+    }
+    // duration->seconds, duration->nanos: Duration → Int
+    for name in ["duration->seconds", "duration->nanos"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Duration)],
+                ret: Box::new(Type::Int),
+                variadic: false,
+            },
+        );
+    }
+    // load-tz: DirCap → String → Timezone
+    env.insert(
+        "load-tz".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str)],
+            ret: Box::new(Type::Timezone),
+            variadic: false,
+        },
+    );
+    // timestamp-in-tz: Timestamp → Timezone → {year, month, day, hour, minute, second, offset-seconds, tz-name}
+    env.insert(
+        "timestamp-in-tz".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Timestamp), (None, Type::Timezone)],
+            ret: Box::new(Type::Record(Row {
+                fields: HashMap::from([
+                    ("year".to_string(), Type::Int),
+                    ("month".to_string(), Type::Int),
+                    ("day".to_string(), Type::Int),
+                    ("hour".to_string(), Type::Int),
+                    ("minute".to_string(), Type::Int),
+                    ("second".to_string(), Type::Int),
+                    ("offset-seconds".to_string(), Type::Int),
+                    ("tz-name".to_string(), Type::Str),
+                ]),
+            })),
+            variadic: false,
+        },
+    );
+    // local->timestamp: Int Int Int Int Int Int Timezone → Timestamp
+    env.insert(
+        "local->timestamp".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Int),
+                (None, Type::Int),
+                (None, Type::Int),
+                (None, Type::Int),
+                (None, Type::Int),
+                (None, Type::Int),
+                (None, Type::Timezone),
+            ],
+            ret: Box::new(Type::Timestamp),
+            variadic: false,
+        },
+    );
+    // local-tz-name: DirCap → String
+    env.insert(
+        "local-tz-name".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+        },
+    );
 }

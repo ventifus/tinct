@@ -360,7 +360,7 @@ The stdlib follows four organizing principles:
 
 ## Stdlib Function Reference
 
-**Architecture:** ~310 Rust-native builtins (with stable `builtin-*` aliases for shadowability) (see `standard_builtins()` in `src/builtins.rs`) + ~117 LLT-implemented functions in `stdlib/prelude.llt` (including shadowable wrappers). The shadowable wrappers are: operators (`<`, `=`, `+`, `-`, `*`, `/`, `if`), core collection ops (`filter`, `map`, `reduce`, `take`, `drop`), and sequence/list ops (`seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`), dict ops (`get`, `length`, `append`), and string ops (`str`, `split`, `str-length`, `str-slice`), plus `raise`. All wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`, `builtin-add`, `builtin-get`, `builtin-str`, `builtin-raise`). `collect-kv`, `str-repeat`, and `str-find` are pure LLT implementations in `prelude.llt` — shadowable via `$include` like other prelude functions, but with no `builtin-*` aliases.
+**Architecture:** ~310 Rust-native builtins (with stable `builtin-*` aliases for shadowability) (see `core_builtins()` in `src/builtins_core.rs`, dispatched via `builtin_module("core")`) + ~117 LLT-implemented functions in `stdlib/prelude.llt` (including shadowable wrappers). The shadowable wrappers are: operators (`<`, `=`, `+`, `-`, `*`, `/`, `if`), core collection ops (`filter`, `map`, `reduce`, `take`, `drop`), and sequence/list ops (`seq`, `head`, `tail`, `collect`, `range`, `repeat`, `cycle`, `iterate`, `unfold`, `join`, `concat`, `first`, `last`, `rest`, `cons`, `reverse`, `sort`), dict ops (`get`, `length`, `append`), and string ops (`str`, `split`, `str-length`, `str-slice`), plus `raise`. All wrapped builtins remain accessible via stable `builtin-*` aliases (e.g., `builtin-lt`, `builtin-eq`, `builtin-add`, `builtin-get`, `builtin-str`, `builtin-raise`). `collect-kv`, `str-repeat`, and `str-find` are pure LLT implementations in `prelude.llt` — shadowable via `$include` like other prelude functions, but with no `builtin-*` aliases.
 
 **Total stdlib API:** ~310 Rust builtins + ~140 prelude LLT functions = ~450 functions available after prelude load.
 
@@ -1268,7 +1268,7 @@ Named arguments are rejected (`reject_named`).
 
 ### Part 3: Typing Rules
 
-**Typing:** `merge` is typed via `TypeEnv::with_builtins()`, which registers precise builtin signatures. When an operand has type `TypeVar(α)`, the type checker falls back to T-MERGE-ANY (treating unresolved type variables as `Any`). With row-variable unification, option (a) — unifying `α` with a fresh open record type — becomes available.
+**Typing:** `merge` is typed via `build_builtins_type_env()` (in `builtins.rs`), which registers precise builtin signatures. When an operand has type `TypeVar(α)`, the type checker falls back to T-MERGE-ANY (treating unresolved type variables as `Any`). With row-variable unification, option (a) — unifying `α` with a fresh open record type — becomes available.
 
 **[T-MERGE] Closed records:**
 
