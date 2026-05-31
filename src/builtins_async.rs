@@ -832,12 +832,14 @@ pub(crate) fn builtin_try_send(
                         )
                     }
                     Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        // Channel closed: error
-                        Err(EvalError::user_error(
-                            "channel closed (receiver dropped)".to_string(),
+                        // Channel closed: return [Closed] variant, consistent with recv/select-once
+                        ok_val(
+                            Value::Variant {
+                                tag: "Closed".to_string(),
+                                payload: None,
+                            },
                             call_span,
                         )
-                        .into())
                     }
                 }
             }

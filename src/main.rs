@@ -1575,13 +1575,10 @@ fn run_eval(
         use std::io::BufWriter;
         use tinct::Value;
 
-        // Create stdout WriteHandle with default caps
+        // Create stdout WriteHandle with default caps (Bool(true) sentinel, consistent with stdin)
         let mut caps = HashMap::new();
-        caps.insert(
-            "Writable".to_string(),
-            Value::Dict(indexmap::IndexMap::new()),
-        );
-        caps.insert("Text".to_string(), Value::Dict(indexmap::IndexMap::new()));
+        caps.insert("Writable".to_string(), Value::Bool(true));
+        caps.insert("Text".to_string(), Value::Bool(true));
 
         let stdout_handle = Value::WriteHandle {
             caps,

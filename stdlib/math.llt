@@ -68,27 +68,27 @@ phi@[doc: "Golden ratio: (1 + sqrt(5)) / 2"]: 1.618033988749895
 # Example: [hypot 3 4] => 5.0
 # Example: [hypot 1 1] => 1.4142135623730951
 hypot@[doc: "Hypotenuse: Euclidean distance sqrt(a² + b²)"]: [fn@Float [let a@Number b@Number]
-    [builtin-sqrt [builtin-add [builtin-pow a 2] [builtin-pow b 2]]]]
+    [sqrt [+ [pow a 2] [pow b 2]]]]
 
 # Convert degrees to radians: d * (π / 180)
 # Type: (Number -> Float)
 # Example: [deg->rad 180] => 3.141592653589793
 # Example: [deg->rad 90] => 1.5707963267948966
 deg->rad@[doc: "Convert degrees to radians"]: [fn@Float [let d@Number]
-    [builtin-mul d [builtin-div pi 180.0]]]
+    [* d [/ pi 180.0]]]
 
 # Convert radians to degrees: r * (180 / π)
 # Type: (Number -> Float)
 # Example: [rad->deg 3.141592653589793] => 180.0
 # Example: [rad->deg 1.5707963267948966] => 90.0
 rad->deg@[doc: "Convert radians to degrees"]: [fn@Float [let r@Number]
-    [builtin-mul r [builtin-div 180.0 pi]]]
+    [* r [/ 180.0 pi]]]
 
 # Logarithm with arbitrary base: log_b(x) = ln(x) / ln(b)
 # Type: (Number -> Number -> Float)
 # Example: [log-base 2 8] => 3.0
 # Example: [log-base 10 100] => 2.0
 log-base@[doc: "Logarithm with arbitrary base"]: [fn@Float [let base@Number x@Number]
-    [builtin-div [builtin-log x] [builtin-log base]]]
+    [/ [log x] [log base]]]
 
 ]

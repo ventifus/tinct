@@ -14,8 +14,8 @@
 #   Dict:        length, keys
 #
 # Do NOT add [include %rust "..."] here — strings.llt uses prelude wrappers
-# only. The prelude exports operator wrappers ($+, $<, $if, etc.) wrapping
-# builtin-* primitives; use those instead of calling builtins directly.
+# only. Do NOT call builtin-* aliases directly — all builtins must go through
+# prelude-exported wrappers (str, str-slice, str-length, +, <, if, etc.).
 #
 # Naming conventions:
 #   str-*     String operations (e.g., str-at, str-length)
@@ -93,13 +93,13 @@ str-substr@[doc: "Extract substring starting at start with length len. Raises er
                 [raise [str "str-substr: end position " end " exceeds string length " str-len]]
                 [str-slice start end s]]]]]
 
-# str-length: number of Unicode codepoints in a string.
-# Re-exported here for callers that include strings.llt (prelude also exports it).
-# Type: (String -> Int)
-# Example: [str-length "hello"] => 5
-# Example: [str-length ""] => 0
-# Example: [str-length "cafe"] => 4  (counts codepoints, not bytes)
-str-length: builtin-str-length
+# str-reverse: reverse a string (codepoint-by-codepoint).
+# Type: (String -> String)
+# Example: [str-reverse "hello"] => "olleh"
+# Example: [str-reverse ""] => ""
+# Example: [str-reverse "a"] => "a"
+str-reverse@[doc: "Reverse a string codepoint-by-codepoint."]: [fn@String [let s@String]
+    [str-reverse-impl s 0 [str-length s] ""]]
 
 # ============================================================================
 # Case Conversion

@@ -30,31 +30,25 @@ csv-row: [fn@String [let row@Dict ks@Dict i@Int acc@String]
       [str acc [if [> i 0] "," ""] [csv-quote [str [get-or [get i ks] "" row]]]]]]]
 ]
 
-# Streaming contract implementation — sequential document expressions
+# Sequential document expression 1: set up shared state and start drain task.
+# SEQ-SCOPE forces this dict's entries, spawning the drain task before % is forced.
 [
-# 1. Reactive cell to hold column headers once the first record arrives.
-#    Starts empty; set atomically by whichever record arrives first.
-headers: [reactive-cell []]
+  headers: [reactive-cell []]
+  drain: [task
+    [loop-select [context]
+      [seq [ch: %emit  handler: [fn [let v]
+        [if [= [cell-get headers] []]
+          # First record: establish column order, write header + first row
+          [do [cell-set headers [keys v]]
+              [write-handle %stdout [csv-header [keys v] 0 ""]]
+              [write-handle %stdout [csv-row v [keys v] 0 ""]]]
+          # Subsequent records: use captured column order
+          [write-handle %stdout [csv-row v [cell-get headers] 0 ""]]]]] []]
+      identity]]
+]
 
-# 2. Start the drain task BEFORE forcing %, so lazy emits are consumed as
-#    they are triggered. The drain sets headers from the first record and
-#    writes the header line + every data row.
-drain: [task
-  [loop-select [context]
-    [seq [ch: %emit  handler: [fn [let v]
-      [if [= [cell-get headers] []]
-        # First record: establish column order, write header + first row
-        [do [cell-set headers [keys v]]
-            [write-handle %stdout [csv-header [keys v] 0 ""]]
-            [write-handle %stdout [csv-row v [keys v] 0 ""]]]
-        # Subsequent records: use captured column order
-        [write-handle %stdout [csv-row v [cell-get headers] 0 ""]]]]] []]
-    identity]]
-
-# 3. Force % to drive the lazy evaluation cascade.
-#    If % is a Seq, write each element as a data row.
-#    If % is a scalar dict, write it as a data row.
-#    Column headers are set by whichever record (from %emit or %) arrives first.
+# Sequential document expression 2: force % to drive the evaluation cascade.
+# SEQ-SCOPE forces this expression before [await drain].
 [if [seq? %]
   # % is a Seq — write each element as a row
   [reduce [fn [let _ x]
@@ -76,6 +70,5 @@ drain: [task
       [write-handle %stdout [csv-row % [cell-get headers] 0 ""]]]
     []]]
 
-# 4. Wait for drain to finish consuming any emits triggered during forcing.
+# Sequential document expression 3: await drain (last — materialized by CLI).
 [await drain]
-]

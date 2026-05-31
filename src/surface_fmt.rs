@@ -374,10 +374,11 @@ fn collect_free_vars(
             // If the pattern is a LetDecl, extract variable names from bindings
             if let CoreExpr::LetDecl { bindings } = &pattern.node {
                 for binding in bindings {
-                    // Each binding in a LetDecl should be a Str (the variable name)
-                    if let CoreExpr::Str(name) = &binding.node {
+                    if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
                         arm_scope.insert(name.clone());
                     } else if let CoreExpr::Annotated { name, .. } = &binding.node {
+                        arm_scope.insert(name.clone());
+                    } else if let CoreExpr::Var { name, .. } = &binding.node {
                         arm_scope.insert(name.clone());
                     }
                 }
@@ -479,9 +480,11 @@ fn collect_free_vars_in_quote(
 
             if let CoreExpr::LetDecl { bindings } = &pattern.node {
                 for binding in bindings {
-                    if let CoreExpr::Str(name) = &binding.node {
+                    if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
                         arm_scope.insert(name.clone());
                     } else if let CoreExpr::Annotated { name, .. } = &binding.node {
+                        arm_scope.insert(name.clone());
+                    } else if let CoreExpr::Var { name, .. } = &binding.node {
                         arm_scope.insert(name.clone());
                     }
                 }
@@ -885,9 +888,11 @@ fn core_expr_to_tinct(
 
             if let CoreExpr::LetDecl { bindings } = &pattern.node {
                 for binding in bindings {
-                    if let CoreExpr::Str(name) = &binding.node {
+                    if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
                         arm_scope.insert(name.clone());
                     } else if let CoreExpr::Annotated { name, .. } = &binding.node {
+                        arm_scope.insert(name.clone());
+                    } else if let CoreExpr::Var { name, .. } = &binding.node {
                         arm_scope.insert(name.clone());
                     }
                 }
@@ -1217,9 +1222,11 @@ fn core_expr_to_tinct_raw(
 
             if let CoreExpr::LetDecl { bindings } = &pattern.node {
                 for binding in bindings {
-                    if let CoreExpr::Str(name) = &binding.node {
+                    if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
                         arm_scope.insert(name.clone());
                     } else if let CoreExpr::Annotated { name, .. } = &binding.node {
+                        arm_scope.insert(name.clone());
+                    } else if let CoreExpr::Var { name, .. } = &binding.node {
                         arm_scope.insert(name.clone());
                     }
                 }

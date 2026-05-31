@@ -5,8 +5,9 @@
 #
 # Usage: [include %libdir "ast.llt"]
 
-# Meta builtins (builtin-variant, tag-of, etc.) are available from the
-# prelude which includes them in the stdlib env.
+# Prelude-exported wrappers (variant, variant-payload, tag-of, etc.) are
+# available from the prelude which is in the parent scope when ast.llt is
+# included. Do NOT call builtin-* aliases directly (T002).
 
 [
 
@@ -121,6 +122,6 @@ extracted name strings. For generating fresh names, use gensym instead.
 Example:
   [ident "counter"]  => Variant("VarRef", {name: "counter"})
 """] [let name@String]
-  [builtin-variant "VarRef" [name: name]]]
+  [variant-payload "VarRef" [name: name]]]
 
 ]

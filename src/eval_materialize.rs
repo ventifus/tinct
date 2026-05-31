@@ -4880,24 +4880,28 @@ mod deep_tests {
 // Utility functions for macro expansion
 // ============================================================================
 
-/// Recursively materialize all dict values and variant payloads in a value tree.
-/// Used to ensure macro expansion results are fully materialized before conversion
-/// back to AST via `dict_to_surface_node`, which expects all nested values to be
-/// pre-materialized (uses `try_get_materialized`).
+/// Recursively materialize all structured container values in a value tree.
+/// Used by `to-tinct` serialization and macro expansion to ensure nested values
+/// are pre-materialized before processing (e.g., `dict_to_surface_node` expects
+/// all values reachable via `try_get_materialized`).
 ///
-/// Unlike `deep_materialize` from earlier runtime versions, this function:
-/// - Only forces Dict values and Variant payloads (not Seq elements or other types)
-/// - Does NOT preserve sharing (may duplicate shared structures)
-/// - Uses cycle detection to avoid infinite loops
+/// Handles four container types:
+/// - `Value::Dict` — materializes all entry thunks and recurses into each value
+/// - `Value::Variant` — materializes the payload thunk and recurses into it
+/// - `Value::Seq` — materializes head/tail thunks and recurses into each
+/// - `Value::Overlay` — flattens and recurses (same as Dict path after flatten)
 ///
-/// If a non-Dict/Variant value is encountered at any level (Int, String, Function, etc.),
-/// the value is returned as-is without further recursion.
+/// All other value types (Int, String, Float, Bool, Function, Channel, ReactiveCell,
+/// BroadcastChannel, OneshotSender, OneshotReceiver, etc.) are returned as-is
+/// without further recursion.
 ///
-/// Sharing preservation is not guaranteed (may duplicate shared structures).
+/// Does NOT preserve sharing (may duplicate shared structures).
+/// Uses cycle detection to avoid infinite loops.
 ///
 /// Exported for use by:
 /// - `expand_macro_call_surface` in expand.rs (fallback path for Dict/Variant macro results)
 /// - `builtin_variant` in builtins_meta.rs (deep-materialize AST variant payloads)
+/// - `builtin_to_tinct` in stream.rs (pre-force all nested values before SCN serialization)
 pub(crate) async fn force_dict_tree(val: &Value, ctx: &Arc<EvalContext>) -> EvalResult<Value> {
     force_dict_tree_impl(val, ctx, &mut HashSet::new()).await
 }

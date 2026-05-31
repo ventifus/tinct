@@ -2623,13 +2623,24 @@ Note: Returns the tag string for a variant value. Errors on non-variant values.
 # Macro transformers (tmpl, do, begin, etc.) access it from stdlib_env directly.
 
 variant: [fn@[return: Variant  doc: """
-Construct a tagged variant value.
+Construct a unit tagged variant value (no payload).
 
 Example: [variant "Red"] => Variant(Red, Null)
-Example: [variant "Some"] => Variant(Some, Null)
+Example: [variant "SIGTERM"] => Variant(SIGTERM, Null)
 
-Note: Creates a variant with the given tag. Payload is always Null. Used for ADT-style tag values.
+Note: Creates a variant with the given tag and no payload. For variants with a
+payload dict, use variant-payload.
 """] [let tag] [builtin-variant tag]]
+
+variant-payload: [fn@[return: Variant  doc: """
+Construct a tagged variant value with a dict payload.
+
+Example: [variant-payload "VarRef" [name: "x"]] => Variant(VarRef, {name: "x"})
+Example: [variant-payload "Lagged" [count: 3]]  => Variant(Lagged, {count: 3})
+
+Note: Creates a variant with the given tag and a payload dict. For unit variants
+(no payload), use variant.
+"""] [let tag payload] [builtin-variant tag payload]]
 
 decimal: [fn@[return: Decimal  doc: """
 Convert to arbitrary-precision decimal.
@@ -2804,7 +2815,7 @@ eval-document-pipeline: [fn@[return: Any  doc: """
 Evaluate all documents in a file, threading % and named sections through each.
 
 initial: initial % value ([] for included files, caller % for CLI pipeline)
-docs: Dict (integer-keyed) of Document values from Program.documents
+docs: Seq of Document values from Program.documents
 include-dir: DirCap — injected as %include-dir so sub-includes work
 
 Skips [Type] stage documents. Returns the final document's result.
@@ -2984,6 +2995,7 @@ Action: [type [Fn@Null []]]
 # Channel recv/select result types
 Closed: [type [Closed]]
 Lagged: [type [Lagged count: Int]]
+Full:   [type [Full]]   # returned by try-send when channel buffer is full
 
 CancelHandle: [type [child-ctx: Context  cancel: Context]]  # return value of with-cancel; cancel is a Context, not an Action — fire with [cancel-task pair.cancel]
 # SelectSource: [type [let t r] [SelectSource  ch: [Channel t]  handler: [Fn@r [t]]]]  — one source entry for select-once
