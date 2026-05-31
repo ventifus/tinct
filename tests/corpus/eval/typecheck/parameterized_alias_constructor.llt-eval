@@ -1,0 +1,10 @@
+# Parameterized type alias used as constructor
+# The [type [let a b] Body] form creates a type alias with params
+# In value position, the constructor (e.g., Pair) is a nominal variant constructor
+
+Result: [type [let t e] [Ok value: t] | [Err error: e]]
+success: [Ok value: 42]
+failure: [Err error: "not found"]
+success.value
+=== out
+42
