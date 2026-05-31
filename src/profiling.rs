@@ -15,13 +15,10 @@ use indexmap::IndexMap;
 use crate::eval::EvalContext;
 use crate::value::{string_val, Key, Thunk, Value};
 
-/// Escape a string for JSON output.
+/// Format a string as a tinct string literal with proper escaping.
 ///
-/// Produces a JSON string literal including the surrounding double-quote characters.
-/// Escapes `"`, `\`, and the ASCII control characters `\n`, `\r`, `\t`, and C0 controls
-/// (U+0000–U+001F) using `\uXXXX` notation. All other bytes are passed through verbatim.
-fn json_escape_string(s: &str) -> String {
-    use std::fmt::Write as FmtWrite;
+/// Escapes `"`, `\`, `\n`, `\t`, `\r` and produces a quoted string.
+fn format_tinct_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -31,42 +28,12 @@ fn json_escape_string(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                // Other C0 control characters as \uXXXX
-                write!(out, "\\u{:04x}", c as u32).unwrap();
-            }
+            c if (c as u32) < 0x20 => out.push('\u{FFFD}'),
             c => out.push(c),
         }
     }
     out.push('"');
     out
-}
-
-/// Format an `Option<u64>` as a JSON value: a number or `null`.
-fn json_opt_u64(v: Option<u64>) -> String {
-    match v {
-        Some(n) => n.to_string(),
-        None => "null".to_string(),
-    }
-}
-
-/// Format an `Option<String>` as a JSON value: an escaped string or `null`.
-fn json_opt_string(v: Option<&str>) -> String {
-    match v {
-        Some(s) => json_escape_string(s),
-        None => "null".to_string(),
-    }
-}
-
-/// Format an `Option<(usize, usize)>` using the packed `line * 1_000_000 + col` encoding.
-///
-/// Matches the schema in doc/12-tooling.md and the old `packed_line_col::serialize` output.
-/// `None` serializes as `null`.
-fn json_packed_line_col(v: Option<(usize, usize)>) -> String {
-    match v {
-        Some((line, col)) => ((line * 1_000_000 + col) as i64).to_string(),
-        None => "null".to_string(),
-    }
 }
 
 /// A single span record: one thunk materialization with full timing and attribution data.
@@ -103,57 +70,194 @@ pub struct SpanRecord {
 }
 
 impl SpanRecord {
-    /// Serialize this span record to a compact single-line JSON object string.
+    /// Serialize this span record to a tinct SCN dict format (one-line).
     ///
-    /// The output matches what `serde_json::to_string(span)` produced: a single-line
-    /// JSON object with kebab-case keys. Used for NDJSON profile output (one line per span).
-    pub fn to_ndjson_line(&self) -> String {
-        // Field order matches SpanRecord struct declaration order; kebab-case names match
-        // the old #[serde(rename_all = "kebab-case")] / #[serde(rename = "builtin")] attributes.
+    /// Produces a dict with kebab-case keys matching the schema in doc/12-tooling.md.
+    /// Empty optional fields serialize as `[]` (tinct null/empty-dict).
+    /// Used for LLT-stream profiling output (one dict per line).
+    pub fn to_tinct_line(&self) -> String {
+        // Helper to format Option<String> as tinct string or [] (tinct null/absent sentinel)
+        fn opt_str(s: &Option<String>) -> String {
+            match s {
+                Some(v) => format_tinct_string(v),
+                None => "[]".to_string(),
+            }
+        }
+
+        // Helper to format Option<u64> as tinct int or []
+        fn opt_u64(v: Option<u64>) -> String {
+            match v {
+                Some(n) => n.to_string(),
+                None => "[]".to_string(),
+            }
+        }
+
+        // Helper to format Option<(line,col)> as packed int or 0
+        fn opt_linecol(v: Option<(usize, usize)>) -> String {
+            match v {
+                Some((line, col)) => ((line * 1000000 + col) as i64).to_string(),
+                None => "0".to_string(),
+            }
+        }
+
+        // Build the dict in tinct SCN format with kebab-case keys
         format!(
-            r#"{{"id":{id},"materialize-parent":{mp},"create-parent":{cp},"create-time-us":{ctu},"source-file":{sf},"source-start":{ss},"source-end":{se},"source-text":{st},"builtin":{bn},"origin-builtin":{ob},"start-us":{su},"end-us":{eu},"stall-us":{stu},"stall-kind":{sk}}}"#,
-            id = self.id,
-            mp = json_opt_u64(self.materialize_parent),
-            cp = json_opt_u64(self.create_parent),
-            ctu = self.create_time_us,
-            sf = json_opt_string(self.source_file.as_deref()),
-            ss = json_packed_line_col(self.source_start),
-            se = json_packed_line_col(self.source_end),
-            st = json_opt_string(self.source_text.as_deref()),
-            bn = json_opt_string(self.builtin_name.as_deref()),
-            ob = json_opt_string(self.origin_builtin.as_deref()),
-            su = self.start_us,
-            eu = self.end_us,
-            stu = self.stall_us,
-            sk = json_opt_string(self.stall_kind.as_deref()),
+            "[id: {}  materialize-parent: {}  create-parent: {}  create-time-us: {}  source-file: {}  source-start: {}  source-end: {}  source-text: {}  builtin: {}  origin-builtin: {}  start-us: {}  end-us: {}  stall-us: {}  stall-kind: {}]",
+            self.id,
+            opt_u64(self.materialize_parent),
+            opt_u64(self.create_parent),
+            self.create_time_us,
+            opt_str(&self.source_file),
+            opt_linecol(self.source_start),
+            opt_linecol(self.source_end),
+            opt_str(&self.source_text),
+            opt_str(&self.builtin_name),
+            opt_str(&self.origin_builtin),
+            self.start_us,
+            self.end_us,
+            self.stall_us,
+            opt_str(&self.stall_kind),
         )
     }
 
-    /// Serialize this span record to a pretty-printed JSON object with 4-space indentation.
+    /// Convert this span record to a tinct Value dict.
     ///
-    /// Intended to be embedded inside a JSON array indented at 2 spaces, so fields are
-    /// placed at 4 spaces to match `serde_json::to_string_pretty` output for an array of
-    /// objects. Used as a building block for `snapshot_to_json_string`.
-    fn to_json_object_pretty(&self) -> String {
-        // 4-space indented fields (2 spaces for array item + 2 spaces for object fields),
-        // matching serde_json::to_string_pretty applied to an array of SpanRecord objects.
-        format!(
-            "  {{\n    \"id\": {id},\n    \"materialize-parent\": {mp},\n    \"create-parent\": {cp},\n    \"create-time-us\": {ctu},\n    \"source-file\": {sf},\n    \"source-start\": {ss},\n    \"source-end\": {se},\n    \"source-text\": {st},\n    \"builtin\": {bn},\n    \"origin-builtin\": {ob},\n    \"start-us\": {su},\n    \"end-us\": {eu},\n    \"stall-us\": {stu},\n    \"stall-kind\": {sk}\n  }}",
-            id = self.id,
-            mp = json_opt_u64(self.materialize_parent),
-            cp = json_opt_u64(self.create_parent),
-            ctu = self.create_time_us,
-            sf = json_opt_string(self.source_file.as_deref()),
-            ss = json_packed_line_col(self.source_start),
-            se = json_packed_line_col(self.source_end),
-            st = json_opt_string(self.source_text.as_deref()),
-            bn = json_opt_string(self.builtin_name.as_deref()),
-            ob = json_opt_string(self.origin_builtin.as_deref()),
-            su = self.start_us,
-            eu = self.end_us,
-            stu = self.stall_us,
-            sk = json_opt_string(self.stall_kind.as_deref()),
-        )
+    /// Produces a dict with kebab-case keys matching the schema in doc/12-tooling.md.
+    /// Empty optional fields use Value::Dict(IndexMap::new()) — the tinct empty-dict sentinel.
+    /// Used for converting span sequences to Value::Seq for final output.
+    pub fn to_value(&self, ctx: &Arc<EvalContext>) -> Value {
+        /// Allocate a materialized thunk into the arena and return the ThunkId.
+        fn alloc(val: Value, ctx: &Arc<EvalContext>) -> crate::value::ThunkId {
+            use crate::ast::Span;
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, Span::origin())))
+        }
+
+        /// The tinct empty-value sentinel (empty dict = `[]`).
+        fn empty() -> Value {
+            Value::Dict(IndexMap::new())
+        }
+
+        let mut entries: IndexMap<Key, crate::value::ThunkId> = IndexMap::new();
+
+        entries.insert(
+            Key::String("id".into()),
+            alloc(Value::Int(self.id as i64), ctx),
+        );
+
+        entries.insert(
+            Key::String("materialize-parent".into()),
+            alloc(
+                self.materialize_parent
+                    .map(|id| Value::Int(id as i64))
+                    .unwrap_or_else(empty),
+                ctx,
+            ),
+        );
+
+        entries.insert(
+            Key::String("create-parent".into()),
+            alloc(
+                self.create_parent
+                    .map(|id| Value::Int(id as i64))
+                    .unwrap_or_else(empty),
+                ctx,
+            ),
+        );
+
+        entries.insert(
+            Key::String("create-time-us".into()),
+            alloc(Value::Int(self.create_time_us as i64), ctx),
+        );
+
+        entries.insert(
+            Key::String("source-file".into()),
+            alloc(
+                self.source_file
+                    .clone()
+                    .map(|f| string_val(&f))
+                    .unwrap_or_else(empty),
+                ctx,
+            ),
+        );
+
+        entries.insert(
+            Key::String("source-start".into()),
+            alloc(
+                self.source_start
+                    .map(|(line, col)| Value::Int((line * 1000000 + col) as i64))
+                    .unwrap_or(Value::Int(0)),
+                ctx,
+            ),
+        );
+
+        entries.insert(
+            Key::String("source-end".into()),
+            alloc(
+                self.source_end
+                    .map(|(line, col)| Value::Int((line * 1000000 + col) as i64))
+                    .unwrap_or(Value::Int(0)),
+                ctx,
+            ),
+        );
+
+        entries.insert(
+            Key::String("source-text".into()),
+            alloc(
+                self.source_text
+                    .clone()
+                    .map(|t| string_val(&t))
+                    .unwrap_or_else(empty),
+                ctx,
+            ),
+        );
+
+        entries.insert(
+            Key::String("builtin".into()),
+            alloc(
+                self.builtin_name
+                    .clone()
+                    .map(|b| string_val(&b))
+                    .unwrap_or_else(empty),
+                ctx,
+            ),
+        );
+
+        entries.insert(
+            Key::String("origin-builtin".into()),
+            alloc(
+                self.origin_builtin
+                    .clone()
+                    .map(|o| string_val(&o))
+                    .unwrap_or_else(empty),
+                ctx,
+            ),
+        );
+
+        entries.insert(
+            Key::String("start-us".into()),
+            alloc(Value::Int(self.start_us as i64), ctx),
+        );
+        entries.insert(
+            Key::String("end-us".into()),
+            alloc(Value::Int(self.end_us as i64), ctx),
+        );
+        entries.insert(
+            Key::String("stall-us".into()),
+            alloc(Value::Int(self.stall_us as i64), ctx),
+        );
+
+        entries.insert(
+            Key::String("stall-kind".into()),
+            alloc(
+                self.stall_kind
+                    .clone()
+                    .map(|k| string_val(&k))
+                    .unwrap_or_else(empty),
+                ctx,
+            ),
+        );
+
+        Value::Dict(entries)
     }
 }
 
@@ -301,7 +405,7 @@ impl ProfilingCollector {
     /// Returns spans added since the last drain, advancing the cursor.
     ///
     /// Each call returns only the spans appended after the previous call to `drain_new`.
-    /// This is used by the NDJSON background flush thread to write new spans incrementally
+    /// This is used by the LLT-stream background flush thread to write new spans incrementally
     /// without re-serializing spans that have already been written.
     pub fn drain_new(&mut self) -> Vec<SpanRecord> {
         let new_spans = self.spans[self.drain_cursor..].to_vec();
@@ -313,22 +417,6 @@ impl ProfilingCollector {
     /// This allows extracting profiling data without consuming the collector.
     pub fn extract_spans(&mut self) -> Vec<SpanRecord> {
         std::mem::take(&mut self.spans)
-    }
-
-    /// Serialize a snapshot of spans directly to a pretty-printed JSON string.
-    ///
-    /// Unlike `spans_to_value`, this method does NOT require an `EvalContext` and is
-    /// safe to call from a background thread. The output format is a JSON array of
-    /// objects with 2-space indentation and kebab-case keys matching the schema in
-    /// doc/12-tooling.md.
-    ///
-    /// Used by the background flush thread and the SIGINT final-flush path.
-    pub fn snapshot_to_json_string(spans: &[SpanRecord]) -> String {
-        if spans.is_empty() {
-            return "[]".to_string();
-        }
-        let items: Vec<String> = spans.iter().map(|s| s.to_json_object_pretty()).collect();
-        format!("[\n{}\n]", items.join(",\n"))
     }
 
     /// Convert all collected spans to a tinct Value::Seq of dicts.
@@ -358,118 +446,7 @@ impl ProfilingCollector {
         let mut acc: Value = empty();
 
         for s in spans.into_iter().rev() {
-            let mut entries: IndexMap<Key, crate::value::ThunkId> = IndexMap::new();
-
-            entries.insert(
-                Key::String("id".into()),
-                alloc(Value::Int(s.id as i64), ctx),
-            );
-
-            entries.insert(
-                Key::String("materialize-parent".into()),
-                alloc(
-                    s.materialize_parent
-                        .map(|id| Value::Int(id as i64))
-                        .unwrap_or_else(empty),
-                    ctx,
-                ),
-            );
-
-            entries.insert(
-                Key::String("create-parent".into()),
-                alloc(
-                    s.create_parent
-                        .map(|id| Value::Int(id as i64))
-                        .unwrap_or_else(empty),
-                    ctx,
-                ),
-            );
-
-            entries.insert(
-                Key::String("create-time-us".into()),
-                alloc(Value::Int(s.create_time_us as i64), ctx),
-            );
-
-            entries.insert(
-                Key::String("source-file".into()),
-                alloc(
-                    s.source_file
-                        .map(|f| string_val(&f))
-                        .unwrap_or_else(|| string_val("")),
-                    ctx,
-                ),
-            );
-
-            entries.insert(
-                Key::String("source-start".into()),
-                alloc(
-                    s.source_start
-                        .map(|(line, col)| Value::Int((line * 1000000 + col) as i64))
-                        .unwrap_or(Value::Int(0)),
-                    ctx,
-                ),
-            );
-
-            entries.insert(
-                Key::String("source-end".into()),
-                alloc(
-                    s.source_end
-                        .map(|(line, col)| Value::Int((line * 1000000 + col) as i64))
-                        .unwrap_or(Value::Int(0)),
-                    ctx,
-                ),
-            );
-
-            entries.insert(
-                Key::String("source-text".into()),
-                alloc(
-                    s.source_text
-                        .map(|t| string_val(&t))
-                        .unwrap_or_else(|| string_val("")),
-                    ctx,
-                ),
-            );
-
-            entries.insert(
-                Key::String("builtin".into()),
-                alloc(
-                    s.builtin_name.map(|b| string_val(&b)).unwrap_or_else(empty),
-                    ctx,
-                ),
-            );
-
-            entries.insert(
-                Key::String("origin-builtin".into()),
-                alloc(
-                    s.origin_builtin
-                        .map(|o| string_val(&o))
-                        .unwrap_or_else(empty),
-                    ctx,
-                ),
-            );
-
-            entries.insert(
-                Key::String("start-us".into()),
-                alloc(Value::Int(s.start_us as i64), ctx),
-            );
-            entries.insert(
-                Key::String("end-us".into()),
-                alloc(Value::Int(s.end_us as i64), ctx),
-            );
-            entries.insert(
-                Key::String("stall-us".into()),
-                alloc(Value::Int(s.stall_us as i64), ctx),
-            );
-
-            entries.insert(
-                Key::String("stall-kind".into()),
-                alloc(
-                    s.stall_kind.map(|k| string_val(&k)).unwrap_or_else(empty),
-                    ctx,
-                ),
-            );
-
-            let dict = Value::Dict(entries);
+            let dict = s.to_value(ctx);
             let head_id = alloc(dict, ctx);
             let tail_id = alloc(acc, ctx);
             acc = Value::Seq {
@@ -612,5 +589,68 @@ mod tests {
         assert_eq!(span.stall_us, 1500);
         // First stall kind wins
         assert_eq!(span.stall_kind.as_deref(), Some("io"));
+    }
+
+    #[test]
+    fn test_to_tinct_line() {
+        let span = SpanRecord {
+            id: 42,
+            materialize_parent: Some(10),
+            create_parent: Some(5),
+            create_time_us: 1000,
+            source_file: Some("test.llt".to_string()),
+            source_start: Some((10, 5)),
+            source_end: Some((10, 20)),
+            source_text: Some("[+ 1 2]".to_string()),
+            builtin_name: None,
+            origin_builtin: None,
+            start_us: 2000,
+            end_us: 3000,
+            stall_us: 100,
+            stall_kind: Some("io".to_string()),
+        };
+
+        let line = span.to_tinct_line();
+
+        // Verify the line is a valid tinct dict with kebab-case keys
+        assert!(line.starts_with("[id: 42"));
+        assert!(line.contains("materialize-parent: 10"));
+        assert!(line.contains("create-parent: 5"));
+        assert!(line.contains("source-file: \"test.llt\""));
+        assert!(line.contains("source-text: \"[+ 1 2]\""));
+        assert!(line.contains("stall-kind: \"io\""));
+        assert!(line.ends_with("]"));
+    }
+
+    #[test]
+    fn test_to_tinct_line_with_empty_fields() {
+        let span = SpanRecord {
+            id: 1,
+            materialize_parent: None,
+            create_parent: None,
+            create_time_us: 0,
+            source_file: None,
+            source_start: None,
+            source_end: None,
+            source_text: None,
+            builtin_name: Some("builtin-map".to_string()),
+            origin_builtin: None,
+            start_us: 0,
+            end_us: 100,
+            stall_us: 0,
+            stall_kind: None,
+        };
+
+        let line = span.to_tinct_line();
+
+        // Verify empty optional fields serialize correctly
+        // All absent optionals use [] (tinct null/absent sentinel), including string-typed fields.
+        assert!(line.contains("materialize-parent: []"));
+        assert!(line.contains("create-parent: []"));
+        assert!(line.contains("source-file: []"));
+        assert!(line.contains("source-text: []"));
+        assert!(line.contains("builtin: \"builtin-map\""));
+        assert!(line.contains("origin-builtin: []"));
+        assert!(line.contains("stall-kind: []"));
     }
 }

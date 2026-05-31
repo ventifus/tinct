@@ -2521,20 +2521,54 @@ pub(crate) async fn apply_cont(
                             }
                         }
                         Value::Program { program: prog, .. } => {
-                            // Program.documents → integer-keyed list of Value::Document
+                            // Program.documents → LLT Seq linked list of Value::Document
                             let val = match field_str.as_str() {
                                 "documents" => {
-                                    let mut map = indexmap::IndexMap::new();
-                                    for (i, doc_spanned) in prog.documents.iter().enumerate() {
-                                        let doc_val = Value::Document(std::sync::Arc::new(
-                                            doc_spanned.node.clone(),
-                                        ));
-                                        let tid = ctx.alloc_thunk(Arc::new(
-                                            Thunk::new_materialized(doc_val, access_span.clone()),
-                                        ));
-                                        map.insert(crate::value::Key::Int(i as i64), tid);
+                                    if prog.documents.is_empty() {
+                                        Value::Dict(indexmap::IndexMap::new())
+                                    } else {
+                                        // End-of-Seq sentinel
+                                        let mut tail_id =
+                                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                                Value::Dict(indexmap::IndexMap::new()),
+                                                access_span.clone(),
+                                            )));
+                                        // Wrap elements from second-to-last down to index 1
+                                        for doc_spanned in prog
+                                            .documents
+                                            .iter()
+                                            .rev()
+                                            .take(prog.documents.len() - 1)
+                                        {
+                                            let head_id =
+                                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                                    Value::Document(std::sync::Arc::new(
+                                                        doc_spanned.node.clone(),
+                                                    )),
+                                                    access_span.clone(),
+                                                )));
+                                            tail_id =
+                                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                                    Value::Seq {
+                                                        head: head_id,
+                                                        tail: tail_id,
+                                                    },
+                                                    access_span.clone(),
+                                                )));
+                                        }
+                                        // First document is the outermost head
+                                        let head_id =
+                                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                                Value::Document(std::sync::Arc::new(
+                                                    prog.documents[0].node.clone(),
+                                                )),
+                                                access_span.clone(),
+                                            )));
+                                        Value::Seq {
+                                            head: head_id,
+                                            tail: tail_id,
+                                        }
                                     }
-                                    Value::Dict(map)
                                 }
                                 _ => Value::Dict(indexmap::IndexMap::new()),
                             };

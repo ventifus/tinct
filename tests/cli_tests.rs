@@ -313,17 +313,15 @@ fn eval_format_llt_float() {
 }
 
 // ---------------------------------------------------------------------------
-// --eval flag (shallow materialization)
+// Deep materialization with output formatters
 // ---------------------------------------------------------------------------
 
 #[test]
-fn eval_flag_deep_materialize() {
-    // With --eval and -o json, the -o branch is taken; --eval is a no-op in this path.
+fn deep_materialize_json() {
     // Deep materialization is handled internally by to-json (codecs/json.llt), not by main.rs.
-    // This test verifies that --eval + -o json together produce correct JSON output.
-    let (path, _dir) = write_temp_llt("eval_flag_deep", "[a: [b: [c: 42]]]");
+    let (path, _dir) = write_temp_llt("deep_json", "[a: [b: [c: 42]]]");
     let output = Command::new(tinct_bin())
-        .args(["run", "--eval", "-o", "json", path.to_str().unwrap()])
+        .args(["run", "-o", "json", path.to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
 
@@ -338,10 +336,10 @@ fn eval_flag_deep_materialize() {
 }
 
 #[test]
-fn eval_flag_with_llt_format() {
-    let (path, _dir) = write_temp_llt("eval_flag_llt", "[x: 1]");
+fn output_llt_format() {
+    let (path, _dir) = write_temp_llt("output_llt", "[x: 1]");
     let output = Command::new(tinct_bin())
-        .args(["run", "--eval", "-o", "llt", path.to_str().unwrap()])
+        .args(["run", "-o", "llt", path.to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
 
@@ -1121,11 +1119,7 @@ fn include_isolation_no_caller_scope() {
     fs::write(dir.path().join("main.llt"), main_src).unwrap();
 
     let output = Command::new(tinct_bin())
-        .args([
-            "run",
-            "--eval",
-            dir.path().join("main.llt").to_str().unwrap(),
-        ])
+        .args(["run", dir.path().join("main.llt").to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
 
@@ -1143,7 +1137,7 @@ fn include_isolation_no_caller_scope() {
 #[test]
 #[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
 fn include_with_deep_materialize() {
-    // Use --eval flag with includes to exercise deep materialization
+    // Test deep materialization with includes and JSON output
     let dir = make_include_dir("deep_materialize");
     fs::write(dir.path().join("nested.llt"), "[a: [b: [c: 42]]]").unwrap();
     fs::write(
@@ -1155,7 +1149,6 @@ fn include_with_deep_materialize() {
     let output = Command::new(tinct_bin())
         .args([
             "run",
-            "--eval",
             "-o",
             "json",
             dir.path().join("main.llt").to_str().unwrap(),
@@ -1217,7 +1210,7 @@ fn include_path_traversal_parent_dir() {
     .unwrap();
 
     let output = Command::new(tinct_bin())
-        .args(["run", "--eval", subdir.join("child.llt").to_str().unwrap()])
+        .args(["run", subdir.join("child.llt").to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
 
@@ -1360,11 +1353,10 @@ fn include_with_dircap_and_hash() {
 #[test]
 fn no_fs_flag_blocks_include() {
     // --no-fs flag should prevent $include from accessing the filesystem.
-    // --eval forces the lazy result so the error is surfaced (without it, the
-    // thunk is never materialized and the program exits 0 silently).
+    // The default none.llt output formatter forces evaluation, surfacing the error.
     let (path, _dir) = write_temp_llt("no_fs_flag", "[include %cwd \"some_file.llt\"]");
     let output = Command::new(tinct_bin())
-        .args(["run", "--eval", "--no-fs", path.to_str().unwrap()])
+        .args(["run", "--no-fs", path.to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
 
@@ -1458,14 +1450,13 @@ fn timeout_flag_exits_with_sigalrm() {
     // Test that --timeout flag installs SIGALRM handler and exits with code 2.
     // Use an infinite workload (iterate with collect) that can never complete.
     // Set a short timeout (1s) to ensure SIGALRM fires.
-    // --eval forces the lazy result so the infinite loop actually runs (without
-    // it, the program exits 0 immediately without driving the computation).
+    // The default none.llt output formatter forces evaluation, driving the computation.
     let source = r#"[call $collect [call $iterate [fn [x] [call $+ x 1]] 0]]"#;
     let (path, _dir) = write_temp_llt("timeout_flag", source);
 
     let start = std::time::Instant::now();
     let output = Command::new(tinct_bin())
-        .args(["run", "--eval", "--timeout", "1s", path.to_str().unwrap()])
+        .args(["run", "--timeout", "1s", path.to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
     let elapsed = start.elapsed();
@@ -1635,21 +1626,13 @@ fn no_fs_flag_and_timeout_flag_conjunctive_enforcement() {
     // Test that both --no-fs and --timeout flags are actively enforced
     // simultaneously. The test should fail due to --no-fs blocking $include,
     // not due to timeout.
-    // --eval forces the lazy result so the include error is surfaced (without
-    // it, the thunk is never materialized and the program exits 0 silently).
+    // The default none.llt output formatter forces evaluation, surfacing the error.
     let (path, _dir) = write_temp_llt(
         "conjunctive_enforcement",
         "[include %cwd \"some_file.llt\"]",
     );
     let output = Command::new(tinct_bin())
-        .args([
-            "run",
-            "--eval",
-            "--no-fs",
-            "--timeout",
-            "5s",
-            path.to_str().unwrap(),
-        ])
+        .args(["run", "--no-fs", "--timeout", "5s", path.to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
 
@@ -1751,7 +1734,7 @@ fn eval_deep_materialize_seq() {
         "[call $collect [call $take 3 [call $range 0 10]]]",
     );
     let output = Command::new(tinct_bin())
-        .args(["run", "--eval", "-o", "json", path.to_str().unwrap()])
+        .args(["run", "-o", "json", path.to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
 
@@ -1902,8 +1885,7 @@ fn cap_fs_read_only_permits_readable() {
 #[test]
 fn cap_fs_read_only_write_fails() {
     // --cap-fs mydir=DIR:r grants read-only access. raw-create should fail (needs Writable).
-    // --eval forces the lazy result so the permission error is surfaced (without it, the
-    // thunk is never materialized and the program exits 0 silently).
+    // The default none.llt output formatter forces evaluation, surfacing the permission error.
     let dir = TempDir::new("cap_fs_ro_write_fail");
     let main = dir.path().join("main.llt");
     let llt_content = r#"[call $raw-create %mydir "test.txt"]"#;
@@ -1913,7 +1895,6 @@ fn cap_fs_read_only_write_fails() {
     let output = Command::new(tinct_bin())
         .args([
             "run",
-            "--eval",
             "--no-cwd",
             "--no-libdir",
             "--cap-fs",
@@ -4436,14 +4417,13 @@ fn cap_file_no_fs_suppresses_injection() {
     // Verify --no-fs suppresses --cap-file Handle injection.
     // The Handle is not injected, so %cfg is undefined.
     // --eval forces the lazy result so the undefined-variable error is surfaced
-    // (without it, the thunk is never materialized and the program exits 0 silently).
+    // The default none.llt output formatter forces evaluation, surfacing the undefined variable error.
     let llt_content = r#"[join "\n" [collect [lines %cfg]]]"#;
     let (llt_path, _llt_dir) = write_temp_llt("cap_file_no_fs_suppresses", llt_content);
 
     let output = Command::new(tinct_bin())
         .args([
             "run",
-            "--eval",
             "--no-fs",
             "--cap-file",
             "cfg=/dev/null:r",
@@ -4718,5 +4698,261 @@ fn fmt_invalid_output_path_traversal() {
         stderr.contains("invalid formatter name"),
         "expected error message mentioning invalid formatter name, got: {}",
         stderr
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Stream output format (data-streaming Phase 4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn run_with_stream_output_produces_llt_expressions() {
+    // `tinct run -o stream` should output LLT expressions (Value Display format).
+    // This tests the stream output formatter from stdlib/cli/out/stream.llt.
+    let (path, _dir) = write_temp_llt("stream_output_basic", "[x: 1 y: 2]");
+    let output = Command::new(tinct_bin())
+        .args(["run", "-o", "stream", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected success for -o stream; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Stream output should be LLT SCN dict format: starts with '[', ends with ']',
+    // and contains the field values from the input dict.
+    let trimmed = stdout.trim();
+    assert!(
+        trimmed.starts_with('[') && trimmed.ends_with(']'),
+        "expected stream output to be a tinct dict expression (starts '[', ends ']'); got: {stdout}"
+    );
+    assert!(
+        stdout.contains("x")
+            && stdout.contains("1")
+            && stdout.contains("y")
+            && stdout.contains("2"),
+        "expected stream output to contain dict fields x:1 and y:2; got: {stdout}"
+    );
+}
+
+#[test]
+fn run_without_output_flag_forces_pipeline_via_none() {
+    // `tinct run program.llt` (no -o) uses none.llt as the default output program.
+    // none.llt forces % to drive evaluation but produces no output.
+    // We verify that % is actually forced by using a program that errors when forced:
+    // division-by-zero surfaces only if % is driven; if % were dropped, the test
+    // would exit zero (a false pass).
+    let (path, _dir) = write_temp_llt("no_output_forces_pipeline", "[/ 1 0]");
+    let output = Command::new(tinct_bin())
+        .args(["run", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    // Division by zero must surface as an error, proving % was forced.
+    assert!(
+        !output.status.success(),
+        "expected forced eval to surface division-by-zero error; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn run_without_output_flag_produces_no_result_output() {
+    // `tinct run program.llt` (no -o) should produce no result output.
+    // Even though the program returns a dict, none.llt discards it.
+    let (path, _dir) = write_temp_llt("no_output_no_result", "[x: 42]");
+    let output = Command::new(tinct_bin())
+        .args(["run", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        output.status.success(),
+        "expected success for run without -o; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Without emit calls and without -o, no output
+    assert_eq!(
+        stdout, "",
+        "expected no output from none.llt (no emit calls); got: {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// --eval flag removal (data-streaming Phase 4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn eval_flag_removed_produces_error() {
+    // The --eval flag was removed in data-streaming Phase 4.
+    // Using it should produce a clear error message.
+    let (path, _dir) = write_temp_llt("eval_flag_removed", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["run", "--eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected failure when --eval flag is used (flag removed)"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Should get a clap error about unknown flag or argument
+    assert!(
+        stderr.contains("--eval")
+            || stderr.contains("unexpected argument")
+            || stderr.contains("unrecognized"),
+        "expected error message about --eval flag; got: {stderr}"
+    );
+}
+
+#[test]
+fn eval_flag_with_output_also_errors() {
+    // Verify --eval produces an error even when combined with -o flag.
+    let (path, _dir) = write_temp_llt("eval_flag_with_output", "[x: 1]");
+    let output = Command::new(tinct_bin())
+        .args(["run", "--eval", "-o", "json", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct");
+
+    assert!(
+        !output.status.success(),
+        "expected failure when --eval flag is used with -o (flag removed)"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--eval")
+            || stderr.contains("unexpected argument")
+            || stderr.contains("unrecognized"),
+        "expected error message about --eval flag; got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Stream round-trip tests (data-streaming T-822)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn run_stream_in_stream_out_round_trip() {
+    use std::io::Write;
+
+    // Step 1: produce stream bytes with -o stream.
+    let (producer, _pdir) = write_temp_llt("stream_rt_produce", "[x: 1  y: 2]");
+    let produce = Command::new(tinct_bin())
+        .args(["run", "-o", "stream", producer.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct for stream production");
+    assert!(
+        produce.status.success(),
+        "stream production failed; stderr: {}",
+        String::from_utf8_lossy(&produce.stderr)
+    );
+    assert!(
+        !produce.stdout.is_empty(),
+        "expected non-empty stream output from -o stream"
+    );
+
+    // Step 2: consume the stream bytes with -i stream and a trivial passthrough.
+    // The consumer program returns %, which is the Seq of records read from stdin.
+    let (consumer, _cdir) = write_temp_llt("stream_rt_consume", "%");
+    let mut child = Command::new(tinct_bin())
+        .args([
+            "run",
+            "-i",
+            "stream",
+            "-o",
+            "llt",
+            consumer.to_str().unwrap(),
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn tinct for stream consumption");
+
+    // Write the produced stream bytes to the consumer's stdin, then close it.
+    child
+        .stdin
+        .take()
+        .expect("child stdin not piped")
+        .write_all(&produce.stdout)
+        .expect("failed to write stream bytes to consumer stdin");
+
+    let out = child
+        .wait_with_output()
+        .expect("failed to wait on consumer");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "stream consumption failed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The round-tripped output must contain the field names from the input dict.
+    assert!(
+        stdout.contains("x") && stdout.contains("y"),
+        "expected round-tripped fields x and y in output; got: {stdout}"
+    );
+}
+
+#[test]
+fn profile_writes_llt_stream_readable_by_stream_input() {
+    // Run a program with --profile to produce a .llt-stream file.
+    // Verify the file exists, is non-empty, and every non-empty line is a tinct dict.
+    // Then consume it with -i stream to verify the CLI pipeline accepts the format.
+    let (path, dir) = write_temp_llt("profile_rt", "[+ 1 2]");
+    let stream_path = dir.path().join("spans.llt-stream");
+
+    let run = Command::new(tinct_bin())
+        .args([
+            "run",
+            "--profile",
+            stream_path.to_str().unwrap(),
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run tinct with --profile");
+    assert!(
+        run.status.success(),
+        "profiled run failed; stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let content =
+        std::fs::read_to_string(&stream_path).expect("profile output file was not created");
+    assert!(!content.trim().is_empty(), "profile output file is empty");
+
+    // Each non-empty line must be a tinct dict (starts '[', ends ']').
+    for line in content.lines() {
+        let line = line.trim();
+        if !line.is_empty() {
+            assert!(
+                line.starts_with('[') && line.ends_with(']'),
+                "profile line is not a tinct dict: {line}"
+            );
+        }
+    }
+
+    // Consume with -i stream — use a program that forces iteration over the seq.
+    // We just verify the consumer exits 0 (the stream is parseable).
+    let (consumer, _cdir) = write_temp_llt("profile_rt_consumer", "[count %]");
+    let consume = Command::new(tinct_bin())
+        .args([
+            "run",
+            "-i",
+            "stream",
+            "-o",
+            "llt",
+            consumer.to_str().unwrap(),
+        ])
+        .stdin(std::fs::File::open(&stream_path).expect("could not open profile stream file"))
+        .output()
+        .expect("failed to run tinct for profile stream consumption");
+    assert!(
+        consume.status.success(),
+        "profile stream consumption failed; stderr: {}",
+        String::from_utf8_lossy(&consume.stderr)
     );
 }

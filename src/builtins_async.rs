@@ -897,8 +897,9 @@ pub(crate) fn builtin_select_once(
         let user_token = match user_ctx_val {
             Value::Context(token) => token,
             other => {
-                return Err(EvalError::type_mismatch("Context", other.type_name(), call_span)
-                    .into())
+                return Err(
+                    EvalError::type_mismatch("Context", other.type_name(), call_span).into(),
+                )
             }
         };
 

@@ -60,11 +60,6 @@ enum Commands {
     /// Evaluate an LLT file and output the result.
     #[clap(alias = "eval")]
     Run {
-        /// Force top-level evaluation before exit (for side-effect pipelines).
-        /// When combined with -o, the formatter handles deep materialization internally.
-        #[arg(long)]
-        eval: bool,
-
         /// Disable all filesystem access: suppresses %cwd, %libdir, and any caps injected
         /// via --cap-fs or --cap-file. Scripts that attempt filesystem operations fail.
         /// Use --no-cwd or --no-libdir for fine-grained suppression.
@@ -383,7 +378,6 @@ fn main() {
     // The REPL spawns its own 128MB thread for eval when needed (src/repl.rs).
     let result = match cli.command {
         Commands::Run {
-            eval,
             no_fs,
             require_integrity,
             strict,
@@ -406,7 +400,6 @@ fn main() {
             files,
         } => run_eval(
             &files,
-            eval,
             no_fs,
             require_integrity,
             strict,
@@ -1201,7 +1194,7 @@ fn parse_cap_fs_entries(
 ///
 /// The thread loops indefinitely, sleeping in 1-second intervals. Every `flush_interval`
 /// complete intervals it calls `drain_new()` on the collector to get spans added since the
-/// last flush, serializes each span as a single-line JSON object (NDJSON), and appends
+/// last flush, serializes each span as a single-line tinct dict (LLT-stream), and appends
 /// them to the shared `BufWriter<File>`. When `PROFILE_FLUSH_STOP` is set (by the SIGINT
 /// handler or the main thread after eval), the thread performs one final drain and exits.
 ///
@@ -1213,10 +1206,10 @@ fn parse_cap_fs_entries(
 ///
 /// # Manual test procedure
 ///
-/// 1. Run a long-evaluating script with `--profile /tmp/spans.ndjson`:
-///    `tinct run --profile /tmp/spans.ndjson heavy.llt`
-/// 2. After ~10 s (first flush interval), `wc -l /tmp/spans.ndjson` should show growing lines.
-///    Use `tail -f /tmp/spans.ndjson` to watch spans arrive.
+/// 1. Run a long-evaluating script with `--profile /tmp/spans.llt-stream`:
+///    `tinct run --profile /tmp/spans.llt-stream heavy.llt`
+/// 2. After ~10 s (first flush interval), `wc -l /tmp/spans.llt-stream` should show growing lines.
+///    Use `tail -f /tmp/spans.llt-stream` to watch spans arrive.
 /// 3. Send Ctrl-C. Within ~1 s, the file should contain all spans written so far.
 /// 4. Let the script complete normally. The final drain in `run_eval` appends remaining spans.
 // AMBIENT-OK: Profile output file is user-specified via --profile (CLI operator choice).
@@ -1267,13 +1260,13 @@ fn spawn_profile_flush_thread(
                     }
                 };
 
-                // Serialize each new span as one NDJSON line and append to the file.
+                // Serialize each new span as one LLT-stream line and append to the file.
                 if !new_spans.is_empty() {
                     match file.lock() {
                         Ok(mut file_guard) => {
                             let mut write_ok = true;
                             for span in &new_spans {
-                                let line = span.to_ndjson_line();
+                                let line = span.to_tinct_line();
                                 if let Err(e) = writeln!(file_guard, "{}", line) {
                                     eprintln!("profiling: background flush write error: {e}");
                                     write_ok = false;
@@ -1313,7 +1306,6 @@ fn spawn_profile_flush_thread(
 #[allow(clippy::disallowed_methods)]
 fn run_eval(
     file_paths: &[String],
-    force_eval: bool,
     no_fs: bool,
     require_integrity: bool,
     strict: bool,
@@ -1405,6 +1397,26 @@ fn run_eval(
             output_path
                 .to_str()
                 .ok_or_else(|| "formatter path is not valid UTF-8".to_string())?
+                .to_string(),
+        ));
+    } else {
+        // When no -o flag is specified, use none.llt as the default output formatter.
+        // This drains %emit and forces % without writing any output.
+        // See doc/whatif/data-streaming.md §src/main.rs for the spec.
+        let libdir_path = resolve_libdir_path(libdir_path.as_deref()).ok_or_else(|| {
+            "stdlib directory not found (libdir) - needed for default output formatter".to_string()
+        })?;
+        let none_path = libdir_path.join("cli").join("out").join("none.llt");
+        if !none_path.exists() {
+            return Err(format!(
+                "internal error: default output formatter not found: {} (stdlib installation is broken)",
+                none_path.display()
+            ));
+        }
+        pipeline_stages.push(PipelineStage::File(
+            none_path
+                .to_str()
+                .ok_or_else(|| "none.llt path is not valid UTF-8".to_string())?
                 .to_string(),
         ));
     }
@@ -1554,6 +1566,35 @@ fn run_eval(
             .insert("%stdin".to_string(), Arc::new(stdin_thunk));
     }
 
+    // Inject `%stdout` WriteHandle into the root environment.
+    // Output formatters write directly to %stdout via [write-handle %stdout ...].
+    // This replaces the old "formatter returns String, CLI prints it" model.
+    {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        use std::io::BufWriter;
+        use tinct::Value;
+
+        // Create stdout WriteHandle with default caps
+        let mut caps = HashMap::new();
+        caps.insert(
+            "Writable".to_string(),
+            Value::Dict(indexmap::IndexMap::new()),
+        );
+        caps.insert("Text".to_string(), Value::Dict(indexmap::IndexMap::new()));
+
+        let stdout_handle = Value::WriteHandle {
+            caps,
+            inner: Rc::new(RefCell::new(
+                Box::new(BufWriter::new(std::io::stdout())) as Box<dyn std::io::Write>
+            )),
+        };
+        let stdout_thunk = tinct::Thunk::new_materialized(stdout_handle, tinct::Span::origin());
+        env.write()
+            .unwrap()
+            .insert("%stdout".to_string(), Arc::new(stdout_thunk));
+    }
+
     // Inject `%libdir` DirCap for the stdlib directory (unless --no-libdir is set).
     // --no-libdir enforcement: when the flag is set, `%libdir` is NOT injected, so
     // any reference to `%libdir` in the program will fail with "undefined variable".
@@ -1561,12 +1602,14 @@ fn run_eval(
     // If resolution fails, %libdir is not injected (stdlib is embedded at compile time anyway).
     // Inject %libdir when: not explicitly suppressed (--no-libdir), AND either:
     //   - filesystem access is enabled (!no_fs), OR
-    //   - an output formatter is requested: formatters are system components that need
-    //     %libdir to load stdlib codecs (e.g., codecs/json.llt). This is safe because
-    //     %libdir gives read-only access to the stdlib directory only.
-    let needs_libdir_for_formatter = output.is_some();
+    //   - a formatter is in use: there is always a formatter (none.llt by default, or -o explicit).
+    //     Formatters are system components that need %libdir to load stdlib codecs
+    //     (e.g., codecs/json.llt). This is safe because %libdir gives read-only access
+    //     to the stdlib directory only.
+    // Since none.llt is now always appended when no -o is given, there is always a formatter.
+    let has_formatter = true;
     let resolved_libdir_path: Option<std::path::PathBuf> =
-        if !no_libdir && (!no_fs || needs_libdir_for_formatter) {
+        if !no_libdir && (!no_fs || has_formatter) {
             resolve_libdir_path(libdir_path.as_deref())
         } else {
             None
@@ -1576,7 +1619,7 @@ fn run_eval(
     // includes without calling open_ambient_dir again. None when --no-libdir is set
     // and no output formatter is requested.
     let mut libdir_rc_for_ctx: Option<Arc<cap_std::fs::Dir>> = None;
-    if !no_libdir && (!no_fs || needs_libdir_for_formatter) {
+    if !no_libdir && (!no_fs || has_formatter) {
         use tinct::Value;
         if let Some(ref path) = resolved_libdir_path {
             if let Ok(libdir_std) =
@@ -1944,8 +1987,8 @@ fn run_eval(
     //
     // The file is opened ONCE in truncate mode at startup. The background flush thread and
     // the final flush path share the file via Arc<Mutex<BufWriter<File>>>. Each flush writes
-    // only new spans (via drain_new()) as NDJSON lines — one JSON object per line, no wrapping
-    // array. `tail -f spans.ndjson` works during long evaluations.
+    // only new spans (via drain_new()) as LLT-stream lines — one tinct dict per line, no wrapping
+    // sequence. `tail -f spans.llt-stream` works during long evaluations.
     //
     // IMPORTANT: PROFILE_FLUSH_STOP is a global AtomicBool. If two concurrent
     // `tinct run --profile` invocations exist in the same process (not a supported
@@ -2298,7 +2341,7 @@ fn run_eval(
         let programs_arg = seq_thunk;
         let input_arg = initial_input_thunk;
 
-        let thunk = match eval_programs_val {
+        match eval_programs_val {
             tinct::Value::Function {
                 ref params,
                 ref body,
@@ -2317,7 +2360,15 @@ fn run_eval(
                     origin: Some(Arc::from("eval-programs")),
                     ctx: &eval_ctx,
                 };
-                tinct::async_rt::block_on(tinct::invoke_function(&call_ctx)).map_err(|e| {
+                // invoke_function returns an unevaluated thunk (the function body is lazy).
+                // Materialize it to drive the full pipeline to completion, including the
+                // output formatter's drain task and [await drain]. Without materialization,
+                // eval-programs is a no-op and no output is ever produced.
+                tinct::async_rt::block_on(async {
+                    let thunk = tinct::invoke_function(&call_ctx).await?;
+                    tinct::materialize(&thunk, None, &eval_ctx).await
+                })
+                .map_err(|e| {
                     let mut error_str = format!("{e}");
                     if let Some(snippet) =
                         tinct::render_span_snippet(&last_source, e.definition_span)
@@ -2326,7 +2377,13 @@ fn run_eval(
                         error_str.push_str(&snippet);
                     }
                     error_str
-                })?
+                })?;
+
+                // Flush %stdout explicitly. BufWriter::drop does not run when
+                // process::exit is called (SIGINT path or EXIT_ERROR). The `?`
+                // above short-circuits on eval error, so this flush only runs on
+                // the success path — avoiding emission of corrupt partial output.
+                let _ = std::io::Write::flush(&mut std::io::stdout());
             }
             other => {
                 return Err(format!(
@@ -2334,53 +2391,14 @@ fn run_eval(
                     other.type_name()
                 ));
             }
-        };
-
-        // When -o flag is present, the pipeline's last expression is an output formatter
-        // that returns a String. Materialize it and write to stdout.
-        // When --eval is present without -o, force evaluation for side effects only.
-        if output.is_some() {
-            // Output formatter was appended to pipeline — materialize and extract String
-            let val = materialize(&thunk, None, &eval_ctx).map_err(|e| {
-                let mut error_str = format!("{e}");
-                if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
-                    error_str.push('\n');
-                    error_str.push_str(&snippet);
-                }
-                error_str
-            })?;
-
-            match val {
-                tinct::Value::String { source, start, end } => {
-                    print!("{}", &source[start..end]);
-                }
-                _ => {
-                    return Err(format!(
-                        "output formatter returned {} instead of String — formatter is broken",
-                        val.type_name()
-                    ));
-                }
-            }
-        } else if force_eval {
-            // --eval flag without -o: force evaluation for side effects (no output)
-            let _val = materialize(&thunk, None, &eval_ctx).map_err(|e| {
-                let mut error_str = format!("{e}");
-                if let Some(snippet) = tinct::render_span_snippet(&last_source, e.definition_span) {
-                    error_str.push('\n');
-                    error_str.push_str(&snippet);
-                }
-                error_str
-            })?;
-            // Shallow materialization only — no deep forcing, no output
         }
-        // Else: neither -o nor --eval specified — lazy evaluation, no output
 
         Ok(())
     })(); // end of eval_result closure
 
     // === Unconditional cleanup (runs on success AND failure) ===
 
-    // Stop the background flush thread and perform a final NDJSON drain.
+    // Stop the background flush thread and perform a final LLT-stream drain.
     //
     // The flush thread is joined here in all exit paths (success, eval error, parse error,
     // type error, etc.) so the final spans are always written when --profile is set.
@@ -2413,7 +2431,7 @@ fn run_eval(
             match pfile.lock() {
                 Ok(mut file_guard) => {
                     for span in &remaining {
-                        let line = span.to_ndjson_line();
+                        let line = span.to_tinct_line();
                         if let Err(e) = writeln!(file_guard, "{}", line) {
                             eprintln!("profiling: final write error: {e}");
                             break;

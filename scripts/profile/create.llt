@@ -1,5 +1,5 @@
 # Creation-context hotspot table
-# Input: %  — Seq of span dicts (via tinct run -i json scripts/profile/create.llt < spans.json)
+# Input: %  — Seq of span dicts (via tinct run -i stream scripts/profile/create.llt < spans.llt-stream)
 # Output: emitted to stdout directly
 #
 # Groups spans by their creator (create-parent span's location) rather than

@@ -58,6 +58,7 @@ test: build-release
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
     {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test cli_tests
+    {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test integration_async
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1
 
 # Run a specific test
@@ -299,11 +300,11 @@ version:
 
 # Show current vs latest versions of Rust toolchain and all direct dependencies.
 # Reads Cargo.lock for locked versions; queries crates.io and rust-lang.org via HTTPS.
-# Writes samples/versions-spans.json (raw profile) and samples/versions-trace.json (Perfetto).
+# Writes samples/versions-spans.llt-stream (raw profile) and samples/versions-trace.json (Perfetto).
 versions:
     {{container}} run {{run_flags}} --network=host \
         -e RUST_VERSION={{rust_version}} \
-        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 --profile samples/versions-spans.ndjson samples/versions.llt && cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run -i ndjson -o json --strict scripts/profile/trace.llt < samples/versions-spans.ndjson > samples/versions-trace.json"
+        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 --profile samples/versions-spans.llt-stream samples/versions.llt && cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run -i stream -o json --strict scripts/profile/trace.llt < samples/versions-spans.llt-stream > samples/versions-trace.json"
 
 # Generate stdlib API reference from @[doc: "..."] annotations.
 # Writes one file per module to doc/lib/<module>.md.
@@ -390,9 +391,9 @@ clean-all: clean-images clean-volumes
 
 # Profile a tinct file and show materialization hotspots
 profile FILE:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- --max-memory {{tinct_max_memory}} run --profile /tmp/spans.ndjson {{FILE}} && cargo run --release -- --max-memory {{tinct_max_memory}} run -i ndjson scripts/profile/materialize.llt < /tmp/spans.ndjson"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- --max-memory {{tinct_max_memory}} run --profile /tmp/spans.llt-stream {{FILE}} && cargo run --release -- --max-memory {{tinct_max_memory}} run -i stream scripts/profile/materialize.llt < /tmp/spans.llt-stream"
 
 # Profile a tinct file and output Perfetto trace
 profile-trace FILE:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- --max-memory {{tinct_max_memory}} run --profile /tmp/spans.ndjson {{FILE}} && cargo run --release -- --max-memory {{tinct_max_memory}} run -i ndjson -o json scripts/profile/trace.llt < /tmp/spans.ndjson"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- --max-memory {{tinct_max_memory}} run --profile /tmp/spans.llt-stream {{FILE}} && cargo run --release -- --max-memory {{tinct_max_memory}} run -i stream -o json scripts/profile/trace.llt < /tmp/spans.llt-stream"
 

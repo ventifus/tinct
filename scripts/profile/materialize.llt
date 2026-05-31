@@ -1,5 +1,5 @@
 # Materialization-context hotspot table
-# Input: %  — Seq of span dicts (via tinct run -i json scripts/profile/materialize.llt < spans.json)
+# Input: %  — Seq of span dicts (via tinct run -i stream scripts/profile/materialize.llt < spans.llt-stream)
 # Output: emitted to stdout directly
 
 [

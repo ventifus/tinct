@@ -1,6 +1,6 @@
 # Perfetto Chrome Trace Event Format output
 # Input: %  — Seq of span dicts
-# Usage: tinct run -i ndjson -o json scripts/profile/trace.llt < spans.ndjson
+# Usage: tinct run -i stream -o json scripts/profile/trace.llt < spans.llt-stream
 # Output: tinct dict — serialized to JSON by -o json flag; no codecs import needed
 
 [
