@@ -1,3 +1,21 @@
-# Output: none — returns empty string (no output).
-# Used for side-effect-only pipelines: tinct run -o none script.llt
-""
+# Output: none — silent output formatter: forces % for side effects, discards all output.
+#
+# Concurrent contract:
+# 1. Drain %emit: discard all emitted values
+# 2. Force %: force for side effects, write nothing
+# 3. Await drain task completion
+#
+# The forcing of % drives the full evaluation cascade (including any emit calls),
+# but nothing is written to stdout.
+
+# 1. Drain the emit channel concurrently, discarding all values.
+[drain: [task
+  [loop-select [context] [[%emit [fn [let v] []]]] identity]]]
+
+# 2. Force % to drive the evaluation cascade (for side effects).
+[if [seq? %]
+  [reduce [fn [let _ x] []] [] %]
+  []]
+
+# 3. Wait for drain to finish consuming any emits triggered during forcing.
+[await drain]

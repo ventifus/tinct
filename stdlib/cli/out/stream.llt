@@ -1,0 +1,25 @@
+# Stream output formatter — concurrent drain/force/await contract.
+#
+# Serializes emitted values and return values to their tinct SCN representation
+# using to-tinct. Each value becomes a single-line tinct expression followed by
+# a newline.
+#
+# Concurrent contract:
+# 1. Drain %emit: serialize and write each emitted value as tinct source
+# 2. Force %: serialize and write the return value (or each Seq element)
+# 3. Await drain task completion
+
+# 1. Drain the emit channel concurrently.
+[drain: [task
+  [loop-select [context] [[%emit [fn [let v]
+    [write-handle %stdout [str [to-tinct v] "\n"]]]]] identity]]]
+
+# 2. Force the return value to drive the lazy evaluation cascade.
+#    Forcing % drives program evaluation, triggering any emit calls.
+[if [seq? %]
+  [reduce [fn [let _ x]
+    [write-handle %stdout [str [to-tinct x] "\n"]]] [] %]
+  [write-handle %stdout [str [to-tinct %] "\n"]]]
+
+# 3. Wait for drain to finish consuming any emits triggered during forcing.
+[await drain]

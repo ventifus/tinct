@@ -1,0 +1,4 @@
+# to-tinct: serialize a negative integer
+[to-tinct -1]
+=== out
+String("-1")

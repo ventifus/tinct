@@ -1,12 +1,28 @@
-# JSON Compact Formatter — uses to-json from stdlib/codecs/json.llt.
+# JSON Compact Formatter — concurrent drain/force/await contract.
 #
-# Serializes the pipeline input (%) to a compact JSON string using the
-# to-json function from the JSON codec.
+# Produces NDJSON-compatible output: one compact JSON object per line.
+# Compatible with jq streaming and other NDJSON consumers.
 #
-# Handles: Int, Float, Bool, String, Dict, Seq, Null ([]).
-# Unserializable values (Fn, Handle, Task, etc.) produce null.
+# Concurrent contract:
+# 1. Drain %emit: write each emitted value as compact JSON (one line per value)
+# 2. Force %: serialize the return value as JSON
+# 3. Await drain task completion
 #
-# Returns a String (the formatted JSON output). No emit calls.
+# Uses to-json from stdlib/codecs/json.llt.
 
 [json: [include %libdir "codecs/json.llt"]]
-[call $json.to-json %]
+
+# 1. Drain the emit channel concurrently.
+[drain: [task
+  [loop-select [context] [[%emit [fn [let v]
+    [write-handle %stdout [str [call $json.to-json v] "\n"]]]]] identity]]]
+
+# 2. Force the return value to drive the lazy evaluation cascade.
+#    Forcing % drives program evaluation, triggering any emit calls.
+[if [seq? %]
+  [reduce [fn [let _ x]
+    [write-handle %stdout [str [call $json.to-json x] "\n"]]] [] %]
+  [write-handle %stdout [str [call $json.to-json %] "\n"]]]
+
+# 3. Wait for drain to finish consuming any emits triggered during forcing.
+[await drain]

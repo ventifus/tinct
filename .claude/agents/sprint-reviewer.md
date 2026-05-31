@@ -47,6 +47,12 @@ Work through each topic below sequentially. For each topic:
 - **Dead code left in place**: old implementations not yet deleted, `#[allow(dead_code)]` without a comment explaining the plan.
 - Any tech debt introduced by this sprint is FIX NOW. Tech debt that pre-existed but was worsened by this sprint is also FIX NOW.
 
+**Codebase-wide cleanup scan** (do this third, independent of the diff): Search the entire `src/` tree for cleanup-needed patterns that may predate this sprint. These are always FIX LATER (create a tracker item) regardless of whether the current sprint touched the file:
+- `grep -rn "proof-of-concept\|proof of concept\|POC\|TEMPORARY\|TODO(parts-\|TOMBSTONE" src/` — any surviving exploratory or tombstone comments
+- `grep -rn "let _[a-z].*=.*typecheck\|let _[a-z].*=.*resolve_surface\|let _[a-z].*=.*eval_surface" src/` — `_`-prefixed results from significant pipeline calls; these indicate dead exploratory code where someone tested a function call but never wired up the result. Each one is a candidate for deletion.
+- `grep -rn "async fn.*{$" src/main.rs | xargs -I{} grep -A5 "{}"` — empty or near-empty async functions in main.rs that were stubs
+- For each match: confirm the call is genuinely needed (result used somewhere meaningful) vs. left-over exploration. If left-over: FIX LATER with a tracker item describing the deletion.
+
 **Commits** (skip in sprint mode): Are commits topical, ordered logically, with descriptive messages? Flag "fix", "fixup", "oops", "WIP" commits that should have been squashed (FIX NOW).
 
 **Build**: The build gate already ran `just ci` (build + test + lint) before you were dispatched and it passed. Do not re-run it. If you notice obvious compilation issues in the code under review (e.g. an unreachable match arm, a type that clearly won't unify, a missing impl), flag them as FIX NOW — but trust that the build is green.

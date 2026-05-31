@@ -112,4 +112,25 @@ yaml@[doc: "Convert value to YAML 1.2 string"]: [fn@String [let val@Any]
     [str [yaml-value val 0] "\n"]]]
 ]
 
-[yaml %]
+# YAML output formatter — concurrent drain/force/await contract.
+#
+# Produces YAML 1.2 output for each emitted value and return value.
+#
+# Concurrent contract:
+# 1. Drain %emit: write each emitted value as YAML
+# 2. Force %: write the return value (or each Seq element) as YAML
+# 3. Await drain task completion
+
+# 1. Drain the emit channel concurrently.
+[drain: [task
+  [loop-select [context] [[%emit [fn [let v]
+    [write-handle %stdout [str [yaml v] "\n"]]]]] identity]]]
+
+# 2. Force the return value to drive the lazy evaluation cascade.
+[if [seq? %]
+  [reduce [fn [let _ x]
+    [write-handle %stdout [str [yaml x] "\n"]]] [] %]
+  [write-handle %stdout [str [yaml %] "\n"]]]
+
+# 3. Wait for drain to finish consuming any emits triggered during forcing.
+[await drain]

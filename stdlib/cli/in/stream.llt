@@ -1,0 +1,10 @@
+# Stream input formatter — reads stdin as a lazy Seq of tinct expressions.
+#
+# Each SCN record (self-contained normal form) is parsed and macro-expanded
+# to an Expression node. Returns a Seq of Expression values.
+#
+# Activated by: tinct run -i stream program.llt
+
+[stream: [include %libdir "codecs/stream.llt"]]
+[map stream.parse-expr
+  [stream.balanced-exprs [lines %stdin]]]

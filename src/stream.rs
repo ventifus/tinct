@@ -13,15 +13,18 @@ use std::sync::Arc;
 
 use crate::builtins::{expect_one_arg, ok_val};
 use crate::error::{EvalError, EvalResult};
+use crate::eval_materialize::force_dict_tree;
 use crate::value::{string_val, BuiltinArgs, Thunk};
 
 /// `builtin-to-tinct`: serialize a value to its SCN tinct source representation.
 ///
-/// Takes one positional argument (pre-materialized via `force_count = 1`).
+/// Takes one positional argument (WHNF-materialized via `force_count = 1`).
 /// Returns a `String` containing the canonical tinct source text for the value.
 ///
-/// Errors if the value has no tinct representation (capabilities, tasks, channels, etc.)
-/// or if a required structure is not fully materialized (e.g., dict values not forced).
+/// Deep-forces all nested structures (dict entries, seq elements, variant payloads)
+/// before serialization to ensure `to_tinct` can access all materialized values.
+///
+/// Errors if the value has no tinct representation (capabilities, tasks, channels, etc.).
 ///
 /// See `Value::to_tinct` in `src/surface_fmt.rs` for the full serialization logic.
 pub(crate) fn builtin_to_tinct(
@@ -41,7 +44,14 @@ pub(crate) fn builtin_to_tinct(
             &ctx,
             call_span.clone(),
         )?;
-        let tinct_str = val
+
+        // Deep-force all nested structures before serialization.
+        // The WHNF-materialized value may contain unevaluated thunks in dict entries,
+        // seq elements, or variant payloads. force_dict_tree recursively materializes
+        // all nested values so that to_tinct's try_get_materialized calls succeed.
+        let deep_val = force_dict_tree(&val, &ctx).await?;
+
+        let tinct_str = deep_val
             .to_tinct(Some(&ctx))
             .map_err(|e| EvalError::user_error(format!("to-tinct: {}", e), call_span.clone()))?;
         ok_val(string_val(&tinct_str), call_span)

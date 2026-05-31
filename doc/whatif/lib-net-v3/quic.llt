@@ -62,9 +62,9 @@
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
-  # PendingQuicHandle: QUIC+TLS config accumulated before handshake fires.
+  # QuicHandle: QUIC+TLS config accumulated before handshake fires.
   # quic creates it (sni inferred, ALPN open); h3/doq/etc add ALPN via with-alpn then quic-commit.
-  PendingQuicHandle: [type
+  QuicHandle: [type
     [pending:     [or ConnectedUdp UdpSocket]
      sni:         [or String Null]    # null = infer from [Hostname h] in peer address
      alpn:        [Seq String]        # set by downstream layer
@@ -134,12 +134,12 @@
      flow:          QuicFlowState]]
 
   # quic — QUIC pending layer. Subject-last: sock last.
-  # Creates PendingQuicHandle — sni inferred from [Hostname h], ALPN open.
+  # Creates QuicHandle — sni inferred from [Hostname h], ALPN open.
   # The downstream layer (h3, dns-quic-resolver, etc.) adds alpn before commit fires.
   # Usage: [connect %net [Hostname h] Udp 443] | quic | h3 | [request req]
-  quic: [fn@[bind: [d]  constraint: [d: Datagram]  return: PendingQuicHandle]
+  quic: [fn@[bind: [d]  constraint: [d: Datagram]  return: QuicHandle]
           [let sock@d]
-    [PendingQuicHandle
+    [QuicHandle
       [pending: sock
        sni:     null          # infer from [Hostname h] in sock peer
        alpn:    []            # set by downstream layer (h3, doq, etc.)
@@ -147,19 +147,19 @@
        trust-roots: SystemRoots]]]
 
   # quic-commit: fire the QUIC+TLS handshake with accumulated config.
-  quic-commit: [fn [let pqh@PendingQuicHandle]
+  quic-commit: [fn [let pqh@QuicHandle]
     [error "TODO: quic-commit — resolve sni, generate SCID, send Initial + ClientHello, complete TLS 1.3, install 1-RTT keys → QuicConnection"]]
 
-  # with-alpn: accumulate ALPN into a PendingQuicHandle before commit.
-  with-alpn: [fn [let pqh@PendingQuicHandle alpn@[Seq String]]
-    [PendingQuicHandle [pending: pqh.pending  sni: pqh.sni  alpn: alpn
+  # with-alpn: accumulate ALPN into a QuicHandle before commit.
+  with-alpn: [fn [let pqh@QuicHandle alpn@[Seq String]]
+    [QuicHandle [pending: pqh.pending  sni: pqh.sni  alpn: alpn
                         ech: pqh.ech  trust-roots: pqh.trust-roots]]]
 
   # quic-connect: sugar for a resolved SocketAddress (skips DNS + HostPort).
   # For hostname-based connections prefer: [connect %net Udp [HostPort [Hostname h] port]] | quic | h3
   quic-connect: [fn [let cap@NetCap addr@SocketAddress cfg@TlsClientConfig]
     [quic-commit
-      [PendingQuicHandle
+      [QuicHandle
         [pending: [ConnectedUdp
                     [sock: [udp-socket cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: 0]]]
                      peer: addr]]

@@ -189,10 +189,15 @@ pub fn fmt_fn(
     let params_str: Vec<String> = params
         .iter()
         .map(|p| {
-            rename_map
+            let name = rename_map
                 .get(&p.name)
                 .cloned()
-                .unwrap_or_else(|| p.name.clone())
+                .unwrap_or_else(|| p.name.clone());
+            if p.variadic {
+                format!("...{}", name)
+            } else {
+                name
+            }
         })
         .collect();
 
@@ -360,6 +365,9 @@ fn collect_free_vars(
         }
 
         CoreExpr::CaseArm { pattern, body } => {
+            // Note: CoreExpr::CaseArm.pattern is a CoreExpr (not Pattern), so we cannot
+            // use collect_pattern_bindings here. The pattern CoreExpr is processed for
+            // free variable collection but doesn't extend param scope.
             collect_free_vars(&pattern.node, param_scope, stdlib_env, out);
             collect_free_vars(&body.node, param_scope, stdlib_env, out);
         }
@@ -723,10 +731,15 @@ fn core_expr_to_tinct(
             let params_str: Vec<String> = params
                 .iter()
                 .map(|p| {
-                    inner_rename
+                    let name = inner_rename
                         .get(&p.node.name)
                         .cloned()
-                        .unwrap_or_else(|| p.node.name.clone())
+                        .unwrap_or_else(|| p.node.name.clone());
+                    if p.node.variadic {
+                        format!("...{}", name)
+                    } else {
+                        name
+                    }
                 })
                 .collect();
             Ok(format!("[fn [let {}] {}]", params_str.join(" "), body_str))
@@ -1226,14 +1239,145 @@ fn serialize_pattern(pattern: &Pattern) -> Result<String, String> {
 ///
 /// This is an AST → source text unparser, the inverse of the parser.
 ///
-/// This is a placeholder stub — full implementation deferred to later sprint tasks.
-pub fn fmt_expression(_node: &Arc<crate::ast::SurfaceNode>) -> Result<String, String> {
-    // TODO(T-792): Implement full SurfaceExpression → tinct source unparser:
-    // - Handle all SurfaceExpression variants (Int, Float, Bool, Str, VarRef, Dict, Seq,
-    //   Call, Fn, DotAccess, Match, Pipe, Quote, etc.)
-    // - Produce parseable tinct source text that round-trips through [load s]
-    // - See doc/whatif/data-streaming.md §Expression serialization note
-    Err("Expression serialization not yet implemented".to_string())
+/// Basic version handling common SurfaceExpression variants. Uncommon variants (Quote, Match,
+/// TypeApp, etc.) return a fallback error.
+pub fn fmt_expression(node: &Arc<crate::ast::SurfaceNode>) -> Result<String, String> {
+    use crate::ast::SurfaceExpression;
+
+    match &node.expr {
+        // Literals — delegate to lexer formatters
+        SurfaceExpression::Int(n) => Ok(fmt_int(*n)),
+        SurfaceExpression::Float(f) => fmt_float(*f),
+        SurfaceExpression::Bool(b) => Ok(fmt_bool(*b).to_string()),
+        SurfaceExpression::Str(s) => Ok(fmt_string(s)),
+
+        // Variable reference — just the name
+        SurfaceExpression::VarRef { name, escaped } => {
+            if *escaped {
+                Ok(format!("${}", name))
+            } else {
+                Ok(name.clone())
+            }
+        }
+
+        // Dict — use similar pattern to fmt_dict but for surface AST
+        SurfaceExpression::Dict(entries) => {
+            let mut out = String::from("[");
+            for (i, entry) in entries.iter().enumerate() {
+                if i > 0 {
+                    out.push_str("  ");
+                }
+                if let Some(key_node) = &entry.node.key {
+                    let key_str = fmt_expression(key_node)?;
+                    out.push_str(&key_str);
+                    out.push(':');
+                    out.push(' ');
+                }
+                let val_str = fmt_expression(&entry.node.value)?;
+                out.push_str(&val_str);
+            }
+            out.push(']');
+            Ok(out)
+        }
+
+        // Call — [func args...]
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } => {
+            let func_str = fmt_expression(func)?;
+            let mut parts = vec![func_str];
+            for arg in args {
+                parts.push(fmt_expression(arg)?);
+            }
+            for named_arg in named_args {
+                let val_str = fmt_expression(&named_arg.node.value)?;
+                parts.push(format!("{}: {}", named_arg.node.name, val_str));
+            }
+            Ok(format!("[{}]", parts.join(" ")))
+        }
+
+        // DotAccess — target.field
+        SurfaceExpression::DotAccess { expr, field } => {
+            let target = fmt_expression(expr)?;
+            Ok(format!("{}.{}", target, field))
+        }
+
+        // Sequential — newline-separated expressions
+        SurfaceExpression::Sequential(exprs) => {
+            let mut parts = Vec::new();
+            for e in exprs {
+                parts.push(fmt_expression(e)?);
+            }
+            Ok(parts.join("\n"))
+        }
+
+        // Fn — [fn [let params] body]
+        SurfaceExpression::Fn { params, body, .. } => {
+            let params_str: Vec<String> = params
+                .iter()
+                .map(|p| {
+                    if p.node.variadic {
+                        format!("...{}", p.node.name)
+                    } else {
+                        p.node.name.clone()
+                    }
+                })
+                .collect();
+            let body_str = fmt_expression(body)?;
+            Ok(format!("[fn [let {}] {}]", params_str.join(" "), body_str))
+        }
+
+        // Placeholder
+        SurfaceExpression::Placeholder => Ok("_".to_string()),
+
+        // Rest parameter
+        SurfaceExpression::Rest(name) => match name {
+            Some(n) => Ok(format!("...{}", n)),
+            None => Ok("...".to_string()),
+        },
+
+        // Uncommon variants — return fallback error
+        SurfaceExpression::TypeAssert { .. } => {
+            Err("Expression serialization for TypeAssert not yet implemented".to_string())
+        }
+        SurfaceExpression::Annotated { .. } => {
+            Err("Expression serialization for Annotated not yet implemented".to_string())
+        }
+        SurfaceExpression::Match { .. } => {
+            Err("Expression serialization for Match not yet implemented".to_string())
+        }
+        SurfaceExpression::Quote(_) => {
+            Err("Expression serialization for Quote not yet implemented".to_string())
+        }
+        SurfaceExpression::Unquote(_) => {
+            Err("Expression serialization for Unquote not yet implemented".to_string())
+        }
+        SurfaceExpression::UnquoteSplice(_) => {
+            Err("Expression serialization for UnquoteSplice not yet implemented".to_string())
+        }
+        SurfaceExpression::Pipe { .. } => {
+            Err("Expression serialization for Pipe not yet implemented".to_string())
+        }
+        SurfaceExpression::PatternDecl { .. } => {
+            Err("Expression serialization for PatternDecl not yet implemented".to_string())
+        }
+        SurfaceExpression::LetDecl { .. } => {
+            Err("Expression serialization for LetDecl not yet implemented".to_string())
+        }
+        SurfaceExpression::CaseArm { .. } => {
+            Err("Expression serialization for CaseArm not yet implemented".to_string())
+        }
+        SurfaceExpression::TypeApp { .. } => {
+            Err("Expression serialization for TypeApp not yet implemented".to_string())
+        }
+        SurfaceExpression::Error(_) => Err("Cannot serialize SurfaceExpression::Error".to_string()),
+        _ => {
+            Err("Expression serialization not yet implemented for this variant".to_string())
+        }
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -1317,10 +1461,38 @@ impl Value {
             Value::Timestamp(nanos) => Ok(format!("[timestamp-nanos {}]", nanos)),
             Value::Duration(nanos) => Ok(format!("[duration-nanos {}]", nanos)),
             Value::Overlay(left, right) => {
-                // Flatten overlay to Dict before serialization
-                // This requires materializing both sides — deferred to full implementation
-                let _ = (left, right);
-                Err("Overlay serialization not yet implemented (requires flattening)".to_string())
+                // Flatten overlay to Dict before serialization.
+                // Right wins on conflicts (overlay semantics: right overlays left).
+                let ctx_ref = ctx.ok_or("Overlay serialization requires EvalContext")?;
+
+                // Materialize left side
+                let left_thunk = ctx_ref.get_thunk(*left);
+                let left_value = left_thunk
+                    .try_get_materialized()
+                    .ok_or("overlay left not materialized")?;
+                let left_dict = match left_value {
+                    Value::Dict(map) => map,
+                    _ => return Err("overlay left is not a Dict".to_string()),
+                };
+
+                // Materialize right side
+                let right_thunk = ctx_ref.get_thunk(*right);
+                let right_value = right_thunk
+                    .try_get_materialized()
+                    .ok_or("overlay right not materialized")?;
+                let right_dict = match right_value {
+                    Value::Dict(map) => map,
+                    _ => return Err("overlay right is not a Dict".to_string()),
+                };
+
+                // Merge: start with left, then overlay right (right wins)
+                let mut merged = left_dict.clone();
+                for (k, v) in right_dict.iter() {
+                    merged.insert(k.clone(), *v);
+                }
+
+                // Serialize the merged dict
+                fmt_dict(&merged, ctx)
             }
             Value::Expression(node) => fmt_expression(node),
 

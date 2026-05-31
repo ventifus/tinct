@@ -448,6 +448,68 @@ json-parse-value: [fn [let s@String]
       [[or [= [json-char-at 0 s2] "-"] [json-digit? [json-char-at 0 s2]]] [json-parse-number s2]]
       [true [raise [str "JSON: unexpected character: " [json-char-at 0 s2]]]]]]]]
 
+# ---- Streaming Input helpers ----
+
+# balanced-objects — groups a Seq of strings into complete balanced JSON values.
+# Counts { and [ for depth (accounting for string literals), yields when depth returns to 0.
+# Skips blank lines and comment lines (lines starting with #).
+# Handles both NDJSON (one object per line) and pretty-printed multi-document JSON streams.
+json-bracket-depth-impl: [fn [let st ch]
+  [if st.done  st
+    [if st.escape  [merge st [escape: false]]
+      [if st.in-string
+        [if [= ch "\\"]  [merge st [escape: true]]
+        [if [= ch "\""]  [merge st [in-string: false]]
+                         st]]
+        [if [= ch "\""]  [merge st [in-string: true]]
+        [if [= ch "{"]   [merge st [depth: [+ st.depth 1]]]
+        [if [= ch "["]   [merge st [depth: [+ st.depth 1]]]
+        [if [= ch "}"]   [merge st [depth: [- st.depth 1]]]
+        [if [= ch "]"]   [merge st [depth: [- st.depth 1]]]
+                         st]]]]]]]]]
+
+json-bracket-depth: [fn [let s@String]
+  [reduce
+    json-bracket-depth-impl
+    [depth: 0  in-string: false  escape: false  done: false]
+    [str-chars s]].depth]
+
+# Streaming accumulator: scan lines, accumulate until JSON bracket depth returns to 0.
+# Skips blank lines and lines starting with #.
+balanced-objects-scan: [fn [let ls acc depth]
+  [if [= [] ls]
+    [if [= "" [trim acc]] []
+      [cons acc []]]
+    [line: [head ls]]
+    [trimmed: [trim line]]
+    [if [or [= "" trimmed]
+            [starts-with? "#" trimmed]]
+      # Skip blank and comment lines
+      [balanced-objects-scan [tail ls] acc depth]
+      [new-depth: [+ depth [json-bracket-depth line]]]
+      [new-acc: [str acc line "\n"]]
+      [if [and [<= new-depth 0]
+               [not [= "" [trim new-acc]]]]
+        # Complete JSON value — yield it
+        [cons new-acc [balanced-objects-scan [tail ls] "" 0]]
+        # Still accumulating
+        [balanced-objects-scan [tail ls] new-acc new-depth]]]]]
+
+balanced-objects@[doc: "Group a Seq of strings (lines) into complete balanced JSON values.
+
+Parameters:
+  lines@Seq — Seq of line strings (e.g., from [lines handle])
+
+Returns:
+  Seq — Seq of complete JSON value strings (one per balanced object/array)
+
+Skips blank lines and comment lines (starting with #).
+Handles both NDJSON (one object per line) and multi-line pretty-printed JSON.
+
+Each yielded string is a complete JSON value ready to be parsed by from-json."]:
+  [fn [let lines]
+    [balanced-objects-scan lines "" 0]]
+
 # ---- Public API ----
 
 to-json@[doc: "Serialize any tinct value to a compact JSON string.

@@ -1,10 +1,29 @@
-# Raw output formatter
-# If % is a String, return it unquoted
-# If % is a Seq, join elements with newlines
-# Otherwise error
+# Raw output formatter — concurrent drain/force/await contract.
+#
+# Emits each value as its string representation (strings are written directly,
+# other values are converted via str).
+#
+# Concurrent contract:
+# 1. Drain %emit: write each emitted value as raw text
+# 2. Force %: write the return value (or each Seq element) as raw text
+# 3. Await drain task completion
 
-[if [str? %]
-  %
-  [if [seq? %]
-    [join "\n" %]
-    [error "raw formatter: expected String or Seq"]]]
+[
+  # Helper: convert value to raw string (strings pass through, others use str)
+  raw: [fn@String [let v]
+    [if [str? v] v [str v]]]
+]
+
+# 1. Drain the emit channel concurrently.
+[drain: [task
+  [loop-select [context] [[%emit [fn [let v]
+    [write-handle %stdout [raw v]]]]] identity]]]
+
+# 2. Force the return value to drive the lazy evaluation cascade.
+[if [seq? %]
+  [reduce [fn [let _ x]
+    [write-handle %stdout [raw x]]] [] %]
+  [write-handle %stdout [raw %]]]
+
+# 3. Wait for drain to finish consuming any emits triggered during forcing.
+[await drain]

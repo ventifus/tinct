@@ -2942,6 +2942,9 @@ fixed-clock: fixed-clock
 # Get current timestamp in nanoseconds since Unix epoch
 timestamp-nanos: builtin-timestamp-nanos
 
+# Convert a duration to nanoseconds
+duration-nanos: builtin-duration-nanos
+
 # ============================================================================
 # Async concurrency primitives
 #

@@ -1,0 +1,6 @@
+# stream.balanced-exprs: groups lines into balanced tinct expressions.
+# Two single-line expressions each form one group.
+[stream: [include %libdir "codecs/stream.llt"]]
+[collect [stream.balanced-exprs [split "\n" "[x: 1]\n[y: 2]"]]]
+=== out
+Dict({0: String("[x: 1]\n"), 1: String("[y: 2]\n")})

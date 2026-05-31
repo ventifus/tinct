@@ -78,8 +78,8 @@
     [error "TODO: h3-accept — open control/QPACK streams, send SETTINGS, recv peer SETTINGS"]]
 
   # h3: fires the QUIC+TLS handshake (adding alpn: ["h3"]) then sets up HTTP/3 streams.
-  # Receives PendingQuicHandle from | quic, not a committed QuicConnection.
-  h3: [fn [let pqh@PendingQuicHandle]
+  # Receives QuicHandle from | quic, not a committed QuicConnection.
+  h3: [fn [let pqh@QuicHandle]
     [conn: [quic-commit [with-alpn pqh ["h3"]]]]
     [error "TODO: h3 — open control/QPACK streams, send SETTINGS, recv peer SETTINGS → Http3Connection"]]
 

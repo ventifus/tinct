@@ -2,7 +2,7 @@
 # Part of: lib-net-v3
 
 [include %libdir "net.llt"]
-[include %include-dir "tls13.llt"]   # for PendingTlsHandle, tls-commit, with-tls-alpn
+[include %include-dir "tls13.llt"]   # for TlsHandle, tls-commit, with-tls-alpn
 [include %include-dir "http1.llt"]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
@@ -147,7 +147,7 @@
     [error "TODO: h2-accept — read client preface, exchange SETTINGS, return Http2Connection"]]
 
   # h2: fires TLS with alpn: ["h2"] via tls-commit, then H2 preface.
-  h2: [fn [let pth@PendingTlsHandle]
+  h2: [fn [let pth@TlsHandle]
     [conn: [tls-commit [with-tls-alpn pth ["h2"]]]]
     [error "TODO: h2 — send client preface, exchange SETTINGS → Http2Connection"]]
 

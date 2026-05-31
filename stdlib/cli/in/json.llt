@@ -1,5 +1,9 @@
-# JSON input formatter
-# Reads %stdin and parses as JSON, producing the parsed tinct value as %
+# JSON Streaming Input Formatter — Phase 2 data-streaming
+#
+# Reads %stdin as a lazy Seq of JSON values using balanced-object parsing.
+# Handles both NDJSON (one object per line) and multi-line pretty-printed JSON streams.
+# Returns a Seq of parsed tinct values — one per complete JSON object/array.
 
 [json: [include %libdir "codecs/json.llt"]]
-[json.from-json %stdin]
+[map json.from-json
+  [json.balanced-objects [lines %stdin]]]

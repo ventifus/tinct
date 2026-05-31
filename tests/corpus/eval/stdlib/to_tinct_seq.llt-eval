@@ -1,0 +1,4 @@
+# to-tinct: serialize a Seq value using the seq constructor form
+[to-tinct [cons 1 []]]
+=== out
+String("[seq 1 []]")

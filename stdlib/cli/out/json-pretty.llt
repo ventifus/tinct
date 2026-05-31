@@ -1,9 +1,28 @@
-# JSON Pretty Formatter — uses to-json-pretty from stdlib/codecs/json.llt.
+# JSON Pretty Formatter — concurrent drain/force/await contract.
 #
 # Produces indented JSON output with 2-space indentation.
 # Empty dicts/arrays render compactly as {} or [].
+# Each record is separated by a blank line (not NDJSON — multi-line format).
 #
-# Returns a String (the formatted JSON output). No emit calls.
+# Concurrent contract:
+# 1. Drain %emit: write each emitted value as pretty JSON
+# 2. Force %: write the return value (or each Seq element) as pretty JSON
+# 3. Await drain task completion
+#
+# Uses to-json-pretty from stdlib/codecs/json.llt.
 
 [json: [include %libdir "codecs/json.llt"]]
-[str [call $json.to-json-pretty %] "\n"]
+
+# 1. Drain the emit channel concurrently.
+[drain: [task
+  [loop-select [context] [[%emit [fn [let v]
+    [write-handle %stdout [str [call $json.to-json-pretty v] "\n\n"]]]]] identity]]]
+
+# 2. Force the return value to drive the lazy evaluation cascade.
+[if [seq? %]
+  [reduce [fn [let _ x]
+    [write-handle %stdout [str [call $json.to-json-pretty x] "\n\n"]]] [] %]
+  [write-handle %stdout [str [call $json.to-json-pretty %] "\n\n"]]]
+
+# 3. Wait for drain to finish consuming any emits triggered during forcing.
+[await drain]

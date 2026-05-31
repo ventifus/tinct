@@ -87,6 +87,7 @@ Proposals formally accepted into the project. Implementation sprints exist in th
 | [Stdlib Architecture — The Rust/tinct Boundary](stdlib-architecture.md) | **Merged into async-eval.md.** See §Rust/tinct Boundary, §Serve and Connect Layers, §Stdlib Module Map. |
 | [Value Serializer Visitor](value-serializer-visitor.md) | Shared traversal for `value_to_json` + `value_to_display_string`; defer until a third format is needed |
 | [Tinct Stream Format — Stdlib-Closed Normal Form](data-streaming.md) | **Accepted 2026-05-30.** See §Accepted above. |
+| [Literate Mode v2 — Self-Hosted Block Evaluation and Codec Pipeline](literate-v2.md) | Per-block output format via ` ```tinct \| json ` fence info strings; codec objects with encode/decode; `stdlib/literate.llt` replaces Rust serialization; `\| json` equivalent to `-o json` |
 
 ## Formal Verification
 

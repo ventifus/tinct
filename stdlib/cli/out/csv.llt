@@ -1,6 +1,12 @@
-# CSV Formatter
-# Convert a list-of-dicts to CSV format
-# First row defines headers (keys), subsequent rows extract values by key
+# CSV Streaming Output Formatter — Phase 2 data-streaming contract
+#
+# Responsibilities:
+# 1. Drain %emit — receive emitted values as they arrive; serialize each to stdout
+# 2. Force % — materialize the lazy return value to drive evaluation cascade
+# 3. Await both before exiting
+#
+# Column order is fixed by the first record (from %emit or %).
+# Subsequent records with different keys produce empty cells for missing columns.
 
 # Private helpers
 [
@@ -16,34 +22,71 @@ csv-header: [fn@String [let ks@Dict i@Int acc@String]
     [csv-header ks [+ i 1]
       [str acc [if [> i 0] "," ""] [csv-quote [get i ks]]]]]]
 
-# Internal: format a single data row
+# Internal: format a single data row using pre-determined column order
 csv-row: [fn@String [let row@Dict ks@Dict i@Int acc@String]
   [if [>= i [length ks]]
     [str acc "\n"]
     [csv-row row ks [+ i 1]
       [str acc [if [> i 0] "," ""] [csv-quote [str [get-or [get i ks] "" row]]]]]]]
-
-# Internal: format all data rows
-csv-rows: [fn@String [let rows@Dict ks@Dict i@Int acc@String]
-  [if [>= i [length rows]]
-    acc
-    [csv-rows rows ks [+ i 1]
-      [str acc [csv-row [get i rows] ks 0 ""]]]]]
-
-# Internal: format list-of-dicts given pre-extracted header keys
-csv-impl: [fn@String [let rows@Dict ks@Dict]
-  [str
-    [csv-header ks 0 ""]
-    [csv-rows rows ks 0 ""]]]
 ]
 
-# Public API
+# Streaming contract implementation — sequential document expressions
 [
-# Public API: format list-of-dicts to CSV
-csv@[doc: "Convert list-of-dicts to CSV format (header row + data rows)"]: [fn@String [let rows@Dict]
-  [if [empty? rows]
-    ""
-    [csv-impl rows [keys rows.0]]]]
-]
+# 1. Try to pull the first record from %emit to establish column headers.
+#    If the channel is already closed (no emitted values), fall through to %.
+first-result: [try [fn [let] [recv %emit]]]
 
-[csv %]
+# 2. If we got a first record, extract column headers and write header + first row.
+#    Capture column keys for all subsequent rows.
+columns: [match first-result
+  [Ok record]:
+    [header-keys: [keys record]]
+    [write-handle %stdout [csv-header header-keys 0 ""]]
+    [write-handle %stdout [csv-row record header-keys 0 ""]]
+    header-keys
+  [Error _]:
+    []]  # No first record from %emit — columns will be set by % if it's a dict
+
+# 3. Drain remaining %emit records concurrently.
+#    If columns are already set, write each record using the captured column order.
+#    If columns are not yet set (no first record), the drain task does nothing
+#    (all records will be handled by forcing % below).
+drain: [task
+  [if [not [= columns []]]
+    [loop-select [context] [[%emit [fn [let v]
+      [write-handle %stdout [csv-row v columns 0 ""]]]]] identity]
+    []]]
+
+# 4. Force % to drive the lazy evaluation cascade.
+#    If % is a Seq, write each element as a data row.
+#    If % is a scalar dict and columns are not yet set, use its keys as headers.
+#    If columns are already set, just write the row.
+[if [seq? %]
+  # % is a Seq — write each element as a row
+  [reduce [fn [let cols-so-far x]
+    [if [= cols-so-far []]
+      # First element sets the columns
+      [new-cols: [keys x]]
+      [write-handle %stdout [csv-header new-cols 0 ""]]
+      [write-handle %stdout [csv-row x new-cols 0 ""]]
+      new-cols
+      # Subsequent elements use existing columns
+      [write-handle %stdout [csv-row x cols-so-far 0 ""]]
+      cols-so-far]]
+    columns
+    %]
+  # % is a scalar — if it's a dict and columns are not yet set, set them now
+  [if [dict? %]
+    [if [= columns []]
+      [new-cols: [keys %]]
+      [write-handle %stdout [csv-header new-cols 0 ""]]
+      [write-handle %stdout [csv-row % new-cols 0 ""]]
+      []
+      # columns already set, just write the row
+      [write-handle %stdout [csv-row % columns 0 ""]]
+      []]
+    []]]
+
+# 5. Wait for drain to finish consuming any emits triggered during forcing.
+[await drain]
+]

@@ -1,0 +1,74 @@
+# Stream Codec — tinct SCN streaming format.
+#
+# Provides parsing utilities for the tinct stream format: balanced bracket
+# counting, multi-line expression grouping, and AST extraction.
+#
+# The stream format constraint: one self-contained tinct expression per record.
+# to-tinct produces single-line bracket expressions; this codec groups input
+# lines by bracket depth to reconstruct complete expressions.
+#
+# All functions are in a single letrec dict so helpers can reference public
+# functions and vice versa. Two-dict separation does NOT work here because
+# scan (private) calls bracket-count (public) — closures capture the defining
+# env, not the call-site env.
+
+[
+  # bracket-count: net open bracket depth in a string.
+  # Counts [ as +1, ] as -1, accounting for string literals and comments.
+  # Does NOT handle triple-quoted strings (""") — stream format constrains
+  # to-tinct to never emit them.
+  #
+  # Type: (String -> Int)
+  # Example: [bracket-count "[x: 1]"] → 0
+  bracket-count: [fn@Int [let s@String]
+    [reduce
+      [fn [let st ch]
+        [if st.done  st
+          [if st.escape  [merge st [escape: false]]
+            [if st.in-string
+              [if [= ch "\\"]  [merge st [escape: true]]
+              [if [= ch "\""]  [merge st [in-string: false]]
+                               st]]
+              [if [= ch "#"]   [merge st [done: true]]
+              [if [= ch "["]   [merge st [depth: [+ st.depth 1]]]
+              [if [= ch "]"]   [merge st [depth: [- st.depth 1]]]
+              [if [= ch "\""]  [merge st [in-string: true]]
+                               st]]]]]]]]
+      [depth: 0  in-string: false  escape: false  done: false]
+      [str-chars s]].depth]
+
+  # scan: accumulate lines into balanced expressions by bracket depth.
+  # Recursive helper for balanced-exprs.
+  scan: [fn [let ls acc depth]
+    [if [= [] ls]
+      [if [= "" [trim acc]] []
+        [cons acc []]]
+      [if [or [= "" [trim [head ls]]]
+              [or [starts-with? "#" [trim [head ls]]]
+                  [= "---" [trim [head ls]]]]]
+        [scan [tail ls] acc depth]
+        [let d [+ depth [bracket-count [head ls]]]
+          [if [and [<= d 0]
+                   [not [= "" [trim [str acc [head ls] "\n"]]]]]
+            [cons [str acc [head ls] "\n"] [scan [tail ls] "" 0]]
+            [scan [tail ls] [str acc [head ls] "\n"] d]]]]]]
+
+  # balanced-exprs: group a Seq of lines into balanced tinct expressions.
+  # Skips blank lines, comment lines (start with #), and --- separators.
+  # Returns a lazy Seq of String, each a complete balanced expression.
+  #
+  # Type: (Seq -> Seq)
+  # Example: [balanced-exprs [lines %stdin]]
+  balanced-exprs: [fn [let ls]
+    [scan ls "" 0]]
+
+  # parse-expr: parse a single balanced expression string to an Expression.
+  # Type: (String -> Expression)
+  parse-expr: [fn [let s]
+    [head [head [expand [load s]].documents].expressions]]
+
+  # program-exprs: extract all expressions from a Value::Program.
+  # Type: (Program -> Seq)
+  program-exprs: [fn [let prog]
+    [flat-map [fn [let doc] doc.expressions] prog.documents]]
+]

@@ -1,0 +1,5 @@
+# stream.bracket-count: one unclosed bracket → depth 1
+[stream: [include %libdir "codecs/stream.llt"]]
+[stream.bracket-count "[ [x: 1]"]
+=== out
+Int(1)
