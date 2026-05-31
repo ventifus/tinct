@@ -812,6 +812,7 @@ fn resolve_includes(
     visited: &mut HashSet<String>,
     depth: usize,
     cap_dir: &cap_std::fs::Dir,
+    prelude_type_env: Rc<TypeEnv>,
 ) -> (Rc<TypeEnv>, IncludeBindings) {
     if depth >= MAX_INCLUDE_DEPTH {
         // Depth limit reached: return base_env unchanged with empty binding map
@@ -955,17 +956,18 @@ fn resolve_includes(
         let _resolution_table = resolve::resolve_surface_program(&program);
 
         // Type-check with the appropriate environment.
-        // For %libdir files (stdlib modules), use a builtins env so that raw builtin
-        // names (e.g. `url`, `http-request`) are visible — stdlib files use builtins
-        // directly and must not be checked against the restricted user env. This
-        // mirrors how `build_prelude_env_inner()` type-checks prelude.llt.
+        // For %libdir files (stdlib modules), use the prelude TypeEnv as the baseline.
+        // Raw builtin-* names are NOT in the outer scope — stdlib modules access them
+        // via `--- uses: ["core"]` headers, which inject module-specific type signatures
+        // at document level (see typecheck.rs:408-427). This matches the runtime's
+        // builtin_module() injection and ensures T002 warnings fire correctly for raw
+        // builtin references in user code that omits the --- uses: header.
         // For %cwd files (user includes), use the accumulated user env as normal.
         let typecheck_env = if cap_name.as_deref() == Some("%libdir") {
-            let mut benv = crate::builtins::build_builtins_type_env();
-            benv.insert("%cwd".to_string(), crate::types::Type::DirCap);
-            benv.insert("%libdir".to_string(), crate::types::Type::DirCap);
-            benv.inject_builtin_aliases();
-            Rc::new(benv)
+            let mut stdlib_env = TypeEnv::with_parent(&prelude_type_env);
+            stdlib_env.insert("%cwd".to_string(), crate::types::Type::DirCap);
+            stdlib_env.insert("%libdir".to_string(), crate::types::Type::DirCap);
+            Rc::new(stdlib_env)
         } else {
             Rc::clone(&env)
         };
@@ -1015,6 +1017,7 @@ fn resolve_includes(
             visited,
             depth + 1,
             &nested_cap_dir,
+            Rc::clone(&prelude_type_env),
         );
         env = nested_env;
 
@@ -1250,6 +1253,7 @@ pub fn build_type_env_with_cap(
             &mut visited,
             0,
             cap_dir,
+            Rc::clone(&prelude_env),
         );
         env = new_env;
         include_bindings = bindings;
@@ -1425,6 +1429,7 @@ mod tests {
         let test_cap_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test cap dir");
 
+        let prelude_env_for_test = build_prelude_env();
         let (result_env, result_bindings) = resolve_includes(
             &include_paths,
             Some(tmp.as_path()),
@@ -1433,6 +1438,7 @@ mod tests {
             &mut visited,
             0,
             &test_cap_dir,
+            prelude_env_for_test,
         );
 
         // Missing file: canonicalize fails → skipped → base_env returned as-is.

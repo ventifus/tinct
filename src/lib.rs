@@ -120,9 +120,12 @@ pub use parser::{
 
 /// Evaluation functions.
 pub use eval::{
-    eval_surface_file, eval_surface_file_with_input, materialize, materialize_sync, EvalConfig,
-    EvalContext, EvalState,
+    eval_surface_file, eval_surface_file_with_input, invoke_function, materialize,
+    materialize_sync, CallContext, EvalConfig, EvalContext, EvalState,
 };
+
+/// Arena thunk identifier — needed by callers that allocate thunks to build Seq values.
+pub use arena::ThunkId;
 
 /// Builtin infrastructure: stdlib creation, JSON conversion, resource limits.
 pub use builtins::{create_stdlib_env, create_type_stage_env, MAX_COLLECT_SIZE, MAX_FILE_SIZE};
@@ -238,7 +241,7 @@ pub fn eval_source(input: &str) -> Result<String, String> {
 ///
 /// This is a variant of [`eval_source`] that allows control over the `no_fs` flag.
 /// When `no_fs` is `true`, filesystem operations (like `include`) are disabled.
-/// Primarily used for corpus tests that verify the `IncludeForbidden` error path.
+/// Primarily used for corpus tests that require filesystem isolation.
 pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, String> {
     #[cfg(test)]
     {

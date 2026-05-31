@@ -1,4 +1,4 @@
-# sqrt : square root
-[sqrt 4]
+# builtin-sqrt : square root
+[builtin-sqrt 4]
 === out
 Float(2)

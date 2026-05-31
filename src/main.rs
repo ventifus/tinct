@@ -1930,14 +1930,14 @@ fn run_eval(
         None // unrestricted
     };
 
-    // Multi-stage pipeline: process each stage in sequence, passing output as input to the next.
+    // Multi-stage pipeline: parse/expand/typecheck all stages, then invoke eval-programs once.
     //
     // ARENA SHARING INVARIANT: All stages in the pipeline must share the same ThunkArena so
     // that ThunkIds allocated by earlier stages remain valid when later stages reference them
     // via the `%` pipeline variable. We establish one base EvalContext for the first stage,
     // then use `with_base_dir_and_path` for subsequent stages — this creates a new config
     // (different base_dir) while sharing the same arena, state, and stdlib_env.
-    let mut pipeline_input: Option<Arc<Thunk>> = None;
+    // eval-programs threads % through each Value::Program in sequence.
 
     // Initialize profiling collector if --profile is set, and spawn the background
     // flush thread + install the SIGINT handler for fault-tolerant profile writing.
@@ -1997,10 +1997,13 @@ fn run_eval(
             None
         };
 
-    let mut thunk = None;
     let mut last_source = String::new();
     let mut last_eval_ctx: Option<Arc<EvalContext>> = None;
     let mut base_eval_ctx: Option<Arc<EvalContext>> = None;
+
+    // Collect Value::Program values from each pipeline stage (parse → expand → resolve → typecheck).
+    // Evaluation is deferred until all programs are collected — eval-programs threads % through them.
+    let mut collected_programs: Vec<tinct::Value> = Vec::new();
 
     // Wrap the pipeline loop and output section in a closure so we can run profile
     // write + flush thread cleanup unconditionally regardless of success or failure.
@@ -2036,14 +2039,6 @@ fn run_eval(
                     (expression.clone(), out)
                 }
             };
-            // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-            let _resolution_table =
-                tinct::resolve::resolve_surface_program(output.as_surface_program());
-            // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
-            let (_type_errors, _type_annotation_table, _expects_resolved) =
-                tinct::typecheck::typecheck_surface_program_annotation_table(
-                    output.as_surface_program(),
-                );
 
             // Determine base directory for $include resolution (needed for expand, typecheck, and eval).
             let file_base_dir_path = match stage {
@@ -2230,64 +2225,116 @@ fn run_eval(
             // TypeAnnotationTable was populated directly by typecheck_surface_program_with_env
             // above — no second typecheck call needed.
             let type_annotation_table = std::sync::Arc::new(type_annotation_table_from_env);
-            let file_result = tinct::async_rt::block_on(tinct::eval_surface_file_with_input(
-                &program,
-                Arc::clone(&env),
-                &eval_ctx,
-                &resolution_table,
-                &type_annotation_table,
-                &infer_state.expects_resolved,
-                pipeline_input.clone(),
-            ))
-            .map_err(|e| {
-                let mut error_str = format!("{e}");
-                if let Some(snippet) = tinct::render_span_snippet(&source, e.definition_span) {
-                    error_str.push('\n');
-                    error_str.push_str(&snippet);
-                }
-                error_str
-            })?;
 
-            // Record blame provenance for the pipeline boundary.
-            // The producing stage label is the file path or expression index.
-            let stage_label = match stage {
-                PipelineStage::File(p) => p.clone(),
-                PipelineStage::Expr(_) => "(inline expression)".to_string(),
-            };
+            // Collect this stage as a Value::Program for eval-programs.
+            // eval-programs (in loader.llt) threads % through each program in sequence.
+            collected_programs.push(tinct::Value::Program {
+                program: std::sync::Arc::new(program),
+                resolutions: resolution_table,
+                types: type_annotation_table,
+                expects_resolved: std::sync::Arc::new(infer_state.expects_resolved),
+            });
 
-            // Pass the result as lazy thunk to next file (matching --- boundary semantics).
-            // Because all files share the same ThunkArena, the ThunkIds in file_result are
-            // valid in the next file's eval context.
-            pipeline_input = Some(file_result.clone());
-
-            // Record blame for the % thunk at this pipeline boundary.
-            // This is used by contract violation errors to identify the producing stage.
-            if let Ok(tinct::Value::Dict(ref map)) =
-                tinct::materialize_sync(&file_result, None, &eval_ctx)
-            {
-                for (_, thunk_id) in map {
-                    eval_ctx.record_blame(*thunk_id, stage_label.clone());
-                }
-            }
-            // Also record blame for the result thunk itself
-            // (use the thunk_arena alloc id if available)
-            let _ = stage_label; // label used above
-
-            // Keep track of the last file's result, source, and context for final output.
-            // IMPORTANT: The ThunkIds in the result's Value::Dict map are indices into the
-            // shared ThunkArena. We MUST use an eval_ctx backed by the same arena for
-            // visit_value; since all file contexts share the arena, any of them works.
-            thunk = Some(file_result);
             last_source = source;
             last_eval_ctx = Some(eval_ctx);
         }
 
-        let thunk = thunk
-            .take()
-            .ok_or_else(|| "internal error: no files processed".to_string())?;
+        if collected_programs.is_empty() {
+            return Err("internal error: no programs collected".to_string());
+        }
+
         let eval_ctx = last_eval_ctx
             .clone()
             .ok_or_else(|| "internal error: no eval context".to_string())?;
+
+        // Look up eval-programs from the stdlib env (exported by loader.llt → prelude).
+        // eval-programs: [fn [let programs initial-input] ...]
+        // It threads % through each program in sequence, returning the final output.
+        let eval_programs_thunk = {
+            let env_guard = env.read().unwrap();
+            env_guard
+                .get("eval-programs")
+                .ok_or_else(|| {
+                    "internal error: eval-programs not found in stdlib env (prelude not loaded?)"
+                        .to_string()
+                })?
+                .clone()
+        };
+        let eval_programs_val = materialize(&eval_programs_thunk, None, &eval_ctx)
+            .map_err(|e| format!("internal error: failed to materialize eval-programs: {e}"))?;
+
+        // Build a [Seq Value::Program] from the collected programs (right-folded linked list).
+        // Seq is: Value::Seq { head: ThunkId, tail: ThunkId } / empty = Value::Dict({})
+        // Build from the end so the first program is at the head.
+        let mut seq_thunk = Arc::new(tinct::Thunk::new_materialized(
+            tinct::Value::Dict(indexmap::IndexMap::new()),
+            tinct::Span::origin(),
+        ));
+        for prog_val in collected_programs.into_iter().rev() {
+            let head_thunk = Arc::new(tinct::Thunk::new_materialized(
+                prog_val,
+                tinct::Span::origin(),
+            ));
+            let head_id = eval_ctx.alloc_thunk(head_thunk);
+            let tail_id = eval_ctx.alloc_thunk(seq_thunk);
+            seq_thunk = Arc::new(tinct::Thunk::new_materialized(
+                tinct::Value::Seq {
+                    head: head_id,
+                    tail: tail_id,
+                },
+                tinct::Span::origin(),
+            ));
+        }
+
+        // The initial input to the pipeline (% for the first program).
+        // None → empty dict (same default as eval_surface_file_with_input).
+        let initial_input_thunk = Arc::new(tinct::Thunk::new_materialized(
+            tinct::Value::Dict(indexmap::IndexMap::new()),
+            tinct::Span::origin(),
+        ));
+
+        // Invoke eval-programs([programs_seq, initial_input]) via invoke_function.
+        // eval-programs is a two-argument function: [fn [let programs initial-input] ...]
+        let programs_arg = seq_thunk;
+        let input_arg = initial_input_thunk;
+
+        let thunk = match eval_programs_val {
+            tinct::Value::Function {
+                ref params,
+                ref body,
+                env: ref closure_env,
+                ..
+            } => {
+                let positional = vec![programs_arg, input_arg];
+                let call_ctx = tinct::CallContext {
+                    params: params.as_slice(),
+                    body,
+                    closure_env,
+                    positional: &positional,
+                    named: None,
+                    default_env: closure_env,
+                    call_span: tinct::Span::origin(),
+                    origin: Some(Arc::from("eval-programs")),
+                    ctx: &eval_ctx,
+                };
+                tinct::async_rt::block_on(tinct::invoke_function(&call_ctx)).map_err(|e| {
+                    let mut error_str = format!("{e}");
+                    if let Some(snippet) =
+                        tinct::render_span_snippet(&last_source, e.definition_span)
+                    {
+                        error_str.push('\n');
+                        error_str.push_str(&snippet);
+                    }
+                    error_str
+                })?
+            }
+            other => {
+                return Err(format!(
+                    "internal error: eval-programs is {} instead of Function",
+                    other.type_name()
+                ));
+            }
+        };
 
         // When -o flag is present, the pipeline's last expression is an output formatter
         // that returns a String. Materialize it and write to stdout.
@@ -2418,14 +2465,6 @@ async fn run_fmt(
     if strict {
         let output = parse_with_file(&source, Arc::clone(&sf))
             .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
-        // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-        let _resolution_table =
-            tinct::resolve::resolve_surface_program(output.as_surface_program());
-        // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
-        let (_type_errors, _type_annotation_table, _expects_resolved) =
-            tinct::typecheck::typecheck_surface_program_annotation_table(
-                output.as_surface_program(),
-            );
 
         // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
         // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
@@ -2568,11 +2607,6 @@ fn run_lint(
     // Parse the file
     let output = parse_with_file(&source, Arc::clone(&sf))
         .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
-    // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-    let _resolution_table = tinct::resolve::resolve_surface_program(output.as_surface_program());
-    // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
-    let (_type_errors, _type_annotation_table, _expects_resolved) =
-        tinct::typecheck::typecheck_surface_program_annotation_table(output.as_surface_program());
 
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
     // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
@@ -2858,11 +2892,6 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
             format!("parse error in tangled tinct source: {e}")
         }
     })?;
-    // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-    let _resolution_table = tinct::resolve::resolve_surface_program(output.as_surface_program());
-    // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
-    let (_type_errors, _type_annotation_table, _expects_resolved) =
-        tinct::typecheck::typecheck_surface_program_annotation_table(output.as_surface_program());
 
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
     // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
@@ -3090,12 +3119,6 @@ fn run_literate_lint(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
             format!("parse error in tangled tinct source: {e}")
         }
     })?;
-
-    // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-    let _resolution_table = tinct::resolve::resolve_surface_program(output.as_surface_program());
-    // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
-    let (_type_errors, _type_annotation_table, _expects_resolved) =
-        tinct::typecheck::typecheck_surface_program_annotation_table(output.as_surface_program());
 
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
     // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
@@ -3349,17 +3372,7 @@ fn run_literate_weave(
 
         let parse_result = parse(code);
         let parsed = match parse_result {
-            Ok(o) => {
-                // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-                let _resolution_table =
-                    tinct::resolve::resolve_surface_program(o.as_surface_program());
-                // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
-                let (_type_errors, _type_annotation_table, _expects_resolved) =
-                    tinct::typecheck::typecheck_surface_program_annotation_table(
-                        o.as_surface_program(),
-                    );
-                o
-            }
+            Ok(o) => o,
             Err(e) => {
                 let error_msg = if strict {
                     tinct::format_parse_error(&e, code, &format!("block {}", i + 1))
@@ -4151,11 +4164,6 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     let sf = read_source(file_path)?;
     let source = String::from(&*sf.content);
     let output = parse_with_file(&source, Arc::clone(&sf)).map_err(|e| format!("{e}"))?;
-    // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
-    let _resolution_table = tinct::resolve::resolve_surface_program(output.as_surface_program());
-    // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
-    let (_type_errors, _type_annotation_table, _expects_resolved) =
-        tinct::typecheck::typecheck_surface_program_annotation_table(output.as_surface_program());
 
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
     // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
@@ -4668,17 +4676,6 @@ If the recursion is intentional but bounded, the limit may be raised with
 --depth (if supported)."
         }
 
-        "E042" => {
-            "\
-E042: Filesystem access disabled
-
-A $include call was made but the --no-fs flag was passed on the command
-line, disabling all filesystem access.
-
-Fix: remove --no-fs if filesystem access is intended, or provide the
-included data through stdin JSON (%) instead."
-        }
-
         "E043" => {
             "\
 E043: Resource limit exceeded
@@ -4688,18 +4685,6 @@ size or string length).
 
 Fix: reduce the size of the collection or string, or check whether the
 limit can be raised for your use case."
-        }
-
-        "E050" => {
-            "\
-E050: Include not available in this context
-
-$include was used in a context where the include subsystem is not
-initialised (for example, in a unit test or REPL context that does not
-set up a base directory).
-
-Fix: run the file with 'tinct eval' rather than in a context that does not
-support $include."
         }
 
         "E051" => {
@@ -4720,16 +4705,6 @@ A $include call would create a cycle: file A includes file B which (directly
 or transitively) includes file A again.
 
 Fix: restructure the files to break the include cycle."
-        }
-
-        "E053" => {
-            "\
-E053: Include parse error
-
-A $include call succeeded in reading the file but the file contains invalid
-LLT syntax. The error message includes the parser error detail.
-
-Fix: correct the syntax error in the included file."
         }
 
         "E054" => {
@@ -4762,17 +4737,6 @@ call was made without supplying an expected hash as the second argument.
 
 Fix: pass the blake3 hash of the included file as the second argument, e.g.
   $include \"config.llt\" \"blake3:abc123...\""
-        }
-
-        "E057" => {
-            "\
-E057: Include path not permitted
-
-A $include call attempted to access a path that is not a descendant of any
-directory listed with --allow-path.
-
-Fix: add the required directory to the --allow-path allowlist, or ensure
-$include only accesses files within the already-allowed directories."
         }
 
         "E060" => {
@@ -4925,6 +4889,25 @@ Fix for type assertion: update the annotation to match the runtime type, or
 fix the expression to produce the declared type."
         }
 
+        "T017" => {
+            "\
+T017: Instance pattern contains Unknown types (type checker)
+
+An instance match arm (for a typeclass instance declaration) contains one or
+more pattern positions whose types are Unknown. The type checker requires all
+pattern positions to have concrete type annotations — Unknown prevents
+coherence checking from working correctly.
+
+Example of the error:
+  instance Eq [MyClass a b]:  -- 'a' or 'b' lacks a type annotation
+
+Fix:
+  - Add explicit type annotations to all pattern positions using the a@Type
+    syntax, e.g. [MyClass a@Int b@String].
+  - Ensure all type parameters in the instance head have concrete types that
+    the type checker can resolve."
+        }
+
         "T018" => {
             "\
 T018: Undefined constructor in structural test (type checker)
@@ -4977,10 +4960,10 @@ annotation or the scrutinee expression to align with the intended logic."
         _ => {
             return Err(format!(
                 "unknown error code: {code}\n\
-                 Run 'tinct explain <code>' with a valid code, e.g. E001 through E099 or T000-T004, T018-T020.\n\
+                 Run 'tinct explain <code>' with a valid code, e.g. E001 through E099 or T000-T020.\n\
                  Known codes: E001, E002, E010, E011, E020-E024, E030-E036, \
-                 E040, E042-E043, E050-E057, E060, E063, E070, E080, E090, E099, \
-                 T000, T001, T002, T003, T004, T018, T019, T020."
+                 E040, E043-E044, E051-E056, E060, E063, E070, E080, E090, E099, \
+                 T000, T001, T002, T003, T004, T017, T018, T019, T020."
             ));
         }
     };

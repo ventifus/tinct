@@ -1,0 +1,922 @@
+//! Path-sensitive narrowing, pattern binding extraction, and overlap checking.
+//!
+//! This module contains the subsystem responsible for:
+//! - Extracting type narrowing constraints from conditional expressions (`if`, match guards)
+//! - Applying those constraints to fork the type environment for true/false branches
+//! - Collecting variable bindings introduced by match patterns with inferred types
+//! - Instance pattern type extraction and functional-dependency parameter index resolution
+//! - Pattern overlap / type unification probes (side-effect-free)
+
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use super::typecheck_annot::resolve_annotation;
+use crate::ast::{Annotation, Pattern, Span, SurfaceExpression, SurfaceNode};
+use crate::types::{unify, InferState, Row, Type, TypeEnv, TypeError};
+
+/// Narrowing constraints extracted from conditional expressions.
+/// Each constraint refines the type of a variable in the true branch of an `if`.
+#[derive(Debug, Clone)]
+pub(crate) enum Narrowing {
+    /// `[= var literal]` narrows `var` to the literal type.
+    EqLiteral { var: String, ty: Type },
+    /// `[= [type-of var] "TypeName"]` narrows `var` to the named type.
+    TypeOf { var: String, ty: Type },
+    /// `[has? var "key"]` narrows `var` to a record with at least that key.
+    HasKey { var: String, key: String },
+}
+
+/// Extract narrowing constraints from a condition expression (SurfaceNode version).
+/// Returns an empty vec for unrecognized patterns.
+pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
+    match &cond.expr {
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } if named_args.is_empty() => {
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                match name.as_str() {
+                    // Pattern: [= x literal] or [= literal x]
+                    "=" if args.len() == 2 => {
+                        // Try both operand orderings
+                        if let Some(narrowing) = try_eq_literal(&args[0], &args[1]) {
+                            return vec![narrowing];
+                        }
+                        if let Some(narrowing) = try_eq_literal(&args[1], &args[0]) {
+                            return vec![narrowing];
+                        }
+                        // Try type-of pattern: [= [type-of x] "TypeName"]
+                        if let Some(narrowing) = try_type_of(&args[0], &args[1]) {
+                            return vec![narrowing];
+                        }
+                        if let Some(narrowing) = try_type_of(&args[1], &args[0]) {
+                            return vec![narrowing];
+                        }
+                    }
+                    // Pattern: [has? x "key"]
+                    "has?" if args.len() == 2 => {
+                        if let (
+                            SurfaceExpression::VarRef { name: var_name, .. },
+                            SurfaceExpression::Str(key),
+                        ) = (&args[0].expr, &args[1].expr)
+                        {
+                            return vec![Narrowing::HasKey {
+                                var: var_name.clone(),
+                                key: key.clone(),
+                            }];
+                        }
+                    }
+                    // Pattern: [and cond1 cond2 ...]
+                    "and" => {
+                        let mut narrowings = Vec::new();
+                        for arg in args {
+                            narrowings.extend(extract_narrowings(arg));
+                        }
+                        return narrowings;
+                    }
+                    // Pattern: [int? x], [str? x], [dict? x], [bool? x], [float? x],
+                    // [fn? x], [null? x], [seq? x], [num? x]
+                    "int?" if args.len() == 1 => {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Int,
+                            }];
+                        }
+                    }
+                    "str?" if args.len() == 1 => {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Str,
+                            }];
+                        }
+                    }
+                    "dict?" if args.len() == 1 => {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
+                            // dict? narrows to open record with fresh RowVar
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Record(Row {
+                                    fields: HashMap::new(),
+                                }),
+                            }];
+                        }
+                    }
+                    "bool?" if args.len() == 1 => {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Bool,
+                            }];
+                        }
+                    }
+                    "float?" if args.len() == 1 => {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Float,
+                            }];
+                        }
+                    }
+                    "fn?" if args.len() == 1 => {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
+                            // HKT: fn? narrows to Function{params:[], ret:Unknown, variadic:true},
+                            // the "any function" type. Zero-param variadic now unifies with any
+                            // concrete function signature (fn-narrowing-variadic sprint).
+                            // Unknown ret type deferred until higher-kinded return type inference.
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Function {
+                                    params: vec![],
+                                    ret: Box::new(Type::Unknown),
+                                    variadic: true,
+                                },
+                            }];
+                        }
+                    }
+                    "null?" if args.len() == 1 => {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
+                            // null? narrows to empty closed record
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Record(Row {
+                                    fields: HashMap::new(),
+                                }),
+                            }];
+                        }
+                    }
+                    "seq?" if args.len() == 1 => {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
+                            // HKT: seq? narrows to Seq(Unknown) — element type deferred until
+                            // higher-kinded type parameterization (Seq: * → *)
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Seq(Box::new(Type::Unknown)),
+                            }];
+                        }
+                    }
+                    "num?" if args.len() == 1 => {
+                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
+                            // num? narrows to Number (supertype of Int | Float)
+                            return vec![Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: Type::Number,
+                            }];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    Vec::new()
+}
+
+/// Try to extract an equality-literal narrowing from `[= var literal]`.
+pub(crate) fn try_eq_literal(
+    left: &Arc<SurfaceNode>,
+    right: &Arc<SurfaceNode>,
+) -> Option<Narrowing> {
+    if let SurfaceExpression::VarRef { name, .. } = &left.expr {
+        match &right.expr {
+            SurfaceExpression::Int(n) => Some(Narrowing::EqLiteral {
+                var: name.clone(),
+                ty: Type::IntLiteral(*n),
+            }),
+            SurfaceExpression::Str(s) => Some(Narrowing::EqLiteral {
+                var: name.clone(),
+                ty: Type::StringLiteral(s.clone()),
+            }),
+            SurfaceExpression::Bool(_b) => Some(Narrowing::EqLiteral {
+                var: name.clone(),
+                ty: Type::Bool,
+            }),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
+/// Try to extract a type-of narrowing from `[= [type-of var] "TypeName"]`.
+pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> Option<Narrowing> {
+    // Left side must be [type-of var]
+    if let SurfaceExpression::Call {
+        func,
+        args,
+        named_args,
+        ..
+    } = &left.expr
+    {
+        if named_args.is_empty() && args.len() == 1 {
+            if let SurfaceExpression::VarRef {
+                name: func_name, ..
+            } = &func.expr
+            {
+                if func_name == "type-of" {
+                    if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
+                        // Right side must be a string literal type name
+                        if let SurfaceExpression::Str(type_name) = &right.expr {
+                            let ty = match type_name.as_str() {
+                                "Int" => Some(Type::Int),
+                                "Float" => Some(Type::Float),
+                                "String" => Some(Type::Str),
+                                "Bool" => Some(Type::Bool),
+                                "Dict" => Some(Type::Record(Row {
+                                    fields: HashMap::new(),
+                                })),
+                                // HKT: bare Seq type tag narrows to Seq(Unknown) — element type deferred
+                                "Seq" => Some(Type::Seq(Box::new(Type::Unknown))),
+                                "Number" => Some(Type::Number),
+                                _ => None,
+                            };
+                            return ty.map(|t| Narrowing::TypeOf {
+                                var: var_name.clone(),
+                                ty: t,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Apply narrowings to a type environment, creating a refined environment for the true branch.
+pub(crate) fn apply_narrowings(
+    env: &Rc<TypeEnv>,
+    narrowings: &[Narrowing],
+    state: &mut InferState,
+) -> Rc<TypeEnv> {
+    if narrowings.is_empty() {
+        return Rc::clone(env);
+    }
+
+    let mut new_env = TypeEnv::with_parent(env);
+
+    for narrowing in narrowings {
+        match narrowing {
+            Narrowing::EqLiteral { var, ty } => {
+                // BAS: all tails are Empty — no row var registration needed
+                new_env.insert(var.clone(), ty.clone());
+            }
+            Narrowing::TypeOf { var, ty } => {
+                // BAS: all tails are Empty — no row var registration needed
+                new_env.insert(var.clone(), ty.clone());
+            }
+            Narrowing::HasKey { var, key } => {
+                // Get the current type of the variable (if any)
+                let current_ty = env.get(var).map(|scheme| scheme.body.clone());
+
+                // Create a record type with at least the given key
+                let mut fields = HashMap::new();
+                let fresh_type_var = state.fresh_type_var();
+                fields.insert(key.clone(), fresh_type_var);
+
+                // BAS: all tails are Empty. Merge existing record fields if present.
+                // Width subtyping handles the openness — the record is known to have the
+                // key at runtime, and may have additional fields beyond those annotated.
+                let new_ty = if let Some(Type::Record(current_row)) = current_ty {
+                    // Merge existing fields with the new constraint
+                    for (k, v) in current_row.fields {
+                        fields.insert(k, v);
+                    }
+                    Type::Record(Row { fields })
+                } else {
+                    // Create a fresh record with just the key constraint
+                    Type::Record(Row { fields })
+                };
+
+                new_env.insert(var.clone(), new_ty);
+            }
+        }
+    }
+
+    Rc::new(new_env)
+}
+
+/// Apply negation narrowings for the false branch of an `if` expression.
+///
+/// For each `TypeOf { var, ty }` narrowing (e.g., produced by `[int? x]`), the false branch
+/// knows the predicate FAILED, so the variable's type is intersected with `Negation(ty)`.
+/// This is the BAS false-branch rule: ~[int? x] → x : ~Int.
+///
+/// EqLiteral and HasKey narrowings are not negated in the false branch (they produce
+/// Negation(literal) which is rarely useful and can confuse downstream unification).
+pub(crate) fn apply_negation_narrowings(
+    env: &Rc<TypeEnv>,
+    narrowings: &[Narrowing],
+    _state: &mut InferState,
+) -> Rc<TypeEnv> {
+    // Only TypeOf narrowings produce useful false-branch refinements
+    let type_of_narrowings: Vec<_> = narrowings
+        .iter()
+        .filter(|n| matches!(n, Narrowing::TypeOf { .. }))
+        .collect();
+
+    if type_of_narrowings.is_empty() {
+        return Rc::clone(env);
+    }
+
+    let mut new_env = TypeEnv::with_parent(env);
+
+    for narrowing in type_of_narrowings {
+        let Narrowing::TypeOf { var, ty } = narrowing else {
+            continue;
+        };
+        // In the false branch: x : ~ty (negation of the predicate type)
+        // Skip Unknown — ~Unknown is not a useful constraint (gradual typing escape hatch).
+        if matches!(ty, Type::Unknown) {
+            continue;
+        }
+        let negated = Type::Negation(Box::new(ty.clone()));
+        new_env.insert(var.clone(), negated);
+    }
+
+    Rc::new(new_env)
+}
+
+/// Collect variable bindings introduced by a pattern, with their types.
+///
+/// Returns `Vec<(name, type)>` pairs used to extend the TypeEnv before
+/// type-checking a match arm body, so that pattern-bound variables are in scope
+/// and have the best type available from the scrutinee's static type.
+///
+/// Type narrowing rules (match-arm-scope sprint):
+/// - `Pattern::Variable(name)`: binds `name` to the full scrutinee type.
+/// - `Pattern::Dict { fields }`: for each `(key, Pattern::Variable(sub_name))` field,
+///   look up `key` in the scrutinee Record type and bind `sub_name` to that field's
+///   type. Falls back to `Unknown` when the scrutinee type is not a concrete Record
+///   or the key is absent (open rows may carry the field at runtime).
+/// - `Pattern::Seq { head, tail }`: head gets `Unknown`, tail gets `Seq(Unknown)`.
+/// - `Pattern::Constructor { binding }`: payload gets the field type from the matching NominalVariant
+///   when scrutinee is Union or Intersection containing the tag; falls back to `Unknown`.
+/// - `Pattern::Or(alts)`: collect from the first alternative only (all alts must bind
+///   the same variable set by parser invariant).
+/// - `Pattern::Wildcard | Literal | TypeTag | Pin`: no bindings.
+pub(crate) fn collect_pattern_bindings(
+    pat: &Pattern,
+    scrutinee_ty: &Type,
+    out: &mut Vec<(String, Type)>,
+) {
+    match pat {
+        Pattern::Variable(name) => {
+            out.push((name.clone(), scrutinee_ty.clone()));
+        }
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::TypeTag(_) | Pattern::Pin(_) => {}
+        Pattern::Dict { fields, .. } => {
+            for (key, sub_pat) in fields {
+                // Narrow the sub-pattern's scrutinee type using the record field type.
+                let field_ty = match scrutinee_ty {
+                    // Gradual: field not in known set — Unknown for missing field in pattern
+                    Type::Record(row) => row.fields.get(key).cloned().unwrap_or(Type::Unknown),
+                    // Union: if all members that are Records agree on the field type, use it.
+                    Type::Union(members) => {
+                        // Collect field types from all Record members
+                        let mut field_types = Vec::new();
+                        for member in members {
+                            if let Type::Record(row) = member {
+                                if let Some(ty) = row.fields.get(key) {
+                                    field_types.push(ty.clone());
+                                }
+                            }
+                        }
+
+                        // If all Record members have this field and all types are equal, use it
+                        if !field_types.is_empty() {
+                            let first_ty = &field_types[0];
+                            if field_types.iter().all(|ty| ty == first_ty) {
+                                first_ty.clone()
+                            } else {
+                                // Gradual: Union members disagree on field type
+                                Type::Unknown
+                            }
+                        } else {
+                            // Gradual: no Record member has this field
+                            Type::Unknown
+                        }
+                    }
+                    _ => Type::Unknown,
+                };
+                collect_pattern_bindings(&sub_pat.node, &field_ty, out);
+            }
+        }
+        Pattern::Seq { head, tail } => {
+            // Head is the element type; tail is the remaining Seq.
+            let elem_ty = match scrutinee_ty {
+                Type::Seq(elem) => (**elem).clone(),
+                // Gradual: scrutinee is not a Seq — element type unknown
+                _ => Type::Unknown,
+            };
+            collect_pattern_bindings(&head.node, &elem_ty, out);
+            // Tail is always a Seq of the same element type.
+            let tail_ty = Type::Seq(Box::new(elem_ty));
+            collect_pattern_bindings(&tail.node, &tail_ty, out);
+        }
+        Pattern::Constructor { tag, binding } => {
+            // Extract the payload type from the scrutinee when it's a Union containing
+            // a NominalVariant with matching tag.
+            if let Some(b) = binding {
+                // Extract the binding variable name for single-field payload resolution.
+                // When the binding name matches the sole field name of a single-field variant,
+                // the runtime payload is the field value directly (e.g., `[Circle r]` with
+                // `Circle r: Int` gives `r: Int`). When names don't match (e.g., `[MyOk p]`
+                // with `MyOk n: Int`), the binding receives the whole payload record so that
+                // field access `p.n` works correctly.
+                let binding_var_name: Option<&str> = match &b.node {
+                    Pattern::Variable(name) => Some(name.as_str()),
+                    _ => None,
+                };
+
+                // Helper: resolve the payload type for a single-field or multi-field row.
+                //
+                // Single-field variant payload resolution:
+                // - Positional fields (auto-indexed: "0", "1", ...): always unwrap to the field
+                //   value type. The runtime stores the value directly, not as a record.
+                //   E.g., [Ok v] where Ok has positional payload → v: a (direct value).
+                // - Named fields (e.g., `r: Int`, `n: Int`):
+                //   - If binding name matches the field name → unwrap to field value type.
+                //     E.g., [Circle r] where Circle has `r: Int` → r: Int.
+                //   - If binding name does NOT match → return the full payload record.
+                //     E.g., [MyOk p] where MyOk has `n: Int` → p: Record{n:Int} → p.n: Int.
+                //
+                // Multi-field variants: always return as record (no single-field unwrapping).
+                let resolve_payload = |fields: &Row| -> Type {
+                    if fields.fields.len() == 1 {
+                        let field_name = fields.fields.keys().next().unwrap();
+                        // Positional fields have auto-indexed names ("0", "1", ...).
+                        // Check if the field name is a non-negative integer (positional).
+                        let is_positional = field_name.parse::<u64>().is_ok();
+                        if is_positional || binding_var_name == Some(field_name.as_str()) {
+                            // Positional field or binding name matches: unwrap to field value type
+                            fields
+                                .fields
+                                .get(field_name)
+                                .cloned()
+                                .unwrap_or(Type::Unknown)
+                        } else {
+                            // Named field, binding name doesn't match: keep as record for field access
+                            Type::Record(fields.clone())
+                        }
+                    } else {
+                        Type::Record(fields.clone())
+                    }
+                };
+
+                let payload_ty = match scrutinee_ty {
+                    Type::NominalVariant {
+                        tag: variant_tag,
+                        fields,
+                    } if variant_tag == tag => {
+                        // Direct NominalVariant match — extract payload type from fields.
+                        resolve_payload(fields)
+                    }
+                    Type::Union(members) => {
+                        // Union: find the NominalVariant member with matching tag
+                        let mut matching_fields = None;
+                        for member in members {
+                            if let Type::NominalVariant {
+                                tag: variant_tag,
+                                fields,
+                            } = member
+                            {
+                                if variant_tag == tag {
+                                    matching_fields = Some(fields.clone());
+                                    break;
+                                }
+                            }
+                        }
+                        // Gradual: constructor tag not found in Union — payload type unknown
+                        matching_fields
+                            .map(|f| resolve_payload(&f))
+                            .unwrap_or(Type::Unknown)
+                    }
+                    Type::Intersection(members) => {
+                        // Intersection: produced by I-Case3 narrowing when arm_scrutinee_ty is
+                        // Intersection([Union([Ok_ty, Err_ty]), NominalVariant("Ok", {})]).
+                        // Pass 1: check Union members first — they carry the real field types.
+                        // Pass 2: fall back to bare NominalVariants (narrowing markers, may have empty fields).
+                        // This ordering ensures we get `r: Int` from `NominalVariant("Circle", {r:Int})`
+                        // inside a Union, not `[]` from the bare `NominalVariant("Circle", {})` marker.
+                        let mut payload = Type::Unknown;
+                        // Pass 1: Union members (real field types)
+                        'union_pass: for member in members {
+                            if let Type::Union(union_members) = member {
+                                for um in union_members {
+                                    if let Type::NominalVariant {
+                                        tag: variant_tag,
+                                        fields,
+                                    } = um
+                                    {
+                                        if variant_tag == tag {
+                                            payload = resolve_payload(fields);
+                                            break 'union_pass;
+                                        }
+                                    }
+                                }
+                            }
+                            // Also accept a bare NominalVariant with non-empty fields in pass 1
+                            if matches!(payload, Type::Unknown) {
+                                if let Type::NominalVariant {
+                                    tag: variant_tag,
+                                    fields,
+                                } = member
+                                {
+                                    if variant_tag == tag && !fields.fields.is_empty() {
+                                        payload = resolve_payload(fields);
+                                        break 'union_pass;
+                                    }
+                                }
+                            }
+                        }
+                        // Pass 2: bare NominalVariant fallback (narrowing markers, possibly empty).
+                        // Prefer NominalVariants with non-empty fields (real payload) over
+                        // empty-field markers (I-Case3 narrowing artifacts).
+                        if matches!(payload, Type::Unknown) {
+                            let mut empty_fallback = Type::Unknown;
+                            for member in members {
+                                if let Type::NominalVariant {
+                                    tag: variant_tag,
+                                    fields,
+                                } = member
+                                {
+                                    if variant_tag == tag {
+                                        if !fields.fields.is_empty() {
+                                            // Real payload with fields — use immediately
+                                            payload = resolve_payload(fields);
+                                            break;
+                                        } else if matches!(empty_fallback, Type::Unknown) {
+                                            // Empty marker — keep as last resort
+                                            empty_fallback = resolve_payload(fields);
+                                        }
+                                    }
+                                }
+                            }
+                            if matches!(payload, Type::Unknown) {
+                                payload = empty_fallback;
+                            }
+                        }
+                        payload
+                    }
+                    _ => Type::Unknown,
+                };
+                collect_pattern_bindings(&b.node, &payload_ty, out);
+            }
+        }
+        Pattern::Or(alts) => {
+            // Or-patterns: only collect from the first alternative (all alts must bind
+            // the same set of variables, so any choice is equivalent for scoping).
+            if let Some(first) = alts.first() {
+                collect_pattern_bindings(&first.node, scrutinee_ty, out);
+            }
+        }
+    }
+}
+
+/// Extract type parameters from an instance pattern declaration.
+///
+/// The PatternDecl stores the inner bracket `[a@Int b@Float]` as a single `SurfaceExpression::Dict`
+/// binding (auto-indexed entries). This function recursively extracts types from either:
+/// - `SurfaceExpression::Dict(entries)` — inner binding bracket; extracts each auto-indexed entry
+/// - `SurfaceExpression::Annotated { annotation, .. }` — `a@Type` form; resolves the annotation
+/// - `SurfaceExpression::VarRef { .. }` — bare identifier; treated as `Type::Unknown`
+pub(crate) fn extract_pattern_types(
+    pattern_node: &Arc<SurfaceNode>,
+    env: &Rc<TypeEnv>,
+    state: &mut InferState,
+) -> Result<Vec<Type>, Vec<TypeError>> {
+    match &pattern_node.expr {
+        SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
+            let mut types = Vec::new();
+            for binding in bindings {
+                extract_binding_types(binding, env, state, &mut types)?;
+            }
+            Ok(types)
+        }
+        _ => Err(vec![TypeError::new(
+            "instance arm pattern must be a [pattern [...]] or [let ...] declaration",
+            pattern_node.span.clone(),
+        )]),
+    }
+}
+
+/// Recursively extract type(s) from a single pattern binding expression.
+///
+/// - `SurfaceExpression::Dict(entries)` — inner binding bracket `[a@Int b@Float]` (old syntax); expands entries
+/// - `SurfaceExpression::LetDecl { bindings }` — inner binding bracket `[let a@Int b@Float]` (new syntax); expands bindings
+/// - `SurfaceExpression::Call { func, args, .. }` — implied call `[Type]` or `[Type arg1 arg2]`; infers the call type
+/// - `SurfaceExpression::Annotated { annotation, .. }` — `a@Type` form
+/// - `SurfaceExpression::VarRef { .. }` — bare identifier → `Type::Unknown`
+/// - `SurfaceExpression::Placeholder` — wildcard `_` → `Type::Unknown`
+pub(crate) fn extract_binding_types(
+    binding: &Arc<SurfaceNode>,
+    env: &Rc<TypeEnv>,
+    state: &mut InferState,
+    types: &mut Vec<Type>,
+) -> Result<(), Vec<TypeError>> {
+    match &binding.expr {
+        // Inner binding bracket [a@Int b@Float] parsed as auto-indexed Dict (old syntax)
+        SurfaceExpression::Dict(entries) => {
+            for entry in entries {
+                // Each entry should be auto-indexed (no key) with Annotated/VarRef value
+                extract_binding_types(&entry.node.value, env, state, types)?;
+            }
+        }
+        // Inner binding bracket [let a@Int b@Float] (new unified-bindings syntax)
+        SurfaceExpression::LetDecl { bindings } => {
+            for sub_binding in bindings {
+                extract_binding_types(sub_binding, env, state, types)?;
+            }
+        }
+        // Implied call [Int] or [Result String] — treat as a type name reference.
+        // [Int] is parsed as Call { func: VarRef("Int"), args: [], implied: true }.
+        // Try to resolve the func as a type annotation; fall back to Unknown on failure.
+        SurfaceExpression::Call {
+            func,
+            args,
+            implied: true,
+            ..
+        } if args.is_empty() => {
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                let ann = Annotation::Simple(name.clone());
+                match resolve_annotation(&ann, env, func.span.clone(), state, &mut None, &mut None)
+                {
+                    Ok(ty) => types.push(ty),
+                    Err(_) => types.push(Type::Unknown),
+                }
+            } else {
+                types.push(Type::Unknown);
+            }
+        }
+        // Multi-arg implied call [Result String] or other complex type expressions:
+        // treat as Unknown (full parametric type resolution is future work).
+        SurfaceExpression::Call { .. } => {
+            types.push(Type::Unknown);
+        }
+        // a@Type form
+        SurfaceExpression::Annotated { annotation, .. } => {
+            let ty = resolve_annotation(
+                &annotation.node,
+                env,
+                annotation.span.clone(),
+                state,
+                &mut None,
+                &mut None,
+            )
+            .map_err(|e| vec![e])?;
+            types.push(ty);
+        }
+        // Bare identifier in pattern position: try to resolve as a type name.
+        // Handles `Int` in [pattern [Int]] where the inner dict entry is VarRef("Int").
+        SurfaceExpression::VarRef { name, .. } => {
+            let ann = Annotation::Simple(name.clone());
+            match resolve_annotation(&ann, env, binding.span.clone(), state, &mut None, &mut None) {
+                Ok(ty) => types.push(ty),
+                Err(_) => types.push(Type::Unknown),
+            }
+        }
+        // Gradual: wildcard placeholder
+        SurfaceExpression::Placeholder => {
+            types.push(Type::Unknown);
+        }
+        _ => {
+            return Err(vec![TypeError::new(
+                "pattern binding must be in form 'a@Type', bare identifier, or [let ...]",
+                binding.span.clone(),
+            )]);
+        }
+    }
+    Ok(())
+}
+
+/// Check if two pattern type lists could overlap (unify).
+///
+/// This is a pure probe: it saves and restores all mutable fields of `state`
+/// that `unify` touches (levels, constraints, kind_env) so that overlap testing
+/// never leaks side-effects into the global inference state.
+pub(crate) fn patterns_overlap(
+    types_a: &[Type],
+    types_b: &[Type],
+    state: &mut InferState,
+) -> Result<bool, Vec<TypeError>> {
+    if types_a.len() != types_b.len() {
+        return Ok(false);
+    }
+
+    // Save every field that unify() may touch so this probe is side-effect-free.
+    let saved_levels = state.levels.clone();
+    let saved_constraints = state.constraints.clone();
+    let saved_kind_env = state.kind_env.clone();
+    let saved_deferred = state.deferred_equalities.clone();
+    // Also save subst and name_counter: improve_functional_dependency writes directly to
+    // state.subst (via std::mem::take/replace) rather than through temp_subst, and
+    // resolve_instance may call fresh_type_var() incrementing name_counter.
+    let saved_subst = state.subst.clone();
+    let saved_name_counter = state.name_counter;
+
+    // Use a temporary substitution so state.subst is also unaffected.
+    let mut temp_subst = state.subst.clone();
+    let overlaps = types_a.iter().zip(types_b.iter()).all(|(ty_a, ty_b)| {
+        // Gradual: Unknown is the gradual-typing wildcard for unannotated pattern bindings.
+        // Treat Unknown as distinct from any concrete type: a position with Unknown
+        // cannot be used to establish overlap (it carries no type information).
+        if matches!(ty_a, Type::Unknown) || matches!(ty_b, Type::Unknown) {
+            return false; // non-overlapping at this position — Unknown is not concrete
+        }
+        unify(ty_a, ty_b, &mut temp_subst, state, Span::origin()).is_ok()
+    });
+
+    // Restore all mutated fields.
+    state.levels = saved_levels;
+    state.constraints = saved_constraints;
+    state.kind_env = saved_kind_env;
+    state.deferred_equalities = saved_deferred;
+    state.subst = saved_subst;
+    state.name_counter = saved_name_counter;
+
+    Ok(overlaps)
+}
+
+/// Probe whether two type slices can unify (for consistency checks).
+/// Returns true if all pairs successfully unify. Side-effect-free — restores state after probe.
+pub(crate) fn types_can_unify(
+    types_a: &[Type],
+    types_b: &[Type],
+    state: &mut InferState,
+) -> Result<bool, Vec<TypeError>> {
+    if types_a.len() != types_b.len() {
+        return Ok(false);
+    }
+
+    // Early bailout: if top-level constructors clearly differ, skip expensive unification.
+    for (ty_a, ty_b) in types_a.iter().zip(types_b.iter()) {
+        match (ty_a, ty_b) {
+            // Clearly disjoint constructors
+            (Type::Int, Type::Str)
+            | (Type::Int, Type::Float)
+            | (Type::Int, Type::Bool)
+            | (Type::Str, Type::Float)
+            | (Type::Str, Type::Bool)
+            | (Type::Float, Type::Bool)
+            | (Type::Str, Type::Int)
+            | (Type::Float, Type::Int)
+            | (Type::Bool, Type::Int)
+            | (Type::Bool, Type::Str)
+            | (Type::Bool, Type::Float)
+            | (Type::Float, Type::Str) => return Ok(false),
+            _ => {}
+        }
+    }
+
+    // Save every field that unify() may touch so this probe is side-effect-free.
+    let saved_levels = state.levels.clone();
+    let saved_constraints = state.constraints.clone();
+    let saved_kind_env = state.kind_env.clone();
+    let saved_deferred = state.deferred_equalities.clone();
+    let saved_subst = state.subst.clone();
+    let saved_name_counter = state.name_counter;
+
+    // Use a temporary substitution for the probe.
+    // Note: this probe uses a separate temp_subst; constraint checking via
+    // check_constraints_on_var may miss bindings from the probe. This is acceptable
+    // for instance consistency checks where types are typically concrete annotations,
+    // but would need to be addressed for general-purpose unification probes.
+    let mut temp_subst = state.subst.clone();
+    let can_unify = types_a
+        .iter()
+        .zip(types_b.iter())
+        .all(|(ty_a, ty_b)| unify(ty_a, ty_b, &mut temp_subst, state, Span::origin()).is_ok());
+
+    // Restore all mutated fields.
+    state.levels = saved_levels;
+    state.constraints = saved_constraints;
+    state.kind_env = saved_kind_env;
+    state.deferred_equalities = saved_deferred;
+    state.subst = saved_subst;
+    state.name_counter = saved_name_counter;
+
+    Ok(can_unify)
+}
+
+/// Extract parameter indices from a functional dependency variable list.
+/// Accepts a single param name (VarRef/Str), a Dict list [a b c], or an implied
+/// Call `[a b]` (which the parser produces when `a` is in head position).
+/// Returns Vec<usize> of indices into the class params list.
+pub(crate) fn extract_param_indices(
+    node: &Arc<SurfaceNode>,
+    params: &[String],
+    span: Span,
+) -> Result<Vec<usize>, Vec<TypeError>> {
+    let mut indices = Vec::new();
+
+    match &node.expr {
+        // Single param: a@Type or just "a"
+        SurfaceExpression::VarRef { name, .. } | SurfaceExpression::Str(name) => {
+            if let Some(idx) = params.iter().position(|p| p == name) {
+                indices.push(idx);
+            } else {
+                return Err(vec![TypeError::new(
+                    format!("functional dependency references unknown param '{}'", name),
+                    span,
+                )]);
+            }
+        }
+        // Multiple params as auto-indexed Dict: produced when bracket contains
+        // a literal/annotated head (e.g. `[a@Int b]` → Dict with auto-indexed entries)
+        SurfaceExpression::Dict(entries) => {
+            for entry in entries {
+                let param_name = match &entry.node.value.expr {
+                    SurfaceExpression::VarRef { name, .. } => name,
+                    SurfaceExpression::Str(s) => s,
+                    _ => {
+                        return Err(vec![TypeError::new(
+                            "functional dependency param must be an identifier or string",
+                            entry.span.clone(),
+                        )]);
+                    }
+                };
+
+                if let Some(idx) = params.iter().position(|p| p == param_name) {
+                    indices.push(idx);
+                } else {
+                    return Err(vec![TypeError::new(
+                        format!(
+                            "functional dependency references unknown param '{}'",
+                            param_name
+                        ),
+                        entry.span.clone(),
+                    )]);
+                }
+            }
+        }
+        // Multiple params as implied Call: produced when bracket has identifier in head
+        // position, e.g. `[a b]` → Call { func: VarRef("a"), args: [VarRef("b")] }
+        SurfaceExpression::Call {
+            func,
+            args,
+            implied: true,
+            ..
+        } => {
+            // Extract the function (head param)
+            let head_name = match &func.expr {
+                SurfaceExpression::VarRef { name, .. } => name,
+                SurfaceExpression::Str(s) => s,
+                _ => {
+                    return Err(vec![TypeError::new(
+                        "functional dependency param must be an identifier or string",
+                        func.span.clone(),
+                    )])
+                }
+            };
+            if let Some(idx) = params.iter().position(|p| p == head_name) {
+                indices.push(idx);
+            } else {
+                return Err(vec![TypeError::new(
+                    format!(
+                        "functional dependency references unknown param '{}'",
+                        head_name
+                    ),
+                    func.span.clone(),
+                )]);
+            }
+            // Extract the remaining args
+            for arg in args {
+                let arg_name = match &arg.expr {
+                    SurfaceExpression::VarRef { name, .. } => name,
+                    SurfaceExpression::Str(s) => s,
+                    _ => {
+                        return Err(vec![TypeError::new(
+                            "functional dependency param must be an identifier or string",
+                            arg.span.clone(),
+                        )])
+                    }
+                };
+                if let Some(idx) = params.iter().position(|p| p == arg_name) {
+                    indices.push(idx);
+                } else {
+                    return Err(vec![TypeError::new(
+                        format!(
+                            "functional dependency references unknown param '{}'",
+                            arg_name
+                        ),
+                        arg.span.clone(),
+                    )]);
+                }
+            }
+        }
+        _ => {
+            return Err(vec![TypeError::new(
+                "functional dependency variables must be an identifier or list",
+                span,
+            )]);
+        }
+    }
+
+    Ok(indices)
+}

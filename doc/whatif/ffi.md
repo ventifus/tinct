@@ -627,7 +627,7 @@ Parse `uses: ["sql" "net"]` in the document header block (same pass as `caps:` a
 
 **Impact:** Minor — one new header key.
 
-#### `src/eval_pipeline.rs` — `--- uses:` injection at evaluation time
+#### `src/eval.rs` — `--- uses:` injection at evaluation time
 
 `eval_surface_document` reads `doc.uses` before evaluating any expressions. For each module name, calls `builtin_module(name)` and injects resulting `BuiltinDef` entries into the document environment. Unknown names error immediately. Timing mirrors `--- caps:` processing.
 

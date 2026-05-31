@@ -658,11 +658,13 @@ pub enum Value {
     // `surface_program_tag()` from `src/surface_fields.rs`.
     /// A complete tinct program — the type returned by `load` and `expand`.
     /// Wraps an Arc<SurfaceProgram> for Send+Sync compatibility (future async runtime).
-    /// Also carries resolution and type annotation tables computed during load/expand.
+    /// Also carries resolution and type annotation tables computed during load/expand,
+    /// plus the expects_resolved map from the typecheck pass (keyed by expects annotation span).
     Program {
         program: Arc<SurfaceProgram>,
         resolutions: Arc<crate::ast::ResolutionTable>,
         types: Arc<crate::ast::TypeAnnotationTable>,
+        expects_resolved: Arc<HashMap<crate::ast::Span, crate::types::Type>>,
     },
 
     /// A single document within a program — accessible via `program.documents`.

@@ -137,7 +137,7 @@ For an unevaluated thunk with expression E and environment env: substitute each 
 - `stdlib/prelude.llt` `do-desugar-inferred`: `[gensym "do-infer"]` now produces `ℊꜱʏᴍ⧼do-infer⧽N`. Both sentinel checks were updated atomically:
   - `src/eval.rs` (`CoreExpr::FreeVar` dispatch): uses `name.starts_with("ℊꜱʏᴍ⧼do-infer⧽")`
   - `src/typecheck.rs` (`check_do_infer` dispatch): same sentinel — both updated together so `do_infer_resolutions` map keys remain consistent.
-- `src/eval_pipeline.rs` migrated from `__nominal_input_N` to `ℊꜱʏᴍ⧼nominal-input⧽N` for consistency.
+- `src/eval.rs` (pipeline functions) migrated from `__nominal_input_N` to `ℊꜱʏᴍ⧼nominal-input⧽N` for consistency.
 - Any macro that calls `[gensym]` or `[gensym prefix]` automatically picks up the new format with no change needed.
 
 The `ℊꜱʏᴍ` prefix is the canonical convention for all compiler-generated identifiers in tinct going forward: macro hygiene, ANF intermediate names, CPS variables, and SCN capture-avoiding renames all use this prefix.

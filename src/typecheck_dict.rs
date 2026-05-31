@@ -525,30 +525,6 @@ pub(crate) fn infer_dict(
             }
 
             if let Some(name) = key_name {
-                // T002: warn when a dict entry's value is a bare VarRef with the
-                // same name as its key — e.g., `[name: name]`. In letrec scoping
-                // this creates a circular self-reference (the value thunk captures
-                // the dict environment where `name` resolves to itself). The user
-                // likely intended to reference an outer-scope variable.
-                if let SurfaceExpression::VarRef {
-                    name: ref var_name,
-                    escaped: false,
-                } = &entry.node.value.expr
-                {
-                    if var_name == name && !state.in_prelude_load {
-                        state.diagnostics.push(crate::error::TypeDiagnostic {
-                            message: format!(
-                                "dict entry `{name}: {name}` is a circular self-reference — \
-                                 the value resolves to itself in letrec scope. \
-                                 Use a different name or alias the outer binding first"
-                            ),
-                            span: entry.node.value.span.clone(),
-                            code: "T002",
-                            level: crate::error::DiagnosticLevel::Warn,
-                        });
-                    }
-                }
-
                 // Set current_function for polymorphic recursion detection.
                 // Only set it for functions WITHOUT return annotations — functions with
                 // annotations can recurse safely because the return type is pinned.

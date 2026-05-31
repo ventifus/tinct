@@ -416,10 +416,10 @@ The formal rules map directly to the implementation:
 | Formal rule | Implementation | Source |
 |------------|----------------|--------|
 | DICT-SCOPE | `eval_dict()` | `eval.rs:309-352` |
-| SEQ-SCOPE | `eval_document_exprs()` (canonical loop) | `eval_pipeline.rs` |
-| SEQ-SCOPE (document) | `eval_surface_document()` (caps validation + delegate to `eval_document_exprs`) | `eval_pipeline.rs` |
+| SEQ-SCOPE | `eval_document_exprs()` (canonical loop) | `eval.rs` |
+| SEQ-SCOPE (document) | `eval_surface_document()` (caps validation + delegate to `eval_document_exprs`) | `eval.rs` |
 | SEQ-SCOPE (eval builtin) | `builtin_eval()` (extracts nodes from Seq, delegates to `eval_document_exprs`) | `builtins_meta.rs` |
-| DOC-PIPELINE | `eval_surface_file_with_input()` (binds `%` + `%name`) | `eval_pipeline.rs` |
+| DOC-PIPELINE | `eval_surface_file_with_input()` (binds `%` + `%name`) | `eval.rs` |
 | DOC-PIPELINE Σ accumulation | Named-section map `named: IndexMap<String, Rc<Thunk>>` | `eval.rs:830, 842-846, 851-853` |
 | LOOKUP | `Environment::get()` | `value.rs:445-460` |
 | Key isolation | `eval_key(key_expr, parent_env, d)` | `eval.rs:327` |
@@ -710,7 +710,7 @@ Duplicate names during merge are errors (consistent with the duplicate-keys-are-
 When an error originates inside a chain of included files, the runtime annotates the error's stack trace with one frame per include boundary, showing the full path that led to the error:
 
 ```text
-[E053] include: parse error in "bad.llt": ... (defined at ...)
+load: parse error in "bad.llt": ... (defined at ...)
   in included from outer.llt at 1:1-1:5
   in included from middle.llt at 1:1-1:24
 ```
@@ -986,8 +986,8 @@ This matches the document isolation property of DOC-PIPELINE (§Scope Chain Sema
 | Guard push | `builtins.rs:1300-1303` (`include_guard.insert`) |
 | Guard pop + base_dir restore | `builtins.rs:1323` (`cleanup` closure) |
 | Cache store | `builtins.rs:1345-1348` |
-| DOC-PIPELINE (cross-ref) | `eval_surface_file_with_input` (`eval_pipeline.rs`) |
-| SEQ-SCOPE (cross-ref) | `eval_document_exprs` (canonical loop, `eval_pipeline.rs`); `eval_surface_document` delegates to it |
+| DOC-PIPELINE (cross-ref) | `eval_surface_file_with_input` (`eval.rs`) |
+| SEQ-SCOPE (cross-ref) | `eval_document_exprs` (canonical loop, `eval.rs`); `eval_surface_document` delegates to it |
 
 ## Side Effects and I/O
 

@@ -1,4 +1,4 @@
-# sin : sine of 0 radians
-[sin 0]
+# builtin-sin : sine of 0 radians
+[builtin-sin 0]
 === out
 Float(0)

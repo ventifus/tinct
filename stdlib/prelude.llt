@@ -2269,6 +2269,7 @@ as %name bindings available to subsequent documents via scope injection.
                            [builtin-reduce builtin-merge []
                              [builtin-map module doc.uses]]]
                program: prog
+               expects: doc.expects
                %: state.percent]]
       [builtin-merge state
         [percent: val

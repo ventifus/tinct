@@ -12,7 +12,7 @@
 //!    rewritten to `Call` nodes during desugaring — this applies to *every* pipe
 //!    expression, not just those involving `$_`. After this pass, `Expr::Pipe` nodes
 //!    produced by the desugar pass are converted to `Call` nodes. The type checker
-//!    asserts `Expr::Pipe` is unreachable (`typecheck.rs:2235`); the evaluator
+//!    asserts `Expr::Pipe` is unreachable (typecheck.rs); the evaluator
 //!    eliminates them via `expr_to_core_expr` in `ast_convert.rs` (which converts
 //!    Pipe to Call silently). This module is the single lowering site for pipe expressions.
 //!

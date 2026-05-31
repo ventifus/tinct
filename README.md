@@ -311,9 +311,15 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 | `src/types.rs` | Type system: `Type` enum (including `Union`, `Intersection`, `Negation`, `Never`, `Top`, `Map`); `Row` (flat, no tail after BAS); `Substitution` (kinded unification); `TypeEnv`, `TypeError`, `InferState` (levels-based generalization) |
 | `src/type_env.rs` | Builtin type registrations: seeds `TypeEnv` with types for all builtins; `%cwd`/`%libdir`/`%stdin` cap types |
 | `src/type_unify.rs` | Unification engine: `unify()`, occurs check, row unification, level adjustment |
-| `src/typecheck.rs` | Type checker: `typecheck_file()`, `infer_expr()`, five-pass dict inference, TypeAssert enforcement, type alias expansion, polymorphic `check_call`, row polymorphism |
-| `src/typecheck_annot.rs` | Annotation type inference helpers |
-| `src/typecheck_dict.rs` | Dict-specific type inference (five-pass algorithm) |
+| `src/typecheck.rs` | Type checker core: `typecheck_file()`, `infer_surface_expr()` dispatch, `infer_if`, state management |
+| `src/typecheck_annot.rs` | Annotation resolution: `expand_type_alias`, `resolve_annotation`, `resolve_fn_type`, type alias instantiation |
+| `src/typecheck_dict.rs` | Dict-specific type inference (five-pass letrec algorithm) |
+| `src/typecheck_narrow.rs` | Narrowing constraints, pattern binding extraction, pattern overlap detection |
+| `src/typecheck_diag.rs` | T010/T011/T012 type quality scanning (`scan_type_quality`, reads TypeMap only) |
+| `src/typecheck_special.rs` | Special-case type refinement: `check_get`, `check_open`, `check_arithmetic`, `check_do_infer` |
+| `src/typecheck_match.rs` | Case arm and function literal inference: `typecheck_case_arm`, `infer_fn` |
+| `src/typecheck_call.rs` | Call and dot-access type checking: `check_call`, `check_call_with_scheme`, `check_dot_access` |
+| `src/typecheck_tests.rs` | Extracted type checker test module (all `#[cfg(test)]` via `#[path]`) |
 | `src/value.rs` | Runtime types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain), `BuiltinFn` signature |
 | `src/arena.rs` | `ThunkId(u32)` arena: `Vec<Thunk>` flat storage for the evaluator |
 | `src/eval.rs` | Evaluator core: `eval()`, `Expr::Sequential` strict binding, dict construction with letrec semantics |
@@ -321,10 +327,10 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 | `src/eval_materialize.rs` | `materialize()`: call-site span attachment, stack frame propagation, WHNF forcing |
 | `src/eval_access.rs` | Access chain evaluation: dot, bracket, range, TypeAssert |
 | `src/eval_dict.rs` | Dict construction and letrec scoping |
-| `src/eval_pipeline.rs` | Document pipeline evaluation: scope chains, `%` pipeline, document-level Sequential |
+| `stdlib/loader.llt` | Bootstrap loader (included at compile time): `eval-program`, `eval-programs` — drives multi-document pipeline evaluation |
 | `src/eval_deep.rs` | `deep_materialize()`: recursive full forcing of all thunks |
 | `src/builtins.rs` | Builtin registry: `standard_builtins()`, `create_root_env()`, `create_stdlib_env()` (loads `stdlib/prelude.llt`) |
-| `src/builtins_io.rs` | I/O builtins: `open`, `slurp`, `write`, `lines`; `connect` (transport-generic: Tcp/Udp/UnixStream/UnixDatagram/Icmp); `tls-layer`, `tls-peer-cert`, `spki-pin`; `quic-session`, `quic-open-stream`, `http2-session`, `http3-session`, `http-request`, `icmp-ping`; `src/async_rt.rs` tokio runtime |
+| `src/builtins_io.rs` | I/O builtins: `open`, `write`, `lines`; `connect` (transport-generic: Tcp/Udp/UnixStream/UnixDatagram/Icmp); `tls-layer`, `tls-peer-cert`, `spki-pin`; `quic-session`, `quic-open-stream`, `http2-session`, `http3-session`, `http-request`, `icmp-ping`; `src/async_rt.rs` tokio runtime |
 | `src/builtins_math.rs` | Math builtins: arithmetic, `floor`, `ceil`, `round`, `pow`, `log`, `sqrt`, etc. |
 | `src/builtins_string.rs` | String builtins: `str`, `str-find`, `str-split`, `str-replace`, `str-chars`, etc. |
 | `src/builtins_meta.rs` | Meta builtins: `type-of`, `tag-of`, `eval`, `try`, `apply`, `force`, `validate` |
@@ -377,7 +383,7 @@ Tests across multiple modules covering:
 - **value.rs** -- Value, Thunk, and Environment types (evaluator foundation)
 - **error.rs** -- `EvalError` and `StackFrame` formatting with definition-site and materialization-site spans
 - **types.rs** -- Type enum, TypeEnv scope chain, subtyping (Number, structural records, function variance, open/closed/row-var records), unification (Hindley-Milner, type variable instantiation, substitution application, literal promotions, occurs check)
-- **typecheck.rs** -- type inference (literals, records, access chains, functions, scope chains, `%` pipeline), TypeAssert enforcement, type alias resolution, annotation interpretation, `Fn@Return [Params]` function type expressions, row polymorphism, polymorphic function call checking (instantiate + unify + apply)
+- **typecheck.rs / typecheck_tests.rs** -- type inference (literals, records, access chains, functions, scope chains, `%` pipeline), TypeAssert enforcement, type alias resolution, annotation interpretation, `Fn@Return [Params]` function type expressions, row polymorphism, polymorphic function call checking (instantiate + unify + apply); tests extracted to `typecheck_tests.rs` via `#[path]`
 
 ### Corpus Tests (`tests/corpus/`)
 
@@ -457,7 +463,7 @@ The dividing line: if the primary input *is already* the domain type,
 domain-first. If the function *produces* that type from something else,
 verb-first.
 
-Single-word builtins are always verbs: `map`, `filter`, `open`, `slurp`,
+Single-word builtins are always verbs: `map`, `filter`, `open`,
 `connect`, `emit`, `reverse`, `sort`.
 
 ### File and module names

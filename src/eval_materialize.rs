@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::IndexMap;
 
-use crate::ast::{Annotation, CoreExpr, Span, Spanned, SurfaceExpression};
+use crate::ast::{Annotation, CoreExpr, Span, Spanned, SurfaceExpression, SurfaceNode};
 use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
@@ -2683,6 +2683,29 @@ pub(crate) async fn apply_cont(
                                         }
                                     }
                                 }
+                                "expects" => match &doc.expects {
+                                    None => Value::Dict(indexmap::IndexMap::new()),
+                                    Some(spanned_ann) => {
+                                        // Return a TypeAssert expression node: `%@annotation`.
+                                        // The inner expression is `VarRef("%")` — when T-833
+                                        // evaluates this, it will bind `%` to the pipeline input
+                                        // and validate it against the annotation.
+                                        let inner = Arc::new(SurfaceNode {
+                                            expr: SurfaceExpression::VarRef {
+                                                name: "%".to_string(),
+                                                escaped: false,
+                                            },
+                                            span: spanned_ann.span.clone(),
+                                        });
+                                        Value::Expression(Arc::new(SurfaceNode {
+                                            expr: SurfaceExpression::TypeAssert {
+                                                annotation: spanned_ann.clone(),
+                                                expr: inner,
+                                            },
+                                            span: spanned_ann.span.clone(),
+                                        }))
+                                    }
+                                },
                                 _ => Value::Dict(indexmap::IndexMap::new()),
                             };
                             let thunk = Arc::new(Thunk::new_materialized(val, access_span.clone()));

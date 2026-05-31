@@ -46,10 +46,10 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::arena::ThunkId;
-use crate::ast::{CoreExpr, Span, Spanned};
+use crate::ast::{CoreExpr, Span, Spanned, SurfaceExpression};
 use crate::builtins::{builtin, ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
-use crate::eval::{materialize, materialize_sync};
+use crate::eval::{materialize, materialize_sync, wrap_with_nominal_validation};
 use crate::eval_call::{invoke_function, CallContext};
 use crate::eval_materialize::force_dict_tree;
 use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
@@ -61,7 +61,7 @@ use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
 /// unguessable — collision requires deliberate IME input of these codepoints.
 ///
 /// Used by both `builtin_gensym` (user-facing) and internal synthetic variable creation
-/// (e.g., `wrap_with_nominal_validation` in `eval_pipeline.rs`) to ensure consistent naming.
+/// (e.g., `wrap_with_nominal_validation` in `eval.rs`) to ensure consistent naming.
 pub(crate) fn make_gensym_name(prefix: &str, id: u64) -> String {
     format!("ℊꜱʏᴍ⧼{}⧽{}", prefix, id)
 }
@@ -1489,9 +1489,8 @@ pub(crate) fn builtin_load(
 
         // Parse
         let parsed = crate::parser::parse(&source).map_err(|e| {
-            EvalError::include_parse_failed(
-                display_name.to_string(),
-                e.to_string(),
+            EvalError::user_error(
+                format!("load: parse error in \"{}\": {}", display_name, e),
                 call_span.clone(),
             )
         })?;
@@ -1504,6 +1503,7 @@ pub(crate) fn builtin_load(
             program: std::sync::Arc::new(program),
             resolutions: std::sync::Arc::new(crate::ast::ResolutionTable::new()),
             types: std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+            expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
         };
         let thunk = Arc::new(Thunk::new_materialized(program_value, call_span));
         Ok(thunk)
@@ -1538,6 +1538,7 @@ pub(crate) fn builtin_expand(
                 program: surface_program,
                 resolutions: _old_resolutions,
                 types: _old_types,
+                expects_resolved: _old_expects_resolved,
             } => {
                 // Run macro expansion using expand_surface_program so SurfaceItem::Decl macros are seen.
                 // PIPELINE INVARIANT: expand -> desugar -> resolve (macros can introduce $_ patterns).
@@ -1563,17 +1564,18 @@ pub(crate) fn builtin_expand(
                 // Typecheck to populate TypeAnnotationTable for static type resolution in TypeAssert nodes.
                 // Type errors are advisory — eval proceeds regardless. Callers that care
                 // about type errors use `builtin_eval_types`.
-                let (_annotation_errors, type_annotation_table, _expects_resolved) =
+                let (_annotation_errors, type_annotation_table, new_expects_resolved) =
                     crate::typecheck::typecheck_surface_program_annotation_table(
                         &new_surface_program,
                     );
 
-                // Return as Value::Program with fresh resolution and type tables
+                // Return as Value::Program with fresh resolution, type, and expects_resolved tables
                 ok_val(
                     Value::Program {
                         program: std::sync::Arc::new(new_surface_program),
                         resolutions: std::sync::Arc::new(new_resolutions),
                         types: std::sync::Arc::new(type_annotation_table),
+                        expects_resolved: std::sync::Arc::new(new_expects_resolved),
                     },
                     call_span,
                 )
@@ -1670,22 +1672,130 @@ pub(crate) fn builtin_eval(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        // Extract optional env:, scope:, %:, and program: named args
-        let (env_dict, scope_dict, pipeline_input, program_opt) = if let Some(named_map) = named {
-            // Reject unknown named args
-            for key in named_map.keys() {
-                if key != "env" && key != "scope" && key != "%" && key != "program" {
-                    return Err(EvalError::named_arg_rejected("eval".to_string(), call_span).into());
+        // Extract optional env:, scope:, %:, program:, and expects: named args
+        let (env_dict, scope_dict, pipeline_input, program_opt, expects_opt) =
+            if let Some(named_map) = named {
+                // Reject unknown named args
+                for key in named_map.keys() {
+                    if key != "env"
+                        && key != "scope"
+                        && key != "%"
+                        && key != "program"
+                        && key != "expects"
+                    {
+                        return Err(
+                            EvalError::named_arg_rejected("eval".to_string(), call_span).into()
+                        );
+                    }
+                }
+
+                let env_dict = named_map.get("env").map(Arc::clone);
+                let scope_dict = named_map.get("scope").map(Arc::clone);
+                let pipeline_input = named_map.get("%").map(Arc::clone);
+                let program_opt = named_map.get("program").map(Arc::clone);
+                let expects_opt = named_map.get("expects").map(Arc::clone);
+                (
+                    env_dict,
+                    scope_dict,
+                    pipeline_input,
+                    program_opt,
+                    expects_opt,
+                )
+            } else {
+                (None, None, None, None, None)
+            };
+
+        // Get resolution, type, and expects_resolved tables from the program: argument if provided.
+        // - res_table and types_table are used by eval_document_exprs when lowering expressions.
+        // - program_expects_resolved is used by expects: validation to look up pre-resolved types
+        //   for pipeline input contracts, keyed by the annotation's span.
+        let (res_table, types_table, program_expects_resolved) =
+            if let Some(ref program_thunk) = program_opt {
+                let program_val = materialize(program_thunk, Some(&call_span), &ctx).await?;
+                match program_val {
+                    Value::Program {
+                        resolutions,
+                        types,
+                        expects_resolved,
+                        ..
+                    } => (
+                        Arc::clone(&resolutions),
+                        Arc::clone(&types),
+                        Arc::clone(&expects_resolved),
+                    ),
+                    _ => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "eval".to_string(),
+                            "Program (for program: argument)",
+                            program_val.type_name(),
+                            call_span,
+                        )
+                        .into())
+                    }
+                }
+            } else {
+                // No program provided - use empty tables (expressions won't have resolution info)
+                (
+                    crate::ast::empty_resolution_table_arc(),
+                    crate::ast::empty_type_annotation_table_arc(),
+                    Arc::new(std::collections::HashMap::new()),
+                )
+            };
+
+        // Validate pipeline input against expects: annotation if provided.
+        // expects: is either [] (null — skip) or Value::Expression(TypeAssert node from doc.expects).
+        // Look up the annotation's resolved type in program_expects_resolved (keyed by annotation
+        // span), then wrap the pipeline input as a lazy GuardedThunk via wrap_with_nominal_validation.
+        // This mirrors eval_surface_document_pipeline's `--- expects: @Type` handling exactly.
+        let validated_pipeline_input = if let Some(expects_thunk) = expects_opt {
+            let expects_val = materialize(&expects_thunk, Some(&call_span), &ctx).await?;
+            match expects_val {
+                // Empty dict == null (no expects annotation)
+                Value::Dict(ref m) if m.is_empty() => pipeline_input.clone(),
+                // Expression node from doc.expects — a synthetic TypeAssert wrapping VarRef("%").
+                // Extract the annotation and look up its resolved type in expects_resolved.
+                Value::Expression(ref node) => {
+                    match &node.expr {
+                        SurfaceExpression::TypeAssert { annotation, .. } => {
+                            // Look up the pre-resolved type from the typecheck pass.
+                            // If not found (e.g. dynamic code not type-checked), resolved_type
+                            // falls back to None and wrap_with_nominal_validation uses Unknown
+                            // (gradual typing: Unknown ~<: T for all T — annotation is a no-op).
+                            let resolved_type =
+                                program_expects_resolved.get(&annotation.span).cloned();
+                            // Get or create the pipeline input thunk to wrap.
+                            let input_thunk = match pipeline_input {
+                                Some(ref t) => Arc::clone(t),
+                                None => Arc::new(crate::value::Thunk::new_materialized(
+                                    Value::Dict(indexmap::IndexMap::new()),
+                                    call_span.clone(),
+                                )),
+                            };
+                            Some(wrap_with_nominal_validation(
+                                input_thunk,
+                                annotation,
+                                resolved_type,
+                                call_span.clone(),
+                                &ctx,
+                            ))
+                        }
+                        // Non-TypeAssert expression node in expects: position — not expected,
+                        // but treat as no-op (pass pipeline_input through unchanged).
+                        _ => pipeline_input.clone(),
+                    }
+                }
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "eval".to_string(),
+                        "[] or Expression (for expects: argument)",
+                        other.type_name(),
+                        call_span,
+                    )
+                    .into())
                 }
             }
-
-            let env_dict = named_map.get("env").map(Arc::clone);
-            let scope_dict = named_map.get("scope").map(Arc::clone);
-            let pipeline_input = named_map.get("%").map(Arc::clone);
-            let program_opt = named_map.get("program").map(Arc::clone);
-            (env_dict, scope_dict, pipeline_input, program_opt)
         } else {
-            (None, None, None, None)
+            pipeline_input.clone()
         };
 
         // Start with stdlib environment
@@ -1779,8 +1889,8 @@ pub(crate) fn builtin_eval(
             env_with_bindings
         };
 
-        // Add %: (pipeline input) as $ binding if provided
-        let final_env = if let Some(input_thunk) = pipeline_input {
+        // Add %: (pipeline input) as $ binding if provided (using validated input)
+        let final_env = if let Some(input_thunk) = validated_pipeline_input {
             let child_env = Arc::new(std::sync::RwLock::new(
                 crate::value::Environment::with_parent(Arc::clone(&env_with_scope)),
             ));
@@ -1837,31 +1947,6 @@ pub(crate) fn builtin_eval(
                 }
             }
         }
-
-        // Get resolution and type tables from the program: argument if provided
-        let (res_table, types_table) = if let Some(program_thunk) = program_opt {
-            let program_val = materialize(&program_thunk, Some(&call_span), &ctx).await?;
-            match program_val {
-                Value::Program {
-                    resolutions, types, ..
-                } => (Arc::clone(&resolutions), Arc::clone(&types)),
-                _ => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "eval".to_string(),
-                        "Program (for program: argument)",
-                        program_val.type_name(),
-                        call_span,
-                    )
-                    .into())
-                }
-            }
-        } else {
-            // No program provided - use empty tables (expressions won't have resolution info)
-            (
-                crate::ast::empty_resolution_table_arc(),
-                crate::ast::empty_type_annotation_table_arc(),
-            )
-        };
 
         // Delegate the scope-chaining loop to the shared eval_document_exprs function.
         // It handles empty slices, intermediate Dict/Overlay binding promotion, and lazy
@@ -2190,11 +2275,6 @@ pub(crate) fn builtin_include_cache_put(
         ok_val(Value::Dict(IndexMap::new()), call_span)
     })
 }
-
-// TOMBSTONE: builtin_include deleted in include-decomp-redelete sprint (2026-05-20).
-// The `include` function is now implemented in stdlib/prelude.llt as a self-hosted
-// pipeline using the decomposed primitives: load, expand, eval, blake3, cap-identity,
-// include-cache-get, include-cache-put. See doc/whatif/include-decomposition.md.
 
 /// `validate`: Validate a value against a schema dict.
 ///

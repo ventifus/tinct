@@ -16,7 +16,7 @@
 # Single-dict structure: all helpers are in one letrec so public functions
 # (from-json, to-json) can reference private helpers (json-parse-value,
 # json-char-at, etc.) directly. This is required because the pipeline scoping
-# model (eval_pipeline.rs) promotes only intermediate dict results — a two-dict
+# model (eval.rs document pipeline) promotes only intermediate dict results — a two-dict
 # structure would prevent public functions from accessing private helpers via
 # closure.
 

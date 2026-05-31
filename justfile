@@ -109,6 +109,7 @@ lint:
     step lint-cfg-attr-allow
     step lint-expect-attrs
     step lint-stdlib
+    step lint-docs
     step lint-md
     step lint-builtins-cps
     echo ""
@@ -176,6 +177,12 @@ lint-builtins-cps:
 lint-stdlib: build-release
     find stdlib -name '*.llt' -type f -print -exec \
         {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct lint --strict {} \;
+
+# Type-check tinct code blocks in documentation using tinct literate lint.
+# Only includes docs where all code blocks are expected to type-check cleanly.
+# Add more files here as they are verified.
+lint-docs: build-release
+    {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct literate lint doc/quickstart.md
 
 # Lint all markdown files with markdownlint-cli2
 lint-md:

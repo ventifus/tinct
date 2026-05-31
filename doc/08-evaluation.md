@@ -1164,7 +1164,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$include` | Evaluates file; returns cached thunk on re-include | Include memoization |
 | **Document Pipeline** | | |
 | `%` (document pipeline) | Bound as `Unevaluated` thunk across `---` boundary | `---` is not a materialization point — laziness is preserved across documents |
-| Document scope chain (`eval_surface_document`) | Both keys and values materialized strictly at binding time | Strict let* semantics: values are eagerly forced when inserted into the child env, so dead-but-erroring bindings fire immediately per SEQ-SCOPE spec. (`eval_pipeline.rs`) |
+| Document scope chain (`eval_surface_document`) | Both keys and values materialized strictly at binding time | Strict let* semantics: values are eagerly forced when inserted into the child env, so dead-but-erroring bindings fire immediately per SEQ-SCOPE spec. (`eval.rs`) |
 | **Internal (eval.rs)** | | |
 | `eval_key` (dict construction) | Materializes all dict keys | Keys must be known for dict insertion |
 | `builtin_keys` | Materializes dict | Keys are never thunks |

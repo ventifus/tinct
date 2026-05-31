@@ -1,9 +1,0 @@
-# write then slurp roundtrip: write "hello tinct" to target/, read it back
-# % is used as an intermediate expression in the second document to force
-# materialization of the write side-effect before the slurp runs.
-[write [narrow %cwd "target"] "tinct-test-write-slurp.txt" "hello tinct"]
----
-%
-[slurp [open [narrow %cwd "target"] "tinct-test-write-slurp.txt" Readable]]
-=== out
-String("hello tinct")

@@ -1,0 +1,6 @@
+# T-833: expects: annotation in builtin-eval raises error when % doesn't match
+# Tests the wrap_with_nominal_validation failure path in builtin_eval
+--- expects: @[x: Int]
+[x: "hello"]
+=== error
+type

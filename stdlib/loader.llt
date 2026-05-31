@@ -48,6 +48,7 @@
                              [builtin-reduce builtin-merge []
                                [builtin-map builtin-module doc.uses]]]
                  program: prog
+                 expects: doc.expects
                  %: state.percent]]
         [builtin-merge state
           [percent: val

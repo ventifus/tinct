@@ -19,9 +19,9 @@
   round_test: [round 3.5]
 
   # Advanced math
-  pow_test: [pow 2 8]
-  sqrt_test: [sqrt 16.0]
-  sin_test: [sin 0.0]
+  pow_test: [builtin-pow 2 8]
+  sqrt_test: [builtin-sqrt 16.0]
+  sin_test: [builtin-sin 0.0]
 
   # Comparison - integers
   lt_int: [< 3 5]

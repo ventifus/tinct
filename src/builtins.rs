@@ -1185,28 +1185,6 @@ pub(crate) fn builtin_proxy(
     })
 }
 
-// TOMBSTONE: standard_builtins() deleted in T-762 (builtin-privacy-infra sprint 2026-05-30).
-// Builtins are now organized into named modules via builtin_module():
-//   builtin_module("core")     → builtins_core::core_builtins()
-//   builtin_module("datetime") → builtins_datetime::datetime_builtins()
-//   builtin_module("net")      → builtins_net::net_builtins()
-// All callers updated to use builtin_module() instead.
-
-// TOMBSTONE: builtin_primary_names() deleted in T-719 (builtin-privacy-infra sprint 2026-05-29).
-// T002 typecheck callers (typecheck.rs:1955, 2359) now iterate builtin_module() groups inline.
-// T-730 (builtin-privacy-parser sprint) will update the T002 lint to use builtin_module() directly.
-
-// TOMBSTONE: rust_module() deleted in include-decomp-redelete sprint (2026-05-20).
-// TOMBSTONE: create_bootstrap_env() deleted in include-decomp-redelete sprint (2026-05-20).
-// The module system and include mechanism have been deleted.
-// All builtins are now registered via builtin_module() groups.
-// See doc/whatif/include-decomposition.md.
-
-// TOMBSTONE: create_root_env() deleted in T-763 (2026-05-29).
-// Replaced by direct builtin_module("core") injection in create_stdlib_env_inner()
-// (loader.llt bootstrap, T-726) and create_type_stage_env() (T-763).
-// Both functions now create empty Environment and inject core builtins directly.
-
 // Bootstrap: loader.llt → prelude.llt (direct eval) → stdlib_env.
 // Prelude now includes macro transformers (formerly macros.llt).
 // Fatal: stdlib failure is not recoverable — callers should propagate or panic on Err.
@@ -1511,49 +1489,6 @@ fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvWit
         let builtin_val = Value::Builtin(def);
         let thunk = Arc::new(Thunk::new_materialized(builtin_val, Span::origin()));
         stdlib_env.write().unwrap().insert(name, thunk);
-    }
-
-    // Inject bare-name aliases for math builtins that are NOT re-exported by prelude.
-    //
-    // Math functions (pow, sqrt, sin, etc.) were renamed to builtin-* in the
-    // builtin-privacy-operators-and-io sprint (S-784). Unlike bitwise/string ops,
-    // they are NOT wrapped in prelude.llt — they live in stdlib/math.llt instead.
-    // The old create_root_env() injected them as bare names; the new four-phase
-    // bootstrap does not. This restores the bare names so that corpus tests and
-    // user code that calls [pow x y] without [include %libdir "math.llt"] continue
-    // to work.
-    //
-    // Mirrors the "builtin-privacy-operators-and-io sprint" section of
-    // inject_builtin_aliases() in type_env.rs (lines ~1370-1385) for the runtime env.
-    // The type checker sees these pairs via inject_builtin_aliases(); the runtime
-    // must agree so that names resolve consistently at both stages.
-    //
-    // Note: floor, round, band, bor, bxor, shl, shr, float and all string ops
-    // (replace, str-chars, char-code, etc.) are already in prelude.llt as wrappers
-    // and are therefore already in stdlib_env from Phase 3 — no alias needed here.
-    for (canonical, bare) in [
-        ("builtin-pow", "pow"),
-        ("builtin-sqrt", "sqrt"),
-        ("builtin-log", "log"),
-        ("builtin-log2", "log2"),
-        ("builtin-log10", "log10"),
-        ("builtin-exp", "exp"),
-        ("builtin-sin", "sin"),
-        ("builtin-cos", "cos"),
-        ("builtin-tan", "tan"),
-        ("builtin-asin", "asin"),
-        ("builtin-acos", "acos"),
-        ("builtin-atan", "atan"),
-        ("builtin-atan2", "atan2"),
-        ("builtin-nan?", "nan?"),
-        ("builtin-inf?", "inf?"),
-        ("builtin-finite?", "finite?"),
-    ] {
-        let env_read = stdlib_env.read().unwrap();
-        if let Some(thunk) = env_read.get(canonical) {
-            drop(env_read);
-            stdlib_env.write().unwrap().insert(bare.to_string(), thunk);
-        }
     }
 
     // Keep the arena alive: loader_ctx holds all ThunkIds allocated during bootstrap.
@@ -5632,9 +5567,6 @@ mod tests {
         );
     }
 
-    // TOMBSTONE: standard_builtins_count() deleted in T-719 — standard_builtins() removed.
-    // TOMBSTONE: standard_builtins_contains_all() deleted in T-719 — standard_builtins() removed.
-
     #[test]
     fn core_builtins_count() {
         let count = crate::builtins_core::core_builtins().len();
@@ -6897,9 +6829,7 @@ mod tests {
         );
     }
 
-    // TOMBSTONE: create_root_env_has_all_builtin_modules() deleted in T-763 (2026-05-29).
-    // Test verified that create_root_env() properly injected all builtin_module() groups.
-    // create_root_env() itself was deleted — replaced by direct injection in
+    // create_root_env() was deleted — replaced by direct injection in
     // create_stdlib_env_inner() and create_type_stage_env().
 
     /// Parse-only smoke test for the prelude. Evaluating the full prelude requires a

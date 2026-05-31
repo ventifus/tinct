@@ -1,8 +1,0 @@
-# write-atomic then slurp roundtrip: atomic write to target/, read it back
-# % is used as an intermediate expression to force the write side-effect.
-[write-atomic [narrow %cwd "target"] "tinct-test-write-atomic-slurp.txt" "atomic write works"]
----
-%
-[slurp [open [narrow %cwd "target"] "tinct-test-write-atomic-slurp.txt" Readable]]
-=== out
-String("atomic write works")

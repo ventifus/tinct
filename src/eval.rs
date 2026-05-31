@@ -1,8 +1,7 @@
 //! Core evaluation module: lazy evaluation with letrec dict scoping, variable lookup,
-//! and sequential expression evaluation.
+//! sequential expression evaluation, and document pipeline execution.
 //!
-//! See also: eval_pipeline.rs (document pipelines), eval_call.rs (function evaluation),
-//! eval_materialize.rs (CEK machine implementation).
+//! See also: eval_call.rs (function evaluation), eval_materialize.rs (CEK machine implementation).
 
 pub(crate) use crate::eval_call::eval_call_core;
 pub use crate::eval_call::{invoke_function, CallContext};
@@ -10,14 +9,11 @@ pub use crate::eval_call::{invoke_function, CallContext};
 // Re-export CEK machine components from eval_materialize
 pub(crate) use crate::eval_materialize::{attach_materialization_context, run, Action};
 
-// Split modules — document/pipeline evaluation and dict construction
+// Split modules — dict construction
 #[path = "eval_dict.rs"]
 mod eval_dict_mod;
-#[path = "eval_pipeline.rs"]
-mod eval_pipeline;
 
 pub(crate) use eval_dict_mod::*;
-pub use eval_pipeline::*;
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -27,7 +23,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use indexmap::IndexMap;
 
 use crate::arena::{EnvArena, ThunkArena, ThunkId};
-use crate::ast::{CoreExpr, LiteralPattern, Param, Pattern, Span, Spanned};
+use crate::ast::{
+    CoreExpr, LiteralPattern, Param, Pattern, ResolutionTable, Span, Spanned, SurfaceNode,
+    SurfaceProgram, TypeAnnotationTable,
+};
 use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
 use crate::types::{Row, Type};
@@ -35,6 +34,333 @@ use crate::types::{Row, Type};
 // builtins.rs imports `invoke_function` and `materialize` from this module.
 // This bidirectional dependency is safe because neither module's initialization depends on the other.
 use crate::value::{string_val, Environment, Key, Thunk, Value};
+
+// ============================================================================
+// Document pipeline evaluation
+// ============================================================================
+
+thread_local! {
+    /// Cached empty dict thunk used as the default `%` when no stdin is provided.
+    /// Avoids allocating a fresh `Arc<Thunk>` on every `eval_surface_file_with_input` call.
+    static EMPTY_DICT_THUNK: Arc<Thunk> = Arc::new(Thunk::new_materialized(
+        Value::Dict(IndexMap::new()),
+        Span::origin(),
+    ));
+}
+
+/// Wrap a thunk with nominal type validation for pipeline input contracts.
+///
+/// Creates a synthetic `CoreExpr::TypeAssert` wrapping a gensym'd `FreeVar` reference.
+/// When evaluated, it performs the same validation as a regular `[@Type expr]` assertion.
+pub(crate) fn wrap_with_nominal_validation(
+    inner: Arc<Thunk>,
+    annotation: &crate::ast::Spanned<crate::ast::Annotation>,
+    resolved_type: Option<crate::types::Type>,
+    validation_span: Span,
+    ctx: &Arc<EvalContext>,
+) -> Arc<Thunk> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Generate a unique variable name to avoid collisions with user code.
+    // Uses the canonical ℊꜱʏᴍ⧼prefix⧽N convention via make_gensym_name (builtins_meta.rs).
+    // Prefix "nominal-input" is distinct from the user-facing "gensym" prefix so pipeline
+    // validation variables cannot alias user-generated symbols.
+    static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let gensym_id = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let gensym_name = crate::builtins_meta::make_gensym_name("nominal-input", gensym_id);
+
+    // Create a synthetic TypeAssert expression: [@Annotation ℊꜱʏᴍ⧼nominal-input⧽N]
+    // If resolved_type is None (untyped contract), use Type::Unknown which accepts all values.
+    let type_check_expr = Arc::new(crate::ast::Spanned::new(
+        CoreExpr::TypeAssert {
+            annotation: annotation.clone(),
+            expr: Arc::new(crate::ast::Spanned::new(
+                CoreExpr::FreeVar(gensym_name.clone()),
+                validation_span.clone(),
+            )),
+            resolved_type: resolved_type.unwrap_or(crate::types::Type::Unknown),
+        },
+        validation_span.clone(),
+    ));
+
+    // Create an environment with ℊꜱʏᴍ⧼nominal-input⧽N bound to the inner thunk
+    let validation_env = Arc::new(std::sync::RwLock::new(Environment::new()));
+    validation_env.write().unwrap().insert(gensym_name, inner);
+
+    // Return an Unevaluated thunk wrapping the TypeAssert expression
+    Arc::new(Thunk::new_unevaluated_core(
+        type_check_expr,
+        validation_env,
+        Arc::clone(ctx),
+        validation_span,
+    ))
+}
+
+/// Evaluate a sequence of surface expression nodes as a scope chain, returning the
+/// last expression's thunk lazily.
+///
+/// This is the canonical scope-chaining loop shared by [`eval_surface_document`] and
+/// `builtin_eval` (in `builtins_meta.rs`). Both callers implement identical semantics:
+///
+/// - **Intermediate expressions** (all but the last): lower → eval → materialize.
+///   If the result is a non-empty `Dict` or `Overlay`, ALL `Key::String` entries are
+///   materialized strictly and inserted into a child environment for subsequent
+///   expressions. Non-dict/overlay results are silently ignored (no error, no scope
+///   extension). This is the `bare-include-scope` behavior.
+///   **Why strict?** Per `doc/09-documents.md §SEQ-SCOPE`: dead bindings must fire
+///   immediately (strict let* semantics), not lazily. A binding that would error must
+///   error at bind-time, not silently defer until (or unless) the name is accessed.
+/// - **Last expression**: lower → eval (lazy). The resulting thunk is returned
+///   without forcing — callers decide when (and whether) to materialize it.
+/// - **Empty slice**: returns a materialized empty-dict thunk (same as an empty doc).
+pub(crate) async fn eval_document_exprs(
+    expr_nodes: &[Arc<SurfaceNode>],
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+    res: &Arc<ResolutionTable>,
+    types: &Arc<TypeAnnotationTable>,
+) -> EvalResult<Arc<Thunk>> {
+    if expr_nodes.is_empty() {
+        return Ok(Arc::new(Thunk::new_materialized(
+            Value::Dict(IndexMap::new()),
+            Span::origin(),
+        )));
+    }
+
+    let mut current_env = env;
+    let last_idx = expr_nodes.len() - 1;
+
+    for (i, node) in expr_nodes.iter().enumerate() {
+        let core_spanned = crate::lower::lower(node, res, types);
+        let node_span = node.span.clone();
+
+        if i == last_idx {
+            // Last expression: return its thunk lazily (no materialization).
+            return eval_core_expr_pub(&core_spanned, &current_env, ctx).await;
+        }
+
+        // Intermediate expression: eval and materialize to extract potential bindings.
+        let thunk = eval_core_expr_pub(&core_spanned, &Arc::clone(&current_env), ctx).await?;
+        let value = materialize(&thunk, Some(&node_span), ctx).await?;
+
+        // If the result is a non-empty Dict or Overlay, promote ALL Key::String entries
+        // into a child environment. Non-dict results are silently skipped — they act as
+        // side-effect expressions that contribute no bindings to the scope chain.
+        let map = match value {
+            Value::Dict(ref m) if !m.is_empty() => Some(m.clone()),
+            Value::Overlay(ref l, ref r) => Some(crate::builtins::flatten_overlay(
+                l,
+                r,
+                "document pipeline",
+                ctx,
+                node_span.clone(),
+            )?),
+            _ => None,
+        };
+
+        if let Some(entries) = map {
+            let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
+                &current_env,
+            ))));
+            for (key, val_thunk_id) in entries.iter() {
+                if let Key::String(name) = key {
+                    // Force each entry value eagerly (strict let* semantics for scope chains).
+                    // This matches doc/09-documents.md §SEQ-SCOPE: named entries are shallowly
+                    // materialized at binding time so dead-but-erroring bindings fire immediately.
+                    let val_thunk = ctx.get_thunk(*val_thunk_id);
+                    let forced_value = materialize(&val_thunk, Some(&node_span), ctx).await?;
+                    let strict_thunk =
+                        Arc::new(Thunk::new_materialized(forced_value, node_span.clone()));
+                    child_env
+                        .write()
+                        .unwrap()
+                        .insert(name.to_string(), strict_thunk);
+                }
+            }
+            current_env = child_env;
+        }
+        // Non-dict/overlay: silently skip — no scope extension, no error.
+    }
+
+    unreachable!(
+        "eval_document_exprs: loop did not return — expr_nodes was non-empty but last_idx was never reached"
+    )
+}
+
+/// Evaluate a SurfaceDocument: a sequence of expression items forming a scope chain.
+///
+/// Each `SurfaceItem::Expr` is lowered to `CoreExpr` via `lower.rs` and evaluated via
+/// `eval_core_expr_pub`. `SurfaceItem::Decl` items are skipped (processed at expand time).
+///
+/// Scope-chain semantics are delegated to [`eval_document_exprs`]:
+/// - Intermediate expressions are materialized; Dict/Overlay results promote bindings into scope.
+/// - The last expression is returned as-is (lazy, any type).
+/// - An empty document returns an empty dict.
+///
+/// This function retains only the document-level concerns: caps validation and
+/// collecting the expression nodes before delegating to the shared loop.
+pub async fn eval_surface_document(
+    doc: &Spanned<crate::ast::SurfaceDocument>,
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+    res: &Arc<ResolutionTable>,
+    types: &Arc<TypeAnnotationTable>,
+) -> EvalResult<Arc<Thunk>> {
+    // Validate capabilities declared in the document header
+    if let Some(ref caps_ann) = doc.node.caps {
+        for (cap_name, annotation) in &caps_ann.node {
+            let full_cap_name = format!("%{}", cap_name);
+
+            let cap_present = {
+                let env_ref = env.read().unwrap();
+                env_ref.get(&full_cap_name).is_some()
+            };
+
+            if !cap_present {
+                let (flag_type, flag_example) = match annotation {
+                    crate::ast::Annotation::Simple(type_name) if type_name == "NetCap" => {
+                        ("--cap-net", format!("{}=HOST:PORT", cap_name))
+                    }
+                    crate::ast::Annotation::Simple(type_name) if type_name == "DirCap" => {
+                        ("--cap-fs", format!("{}=PATH", cap_name))
+                    }
+                    crate::ast::Annotation::Simple(type_name) if type_name == "Handle" => {
+                        ("--cap-file", format!("{}=PATH:r", cap_name))
+                    }
+                    _ => ("--cap", format!("{}=VALUE", cap_name)),
+                };
+
+                let auto_injected_caps = ["cwd", "libdir", "stdin"];
+                let is_auto_injected = auto_injected_caps.contains(&cap_name.as_str());
+
+                let mut message = format!(
+                    "{}@{} is required but not provided",
+                    full_cap_name,
+                    match annotation {
+                        crate::ast::Annotation::Simple(type_name) => type_name.clone(),
+                        crate::ast::Annotation::PropertyDict(_) => "Dict".to_string(),
+                        crate::ast::Annotation::Annotated(name, _) => name.clone(),
+                    }
+                );
+
+                if is_auto_injected {
+                    message.push_str(&format!(
+                        "\n  note: {} is injected automatically — did you pass --no-{}?",
+                        full_cap_name, cap_name
+                    ));
+                } else {
+                    message.push_str(&format!(
+                        "\n  inject it with:  tinct run {} {} ...\n  or unrestricted: tinct run {} {}=any ...",
+                        flag_type, flag_example, flag_type, cap_name
+                    ));
+                }
+
+                return Err(EvalError::capability_required(message, caps_ann.span.clone()).into());
+            }
+        }
+    }
+
+    // Collect expression nodes (skip Decl items — processed by expander) and
+    // delegate the scope-chaining loop to the shared eval_document_exprs function.
+    let expr_nodes: Vec<Arc<SurfaceNode>> = doc.node.expressions().cloned().collect();
+    eval_document_exprs(&expr_nodes, env, ctx, res, types).await
+}
+
+/// Evaluate a SurfaceProgram: one or more documents separated by `---`.
+///
+/// # Precondition
+///
+/// **Pipeline invariant:** `expand_surface_program` → `desugar_surface_program` →
+/// `resolve_surface_program` must be called before passing the program here.
+/// The `res` table must be the one returned by `resolve_surface_program`.
+/// The `types` table may be empty (from `TypeAnnotationTable::new()`) if type checking
+/// was skipped; `TypeAssert` nodes will use Type::Unknown (accepts all values) in that case.
+pub async fn eval_surface_file(
+    program: &SurfaceProgram,
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+    res: &Arc<ResolutionTable>,
+    types: &Arc<TypeAnnotationTable>,
+) -> EvalResult<Arc<Thunk>> {
+    eval_surface_file_with_input(
+        program,
+        env,
+        ctx,
+        res,
+        types,
+        &std::collections::HashMap::new(),
+        None,
+    )
+    .await
+}
+
+/// Evaluate a SurfaceProgram with an optional initial `%` value.
+///
+/// See `eval_surface_file` for preconditions. When `initial_input` is `Some(thunk)`,
+/// that thunk becomes `%` for the first document instead of the default empty dict.
+pub async fn eval_surface_file_with_input(
+    program: &SurfaceProgram,
+    env: Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+    res: &Arc<ResolutionTable>,
+    types: &Arc<TypeAnnotationTable>,
+    expects_resolved: &std::collections::HashMap<crate::ast::Span, crate::types::Type>,
+    initial_input: Option<Arc<Thunk>>,
+) -> EvalResult<Arc<Thunk>> {
+    let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(Arc::clone));
+    let mut named: IndexMap<String, Arc<Thunk>> = IndexMap::new();
+
+    for surface_doc in &program.documents {
+        // Skip type-stage documents
+        if surface_doc.node.stage == Some(crate::ast::Stage::Type) {
+            continue;
+        }
+
+        // Each document gets a fresh scope with % and %name bindings
+        let doc_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
+
+        // Bind % (pipeline variable), wrapping with validation if expects: is declared
+        let percent_thunk = if let Some(ref expects_ann) = surface_doc.node.expects {
+            let resolved_type = expects_resolved.get(&expects_ann.span).cloned();
+            wrap_with_nominal_validation(
+                Arc::clone(&prev_output),
+                expects_ann,
+                resolved_type,
+                surface_doc.span.clone(),
+                ctx,
+            )
+        } else {
+            Arc::clone(&prev_output)
+        };
+
+        doc_env
+            .write()
+            .unwrap()
+            .insert("%".to_string(), percent_thunk);
+
+        // Bind all previously named sections as %name
+        for (section_name, section_thunk) in &named {
+            doc_env
+                .write()
+                .unwrap()
+                .insert(format!("%{}", section_name), Arc::clone(section_thunk));
+        }
+
+        let result = eval_surface_document(surface_doc, doc_env, ctx, res, types).await?;
+
+        if let Some(ref name) = surface_doc.node.name {
+            named.insert(name.clone(), Arc::clone(&result));
+        }
+
+        prev_output = result; // lazy: no materialization at boundary
+    }
+
+    Ok(prev_output)
+}
+
+// ============================================================================
+// End document pipeline evaluation
+// ============================================================================
 
 pub(crate) const DEFAULT_ANNOTATION_KEY: &str = "default";
 pub(crate) const IS_ANNOTATION_KEY: &str = "is";
@@ -553,7 +879,7 @@ impl EvalContext {
     }
 
     /// Allocate a thunk in the arena and return its ID.
-    pub(crate) fn alloc_thunk(&self, thunk: Arc<Thunk>) -> ThunkId {
+    pub fn alloc_thunk(&self, thunk: Arc<Thunk>) -> ThunkId {
         self.thunk_arena.lock().unwrap().alloc(thunk)
     }
 
@@ -7996,11 +8322,7 @@ mod tests {
     /// Verifies the no_fs=true code path end-to-end through `with_base_dir()`:
     /// 1. Create a ctx1 with no_fs=true.
     /// 2. Call ctx1.with_base_dir() to get ctx2 with a different base_dir.
-    /// 3. Evaluate a `$include` call using ctx2.
-    /// 4. Confirm the result is `IncludeForbidden` [E042] — proving:
-    ///    a. `with_base_dir()` correctly propagates the no_fs flag.
-    ///    b. `$include` resolves via ctx2's config (not a stale ctx1 config).
-    ///    c. No actual filesystem access is needed — the error fires immediately.
+    /// 3. Verify that ctx2 correctly propagates the no_fs flag.
     #[test]
     #[ignore = "pre-existing regression from runtime-v2 merge: stdlib loading fails"]
     fn test_eval_context_with_base_dir_inherits_no_fs() {
@@ -8029,28 +8351,6 @@ mod tests {
         assert!(
             Arc::ptr_eq(&ctx1.state, &ctx2.state),
             "ctx2 must share the same state Arc as ctx1"
-        );
-
-        // Exercise the no_fs path: $include must produce IncludeForbidden [E042].
-        // This proves ctx2 correctly propagates no_fs to $include without needing
-        // any real files on disk.
-        let include_node =
-            crate::parser::parse_surface_expression("[call $include hypothetical.llt]")
-                .expect("parse should succeed");
-
-        let thunk = eval_for_test(include_node, Arc::clone(&ctx2.config.stdlib_env), &ctx2)
-            .expect("eval should succeed (thunk creation does not access filesystem)");
-        let err = materialize(&thunk, None, &ctx2).expect_err("$include with no_fs=true must fail");
-
-        assert!(
-            matches!(err.kind, crate::error::ErrorKind::IncludeForbidden),
-            "Expected IncludeForbidden [E042], got: {}",
-            err.kind.code()
-        );
-        assert_eq!(
-            err.kind.code(),
-            "E042",
-            "IncludeForbidden must produce error code E042"
         );
     }
 

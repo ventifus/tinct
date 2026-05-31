@@ -255,30 +255,6 @@ pub struct ExpandSurfaceResult {
     pub macro_injects_map: HashMap<String, String>,
 }
 
-/// Register stdlib macros by looking up transformer functions from `stdlib_env`.
-///
-/// Macro transformer functions (tmpl, do, begin, syntax-fn, syntax-class, syntax-type)
-/// are defined directly in `stdlib/prelude.llt` and exported into `stdlib_env` during
-/// the prelude bootstrap phase. This function registers them with their parameter
-/// patterns so `expand_macro_call_surface` can quote args and invoke them as macros.
-///
-/// Errors (missing transformer, registration failures) are silently ignored so that
-/// a stdlib failure here surfaces as a missing macro error at call time rather than a
-/// hard crash during stdlib loading.
-async fn register_stdlib_macros_from_env(
-    _env_macro: &mut MacroEnv,
-    _stdlib_env: &Arc<RwLock<Environment>>,
-) {
-    // Register stdlib macros defined as dict entries in prelude.llt.
-    // These functions are already evaluated and stored in stdlib_env by the prelude
-    // bootstrap (create_stdlib_env_inner Phase 3+4). We register them here with their
-    // param patterns so expand_macro_call_surface can quote args and invoke them as macros.
-    //
-    // NOTE: All stdlib macros (tmpl, do, begin) are now [macro ...] declarations
-    // in prelude.llt and are auto-discovered by the pre-scan pass.
-    // syntax-fn/class/type were removed in T-789 (unified-bindings migration).
-}
-
 // Reentrance depth guard for expand_surface_program → create_stdlib_env calls.
 // When depth > 0, we're in a re-entrant call and must reuse the cached stdlib
 // env from the depth == 0 call. STDLIB_RESULT_CACHE (in builtins.rs) is the
@@ -365,7 +341,6 @@ pub async fn expand_surface_program(
                     Arc::clone(&arena),
                     HashMap::new(), // macro_injects_map — will be populated during expansion
                 );
-                register_stdlib_macros_from_env(&mut env_macro, &env).await;
                 // STDLIB_RESULT_CACHE (builtins.rs) is populated by create_stdlib_env_with_arena;
                 // re-entrant calls at depth > 0 will hit that cache and get the same env/arena.
                 (env, ctx)

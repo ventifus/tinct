@@ -72,7 +72,7 @@ pub struct BlameLabel {
 /// construct PipelineBlame { producer: prev_stage_label, consumer: current_stage_label }
 /// and thread it through the validation path. This requires:
 /// 1. Tracking stage labels (document names or indices) during pipeline evaluation
-/// 2. Passing PipelineBlame to wrap_with_nominal_validation in eval_pipeline.rs
+/// 2. Passing PipelineBlame to wrap_with_nominal_validation in eval.rs
 /// 3. Threading it through TypeAssert → GuardedValidate → validate_and_wrap_record
 /// 4. Enriching type assertion errors with pipeline blame context
 #[derive(Debug, Clone, PartialEq)]
@@ -191,8 +191,6 @@ pub enum ErrorKind {
     DepthExceeded {
         limit: usize,
     },
-    /// Filesystem access is disabled (--no-fs sandbox flag).
-    IncludeForbidden,
     /// Resource limit exceeded (collection size, string size, etc.).
     /// Like `DepthExceeded`, this is non-catchable — resource limits are
     /// safety boundaries, not application-level errors.
@@ -206,7 +204,6 @@ pub enum ErrorKind {
     },
 
     // --- Include errors (E050-E059) ---
-    IncludeNotAvailable,
     /// Covers both "cannot open" (canonicalize failure) and "cannot read"
     /// (metadata/read failure). The `detail` field carries the OS error.
     IncludeIoError {
@@ -215,10 +212,6 @@ pub enum ErrorKind {
     },
     IncludeCycle {
         path: String,
-    },
-    IncludeParseFailed {
-        path: String,
-        detail: String,
     },
     IncludeFileTooLarge {
         path: String,
@@ -231,11 +224,6 @@ pub enum ErrorKind {
         actual: String,
     },
     IncludeHashRequired {
-        path: String,
-    },
-    /// Path not permitted by the `--allow-path` allowlist.
-    /// Includes the user-supplied path and the list of allowed roots for the error message.
-    IncludePathNotAllowed {
         path: String,
     },
 
@@ -430,7 +418,6 @@ impl PartialEq for ErrorKind {
                 Self::ValueNotSerializable { value_type: t2 },
             ) => t1 == t2,
             (Self::DepthExceeded { limit: l1 }, Self::DepthExceeded { limit: l2 }) => l1 == l2,
-            (Self::IncludeForbidden, Self::IncludeForbidden) => true,
             (
                 Self::ResourceLimitExceeded { message: m1 },
                 Self::ResourceLimitExceeded { message: m2 },
@@ -439,7 +426,6 @@ impl PartialEq for ErrorKind {
                 Self::CapabilityRequired { message: m1 },
                 Self::CapabilityRequired { message: m2 },
             ) => m1 == m2,
-            (Self::IncludeNotAvailable, Self::IncludeNotAvailable) => true,
             (
                 Self::IncludeIoError {
                     path: p1,
@@ -451,16 +437,6 @@ impl PartialEq for ErrorKind {
                 },
             ) => p1 == p2 && d1 == d2,
             (Self::IncludeCycle { path: p1 }, Self::IncludeCycle { path: p2 }) => p1 == p2,
-            (
-                Self::IncludeParseFailed {
-                    path: p1,
-                    detail: d1,
-                },
-                Self::IncludeParseFailed {
-                    path: p2,
-                    detail: d2,
-                },
-            ) => p1 == p2 && d1 == d2,
             (
                 Self::IncludeFileTooLarge {
                     path: p1,
@@ -488,10 +464,6 @@ impl PartialEq for ErrorKind {
             (Self::IncludeHashRequired { path: p1 }, Self::IncludeHashRequired { path: p2 }) => {
                 p1 == p2
             }
-            (
-                Self::IncludePathNotAllowed { path: p1 },
-                Self::IncludePathNotAllowed { path: p2 },
-            ) => p1 == p2,
             (
                 Self::ParseConversion {
                     builtin: b1,
@@ -570,17 +542,13 @@ impl ErrorKind {
             Self::ValueNotSerializable { .. } => "E035",
             Self::FloatOutOfRange { .. } => "E036",
             Self::DepthExceeded { .. } => "E040",
-            Self::IncludeForbidden => "E042",
             Self::ResourceLimitExceeded { .. } => "E043",
             Self::CapabilityRequired { .. } => "E044",
-            Self::IncludeNotAvailable => "E050",
             Self::IncludeIoError { .. } => "E051",
             Self::IncludeCycle { .. } => "E052",
-            Self::IncludeParseFailed { .. } => "E053",
             Self::IncludeFileTooLarge { .. } => "E054",
             Self::IncludeHashMismatch { .. } => "E055",
             Self::IncludeHashRequired { .. } => "E056",
-            Self::IncludePathNotAllowed { .. } => "E057",
             Self::ParseConversion { .. } => "E060",
             Self::UriParseError { .. } => "E063",
             Self::CircularDependency { .. } => "E070",
@@ -961,17 +929,12 @@ impl fmt::Display for ErrorKind {
             Self::DepthExceeded { limit } => {
                 write!(f, "maximum evaluation depth exceeded ({limit})")
             }
-            Self::IncludeForbidden => write!(f, "filesystem access is disabled (--no-fs)"),
             Self::ResourceLimitExceeded { message } => write!(f, "{}", message),
             Self::CapabilityRequired { message } => write!(f, "{}", message),
-            Self::IncludeNotAvailable => write!(f, "include: not available in this context"),
             Self::IncludeIoError { path, detail } => {
                 write!(f, "include: cannot access \"{path}\": {detail}")
             }
             Self::IncludeCycle { path } => write!(f, "circular include detected: \"{path}\""),
-            Self::IncludeParseFailed { path, detail } => {
-                write!(f, "include: parse error in \"{path}\": {detail}")
-            }
             Self::IncludeFileTooLarge { path, size, limit } => write!(
                 f,
                 "include: file \"{path}\" is {size} bytes, exceeds {limit} byte limit"
@@ -987,10 +950,6 @@ impl fmt::Display for ErrorKind {
             Self::IncludeHashRequired { path } => write!(
                 f,
                 "include: integrity hash required for \"{path}\" (--require-integrity)"
-            ),
-            Self::IncludePathNotAllowed { path } => write!(
-                f,
-                "include: path \"{path}\" is not permitted by the --allow-path allowlist"
             ),
             Self::ParseConversion {
                 builtin,
@@ -1605,37 +1564,11 @@ impl EvalError {
         }
     }
 
-    pub fn include_forbidden(definition_span: Span) -> Self {
-        Self {
-            kind: ErrorKind::IncludeForbidden,
-            definition_span,
-            materialization_span: None,
-            stack: SmallVec::new(),
-            secondary_span: None,
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-        }
-    }
-
     pub fn resource_limit_exceeded(message: impl Into<String>, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::ResourceLimitExceeded {
                 message: message.into(),
             },
-            definition_span,
-            materialization_span: None,
-            stack: SmallVec::new(),
-            secondary_span: None,
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-        }
-    }
-
-    pub fn include_not_available(definition_span: Span) -> Self {
-        Self {
-            kind: ErrorKind::IncludeNotAvailable,
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -1662,19 +1595,6 @@ impl EvalError {
     pub fn include_cycle(path: String, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::IncludeCycle { path },
-            definition_span,
-            materialization_span: None,
-            stack: SmallVec::new(),
-            secondary_span: None,
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-        }
-    }
-
-    pub fn include_parse_failed(path: String, detail: String, definition_span: Span) -> Self {
-        Self {
-            kind: ErrorKind::IncludeParseFailed { path, detail },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -1728,19 +1648,6 @@ impl EvalError {
     pub fn include_hash_required(path: String, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::IncludeHashRequired { path },
-            definition_span,
-            materialization_span: None,
-            stack: SmallVec::new(),
-            secondary_span: None,
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-        }
-    }
-
-    pub fn include_path_not_allowed(path: String, definition_span: Span) -> Self {
-        Self {
-            kind: ErrorKind::IncludePathNotAllowed { path },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -2419,8 +2326,6 @@ mod tests {
             value: 1e20
         }
         .is_catchable());
-        assert!(ErrorKind::IncludeForbidden.is_catchable());
-        assert!(ErrorKind::IncludeNotAvailable.is_catchable());
         assert!(ErrorKind::IncludeIoError {
             path: "test.llt".to_string(),
             detail: "no such file".to_string()
@@ -2428,11 +2333,6 @@ mod tests {
         .is_catchable());
         assert!(ErrorKind::IncludeCycle {
             path: "test.llt".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::IncludeParseFailed {
-            path: "test.llt".to_string(),
-            detail: "parse error".to_string()
         }
         .is_catchable());
         assert!(ErrorKind::IncludeFileTooLarge {
@@ -2449,10 +2349,6 @@ mod tests {
         .is_catchable());
         assert!(ErrorKind::IncludeHashRequired {
             path: "x.llt".to_string()
-        }
-        .is_catchable());
-        assert!(ErrorKind::IncludePathNotAllowed {
-            path: "/etc/passwd".to_string()
         }
         .is_catchable());
         assert!(ErrorKind::ParseConversion {
@@ -2573,24 +2469,18 @@ mod tests {
                 value: 1e20,
             },
             ErrorKind::DepthExceeded { limit: 256 },
-            ErrorKind::IncludeForbidden,
             ErrorKind::ResourceLimitExceeded {
                 message: "test: resource limit exceeded (1000)".to_string(),
             },
             ErrorKind::CapabilityRequired {
                 message: "test: capability required".to_string(),
             },
-            ErrorKind::IncludeNotAvailable,
             ErrorKind::IncludeIoError {
                 path: "x".to_string(),
                 detail: "error".to_string(),
             },
             ErrorKind::IncludeCycle {
                 path: "x".to_string(),
-            },
-            ErrorKind::IncludeParseFailed {
-                path: "x".to_string(),
-                detail: "error".to_string(),
             },
             ErrorKind::IncludeFileTooLarge {
                 path: "x".to_string(),
@@ -2604,9 +2494,6 @@ mod tests {
             },
             ErrorKind::IncludeHashRequired {
                 path: "x".to_string(),
-            },
-            ErrorKind::IncludePathNotAllowed {
-                path: "/etc/passwd".to_string(),
             },
             ErrorKind::ParseConversion {
                 builtin: "to-int".to_string(),
@@ -2816,12 +2703,10 @@ mod tests {
             value: 1e20
         }
         .is_cacheable());
-        assert!(ErrorKind::IncludeForbidden.is_cacheable());
         assert!(ErrorKind::ResourceLimitExceeded {
             message: "test".to_string(),
         }
         .is_cacheable());
-        assert!(ErrorKind::IncludeNotAvailable.is_cacheable());
         assert!(ErrorKind::IncludeIoError {
             path: "test.llt".to_string(),
             detail: "no such file".to_string()
@@ -2829,11 +2714,6 @@ mod tests {
         .is_cacheable());
         assert!(ErrorKind::IncludeCycle {
             path: "test.llt".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::IncludeParseFailed {
-            path: "test.llt".to_string(),
-            detail: "parse error".to_string()
         }
         .is_cacheable());
         assert!(ErrorKind::IncludeFileTooLarge {
@@ -2850,10 +2730,6 @@ mod tests {
         .is_cacheable());
         assert!(ErrorKind::IncludeHashRequired {
             path: "x.llt".to_string()
-        }
-        .is_cacheable());
-        assert!(ErrorKind::IncludePathNotAllowed {
-            path: "/etc/passwd".to_string()
         }
         .is_cacheable());
         assert!(ErrorKind::ParseConversion {
@@ -3141,10 +3017,6 @@ mod tests {
             "maximum evaluation depth exceeded (256)"
         );
         assert_eq!(
-            format!("{}", ErrorKind::IncludeForbidden),
-            "filesystem access is disabled (--no-fs)"
-        );
-        assert_eq!(
             format!(
                 "{}",
                 ErrorKind::ResourceLimitExceeded {
@@ -3165,10 +3037,6 @@ mod tests {
 
         // Include errors (E050-E059)
         assert_eq!(
-            format!("{}", ErrorKind::IncludeNotAvailable),
-            "include: not available in this context"
-        );
-        assert_eq!(
             format!(
                 "{}",
                 ErrorKind::IncludeIoError {
@@ -3186,16 +3054,6 @@ mod tests {
                 }
             ),
             "circular include detected: \"a.llt\""
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::IncludeParseFailed {
-                    path: "bad.llt".to_string(),
-                    detail: "unexpected token".to_string()
-                }
-            ),
-            "include: parse error in \"bad.llt\": unexpected token"
         );
         assert_eq!(
             format!(
@@ -3227,15 +3085,6 @@ mod tests {
                 }
             ),
             "include: integrity hash required for \"config.llt\" (--require-integrity)"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                ErrorKind::IncludePathNotAllowed {
-                    path: "/etc/passwd".to_string()
-                }
-            ),
-            "include: path \"/etc/passwd\" is not permitted by the --allow-path allowlist"
         );
 
         // Conversion errors (E060-E069)
@@ -4323,20 +4172,6 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_error_include_forbidden_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::include_forbidden(span);
-        assert!(matches!(err.kind, ErrorKind::IncludeForbidden));
-        assert_eq!(err.kind.code(), "E042");
-        assert_eq!(
-            err.kind.to_string(),
-            "filesystem access is disabled (--no-fs)"
-        );
-        assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
-    }
-
-    #[test]
     fn test_eval_error_resource_limit_exceeded_constructor() {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::resource_limit_exceeded(
@@ -4359,20 +4194,6 @@ mod tests {
             err.kind.is_cacheable(),
             "ResourceLimitExceeded should be cacheable"
         );
-    }
-
-    #[test]
-    fn test_eval_error_include_not_available_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::include_not_available(span);
-        assert!(matches!(err.kind, ErrorKind::IncludeNotAvailable));
-        assert_eq!(err.kind.code(), "E050");
-        assert_eq!(
-            err.kind.to_string(),
-            "include: not available in this context"
-        );
-        assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
     }
 
     #[test]
@@ -4402,25 +4223,6 @@ mod tests {
         assert_eq!(err.kind.code(), "E052");
         assert!(err.kind.to_string().contains("circular include detected"));
         assert!(err.kind.to_string().contains("recursive.llt"));
-        assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
-    }
-
-    #[test]
-    fn test_eval_error_include_parse_failed_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::include_parse_failed(
-            "broken.llt".to_string(),
-            "unexpected token at line 3".to_string(),
-            span,
-        );
-        assert!(matches!(err.kind, ErrorKind::IncludeParseFailed { .. }));
-        assert_eq!(err.kind.code(), "E053");
-        assert!(err
-            .kind
-            .to_string()
-            .contains("parse error in \"broken.llt\""));
-        assert!(err.kind.to_string().contains("unexpected token at line 3"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -4466,21 +4268,6 @@ mod tests {
         assert_eq!(err.kind.code(), "E056");
         assert!(err.kind.to_string().contains("integrity hash required"));
         assert!(err.kind.to_string().contains("untrusted.llt"));
-        assert!(err.kind.is_catchable());
-        assert!(err.kind.is_cacheable());
-    }
-
-    #[test]
-    fn test_eval_error_include_path_not_allowed_constructor() {
-        let span = test_span(1, 1, 1, 5);
-        let err = EvalError::include_path_not_allowed("/etc/passwd".to_string(), span);
-        assert!(matches!(err.kind, ErrorKind::IncludePathNotAllowed { .. }));
-        assert_eq!(err.kind.code(), "E057");
-        assert!(err
-            .kind
-            .to_string()
-            .contains("not permitted by the --allow-path allowlist"));
-        assert!(err.kind.to_string().contains("/etc/passwd"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
@@ -4544,11 +4331,11 @@ mod tests {
         }
         // Verify the count matches all_error_kind_variants() — the canonical list.
         // If variants are added or removed, update all_error_kind_variants() to match.
-        // Current count: 41 variants (verified against the ErrorKind enum definition).
+        // Current count: 37 variants (verified against the ErrorKind enum definition).
         assert_eq!(
             variants.len(),
-            41,
-            "Expected 41 ErrorKind variants in all_error_kind_variants(); got {}. \
+            37,
+            "Expected 37 ErrorKind variants in all_error_kind_variants(); got {}. \
              Update all_error_kind_variants() if variants were added or removed.",
             variants.len()
         );
@@ -4659,16 +4446,12 @@ mod tests {
                 ErrorKind::ValueNotSerializable { .. } => "E035",
                 ErrorKind::FloatOutOfRange { .. } => "E036",
                 ErrorKind::DepthExceeded { .. } => "E040",
-                ErrorKind::IncludeForbidden => "E042",
                 ErrorKind::ResourceLimitExceeded { .. } => "E043",
-                ErrorKind::IncludeNotAvailable => "E050",
                 ErrorKind::IncludeIoError { .. } => "E051",
                 ErrorKind::IncludeCycle { .. } => "E052",
-                ErrorKind::IncludeParseFailed { .. } => "E053",
                 ErrorKind::IncludeFileTooLarge { .. } => "E054",
                 ErrorKind::IncludeHashMismatch { .. } => "E055",
                 ErrorKind::IncludeHashRequired { .. } => "E056",
-                ErrorKind::IncludePathNotAllowed { .. } => "E057",
                 ErrorKind::ParseConversion { .. } => "E060",
                 ErrorKind::UriParseError { .. } => "E063",
                 ErrorKind::CircularDependency { .. } => "E070",

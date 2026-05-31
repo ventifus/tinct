@@ -2588,41 +2588,6 @@ fn write_atomic_basic() {
     assert_eq!(entries.len(), 0, "temp files should be cleaned up");
 }
 
-#[test]
-#[ignore = "include builtin removed in include-decomp-prelude sprint; re-enable when LLT-level include is implemented"]
-fn write_and_slurp_roundtrip() {
-    // Test write + slurp roundtrip via stdlib/io.llt wrappers
-    let dir = TempDir::new("write_roundtrip_test");
-
-    let llt_content = r#"
-[include %libdir "io.llt"]
-[write-file %cap "test.txt" "roundtrip data"]
-[match [read-file %cap "test.txt"]
-  [Ok v]: v
-  [Err msg]: [error msg]]
-"#;
-    let (path, _llt_dir) = write_temp_llt("write_roundtrip", llt_content);
-    let output = Command::new(tinct_bin())
-        .args([
-            "run",
-            "-o",
-            "json",
-            &format!("--cap-fs=cap={}:rw", dir.path().display()),
-            path.to_str().unwrap(),
-        ])
-        .output()
-        .expect("failed to run tinct");
-
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("invalid JSON output");
-    assert_eq!(json, serde_json::json!("roundtrip data"));
-}
-
 // ---------------------------------------------------------------------------
 // Multi-file pipeline
 // ---------------------------------------------------------------------------

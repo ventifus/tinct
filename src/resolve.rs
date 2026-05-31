@@ -351,7 +351,7 @@ pub fn resolve_surface_program(program: &SurfaceProgram) -> ResolutionTable {
         let doc = &doc_spanned.node;
 
         // Skip type-stage documents — they don't participate in runtime evaluation.
-        // Matches eval_pipeline.rs:539-541 which skips type-stage documents entirely.
+        // Matches eval_surface_file_with_input in eval.rs which skips type-stage documents entirely.
         if doc.stage == Some(crate::ast::Stage::Type) {
             continue;
         }

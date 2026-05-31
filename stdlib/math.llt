@@ -40,6 +40,8 @@ atan2@[doc: "Two-argument arctangent atan2(y, x). Returns Float (radians)."]: bu
 nan?@[doc: "True if the Float value is NaN."]: builtin-nan?
 inf?@[doc: "True if the Float value is infinite."]: builtin-inf?
 finite?@[doc: "True if the Float value is finite (not NaN and not infinite)."]: builtin-finite?
+floor@[doc: "Floor: largest integer less than or equal to x. Returns Int."]: builtin-floor
+round@[doc: "Round to nearest integer. Returns Int."]: builtin-round
 
 # ============================================================================
 # Mathematical Constants
