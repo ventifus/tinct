@@ -29,6 +29,12 @@
 #   builtin-eval (with scope:)                   — document evaluation
 --- uses: ["core"]
 [
+  # Internal helper: build a single-entry dict from a computed key and value.
+  # Key must be a plain variable so it can appear in key position syntactically.
+  make-entry: [fn@Dict [let k v] [$k: v]]
+]
+
+[
   # Evaluate a single program's documents, threading % through them.
   # State carries:
   #   percent — current % pipeline value
@@ -42,13 +48,14 @@
                              [builtin-reduce builtin-merge []
                                [builtin-map builtin-module doc.uses]]]
                  program: prog
-                 %: state.percent]
-         k:   [builtin-str "%" doc.name]]
+                 %: state.percent]]
         [builtin-merge state
           [percent: val
-           named: [if [= [] doc.name]
-                    state.named
-                    [builtin-merge state.named [$k: val]]]]]]
+           named: [match doc.name
+                    [case [let n: Named]
+                      [builtin-merge state.named [make-entry [builtin-str "%" n] val]]]
+                    [case [let _: Unnamed]
+                      state.named]]]]]
       [percent: initial-input  named: []]
       prog.documents]]
     state.percent]

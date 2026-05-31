@@ -1,0 +1,5 @@
+# builtin-eval scope: injects bindings into the document's local scope
+--- uses: ["core"]
+[result: [builtin-eval [x] scope: [x: 42]]]
+=== out
+Dict({"result": Int(42)})

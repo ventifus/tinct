@@ -6904,7 +6904,13 @@ mod tests {
     fn prelude_parses_without_error() {
         let prelude_source = include_str!("../stdlib/prelude.llt");
         match crate::parser::parse(prelude_source) {
-            Ok(_) => {}
+            Ok(output) => {
+                assert!(
+                    output.errors.is_empty(),
+                    "prelude.llt has parse errors: {:?}",
+                    output.errors
+                );
+            }
             Err(e) => panic!("prelude parse failed: {e}"),
         }
     }

@@ -355,16 +355,35 @@ if let Some(scope_thunk) = args.named("scope") {
 ```tinct
 --- uses: ["core"]
 [
+  # Internal helper: build a single-entry dict from a computed key and value.
+  make-entry: [fn@Dict [let k v] [$k: v]]
+]
+
+[
   # Evaluate a single program's documents, threading % through them.
+  # State carries:
+  #   percent — current % pipeline value
+  #   named   — accumulated %name bindings from --- %name document headers
   eval-program: [fn [let prog initial-input]
-    [builtin-reduce
-      [fn [let percent doc]
-        [builtin-eval doc.expressions
-          scope:   [builtin-reduce builtin-merge [] [builtin-map builtin-module doc.uses]]
-          program: prog
-          %:       percent]]
-      initial-input
+    [state: [builtin-reduce
+      [fn [let state doc]
+        [val: [builtin-eval doc.expressions
+                 scope:   [builtin-merge
+                             state.named
+                             [builtin-reduce builtin-merge []
+                               [builtin-map builtin-module doc.uses]]]
+                 program: prog
+                 %: state.percent]]
+        [builtin-merge state
+          [percent: val
+           named: [match doc.name
+                    [case [let n: Named]
+                      [builtin-merge state.named [make-entry [builtin-str "%" n] val]]]
+                    [case [let _: Unnamed]
+                      state.named]]]]]
+      [percent: initial-input  named: []]
       prog.documents]]
+    state.percent]
 
   # Evaluate a pipeline of programs (a Seq of Value::Program), threading %
   # from one to the next. This is the real CLI entry point.
@@ -380,7 +399,7 @@ if let Some(scope_thunk) = args.named("scope") {
 ]
 ```
 
-Core primitives used: `builtin-reduce`, `builtin-merge`, `builtin-map`, `builtin-module`, `builtin-eval` (all registered in "core"). No bare aliases — prelude is not loaded yet.
+Core primitives used: `builtin-reduce`, `builtin-merge`, `builtin-map`, `builtin-module`, `builtin-eval`, `builtin-str` (all registered in "core"). No bare aliases — prelude is not loaded yet.
 
 Rust evaluates loader.llt in Phase 2 with `scope: builtin_module("core")`. This is the only place Rust hardcodes a scope. loader.llt changes only if the loading mechanism itself changes.
 
@@ -472,22 +491,37 @@ Prelude re-exports `eval-program` and `eval-programs` from loader (same implemen
 --- uses: ["core"]
 # First (private) dict — helpers not exported
 [
+  # make-entry: build single-entry dict from computed key and value
+  make-entry: [fn@Dict [let k v] [$k: v]]
   # ... loop-select-impl, retry-impl, and other private helpers ...
 ]
 # Second (public) dict — the prelude API
 [
   # Loading primitives — re-exported from loader, using module alias
-  module:        builtin-module
+  module: builtin-module
 
-  eval-program:  [fn [let prog initial-input]
-    [builtin-reduce
-      [fn [let percent doc]
-        [builtin-eval doc.expressions
-          scope:   [builtin-reduce builtin-merge [] [builtin-map module doc.uses]]
-          program: prog
-          %:       percent]]
-      initial-input
+  # eval-program threads {percent, named} state through all documents.
+  # Named document sections (--- %name) accumulate as %name bindings.
+  eval-program: [fn [let prog initial-input]
+    [state: [builtin-reduce
+      [fn [let state doc]
+        [val: [builtin-eval doc.expressions
+                 scope:   [builtin-merge
+                             state.named
+                             [builtin-reduce builtin-merge []
+                               [builtin-map module doc.uses]]]
+                 program: prog
+                 %: state.percent]]
+        [builtin-merge state
+          [percent: val
+           named: [match doc.name
+                    [case [let n: Named]
+                      [builtin-merge state.named [make-entry [str "%" n] val]]]
+                    [case [let _: Unnamed]
+                      state.named]]]]]
+      [percent: initial-input  named: []]
       prog.documents]]
+    state.percent]
 
   eval-programs: [fn [let programs initial-input]
     [builtin-reduce
@@ -509,7 +543,7 @@ No Rust code reads `doc.uses` for injection — that is `eval-program`'s job ent
 
 ### `stdlib/prelude.llt` — header and new exports
 
-`--- uses: ["core"]` header added to the runtime prelude document (the second document, after `--- stage: type`). Prelude's `--- uses:` is handled by loader's `eval-program` in Phase 3 — it is machine-read and load-bearing, not just documentation.
+`--- uses: ["core"]` header added to the runtime prelude document (the second document, after `--- stage: type`). In the current bootstrap (Phase 3 direct eval), this header is metadata only — core builtins are already in scope via the loader_env parent chain. Once Phase 4 CLI wiring lands (T-782/T-783), the header becomes machine-read and load-bearing when eval-programs processes prelude.
 
 See §`stdlib/prelude.llt — eval-program and module` above for the full implementation. The key exports added by this whatif: `module` (alias for `builtin-module`) and `eval-program` (multi-document loader loop).
 

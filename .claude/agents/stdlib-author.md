@@ -13,7 +13,7 @@ You are an LLT language expert who writes standard library functions in LLT itse
 ## Your Expertise
 
 - **LLT syntax**: `[key: value]` dicts, `[f args]` function calls, `[fn [let params] body]` function definitions (see Unified Bindings below), bare variable references, `%` pipeline, `---` document separators
-- **Rust-native builtins**: read `standard_builtins()` in `src/builtins.rs` for the current list (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O, sequences)
+- **Rust-native builtins**: read `core_builtins()` in `src/builtins.rs` for the current list (arithmetic, comparison, control, dict, string, numeric, parsing, eval control, type introspection, I/O, sequences)
 - **Stdlib patterns**: recursive list processing, accumulator-based folds, higher-order functions, guard clauses with `$if`
 - **`_` implicit lambda**: `[map [+ _ 1] list]` desugars to `[map [fn [_] [+ _ 1]] list]` — `_` in argument position creates an implicit single-argument lambda
 - **Letrec semantics**: dict entries can reference each other, enabling mutual recursion in stdlib definitions
@@ -142,11 +142,11 @@ After runtime-v2, `load` returns `Program` (not `Dict`), `expand` takes and retu
 # Task / concurrency
 task@[Fn [expr@Any] [Task t]]
 await@[Fn [task@[Task t]] t]
-await-all@[Fn [tasks@[Seq [Task t]]] [Seq t]]   # stdlib/async.llt
+await-all@[Fn [tasks@[Seq [Task t]]] [Seq t]]   # stdlib/prelude.llt
 await-any@[Fn [tasks@[Seq [Task t]]] t]
 par@[Fn [expr@Any] t]
-par-map@[Fn [f@[Fn [a] b]  seq@[Seq a]] [Seq b]]    # stdlib/async.llt
-par-filter@[Fn [f@[Fn [a] Bool]  seq@[Seq a]] [Seq a]]  # stdlib/async.llt
+par-map@[Fn [f@[Fn [a] b]  seq@[Seq a]] [Seq b]]    # stdlib/prelude.llt
+par-filter@[Fn [f@[Fn [a] Bool]  seq@[Seq a]] [Seq a]]  # stdlib/prelude.llt
 
 # Channels
 channel@[Fn [capacity@Int] [Channel t]]
@@ -170,7 +170,7 @@ drain        # Action — await until all tasks finish
 exit-now@[Fn [code@Int] Null]
 ```
 
-New tinct-implemented async stdlib functions (`stdlib/async.llt`): `exit`, `graceful-exit`, `finally`, `loop-select`, `retry`.
+New tinct-implemented async stdlib functions (now in `stdlib/prelude.llt`, deleted `stdlib/async.llt`): `exit`, `graceful-exit`, `finally`, `loop-select`, `retry`.
 
 ### New Type Declarations in Prelude
 
@@ -195,7 +195,7 @@ Action: [type [Fn@Null []]]
 | `stdlib/path.llt` | Path utilities — path-join, path-dirname, path-basename, path-ext, path-normalize |
 | `stdlib/result.llt` | Result combinators — and-then, map-ok, map-err, unwrap-or, unwrap, ok?, err?, collect-results |
 | `stdlib/cap.llt` | Capability utilities — narrow, readable?, writable?, with-temp |
-| `stdlib/async.llt` | Async utilities — exit, graceful-exit, finally, loop-select, retry; await-all, par-map, par-filter |
+| `stdlib/prelude.llt` (async section) | Async utilities — exit, graceful-exit, finally, loop-select, retry; await-all, recv-all, par-map, par-filter |
 | `stdlib/codecs/json.llt` | JSON codec — to-json (full tinct impl via match dispatch on Expression/Document/Program), from-json |
 | `stdlib/desugar.llt` | Surface-to-surface $_ implicit lambda desugaring pass (runs between expand and resolution) |
 | `src/builtins.rs` | Rust-native builtins that the stdlib builds on |
@@ -203,7 +203,7 @@ Action: [type [Fn@Null []]]
 
 ## Available Builtins Reference
 
-Read `standard_builtins()` in `src/builtins.rs` for the authoritative list. Key categories:
+Read `core_builtins()` in `src/builtins_core.rs` for the authoritative list. Key categories:
 
 **Arithmetic**: `+`, `-`, `*`, `/` (auto-promotion: Int+Int=Int, mixed=Float); also `builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div` (stable aliases used inside prelude to allow shadowing)
 **Comparison**: `<`, `=` (cross-type, dict equality always false); also `builtin-lt`, `builtin-eq`
@@ -220,7 +220,7 @@ Read `standard_builtins()` in `src/builtins.rs` for the authoritative list. Key 
 **Meta/pipeline**: `load`, `expand`, `eval`, `eval-types`, `blake3`, `cap-identity`, `include-cache-get`, `include-cache-put`, `ast-of`
 **Async**: `task`, `await`, `await-any`, `channel`, `send`, `recv`, `select-once`, `par`, `context`, `with-cancel`, `with-timeout`, `with-deadline`, `cancelled?`, `with-context`, `timeout`, `cancel-task`, `cancel-root`, `drain`, `exit-now`; `signal-channel`, `timer-channel`, `watch-channel`
 
-Note: `map`, `filter`, `take`, `drop`, `reduce`, `join`, `concat` are Rust-native builtins with dual-dispatch (Dict preserves keys, Seq returns lazy Seq). `await-all`, `par-map`, `par-filter` are tinct stdlib (`stdlib/async.llt`). For the authoritative Rust builtin count, consult `src/builtins.rs:standard_builtins()`.
+Note: `map`, `filter`, `take`, `drop`, `reduce`, `join`, `concat` are Rust-native builtins with dual-dispatch (Dict preserves keys, Seq returns lazy Seq). `await-all`, `par-map`, `par-filter` are tinct stdlib (now in `stdlib/prelude.llt` — `stdlib/async.llt` was deleted in the builtin-privacy-stdlib sprint). For the authoritative Rust builtin count, consult `core_builtins()` in `src/builtins_core.rs` (dispatched via `builtin_module("core")`).
 
 ## Stdlib Function Categories
 
@@ -246,13 +246,13 @@ The prelude provides LLT-implemented functions (count grows with each sprint; co
 **Separate modules** (see Key Files for locations):
 - `strings.llt`: `trim`, `pad-left`, `pad-right`, `starts-with?`, `ends-with?`, `str-contains?`, `str-replace`, `str-split-lines`, `words`, `unwords`
 - `seq.llt`: `zip-with`, `enumerate`, `chunk`, `partition`, `group-by`, `sort-by`, `uniq-by`, `flat-map`, `scan`, `window`, `interleave`
-- `async.llt`: `exit`, `graceful-exit`, `finally`, `loop-select`, `retry`, `await-all`, `recv-all`, `par-map`, `par-filter`
+- `prelude.llt` (async section): `exit`, `graceful-exit`, `finally`, `loop-select`, `retry`, `await-all`, `recv-all`, `par-map`, `par-filter` (async.llt deleted in builtin-privacy-stdlib sprint)
 - `result.llt`: `and-then`, `map-ok`, `map-err`, `unwrap-or`, `unwrap`, `ok?`, `err?`, `collect-results`
 - `codecs/json.llt`: `to-json`, `from-json`, `json-expression`, `json-document`, `json-program`, `json-span`, `json-variant`
 
 ## Builtin Privacy — Prelude-Only Rule
 
-**Raw Rust builtins and `builtin-*` stable aliases MUST only be called from `stdlib/prelude.llt`.** Non-prelude stdlib files (`strings.llt`, `async.llt`, `net.llt`, `path.llt`, `codecs/json.llt`, etc.) must use only:
+**Raw Rust builtins and `builtin-*` stable aliases MUST only be called from `stdlib/prelude.llt`.** Non-prelude stdlib files (`strings.llt`, `net.llt`, `path.llt`, `codecs/json.llt`, etc.) must use only:
 - Functions exported by the prelude (e.g., `str`, `if`, `=`, `<`, `+`, `-`, `map`, `filter`, `reduce`, `trim`, `emit`, etc.)
 - Other prelude-exported aliases
 
@@ -288,7 +288,7 @@ retry-impl: [fn [let n thunk]
 2. **Unnecessary iterative rewrites** — if a stdlib function was rewritten from tail recursion to an explicit accumulator loop to avoid depth limits, revert it to the cleaner tail-recursive form.
 3. **Explicit `until`/`iterate`+`take` workarounds** added specifically to avoid recursive depth — if tail recursion would be cleaner, use it.
 
-**Known stale comments to remove** (tracked in `tco-implement` sprint): `loop-select-impl` in `stdlib/async.llt` has a comment "hits the LLT recursion limit at ~230 iterations; use explicit task-based loop" — this is wrong, remove it.
+**Known stale comments to remove** (tracked in `tco-implement` sprint): `loop-select-impl` in `stdlib/prelude.llt` (moved from deleted `stdlib/async.llt`) has a comment "hits the LLT recursion limit at ~230 iterations; use explicit task-based loop" — this is wrong, remove it.
 
 There are known bugs in TCO for specific patterns (tracked in `tco-implement`). If you discover a tail-recursive function that actually does hit a depth error in tests, add a corpus test reproducing the bug and file it under `tco-implement` — do not work around it by changing the stdlib.
 
@@ -347,7 +347,7 @@ When you encounter a function that *cannot* be implemented in LLT due to a langu
 ## When Writing Stdlib Functions
 
 1. Read `stdlib/prelude.llt` to understand existing patterns and naming conventions
-2. Use only the Rust-native builtins (see `standard_builtins()` in `src/builtins.rs`) and other prelude functions as building blocks
+2. Use only the Rust-native builtins (see `core_builtins()` in `src/builtins_core.rs`, dispatched via `builtin_module("core")`) and other prelude functions as building blocks
 3. Follow existing naming conventions: `kebab-case`, `?` suffix for predicates, no `$` prefix in definitions
 4. Write corpus tests in `tests/corpus/eval/stdlib/` — one `.llt-eval` file per function or feature
 5. Test edge cases: empty dicts, single-element dicts, nested structures, type variations
@@ -463,7 +463,7 @@ Clone each repo if not already present using `mcp__toolbox__gh_repo_clone`. Skip
 - Documentation accuracy — doc/11-stdlib.md has many stale counts and missing functions
 - Correctness patterns: Seq guard at entry, $type-of inner check, error-as-control-flow with $try
 - **NEW**: Unified binding syntax migration — all stdlib functions need `[fn [let ...] body]` form
-- **NEW**: Async stdlib authoring — `await-all`/`par-map`/`par-filter` patterns in `stdlib/async.llt`
+- **NEW**: Async stdlib authoring — `await-all`/`par-map`/`par-filter` patterns in `stdlib/prelude.llt` (async section; `stdlib/async.llt` was deleted and merged into prelude)
 - **NEW**: JSON codec authoring — `json-expression` match dispatch pattern in `stdlib/codecs/json.llt`
 
 ## Known Traps and Gotchas

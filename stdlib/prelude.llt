@@ -411,6 +411,31 @@ reverse-seq-impl: [fn [let seq acc]
         Seq: [reverse-seq-impl [builtin-tail seq] [builtin-seq [builtin-head seq] acc]]
         _:   acc]]
 
+# ============================================================================
+# Async private helpers (T-733: moved from stdlib/async.llt)
+# ============================================================================
+
+# retry-impl: recursive countdown helper for retry.
+# Attempts thunk. On success returns value. On failure, if n > 0 retries.
+# Uses the Ok/Error variants produced by [try thunk].
+retry-impl: [fn [let n@Int thunk@Fn]
+    [match [builtin-try thunk]
+        [Ok v]:    v
+        [Error _]: [builtin-if [builtin-gte n 1]
+                       [retry-impl [builtin-sub n 1] thunk]
+                       [builtin-raise "retry limit exceeded"]]]]
+
+# loop-select-impl: recursive event-loop body.
+# Calls select-once on sources, passes result to handler, then loops.
+# Checks ctx cancellation before each iteration so callers can bound the loop.
+# Tail-recursive with TCO support (O(1) stack depth in the CEK machine).
+loop-select-impl: [fn [let ctx sources@Seq handler@Fn]
+    [builtin-if [builtin-cancelled-q ctx]
+        null
+        [do
+            [handler [builtin-select-once sources]]
+            [loop-select-impl ctx sources handler]]]]
+
 ]
 
 # ============================================================================
@@ -2193,6 +2218,7 @@ recv-datagram@[doc: "Receive a datagram packet"]: builtin-recv-datagram
 
 # Handle utilities
 string-handle@[doc: "Create a readable Handle from a string"]: builtin-string-handle
+read-chunk@[doc: "Read up to n bytes from a Handle as a Bytes value. Returns [] at EOF."]: builtin-read-chunk
 
 # Meta primitives: load/expand/eval for AST introspection and meta-programming.
 load@[doc: "Parse tinct source text into a Program value. Named arg name: sets the display path for error spans."]: builtin-load
@@ -2201,6 +2227,68 @@ eval@[doc: "Evaluate a sequence of expressions. Optional named args: env: (envir
 eval-types@[doc: "Evaluate expressions in the type-stage environment"]: builtin-eval-types
 blake3@[doc: "Compute the BLAKE3 cryptographic hash of a string, returning a hex-encoded digest."]: builtin-blake3
 cap-identity@[doc: "Return a stable string identity for a DirCap (used for content-addressed caching keys)."]: builtin-cap-identity
+
+# module: resolve a module name to its export dict (used to build eval scope from doc.uses).
+module@[doc: "Resolve a builtin module name to its export dict."]: builtin-module
+
+# eval-program: evaluate all runtime-stage documents in a Program, threading %.
+# Returns the final document's result.
+#
+# prog:          Program value (output of [expand [load source name: path]])
+# initial-input: initial pipeline input % for the first document
+#
+# State threads {percent, named} through all documents:
+#   percent — current % pipeline value
+#   named   — accumulated %name bindings from --- %name document headers
+#             (doc.name = [Named "foo"] → binds %foo; doc.name = [Unnamed] → unchanged)
+# Each document's scope merges accumulated named bindings with module-injected bindings.
+eval-program@[doc: """
+Evaluate all runtime-stage documents in a Program, threading %.
+
+prog:          Program value from [expand [load source name: path]]
+initial-input: initial % value for the first document
+
+Returns the final document's result. Named document sections (--- %name) accumulate
+as %name bindings available to subsequent documents via scope injection.
+"""]: [fn [let prog initial-input]
+  [state: [builtin-reduce
+    [fn [let state doc]
+      [val: [builtin-eval doc.expressions
+               scope:   [builtin-merge
+                           state.named
+                           [builtin-reduce builtin-merge []
+                             [builtin-map module doc.uses]]]
+               program: prog
+               %: state.percent]]
+      [builtin-merge state
+        [percent: val
+         named: [match doc.name
+                  [case [let n: Named]
+                    [builtin-merge state.named [make-entry [str "%" n] val]]]
+                  [case [let _: Unnamed]
+                    state.named]]]]]
+    [percent: initial-input  named: []]
+    prog.documents]]
+  state.percent]
+
+# eval-programs: evaluate a sequence of Programs in pipeline order, threading %.
+# Each Program's final value becomes the % for the next Program.
+#
+# programs:      Seq of Program values
+# initial-input: initial % value for the first Program
+eval-programs@[doc: """
+Evaluate a sequence of Programs in pipeline order, threading %.
+
+programs:      Seq of Program values
+initial-input: initial % value for the first Program
+
+Returns the final Program's result.
+"""]: [fn [let programs initial-input]
+  [builtin-reduce
+    [fn [let percent prog]
+      [eval-program prog percent]]
+    initial-input
+    programs]]
 
 # ============================================================================
 # Builder Primitives (B-168: builtin-privacy I/O renaming)
@@ -2672,10 +2760,10 @@ Returns: updated state {prev: result, named: updated-named-sections}
            ["%include-dir": include-dir]]]]
   [prev:  result
    named: [match doc.name
-            [case [let n: Named]]
-              [merge state.named [make-entry [str "%" n] result]]
-            [case Unnamed]
-              state.named]]]
+            [case [let n: Named]
+              [merge state.named [make-entry [str "%" n] result]]]
+            [case [let _: Unnamed]
+              state.named]]]]
 
 # eval-document-pipeline: thread % through all documents in a file AST dict.
 #
@@ -2777,7 +2865,7 @@ Uses content-addressed memoization: blake3(cap-identity + "|" + source).
 Detects circular includes via [Pending] cache state.
 Included files start with % = [] (fresh pipeline input).
 """] [let cap@DirCap path@String integrity-hash@[default: []]]
-  [source: [join "\n" [collect [lines [open cap path Readable]]]]]
+  [source: [builtin-read-all [open cap path Readable]]]
   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
   [match [builtin-include-cache-get hash]
     [Cached result]: result
@@ -2805,7 +2893,7 @@ Same semantics as --- within a file, applied across multiple files.
   [reduce
     [fn@[return: Any] [let prev file-path]
       [eval-file
-        [expand [load [join "\n" [collect [lines [open pwd file-path Readable]]]] name: file-path]]
+        [expand [load [builtin-read-all [open pwd file-path Readable]] name: file-path]]
         prev
         pwd]]
     initial
@@ -2839,9 +2927,10 @@ fixed-clock: fixed-clock
 # ============================================================================
 # Async concurrency primitives
 #
-# Bare-name wrappers over builtin-* stable aliases.
-# These were removed from standard_builtins() in the builtin-privacy-primary-names
-# sprint, with prelude expected to re-export them. async.llt depends on these.
+# Async utilities (loop-select, retry, finally, await-all, recv-all, par-map,
+# par-filter, exit, graceful-exit) live in this prelude — stdlib/async.llt was
+# deleted and its contents merged here in the builtin-privacy-stdlib sprint.
+# Bare-name wrappers over builtin-* stable aliases are also re-exported here.
 # ============================================================================
 
 # Signal type: POSIX signal variants for signal-channel
@@ -2895,6 +2984,137 @@ cancel-task:     builtin-cancel-task
 cancel-root:   builtin-cancel-root
 drain:         builtin-drain
 exit-now:      builtin-exit-now
+
+# ============================================================================
+# Async Utilities (T-733: moved from stdlib/async.llt)
+# ============================================================================
+#
+# High-level async utilities built on the async builtins above.
+# Private helpers (retry-impl, loop-select-impl) are in the private dict.
+
+# await-all: wait for all tasks in parallel, return a Seq of results.
+# Each element of tasks must be a Task value produced by [task ...].
+# Results are returned in the same order as the input tasks.
+#
+# Type: ([Seq [Task T]] -> [Seq T])
+# Example: [await-all [[task [+ 1 2]] [task [* 3 4]]]] => [3 12]
+await-all@[doc: """
+Wait for all tasks and return a Seq of results in submission order.
+
+Example: [await-all [[task [+ 1 2]] [task [* 3 4]]]] => [3 12]
+
+Note: Each element must be a Task value. Results are in input order.
+The map drives evaluation; for parallel work, spawn tasks before calling await-all.
+"""]: [fn [let tasks]
+    [map await [collect tasks]]]
+
+# recv-all: receive exactly n items from a channel, returning them as a Seq.
+# Blocks until all n items have been received.
+#
+# Type: ([Channel T] -> Int -> [Seq T])
+# Example: [recv-all ch 3] => Seq of 3 received values
+recv-all@[doc: """
+Receive exactly n items from a channel, returning them as a Seq.
+
+Example: [recv-all ch 3]
+
+Note: Blocks until all n items have been received. Uses reduce over [range 0 n]
+to collect results; the accumulator grows by one item per step.
+"""]: [fn [let ch@Channel n@Int]
+    [reduce [fn [let acc _] [append acc [recv ch]]] [] [range 0 n]]]
+
+# exit: graceful shutdown — cancel all tasks, wait for drain, then exit.
+#
+# Type: (Int -> Null)
+# Example: [exit 0]
+exit@[doc: """
+Graceful shutdown: cancel all tasks, drain, then exit with code.
+
+Example: [exit 0]
+
+Note: Waits indefinitely for tasks to drain. For bounded wait, use graceful-exit.
+"""]: [fn [let code@Int]
+    [do
+        [cancel-root]
+        [drain]
+        [exit-now code]]]
+
+# graceful-exit: bounded graceful shutdown with an explicit drain timeout.
+#
+# Type: (Int -> Null)
+# Example: [graceful-exit 0]
+graceful-exit@[doc: """
+Bounded graceful shutdown: cancel tasks, drain, then exit.
+
+Example: [graceful-exit 0]
+
+Note: MVP implementation waits indefinitely for drain. A future version will add
+a drain-timeout parameter (tracked in the issue tracker).
+"""]: [fn [let code@Int]
+    [do
+        [cancel-root]
+        [drain]
+        [exit-now code]]]
+
+# loop-select: repeatedly call select-once on sources until the context is
+# cancelled. On each iteration the handler is called with the received value.
+# Tail-recursive implementation with O(1) stack depth via TCO.
+#
+# Type: (Context -> [Seq [Channel Fn]] -> Fn -> Null)
+# Example:
+#   [loop-select [context] [[sig-ch [fn [_] [exit 0]]]] identity]
+loop-select@[doc: """
+Repeatedly select from channels until the context is cancelled.
+
+Example:
+  [loop-select [context]
+    [[sig-ch  [fn [_] [exit 0]]]
+     [req-ch  [fn [req] [task [handle req]]]]]
+    identity]
+
+Note: Tail-recursive with O(1) stack depth. TCO was implemented in tco-proper sprint.
+"""]: [fn [let ctx sources@Seq handler@Fn]
+    [loop-select-impl ctx sources handler]]
+
+# retry: run thunk; on error, retry up to n more times.
+# Returns the first successful value, or raises "retry limit exceeded" after
+# n+1 total attempts fail.
+#
+# Type: (Int -> [Fn -> T] -> T)
+# Example: [retry 3 [fn [] [flaky-operation]]]
+retry@[doc: """
+Retry a zero-arg function up to n times on error.
+
+Example: [retry 3 [fn [] [flaky-operation]]]
+
+Note: Makes up to n+1 total attempts (1 initial + n retries).
+Raises "retry limit exceeded" if all attempts fail.
+Inherently materializing: must force each attempt to catch errors.
+"""]: [fn [let n@Int thunk@Fn]
+    [retry-impl n thunk]]
+
+# finally: run cleanup regardless of whether body succeeds or errors.
+# Returns the body's result on success, re-raises on error.
+# Cleanup receives no arguments and its return value is discarded.
+#
+# Type: ([Fn -> Null] -> [Fn -> T] -> T)
+# Example:
+#   [finally [fn [] [close-conn conn]] [fn [] [do-work]]]
+finally@[doc: """
+Run cleanup regardless of whether body succeeds or errors, then return/re-raise.
+
+Example:
+  [finally
+    [fn [] [close-conn conn]]
+    [fn [] [do-work-with conn]]]
+
+Note: cleanup runs in a non-cancellable context — it will complete even if
+the parent context is cancelled. Cleanup return value is discarded.
+Rust-level EvalErrors bypass finally.
+"""]: [fn [let cleanup@Fn body@Fn]
+    [match [try body]
+        [Ok v]:    [do [with-context [non-cancellable] [cleanup]] v]
+        [Error e]: [do [with-context [non-cancellable] [cleanup]] [raise e]]]]
 
 # ============================================================================
 # Macro transformer helpers and public transformers

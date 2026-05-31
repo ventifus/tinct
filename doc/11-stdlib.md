@@ -248,7 +248,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 **Tinct-implemented stdlib (wrappers and derived functions):**
 
-The prelude wraps every primary-name operator that has a stable alias, making it shadowable by domain-specific stdlib modules. The `builtin-*` names used in the derivation column are accessible to all code via the environment chain (they are pre-injected by `create_root_env()`), but are typically accessed only by the prelude and domain stdlib modules that need to call through a shadow:
+The prelude wraps every primary-name operator that has a stable alias, making it shadowable by domain-specific stdlib modules. The `builtin-*` names used in the derivation column are accessible to all code via the environment chain (injected from the "core" builtin module during bootstrap), but are typically accessed only by the prelude and domain stdlib modules that need to call through a shadow:
 
 | Function | Derivation | Notes |
 |----------|-----------|-------|
@@ -299,18 +299,19 @@ Any `include`d stdlib module can shadow the primary-name operators in lexical sc
 
 **Loading mechanism:**
 
-Only `stdlib/prelude.llt` is loaded automatically at startup (bundled at compile time via `include_str!`). All other stdlib modules must be loaded explicitly with `[include ...]`. At startup:
+Both `stdlib/loader.llt` and `stdlib/prelude.llt` are loaded automatically at startup (bundled at compile time via `include_str!`). All other stdlib modules must be loaded explicitly with `[include ...]`. Startup follows a four-phase bootstrap inside `create_stdlib_env_inner()`:
 
-1. `create_root_env()` pre-injects all Rust builtins directly into the bootstrap environment — all Rust builtin functions are registered by name (e.g., `builtin-lt`, `builtin-add`, `eval`, `raise`, `load`, `blake3`, etc.)
-2. `create_stdlib_env_inner()` parses and evaluates `stdlib/prelude.llt` in a child of the bootstrap env — prelude can access all builtins via the environment chain
-3. Prelude exports its public wrappers (`<`, `=`, `+`, `if`, `not`, `>`, `and`, `or`, ...) into the stdlib env, shadowing some builtin names with user-friendly wrappers
-4. User code inherits the stdlib env — `builtin-*` names are accessible via the environment chain, but shadowed by prelude wrappers where appropriate
+1. **Phase 1 — core env:** A fresh environment is populated with all builtins from `builtin_module("core")` — `builtin-lt`, `builtin-add`, `eval`, `raise`, `load`, `blake3`, etc.
+2. **Phase 2 — loader.llt:** `stdlib/loader.llt` is evaluated in the core env, producing `eval-program` and `eval-programs` (the pipeline entry points). `make-entry` is a private helper in a preceding dict.
+3. **Phase 3 — prelude.llt:** `stdlib/prelude.llt` is evaluated using `eval-programs`, with the loader dict injected into scope. Prelude defines its private helpers in a first dict and its full public API in a second dict.
+4. **Phase 4 — stdlib env:** The prelude's public dict becomes the stdlib env. User code and domain stdlib modules inherit this env.
 
 ```text
-Bootstrap env: all 233 Rust builtins (builtin-lt, builtin-add, eval, raise, load, blake3, ...)
-  └── Stdlib env: prelude.llt exports (<, =, +, -, *, /, if, filter, map, not, >, and, or, ...)
-        └── User code / domain stdlib ([include "stdlib/sql.llt"] shadows filter, map, <, =, ...)
-              └── User predicates and programs
+Core env: builtin_module("core") (builtin-lt, builtin-add, eval, raise, load, blake3, ...)
+  └── Loader dict: loader.llt (eval-program, eval-programs, make-entry)
+        └── Prelude dict: prelude.llt exports (<, =, +, -, *, /, if, filter, map, not, >, and, or, ...)
+              └── User code / domain stdlib ([include "stdlib/sql.llt"] shadows filter, map, <, =, ...)
+                    └── User predicates and programs
 ```
 
 The prelude wraps builtins with stable `builtin-*` aliases (`builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div`, `builtin-eq`, `builtin-lt`, `builtin-if`, `builtin-seq`, `builtin-head`, `builtin-tail`, `builtin-collect`, `builtin-range`, `builtin-repeat`, `builtin-cycle`, `builtin-iterate`, `builtin-unfold`, `builtin-map`, `builtin-filter`, `builtin-take`, `builtin-drop`, `builtin-reduce`, `builtin-join`, `builtin-concat`, `builtin-first`, `builtin-last`, `builtin-rest`, `builtin-cons`, `builtin-reverse`, `builtin-sort`, `builtin-get`, `builtin-length`, `builtin-append`, `builtin-str`, `builtin-split`, `builtin-str-length`, `builtin-str-slice`, `builtin-raise`) so domain modules can shadow the primary names while still calling the original implementation. All other builtins (e.g., `eval`, `load`) are used directly by name.
@@ -319,7 +320,6 @@ The prelude wraps builtins with stable `builtin-*` aliases (`builtin-add`, `buil
 
 | Module | Functions provided | When to include |
 |--------|-------------------|-----------------|
-| `async.llt` | `await-all`, `recv-all`, `par-map`, `par-filter`, `exit`, `graceful-exit`, `loop-select`, `retry`, `finally` | Async utilities (task coordination, graceful shutdown, retry loops) |
 | `numeric.llt` | `UInt8`, `UInt16`, `UInt32`, `UInt64`, `Int8`, `Int16`, `Int32`, `Int64`, `to-bytes` | Fixed-width integer type aliases with range constraints |
 | `strings.llt` | `pad-left`, `pad-right`, `str-reverse`, `upper`, `lower` | String formatting, reversal, and case conversion (`str-find`, `str-repeat` are in prelude) |
 | `math.llt` | `pi`, `e`, `phi`, `hypot`, `deg->rad`, `rad->deg`, `log-base` | Math constants, derived trig/log functions |

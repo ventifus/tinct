@@ -1,6 +1,6 @@
 # async stdlib basic smoke test
-# Tests the pure-LLT functions in stdlib/async.llt that do not require
-# the async runtime (task/await/channel) to be live — specifically:
+# Tests the pure-LLT async utility functions in stdlib/prelude.llt that do not
+# require the async runtime (task/await/channel) to be live — specifically:
 #   - retry: succeeds on first attempt
 #   - await-all: wraps map-await (tested via identity since no async runtime)
 #
@@ -8,7 +8,6 @@
 # graceful-exit) are not tested here because they require either a live
 # async runtime or builtins not yet implemented.
 
-[include %libdir "async.llt"]
 [retry 3 [fn [] 42]]
 === out
 Int(42)

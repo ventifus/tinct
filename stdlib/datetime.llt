@@ -1,5 +1,5 @@
 # Date-time helpers (pure tinct, depends on builtins)
-
+--- uses: ["datetime"]
 [
 # Internal helper dict — provides pad-left utility
 pad-left: [include %libdir "strings.llt"].pad-left

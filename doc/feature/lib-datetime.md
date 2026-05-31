@@ -250,7 +250,7 @@ For local fields, use `timestamp-in-tz` first.
 ### Rust Builtins (`src/builtins.rs`)
 
 ~25 new builtins across timestamp construction, arithmetic, extraction,
-duration, clock, and timezone. Registered in `standard_builtins()`.
+duration, clock, and timezone. Registered in `datetime_builtins()` in `src/builtins_datetime.rs`, accessible via `builtin_module("datetime")`.
 
 ### CLI (`src/main.rs`)
 
