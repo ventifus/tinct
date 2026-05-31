@@ -2127,16 +2127,18 @@ mod tests {
     /// second await would then read `Ok({})` and return `{}` instead of the error.
     ///
     /// Uses builtin-task/builtin-await (bare names removed in builtin-privacy-primary-names sprint).
-    /// `try` stays as the prelude wrapper; `+` stays as the prelude wrapper (2-arg, so [+ 1 2 3] gives arity mismatch).
+    /// `try` stays as the prelude wrapper; [builtin-div 1 0] gives a reliable division-by-zero error.
+    /// Note: builtin-add accepts 2+ args (uses first two), so [builtin-add 1 2 3] returns Ok(3),
+    /// not an error — division by zero is used instead.
     #[test]
     fn test_await_error_twice_returns_error_both_times() {
-        // Create a task that errors ([+ 1 2 3] fails: + is 2-arg). [try [fn [] ...]] catches
+        // Create a task that errors ([builtin-div 1 0] fails: division by zero). [try [fn [] ...]] catches
         // the error as [Error "msg"]. We await the same task twice — both should return
         // [Error ...], not [Ok {}].
         // The bug: before the fix, Done stored Ok({}) after first await and second
         // await would return {} instead of the original error.
         let result = crate::eval_source_with_config(
-            "[t: [builtin-task [fn [let] [+ 1 2 3]]]] [first-err: [try [fn [let] [builtin-await t]]]] [second-err: [try [fn [let] [builtin-await t]]]] [first-result: first-err  second-result: second-err]",
+            "[t: [builtin-task [fn [let] [builtin-div 1 0]]]] [first-err: [try [fn [let] [builtin-await t]]]] [second-err: [try [fn [let] [builtin-await t]]]] [first-result: first-err  second-result: second-err]",
             false,
         );
         let output = result.expect("eval should succeed (try catches errors)");
@@ -2149,7 +2151,7 @@ mod tests {
             "both awaits should produce Error, not Ok: {output}"
         );
         // Verify they're the same error (same message appears twice)
-        let error_msg = "arity mismatch";
+        let error_msg = "division by zero";
         let count = output.matches(error_msg).count();
         assert_eq!(
             count, 2,

@@ -20,7 +20,7 @@ addition enables:
 
 ## Supersession Notes
 
-- **`[do]` implementation**: The `[do]` macro is implemented in `stdlib/macros.llt`.
+- **`[do]` implementation**: The `[do]` macro transformer is implemented in `stdlib/prelude.llt`.
 - **`sequence`/`traverse`**: Defined in `stdlib/prelude.llt`.
 - **`Mappable` kind registration**: Registered with `Kind::Operator` as specified.
 
@@ -472,7 +472,7 @@ assume strict evaluation. Tinct's lazy model makes monads the right abstraction.
 
 Accepted 2026-05-11. The acceptance review identified the following critical issues, which have been resolved:
 
-1. **`[do]` macro** — `stdlib/macros.llt` implements the `[do]` macro via the `hkt-do-macro` sprint.
+1. **`[do]` macro** — `stdlib/prelude.llt` implements the `[do]` macro transformer via the `hkt-do-macro` sprint (formerly in `stdlib/macros.llt`, merged into prelude).
 2. **BAS distribution rule** — One-directional rule adopted: `App(m, a) | App(m, b) <: App(m, a|b)` for covariant `m` (KEEP); `App(m, a|b) <: App(m, a) | App(m, b)` (DROP — unsound for diagonal functors). `Result` uses nominal ADT, not structural records.
 3. **Naming consistency** — `TyCon` renamed to `Operator` throughout: `Type::Operator(String)`, `Kind::Operator`, `UNIFY-OPERATOR`, `KIND-OPERATOR`.
 4. **`UNIFY-OPERATOR` rule added** — specified above.
@@ -520,7 +520,7 @@ Hierarchy.
 `Numeric` remains a hardcoded fixed-instance set — its mixed-type arithmetic semantics
 require multi-parameter type classes to express correctly, which are out of scope.
 
-### `[do]` Macro (`stdlib/macros.llt`)
+### `[do]` Macro (`stdlib/prelude.llt`)
 
 Extended to support inferred form: when no explicit monad argument is present, the macro
 emits a typeclass constraint for resolution by the type checker. The desugaring is

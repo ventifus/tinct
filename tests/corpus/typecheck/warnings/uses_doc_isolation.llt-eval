@@ -1,0 +1,16 @@
+# --- uses: ["core"] builtins are doc-local at the type-checker level.
+# Runtime isolation is deferred (S-786 Phase 4). At runtime, core builtins are
+# accessible in all documents because core builtins are in stdlib_env globally.
+# The type checker enforces isolation via T002: both the second and third documents
+# lack a --- uses: header, so the type checker warns about raw builtins in each.
+# Two T002 warnings are expected: one for builtin-if (doc 2) and one for builtin-add (doc 3).
+--- uses: ["core"]
+---
+[x: [builtin-if true 1 0]]
+---
+[y: [builtin-add 3 4]]
+=== out
+Dict({"y": Int(7)})
+=== warn
+raw builtin `builtin-if` is not available in user code
+raw builtin `builtin-add` is not available in user code

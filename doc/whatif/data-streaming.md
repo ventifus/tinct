@@ -71,7 +71,7 @@ The SCN algorithm is defined by cases:
 | `Dict([])` | `[]` |
 | `Dict(entries)` | `[k: SCN(v)  ...]` for each entry |
 | `Overlay(l, r)` | `[k: SCN(v)  ...]` — flattened to Dict before serialization |
-| `Seq { head, tail }` | `[SCN(head) \| SCN(tail)]` |
+| `Seq { head, tail }` | `[seq SCN(head) SCN(tail)]` — uses `seq` builtin constructor; `|` is the pipe operator and cannot be used here |
 | `Builtin(b)` | `b.name` — builtins are always stdlib; serialize by name string |
 | `Variant(tag, None)` | `tag` — nullary constructor |
 | `Variant(tag, Some(payload))` | `[tag SCN(payload)]` |
@@ -92,9 +92,38 @@ The SCN algorithm is defined by cases:
 3. **Capture avoidance** — before substituting, check whether any param name `p` appears free in any `SCN(env.lookup(x))`. If so, alpha-rename `p` to a fresh gensym name (`ℊꜱʏᴍ⧼p⧽N` form — prefix U+210A ℊ followed by small-caps SYM, then the original param name and a counter) in both the param list and all `Var { name: p, .. }` and `FreeVar(p)` binding references in the body. This is the Barendregt convention applied mechanically. The `ℊꜱʏᴍ` prefix characters (U+210A, U+A731, U+028F, U+1D0D) are all Unicode Letter-category and valid tinct identifier characters, so the SCN output remains parseable; a collision requires the user to deliberately type these Unicode codepoints, making accidental collision practically impossible.
 4. **Serialize** — emit `[fn [let params'] body']` using the substituted, possibly alpha-renamed body.
 
+**CoreExpr traversal — complete variant table.** The free-variable walk and substitution pass must handle every `CoreExpr` variant. The walker carries a *param scope* (set of names bound by enclosing `Fn` params and `CaseArm` pattern bindings) and replaces captured references with their inline SCN.
+
+| Variant | Walk / Substitute action |
+|---------|--------------------------|
+| `Int`, `Float`, `Bool`, `Str` | Leaf — nothing to do |
+| `Placeholder`, `Error(_)` | Leaf — nothing to do |
+| `Rest(_)` | Leaf — always a rest-parameter reference, in param scope |
+| `Var { name, .. }` | **Decision point**: if `name` ∈ param scope → leave as `name`; if `name` ∈ stdlib → leave; else → substitute with `SCN(env.lookup(name))` |
+| `FreeVar(name)` | Same as `Var` — de Bruijn coordinates irrelevant to SCN |
+| `Annotated { name, .. }` | Same as `Var` — `name` is a variable reference in annotation position |
+| `DotAccess { expr, field }` | Recurse into `expr`; `field` is a static key (no variables) |
+| `Sequential(exprs)` | Recurse into each expr in order |
+| `Dict(entries)` | Recurse into each entry's `key` (if `Some`) and `value` |
+| `Call { func, args, named_args, .. }` | Recurse into `func`; recurse into each positional `arg`; recurse into each `named_arg.value` |
+| `TypeAssert { expr, .. }` | Recurse into `expr`; annotation is a type expression, not a variable reference |
+| `TypeApp { func, arg }` | Recurse into `func` and `arg` |
+| `Match { scrutinee, arms }` | Recurse into `scrutinee`; recurse into each arm (each is a `CaseArm`) |
+| `CaseArm { pattern, body }` | Collect variable names bound by `pattern` → extend param scope → recurse into `body` with extended scope; also recurse into `pattern` for nested closures in guard positions |
+| `Fn { params, body, .. }` | Extend param scope with all param names → recurse into `body` with extended scope. Capture avoidance (step 3) must be applied before substituting into the body. |
+| `PatternDecl { bindings }` | Recurse into each binding (pattern positions, may contain nested closures) |
+| `LetDecl { bindings }` | Recurse into each binding |
+| `Quote(expr)` | **Do not substitute** — quoted code is opaque AST data passed to macros, not evaluated in the closure's context. Recurse only into nested `Unquote`/`UnquoteSplice` sub-expressions (these ARE evaluated). Track quote depth; at depth > 0, Unquote decrements depth and resumes substitution. |
+| `Unquote(expr)` | If at quote depth > 0: decrement depth, recurse into `expr` normally. At depth 0: recurse normally (Unquote outside Quote is a no-op in the surface language). |
+| `UnquoteSplice(expr)` | Same as `Unquote` |
+
+**CaseArm pattern variable extraction.** For each arm's `pattern`, collect variable names using the same rules as lowering: `Variable(name)` bindings, dict-pattern field bindings, seq-pattern head/tail bindings. These names are added to the param scope for that arm's body only.
+
+**Mutual recursion: non-serializable.** If closure `f` captures closure `g` and `g` captures `f`, `SCN(f)` attempts to inline `SCN(g)` which attempts to inline `SCN(f)` — infinite recursion. The `InProgress` sentinel fires and produces a cycle error, the same as for cyclic value graphs. Mutually recursive closures cannot be serialized to the stream format.
+
 No changes to `FnAnnotation` or `src/value.rs` are required.
 
-**`src/surface_fmt.rs` addition:** `fn fmt_fn(params: &[Param], body: &Arc<Spanned<CoreExpr>>, env: &Environment, ctx: &Arc<EvalContext>) -> Result<String, String>` — implements steps 1–4. (`Param` is the type stored in `Value::Function.params: Rc<Vec<Param>>`; nested `CoreExpr::Fn` nodes inside the body use `CoreParam`, which has the same fields.) Stdlib membership check: `ctx.config.stdlib_env.read().unwrap().lookup(name).is_some()`.
+**`src/surface_fmt.rs` addition:** `fn fmt_fn(params: &[Param], body: &Arc<Spanned<CoreExpr>>, env: &Environment, ctx: &Arc<EvalContext>) -> Result<String, String>` — implements steps 1–4. (`Param` is the type stored in `Value::Function.params: Rc<Vec<Param>>`; nested `CoreExpr::Fn` nodes inside the body use `CoreParam`, which has the same fields.) Stdlib membership check: `ctx.config.stdlib_env.read().unwrap().lookup(name).is_some()` — after builtin-privacy, `stdlib_env` is `prelude_dict` (the result of Phase 3 bootstrap), so stdlib names are those exported by prelude and any included stdlib modules.
 
 **Cyclic values.** `to-tinct` forces eagerly. A cyclic value graph (e.g., a lazy recursive `Seq` with `xs: [cons 1 xs]`) will hit the InProgress sentinel during SCN traversal and produce a cycle error — the same behavior as `to-json`. Cyclic structures cannot be serialized to the stream format.
 
@@ -105,7 +134,7 @@ For an unevaluated thunk with expression E and environment env: substitute each 
 **Gensym convention — design note.** This whatif changes the output format of the `[gensym ...]` builtin (`src/builtins_meta.rs:595`) from `:prefix:N` (e.g. `:foo:0`) to `ℊꜱʏᴍprefixN` (e.g. `ℊꜱʏᴍ⧼foo⧽0`). The old `:p:N` format used `:` as a delimiter, which is a lexer-denylist character (`Token::Colon`) — correct for unforgeability but wrong when the output must be parseable source text, as it is for SCN. The new format uses the prefix `ℊꜱʏᴍ` (U+210A SCRIPT SMALL G + U+A731 LATIN LETTER SMALL CAPITAL S + U+028F LATIN LETTER SMALL CAPITAL Y + U+1D0D LATIN LETTER SMALL CAPITAL M) — all Unicode Letter-category characters and therefore valid tinct identifiers. Collision requires deliberate IME input of these codepoints.
 
 This change affects all callers of `[gensym ...]`:
-- `stdlib/macros.llt` `do-desugar-inferred`: `[gensym "do-infer"]` produces `:do-infer:N` → will produce `ℊꜱʏᴍ⧼do-infer⧽N`. The runtime sentinel check in `src/eval.rs` (`name.starts_with(":do-infer:")`) must be updated to `name.starts_with("ℊꜱʏᴍ⧼do-infer⧽")`.
+- `stdlib/prelude.llt` `do-desugar-inferred`: `[gensym "do-infer"]` produces `:do-infer:N` → will produce `ℊꜱʏᴍ⧼do-infer⧽N`. The runtime sentinel check in `src/eval.rs` (`name.starts_with(":do-infer:")`) must be updated to `name.starts_with("ℊꜱʏᴍ⧼do-infer⧽")`.
 - `src/eval_pipeline.rs` uses its own `__nominal_input_N` format (not `[gensym]`) — should be migrated to `ℊꜱʏᴍ⧼nominal-input⧽N` for consistency.
 - Any macro that calls `[gensym]` or `[gensym prefix]` automatically picks up the new format with no change needed.
 
@@ -147,24 +176,24 @@ emit@[doc: "Emit a value to the output channel"]:
   [fn@Null [let v@Any] [send %emit v]]
 ```
 
-`%emit` is injected by the CLI into every program's environment before evaluation. `emit v` sends `v` to that channel; the formatter on the other end decides how to serialize it. Call sites are agnostic to the serializer — they just `emit`.
+`%emit` is created by `eval-programs` and injected into every program's scope as a `Channel@Any`. `emit v` sends `v` to that channel; the formatter decides how to serialize it. Call sites are agnostic to the serializer — they just `emit`.
 
 **Strictness note.** `[send %emit v]` materializes `v` before putting it on the channel (`builtin_send` at `src/builtins_async.rs:402`). This means `emit` is a strictness point: the emitted value is fully forced at call time, not at serialization time. The structural transfer claim in the SCN section refers to the `to-tinct` output format preserving callable structure (e.g., a forced `Value::Function` or `Value::Variant`), not to thunks travelling lazily across the channel.
 
-The CLI wires the user program's `%emit` to the output program's `%emit`, and injects `%stdout` (a writable handle) into the output program:
+`eval-programs` creates a `%emit` channel and injects it into every program's scope (see §`stdlib/loader.llt`). Every program in the pipeline can call `emit v` and can receive from `%emit`. The CLI injects `%stdout` (a writable handle) into the environment.
 
 ```text
 user program  ──%emit──▶  output program  ──%stdout──▶  actual stdout
-  (producer)                (consumer)
+ (emit producer)          (emit consumer, also handles %)
 ```
 
-- User program calls `emit v` = `[send %emit v]`. It is an **emit producer**.
-- Output program calls `[recv %emit ...]` to consume values. It is an **emit consumer**.
-- Output program writes to `%stdout` (a writable handle). It never calls `emit`.
+- Any program can call `emit v` = `[send %emit v]` — not just user programs.
+- The output program (last in the pipeline) acts as the **emit consumer**: it drains `%emit` and writes to `%stdout`.
+- By convention, output programs do not call `emit` themselves — they consume from `%emit` and write to `%stdout`.
 
-The CLI injects `%stdout` as a writable handle into every output program. Output programs are **emit consumers** — they receive from `%emit` and write to `%stdout`. They never call `emit` themselves.
+**`%emit` is always available.** `%emit` is created by `eval-programs` and injected into every program's scope — always present so `emit` never fails with "undefined variable" in any context. The default output program is `stdlib/cli/out/none.llt`: it drains `%emit` discarding all values, and forces `%` discarding all elements. Programs evaluate fully (side effects and `emit` calls fire normally) but nothing is printed. Output requires an explicit `-o` flag.
 
-**`%emit` is always injected.** `%emit` is part of the bootstrap environment — always present alongside `%libdir`, `%cwd` etc. — so `emit` never fails with "undefined variable" in any context. The default output program is `stdlib/cli/out/none.llt`: it drains `%emit` discarding all values, and forces `%` discarding all elements. Programs evaluate fully (side effects and `emit` calls fire normally) but nothing is printed. Output requires an explicit `-o` flag.
+**`%` threading and `%emit` are orthogonal.** `eval-programs` threads `%` sequentially through the list — the return value of each program becomes `%` for the next. `eval-programs` also creates `%emit` once and injects it into every document's scope. The output formatter drains `%emit` concurrently within its own execution via `drain: [task ...]`.
 
 ### `to-tinct` — the SCN function
 
@@ -233,15 +262,15 @@ bracket-count: [fn@Int [let s@String]
   [reduce
     [fn [let st ch]
       [if st.done  st
-        [if st.escape  [st | [escape: false]]
+        [if st.escape  [merge st [escape: false]]
           [if st.in-string
-            [if [= ch "\\"]  [st | [escape: true]]
-            [if [= ch "\""]  [st | [in-string: false]]
+            [if [= ch "\\"]  [merge st [escape: true]]
+            [if [= ch "\""]  [merge st [in-string: false]]
                              st]]
-            [if [= ch "#"]   [st | [done: true]]
-            [if [= ch "["]   [st | [depth: [+ st.depth 1]]]
-            [if [= ch "]"]   [st | [depth: [- st.depth 1]]]
-            [if [= ch "\""]  [st | [in-string: true]]
+            [if [= ch "#"]   [merge st [done: true]]
+            [if [= ch "["]   [merge st [depth: [+ st.depth 1]]]
+            [if [= ch "]"]   [merge st [depth: [- st.depth 1]]]
+            [if [= ch "\""]  [merge st [in-string: true]]
                              st]]]]]]]]
     [depth: 0  in-string: false  escape: false  done: false]
     [str-chars s]].depth]
@@ -256,16 +285,14 @@ bracket-count: [fn@Int [let s@String]
     [if [= [] ls]
       [if [= "" [trim acc]] []
         [cons acc []]]
-      [let line [head ls]
-      [let rest [tail ls]
-      [let t    [trim line]
-      [if [or [= "" t] [starts-with? "#" t] [= "---" t]]
-        [scan rest acc depth]
-        [let d [+ depth [bracket-count line]]
-        [let a [str acc line "\n"]
-        [if [and [<= d 0] [not [= "" [trim a]]]]
-          [cons a [scan rest "" 0]]
-          [scan rest a d]]]]]]]]]
+      [if [or [= "" [trim [head ls]]]
+               [starts-with? "#" [trim [head ls]]]
+               [= "---" [trim [head ls]]]]
+        [scan [tail ls] acc depth]
+        [if [and [<= [+ depth [bracket-count [head ls]]] 0]
+                 [not [= "" [trim [str acc [head ls] "\n"]]]]]
+          [cons [str acc [head ls] "\n"] [scan [tail ls] "" 0]]
+          [scan [tail ls] [str acc [head ls] "\n"] [+ depth [bracket-count [head ls]]]]]]]]
 ]
 [
   balanced-exprs: [fn [let lines]
@@ -306,23 +333,20 @@ The complete `stdlib/codecs/stream.llt` exports three functions:
 
 ### Streaming Output: `emit`, `%emit`, and the Output Program Contract
 
-The CLI runs the user program and the output program as **concurrent tasks**. The user program's `%emit` is wired to the output program's `%emit`. The CLI injects `%stdout` into the output program and passes the user program's lazy return value as the output program's `%`.
+`eval-programs` creates a `%emit` channel and threads it through the full program list, calling `eval-programs` with all programs in sequence. `%` is threaded sequentially — the return value of each program becomes `%` for the next. The CLI provides `%stdout` and other capability handles but does not touch `%emit`.
 
-```text
-user program  ──%emit──▶  output program  ──%stdout──▶  actual stdout
- (emit producer)           (emit consumer)
-```
+`emit v` in user code sends `v` to `%emit`. Call sites are agnostic to the serializer — the output program (last in the list) decides how to write each received value to `%stdout`.
 
-`emit v` in user code sends `v` to `%emit`. Call sites are agnostic to the serializer — the output program decides how to write each received value to `%stdout`.
+**Bounded channels and concurrent draining.** The `%emit` channel is bounded (64 slots). If a user program emits more values than the channel can buffer before the output program starts draining, `[send %emit v]` will block. Since `%` is lazy, the output program forces it (driving user-prog's lazy computation) while concurrently draining `%emit` via `drain: [task ...]`. This works when the output program runs in the same tokio `LocalSet` — cooperative scheduling interleaves the force and the drain. For programs that emit large volumes, the CLI may need to spawn user programs and the output formatter as concurrent tasks (see §`src/main.rs`).
 
 #### Output Program Contract
 
-Every output program receives two inputs:
+Every output program receives:
 
 - **`%`** — the lazy return value of the previous pipeline stage. Forcing this kicks off the lazy evaluation cascade, driving any `map`/`filter`/`each` computation. The output program is responsible for this forcing — without it, a program that returns a filtered Seq never evaluates.
-- **`%emit`** — the emit channel. Values arrive here as the user program evaluates and calls `emit`.
+- **`%emit`** — the emit channel, shared with all upstream programs in the pipeline. Values arrive here as user programs call `emit`.
 
-These must be handled **concurrently**: forcing `%` may itself trigger `emit` calls (e.g., `each` with `emit` inside), so the channel drain must run simultaneously or deadlock.
+These must be handled **concurrently within the output program**: forcing `%` drives the program's evaluation and will trigger any `emit` calls in the pipeline, so the channel drain must run simultaneously or deadlock.
 
 The three responsibilities:
 
@@ -333,55 +357,30 @@ The three responsibilities:
 #### `stdlib/cli/out/stream.llt`
 
 ```tinct
-[
-  # 1. Drain the emit channel concurrently.
-  #    Values arrive here as the user program evaluates and calls [emit v].
-  drain: [task
-    [try
-      [loop-select [context] [[%emit [fn [let v]
-        [write %stdout [to-tinct v]]]]] identity]
-      [fn [let _] []]]]
+# Sequential document expressions — each is forced in order.
+# 1. Drain the emit channel concurrently.
+[drain: [task
+  [loop-select [context] [[%emit [fn [let v]
+    [write %stdout [to-tinct v]]]]] identity]]]
 
-  # 2. Force the return value to drive the lazy evaluation cascade.
-  #    Non-nil elements of a Seq return value are also serialized.
-  [if [seq? %]
-    [each [fn [let x]
-      [if [not [= [] x]]
-        [write %stdout [to-tinct x]]
-        []]] %]
-    [if [not [= [] %]]
-      [write %stdout [to-tinct %]]
-      []]]
+# 2. Force the return value to drive the lazy evaluation cascade.
+#    Forcing % drives program evaluation, triggering any emit calls.
+[if [seq? %]
+  [reduce [fn [let _ x]
+    [if [not [= [] x]]
+      [write %stdout [to-tinct x]]
+      []]] [] %]
+  [if [not [= [] %]]
+    [write %stdout [to-tinct %]]
+    []]]
 
-  # 3. Wait for drain to finish consuming any emits triggered during forcing.
-  [await drain]
-]
-```
-
-#### `stdlib/cli/out/json.llt` (updated for NDJSON)
-
-```tinct
-[
-  drain: [task
-    [try
-      [loop-select [context] [[%emit [fn [let v]
-        [write %stdout [to-json v]]]]] identity]
-      [fn [let _] []]]]
-
-  [if [seq? %]
-    [each [fn [let x]
-      [if [not [= [] x]]
-        [write %stdout [to-json x]]
-        []]] %]
-    [if [not [= [] %]]
-      [write %stdout [to-json %]]
-      []]]
-
-  [await drain]
-]
+# 3. Wait for drain to finish consuming any emits triggered during forcing.
+[await drain]
 ```
 
 A user writing a custom output formatter follows the same contract: start a `drain` task on `%emit`, force `%`, await the task. Only the serializer changes.
+
+**Error handling in the drain task.** `loop-select` returns `[]` when all channels are exhausted — no exception for normal termination. This means no `try` is needed in the drain task. Serialization errors from `[SERIALIZER v]` (e.g., `to-tinct` encountering a non-serializable `Handle`) propagate naturally up through the task and are visible to the caller of `[await drain]`.
 
 #### Programs emit records lazily
 
@@ -466,6 +465,58 @@ The profiling flush thread constructs a `Value::Dict` from each `SpanRecord` and
 
 ## What Would Change
 
+### `stdlib/loader.llt` (update)
+
+**Current** (after builtin-privacy): `eval-program` and `eval-programs` thread `%` through programs; no `%emit` handling.
+
+**Proposed:** `eval-programs` creates the `%emit` channel and `eval-program` handles all document headers: `--- uses:` module injection, named outputs (`--- %name` binds result as `%name` for subsequent documents via the `$k` dynamic key syntax), and `%emit` injection. The CLI does not touch `%emit`.
+
+```tinct
+--- uses: ["core"]
+[
+  # eval-program gains emit-ch as a third parameter and handles all --- headers:
+  # - --- uses: ["core"]  → module bindings injected via scope:
+  # - --- %name           → result bound as %name for subsequent documents
+  # Named outputs use $k dynamic key syntax: [$k: val] where k is a string variable.
+  eval-program: [fn [let prog initial-input emit-ch]
+    [state: [builtin-reduce
+      [fn [let state doc]
+        [val: [builtin-eval doc.expressions
+                 scope:   [builtin-merge
+                             [builtin-merge [%emit: emit-ch] state.named]
+                             [builtin-reduce builtin-merge []
+                               [builtin-map builtin-module doc.uses]]]
+                 program: prog
+                 %: state.percent]
+         k:   [str "%" doc.name]]
+        [state |
+          [percent: val]
+          [named: [if [= [] doc.name]
+                     state.named
+                     [builtin-merge state.named [$k: val]]]]]]
+      [percent: initial-input  named: []]
+      prog.documents]]
+    state.percent]
+
+  # eval-programs creates the %emit channel once, shared across all programs.
+  # The first dict body establishes emit-ch as a local binding; the second
+  # (the reduce) is what eval-programs returns. emit-ch is captured by the
+  # inner reduce callback. The last program (output formatter) drains the
+  # channel via drain: [task ...].
+  eval-programs: [fn [let programs initial-input]
+    [emit-ch: [builtin-channel 64]]
+    [builtin-reduce
+      [fn [let percent prog]
+        [eval-program prog percent emit-ch]]
+      initial-input
+      programs]]
+]
+```
+
+`%emit` is no longer a CLI-injected cap — it is created and owned by `eval-programs`. The CLI only injects true capability handles: `%libdir`, `%cwd`, `%stdin`, `%stdout`.
+
+**Prelude:** `stdlib/prelude.llt` re-exports `eval-program` and `eval-programs` (added by builtin-privacy T-735). These must be updated to the new signatures shown above, substituting `module` for `builtin-module` per prelude convention.
+
 ### `stdlib/codecs/stream.llt` (new)
 
 **Current:** Nothing.
@@ -529,29 +580,41 @@ Every existing output formatter follows the old contract: receive `%`, compute a
 
 The shared rewrite pattern — substituting only the serializer. Output programs are emit consumers: they receive from `%emit` and write to `%stdout`. They never call `emit`.
 
-**`loop-select` calling convention:** `loop-select` takes three arguments: `ctx` (a context), `sources` (a `[Seq [Channel Fn]]` — each element is a `[channel handler]` pair), and `handler` (a function applied to each received value, usually `identity`). The drain loop must wrap `loop-select` in `[try ...]` to catch the "all channels closed" error that fires when the sender drops — this is normal termination, not a failure.
+**`loop-select` calling convention:** `loop-select` takes three arguments: `context` (a Context value), `sources` (a `[Seq [Channel Fn]]` — each element is a `[channel handler]` pair), and `handler` (a function applied to each received value, usually `identity`). When all channels are exhausted (all senders dropped), `loop-select` returns `[Closed]`.
+
+**`select-once` returns a nominal result, not an error.** The underlying `select-once` primitive (B-192) returns `[Ok v]` when a value arrives on any channel, or `[Closed]` when all channels are closed. `[Closed]` is a nominally-typed unit constructor that can only ever mean "channel exhausted" — it cannot be confused with any emitted value regardless of what producers emit. `[Ok v]` wraps the actual received value, so a producer emitting `[]` produces `[Ok []]`, which the match correctly handles as a legitimate received value.
+
+`loop-select` is therefore a pure tinct function:
+
+```tinct
+loop-select: [fn [let context sources handler]
+  [match [select-once context sources]
+    [Closed]: [Closed]
+    [Ok v]:   [[handler v] [loop-select context sources handler]]]]
+```
+
+`[Closed]` must be declared as a nominal variant in prelude: `[type [Closed]]`. The `broadcast-channel` primitive also introduces `[Lagged n]` (a variant indicating missed messages due to a slow subscriber). Both are declared in prelude: `[type [Closed] [Lagged count]]`. The per-channel handler is only called with actual received values. Channel close surfaces as `[Closed]` in the match and never reaches the handler.
 
 `loop-select` is exported from prelude (its implementation moves from `stdlib/async.llt` into prelude when async.llt is merged).
 
 ```tinct
-[
-  drain: [task
-    [try
-      [loop-select [context] [[%emit [fn [let v]
-        [write %stdout [SERIALIZER v]]]]] identity]
-      [fn [let _] []]]]
+# Output formatters are sequential document expressions — NOT a single dict.
+# Dict entries are lazy thunks; only sequential expressions are forced in order.
+# loop-select returns [] when channels exhaust — no try needed for normal termination.
+[drain: [task
+  [loop-select [context] [[%emit [fn [let v]
+    [write %stdout [SERIALIZER v]]]]] identity]]]]
 
-  [if [seq? %]
-    [each [fn [let x]
-      [if [not [= [] x]]
-        [write %stdout [SERIALIZER x]]
-        []]] %]
-    [if [not [= [] %]]
-      [write %stdout [SERIALIZER %]]
-      []]]
+[if [seq? %]
+  [reduce [fn [let _ x]
+    [if [not [= [] x]]
+      [write %stdout [SERIALIZER x]]
+      []]] [] %]
+  [if [not [= [] %]]
+    [write %stdout [SERIALIZER %]]
+    []]]
 
-  [await drain]
-]
+[await drain]
 ```
 
 **`stdlib/cli/out/stream.llt` (new)** — `SERIALIZER = to-tinct`. One new file, ~15 lines.
@@ -585,21 +648,16 @@ Column order is fixed at step 2 and never changes. Records that don't match the 
 **`stdlib/cli/out/none.llt` (rewrite)** — currently returns `""` and is only invoked by explicit `-o none`. New role: **the default output program** when no `-o` flag is given. Drains `%emit` discarding all values, forces `%` discarding all elements (driving the lazy evaluation cascade for side effects), writes nothing to `%stdout`.
 
 ```tinct
-# stdlib/cli/out/none.llt
-[
-  drain: [task
-    [try
-      [loop-select [context] [[%emit [fn [let v] []]]] identity]
-      [fn [let _] []]]]
+# stdlib/cli/out/none.llt — sequential document expressions.
+[drain: [task
+  [loop-select [context] [[%emit [fn [let v] []]]] identity]]]
 
-  # Force % to drive the evaluation cascade (for side effects).
-  # Guard against non-Seq %: each errors on scalars; use seq?/dict? to branch.
-  [if [or [seq? %] [dict? %]]
-    [each [fn [let x] []] %]
-    []]
+# Force % to drive the evaluation cascade (for side effects).
+[if [seq? %]
+  [reduce [fn [let _ x] []] [] %]
+  []]
 
-  [await drain]
-]
+[await drain]
 ```
 
 **Impact:** All ten formatters rewritten. Old "return a String" contract deleted entirely.
@@ -681,6 +739,49 @@ Token-level formatters (`fmt_int`, `fmt_float`, `fmt_string`, etc.) live in `src
 
 **Impact:** New file, ~20 lines.
 
+### Additional channel primitives (`src/builtins_async.rs`)
+
+Three new channel primitives needed for streaming pipelines. All are backed by Tokio; higher-level patterns (pub/sub routing, fan-out trees) are built in tinct on top of these.
+
+**`broadcast-channel N → [Seq Channel Channel]`** — backed by `tokio::sync::broadcast::channel(N)`. Returns a 2-element seq `[subscriber-channel publish-channel]`. Multiple subscribers can each call `recv` on their own subscriber-channel. When a value is sent on `publish-channel`, all subscribers receive it. The backing ring buffer holds at most N messages; slow subscribers receive `[Lagged n]` (a variant indicating they missed `n` messages) instead of a value. When all publishers drop, subscribers receive `[Closed]`. Multiple senders are supported by passing `publish-channel` to multiple tasks. In tinct, fan-out is straightforward:
+
+```tinct
+[
+  chans:      [broadcast-channel 64]
+  subscriber: chans.0
+  publisher:  chans.1
+]
+```
+
+Pub/sub topic routing, filtering, and subscription management are implemented in tinct on top of `broadcast-channel`.
+
+**`oneshot-channel → [Seq Channel Channel]`** — backed by `tokio::sync::oneshot`. Returns `[receiver-channel sender-channel]`. Exactly one value is sent on `sender-channel`; the single `recv` on `receiver-channel` returns it. Subsequent sends or receives return `[Closed]`. Used for request/response patterns where a task wants to await a single reply:
+
+```tinct
+[
+  reply-chans: [oneshot-channel]
+  reply-recv:  reply-chans.0
+  reply-send:  reply-chans.1
+]
+[task [process-request request reply-send]]
+[recv reply-recv]  # blocks until the reply arrives
+```
+
+**`try-send channel value → Bool`** — non-blocking send backed by `mpsc::try_send`. Returns `true` if the value was sent, `false` if the channel was full (value dropped). Never suspends. Used for drop-newest lossy channels where producers must not stall:
+
+```tinct
+# Telemetry that drops metrics when the consumer is slow
+[if [not [try-send metrics-channel datapoint]]
+  []  # dropped — that's fine
+  []]
+```
+
+`try-send` on a full `broadcast-channel` always succeeds (oldest message dropped) — `try-send` is only meaningful for mpsc channels where "full = drop newest" is the desired behaviour.
+
+**Prelude exports:** `broadcast-channel`, `oneshot-channel`, `try-send` — all added to prelude's public dict after S-786 lands (requires `--- uses: ["core"]` injection).
+
+**Impact:** ~60 lines in `src/builtins_async.rs`; ~5 lines in `stdlib/prelude.llt`.
+
 
 ### `src/main.rs` — emit channel wiring and deletion of special-case output paths
 
@@ -694,38 +795,25 @@ Token-level formatters (`fmt_int`, `fmt_float`, `fmt_string`, etc.) live in `src
 
 All three embed the assumption that the CLI is responsible for output serialization and that `emit` is a side-effect bolted on top. All three must be deleted.
 
-**Proposed:** The CLI creates a `%emit` channel, injects it into both the user program and the output formatter, and spawns both as `spawn_local` tasks (same `LocalSet` — required because `Arc<Thunk>` is `!Send`). The CLI waits for both tasks to complete. No materialization, no serialization, no String assertion.
+**Proposed:** The CLI injects `%stdout` (a writable Handle for actual stdout) into the env, then calls `prelude-dict["eval-programs"]` with the full program list. `eval-programs` creates and manages `%emit` internally — the CLI does not touch `%emit`. For programs that emit large volumes, the output formatter handles concurrency internally via `drain: [task ...]`.
 
-**`%emit` channel wiring (concrete):**
-
-```rust
-// In run_eval (before pipeline loop):
-let (emit_inner) = {
-    let (tx, rx) = tokio::sync::mpsc::channel(64);
-    Arc::new(ChannelInner { sender: tx, receiver: Mutex::new(rx), capacity: 64 })
-};
-let emit_val = Value::Channel(Arc::clone(&emit_inner));
-let emit_thunk = Arc::new(Thunk::new_materialized(emit_val, Span::origin()));
-env.write().unwrap().insert("%emit".to_string(), emit_thunk);
-// Both user program and output formatter share the same Arc<ChannelInner>.
-// User program calls send (uses sender), output formatter calls recv (uses receiver).
-```
-
-**`%stdout` injection (formatter-only):**
-
-`%stdout` is a writable `Handle` injected into only the output formatter stage via a child-env overlay:
+**CLI wiring (concrete):**
 
 ```rust
-// Create formatter env as a child of the shared env, adding %stdout
-let formatter_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
-let stdout_handle = Value::Handle { caps: {Writable, Text}, write_inner: Some(stdout), ... };
-formatter_env.write().unwrap().insert("%stdout".to_string(), stdout_thunk);
-// Run formatter with formatter_env; user program uses shared env (no %stdout).
+// In run_eval — CLI only provides capability handles:
+env.write().unwrap().insert("%stdout".to_string(), stdout_thunk);
+// Note: %emit is NOT injected here — eval-programs creates it internally.
+
+// Build the program list from CLI args:
+// tinct run -i json u1.llt u2.llt -o json
+//   → programs = [json-in-prog, u1-prog, u2-prog, json-out-prog]
+let eval_programs = prelude_dict.get("eval-programs").expect("prelude exports eval-programs");
+let result = invoke_fn(eval_programs, [programs_seq, initial_input], ctx)?;
 ```
 
-**Channel capacity (64):** The `%emit` channel is bounded at 64 slots. This provides backpressure — if the formatter writes slower than the program emits, `[send %emit v]` suspends. With `spawn_local` cooperative scheduling this cannot deadlock: when the sender suspends on a full channel, Tokio yields to the drain task which consumes a value, making room. 64 is small enough to bound memory use (at most 64 materialized `Value`s queued) and large enough to amortize task-switch overhead. An unbounded channel would risk accumulating all emitted values in memory for slow formatters. A configurable size adds unnecessary API surface.
+**Channel capacity (64):** The `%emit` channel is bounded at 64 slots. This provides backpressure — if the formatter writes slower than the program emits, `[send %emit v]` suspends. With cooperative scheduling this cannot deadlock when the drain task and the force run on the same `LocalSet`: when the sender suspends on a full channel, Tokio yields to the drain task which consumes a value, making room. An unbounded channel would risk accumulating all emitted values in memory for slow formatters.
 
-**Concurrent tasks:** Both user program and formatter run as `tokio::task::spawn_local` on the same `LocalSet`. This is required — `Value` is `!Send` (multiple variants contain `Rc<...>`: `Rc<Vec<Param>>` in `Value::Function`, `Rc<str>` in string keys, `Rc<cap_std::fs::Dir>` in `DirCap`, etc.), so `spawn` would fail to compile. `spawn_local` on the same `LocalSet` allows sharing `Arc<ChannelInner>` via the emit channel.
+**Concurrent tasks:** `Value` is `!Send` (contains `Rc<...>`), so all tasks must use `tokio::task::spawn_local` on the same `LocalSet`. This allows sharing `Arc<ChannelInner>` via the emit channel.
 
 Specifically deleted:
 
@@ -737,11 +825,11 @@ Specifically deleted:
 
 `run_literate_eval` and `run_literate_weave` gain the same channel-wiring treatment as `run_eval`.
 
-**Impact:** Moderate — replaces the sequential "eval → materialize → print" model with "eval + formatter as concurrent tasks". The output formatters (`cli/out/*.llt`) become the sole owners of serialization and stdout writing.
+**Impact:** Moderate — replaces the sequential "eval → materialize → print" model with "eval-programs + output formatter handles serialization". The output formatters (`cli/out/*.llt`) become the sole owners of serialization and stdout writing.
 
 **Note on `--eval` and the forcing guarantee.** The `--eval` flag is made redundant by this model — running without `-o` uses `none.llt`, which drains `%emit` and forces `%` (including all Seq elements) without writing anything. `--eval` must be removed from the CLI and all documentation.
 
-**Behavior change acknowledged:** In the current model, a program can `tinct run program.llt` without `-o` and the return value is never forced (lazy, no output). After this change, running without `-o` always forces `%` (via `none.llt`'s `[each [fn [let x] []] %]`). There is no way to "run a program and produce no output and force nothing" — the closest is an explicit `tinct run -o none program.llt` which also forces. This is intentional: the new model requires `%` to be forced to drive the evaluation cascade (for side effects and `emit` calls); a program whose return value is deliberately lazy and unused should simply not return a Seq, or should be written to terminate without a meaningful `%`. If this is a real use case, it requires a dedicated `--no-force` flag, which is out of scope for this sprint.
+**Behavior change acknowledged:** In the current model, a program can `tinct run program.llt` without `-o` and the return value is never forced (lazy, no output). After this change, running without `-o` always forces `%` (via `none.llt`'s `[each [fn [let x] []] %]`). This is intentional: the new model requires `%` to be forced to drive the evaluation cascade for side effects and `emit` calls.
 
 ### `src/profiling.rs`
 
@@ -774,13 +862,21 @@ tinct run -i stream scripts/profile/materialize.llt < spans.llt-stream
 
 ## Prerequisites
 
-**Async prelude wrappers.** The output formatters call `task`, `await`, `send`, `recv`, `select-once`, `cancelled?`, `context`, and `loop-select` as bare names. These are all exported from `stdlib/prelude.llt` — the async builtins as wrappers over their `builtin-*` stable aliases, and `loop-select` as a tinct function defined in prelude (merged from the former `stdlib/async.llt`).
+**builtin-privacy sprints (S-785, S-786).** This whatif depends on the full builtin-privacy implementation:
+- `eval-programs` and `eval-program` exported from prelude (T-735, S-786)
+- `--- uses: ["core"]` header in prelude and stdlib files (S-786)
+- `builtin-module`, `builtin-eval scope:`, `document.uses` field access (S-785)
+- Async utilities (`task`, `await`, `send`, `recv`, `loop-select`, etc.) merged into prelude from `stdlib/async.llt` (T-733, S-786)
 
-**Other primitives** (`str-chars`, `lines`, `load`, `expand`, `map`, `flat-map`, `filter`, `starts-with?`, `trim`, `str`, `reduce`, `write`, `each`, `seq?`, `dict?`) are exported from `stdlib/prelude.llt`. (`write` requires B-168 — rename `"write"` to `"builtin-write"` in `src/builtins.rs` and add `write: builtin-write` to prelude, following the same pattern as the async builtin-privacy sprint.) No new Rust builtins are required for the stream codec — `program-exprs` is pure tinct using existing `program.documents` and `document.expressions` field access.
+**Prelude exports.** Output formatters use `task`, `await`, `send`, `recv`, `select-once`, `cancelled?`, `context`, `loop-select`, `write`, `each`, `seq?`, `dict?`, `str-chars`, `lines`, `load`, `expand`, `map`, `flat-map`, `filter`, `starts-with?`, `trim`, `str`, `reduce` — all available from prelude after S-786.
 
-**`serde_json` dependency.** `src/profiling.rs` is already serde-free (the `json-remove-serde-dep` sprint closed as completed). The `serde_json` dependency remains in the LSP feature only, where it is architecturally required. This whatif has no serde_json dependency.
+**B-168 done.** `write` was renamed to `builtin-write` and re-exported from prelude. `w: builtin-write` is already in prelude. No further action needed.
 
-**Doc chapters.** In addition to `doc/12-tooling.md`, the `emit` model change, `%emit`/`%stdout` injection, and output program contract require updates to `doc/08-evaluation.md` (§Macro Expansion Pipeline and §emit semantics) and `doc/09-documents.md` (§Pipeline model).
+**No new Rust builtins for the stream codec.** `program-exprs`, `parse-expr`, `balanced-exprs`, `bracket-count` are pure tinct using existing `program.documents` (already returning `[Seq Document]` after the `program.documents` → Seq change below) and `document.expressions` field access.
+
+**`serde_json` dependency.** `src/profiling.rs` is already serde-free. The `serde_json` dependency remains in the LSP feature only, where it is architecturally required.
+
+**Doc chapters.** In addition to `doc/12-tooling.md`, the `emit` model change, `%emit`/`%stdout` injection, and output program contract require updates to `doc/08-evaluation.md` (§emit semantics) and `doc/09-documents.md` (§Pipeline model).
 
 ## References
 

@@ -760,6 +760,7 @@ pub struct SurfaceDocument {
     pub output_type: Option<Spanned<Annotation>>,
     pub expects: Option<Spanned<Annotation>>,
     pub caps: Option<Spanned<Vec<(String, Annotation)>>>,
+    pub uses: Option<Spanned<Vec<Spanned<String>>>>,
 }
 
 impl SurfaceDocument {

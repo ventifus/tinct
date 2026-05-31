@@ -281,6 +281,21 @@ impl<'a> Formatter<'a> {
                     self.output.push('@');
                     self.format_annotation(expects_ann);
                 }
+                if let Some(ref uses) = doc.node.uses {
+                    self.push_space(Some('u'));
+                    self.output.push_str("uses:");
+                    self.push_space(Some('['));
+                    self.output.push('[');
+                    for (i, module) in uses.node.iter().enumerate() {
+                        if i > 0 {
+                            self.push_space(Some('"'));
+                        }
+                        self.output.push('"');
+                        self.output.push_str(&module.node);
+                        self.output.push('"');
+                    }
+                    self.output.push(']');
+                }
                 if self.oneline {
                     self.output.push(';');
                     // Push space before next document's first expression
@@ -1430,7 +1445,7 @@ fn is_bare_word_char(c: char) -> bool {
 
 /// Check if a character is a stop character for variable names in interpolated strings.
 /// Mirrors the stop-char set in `src/lexer.rs` `lex_interpolated_string` VarRef branch
-/// and the `tmpl-is-stop` helper in `stdlib/macros.llt`.
+/// and the `tmpl-is-stop` helper in `stdlib/prelude.llt`.
 fn is_tmpl_stop_char(c: char) -> bool {
     matches!(
         c,
@@ -2122,6 +2137,38 @@ mod tests {
         let once = format_source(input).unwrap();
         let twice = format_source(&once).unwrap();
         assert_eq!(once, twice, "pipe expression formatting must be idempotent");
+    }
+
+    #[test]
+    fn test_uses_header_roundtrips() {
+        // --- uses: ["core"] header must survive a format/parse/format round-trip.
+        let input = "--- uses: [\"core\"]\n[x: 1]\n";
+        let formatted = format_source(input).unwrap();
+        assert!(
+            formatted.contains("uses: [\"core\"]"),
+            "formatted output must include 'uses: [\"core\"]', got: {formatted:?}"
+        );
+        let reformatted = format_source(&formatted).unwrap();
+        assert_eq!(
+            formatted, reformatted,
+            "uses: header must be idempotent under repeated formatting"
+        );
+    }
+
+    #[test]
+    fn test_uses_header_multi_module_roundtrips() {
+        // Multiple modules in a uses: header.
+        let input = "--- uses: [\"core\" \"datetime\"]\n[x: 1]\n";
+        let formatted = format_source(input).unwrap();
+        assert!(
+            formatted.contains("uses: [\"core\" \"datetime\"]"),
+            "formatted output must include both modules, got: {formatted:?}"
+        );
+        let reformatted = format_source(&formatted).unwrap();
+        assert_eq!(
+            formatted, reformatted,
+            "multi-module uses: header must be idempotent under repeated formatting"
+        );
     }
 
     #[test]

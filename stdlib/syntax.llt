@@ -1,8 +1,8 @@
 # stdlib/syntax.llt — Let-softening for fn/class/type (opt-in module)
 #
 # This module is kept for backward compatibility and documentation purposes.
-# The fn, class, and type let-softening macros are now globally registered
-# (like tmpl, do, begin) via stdlib/macros.llt and do not require an explicit
+# The fn, class, and type let-softening macros are globally registered
+# (like tmpl, do, begin) via stdlib/prelude.llt and do not require an explicit
 # include.
 #
 # Usage (still works, but not required):
@@ -18,7 +18,7 @@
 #   [fn [let x y] body]          only valid source form
 #   [fn [x y] body]              parse error — must use [let ...] params
 #
-# Implementation: see stdlib/macros.llt for the transformer functions
+# Implementation: see stdlib/prelude.llt for the transformer functions
 # (syntax-fn, syntax-class, syntax-type) and src/expand.rs for registration.
 
 # Empty dict — including this file adds nothing to scope.

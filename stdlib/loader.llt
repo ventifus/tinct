@@ -1,0 +1,67 @@
+# stdlib/loader.llt — Bootstrap loader (pre-data-streaming)
+#
+# This file is the first tinct code evaluated at process startup. It defines
+# eval-programs, which is the real entry point for running tinct: a pipeline
+# of programs where % is threaded through each one in sequence.
+#
+# `tinct run -i json user1.llt user2.llt -o json` builds the list
+# [json-in, user1, user2, json-out] and calls eval-programs on it. -i prepends
+# from stdlib/cli/in/, -o appends from stdlib/cli/out/. All programs are equal:
+# the return value of each becomes % for the next, regardless of how the
+# returning program named its output.
+#
+# Document header support:
+#   --- uses: ["core"]  → module bindings injected into each document's scope
+#   --- %name           → result bound as %name for subsequent documents
+#                         (doc.name stores name WITHOUT %, e.g. "defaults")
+#
+# Note: %emit is NOT handled here — that is data-streaming's addition.
+# When data-streaming is accepted, eval-program gains an emit-ch parameter
+# and eval-programs creates the channel. See doc/whatif/data-streaming.md.
+#
+# Rust evaluates this file in Phase 2 of the bootstrap with scope: core — the
+# only place Rust hardcodes a scope. The resulting eval-programs is used (Phase
+# 3) to load prelude, which re-exports both functions for user code.
+#
+# Uses raw builtin-* names — prelude is not loaded yet when this runs.
+#   builtin-reduce, builtin-merge, builtin-map   — sequences and dicts
+#   builtin-module                               — module dict retrieval
+#   builtin-eval (with scope:)                   — document evaluation
+--- uses: ["core"]
+[
+  # Evaluate a single program's documents, threading % through them.
+  # State carries:
+  #   percent — current % pipeline value
+  #   named   — accumulated %name bindings from --- %name document headers
+  eval-program: [fn [let prog initial-input]
+    [state: [builtin-reduce
+      [fn [let state doc]
+        [val: [builtin-eval doc.expressions
+                 scope:   [builtin-merge
+                             state.named
+                             [builtin-reduce builtin-merge []
+                               [builtin-map builtin-module doc.uses]]]
+                 program: prog
+                 %: state.percent]
+         k:   [builtin-str "%" doc.name]]
+        [builtin-merge state
+          [percent: val
+           named: [if [= [] doc.name]
+                    state.named
+                    [builtin-merge state.named [$k: val]]]]]]
+      [percent: initial-input  named: []]
+      prog.documents]]
+    state.percent]
+
+  # Evaluate a pipeline of programs (a Seq of Value::Program), threading %
+  # from one to the next. This is the real CLI entry point.
+  # % flows: initial-input → prog1-result → prog2-result → ...
+  # The return value of each program becomes % for the next, regardless of
+  # how the program internally named its output dict entries.
+  eval-programs: [fn [let programs initial-input]
+    [builtin-reduce
+      [fn [let percent prog]
+        [eval-program prog percent]]
+      initial-input
+      programs]]
+]

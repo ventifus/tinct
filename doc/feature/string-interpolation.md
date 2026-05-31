@@ -40,7 +40,7 @@ Implemented as `templating-phase3`: `i"..."` + `${expr}` + formatter roundtrip
 
 ## Supersession Notes
 
-- **Desugaring path**: The feature doc describes a single-step `desugar_interpolated_string()` that produces `[str ...]` directly. The actual implementation is a two-step flow: the parser calls `emit_tmpl_call()` producing `[tmpl raw-template expr0 ...]`; the macro expander transforms `[tmpl ...]` into `[str ...]` via `tmpl-transformer` in `stdlib/macros.llt`. See [macros.md](macros.md) (2026-05-06).
+- **Desugaring path**: The feature doc describes a single-step `desugar_interpolated_string()` that produces `[str ...]` directly. The actual implementation is a two-step flow: the parser calls `emit_tmpl_call()` producing `[tmpl raw-template expr0 ...]`; the macro expander transforms `[tmpl ...]` into `[str ...]` via `tmpl-transformer` in `stdlib/prelude.llt`. See [macros.md](macros.md) (2026-05-06).
 - **Formatter reconstruction**: The formatter reconstructs `i"..."` syntax from `[str ...]` call patterns — it does not emit `[str ...]` for interpolated strings.
 - **`InterpolatedPart` enum**: The enum has three variants: `Literal(String)`, `VarRef(String)`, and `Expr(String)` (the `${expr}` form). The `Expr` variant is missing from the feature doc's §Internal Representation.
 

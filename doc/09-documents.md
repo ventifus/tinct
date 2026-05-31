@@ -546,19 +546,20 @@ document      = expression*
 expression    = !section_header ~ value
 section_header = "---" ~ header_components? ~ NEWLINE
 header_components = header_component+
-header_component  = section_name | output_annotation | expects_pragma | caps_pragma
+header_component  = section_name | output_annotation | expects_pragma | caps_pragma | uses_pragma
 section_name      = "%" ~ ident_char+     // e.g., %config — bare % alone is a parse error
 output_annotation = "@" ~ annotation_value
 expects_pragma    = "expects" ~ ":" ~ annotation_value
 caps_pragma       = "caps" ~ ":" ~ "[" ~ (cap_entry)* ~ "]"
 cap_entry         = "%" ~ ident_char+ ~ ":" ~ "@" ~ ident_char+   // e.g., %nc: @NetCap
+uses_pragma       = "uses" ~ ":" ~ "[" ~ (quoted_string)* ~ "]"   // e.g., uses: ["core" "datetime"]
 ```
 
 **File:** The outermost unit. Contains documents separated by `---` section headers.
 
 **Document:** A sequence of expressions that form a scope chain. Each expression's result becomes the parent scope for the next expression. Documents are isolated from each other — data flows through pipeline bindings (`%` and `%name`), not the scope chain.
 
-**Section header:** The `---` line, optionally carrying a name (`--- %config`), output type annotation (`--- %config@Config`), input contract (`--- expects: InputType`), and/or required capability declarations (`--- caps: [%nc: @NetCap  %data: @DirCap]`). All components are optional; a bare `---` is valid. A bare `%` with no identifier after it on the header line is a parse error. The components may appear in any order.
+**Section header:** The `---` line, optionally carrying a name (`--- %config`), output type annotation (`--- %config@Config`), input contract (`--- expects: InputType`), required capability declarations (`--- caps: [%nc: @NetCap  %data: @DirCap]`), and/or module injection (`--- uses: ["core"]`). All components are optional; a bare `---` is valid. A bare `%` with no identifier after it on the header line is a parse error. The components may appear in any order.
 
 **`caps:` pragma** — declares capabilities that must be injected by the caller before this document can run. Capability types (`NetCap`, `DirCap`, etc.) are described in [Data Model](03-data-model.md) §Handles — Capability Row.
 
@@ -605,6 +606,40 @@ The CLI flag name is derived from the cap name by stripping the `%` prefix: `%nc
 - `rb` — readable binary handle (`$slurp` returns Bytes)
 - `w` — writable text handle (`$write-handle` writes a String)
 - `wb` — writable binary handle (`$write-handle` writes Bytes)
+
+**`uses:` pragma** — injects a native module's builtins into this document's local scope.
+
+```tinct
+--- uses: ["core"]
+[result: [builtin-if true "yes" "no"]]
+```
+
+The module list is a bracket form containing plain quoted strings. Each string names a native module registered in the builtin registry. Bare identifiers, interpolated strings (`i"..."`), and triple-quoted strings are all parse errors in a `uses:` list — the module names must be plain double-quoted string literals.
+
+**Doc-local scope injection.** The named module's builtins are added to the document's type environment and (via `eval-program`) to its runtime scope. Injection is strictly doc-local: the bindings do not appear in any subsequent document's scope. A module injected in document 1 is not visible in document 2 unless document 2 also declares `--- uses: ["module"]`.
+
+```tinct
+--- uses: ["core"]
+[x: [builtin-if true 1 0]]   # builtin-if in scope here
+
+---
+[y: [builtin-if true 1 0]]   # type error: builtin-if not in scope (T002)
+```
+
+**Multiple modules.** Multiple module names may be listed in one `uses:` header:
+
+```tinct
+--- uses: ["core" "datetime"]
+[now: [builtin-time-now]  result: [builtin-if true now now]]
+```
+
+**Error handling.** An unknown module name is a static type error flagged at parse/typecheck time:
+
+```text
+unknown native module: typo
+```
+
+**Isolation guarantee.** Module bindings injected via `uses:` are isolated between documents in the same file. They are also isolated between files in a multi-file pipeline — each document carries only what its own `uses:` header declares. The type checker enforces this with the T002 warning (raw builtin used without `uses:` declaration).
 
 **`doc_separator`:** Three hyphens `---` not followed by an `ident_char`. This prevents `----` or `---foo` from matching as a separator.
 

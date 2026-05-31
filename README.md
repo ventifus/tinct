@@ -186,7 +186,6 @@ Supplemental modules are available but must be loaded explicitly with `[include 
 | `protocols/websocket.llt` | WebSocket frame encoding/decoding + HTTP upgrade handshake |
 | `protocols/socks5.llt` | SOCKS5 proxy wire helpers |
 | `protocols/grpc.llt` | gRPC frame encoding/decoding |
-| `macros.llt` | `tmpl` and `do` macro transformers (auto-loaded by the expander) |
 
 ### Interactive REPL
 
@@ -357,7 +356,6 @@ cargo run --features lsp -- lsp                 # Start LSP server (stdio)
 | `stdlib/regex.llt` | Regex engine in pure Tinct: `re-match`, `re-find`, `re-replace` (explicit include required) |
 | `stdlib/net.llt` | HTTP helpers: `http-get`, `fetch`, URL utilities (explicit include required) |
 | `stdlib/toml-lite.llt` | TOML subset parser in pure Tinct (explicit include required) |
-| `stdlib/macros.llt` | `tmpl` and `do` macro transformers (auto-loaded by expander) |
 | `stdlib/protocols/` | Wire format libraries: `dns.llt`, `websocket.llt`, `socks5.llt`, `grpc.llt` (explicit include required) |
 | `tests/corpus/` | File-based test suite (valid + invalid inputs) |
 | `tests/corpus_tests.rs` | Corpus test runner with `===` delimiter support |

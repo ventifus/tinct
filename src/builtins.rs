@@ -5,7 +5,6 @@
 //! - `builtin_module(name)` — dispatch to per-module aggregators (`core_builtins()`, etc.)
 //! - `type_env_module(name)` — dispatch to per-module type environments
 //! - `build_builtins_type_env()` — combined type env for all modules
-//! - `create_root_env()` — pre-load an env with all builtins for bootstrap (pre-S-785)
 //! - `create_stdlib_env_inner()` / `create_type_stage_env()` — bootstrap prelude loading
 //! - Helper functions: `ok_val`, `string_val`, `reject_named`, `require_string`, etc.
 //! - Re-exports of split-file functions for test access via `use super::*`
@@ -1186,975 +1185,12 @@ pub(crate) fn builtin_proxy(
     })
 }
 
-// TOMBSTONE: standard_builtins() deleted in T-719 (builtin-privacy-infra sprint 2026-05-29).
+// TOMBSTONE: standard_builtins() deleted in T-762 (builtin-privacy-infra sprint 2026-05-30).
 // Builtins are now organized into named modules via builtin_module():
 //   builtin_module("core")     → builtins_core::core_builtins()
 //   builtin_module("datetime") → builtins_datetime::datetime_builtins()
 //   builtin_module("net")      → builtins_net::net_builtins()
 // All callers updated to use builtin_module() instead.
-#[cfg(any())] // dead — body preserved until S-785 (T-762 will delete this block)
-pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
-    vec![
-        // Arithmetic
-        builtin!("+", builtin_add, [Strictness::Seq, Strictness::Seq], 2),
-        builtin!("-", builtin_sub, [Strictness::Seq, Strictness::Seq], 2),
-        builtin!("*", builtin_mul, [Strictness::Seq, Strictness::Seq], 2),
-        builtin!(
-            "/",
-            builtin_div_float,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        // Arithmetic stable aliases (used internally by prelude to allow shadowing)
-        builtin!(
-            "builtin-add",
-            builtin_add,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-sub",
-            builtin_sub,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-mul",
-            builtin_mul,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-div",
-            builtin_div_float,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        // Comparison
-        builtin!("=", builtin_eq, [Strictness::Seq, Strictness::Seq], 2),
-        builtin!("<", builtin_lt, [Strictness::Seq, Strictness::Seq], 2),
-        // Comparison stable aliases (used internally by prelude to allow shadowing)
-        builtin!(
-            "builtin-eq",
-            builtin_eq,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-lt",
-            builtin_lt,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-gt",
-            builtin_gt,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-lte",
-            builtin_lte,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-gte",
-            builtin_gte,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        // Control
-        builtin!(
-            "if",
-            builtin_if,
-            [Strictness::Seq, Strictness::Id, Strictness::Id],
-            1
-        ),
-        // Control stable alias (used internally by prelude to allow shadowing)
-        builtin!(
-            "builtin-if",
-            builtin_if,
-            [Strictness::Seq, Strictness::Id, Strictness::Id],
-            1
-        ),
-        // Dict primitives (registered under builtin-NAME; prelude exports the bare names)
-        builtin!("builtin-keys", builtin_keys, [Strictness::Spine], 1),
-        builtin!("builtin-length", builtin_length, [Strictness::Spine], 1),
-        builtin!("builtin-merge", builtin_merge),
-        builtin!(
-            "builtin-append",
-            builtin_append,
-            [Strictness::Seq, Strictness::Id],
-            1
-        ), // Stable alias
-        builtin!(
-            "builtin-get",
-            builtin_get,
-            [Strictness::Seq, Strictness::Spine],
-            2
-        ),
-        builtin!(
-            "get?",
-            builtin_get_optional,
-            [Strictness::Seq, Strictness::Spine],
-            2
-        ),
-        // each: 2-strictness for both 1-arg (user) and 2-arg (internal offset) calls
-        // (registered under builtin-NAME; prelude exports the bare names)
-        builtin!(
-            "builtin-each",
-            builtin_each,
-            [Strictness::Spine, Strictness::Spine]
-        ),
-        builtin!(
-            "builtin-each-key",
-            builtin_each_key,
-            [Strictness::Spine, Strictness::Spine]
-        ),
-        builtin!(
-            "builtin-each-kv",
-            builtin_each_kv,
-            [Strictness::Spine, Strictness::Spine]
-        ),
-        builtin!(
-            "builtin-build-dict",
-            builtin_build_dict,
-            [Strictness::Spine],
-            1
-        ),
-        // Transient builders (registered under builtin-NAME; prelude exports the bare names)
-        builtin!("builtin-make-builder", builtin_make_builder),
-        builtin!(
-            "builtin-builder-set",
-            builtin_builder_set,
-            [Strictness::Seq, Strictness::Seq, Strictness::Id],
-            2
-        ),
-        builtin!(
-            "builtin-builder-delete",
-            builtin_builder_delete,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-builder-finish",
-            builtin_builder_finish,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "builtin-builder-snapshot",
-            builtin_builder_snapshot,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "builtin-builder-has?",
-            builtin_builder_has,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-builder-get",
-            builtin_builder_get,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-builder-get-or",
-            builtin_builder_get_or,
-            [Strictness::Seq, Strictness::Seq, Strictness::Id],
-            2
-        ),
-        // Strings (registered under builtin-NAME; prelude exports the bare names)
-        builtin!("builtin-str", builtin_str, [Strictness::Seq]), // variadic - can't use force_count
-        builtin!(
-            "builtin-split",
-            builtin_split,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-replace",
-            builtin_replace,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
-        ),
-        builtin!("builtin-trim", builtin_trim, [Strictness::Seq], 1),
-        builtin!(
-            "builtin-str-length",
-            builtin_str_length,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "builtin-str-slice",
-            builtin_str_slice,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
-        ),
-        builtin!("builtin-str-chars", builtin_str_chars, [Strictness::Seq], 1),
-        builtin!("builtin-char-code", builtin_char_code, [Strictness::Seq], 1),
-        builtin!("builtin-chr", builtin_chr, [Strictness::Seq], 1),
-        builtin!("builtin-str-bytes", builtin_str_bytes, [Strictness::Seq], 1),
-        builtin!("builtin-bytes-str", builtin_bytes_str, [Strictness::Seq], 1),
-        builtin!(
-            "builtin-str-index-of",
-            builtin_str_index_of,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-trim-start",
-            builtin_trim_start,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!("builtin-trim-end", builtin_trim_end, [Strictness::Seq], 1),
-        builtin!(
-            "builtin-str-to-upper-char",
-            builtin_str_to_upper_char,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "builtin-str-to-lower-char",
-            builtin_str_to_lower_char,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "builtin-str-map-chars",
-            builtin_str_map_chars,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-regex-match?",
-            builtin_regex_match,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        // Bytes
-        builtin!("bytes", builtin_bytes, []),
-        builtin!(
-            "bytes-find",
-            builtin_bytes_find,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!("bytes-of", builtin_bytes_of, [Strictness::Seq]),
-        builtin!(
-            "bytes-equal?",
-            builtin_bytes_equal,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "ct-equal?",
-            builtin_ct_equal,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        // Numeric (all registered under builtin-NAME; prelude/math.llt export bare names)
-        builtin!("builtin-floor", builtin_floor, [Strictness::Seq], 1),
-        builtin!("builtin-round", builtin_round, [Strictness::Seq], 1),
-        builtin!(
-            "builtin-pow",
-            builtin_pow,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!("builtin-sqrt", builtin_sqrt, [Strictness::Seq], 1),
-        builtin!("builtin-log", builtin_log, [Strictness::Seq], 1),
-        builtin!("builtin-log2", builtin_log2, [Strictness::Seq], 1),
-        builtin!("builtin-log10", builtin_log10, [Strictness::Seq], 1),
-        builtin!("builtin-exp", builtin_exp, [Strictness::Seq], 1),
-        builtin!("builtin-sin", builtin_sin, [Strictness::Seq], 1),
-        builtin!("builtin-cos", builtin_cos, [Strictness::Seq], 1),
-        builtin!("builtin-tan", builtin_tan, [Strictness::Seq], 1),
-        builtin!("builtin-asin", builtin_asin, [Strictness::Seq], 1),
-        builtin!("builtin-acos", builtin_acos, [Strictness::Seq], 1),
-        builtin!("builtin-atan", builtin_atan, [Strictness::Seq], 1),
-        builtin!(
-            "builtin-atan2",
-            builtin_atan2,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!("builtin-nan?", builtin_nan_check, [Strictness::Seq], 1),
-        builtin!("builtin-inf?", builtin_inf_check, [Strictness::Seq], 1),
-        builtin!(
-            "builtin-finite?",
-            builtin_finite_check,
-            [Strictness::Seq],
-            1
-        ),
-        // Bitwise (registered under builtin-NAME; prelude exports bare names)
-        builtin!(
-            "builtin-band",
-            builtin_band,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-bor",
-            builtin_bor,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-bxor",
-            builtin_bxor,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-shl",
-            builtin_shl,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-shr",
-            builtin_shr,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        // Type conversion (registered under builtin-NAME; prelude exports bare name)
-        builtin!("builtin-float", builtin_float, [Strictness::Seq], 1),
-        // Parsing (registered under builtin-NAME; prelude exports the bare names)
-        builtin!("builtin-to-int", builtin_to_int, [Strictness::Seq]),
-        builtin!("builtin-to-float", builtin_to_float, [Strictness::Seq]),
-        // Evaluation control (registered under builtin-NAME; prelude exports the bare names)
-        builtin!("materialize", builtin_force, [Strictness::Seq]),
-        builtin!("builtin-raise", builtin_raise, [Strictness::Seq]),
-        builtin!(
-            "builtin-macro-error",
-            builtin_macro_error,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!("builtin-try", builtin_try, [Strictness::Id], 1),
-        builtin!(
-            "builtin-apply",
-            builtin_apply,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!("until", builtin_until),
-        // Type introspection (registered under builtin-NAME; prelude exports the bare names)
-        builtin!("builtin-type-of", builtin_type_of, [Strictness::Seq]),
-        builtin!("ast-of", builtin_ast_of, [Strictness::Id]),
-        // All type predicates (int?, float?, str?, bool?, null?, dict?, fn?, seq?, bytes?, proxy?)
-        // are implemented in LLT stdlib/prelude.llt via match pattern dispatch.
-        // num?, record?, map? are also LLT-implemented. No Rust builtin-*? predicates remain.
-        // Schema validation
-        builtin!(
-            "validate",
-            builtin_validate,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        // I/O (registered under builtin-NAME; prelude exports the bare names)
-        builtin!("builtin-emit", builtin_emit, [Strictness::Seq]),
-        builtin!("builtin-env", builtin_env, [Strictness::Seq]),
-        builtin!(
-            "builtin-open",
-            builtin_open,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "builtin-narrow",
-            builtin_narrow,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!("builtin-revocable", builtin_revocable, [Strictness::Seq]),
-        builtin!("builtin-revoke-cap", builtin_revoke_cap, [Strictness::Seq]),
-        builtin!(
-            "builtin-connect",
-            builtin_connect,
-            [
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq
-            ]
-        ),
-        builtin!(
-            "builtin-tls-layer",
-            builtin_tls_layer,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
-        ),
-        builtin!(
-            "builtin-tls-peer-cert",
-            builtin_tls_peer_cert,
-            [Strictness::Seq]
-        ),
-        builtin!(
-            "builtin-string-handle",
-            builtin_string_handle,
-            [Strictness::Seq]
-        ),
-        builtin!("builtin-read-line", builtin_read_line, [Strictness::Seq]),
-        builtin!(
-            "builtin-read-chunk",
-            builtin_read_chunk,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!("builtin-read-all", builtin_read_all, [Strictness::Seq]),
-        builtin!(
-            "builtin-write",
-            builtin_write,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
-        ),
-        builtin!(
-            "builtin-write-atomic",
-            builtin_write_atomic,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
-        ),
-        builtin!(
-            "builtin-cap-data",
-            builtin_cap_data,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-write-handle",
-            builtin_write_handle,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!("builtin-flush", builtin_flush, [Strictness::Seq]),
-        builtin!("builtin-close", builtin_close, [Strictness::Seq]),
-        builtin!(
-            "builtin-raw-create",
-            builtin_raw_create,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-seek",
-            builtin_seek,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!("builtin-seek-end", builtin_seek_end, [Strictness::Seq]),
-        builtin!("builtin-position", builtin_position, [Strictness::Seq]),
-        builtin!(
-            "builtin-list-dir",
-            builtin_list_dir,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-stat",
-            builtin_stat,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-exists",
-            builtin_exists,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-stat-symlink",
-            builtin_stat_symlink,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-copy-file",
-            builtin_copy_file,
-            [
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq
-            ],
-            4
-        ),
-        builtin!(
-            "builtin-symlink",
-            builtin_symlink,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
-        ),
-        builtin!(
-            "builtin-set-permissions",
-            builtin_set_permissions,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
-        ),
-        builtin!(
-            "builtin-get-xattr",
-            builtin_get_xattr,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
-        ),
-        builtin!(
-            "builtin-set-xattr",
-            builtin_set_xattr,
-            [
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq
-            ],
-            4
-        ),
-        builtin!(
-            "builtin-remove-xattr",
-            builtin_remove_xattr,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
-        ),
-        builtin!(
-            "builtin-list-xattrs",
-            builtin_list_xattrs,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-make-dir",
-            builtin_make_dir,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-remove",
-            builtin_remove,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-rename",
-            builtin_rename,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
-        ),
-        builtin!(
-            "builtin-link",
-            builtin_link,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
-        ),
-        builtin!(
-            "builtin-read-link",
-            builtin_read_link,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        // Datagram sockets (UDP, Unix datagram)
-        builtin!(
-            "builtin-send-datagram",
-            builtin_send_datagram,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "builtin-recv-datagram",
-            builtin_recv_datagram,
-            [Strictness::Seq]
-        ),
-        // DELETED: builtin!("builtin-from-json", builtin_from_json, [Strictness::Seq])
-        // json-serde-removal sprint: from-json is now pure tinct in stdlib/codecs/json.llt
-        // DELETED: builtin!("builtin-to-json", builtin_to_json, [Strictness::Seq])
-        // json-delete-to-json sprint: CLI uses tinct to-json (codecs/json.llt) instead.
-        // DELETED: builtin!("include", builtin_include, [Strictness::Seq])
-        // `include` is now implemented in stdlib/prelude.llt (include-decomp-redelete sprint)
-        // Decomposed include primitives (include-decomp-primitives sprint)
-        builtin!("builtin-blake3", builtin_blake3, [Strictness::Seq]),
-        builtin!(
-            "builtin-cap-identity",
-            builtin_cap_identity,
-            [Strictness::Seq]
-        ),
-        // runtime-v2 Part F: expand/load/eval primitives for include-decomp pipeline
-        builtin!("builtin-expand", builtin_expand, [Strictness::Seq], 1),
-        builtin!("builtin-load", builtin_load, [Strictness::Seq], 1),
-        builtin!("builtin-eval", builtin_eval, [Strictness::Seq], 1),
-        builtin!(
-            "builtin-eval-types",
-            builtin_eval_types,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "builtin-include-cache-get",
-            builtin_include_cache_get,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "builtin-include-cache-put",
-            builtin_include_cache_put,
-            [],
-            2
-        ),
-        // Sequences (registered under builtin-NAME; prelude exports the unwrapped names)
-        builtin!("builtin-seq", builtin_seq),
-        builtin!("builtin-head", builtin_head, [Strictness::Seq]),
-        builtin!("builtin-tail", builtin_tail, [Strictness::Seq]),
-        builtin!("builtin-collect", builtin_collect, [Strictness::Spine]),
-        builtin!(
-            "builtin-range",
-            builtin_range,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!("builtin-repeat", builtin_repeat),
-        builtin!("builtin-cycle", builtin_cycle, [Strictness::Spine], 1),
-        builtin!("builtin-iterate", builtin_iterate),
-        builtin!("builtin-unfold", builtin_unfold),
-        // map/filter/take/drop/reduce registered under builtin-NAME; prelude exports the bare names
-        builtin!(
-            "builtin-map",
-            builtin_map,
-            [Strictness::Id, Strictness::Spine],
-            1
-        ),
-        builtin!(
-            "builtin-filter",
-            builtin_filter,
-            [Strictness::Id, Strictness::Spine],
-            1
-        ),
-        builtin!(
-            "builtin-take",
-            builtin_take,
-            [Strictness::Seq, Strictness::Spine],
-            2
-        ),
-        builtin!(
-            "builtin-drop",
-            builtin_drop,
-            [Strictness::Seq, Strictness::Spine],
-            2
-        ),
-        builtin!(
-            "builtin-reduce",
-            builtin_reduce,
-            [Strictness::Id, Strictness::Id, Strictness::Spine]
-        ),
-        builtin!(
-            "builtin-join",
-            builtin_join,
-            [Strictness::Seq, Strictness::Spine],
-            2
-        ),
-        builtin!(
-            "builtin-concat",
-            builtin_concat,
-            [Strictness::Spine, Strictness::Seq],
-            1
-        ),
-        // Helper builtins for continuation-based reduce (internal, not exposed to users)
-        builtin!(
-            "reduce_dict_step",
-            builtin_reduce_dict_step,
-            [
-                Strictness::Id,
-                Strictness::Id,
-                Strictness::Spine,
-                Strictness::Seq
-            ]
-        ),
-        builtin!(
-            "reduce_seq_step",
-            builtin_reduce_seq_step,
-            [Strictness::Id, Strictness::Id, Strictness::Spine]
-        ),
-        // List operations (registered under builtin-NAME; prelude exports the unwrapped names)
-        builtin!("builtin-first", builtin_first, [Strictness::Spine]),
-        builtin!("builtin-last", builtin_last, [Strictness::Spine]),
-        builtin!("builtin-rest", builtin_rest, [Strictness::Spine]),
-        builtin!(
-            "builtin-cons",
-            builtin_cons,
-            [Strictness::Id, Strictness::Spine]
-        ),
-        builtin!("builtin-reverse", builtin_reverse, [Strictness::Spine]),
-        builtin!(
-            "builtin-sort",
-            builtin_sort,
-            [Strictness::Spine, Strictness::Spine]
-        ),
-        // Async concurrency primitives (registered under builtin-NAME; prelude exports bare names)
-        builtin!("builtin-task", builtin_task),
-        builtin!("builtin-await", builtin_await),
-        builtin!("builtin-channel", builtin_channel),
-        builtin!("builtin-send", builtin_send),
-        builtin!("builtin-recv", builtin_recv),
-        builtin!("builtin-select-once", builtin_select_once),
-        builtin!("builtin-par", builtin_par),
-        builtin!("builtin-par-map", builtin_par_map),
-        builtin!("builtin-par-filter", builtin_par_filter),
-        builtin!("builtin-signal-channel", builtin_signal_channel),
-        builtin!("builtin-timer-channel", builtin_timer_channel),
-        builtin!("builtin-watch-channel", builtin_watch_channel),
-        builtin!("builtin-context", builtin_context),
-        builtin!(
-            "builtin-with-cancel",
-            builtin_with_cancel,
-            [Strictness::Seq]
-        ),
-        builtin!(
-            "builtin-with-timeout",
-            builtin_with_timeout,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "builtin-with-deadline",
-            builtin_with_deadline,
-            [Strictness::Seq, Strictness::Seq]
-        ),
-        builtin!(
-            "builtin-cancelled-q",
-            builtin_cancelled_q,
-            [Strictness::Seq]
-        ),
-        builtin!(
-            "builtin-cancel-task",
-            builtin_cancel_task,
-            [Strictness::Seq]
-        ),
-        builtin!("builtin-non-cancellable", builtin_non_cancellable),
-        builtin!(
-            "builtin-with-context",
-            builtin_with_context,
-            [Strictness::Seq, Strictness::Id],
-            1
-        ),
-        // Shutdown primitives (async-shutdown-primitives)
-        builtin!("builtin-cancel-root", builtin_cancel_root),
-        builtin!("builtin-drain", builtin_drain),
-        builtin!("builtin-exit-now", builtin_exit_now, [Strictness::Seq]),
-        // Date-time: timestamps and durations
-        builtin!(
-            "parse-timestamp",
-            builtin_parse_timestamp,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "format-timestamp",
-            builtin_format_timestamp,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "timestamp->unix",
-            builtin_timestamp_to_unix,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "unix->timestamp",
-            builtin_unix_to_timestamp,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!("now", builtin_now, [Strictness::Seq], 1),
-        builtin!("fixed-clock", builtin_fixed_clock, [Strictness::Seq], 1),
-        builtin!(
-            "timestamp-add",
-            builtin_timestamp_add,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "timestamp-diff",
-            builtin_timestamp_diff,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "timestamp<?",
-            builtin_timestamp_lt,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "timestamp>?",
-            builtin_timestamp_gt,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "timestamp=?",
-            builtin_timestamp_eq,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "timestamp-year",
-            builtin_timestamp_year,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "timestamp-month",
-            builtin_timestamp_month,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!("timestamp-day", builtin_timestamp_day, [Strictness::Seq], 1),
-        builtin!(
-            "timestamp-hour",
-            builtin_timestamp_hour,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "timestamp-minute",
-            builtin_timestamp_minute,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "timestamp-second",
-            builtin_timestamp_second,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "timestamp-parts",
-            builtin_timestamp_parts,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "duration-nanos",
-            builtin_duration_nanos,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "duration-seconds",
-            builtin_duration_seconds,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "duration-minutes",
-            builtin_duration_minutes,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "duration-hours",
-            builtin_duration_hours,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!("duration-days", builtin_duration_days, [Strictness::Seq], 1),
-        builtin!(
-            "duration->seconds",
-            builtin_duration_to_seconds,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "duration->nanos",
-            builtin_duration_to_nanos,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "load-tz",
-            builtin_load_tz,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!(
-            "timestamp-in-tz",
-            builtin_timestamp_in_tz,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        builtin!("local->timestamp", builtin_local_to_timestamp, [], 7),
-        builtin!("local-tz-name", builtin_local_tz_name, [Strictness::Seq], 1),
-        // URI parsing
-        builtin!("uri", builtin_uri, [Strictness::Seq]),
-        builtin!("url", builtin_url, [Strictness::Seq]),
-        builtin!("urn", builtin_urn, [Strictness::Seq]),
-        // HTTP-sessions stubs (QUIC/HTTP2/HTTP3/ICMP — full implementation deferred)
-        builtin!(
-            "quic-session",
-            builtin_quic_session,
-            [
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq
-            ],
-            4
-        ),
-        builtin!(
-            "quic-open-stream",
-            builtin_quic_open_stream,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "quic-open-datagram",
-            builtin_quic_open_datagram,
-            [Strictness::Seq],
-            1
-        ),
-        builtin!(
-            "http2-session",
-            builtin_http2_session,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
-        ),
-        builtin!("http3-session", builtin_http3_session, [Strictness::Seq], 1),
-        builtin!(
-            "http-request",
-            builtin_http_request,
-            [
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq,
-                Strictness::Seq
-            ],
-            5
-        ),
-        builtin!(
-            "icmp-ping",
-            builtin_icmp_ping,
-            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
-        ),
-        // Meta primitives (registered under builtin-NAME; prelude exports the bare names)
-        // DELETED: builtin!("eval-ast", builtin_eval_ast, [Strictness::Seq])
-        // eval-ast was the old single-expression eval interface, superseded by the new eval builtin
-        builtin!("builtin-gensym", builtin_gensym, [Strictness::Seq]),
-        builtin!("builtin-llt-repr", builtin_llt_repr, [Strictness::Seq]),
-        builtin!("builtin-tag-of", builtin_tag_of, [Strictness::Seq]),
-        builtin!(
-            "builtin-variant",
-            builtin_variant,
-            [Strictness::Seq, Strictness::Id]
-        ),
-        builtin!("builtin-decimal", builtin_decimal, [Strictness::Seq]),
-        builtin!("builtin-big-int", builtin_big_int, [Strictness::Seq]),
-        builtin!("builtin-proxy", builtin_proxy),
-        builtin!(
-            "builtin-macro-injects",
-            builtin_macro_injects,
-            [Strictness::Seq]
-        ),
-    ]
-}
 
 // TOMBSTONE: builtin_primary_names() deleted in T-719 (builtin-privacy-infra sprint 2026-05-29).
 // T002 typecheck callers (typecheck.rs:1955, 2359) now iterate builtin_module() groups inline.
@@ -2163,108 +1199,17 @@ pub fn standard_builtins() -> Vec<crate::value::BuiltinDef> {
 // TOMBSTONE: rust_module() deleted in include-decomp-redelete sprint (2026-05-20).
 // TOMBSTONE: create_bootstrap_env() deleted in include-decomp-redelete sprint (2026-05-20).
 // The module system and include mechanism have been deleted.
-// All builtins are now registered via builtin_module() groups in create_root_env().
+// All builtins are now registered via builtin_module() groups.
 // See doc/whatif/include-decomposition.md.
 
-/// Create the root environment with all builtins registered as `Value::Builtin`.
-/// No longer called from `src/expand.rs` (T-721 removed that caller).
-/// Called by `create_stdlib_env_inner()` and `create_type_stage_env()`.
-/// S-785 will replace these calls with `--- uses: ["core"]` document-level injection.
-pub(crate) fn create_root_env() -> Arc<RwLock<Environment>> {
-    let env = Arc::new(RwLock::new(Environment::new()));
-    for module_name in &["core", "datetime", "net"] {
-        if let Some(defs) = builtin_module(module_name) {
-            for def in defs {
-                let name = def.name.to_string();
-                let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
-                env.write().unwrap().insert(name, thunk);
-            }
-        }
-    }
+// TOMBSTONE: create_root_env() deleted in T-763 (2026-05-29).
+// Replaced by direct builtin_module("core") injection in create_stdlib_env_inner()
+// (loader.llt bootstrap, T-726) and create_type_stage_env() (T-763).
+// Both functions now create empty Environment and inject core builtins directly.
 
-    // Transport nominal variant constants: Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp.
-    // Now registered automatically by the prelude's [type [Tcp] [Udp] ...] declaration.
-
-    env
-}
-
-/// Create the stdlib environment: root builtins + prelude functions.
-///
-/// Starts with a flat `Environment::new()` pre-populated with all builtins
-/// (via `create_root_env()`), then evaluates `stdlib/prelude.llt` and inserts
-/// its exported bindings into the same env. No parent chain — user code inherits
-/// this env directly. S-785 will replace `create_root_env()` with `--- uses: ["core"]`
-/// injection so the env starts truly empty.
+// Bootstrap: loader.llt → prelude.llt (direct eval) → stdlib_env.
+// Prelude now includes macro transformers (formerly macros.llt).
 // Fatal: stdlib failure is not recoverable — callers should propagate or panic on Err.
-/// Helper function to load a stdlib module from source and insert its bindings
-/// into the environment.
-fn load_stdlib_module(
-    source: &str,
-    module_name: &str,
-    env: &Arc<RwLock<Environment>>,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<(), Box<crate::error::EvalError>> {
-    // Stamp spans with the module filename so runtime backtraces show
-    // "prelude.llt:1234:5" instead of bare "1234:5".
-    let sf = std::sync::Arc::new(crate::ast::SourceFile {
-        path: std::sync::Arc::from(module_name),
-        content: std::sync::Arc::from(source),
-    });
-    let parsed = crate::parser::parse_with_file(source, sf).map_err(|e| {
-        crate::error::EvalError::internal(format!("{module_name} parse error: {e}"), Span::origin())
-    })?;
-
-    // Desugar $_ implicit lambdas on SurfaceProgram.
-    let mut program = parsed.program.clone();
-    crate::desugar::desugar_surface_program(&mut program);
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let resolution_table = std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));
-    let type_annotation_table = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
-
-    // Type errors are advisory and the result is discarded, so skip the type-check pass
-    // during stdlib loading. This avoids a full type-check of the prelude (with all its
-    // class/instance declarations) on every create_stdlib_env() call — a significant
-    // cost reduction (~5s per call in debug builds). The prelude's types are properly
-    // checked in build_prelude_env_inner() via typecheck_and_merge_stdlib_module().
-
-    let thunk = crate::async_rt::block_on_anywhere(crate::eval::eval_surface_file(
-        &program,
-        Arc::clone(env),
-        ctx,
-        &resolution_table,
-        &type_annotation_table,
-    ))?;
-    let val = crate::eval::materialize_sync(&thunk, None, ctx)?;
-
-    let dict = match val {
-        Value::Dict(map) => map,
-        Value::Overlay(l_id, r_id) => {
-            flatten_overlay(&l_id, &r_id, module_name, ctx, Span::origin())?
-        }
-        other => {
-            return Err(crate::error::EvalError::internal(
-                format!(
-                    "{module_name} must evaluate to a Dict, got {}",
-                    other.type_name()
-                ),
-                Span::origin(),
-            )
-            .into())
-        }
-    };
-
-    // Insert the module's bindings into the environment
-    for (key, thunk_id) in dict {
-        let name = match key {
-            Key::String(s) => s.to_string(),
-            Key::Int(n) => n.to_string(),
-        };
-        let thunk = ctx.get_thunk(thunk_id);
-        env.write().unwrap().insert(name, thunk);
-    }
-
-    Ok(())
-}
 
 // Reentrance guard for create_stdlib_env to detect unexpected recursive calls.
 std::thread_local! {
@@ -2272,6 +1217,11 @@ std::thread_local! {
     /// Cache of the stdlib arena so EvalContexts created after create_stdlib_env()
     /// can inherit the stdlib ThunkIds without the caller explicitly threading the arena.
     static STDLIB_ARENA_CACHE: std::cell::RefCell<Option<Arc<Mutex<crate::arena::ThunkArena>>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Full result cache: caches the (env, arena) pair returned by create_stdlib_env_with_arena.
+    /// On a cache hit, the existing Arc<RwLock<Environment>> and Arc<Mutex<ThunkArena>> are
+    /// returned directly, avoiding a full stdlib rebuild. Cleared by clear_stdlib_cache().
+    static STDLIB_RESULT_CACHE: std::cell::RefCell<Option<(Arc<RwLock<Environment>>, Arc<Mutex<crate::arena::ThunkArena>>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -2286,12 +1236,14 @@ pub(crate) fn new_arena_with_stdlib_snapshot() -> Option<Arc<Mutex<crate::arena:
     })
 }
 
-/// Clear the STDLIB_ARENA_CACHE. This is intended for test environments where the cache
-/// needs to be reset between test iterations to prevent memory accumulation.
+/// Clear both stdlib caches (`STDLIB_ARENA_CACHE` and `STDLIB_RESULT_CACHE`). This is
+/// intended for test environments where the cache needs to be reset between test iterations
+/// to prevent memory accumulation.
 ///
 /// **Performance impact:** After calling this function, the next call to
 /// `create_stdlib_env_with_arena()` will rebuild the stdlib from scratch (parsing and
-/// evaluating prelude.llt and macros.llt). Subsequent calls will use the new cached arena.
+/// evaluating loader.llt and prelude.llt directly). Subsequent calls will use the
+/// new cached result until the next `clear_stdlib_cache()` call.
 ///
 /// **Production use:** This function should NOT be called in production code. The stdlib
 /// cache is intentionally persistent across multiple evaluations to amortize the cost of
@@ -2299,6 +1251,7 @@ pub(crate) fn new_arena_with_stdlib_snapshot() -> Option<Arc<Mutex<crate::arena:
 /// the same process should call this.
 pub fn clear_stdlib_cache() {
     STDLIB_ARENA_CACHE.with(|c| *c.borrow_mut() = None);
+    STDLIB_RESULT_CACHE.with(|c| *c.borrow_mut() = None);
 }
 
 pub fn create_stdlib_env() -> Result<Arc<RwLock<Environment>>, Box<crate::error::EvalError>> {
@@ -2308,7 +1261,8 @@ pub fn create_stdlib_env() -> Result<Arc<RwLock<Environment>>, Box<crate::error:
 }
 
 /// Like `create_stdlib_env` but also returns the arena used during stdlib evaluation.
-/// The arena holds all ThunkIds allocated while loading the prelude and macros.llt.
+/// The arena holds all ThunkIds allocated while loading the prelude (which now includes
+/// the macro transformer functions formerly in macros.llt).
 /// Callers (e.g., macro expansion) that need to share the same ThunkId space should
 /// use this arena when constructing their EvalContext via `EvalContext::new_sharing_arena`.
 ///
@@ -2317,6 +1271,13 @@ pub fn create_stdlib_env() -> Result<Arc<RwLock<Environment>>, Box<crate::error:
 /// consistency regardless of which entry point (`create_stdlib_env()` or
 /// `create_stdlib_env_with_arena()`) was used to build the stdlib.
 pub(crate) fn create_stdlib_env_with_arena() -> StdlibEnvWithArena {
+    // Fast path: return cached (env, arena) pair if available, avoiding a full stdlib rebuild.
+    // STDLIB_RESULT_CACHE is cleared by clear_stdlib_cache(), which corpus tests call between
+    // iterations. On a cache hit, Arc::clone is O(1) and both callers share the same env/arena.
+    if let Some((env, arena)) = STDLIB_RESULT_CACHE.with(|c| c.borrow().clone()) {
+        return Ok((env, arena));
+    }
+
     let d = STDLIB_ENV_DEPTH.get();
     if d > 5 {
         panic!(
@@ -2340,54 +1301,258 @@ pub(crate) fn create_stdlib_env_with_arena() -> StdlibEnvWithArena {
     let result = create_stdlib_env_inner(bootstrap_base_dir);
     STDLIB_ENV_DEPTH.set(d);
     // Cache the arena so subsequent EvalContext::new() calls can inherit stdlib ThunkIds.
-    if let Ok((_, ref arena)) = result {
+    if let Ok((ref env, ref arena)) = result {
         STDLIB_ARENA_CACHE.with(|c| *c.borrow_mut() = Some(Arc::clone(arena)));
+        // Cache the full (env, arena) result so subsequent calls return immediately.
+        STDLIB_RESULT_CACHE.with(|c| {
+            *c.borrow_mut() = Some((Arc::clone(env), Arc::clone(arena)));
+        });
     }
     result
 }
 
 fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvWithArena {
-    // Phase 2: Bootstrap env switch.
-    // stdlib_env starts as Environment::new() pre-populated with all builtins via
-    // create_root_env(). This is the structural form required by T-720: a flat env with
-    // no parent chain. S-785 will remove create_root_env() here and rely on
-    // --- uses: ["core"] injection instead.
-    let stdlib_env = create_root_env();
+    // Four-phase bootstrap (S-785 / T-726):
+    // Phase 1: Populate loader env with core builtins
+    // Phase 2: Evaluate loader.llt → loader_dict with eval-program / eval-programs functions
+    // Phase 3: Evaluate prelude.llt DIRECTLY in a child of loader_env → prelude_dict
+    // Phase 4: Convert prelude_dict to stdlib_env
+    //
+    // Macro transformer functions (tmpl, do, begin, syntax-fn, syntax-class, syntax-type)
+    // are now defined directly in prelude.llt and exported from the final dict.
+    // register_stdlib_macros_from_env() picks them up by name from stdlib_env.
 
-    // Create a bootstrap EvalContext backed by the stdlib env.
-    // bootstrap_base_dir was opened by the caller (create_stdlib_env_with_arena) to confine
-    // open_ambient_dir to the public entry point.
-    // Use new_empty() to bypass STDLIB_ARENA_CACHE — we're BUILDING the stdlib here,
-    // so we need a fresh arena, not one seeded with stale cache contents.
-    // Pass stdlib_env as type_stage_env since we're bootstrapping (no type-stage env exists yet).
-    let bootstrap_ctx =
-        crate::eval::EvalContext::new_empty(bootstrap_base_dir, Arc::clone(&stdlib_env), false);
+    // ========== Phase 1 & 2: Parse loader.llt and create bootstrap context ==========
+    // We need to create the loader context first so we have an arena to allocate
+    // core builtins into. The loader env will be populated with core builtins,
+    // then loader.llt will be evaluated in that env.
 
-    // Load prelude — provides all public stdlib functions.
-    // Builtins are accessible directly in stdlib_env.bindings (no parent chain).
-    // Prelude bindings are inserted into stdlib_env alongside the builtins.
+    let loader_source = include_str!("../stdlib/loader.llt");
+    let loader_sf = std::sync::Arc::new(crate::ast::SourceFile {
+        path: std::sync::Arc::from("stdlib/loader.llt"),
+        content: std::sync::Arc::from(loader_source),
+    });
+    let loader_parsed = crate::parser::parse_with_file(loader_source, loader_sf)
+        .map_err(|e| EvalError::internal(format!("loader.llt parse error: {e}"), Span::origin()))?;
+
+    // Desugar and resolve loader.llt
+    let mut loader_program = loader_parsed.program.clone();
+    crate::desugar::desugar_surface_program(&mut loader_program);
+    let loader_resolution_table =
+        std::sync::Arc::new(crate::resolve::resolve_surface_program(&loader_program));
+    let loader_type_table = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
+
+    // Create empty environment and context - we'll populate it with core builtins
+    let loader_env = Arc::new(RwLock::new(Environment::new()));
+
+    // Create bootstrap context for loader evaluation
+    // Use new_empty since we're bootstrapping (no stdlib env exists yet)
+    let loader_ctx = crate::eval::EvalContext::new_empty(
+        bootstrap_base_dir.try_clone().map_err(|e| {
+            Box::new(EvalError::internal(
+                format!("cannot clone bootstrap_base_dir for loader: {e}"),
+                Span::origin(),
+            ))
+        })?,
+        Arc::clone(&loader_env),
+        false,
+    );
+
+    // Now populate loader_env with core builtins using the loader_ctx's arena
+    let core_builtins = builtin_module("core").ok_or_else(|| {
+        Box::new(EvalError::internal(
+            "builtin_module(\"core\") returned None during bootstrap".to_string(),
+            Span::origin(),
+        ))
+    })?;
+
+    for def in core_builtins {
+        let name = def.name.to_string();
+        let builtin_val = Value::Builtin(def);
+        let thunk = Arc::new(Thunk::new_materialized(builtin_val, Span::origin()));
+        // Insert directly into loader_env (no need to go through the arena for builtins)
+        loader_env.write().unwrap().insert(name, thunk);
+    }
+
+    // Evaluate loader.llt (it has one document with one dict expression)
+    let loader_thunk = crate::async_rt::block_on_anywhere(crate::eval::eval_surface_file(
+        &loader_program,
+        Arc::clone(&loader_env),
+        &loader_ctx,
+        &loader_resolution_table,
+        &loader_type_table,
+    ))?;
+
+    let loader_val = crate::eval::materialize_sync(&loader_thunk, None, &loader_ctx)?;
+
+    // loader_val should be a Dict with eval-program and eval-programs
+    let loader_dict = match loader_val {
+        Value::Dict(d) => d,
+        Value::Overlay(l_id, r_id) => {
+            flatten_overlay(&l_id, &r_id, "loader.llt", &loader_ctx, Span::origin())?
+        }
+        other => {
+            return Err(Box::new(EvalError::internal(
+                format!(
+                    "loader.llt must evaluate to a Dict, got {}",
+                    other.type_name()
+                ),
+                Span::origin(),
+            )))
+        }
+    };
+
+    // ========== Phase 3: Evaluate prelude DIRECTLY (fast path) ==========
+    //
+    // Instead of calling eval-program (which invokes builtin-eval → builtin-reduce through
+    // the async eval chain), we evaluate prelude.llt directly using eval_surface_file —
+    // the same mechanism as the prelude bootstrap (eval_surface_file). This is ~10x faster because it avoids
+    // the overhead of constructing a Value::Program, invoking a tinct function, and running
+    // the full eval-program pipeline.
+    //
+    // PRECONDITION: prelude.llt must not rely on `--- uses:` module injection for any of its
+    // documents. This direct-eval path does not process doc.uses — module injection happens
+    // only through loader.llt's eval-program pipeline (T-768/S-786). Core builtins are in
+    // scope via loader_env parent chain.
+    //
+    // Correctness: prelude's `--- uses: ["core"]` header is metadata only. In direct eval
+    // the env already contains core builtins (inherited from loader_env). We also inject
+    // eval-program and eval-programs from loader_dict so prelude can reference them if needed.
+
+    // Build prelude_env: child of loader_env (inherits core builtins) + loader_dict entries
+    let prelude_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
+        &loader_env,
+    ))));
+    for (key, thunk_id) in &loader_dict {
+        let name = match key {
+            Key::String(s) => s.to_string(),
+            Key::Int(n) => n.to_string(),
+        };
+        let thunk = loader_ctx.get_thunk(*thunk_id);
+        prelude_env.write().unwrap().insert(name, thunk);
+    }
+
+    // Parse and desugar prelude
     let prelude_source = include_str!("../stdlib/prelude.llt");
-    load_stdlib_module(
-        prelude_source,
-        "stdlib/prelude.llt",
-        &stdlib_env,
-        &bootstrap_ctx,
-    )?;
+    let prelude_sf = std::sync::Arc::new(crate::ast::SourceFile {
+        path: std::sync::Arc::from("stdlib/prelude.llt"),
+        content: std::sync::Arc::from(prelude_source),
+    });
+    let prelude_parsed =
+        crate::parser::parse_with_file(prelude_source, prelude_sf).map_err(|e| {
+            EvalError::internal(format!("prelude.llt parse error: {e}"), Span::origin())
+        })?;
+    let mut prelude_program = prelude_parsed.program.clone();
+    crate::desugar::desugar_surface_program(&mut prelude_program);
+    let prelude_resolution_table =
+        std::sync::Arc::new(crate::resolve::resolve_surface_program(&prelude_program));
+    let prelude_type_table = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
 
-    // Load macros — exports tmpl-transformer and helpers used by expand_surface_program.
-    // Loaded after prelude so macro helpers can reference prelude functions.
-    let macros_source = include_str!("../stdlib/macros.llt");
-    load_stdlib_module(
-        macros_source,
-        "stdlib/macros.llt",
-        &stdlib_env,
-        &bootstrap_ctx,
-    )?;
+    // Evaluate prelude directly (type-stage documents are skipped by eval_surface_file)
+    let prelude_result_thunk = crate::async_rt::block_on_anywhere(crate::eval::eval_surface_file(
+        &prelude_program,
+        Arc::clone(&prelude_env),
+        &loader_ctx,
+        &prelude_resolution_table,
+        &prelude_type_table,
+    ))?;
+    let prelude_val = crate::eval::materialize_sync(&prelude_result_thunk, None, &loader_ctx)?;
 
-    // Keep the arena alive: bootstrap_ctx is dropped here, but its arena holds all
-    // ThunkIds allocated during prelude/macros loading. Callers that need to share
-    // the same ThunkId space (e.g., macro expansion) clone this Arc before returning.
-    let arena = Arc::clone(&bootstrap_ctx.thunk_arena);
+    // Result should be a Dict containing prelude exports
+    let prelude_dict = match prelude_val {
+        Value::Dict(d) => d,
+        Value::Overlay(l_id, r_id) => {
+            flatten_overlay(&l_id, &r_id, "prelude.llt", &loader_ctx, Span::origin())?
+        }
+        other => {
+            return Err(Box::new(EvalError::internal(
+                format!(
+                    "prelude eval-program result must be a Dict, got {}",
+                    other.type_name()
+                ),
+                Span::origin(),
+            )))
+        }
+    };
+
+    // ========== Phase 4: Convert prelude_dict to Environment ==========
+    // Create stdlib_env with prelude exports (includes macro transformers).
+    let stdlib_env = Arc::new(RwLock::new(Environment::new()));
+
+    for (key, thunk_id) in prelude_dict {
+        let name = match key {
+            Key::String(s) => s.to_string(),
+            Key::Int(n) => n.to_string(),
+        };
+        let thunk = loader_ctx.get_thunk(thunk_id);
+        stdlib_env.write().unwrap().insert(name, thunk);
+    }
+
+    // Inject core builtins into stdlib_env (T-763 fix).
+    // Macro transformers in prelude need builtin-variant, builtin-tag-of, etc.
+    // for AST construction. Prelude exports user-facing functions but does not
+    // re-export all raw builtin-* aliases directly.
+    let core_builtins = builtin_module("core").ok_or_else(|| {
+        Box::new(EvalError::internal(
+            "builtin_module(\"core\") returned None during stdlib bootstrap".to_string(),
+            Span::origin(),
+        ))
+    })?;
+
+    for def in core_builtins {
+        let name = def.name.to_string();
+        let builtin_val = Value::Builtin(def);
+        let thunk = Arc::new(Thunk::new_materialized(builtin_val, Span::origin()));
+        stdlib_env.write().unwrap().insert(name, thunk);
+    }
+
+    // Inject bare-name aliases for math builtins that are NOT re-exported by prelude.
+    //
+    // Math functions (pow, sqrt, sin, etc.) were renamed to builtin-* in the
+    // builtin-privacy-operators-and-io sprint (S-784). Unlike bitwise/string ops,
+    // they are NOT wrapped in prelude.llt — they live in stdlib/math.llt instead.
+    // The old create_root_env() injected them as bare names; the new four-phase
+    // bootstrap does not. This restores the bare names so that corpus tests and
+    // user code that calls [pow x y] without [include %libdir "math.llt"] continue
+    // to work.
+    //
+    // Mirrors the "builtin-privacy-operators-and-io sprint" section of
+    // inject_builtin_aliases() in type_env.rs (lines ~1370-1385) for the runtime env.
+    // The type checker sees these pairs via inject_builtin_aliases(); the runtime
+    // must agree so that names resolve consistently at both stages.
+    //
+    // Note: floor, round, band, bor, bxor, shl, shr, float and all string ops
+    // (replace, str-chars, char-code, etc.) are already in prelude.llt as wrappers
+    // and are therefore already in stdlib_env from Phase 3 — no alias needed here.
+    for (canonical, bare) in [
+        ("builtin-pow", "pow"),
+        ("builtin-sqrt", "sqrt"),
+        ("builtin-log", "log"),
+        ("builtin-log2", "log2"),
+        ("builtin-log10", "log10"),
+        ("builtin-exp", "exp"),
+        ("builtin-sin", "sin"),
+        ("builtin-cos", "cos"),
+        ("builtin-tan", "tan"),
+        ("builtin-asin", "asin"),
+        ("builtin-acos", "acos"),
+        ("builtin-atan", "atan"),
+        ("builtin-atan2", "atan2"),
+        ("builtin-nan?", "nan?"),
+        ("builtin-inf?", "inf?"),
+        ("builtin-finite?", "finite?"),
+    ] {
+        let env_read = stdlib_env.read().unwrap();
+        if let Some(thunk) = env_read.get(canonical) {
+            drop(env_read);
+            stdlib_env.write().unwrap().insert(bare.to_string(), thunk);
+        }
+    }
+
+    // Keep the arena alive: loader_ctx holds all ThunkIds allocated during bootstrap.
+    // Callers that need to share the same ThunkId space (e.g., macro expansion)
+    // clone this Arc before returning.
+    let arena = Arc::clone(&loader_ctx.thunk_arena);
 
     Ok((stdlib_env, arena))
 }
@@ -2431,16 +1596,30 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
     let resolution_table = std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));
     let empty_types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
 
-    // type_stage_env starts as Environment::new() pre-populated with all builtins via
-    // create_root_env(). Flat env with no parent chain — same structural form as
-    // create_stdlib_env_inner() after T-720. S-785 will remove create_root_env() here
-    // and rely on --- uses: ["core"] injection in the type-stage document header.
-    let type_stage_env = create_root_env();
+    // T-763: type_stage_env starts as empty Environment, then we inject core builtins directly.
+    // Same pattern as create_stdlib_env_inner()'s loader bootstrap. Flat env with no parent chain.
+    let type_stage_env = Arc::new(RwLock::new(Environment::new()));
 
-    // Create a bootstrap EvalContext. bootstrap_base_dir was opened above.
-    // Pass type_stage_env since we're bootstrapping (no separate type-stage env exists yet).
+    // Create a bootstrap EvalContext first, so we have an arena for builtin allocation.
+    // Use new_empty since we're bootstrapping (no stdlib env exists yet).
     let bootstrap_ctx =
         crate::eval::EvalContext::new_empty(bootstrap_base_dir, Arc::clone(&type_stage_env), false);
+
+    // Inject core builtins into type_stage_env (same pattern as loader.llt bootstrap).
+    // Type-stage prelude only needs core builtins (if, =, dict construction, etc.).
+    let core_builtins = builtin_module("core").ok_or_else(|| {
+        Box::new(EvalError::internal(
+            "builtin_module(\"core\") returned None during type-stage bootstrap".to_string(),
+            Span::origin(),
+        ))
+    })?;
+
+    for def in core_builtins {
+        let name = def.name.to_string();
+        let builtin_val = Value::Builtin(def);
+        let thunk = Arc::new(Thunk::new_materialized(builtin_val, Span::origin()));
+        type_stage_env.write().unwrap().insert(name, thunk);
+    }
 
     // Filter to only stage: type documents and evaluate them
     for doc in &program.documents {
@@ -2503,26 +1682,6 @@ pub fn builtin_module(name: &str) -> Option<Vec<crate::value::BuiltinDef>> {
     }
 }
 
-#[allow(dead_code)] // S-785 will wire callers via --- uses: injection
-/// Return a TypeEnv populated with type signatures for the named module.
-/// Returns None for unknown module names.
-pub(crate) fn type_env_module(name: &str) -> Option<crate::types::TypeEnv> {
-    match name {
-        "core" => {
-            let mut env = crate::types::TypeEnv::new();
-            crate::builtins_core::core_type_env(&mut env);
-            Some(env)
-        }
-        "datetime" => {
-            let mut env = crate::types::TypeEnv::new();
-            crate::builtins_datetime::datetime_type_env(&mut env);
-            Some(env)
-        }
-        "net" => Some(crate::builtins_net::net_type_env()),
-        _ => None,
-    }
-}
-
 /// Build a `TypeEnv` containing type signatures for all builtin modules (core, datetime, net).
 ///
 /// This is the replacement for `TypeEnv::with_builtins()` (deleted in T-722). Callers that
@@ -2537,6 +1696,30 @@ pub fn build_builtins_type_env() -> crate::types::TypeEnv {
     crate::builtins_datetime::datetime_type_env(&mut env);
     env.merge(crate::builtins_net::net_type_env());
     env
+}
+
+/// Return the type environment for a specific native module.
+///
+/// Used by the type checker to inject module-specific type signatures when a document
+/// declares `--- uses: ["core" "datetime"]`. This parallels the runtime's
+/// `builtin_module()` function which injects runtime values.
+///
+/// Returns `None` for unknown module names.
+pub fn type_env_module(name: &str) -> Option<crate::types::TypeEnv> {
+    match name {
+        "core" => {
+            let mut env = crate::types::TypeEnv::new();
+            crate::builtins_core::core_type_env(&mut env);
+            Some(env)
+        }
+        "datetime" => {
+            let mut env = crate::types::TypeEnv::new();
+            crate::builtins_datetime::datetime_type_env(&mut env);
+            Some(env)
+        }
+        "net" => Some(crate::builtins_net::net_type_env()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -7707,24 +6890,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn create_root_env_has_all_builtin_modules() {
-        // Replaces create_root_env_has_all_builtins() (T-719): verifies that all builtins
-        // registered via builtin_module() are present in create_root_env().
-        let env = create_root_env();
-        let env_ref = env.read().unwrap();
-        for module_name in &["core", "datetime", "net"] {
-            let defs = builtin_module(module_name)
-                .unwrap_or_else(|| panic!("builtin_module({module_name:?}) returned None"));
-            for def in &defs {
-                assert!(
-                    env_ref.get(def.name).is_some(),
-                    "root env missing builtin from module {module_name:?}: {}",
-                    def.name
-                );
-            }
-        }
-    }
+    // TOMBSTONE: create_root_env_has_all_builtin_modules() deleted in T-763 (2026-05-29).
+    // Test verified that create_root_env() properly injected all builtin_module() groups.
+    // create_root_env() itself was deleted — replaced by direct injection in
+    // create_stdlib_env_inner() and create_type_stage_env().
 
     /// Parse-only smoke test for the prelude. Evaluating the full prelude requires a
     /// 128 MB thread stack (see corpus_tests.rs) due to deep Rc<Environment> drop chains
@@ -7740,14 +6909,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn macros_parses_without_error() {
-        let macros_source = include_str!("../stdlib/macros.llt");
-        match crate::parser::parse(macros_source) {
-            Ok(_) => {}
-            Err(e) => panic!("macros.llt parse failed: {e}"),
-        }
-    }
+    // Note: macros_parses_without_error test removed — macro transformer definitions
+    // (tmpl, do, begin, syntax-fn, syntax-class, syntax-type) were merged into
+    // prelude.llt and are now covered by the prelude_parses_without_error test above.
 
     #[test]
     #[ignore = "pre-existing regression from runtime-v2 merge: stdlib loading fails"]
@@ -7768,12 +6932,18 @@ mod tests {
             env_ref.get("identity").is_some(),
             "missing prelude function identity"
         );
-        // Should have macros exports (tmpl, do, begin)
-        assert!(env_ref.get("tmpl").is_some(), "missing macros export tmpl");
-        assert!(env_ref.get("do").is_some(), "missing macros export do");
+        // Should have macro transformer exports from prelude (tmpl, do, begin)
+        assert!(
+            env_ref.get("tmpl").is_some(),
+            "missing prelude macro export tmpl"
+        );
+        assert!(
+            env_ref.get("do").is_some(),
+            "missing prelude macro export do"
+        );
         assert!(
             env_ref.get("begin").is_some(),
-            "missing macros export begin"
+            "missing prelude macro export begin"
         );
         // strings/math/encoding are NOT loaded at startup — require explicit include.
         assert!(
@@ -9531,15 +8701,14 @@ mod tests {
     /// This is a wholeness test: it catches regressions where a prelude function is
     /// accidentally removed, renamed, or fails to evaluate during stdlib loading.
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: stdlib loading fails"]
     fn test_stdlib_wholeness() {
         let stdlib_env = create_stdlib_env().expect("create_stdlib_env() must not fail");
         let env = stdlib_env.read().unwrap();
 
-        // Names that must exist: Rust-native builtins (now registered via builtin_module() groups)
+        // Names that must exist: Rust-native builtins (registered via builtin_module() groups)
         // plus a representative selection of prelude-defined functions.
         let required_names: &[&str] = &[
-            // Rust-native operators (registered via builtin_module("core") in create_root_env())
+            // Rust-native operators (registered via builtin_module("core"), injected during bootstrap)
             "$+",
             "$-",
             "$*",

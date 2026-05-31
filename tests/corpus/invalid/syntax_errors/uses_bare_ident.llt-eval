@@ -1,0 +1,6 @@
+# Bare identifier in uses: list is a parse error.
+# Module names must be plain quoted strings like "core", not bare identifiers.
+--- uses: [core]
+[]
+=== out
+bare identifiers not allowed in uses: list

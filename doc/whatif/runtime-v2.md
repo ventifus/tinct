@@ -1260,7 +1260,7 @@ The internal parser (8182 lines, 391 `Expr::` constructions) was not directly mi
 
 ### `ast-of` deferred to Part G for Unevaluated thunks
 
-`ast-of` on `ThunkState::Unevaluated` thunks continues returning the old Variant-encoded AST schema (via `ast_to_dict_expr`). Changing it to return `Value::Expression` broke `macros.llt` which uses `[tag-of [ast-of expr]]` expecting a Variant tag string. The migration to returning `Value::Expression` for Unevaluated thunks is deferred to Part G when `macros.llt` is updated to handle `Value::Expression` directly.
+`ast-of` on `ThunkState::Unevaluated` thunks continues returning the old Variant-encoded AST schema (via `ast_to_dict_expr`). Changing it to return `Value::Expression` broke the macro transformer code (formerly `macros.llt`, now merged into `prelude.llt`) which uses `[tag-of [ast-of expr]]` expecting a Variant tag string. The migration to returning `Value::Expression` for Unevaluated thunks is deferred to Part G when the macro transformers in `prelude.llt` are updated to handle `Value::Expression` directly.
 
 `ast-of` on `ThunkState::Surface` and `ThunkState::AstNodeField` thunks DOES return `Value::Expression` — this is the new path for expressions created via the Surface pipeline.
 

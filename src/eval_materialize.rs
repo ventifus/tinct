@@ -2622,6 +2622,58 @@ pub(crate) async fn apply_cont(
                                         payload: None,
                                     }
                                 }
+                                "uses" => {
+                                    // Build a LLT Seq linked list of module names
+                                    // When absent or empty → [] (empty dict)
+                                    match &doc.uses {
+                                        None => Value::Dict(indexmap::IndexMap::new()),
+                                        Some(crate::Spanned { node: modules, .. })
+                                            if modules.is_empty() =>
+                                        {
+                                            Value::Dict(indexmap::IndexMap::new())
+                                        }
+                                        Some(crate::Spanned { node: modules, .. }) => {
+                                            // End-of-Seq sentinel
+                                            let mut tail_id =
+                                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                                    Value::Dict(indexmap::IndexMap::new()),
+                                                    access_span.clone(),
+                                                )));
+                                            // Wrap module names from last to second
+                                            for module_spanned in
+                                                modules.iter().rev().take(modules.len() - 1)
+                                            {
+                                                let head_id = ctx.alloc_thunk(Arc::new(
+                                                    Thunk::new_materialized(
+                                                        crate::value::string_val(
+                                                            &module_spanned.node,
+                                                        ),
+                                                        access_span.clone(),
+                                                    ),
+                                                ));
+                                                tail_id = ctx.alloc_thunk(Arc::new(
+                                                    Thunk::new_materialized(
+                                                        Value::Seq {
+                                                            head: head_id,
+                                                            tail: tail_id,
+                                                        },
+                                                        access_span.clone(),
+                                                    ),
+                                                ));
+                                            }
+                                            // First module name is the outermost head
+                                            let head_id =
+                                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                                    crate::value::string_val(&modules[0].node),
+                                                    access_span.clone(),
+                                                )));
+                                            Value::Seq {
+                                                head: head_id,
+                                                tail: tail_id,
+                                            }
+                                        }
+                                    }
+                                }
                                 _ => Value::Dict(indexmap::IndexMap::new()),
                             };
                             let thunk = Arc::new(Thunk::new_materialized(val, access_span.clone()));

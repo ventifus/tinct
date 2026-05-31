@@ -1,0 +1,5 @@
+# unclosed uses: list — missing ]
+--- uses: ["core"
+[x: 1]
+=== out
+unclosed uses list

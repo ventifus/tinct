@@ -64,6 +64,7 @@ test: build-release
 test-one TEST:
     {{container}} run {{run_flags}} {{rust_image}} cargo test {{TEST}}
 
+
 # Run only lib unit tests (no integration tests)
 # --test-threads=1 prevents OOM from parallel stdlib cache accumulation (same as `just test`)
 test-lib:

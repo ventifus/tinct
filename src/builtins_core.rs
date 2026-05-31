@@ -50,11 +50,11 @@ use crate::builtins_bytes::{
 use crate::builtins::{builtin_floor, builtin_round, builtin_to_float, builtin_to_int};
 // Meta/eval implementations.
 use crate::builtins_meta::{
-    builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_cap_identity,
-    builtin_decimal, builtin_eval, builtin_eval_types, builtin_expand, builtin_force,
-    builtin_gensym, builtin_include_cache_get, builtin_include_cache_put, builtin_llt_repr,
-    builtin_load, builtin_macro_error, builtin_macro_injects, builtin_raise, builtin_tag_of,
-    builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_builtin_module,
+    builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_types, builtin_expand,
+    builtin_force, builtin_gensym, builtin_include_cache_get, builtin_include_cache_put,
+    builtin_llt_repr, builtin_load, builtin_macro_error, builtin_macro_injects, builtin_raise,
+    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 // I/O implementations.
 use crate::builtins_io::{
@@ -648,6 +648,12 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         ),
         builtin!("builtin-expand", builtin_expand, [Strictness::Seq], 1),
         builtin!("builtin-load", builtin_load, [Strictness::Seq], 1),
+        builtin!(
+            "builtin-module",
+            builtin_builtin_module,
+            [Strictness::Seq],
+            1
+        ),
         builtin!("builtin-eval", builtin_eval, [Strictness::Seq], 1),
         builtin!(
             "builtin-eval-types",
@@ -1513,6 +1519,15 @@ pub fn core_type_env(env: &mut TypeEnv) {
             variadic: false,
         },
     );
+    // float: Number → Float (converts Int or Float to Float)
+    env.insert(
+        "float".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Number)],
+            ret: Box::new(Type::Float),
+            variadic: false,
+        },
+    );
 
     // ── Evaluation control ────────────────────────────────────────────────────
     env.insert(
@@ -1653,10 +1668,19 @@ pub fn core_type_env(env: &mut TypeEnv) {
             variadic: false,
         },
     );
-    // eval: evaluate a Document/Program/Seq of expressions with optional env/input.
+    // builtin-module: returns a dict of builtins for the named module.
+    env.insert(
+        "builtin-module".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Unknown), // Returns a Dict of builtins
+            variadic: false,
+        },
+    );
+    // builtin-eval: evaluate a Document/Program/Seq of expressions with optional env/input.
     // Return type is Unknown — genuinely opaque (output depends on runtime values).
     env.insert(
-        "eval".to_string(),
+        "builtin-eval".to_string(),
         Type::Function {
             params: vec![(None, Type::Unknown)],
             ret: Box::new(Type::Unknown),
@@ -2345,6 +2369,14 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
     env.insert(
+        "builtin-take".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int), (None, Type::Seq(Box::new(Type::Top)))],
+            ret: Box::new(Type::Seq(Box::new(Type::Top))),
+            variadic: false,
+        },
+    );
+    env.insert(
         "drop".to_string(),
         Type::Function {
             params: vec![(None, Type::Int), (None, Type::Seq(Box::new(Type::Top)))],
@@ -2679,6 +2711,405 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
 
+    // ── Async concurrency ─────────────────────────────────────────────────────
+    // Task and Channel are opaque runtime types; use Unknown for all async I/O
+    // boundaries. The key requirement is that every entry has type Function (not
+    // Unknown or Error) so prelude wrappers (await, task, …) resolve correctly.
+
+    // builtin-task: Unknown → Unknown
+    // Takes any expression value (the task body evaluated lazily), returns an opaque Task.
+    // The runtime does not require a zero-arg function — any value is accepted.
+    env.insert(
+        "builtin-task".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)],
+            ret: Box::new(Type::Unknown), // Task — opaque async handle
+            variadic: false,
+        },
+    );
+    // builtin-await: Unknown → Unknown
+    // Awaits a Task and returns its result.
+    env.insert(
+        "builtin-await".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)],
+            ret: Box::new(Type::Unknown), // Task result — genuinely opaque
+            variadic: false,
+        },
+    );
+    // builtin-channel: Int → Unknown
+    // Creates a buffered channel with the given capacity.
+    env.insert(
+        "builtin-channel".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int)],
+            ret: Box::new(Type::Unknown), // Channel — opaque
+            variadic: false,
+        },
+    );
+    // builtin-send: Unknown → Unknown → Unknown
+    // Sends a value on a channel: (channel, value) → Null/result
+    env.insert(
+        "builtin-send".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
+            ret: Box::new(Type::Unknown),
+            variadic: false,
+        },
+    );
+    // builtin-recv: Unknown → Unknown
+    // Receives a value from a channel.
+    env.insert(
+        "builtin-recv".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)],
+            ret: Box::new(Type::Unknown), // Received value — genuinely opaque
+            variadic: false,
+        },
+    );
+    // builtin-select-once: Unknown → Unknown
+    // Selects the first ready channel from a seq of SelectSource values.
+    env.insert(
+        "builtin-select-once".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)],
+            ret: Box::new(Type::Unknown),
+            variadic: false,
+        },
+    );
+    // builtin-par: Unknown → Unknown → Unknown
+    // Runs two thunks in parallel, returns both results.
+    env.insert(
+        "builtin-par".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
+            ret: Box::new(Type::Unknown),
+            variadic: false,
+        },
+    );
+    // builtin-par-map: ∀a b. (a → b) → Seq(a) → Seq(b)
+    env.insert_scheme(
+        "builtin-par-map".to_string(),
+        TypeScheme {
+            type_vars: vec!["a".to_string(), "b".to_string()],
+            constraints: vec![],
+            body: Type::Function {
+                params: vec![
+                    (
+                        None,
+                        Type::Function {
+                            params: vec![(None, Type::TypeVar("a".to_string(), 0))],
+                            ret: Box::new(Type::TypeVar("b".to_string(), 0)),
+                            variadic: false,
+                        },
+                    ),
+                    (None, Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
+                ],
+                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
+                variadic: false,
+            },
+            label_vars: vec![],
+            kind_vars: Vec::new(),
+            doc: None,
+            inner_schemes: None,
+        },
+    );
+    // builtin-par-filter: ∀a. (a → Bool) → Seq(a) → Seq(a)
+    env.insert_scheme(
+        "builtin-par-filter".to_string(),
+        TypeScheme {
+            type_vars: vec!["a".to_string()],
+            constraints: vec![],
+            body: Type::Function {
+                params: vec![
+                    (
+                        None,
+                        Type::Function {
+                            params: vec![(None, Type::TypeVar("a".to_string(), 0))],
+                            ret: Box::new(Type::Bool),
+                            variadic: false,
+                        },
+                    ),
+                    (None, Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
+                ],
+                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
+                variadic: false,
+            },
+            label_vars: vec![],
+            kind_vars: Vec::new(),
+            doc: None,
+            inner_schemes: None,
+        },
+    );
+    // builtin-signal-channel: Unknown → Unknown
+    // Creates a channel for OS signals; argument is a seq of Signal values.
+    env.insert(
+        "builtin-signal-channel".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)],
+            ret: Box::new(Type::Unknown), // Channel — opaque
+            variadic: false,
+        },
+    );
+    // builtin-timer-channel: Unknown → Unknown
+    // Creates a timer channel; argument is a duration or interval.
+    env.insert(
+        "builtin-timer-channel".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)],
+            ret: Box::new(Type::Unknown), // Channel — opaque
+            variadic: false,
+        },
+    );
+    // builtin-watch-channel: Unknown → Unknown
+    // Creates a filesystem watch channel; argument is a path or DirCap.
+    env.insert(
+        "builtin-watch-channel".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)],
+            ret: Box::new(Type::Unknown), // Channel — opaque
+            variadic: false,
+        },
+    );
+    // builtin-context: Unknown → Unknown
+    // Returns the current task context. Typically called as (builtin-context).
+    // Typed as 1-arg to satisfy Function requirement; arg is variadic-style optional.
+    env.insert(
+        "builtin-context".to_string(),
+        Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Unknown), // Context — opaque
+            variadic: true,
+        },
+    );
+    // builtin-with-cancel: Unknown → Unknown
+    // Creates a cancellable child context from a parent context.
+    env.insert(
+        "builtin-with-cancel".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)],
+            ret: Box::new(Type::Unknown), // (Context, cancel-fn) pair — opaque
+            variadic: false,
+        },
+    );
+    // builtin-with-timeout: Unknown → Unknown → Unknown
+    // Creates a context with a timeout; (parent-context, duration) → Context
+    env.insert(
+        "builtin-with-timeout".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
+            ret: Box::new(Type::Unknown), // Context — opaque
+            variadic: false,
+        },
+    );
+    // builtin-with-deadline: Unknown → Unknown → Unknown
+    // Creates a context with a deadline; (parent-context, deadline) → Context
+    env.insert(
+        "builtin-with-deadline".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
+            ret: Box::new(Type::Unknown), // Context — opaque
+            variadic: false,
+        },
+    );
+    // builtin-cancelled?: Unknown → Bool
+    // Checks whether a context has been cancelled.
+    env.insert(
+        "builtin-cancelled-q".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)],
+            ret: Box::new(Type::Bool),
+            variadic: false,
+        },
+    );
+    // builtin-cancel-task: Unknown → Unknown
+    // Cancels a task or context.
+    env.insert(
+        "builtin-cancel-task".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)],
+            ret: Box::new(Type::Unknown),
+            variadic: false,
+        },
+    );
+    // builtin-non-cancellable: Unknown → Unknown
+    // Wraps a thunk so it runs in a non-cancellable context.
+    env.insert(
+        "builtin-non-cancellable".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)],
+            ret: Box::new(Type::Unknown),
+            variadic: false,
+        },
+    );
+    // builtin-with-context: Unknown → Unknown → Unknown
+    // Runs a thunk with a specific context: (context, thunk) → result
+    env.insert(
+        "builtin-with-context".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
+            ret: Box::new(Type::Unknown),
+            variadic: false,
+        },
+    );
+    // builtin-cancel-root: Unknown → Unknown
+    // Cancels the root context of the current task.
+    env.insert(
+        "builtin-cancel-root".to_string(),
+        Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Unknown),
+            variadic: true,
+        },
+    );
+    // builtin-drain: Unknown → Unknown
+    // Drains a channel, consuming all buffered values.
+    env.insert(
+        "builtin-drain".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)],
+            ret: Box::new(Type::Unknown),
+            variadic: false,
+        },
+    );
+    // builtin-exit-now: Int → Unknown
+    // Immediately terminates the process with the given exit code.
+    env.insert(
+        "builtin-exit-now".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int)],
+            ret: Box::new(Type::Never), // process terminates — logically Never
+            variadic: false,
+        },
+    );
+
+    // ── Builder / Proxy ───────────────────────────────────────────────────────
+    // Builder and Proxy are opaque runtime types; use Unknown for all builder
+    // I/O boundaries. The key requirement is that every entry has type Function
+    // (not Unknown or Error) so prelude wrappers (make-builder, builder-set, …)
+    // resolve correctly.
+
+    // builtin-make-builder: () → Unknown
+    // Takes 0 args, returns a new opaque Builder value.
+    env.insert(
+        "builtin-make-builder".to_string(),
+        Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Unknown), // Builder — opaque mutable container
+            variadic: false,
+        },
+    );
+    // builtin-builder-set: Unknown → Unknown → Unknown → Unknown
+    // (builder, key, value) → builder
+    env.insert(
+        "builtin-builder-set".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Unknown), // builder
+                (None, Type::Unknown), // key
+                (None, Type::Unknown), // value
+            ],
+            ret: Box::new(Type::Unknown), // builder (mutated in-place, same ref)
+            variadic: false,
+        },
+    );
+    // builtin-builder-delete: Unknown → Unknown → Unknown
+    // (builder, key) → builder
+    env.insert(
+        "builtin-builder-delete".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Unknown), // builder
+                (None, Type::Unknown), // key
+            ],
+            ret: Box::new(Type::Unknown), // builder
+            variadic: false,
+        },
+    );
+    // builtin-builder-finish: Unknown → Unknown
+    // Consumes the builder and returns an immutable Dict.
+    env.insert(
+        "builtin-builder-finish".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)], // builder
+            ret: Box::new(Type::Unknown),        // Dict — shape unknown statically
+            variadic: false,
+        },
+    );
+    // builtin-builder-snapshot: Unknown → Unknown
+    // Returns an immutable Dict snapshot without consuming the builder.
+    env.insert(
+        "builtin-builder-snapshot".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)], // builder
+            ret: Box::new(Type::Unknown),        // Dict snapshot
+            variadic: false,
+        },
+    );
+    // builtin-builder-has?: Unknown → Unknown → Bool
+    // (builder, key) → Bool
+    env.insert(
+        "builtin-builder-has?".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Unknown), // builder
+                (None, Type::Unknown), // key
+            ],
+            ret: Box::new(Type::Bool),
+            variadic: false,
+        },
+    );
+    // builtin-builder-get: Unknown → Unknown → Unknown
+    // (builder, key) → value (errors if key absent)
+    env.insert(
+        "builtin-builder-get".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Unknown), // builder
+                (None, Type::Unknown), // key
+            ],
+            ret: Box::new(Type::Unknown), // value — genuinely opaque
+            variadic: false,
+        },
+    );
+    // builtin-builder-get-or: Unknown → Unknown → Unknown → Unknown
+    // (builder, key, default) → value
+    env.insert(
+        "builtin-builder-get-or".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Unknown), // builder
+                (None, Type::Unknown), // key
+                (None, Type::Unknown), // default
+            ],
+            ret: Box::new(Type::Unknown), // value or default — opaque
+            variadic: false,
+        },
+    );
+    // builtin-proxy: Unknown → Unknown
+    // (handler-fn) → Proxy — wraps a function as a capability proxy.
+    env.insert(
+        "builtin-proxy".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)], // handler function — opaque
+            ret: Box::new(Type::Unknown),        // Proxy — opaque
+            variadic: false,
+        },
+    );
+
+    // ── Type introspection ────────────────────────────────────────────────────
+    // ast-of: Unknown → Unknown
+    // Takes any expression unevaluated (Strictness::Id), returns a metadata Dict
+    // describing the AST or runtime thunk state. Shape is entirely runtime-dependent.
+    env.insert(
+        "ast-of".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)], // any expression — not materialized
+            ret: Box::new(Type::Unknown),        // metadata Dict — shape runtime-dependent
+            variadic: false,
+        },
+    );
+
     // ── Type constructors ─────────────────────────────────────────────────────
     // Map with Unknown K/V is the unparameterized Map type.
     env.insert(
@@ -2795,4 +3226,113 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ]),
         },
     );
+
+    // ── builtin-* aliases for core operators ─────────────────────────────────
+    // When a document declares `--- uses: ["core"]`, `type_env_module("core")`
+    // injects this env. User code may then use `builtin-if`, `builtin-add`, etc.
+    // directly (bypassing prelude). These aliases must mirror the canonical forms
+    // already registered above so that the type checker accepts them.
+    //
+    // Note: aliases that already have their own direct registrations above
+    // (e.g. `builtin-get`, `builtin-take`, `builtin-keys`, `builtin-each`, etc.)
+    // are NOT included here — the loop would overwrite them with the canonical
+    // form's TypeScheme instead of their own more-precise scheme.
+    for (alias, canonical) in [
+        // Arithmetic operators
+        ("builtin-add", "+"),
+        ("builtin-sub", "-"),
+        ("builtin-mul", "*"),
+        ("builtin-div", "/"),
+        // Comparison operators
+        ("builtin-eq", "="),
+        ("builtin-lt", "<"),
+        ("builtin-gt", ">"),
+        ("builtin-gte", ">="),
+        ("builtin-lte", "<="),
+        // Control flow
+        ("builtin-if", "if"),
+        // Sequence transforms
+        ("builtin-filter", "filter"),
+        ("builtin-map", "map"),
+        ("builtin-reduce", "reduce"),
+        ("builtin-drop", "drop"),
+        // String operations
+        ("builtin-str", "str"),
+        ("builtin-split", "split"),
+        ("builtin-trim", "trim"),
+        ("builtin-trim-start", "trim-start"),
+        ("builtin-trim-end", "trim-end"),
+        ("builtin-replace", "replace"),
+        ("builtin-str-chars", "str-chars"),
+        ("builtin-char-code", "char-code"),
+        ("builtin-chr", "chr"),
+        ("builtin-str-bytes", "str-bytes"),
+        ("builtin-bytes-str", "bytes-str"),
+        ("builtin-str-index-of", "str-index-of"),
+        ("builtin-str-to-upper-char", "str-to-upper-char"),
+        ("builtin-str-to-lower-char", "str-to-lower-char"),
+        ("builtin-str-map-chars", "str-map-chars"),
+        ("builtin-str-length", "str-length"),
+        ("builtin-str-slice", "str-slice"),
+        ("builtin-regex-match?", "regex-match?"),
+        // Numeric
+        ("builtin-floor", "floor"),
+        ("builtin-round", "round"),
+        ("builtin-to-int", "to-int"),
+        ("builtin-to-float", "to-float"),
+        ("builtin-pow", "pow"),
+        ("builtin-sqrt", "sqrt"),
+        ("builtin-log", "log"),
+        ("builtin-log2", "log2"),
+        ("builtin-log10", "log10"),
+        ("builtin-exp", "exp"),
+        ("builtin-sin", "sin"),
+        ("builtin-cos", "cos"),
+        ("builtin-tan", "tan"),
+        ("builtin-asin", "asin"),
+        ("builtin-acos", "acos"),
+        ("builtin-atan", "atan"),
+        ("builtin-atan2", "atan2"),
+        ("builtin-nan?", "nan?"),
+        ("builtin-inf?", "inf?"),
+        ("builtin-finite?", "finite?"),
+        ("builtin-band", "band"),
+        ("builtin-bor", "bor"),
+        ("builtin-bxor", "bxor"),
+        ("builtin-shl", "shl"),
+        ("builtin-shr", "shr"),
+        ("builtin-float", "float"),
+        // Control/meta (non-direct registrations)
+        ("builtin-apply", "apply"),
+        ("builtin-try", "try"),
+        ("builtin-type-of", "type-of"),
+        ("builtin-raise", "raise"),
+        ("builtin-llt-repr", "llt-repr"),
+        ("builtin-tag-of", "tag-of"),
+        ("builtin-eval-ast", "eval-ast"),
+        ("builtin-gensym", "gensym"),
+        ("builtin-decimal", "decimal"),
+        ("builtin-big-int", "big-int"),
+        ("builtin-variant", "variant"),
+        // I/O (bare-name forms)
+        ("builtin-emit", "emit"),
+        ("builtin-env", "env"),
+        ("builtin-narrow", "narrow"),
+        ("builtin-write", "write"),
+        ("builtin-write-atomic", "write-atomic"),
+        ("builtin-flush", "flush"),
+        ("builtin-close", "close"),
+        ("builtin-stat", "stat"),
+        ("builtin-make-dir", "make-dir"),
+        ("builtin-rename", "rename"),
+        ("builtin-link", "link"),
+        ("builtin-read-link", "read-link"),
+        ("builtin-seek", "seek"),
+        ("builtin-list-dir", "list-dir"),
+        ("builtin-open", "open"),
+    ] {
+        if let Some(scheme) = env.get(canonical).cloned() {
+            env.insert_scheme(alias.to_string(), scheme);
+        }
+    }
 }

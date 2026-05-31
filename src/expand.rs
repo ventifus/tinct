@@ -255,36 +255,24 @@ pub struct ExpandSurfaceResult {
     pub macro_injects_map: HashMap<String, String>,
 }
 
-/// Register stdlib macros by pre-scanning the stdlib source files.
+/// Register stdlib macros by looking up transformer functions from `stdlib_env`.
 ///
-/// Parses `stdlib/macros.llt` and calls `pre_scan_surface_document` on each document.
-/// This discovers all `[macro ...]` / `[defmacro ...]` declarations and registers them
-/// in `env_macro` — the same registration path used for user-code macros.
+/// Macro transformer functions (tmpl, do, begin, syntax-fn, syntax-class, syntax-type)
+/// are defined directly in `stdlib/prelude.llt` and exported into `stdlib_env` during
+/// the prelude bootstrap phase. This function registers them with their parameter
+/// patterns so `expand_macro_call_surface` can quote args and invoke them as macros.
 ///
-/// Errors (parse failures, transformer evaluation failures) are silently ignored so that
+/// Errors (missing transformer, registration failures) are silently ignored so that
 /// a stdlib failure here surfaces as a missing macro error at call time rather than a
-/// hard crash during stdlib loading. The stdlib is already evaluated and its bindings are
-/// available in `stdlib_env` which is passed to `pre_scan_surface_document`.
+/// hard crash during stdlib loading.
 async fn register_stdlib_macros_from_env(
     env_macro: &mut MacroEnv,
     stdlib_env: &Arc<RwLock<Environment>>,
-    ctx: &Arc<EvalContext>,
 ) {
-    // Phase 1: pre-scan macros.llt for any [macro ...] / [defmacro ...] declarations.
-    // These are rare — most stdlib macros use the dict-entry form below.
-    let macros_source = include_str!("../stdlib/macros.llt");
-    let parsed = match crate::parser::parse(macros_source) {
-        Ok(p) => p,
-        Err(_) => return,
-    };
-    for doc_spanned in &parsed.program.documents {
-        let _ = pre_scan_surface_document(&doc_spanned.node, env_macro, ctx, stdlib_env).await;
-    }
-
-    // Phase 2: register stdlib macros defined as dict entries in macros.llt.
-    // These functions are already evaluated and stored in stdlib_env by load_stdlib_module.
-    // We register them here with their param patterns so expand_macro_call_surface can
-    // quote args and invoke them as macros (not regular function calls).
+    // Register stdlib macros defined as dict entries in prelude.llt.
+    // These functions are already evaluated and stored in stdlib_env by the prelude
+    // bootstrap (create_stdlib_env_inner Phase 3+4). We register them here with their
+    // param patterns so expand_macro_call_surface can quote args and invoke them as macros.
     //
     // Each entry is: (macro_name, params_spec)
     // params_spec is a slice of (&str, bool) = (param_name, is_variadic).
@@ -334,7 +322,7 @@ async fn register_stdlib_macros_from_env(
 
 /// Register a single stdlib macro by looking up its transformer function from `stdlib_env`.
 ///
-/// The function must already be evaluated in `stdlib_env` (by `load_stdlib_module`).
+/// The function must already be evaluated in `stdlib_env` (as part of prelude evaluation).
 /// We construct a synthetic `[let ...]` params node for `expand_macro_call_surface` to use
 /// for syntax-class validation (no annotations here, so validation is a no-op).
 fn register_stdlib_macro_by_name(
@@ -389,13 +377,12 @@ fn register_stdlib_macro_by_name(
 
 // Reentrance depth guard for expand_surface_program → create_stdlib_env calls.
 // When depth > 0, we're in a re-entrant call and must reuse the cached stdlib
-// env from the depth == 0 call rather than falling back to a degraded create_root_env.
+// env from the depth == 0 call. STDLIB_RESULT_CACHE (in builtins.rs) is the
+// authoritative cache; create_stdlib_env_with_arena() returns it on a cache hit
+// without rebuilding. No separate CACHED_STDLIB_ENV is needed.
 std::thread_local! {
     static EXPAND_MACROS_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static EXPAND_EXPR_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-    /// Cached stdlib env from the depth == 0 bootstrap. Reused at depth > 0 so that
-    /// macro bodies in re-entrant calls can access prelude functions (split, reduce, etc.).
-    static CACHED_STDLIB_ENV: RefCell<Option<Arc<RwLock<Environment>>>> = const { RefCell::new(None) };
 }
 
 /// RAII guard for EXPAND_MACROS_DEPTH. Restores depth on drop, even if the guarded scope panics.
@@ -474,35 +461,31 @@ pub async fn expand_surface_program(
                     Arc::clone(&arena),
                     HashMap::new(), // macro_injects_map — will be populated during expansion
                 );
-                register_stdlib_macros_from_env(&mut env_macro, &env, &ctx).await;
-                // Cache for re-entrant calls (depth > 0) so they get the full prelude env.
-                CACHED_STDLIB_ENV.with(|c| *c.borrow_mut() = Some(Arc::clone(&env)));
+                register_stdlib_macros_from_env(&mut env_macro, &env).await;
+                // STDLIB_RESULT_CACHE (builtins.rs) is populated by create_stdlib_env_with_arena;
+                // re-entrant calls at depth > 0 will hit that cache and get the same env/arena.
                 (env, ctx)
             }
             Err(e) => return Err(e),
         }
     } else {
         // Invariant: depth > 0 means we are inside a depth == 0 call that already
-        // bootstrapped the stdlib and cached it in CACHED_STDLIB_ENV. The cached env
-        // MUST be present — if it isn't, something has gone wrong in the call stack
-        // (e.g., a re-entrant expand_surface_program call without an enclosing depth == 0
-        // context). Using create_root_env() here would be wrong: it produces a bare
-        // builtin-only env without prelude functions, causing macro bodies to fail on any
-        // prelude call. Using new_empty() with a stdlib env would also violate the arena
-        // invariant (stdlib ThunkIds are invalid in a fresh arena). Both bugs are silent
-        // and hard to diagnose, so we assert the invariant explicitly.
-        let env = CACHED_STDLIB_ENV.with(|c| {
-            c.borrow().as_ref().cloned().unwrap_or_else(|| {
-                unreachable!(
-                    "expand_surface_program at depth {} but CACHED_STDLIB_ENV is None; \
-                     re-entrant expansion must always be nested inside a depth == 0 call \
-                     that has already populated the cache",
-                    depth
-                )
-            })
+        // bootstrapped the stdlib. STDLIB_RESULT_CACHE (builtins.rs) is populated by
+        // that call; create_stdlib_env_with_arena() returns the cached (env, arena) pair
+        // immediately without rebuilding. Re-entrant macro expansion must always be nested
+        // inside a depth == 0 call — if the cache is absent, the call stack is broken.
+        //
+        // Using a fresh env with only core builtins would be wrong: macro bodies need prelude
+        // functions. Using new_empty() would violate the arena invariant (stdlib ThunkIds
+        // invalid in a fresh arena). Both bugs are silent and hard to diagnose.
+        let (env, arena) = builtins::create_stdlib_env_with_arena().unwrap_or_else(|_| {
+            unreachable!(
+                "expand_surface_program at depth {} but STDLIB_RESULT_CACHE is empty; \
+                 re-entrant expansion must always be nested inside a depth == 0 call \
+                 that has already populated the cache",
+                depth
+            )
         });
-        let arena = builtins::new_arena_with_stdlib_snapshot()
-            .expect("STDLIB_ARENA_CACHE must be populated when CACHED_STDLIB_ENV is Some");
         let type_stage_env =
             crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
         let ctx = EvalContext::new_sharing_arena(

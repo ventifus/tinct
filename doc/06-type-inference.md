@@ -1404,7 +1404,7 @@ type-stage reduction depth exceeded while computing AddResult(...)
 
 ## `[do]` Desugaring
 
-The `[do]` form is syntactic sugar for monadic bind chains. It is implemented as a macro in `stdlib/macros.llt`.
+The `[do]` form is syntactic sugar for monadic bind chains. It is implemented as a macro transformer in `stdlib/prelude.llt`.
 
 ### Desugaring Rule
 

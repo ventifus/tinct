@@ -2,7 +2,7 @@
 # a Call(fn, ...) AST node with non-LetDecl params.
 # The wrap-fn macro generates a Call to fn using the legacy dict format;
 # the fn macro normalizes the params (Call(x,[y]) → proper Fn params).
-# The fn/class/type macros are globally registered via macros.llt; no include needed.
+# The fn/class/type macros are globally registered via prelude.llt; no include needed.
 
 [macro wrap-fn [let params body]
   [

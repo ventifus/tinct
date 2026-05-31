@@ -1629,6 +1629,57 @@ pub(crate) fn builtin_expand(
     })
 }
 
+/// `builtin-module`: Returns a dict of all builtins in the named module.
+///
+/// Takes a module name (String) and returns a Dict mapping builtin names to their
+/// implementations. Used by the bootstrap loader to inject modules into the stdlib
+/// environment.
+///
+/// Available modules: "core", "datetime", "net"
+pub(crate) fn builtin_builtin_module(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+
+        let name_val = crate::builtins::expect_one_arg(
+            "builtin-module",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+
+        let name = require_string("builtin-module", name_val, call_span.clone())?;
+
+        match crate::builtins::builtin_module(&name) {
+            Some(defs) => {
+                // Convert Vec<BuiltinDef> to a Dict
+                let mut dict_map = IndexMap::new();
+                for def in defs {
+                    let builtin_thunk = Arc::new(Thunk::new_materialized(
+                        Value::Builtin(def),
+                        call_span.clone(),
+                    ));
+                    let thunk_id = ctx.alloc_thunk(builtin_thunk);
+                    dict_map.insert(Key::String(def.name.into()), thunk_id);
+                }
+                ok_val(Value::Dict(dict_map), call_span)
+            }
+            None => Err(EvalError::user_error(
+                format!("unknown native module: {:?}", name),
+                call_span,
+            )
+            .into()),
+        }
+    })
+}
+
 /// `eval`: evaluates a sequence of Expression values in a given environment.
 ///
 /// For the include-decomp self-hosted pipeline. Takes a `[Seq Expression]` and
@@ -1639,6 +1690,7 @@ pub(crate) fn builtin_expand(
 ///
 /// Named args:
 /// - `env:` (Dict) — bindings added to the base environment (default: empty)
+/// - `scope:` (Dict) — bindings injected after env (for module loading)
 /// - `%:` (Any) — the pipeline input value, bound as `$` in the environment
 /// - `program:` (Program) — the source Program providing resolution/type tables for the expressions (optional)
 ///
@@ -1658,21 +1710,22 @@ pub(crate) fn builtin_eval(
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
         }
 
-        // Extract optional env:, %:, and program: named args
-        let (env_dict, pipeline_input, program_opt) = if let Some(named_map) = named {
+        // Extract optional env:, scope:, %:, and program: named args
+        let (env_dict, scope_dict, pipeline_input, program_opt) = if let Some(named_map) = named {
             // Reject unknown named args
             for key in named_map.keys() {
-                if key != "env" && key != "%" && key != "program" {
+                if key != "env" && key != "scope" && key != "%" && key != "program" {
                     return Err(EvalError::named_arg_rejected("eval".to_string(), call_span).into());
                 }
             }
 
             let env_dict = named_map.get("env").map(Arc::clone);
+            let scope_dict = named_map.get("scope").map(Arc::clone);
             let pipeline_input = named_map.get("%").map(Arc::clone);
             let program_opt = named_map.get("program").map(Arc::clone);
-            (env_dict, pipeline_input, program_opt)
+            (env_dict, scope_dict, pipeline_input, program_opt)
         } else {
-            (None, None, None)
+            (None, None, None, None)
         };
 
         // Start with stdlib environment
@@ -1722,10 +1775,53 @@ pub(crate) fn builtin_eval(
             base_env
         };
 
+        // Add scope: dict bindings if provided (injected after env:)
+        let env_with_scope = if let Some(scope_thunk) = scope_dict {
+            let scope_val = materialize(&scope_thunk, Some(&call_span), &ctx).await?;
+            // Flatten Overlay to Dict before processing scope bindings
+            let scope_val = match scope_val {
+                Value::Overlay(l, r) => Value::Dict(crate::builtins::flatten_overlay(
+                    &l,
+                    &r,
+                    "eval",
+                    &ctx,
+                    call_span.clone(),
+                )?),
+                other => other,
+            };
+            match scope_val {
+                Value::Dict(entries) => {
+                    // Create child environment with dict entries as bindings
+                    let child_env = Arc::new(std::sync::RwLock::new(
+                        crate::value::Environment::with_parent(Arc::clone(&env_with_bindings)),
+                    ));
+                    for (key, thunk_id) in entries.iter() {
+                        if let Key::String(name) = key {
+                            child_env
+                                .write()
+                                .unwrap()
+                                .insert(name.to_string(), ctx.get_thunk(*thunk_id));
+                        }
+                    }
+                    child_env
+                }
+                _ => {
+                    // Non-Dict scope: silently ignored (spec: T-766).
+                    // [] (empty dict) is the canonical "no scope" value and already
+                    // matches the Dict arm above. Other non-Dict values (e.g., a bare
+                    // string passed by mistake) are treated as empty scope rather than
+                    // erroring, matching the spec's "silently ignored" intent.
+                    Arc::clone(&env_with_bindings)
+                }
+            }
+        } else {
+            env_with_bindings
+        };
+
         // Add %: (pipeline input) as $ binding if provided
         let final_env = if let Some(input_thunk) = pipeline_input {
             let child_env = Arc::new(std::sync::RwLock::new(
-                crate::value::Environment::with_parent(Arc::clone(&env_with_bindings)),
+                crate::value::Environment::with_parent(Arc::clone(&env_with_scope)),
             ));
             child_env
                 .write()
@@ -1733,7 +1829,7 @@ pub(crate) fn builtin_eval(
                 .insert("$".to_string(), input_thunk);
             child_env
         } else {
-            env_with_bindings
+            env_with_scope
         };
 
         // Materialize the sequence argument

@@ -102,6 +102,28 @@ For dynamic or computed keys, use `get`:
 ]
 ```
 
+**Multi-body functions** — a function body can be multiple dict expressions. All but the last are intermediate bindings (local scope); only the last is returned:
+
+```tinct
+[
+  # Intermediate dict establishes local names; final expression is returned.
+  normalize: [fn [let xs]
+    [total: [reduce + 0 xs]]
+    [map [fn [let x] [/ x total]] xs]]
+
+  # Chained intermediate dicts — each can see the previous.
+  describe: [fn [let n]
+    [abs-n:  [if [< n 0] [* n -1] n]]
+    [label:  [if [= abs-n 0] "zero" [if [< abs-n 10] "small" "large"]]]
+    [str label " (" n ")"]]
+
+  r1: [normalize [3 1 6]]              # → [0: 0.3  1: 0.1  2: 0.6]
+  r2: [describe -42]                   # → "large (-42)"
+]
+```
+
+Intermediate dicts are letrec-scoped among themselves but do not appear in the function's return value — they are discarded after the final expression evaluates.
+
 **`_` shorthand** — desugars to a single-argument lambda:
 
 ```tinct

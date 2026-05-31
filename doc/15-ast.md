@@ -39,6 +39,12 @@ struct SurfaceDocument {
     caps: Option<Spanned<Vec<(String, Annotation)>>>,
     /// Document stage from `--- stage: type` (defaults to `Stage::Runtime` if `None`).
     stage: Option<Stage>,
+    /// Module injection from `--- uses: ["core" "datetime"]`.
+    /// Each string names a native module whose builtins are injected into this document's
+    /// local scope. Injection is doc-local: the bindings do not propagate to subsequent
+    /// documents. `None` means no `uses:` header was present; `Some([])` means `uses: []`
+    /// (explicit empty list, equivalent to no injection).
+    uses: Option<Spanned<Vec<Spanned<String>>>>,
 }
 
 /// Document stage — determines how the document is evaluated

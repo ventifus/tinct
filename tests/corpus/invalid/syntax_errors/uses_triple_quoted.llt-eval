@@ -1,0 +1,5 @@
+# triple-quoted strings not allowed in uses: list
+--- uses: ["""core"""]
+[x: 1]
+=== out
+triple-quoted strings not allowed in uses: list

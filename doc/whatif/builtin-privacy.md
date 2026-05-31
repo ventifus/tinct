@@ -80,27 +80,33 @@ Phase 1 — Rust: build core dict
 
 Phase 2 — Rust evaluates stdlib/loader.llt with scope: core-dict
   loader-dict = eval(loader.llt, scope: core-dict)
-    → { eval-program: <fn> }
+    → { eval-program: <fn>, eval-programs: <fn> }
   (loader.llt is a privileged file; Rust hardcodes scope: core-dict for it)
 
-Phase 3 — Rust calls loader-dict["eval-program"] to load prelude
-  prelude-dict = loader-dict["eval-program"](prelude-program, [])
-    → eval-program reads prelude's --- uses: ["core"]
-    → calls builtin-module for each, builds scope dict, passes to eval
-    → prelude evaluates with core builtins in its doc-local scope
-    → prelude-dict = { map, write, if, task, module, eval-program, ... }
+Phase 3 — Rust evaluates prelude.llt directly (direct eval path, ~10x faster than eval-programs)
+  prelude_env = child of loader_env (inherits core builtins) + loader_dict entries
+  prelude-dict = eval_surface_file(prelude.llt, env: prelude_env)
+    → prelude evaluates directly; core builtins are already in prelude_env from Phase 1
+    → prelude's --- uses: ["core"] header is metadata only during bootstrap
+       (it becomes machine-read in Phase 4 when T-768/T-770 CLI wiring lands)
+    → prelude-dict = { map, write, if, task, module, eval-program, eval-programs, ... }
   prelude-dict held for process lifetime
 
-Phase 4 — Rust calls prelude-dict["eval-program"] for each user program
-  result = prelude-dict["eval-program"](user-program, initial-input)
-    → eval-program handles --- uses: per document in tinct
+Phase 4 — CLI builds program list and calls eval-programs
+  programs = [input-prog, user-prog1, user-prog2, ..., output-prog]
+             (-i prepends from stdlib/cli/in/, -o appends from stdlib/cli/out/)
+  result = prelude-dict["eval-programs"](programs, [])
+    → threads % through each program in sequence
+    → return value of each becomes % for the next, regardless of how it named its output
+    → all caps (%libdir, %cwd, %stdin, %emit, %stdout, ...) are in the env chain,
+      accessible equally from all programs
 ```
 
-`builtin-map`, `builtin-write`, `builtin-task`, `builtin-send` etc. are in prelude's doc-local scope during Phase 3 but are not in `prelude-dict` unless prelude explicitly re-exports them. User code receives only `prelude-dict` and cannot reach raw `builtin-*` names.
+`builtin-map`, `builtin-write`, `builtin-task`, `builtin-send` etc. are in prelude's env during Phase 3 but are not in `prelude-dict` unless prelude explicitly re-exports them. User code receives only `prelude-dict` and cannot reach raw `builtin-*` names.
 
-**Prelude is not special.** The same `eval-program` mechanism that loads prelude (Phase 3) loads user programs (Phase 4). Prelude's `--- uses: ["core"]` header is machine-read and load-bearing, not documentation.
+**Prelude is not special.** Once Phase 4 CLI wiring lands (T-768/T-770), the same `eval-programs` mechanism will load prelude and run the full user pipeline. At that point prelude's `--- uses: ["core"]` header becomes machine-read and load-bearing. Until then, prelude's header is documentation that describes its dependency.
 
-**"Cloning" the prelude scope is O(1).** `prelude-dict` is an immutable `Value::Dict`. Each user program gets a fresh env frame seeded from it — `Arc::clone` references, no copying. No `CACHED_STDLIB_ENV` thread-local or `Arc<RwLock<Environment>>` cache is needed.
+**"Cloning" the prelude scope is O(1).** `prelude-dict` is an immutable `Value::Dict`. Each user program gets a fresh env frame seeded from it — `Arc::clone` references, no copying. `STDLIB_RESULT_CACHE` (builtins.rs) caches the `(env, arena)` pair for the process lifetime; no separate `CACHED_STDLIB_ENV` is needed.
 
 ### Builtin Module Registry
 
@@ -108,19 +114,34 @@ Phase 4 — Rust calls prelude-dict["eval-program"] for each user program
 
 ```rust
 // src/builtins.rs — only the registry; no builtin definitions
-pub fn builtin_module(name: &str) -> Option<Value> {
-    // Returns a Value::Dict mapping builtin name → Value::Builtin.
-    // This is the Rust-internal form; the tinct-callable wrapper is builtin-module.
-    let defs = match name {
-        "core"     => builtins_core::core_builtins(),
-        "datetime" => builtins_datetime::datetime_builtins(),
-        "net"      => builtins_net::net_builtins(),
-        _          => return None,
-    };
-    let map: IndexMap<Key, ThunkId> = defs.into_iter()
-        .map(|def| (Key::from(def.name), thunk_of(Value::Builtin(def))))
-        .collect();
-    Some(Value::Dict(map))
+//
+// Note: builtin_module() returns Option<Vec<BuiltinDef>>, not Option<Value>.
+// The Vec<BuiltinDef> → Value::Dict conversion happens in the tinct-callable
+// wrapper (builtin_builtin_module in builtins_meta.rs) and in bootstrap code.
+pub fn builtin_module(name: &str) -> Option<Vec<BuiltinDef>> {
+    match name {
+        "core"     => Some(builtins_core::core_builtins()),
+        "datetime" => Some(builtins_datetime::datetime_builtins()),
+        "net"      => Some(builtins_net::net_builtins()),
+        _          => None,
+    }
+}
+
+// The tinct-callable wrapper (registered as "builtin-module" in core):
+pub fn builtin_builtin_module(args: BuiltinArgs, ctx: &Arc<EvalContext>) -> EvalResult {
+    let name = require_string(&args.args[0], ctx, "builtin-module")?;
+    match builtin_module(&name) {
+        Some(defs) => {
+            // Convert Vec<BuiltinDef> to Value::Dict
+            let map = defs.into_iter()
+                .map(|def| (Key::from(def.name), ctx.alloc_thunk(...)))
+                .collect();
+            Ok(Value::Dict(map))
+        }
+        None => Err(EvalError::user_error(
+            format!("unknown native module: {:?}", name), args.call_span,
+        )),
+    }
 }
 
 pub fn type_env_module(name: &str) -> Option<TypeEnv> {
@@ -135,7 +156,7 @@ pub fn type_env_module(name: &str) -> Option<TypeEnv> {
 
 **`builtin-module` — tinct-callable.** `builtin_module` is exposed to tinct as `builtin-module name → Dict`. It is registered in "core" so it is available immediately. `loader.llt` uses it directly as `builtin-module`; prelude re-exports it as `module: builtin-module` for user code.
 
-**`eval-program`** is defined in `loader.llt` (see §`stdlib/loader.llt`), which is the first tinct code evaluated. Prelude re-exports it so user programs can call it by name.
+**`eval-program`** and **`eval-programs`** are both defined in `loader.llt` (see §`stdlib/loader.llt`). `eval-programs` is the real CLI entry point — it takes `[Seq Program]` and threads `%` through each. `eval-program` is the single-program helper called by `eval-programs`. Prelude re-exports both.
 
 `eval scope: dict` is a new named argument on the `eval` builtin. It seeds the document-local env frame with the entries from `dict` before evaluating the expressions. Unknown module names error at the `builtin-module` call: `[builtin-module "typo"]` → `unknown native module: "typo"`.
 
@@ -181,7 +202,7 @@ The builtins implementation is already well-split. The key change is co-locating
 | `src/builtins_net.rs` | **NEW** | Net builtins extracted from `builtins_io.rs` + all of `builtins_uri.rs`; add `net_type_env()` |
 | `src/builtins_uri.rs` | **ABSORBED** | Contents move into `builtins_net.rs`; file deleted |
 | `src/builtins.rs` | **SLIMMED** | Retains only: `builtin_module()`, `type_env_module()`, `create_stdlib_env_inner()`, `create_type_stage_env()`, bootstrap logic; no builtin definitions |
-| `src/type_env.rs` | **DELETED** | All content distributed into per-module files |
+| `src/type_env.rs` | **SLIMMED** | TypeEnv infrastructure remains; only `TypeEnv::with_builtins()` deleted (T-722). File not deleted. |
 | `stdlib/async.llt` | **DELETED** | `loop-select`, `retry`, `finally`, `defer`, `with-resource` and all tinct-level async utilities move into `stdlib/prelude.llt` |
 
 After this sprint, everything related to a module lives in one file: Rust implementation + type signatures together, no cross-file coordination with `type_env.rs`.
@@ -221,7 +242,7 @@ All tinct-level async utilities from `stdlib/async.llt` move into prelude. `loop
 
 ### `src/builtins.rs` — `create_stdlib_env_inner()`
 
-The entire bootstrap env setup is replaced. There is no `bootstrap_env`, no `create_root_env()`, and no `CACHED_STDLIB_ENV` thread-local. Rust runs a two-step bootstrap: evaluate `loader.llt` to get `eval-program`, then call it on prelude:
+The entire bootstrap env setup is replaced. There is no `bootstrap_env`, no `create_root_env()`, and no `CACHED_STDLIB_ENV` thread-local. Rust runs a two-step bootstrap: evaluate `loader.llt` to get `eval-programs`, then use it to load prelude:
 
 ```rust
 // DELETED:
@@ -237,13 +258,16 @@ let core_dict = builtin_module("core").expect("core module must exist");
 // loader.llt is an inline string constant — no filesystem access needed at bootstrap.
 let loader_prog = parse_and_expand(LOADER_TINCT)?;
 let loader_dict = eval_document(loader_prog.documents[0].expressions, scope: core_dict, ctx)?;
-// loader_dict = { eval-program: <fn> }
+// loader_dict = { eval-program: <fn>, eval-programs: <fn> }
 
-// Phase 3: use loader's eval-program to load prelude
+// Phase 3: use loader's eval-programs to load prelude
 let prelude_prog = parse_and_expand(PRELUDE_TINCT)?;
-let eval_program = loader_dict.get("eval-program").expect("loader must export eval-program");
-let prelude_dict = invoke_fn(eval_program, [prelude_prog, Value::Dict(IndexMap::new())], ctx)?;
-// prelude_dict = { map, write, if, module, eval-program, ... }
+let eval_programs = loader_dict.get("eval-programs").expect("loader must export eval-programs");
+let prelude_dict = invoke_fn(eval_programs, [
+    Value::Seq::singleton(Value::Program(Arc::new(prelude_prog))),
+    Value::nil(),
+], ctx)?;
+// prelude_dict = { map, write, if, module, eval-program, eval-programs, ... }
 // Held for process lifetime. Each program run seeds a fresh env frame from it.
 ```
 
@@ -326,25 +350,39 @@ if let Some(scope_thunk) = args.named("scope") {
 
 ### `stdlib/loader.llt` — the bootstrap loader
 
-`loader.llt` is the first tinct code evaluated. It defines `eval-program` using only core primitives, and its sole job is to load prelude. It is stored as an inline `&'static str` constant in Rust rather than read from disk, making the bootstrap self-contained.
+`loader.llt` is the first tinct code evaluated. It defines `eval-program` (single program) and `eval-programs` (the real CLI entry point — a seq of programs). It is stored as an inline `&'static str` constant via `include_str!` rather than read from disk, making the bootstrap self-contained.
 
 ```tinct
 --- uses: ["core"]
----
 [
+  # Evaluate a single program's documents, threading % through them.
   eval-program: [fn [let prog initial-input]
-    [reduce
+    [builtin-reduce
       [fn [let percent doc]
-        [let scope [reduce merge [] [map builtin-module doc.uses]]]
-        [eval doc.expressions scope: scope program: prog %: percent]]
+        [builtin-eval doc.expressions
+          scope:   [builtin-reduce builtin-merge [] [builtin-map builtin-module doc.uses]]
+          program: prog
+          %:       percent]]
       initial-input
       prog.documents]]
+
+  # Evaluate a pipeline of programs (a Seq of Value::Program), threading %
+  # from one to the next. This is the real CLI entry point.
+  # % flows: initial-input → prog1-result → prog2-result → ...
+  # The return value of each program becomes % for the next, regardless of
+  # how the program internally named its output dict entries.
+  eval-programs: [fn [let programs initial-input]
+    [builtin-reduce
+      [fn [let percent prog]
+        [eval-program prog percent]]
+      initial-input
+      programs]]
 ]
 ```
 
-Core primitives used: `reduce`, `merge`, `map` (sequences/dicts), `builtin-module`, `eval` (meta). No I/O, no async, no string ops — only what's needed to implement the loading loop.
+Core primitives used: `builtin-reduce`, `builtin-merge`, `builtin-map`, `builtin-module`, `builtin-eval` (all registered in "core"). No bare aliases — prelude is not loaded yet.
 
-Rust evaluates loader.llt in Phase 2 of the bootstrap (§Bootstrap Sequence) with `scope: builtin_module("core")`. This is the only place where Rust hardcodes a scope rather than reading `--- uses:`. loader.llt is a privileged file maintained by language implementors; it never changes unless the loading mechanism itself changes.
+Rust evaluates loader.llt in Phase 2 with `scope: builtin_module("core")`. This is the only place Rust hardcodes a scope. loader.llt changes only if the loading mechanism itself changes.
 
 ### Source files (see §File Structure Reorganization for full details)
 
@@ -426,28 +464,37 @@ New case in the document header parser (after the `--- caps:` arm, which ends ar
 
 When `--- uses:` is absent, `doc.uses` returns `[]` — `[map builtin-module []]` produces `[]`, `[reduce merge [] []]` returns `[]`, and `[eval exprs scope: []]` evaluates with no extra bindings. The mechanism works correctly for documents with no declared modules.
 
-### `stdlib/prelude.llt` — `eval-program` and `module`
+### `stdlib/prelude.llt` — `eval-program`, `eval-programs`, and `module`
 
-Prelude re-exports `eval-program` from loader (same implementation, using `module` alias) and exports `module: builtin-module`:
+Prelude re-exports `eval-program` and `eval-programs` from loader (same implementation, using `module` alias) and exports `module: builtin-module`:
 
 ```tinct
 --- uses: ["core"]
----
 # First (private) dict — helpers not exported
 [
   # ... loop-select-impl, retry-impl, and other private helpers ...
 ]
 # Second (public) dict — the prelude API
 [
-  # Loading primitives
-  module:       builtin-module
-  eval-program: [fn [let prog initial-input]
-    [reduce
+  # Loading primitives — re-exported from loader, using module alias
+  module:        builtin-module
+
+  eval-program:  [fn [let prog initial-input]
+    [builtin-reduce
       [fn [let percent doc]
-        [let scope [reduce merge [] [map module doc.uses]]]
-        [eval doc.expressions scope: scope program: prog %: percent]]
+        [builtin-eval doc.expressions
+          scope:   [builtin-reduce builtin-merge [] [builtin-map module doc.uses]]
+          program: prog
+          %:       percent]]
       initial-input
       prog.documents]]
+
+  eval-programs: [fn [let programs initial-input]
+    [builtin-reduce
+      [fn [let percent prog]
+        [eval-program prog percent]]
+      initial-input
+      programs]]
 
   # Core re-exports
   if:    builtin-if
@@ -456,7 +503,7 @@ Prelude re-exports `eval-program` from loader (same implementation, using `modul
 ]
 ```
 
-`eval-program` in prelude uses `module` (the re-exported alias) instead of `builtin-module` directly — cleaner for user readability if they ever inspect it. The behavior is identical to loader's version.
+`eval-programs` is the real CLI entry point. `tinct run -i json u1.llt u2.llt -o json` builds `[json-in, u1, u2, json-out]` and calls `eval-programs` on that list. `-i` prepends from `stdlib/cli/in/`, `-o` appends from `stdlib/cli/out/`. All programs are equal — the return value of each becomes `%` for the next regardless of how it named its output.
 
 No Rust code reads `doc.uses` for injection — that is `eval-program`'s job entirely.
 
@@ -469,8 +516,7 @@ See §`stdlib/prelude.llt — eval-program and module` above for the full implem
 ### All stdlib files with Rust deps
 
 `--- uses:` headers added to files that own or directly call Rust builtins:
-- `stdlib/prelude.llt` — `--- uses: ["core"]` (second document; all builtins including I/O are in "core")
-- `stdlib/macros.llt` — `--- uses: ["core"]` (calls `builtin-variant` by raw name directly; `tag-of` and `gensym` are accessed via prelude-exported wrappers and don't require `--- uses:`, but `--- uses: ["core"]` ensures `builtin-variant` is in scope)
+- `stdlib/prelude.llt` — `--- uses: ["core"]` (second document; all builtins including I/O are in "core"; also includes macro transformer definitions formerly in `macros.llt` which call `builtin-variant` directly)
 - `stdlib/datetime.llt` — `--- uses: ["datetime"]`
 - `stdlib/sql.llt` — `--- uses: ["sql"]` (future sprint — `src/builtins_sql.rs` does not yet exist)
 - `stdlib/regex.llt` — `--- uses: ["regex"]` (future sprint — `stdlib/regex.llt` is currently pure-tinct with no Rust builtins; header added when Rust regex builtins land)

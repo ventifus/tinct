@@ -1210,6 +1210,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
     let mut next_doc_output_type: Option<Spanned<Annotation>> = None;
     let mut next_doc_expects: Option<Spanned<Annotation>> = None;
     let mut next_doc_caps: Option<Spanned<Vec<(String, Annotation)>>> = None;
+    let mut next_doc_uses: Option<Spanned<Vec<Spanned<String>>>> = None;
     let mut next_doc_stage: Option<Stage> = None;
 
     // Convert to index-based iteration for peeking
@@ -3008,7 +3009,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             }
 
             Token::InterpolatedString(parts) => {
-                // Emit [tmpl "raw-template"] call; the [tmpl] macro registered from stdlib/macros.llt
+                // Emit [tmpl "raw-template"] call; the [tmpl] macro registered from stdlib/prelude.llt
                 // expands this to [str segment1 var1 segment2 ...] at compile time.
                 let expr = emit_tmpl_call(parts, span.clone())?;
                 if let Err(push_err) = push_value(&mut stack, &mut current_document_items, expr) {
@@ -3471,6 +3472,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         expects: next_doc_expects.take(),
                         caps: next_doc_caps.take(),
                         stage: next_doc_stage.take(),
+                        uses: next_doc_uses.take(),
                     },
                     doc_span,
                 ));
@@ -3727,6 +3729,99 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             let caps_end = token_vec[i - 1].span.end;
                             next_doc_caps =
                                 Some(Spanned::new(caps_vec, Span::new(caps_start, caps_end)));
+                        }
+                        Token::Identifier(s) if s == "uses" => {
+                            // uses: pragma
+                            if next_doc_uses.is_some() {
+                                return Err(ParseError {
+                                    message: "duplicate uses: pragma in header".to_string(),
+                                    span: Some(token_vec[i].span.clone()),
+                                });
+                            }
+                            i += 1;
+                            // Expect colon
+                            if i >= token_vec.len() || !matches!(&token_vec[i].node, Token::Colon) {
+                                return Err(ParseError {
+                                    message: "expected ':' after 'uses' pragma".to_string(),
+                                    span: Some(if i < token_vec.len() {
+                                        token_vec[i].span.clone()
+                                    } else {
+                                        token_vec[i - 1].span.clone()
+                                    }),
+                                });
+                            }
+                            i += 1;
+
+                            // Expect open bracket
+                            if i >= token_vec.len()
+                                || !matches!(&token_vec[i].node, Token::OpenBracket)
+                            {
+                                return Err(ParseError {
+                                    message: "expected '[' after 'uses:' — module list must be a bracket form".to_string(),
+                                    span: Some(if i < token_vec.len() {
+                                        token_vec[i].span.clone()
+                                    } else {
+                                        token_vec[i - 1].span.clone()
+                                    }),
+                                });
+                            }
+                            let uses_start = token_vec[i].span.start;
+                            i += 1; // Skip open bracket
+
+                            // Parse module names (only Token::QuotedString allowed)
+                            let mut uses_vec: Vec<Spanned<String>> = Vec::new();
+                            loop {
+                                // Check for close bracket
+                                if i >= token_vec.len() {
+                                    return Err(ParseError {
+                                        message: "unclosed uses list — expected ']'".to_string(),
+                                        span: Some(token_vec[i - 1].span.clone()),
+                                    });
+                                }
+                                if matches!(&token_vec[i].node, Token::CloseBracket) {
+                                    i += 1; // Skip close bracket
+                                    break;
+                                }
+
+                                // Only Token::QuotedString is valid; reject all others
+                                match &token_vec[i].node {
+                                    Token::QuotedString(module_name) => {
+                                        let name_span = token_vec[i].span.clone();
+                                        uses_vec.push(Spanned::new(module_name.clone(), name_span));
+                                        i += 1;
+                                    }
+                                    Token::InterpolatedString(_) => {
+                                        return Err(ParseError {
+                                            message: "interpolated strings not allowed in uses: list — use plain quoted strings like \"core\"".to_string(),
+                                            span: Some(token_vec[i].span.clone()),
+                                        });
+                                    }
+                                    Token::TripleQuotedString(_) => {
+                                        return Err(ParseError {
+                                            message: "triple-quoted strings not allowed in uses: list — use plain quoted strings like \"core\"".to_string(),
+                                            span: Some(token_vec[i].span.clone()),
+                                        });
+                                    }
+                                    Token::Identifier(_) => {
+                                        return Err(ParseError {
+                                            message: "bare identifiers not allowed in uses: list — use quoted strings like \"core\"".to_string(),
+                                            span: Some(token_vec[i].span.clone()),
+                                        });
+                                    }
+                                    _ => {
+                                        return Err(ParseError {
+                                            message:
+                                                "expected module name (quoted string) in uses: list"
+                                                    .to_string(),
+                                            span: Some(token_vec[i].span.clone()),
+                                        });
+                                    }
+                                }
+                            }
+
+                            let uses_end = token_vec[i - 1].span.end;
+                            next_doc_uses =
+                                Some(Spanned::new(uses_vec, Span::new(uses_start, uses_end)));
                         }
                         Token::Identifier(s) if s == "stage" => {
                             // stage: pragma
@@ -4444,6 +4539,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             expects: next_doc_expects.take(),
             caps: next_doc_caps.take(),
             stage: next_doc_stage.take(),
+            uses: next_doc_uses.take(),
         };
         let doc_span = Span {
             start: Position {
@@ -4468,6 +4564,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             expects: next_doc_expects.take(),
             caps: next_doc_caps.take(),
             stage: next_doc_stage.take(),
+            uses: next_doc_uses.take(),
         };
         let doc_span = Span {
             start: Position {

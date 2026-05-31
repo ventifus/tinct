@@ -380,6 +380,32 @@ fn typecheck_surface_document(
         env = Rc::new(env_mut);
     }
 
+    // Process uses: pragma if present
+    // Inject module-specific type signatures into the doc-local environment.
+    // These bindings are available for type-checking THIS document's expressions,
+    // but do NOT propagate to subsequent documents via result_env (module bindings
+    // are doc-local, matching the runtime's `builtin_module()` injection behavior).
+    if let Some(ref uses) = doc.uses {
+        let mut env_mut = (*env).clone();
+        for module_name in &uses.node {
+            match crate::builtins::type_env_module(&module_name.node) {
+                Some(module_env) => {
+                    env_mut.merge(module_env);
+                }
+                None => {
+                    // Emit a diagnostic for unknown native modules.
+                    // The runtime will also catch this when it attempts to call
+                    // builtin_module(), but we flag it statically here too.
+                    errors.push(TypeError::new(
+                        format!("unknown native module: {}", module_name.node),
+                        module_name.span.clone(),
+                    ));
+                }
+            }
+        }
+        env = Rc::new(env_mut);
+    }
+
     let mut result_type = Type::Record(Row {
         fields: HashMap::new(),
     });
@@ -656,7 +682,12 @@ fn typecheck_surface_document(
 
     // Build result_env: thread last-dict schemes or last-Record fields into cross-document scope.
     // Mirrors typecheck_document lines 1116-1148.
-    let mut result_env = TypeEnv::with_parent(&env);
+    //
+    // IMPORTANT: result_env uses parent_env as its parent, NOT env.
+    // This ensures doc-local bindings (%, %name, caps, and module-from-uses) do NOT
+    // propagate to subsequent documents. Only explicitly exported bindings (last-dict
+    // schemes, last-Record fields, %) are propagated via result_env.bindings.
+    let mut result_env = TypeEnv::with_parent(parent_env);
     if let Some(schemes) = last_dict_schemes {
         for (name, scheme) in schemes {
             result_env.insert_scheme(name, scheme);
@@ -1916,7 +1947,8 @@ fn extract_param_indices(
 /// those names still appear in `builtin_module("core")` but prelude exports them, so they
 /// won't reach the undefined-variable arm in normal user code anyway.
 ///
-/// T-730 will refine this to use per-document `--- uses:` declarations instead.
+/// The diagnostic suggests `--- uses:` headers (per-document builtin scoping).
+/// Full `--- uses:` enforcement will be implemented when the `builtin-privacy` whatif lands.
 fn is_known_builtin_name(name: &str) -> bool {
     use std::collections::HashSet;
     use std::sync::OnceLock;
@@ -1980,13 +2012,12 @@ pub(crate) fn infer_surface_expr(
                 } else if !state.in_prelude_load && is_known_builtin_name(name.as_str()) {
                     // T002: raw Rust builtin referenced directly in user code.
                     // The name is known to the runtime but was not exported by prelude.
-                    // T-730 will refine this to use per-document --- uses: declarations.
                     err.notes.push(format!(
-                        "  = note: `{name}` is a Rust builtin that is not exported by the prelude\n  = help: use the prelude-exported wrapper instead, or load a stdlib module via [include %libdir \"<module>.llt\"]"
+                        "  = note: `{name}` is a Rust builtin that is not exported by the prelude\n  = help: declare `--- uses: [\"core\"]` (or the appropriate module) in this document's header to access raw builtins"
                     ));
                     state.diagnostics.push(crate::error::TypeDiagnostic {
                         message: format!(
-                            "raw builtin `{name}` is not available in user code — use the prelude-exported version or include the relevant stdlib module"
+                            "raw builtin `{name}` is not available in user code — declare `--- uses:` to access it, or use the prelude-exported version"
                         ),
                         span: node.span.clone(),
                         code: "T002",
@@ -2383,13 +2414,12 @@ pub(crate) fn infer_surface_expr(
                             } else if !state.in_prelude_load && is_known_builtin_name(name.as_str())
                             {
                                 // T002: raw Rust builtin referenced directly in user code.
-                                // T-730 will refine this to use per-document --- uses: declarations.
                                 err.notes.push(format!(
-                                    "  = note: `{name}` is a Rust builtin that is not exported by the prelude\n  = help: use the prelude-exported wrapper instead, or load a stdlib module via [include %libdir \"<module>.llt\"]"
+                                    "  = note: `{name}` is a Rust builtin that is not exported by the prelude\n  = help: declare `--- uses: [\"core\"]` (or the appropriate module) in this document's header to access raw builtins"
                                 ));
                                 state.diagnostics.push(crate::error::TypeDiagnostic {
                                     message: format!(
-                                        "raw builtin `{name}` is not available in user code — use the prelude-exported version or include the relevant stdlib module"
+                                        "raw builtin `{name}` is not available in user code — declare `--- uses:` to access it, or use the prelude-exported version"
                                     ),
                                     span: func.span.clone(),
                                     code: "T002",
@@ -10219,7 +10249,7 @@ mod tests {
 
         // Multiple calls should get independent instantiations (use quoted string in new syntax)
         // Each call returns the literal type of its argument
-        let env = doc_env("[f: [fn [let x@a] $x]]\n[r1: [call $f 42]]\n[r2: [call $f \"hello\"]]");
+        let env = doc_env("[f: [fn [let x@a] $x]  r1: [call $f 42]  r2: [call $f \"hello\"]]");
         let r1 = env.get("r1").unwrap();
         let r2 = env.get("r2").unwrap();
         assert_eq!(r1.body, Type::IntLiteral(42));
@@ -11046,7 +11076,7 @@ mod tests {
         // The last document has one dict [result: ...], so result is in the final env.
         let env = file_env(
             // In new syntax, string literals require quotes.
-            "[id: [fn [let x@a] $x]]\n[data: [name: \"hello\"]]\n---\n[result: [call $id $data.name]]",
+            "[id: [fn [let x@a] $x]  data: [name: \"hello\"]]\n---\n[result: [call $id $data.name]]",
         );
         let result_ty = env
             .get("result")
@@ -12355,18 +12385,22 @@ mod tests {
     #[test]
     fn test_builtin_seq_generators_return_seq_types() {
         // Regression test for type-seq sprint: sequence-generating builtins should return Type::Seq.
-        // Covers: $builtin-seq, $builtin-repeat, $builtin-cycle, $builtin-iterate, $builtin-unfold, $take
+        // Covers: $builtin-seq, $builtin-repeat, $builtin-cycle, $builtin-iterate, $builtin-unfold, $builtin-take
         // NOTE: $builtin-seq takes (head, tail) args — it's the primitive Seq cons operation.
-        // The user-facing wrappers ($seq, $range, $repeat, $cycle, $iterate, $unfold) live in
+        // The user-facing wrappers ($seq, $range, $repeat, $cycle, $iterate, $unfold, $take) live in
         // prelude.llt and are not present when using build_builtins_type_env() alone.
+        // Single dict so all keys appear in result_env (typecheck_surface_document returns
+        // only the last dict's schemes in result_env — multiple separate dicts would leave
+        // only the final one accessible via new_env.get()).
         let input = r#"
-            [some_seq: [call $builtin-range 0 10]]
-            [seq_result: [call $builtin-seq 1 $some_seq]]
-            [repeat_result: [call $builtin-repeat 42]]
-            [cycle_result: [call $builtin-cycle $some_seq]]
-            [iterate_result: [call $builtin-iterate [fn [let x@a] $x] 0]]
-            [unfold_result: [call $builtin-unfold [fn [let x@a] [Just: [x  $x]]] 0]]
-            [take_result: [call $take 5 $some_seq]]
+            [
+                seq_result: [call $builtin-seq 1 [call $builtin-range 0 10]]
+                repeat_result: [call $builtin-repeat 42]
+                cycle_result: [call $builtin-cycle [call $builtin-range 0 10]]
+                iterate_result: [call $builtin-iterate [fn [let x@a] $x] 0]
+                unfold_result: [call $builtin-unfold [fn [let x@a] [Just: [x  $x]]] 0]
+                take_result: [call $builtin-take 5 [call $builtin-range 0 10]]
+            ]
         "#;
         let mut program = crate::parse(input).unwrap().program;
         crate::desugar::desugar_surface_program(&mut program);

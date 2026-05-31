@@ -1,0 +1,6 @@
+# uses: without a bracket form is a parse error.
+# The module list must be a bracket form: uses: ["core"], not uses: "core".
+--- uses: "core"
+[]
+=== out
+expected '[' after 'uses:'

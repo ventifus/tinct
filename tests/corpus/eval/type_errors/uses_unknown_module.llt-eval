@@ -1,0 +1,7 @@
+# --- uses: with unknown module name produces a type error.
+# The type checker (not the runtime) validates module names.
+# typecheck_source fails with "unknown native module" for unrecognised names.
+--- uses: ["typo"]
+[]
+=== out
+unknown native module: typo

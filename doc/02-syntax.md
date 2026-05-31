@@ -820,6 +820,7 @@ All components are optional. A bare `---` is valid. **Components may appear in a
 | Input contract | `expects: Type` | Declares the expected type of `%` |
 | Capability requirements | `caps: [%cap: @Type ...]` | Declares required capability bindings |
 | Evaluation stage | `stage: type` | Marks the document as a type-stage document (evaluated during type checking, not at runtime); only `type` is a valid value |
+| Module injection | `uses: ["module1" "module2"]` | Injects native module builtins into this document's local scope (doc-local only; does not propagate to subsequent documents) |
 
 ```tinct
 ---                                    # bare separator

@@ -96,7 +96,7 @@ fn typecheck_and_merge_stdlib_module(
 
     // Skip macro expansion for stdlib modules.
     //
-    // Rationale: stdlib modules (prelude.llt, macros.llt) never use [defmacro ...],
+    // Rationale: stdlib modules (prelude.llt and others) never use [defmacro ...],
     // so expand_surface_program is a no-op for them — but at depth 0 it triggers a full
     // create_stdlib_env() bootstrap (~20s in debug builds). Since build_prelude_env
     // is called once per test thread, this turns parallel test runs into a hang
