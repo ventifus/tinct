@@ -1,0 +1,6 @@
+[match true
+  [case true]: "yes"
+  [case false]: "no"
+  _: "other"]
+---
+String("yes")

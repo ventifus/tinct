@@ -1,0 +1,5 @@
+[match "test"
+  [case "test"]: "hit"
+  _: "miss"]
+---
+String("hit")

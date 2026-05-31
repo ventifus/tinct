@@ -1,7 +1,6 @@
-# stdlib/protocols/h2.llt — HTTP/2 (RFC 7540) + HPACK (RFC 7541) in tinct.
+# stdlib/protocols/http2.llt — HTTP/2 (RFC 7540) + HPACK (RFC 7541) in tinct.
 # Part of: lib-net-v3
 
-[include %libdir "async.llt"]
 [include %libdir "net.llt"]
 [include %include-dir "http1.llt"]
 
@@ -77,6 +76,21 @@
     [error "TODO: hpack-add-to-table — evict oldest entries until size fits, prepend new entry"]]
 ]
 
+# HttpConnect instance for Http2Connection.
+[instance [HttpConnect Http2Connection]
+  request: request]
+
+# HPACK codec: Headers ↔ Bytes (encode headers as HPACK; decode HPACK bytes to headers).
+# Note: hpack-encode/hpack-decode take HpackTable as the codec instance (dynamic table state).
+[instance [Codec HpackCodec Headers Bytes]
+  encode: hpack-encode
+  decode: hpack-decode]
+
+# HTTP/2 frame codec: H2Frame ↔ Bytes (serialize/parse the 9-byte frame header + payload).
+[instance [Codec H2FrameCodec H2Frame Bytes]
+  encode: h2-frame-serialize
+  decode: h2-frame-parse]
+
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
@@ -120,14 +134,22 @@
   hpack-huffman-decode: [fn [let data@Bytes]
     [error "TODO: hpack-huffman-decode — 30-bit code table (RFC 7541 Appendix B), bit accumulation, EOS detection"]]
 
+  # Codec instance methods for H2FrameCodec (serialize/parse H2Frame ↔ Bytes).
+  # These wrap the internal read-h2-frame/write-h2-frame helpers for use as Codec instances.
+  h2-frame-serialize: [fn [let _ frame@H2Frame]
+    [error "TODO: h2-frame-serialize — delegate to write-h2-frame, return Bytes"]]
+
+  h2-frame-parse: [fn [let _ data@Bytes]
+    [error "TODO: h2-frame-parse — delegate to read-h2-frame, return H2Frame"]]
+
   h2-accept: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
     [error "TODO: h2-accept — read client preface, exchange SETTINGS, return Http2Connection"]]
 
-  h2-connect: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
-    [error "TODO: h2-connect — send client preface, exchange SETTINGS, return Http2Connection"]]
+  h2: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
+    [error "TODO: h2 — send client preface, exchange SETTINGS, return Http2Connection"]]
 
-  http-request: [fn [let conn@Http2Connection req@RawRequest]
-    [error "TODO: http-request — allocate stream ID, send HEADERS+DATA, return Task@RawResponse"]]
+  request: [fn [let req@RawRequest conn@Http2Connection]
+    [error "TODO: request — allocate stream ID, send HEADERS+DATA, return Task@RawResponse"]]
 
   h2-open-stream: [fn [let conn@Http2Connection]
     [error "TODO: h2-open-stream — allocate next odd stream ID, return Handle"]]
@@ -139,11 +161,17 @@
     [error "TODO: http2-req-conn — read HEADERS frames, hpack-decode, emit RawRequest with respond fn"]]
 
   http2-client: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
-    [h2-connect h]]
+    [h2 h]]
 
   h2-stream-ch: [fn [let ch@[Channel Http2Connection]]
     [channel-map [fn [let conn] [h2-open-stream conn]] ch]]
 
   h2-push: [fn [let conn@Http2Connection stream-id@Int req@RawRequest resp@RawResponse]
     [error "TODO: h2-push — send PUSH_PROMISE + HEADERS+DATA on new server-initiated stream"]]
+
+  # Serve layer: promote each incoming Handle to an Http2Connection. Subject-last for |.
+  h2-serve: [_ | [channel-map h2-accept]]
+
+  # Request-extraction: each Http2Connection yields its request streams.
+  http2-requests: [_ | [channel-flat-map http2-req-conn]]
 ]

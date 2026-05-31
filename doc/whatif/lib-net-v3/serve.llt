@@ -1,39 +1,97 @@
-# stdlib/serve.llt — protocol serve layers.
+# stdlib/serve.llt — generic codec pipeline and MessageStream replugging primitives.
 # Part of: lib-net-v3
-# channel-map and channel-flat-map live in async.llt (not networking-specific).
-# Config-bearing layers (tls-serve, wireguard-serve, noise-serve) live in their protocol files.
-# h2-stream-ch and h3-stream-ch are defined in h2.llt and h3.llt respectively.
+#
+# This file contains only protocol-agnostic machinery. Protocol-specific serve
+# layers (h2-serve, h3-serve, ws-serve, http1-serve, http2-requests, etc.) live
+# in their respective protocol files alongside the accept functions they wrap.
+#
+# task, send, recv, channel, loop-select, context are all in prelude.
 
-[include %libdir "async.llt"]
 [include %libdir "net.llt"]
-[include %libdir "protocols/quic.llt"]
-[include %libdir "protocols/h2.llt"]
-[include %libdir "protocols/h3.llt"]
-[include %libdir "protocols/websocket.llt"]
-[include %libdir "protocols/http1.llt"]
 
-# ── Internal. ────────────────────────────────────────────────────────────────────────────────────
+# ── MessageStream instance for MessageStreamHandle ────────────────────────────
+
+# MessageStreamHandle wraps any MessageStream implementation in a reactive cell,
+# enabling atomic rebinding without affecting in-flight senders.
+# send/recv on a handle transparently delegate to the current impl.
+[instance@[bind: [t]] [MessageStream [MessageStreamHandle t] t]
+  send: [fn [let ms@[MessageStreamHandle t] v@t]
+    [send [builtin-cell-get ms.impl] v]]
+  recv: [fn [let ms@[MessageStreamHandle t]]
+    [recv [builtin-cell-get ms.impl]]]]
+
+# ── Public API. ───────────────────────────────────────────────────────────────
 
 [
-  # (no private helpers)
-]
+  # MessageStreamHandle: wraps any MessageStream in a reactive cell.
+  # The impl cell always holds the current routing implementation (a MessageStream).
+  # Backed by builtin-reactive-cell (tokio::sync::watch semantics: last-write-wins,
+  # all concurrent reads see the latest value atomically).
+  # Tracker: implement builtin-reactive-cell, builtin-cell-get, builtin-cell-set
+  # as Rust primitives backed by tokio::sync::watch.
+  MessageStreamHandle: [type [t]
+    [impl: [ReactiveCell [MessageStream t]]]]
 
-# ── Public API. ───────────────────────────────────────────────────────────────────────────────────
+  # ── MessageStream replugging ─────────────────────────────────────────────────
 
-[
-  # Config-free connection-promotion layers (1:1 via channel-map).
-  # Config-bearing layers (tls-serve, wireguard-serve, noise-serve) live in their
-  # respective protocol files where they close over protocol-specific config types.
-  h2-serve:        [fn [let in-ch] [channel-map h2-accept    in-ch]]
-  h3-serve:        [fn [let in-ch] [channel-map h3-accept    in-ch]]
-  ws-serve:        [fn [let in-ch] [channel-map ws-accept    in-ch]]
+  # Create a repluggable MessageStream handle from an initial implementation.
+  message-stream: [fn [let initial-impl]
+    [MessageStreamHandle [impl: [builtin-reactive-cell initial-impl]]]]
 
-  # Request-extraction layers (1:N via channel-flat-map).
-  http1-serve:     [fn [let in-ch] [channel-flat-map http1-conn      in-ch]]
-  http2-requests:  [fn [let in-ch] [channel-flat-map http2-req-conn  in-ch]]
-  http3-requests:  [fn [let in-ch] [channel-flat-map http3-req-conn  in-ch]]
+  # Swap the routing implementation atomically.
+  # Senders see the new implementation on their very next send.
+  rebind: [fn [let ms new-impl]
+    [builtin-cell-set ms.impl new-impl]]
 
-  # Stream adapters: open one stream per incoming connection.
-  # h2-stream-ch and h3-stream-ch are in h2.llt and h3.llt respectively.
-  quic-stream-ch:  [fn [let ch@[Channel QuicConnection]]    [channel-map [fn [let c] [quic-open-stream c]] ch]]
+  # ── Codec pipeline ───────────────────────────────────────────────────────────
+  #
+  # Codec stages compose with | to form readable pipelines:
+  #
+  #   source | [codec JsonCodec] | [codec NdjsonFramer] | [sink %stdout]
+  #
+  # Each | [codec C] stage applies C.encode to each value from the previous stage.
+  # The terminal | [sink S] writes encoded bytes to the ByteStream S.
+
+  # codec C source — wrap source through a Codec stage.
+  # Argument order (C, source) makes | pipelines read left to right.
+  # Returns a Channel that emits encoded values.
+  codec: [fn@[bind: [c input output]]
+           [let c@[Codec c input output]  source@[Channel input]]
+    [out: [channel 64]]
+    [task
+      [let step [fn []
+        [match [recv source]
+          [Closed]: []
+          [Ok v]:   [[send out [encode c v]] [step]]]]]
+      [step]]
+    out]
+
+  # sink S source — terminal stage: drain source and write each encoded value to S.
+  # Returns a Task. Await it when the drain must complete before exit.
+  sink: [fn [let s  source@[Channel Bytes]]
+    [task
+      [let step [fn []
+        [match [recv source]
+          [Closed]: []
+          [Ok v]:   [[write-bytes s v] [step]]]]]
+      [step]]]
+
+  # ── MessageStream constructors ────────────────────────────────────────────────
+
+  # to-messages v — adapter from any tinct value to a Channel.
+  # Seq → yields each element; scalar → yields one element.
+  # Enables [[to-messages %] | out] patterns.
+  to-messages: [fn [let v]
+    [ch: [channel 64]]
+    [task
+      [if [seq? v]
+        [reduce [fn [let _ x] [send ch x]] [] v]
+        [send ch v]]]
+    ch]
+
+  # drain-emit codec sink — sugar: drain %emit through a single Codec into a ByteStream.
+  # For multi-stage pipelines use | instead:
+  #   %emit | [codec JsonCodec] | [codec NdjsonFramer] | [sink %stdout]
+  drain-emit: [fn@[bind: [c output]] [let c@[Codec c Any output]  s]
+    [sink s [%emit | [codec c]]]]
 ]

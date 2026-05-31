@@ -371,6 +371,25 @@ pub(crate) struct MatchDispatchData {
     pub(crate) match_span: Span,
 }
 
+/// Payload for Cont::CaseArmExactValueCheck. Boxed to keep the Cont enum ≤96 bytes.
+pub(crate) struct CaseArmExactValueCheckData {
+    /// Current arm index (for continuing to next arm if match fails)
+    pub(crate) arm_idx: usize,
+    pub(crate) arms: Arc<Vec<crate::ast::CoreMatchArm>>,
+    /// The original environment for fallback matching
+    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) ctx: Arc<EvalContext>,
+    pub(crate) match_span: Span,
+    /// Environment from the outer match arm (no pattern bindings for exact-value matches)
+    pub(crate) arm_env: Arc<RwLock<Environment>>,
+    /// The scrutinee value (for comparison with pattern value)
+    pub(crate) scrutinee_value: Value,
+    /// The arm body to evaluate if pattern matches
+    pub(crate) body: Arc<Spanned<CoreExpr>>,
+    /// The guard expression to evaluate if pattern matches (if any)
+    pub(crate) guard: Option<Arc<Spanned<CoreExpr>>>,
+}
+
 /// Payload for Cont::MatchGuardCheck. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct MatchGuardCheckData {
     /// Current arm index (for continuing to next arm if guard fails)
@@ -465,6 +484,10 @@ pub(crate) enum Cont {
     /// Dispatch to the next arm after materializing the scrutinee in a Match expression.
     /// Tries each arm pattern in order until one matches, then evaluates that arm's body.
     MatchDispatch(Box<MatchDispatchData>),
+    /// Check the result of an exact-value pattern evaluation for a CaseArm.
+    /// After materializing the pattern expression, compares it to the scrutinee using
+    /// values_equal and either proceeds with the body (match) or continues to next arm (no match).
+    CaseArmExactValueCheck(Box<CaseArmExactValueCheckData>),
     /// Check the guard result for a matched arm and either evaluate the body (guard passed)
     /// or continue to the next arm (guard failed).
     MatchGuardCheck(Box<MatchGuardCheckData>),
@@ -3133,11 +3156,28 @@ pub(crate) async fn apply_cont(
                                         _ => {
                                             // Exact-value pattern: evaluate the pattern expression and
                                             // compare to the scrutinee using values_equal.
-                                            // TODO(unified-bindings-structural-tests Task 4): implement
-                                            // exact-value matching for non-LetDecl case patterns.
-                                            // For now, treat as wildcard (always match) so CaseArm arms
-                                            // with non-LetDecl patterns don't crash.
-                                            (Arc::clone(&arm_env), Arc::clone(body))
+                                            // Push a continuation to receive the pattern value, then
+                                            // evaluate the pattern expression. The continuation will
+                                            // compare the result and either proceed with the body or
+                                            // continue to the next arm.
+                                            stack.push(Cont::CaseArmExactValueCheck(Box::new(
+                                                CaseArmExactValueCheckData {
+                                                    arm_idx: i,
+                                                    arms: Arc::clone(&arms),
+                                                    env: Arc::clone(&env),
+                                                    ctx: Arc::clone(&ctx),
+                                                    match_span: match_span.clone(),
+                                                    arm_env: Arc::clone(&arm_env),
+                                                    scrutinee_value: scrutinee_value.clone(),
+                                                    body: Arc::clone(body),
+                                                    guard: arm.guard.as_ref().map(Arc::clone),
+                                                },
+                                            )));
+                                            return Action::EvalCore {
+                                                expr: Arc::clone(pattern),
+                                                env: Arc::clone(&env),
+                                                ctx,
+                                            };
                                         }
                                     }
                                 } else {
@@ -3184,6 +3224,67 @@ pub(crate) async fn apply_cont(
                         scrutinee_value.type_name(),
                         match_span.clone(),
                     ))))
+                }
+            }
+        }
+        Cont::CaseArmExactValueCheck(data) => {
+            let CaseArmExactValueCheckData {
+                arm_idx,
+                arms,
+                env,
+                ctx,
+                match_span,
+                arm_env,
+                scrutinee_value,
+                body,
+                guard,
+            } = *data;
+
+            match result {
+                Err(e) => Action::Continue(Err(e)),
+                Ok(pattern_value) => {
+                    // Compare the pattern value to the scrutinee using structural equality
+                    if crate::builtins_meta::values_equal(&pattern_value, &scrutinee_value) {
+                        // Pattern matched. If there is a guard, evaluate it.
+                        if let Some(guard_expr) = guard {
+                            // Push a continuation to check the guard result
+                            stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
+                                arm_idx,
+                                arms,
+                                env,
+                                ctx: Arc::clone(&ctx),
+                                match_span: match_span.clone(),
+                                arm_env: Arc::clone(&arm_env),
+                                scrutinee_value,
+                                body,
+                                callable_invoked: false,
+                            })));
+
+                            // Evaluate the guard
+                            Action::EvalCore {
+                                expr: guard_expr,
+                                env: arm_env,
+                                ctx,
+                            }
+                        } else {
+                            // No guard — arm matched, evaluate body
+                            Action::EvalCore {
+                                expr: body,
+                                env: arm_env,
+                                ctx,
+                            }
+                        }
+                    } else {
+                        // Pattern did not match — try the next arm
+                        stack.push(Cont::MatchDispatch(Box::new(MatchDispatchData {
+                            arm_idx: arm_idx + 1,
+                            arms,
+                            env,
+                            ctx: Arc::clone(&ctx),
+                            match_span: match_span.clone(),
+                        })));
+                        Action::Continue(Ok(scrutinee_value))
+                    }
                 }
             }
         }

@@ -243,6 +243,53 @@ Type declarations and construction:
 
 ---
 
+## Nominal Variants
+
+`[type ...]` declarations auto-generate constructor functions. After the declaration, the constructor name is callable:
+
+```tinct
+[
+  [type [Some value] [None]]   # auto-generates: Some: [variant "Some"], None: [variant "None"]
+
+  x: [Some 42]                 # construct by calling the constructor
+  y: [None]                    # unit variant — no argument
+
+  n: [match x
+        [Some v]: v            # → 42
+        [None]:   0]
+]
+```
+
+**Constructors are ordinary values.** `Some` is just `[variant "Some"]` — a unit-variant value that the evaluator treats as callable. You can pass constructors around, store them in dicts, or define your own with `[variant "Tag"]` directly:
+
+```tinct
+[
+  MyTag: [variant "MyTag"]   # same as what [type [MyTag]] would inject
+  val:   [MyTag 99]          # → Variant("MyTag", 99)
+]
+```
+
+**Named-field variants** — wrap a dict payload:
+
+```tinct
+[type [Point x: Float y: Float]]
+
+[
+  p: [Point x: 1.0  y: 2.0]   # payload is a dict
+
+  # Access fields directly
+  _: p.x                       # → 1.0
+
+  # Match and destructure
+  _: [match p
+        [Point [x: px  y: py]]: [str px "," py]]
+]
+```
+
+**Runtime-created variants are indistinguishable from user-constructed ones.** A builtin that returns `[Ok v]` and user code that calls `[Ok v]` produce identical `Value::Variant` values — there is no privileged runtime type. This means prelude behavior is fully replicable in user code.
+
+---
+
 ## Pattern Matching
 
 Patterns appear directly as `pattern: body` pairs inside `[match ...]`:

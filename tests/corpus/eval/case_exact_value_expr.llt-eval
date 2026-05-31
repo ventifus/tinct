@@ -1,0 +1,6 @@
+[let x [+ 1 1]]
+[match x
+  [case 2]: "two"
+  _: "other"]
+---
+String("two")

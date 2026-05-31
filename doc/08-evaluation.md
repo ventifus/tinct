@@ -1527,6 +1527,8 @@ This is **structurally determined** by the `Cont` variant on the stack, not infe
 
 **Tail-call optimization:** TCO via `Memoize`-reuse was investigated but reverted due to `EvalStackGuard` invariant violations — reusing the memoize frame caused guard bookkeeping to go out of sync, producing double-cache-writes and incorrect failure propagation. Proper TCO is tracked in the issue tracker. Until that sprint lands, recursive calls always push a fresh `Cont::Memoize` frame. Builtin calls likewise always push a continuation — builtins rely on `PendingBuiltin` thunk deferral for lazy behavior, not tail-call elimination.
 
+**TCO and infinite loops.** Tail-recursive functions without a base case run as infinite loops under TCO — the continuation stack stays bounded but the function runs indefinitely. This is intentional: infinite loops are valid programs in tinct (event loops, streaming pipelines). The `--timeout`/`--max-cpu` flags provide external resource limits. The depth limit (MAX_CONTINUATION_STACK) only applies to non-tail-recursive calls.
+
 **Error stack traces:** Walk `Vec<Cont>` to reconstruct the call stack, using each variant's stored span and label to produce precise "materialized at" context for every frame. This replaces the current `EvalError::stack` vector with a continuation-derived trace.
 
 **Cont variant count:** 11 variants — `Memoize`, `PendingCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `DotAccessForce`, `TypeAssertCheck`, `SequentialStep`, `ForceAndBind`, `MatchDispatch`, `MatchGuardCheck`, `PredicateCheck`. Each variant stores only its specific continuation data (Arc pointers + Span + small fields). Frame size: ≤96 bytes per Cont (enforced by the compile-time assertion at `src/eval_materialize.rs:467`).

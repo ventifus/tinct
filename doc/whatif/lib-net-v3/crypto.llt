@@ -1,9 +1,15 @@
-# stdlib/crypto.llt — X.509 certificate parsing and chain verification.
+# stdlib/crypto.llt — Cryptographic utilities: HKDF hash algorithm selectors, and
+#   X.509 certificate parsing and chain verification.
 # Part of: lib-net-v3
 # Rust primitives: rsa-pss-verify, rsa-pkcs1-verify, p256-verify, p384-verify, ed25519-verify,
 #   sha256, sha384, sha512 (for signature algorithm dispatch)
+--- uses: ["crypto"]
 
 [include %libdir "net.llt"]
+
+# Hash algorithm selectors for HKDF (used by TLS, WireGuard, Noise, etc.)
+# Defined here — not in tls.llt — because they are crypto primitives, not TLS-specific.
+[type [Sha256]] [type [Sha384]] [type [Sha512]] [type [Blake2s]]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
@@ -104,6 +110,10 @@
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
+  # Hash algorithm selector union for all HKDF calls.
+  # The four [type [X]] top-level declarations above define Sha256/Sha384/Sha512/Blake2s.
+  HkdfHash: [union [Sha256] [Sha384] [Sha512] [Blake2s]]
+
   AsnValue: [union
     [AsnBool    Bool]
     [AsnInt     Bytes]

@@ -1128,13 +1128,16 @@ pub(crate) fn builtin_signal_channel(
     })
 }
 
-/// `timer-channel`: Create a channel that ticks every `interval-ms` milliseconds.
+/// `timer-channel`: Create a channel that ticks every `interval` duration.
 ///
-/// Signature: `Int → Channel@Null`
+/// Signature: `Duration → Channel@Timestamp`
 ///
-/// Spawns a local task driven by `tokio::time::interval`. Sends `null` (empty dict) on
-/// each tick. The channel has capacity 1; if the receiver is slow, ticks are dropped
-/// (non-blocking `try_send`) so that a slow consumer never builds up an unbounded backlog.
+/// Spawns a local task driven by `tokio::time::interval`. Sends `Value::Timestamp` (scheduled
+/// tick time in nanoseconds since Unix epoch) on each tick. The channel has capacity 1; if the
+/// receiver is slow, ticks are dropped (non-blocking `try_send`) so that a slow consumer never
+/// builds up an unbounded backlog.
+///
+/// Backward compatibility: also accepts a bare Int (treated as milliseconds).
 pub(crate) fn builtin_timer_channel(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -1145,10 +1148,21 @@ pub(crate) fn builtin_timer_channel(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let ms_thunk = take_one_thunk("timer-channel", &args, named.as_ref(), call_span.clone())?;
-        let ms_val = materialize(&ms_thunk, Some(&call_span), &ctx).await?;
+        let interval_thunk =
+            take_one_thunk("timer-channel", &args, named.as_ref(), call_span.clone())?;
+        let interval_val = materialize(&interval_thunk, Some(&call_span), &ctx).await?;
 
-        let interval_ms = match ms_val {
+        let interval_ms = match interval_val {
+            // Duration is stored as nanoseconds (i64) — divide by 1_000_000 to get milliseconds
+            Value::Duration(nanos) if nanos >= 1_000_000 => (nanos / 1_000_000) as u64,
+            Value::Duration(nanos) => {
+                return Err(EvalError::user_error(
+                    format!("timer-channel: interval must be ≥ 1 ms, got {} ns", nanos),
+                    call_span,
+                )
+                .into())
+            }
+            // Backward compatibility: accept bare Int as milliseconds
             Value::Int(n) if n >= 1 => n as u64,
             Value::Int(n) => {
                 return Err(EvalError::user_error(
@@ -1157,7 +1171,14 @@ pub(crate) fn builtin_timer_channel(
                 )
                 .into())
             }
-            _ => return Err(EvalError::type_mismatch("Int", ms_val.type_name(), call_span).into()),
+            _ => {
+                return Err(EvalError::type_mismatch(
+                    "Duration or Int",
+                    interval_val.type_name(),
+                    call_span,
+                )
+                .into())
+            }
         };
 
         // Capacity 1: non-blocking try_send drops ticks if the receiver is slow.
@@ -1176,8 +1197,13 @@ pub(crate) fn builtin_timer_channel(
                         break;
                     }
                     _ = interval.tick() => {
+                        // Get current time as nanoseconds since Unix epoch.
+                        let now_nanos = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos() as i64;
                         // Non-blocking: if the receiver hasn't consumed the previous tick, drop this one.
-                        let _ = tx_clone.try_send(Value::Dict(IndexMap::new()));
+                        let _ = tx_clone.try_send(Value::Timestamp(now_nanos));
                     }
                 }
             }
@@ -1195,18 +1221,28 @@ pub(crate) fn builtin_timer_channel(
     })
 }
 
-/// `watch-channel`: Create a watch channel backed by `tokio::sync::watch`.
+/// `watch-channel`: Create a filesystem watch channel.
 ///
-/// Signature: `Any → [Seq Channel Channel]`
+/// Signature: `DirCap → String → Channel@Null`
 ///
-/// Returns a 2-element list `[recv-channel update-channel]`:
-/// - `recv-channel`: receives the latest value whenever it changes (use `recv`).
-/// - `update-channel`: send a new value here to update the watch (use `send`).
+/// Watches the file or directory at the given path (resolved relative to the DirCap)
+/// and sends `Value::Dict([])` (null) on the channel whenever the file's metadata changes.
+/// Uses polling-based detection: checks `modified()` timestamp every 1 second.
 ///
-/// The initial value is sent immediately, so the first `recv` returns without waiting.
-/// Watch semantics: each change overwrites the previous unseen value (last-write-wins).
-/// A background task bridges the watch into the mpsc so callers use the standard
-/// `send`/`recv` builtins throughout.
+/// The channel has capacity 1; if the consumer is slow, only the most recent event is
+/// retained (last-write-wins semantics).
+///
+/// Example usage:
+/// ```tinct
+/// dir: [builtin-dir-cap "."]
+/// ch: [builtin-watch-channel dir "config.toml"]
+/// # Modifying config.toml will produce a recv event after ~1 second
+/// event: [builtin-recv ch]  # blocks until file changes
+/// ```
+///
+/// Implementation note: This is a simplified polling-based watcher. A production-grade
+/// implementation would use the `notify` crate for OS-level filesystem events (inotify,
+/// FSEvents, etc.), but this polling approach has no external dependencies.
 pub(crate) fn builtin_watch_channel(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -1217,83 +1253,77 @@ pub(crate) fn builtin_watch_channel(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let init_thunk = take_one_thunk("watch-channel", &args, named.as_ref(), call_span.clone())?;
-        let init_val = materialize(&init_thunk, Some(&call_span), &ctx).await?;
+        let (dir_cap_thunk, path_thunk) =
+            take_two_thunks("watch-channel", &args, named.as_ref(), call_span.clone())?;
+        let dir_cap_val = materialize(&dir_cap_thunk, Some(&call_span), &ctx).await?;
+        let path_val = materialize(&path_thunk, Some(&call_span), &ctx).await?;
 
-        // watch channel: holds the latest value; watch_rx.changed() fires on each update.
-        let (watch_tx, watch_rx) = tokio::sync::watch::channel(init_val);
-
-        // Read side: mpsc channel that forwards each watch change to the recv caller.
-        // Capacity 1: last-write-wins — if the consumer is slow it sees the most recent value.
-        let (read_tx, read_rx) = tokio::sync::mpsc::channel::<Value>(1);
-        let read_tx_clone = read_tx.clone();
-        let mut watch_rx_reader = watch_rx.clone();
-        let cancel_token_forward = ctx.cancel.clone();
-
-        // Forward task: watch → mpsc read channel.
-        // Sends the initial value immediately, then forwards each subsequent change.
-        // Uses try_send (non-blocking) to preserve last-value-wins semantics: if the
-        // consumer hasn't read the previous value, the new one overwrites it by dropping
-        // the old one. This prevents the forward task from suspending and starving other
-        // cooperative tasks in the LocalSet.
-        let handle1 = crate::async_rt::spawn_local(async move {
-            // Send the current (initial) value; drop silently if the channel is full
-            // (capacity-1 channel just allocated, so this should always succeed on first call).
-            let initial = watch_rx_reader.borrow().clone();
-            let _ = read_tx_clone.try_send(initial);
-
-            loop {
-                tokio::select! {
-                    biased;
-                    _ = cancel_token_forward.cancelled() => {
-                        break;
-                    }
-                    result = watch_rx_reader.changed() => {
-                        if result.is_err() {
-                            // Watch sender dropped — stop forwarding.
-                            break;
-                        }
-                        let val = watch_rx_reader.borrow().clone();
-                        // Non-blocking: if the consumer is slow, the old value is dropped (last-value-wins).
-                        // Ignore send errors (consumer dropped — stop forwarding on next changed() call).
-                        let _ = read_tx_clone.try_send(val);
-                    }
-                }
+        // Extract DirCap
+        let dir = match dir_cap_val {
+            Value::DirCap { dir, perms: _ } => dir,
+            _ => {
+                return Err(
+                    EvalError::type_mismatch("DirCap", dir_cap_val.type_name(), call_span).into(),
+                )
             }
-        });
+        };
 
-        // Register background task for drain tracking
-        ctx.task_registry.lock().unwrap().push(handle1);
+        // Extract path String
+        let path = match path_val {
+            Value::String { source, start, end } => source[start..end].to_string(),
+            _ => {
+                return Err(
+                    EvalError::type_mismatch("String", path_val.type_name(), call_span).into(),
+                )
+            }
+        };
 
-        // Update side: mpsc channel that the user sends new values to; a bridge task reads
-        // from it and writes into the watch.
-        let (update_tx, update_rx_bridge) = tokio::sync::mpsc::channel::<Value>(8);
-        let update_tx_clone = update_tx.clone();
+        // Create the channel (capacity 1 for last-write-wins)
+        let (tx, rx) = tokio::sync::mpsc::channel::<Value>(1);
+        let tx_clone = tx.clone();
+        let cancel_token = ctx.cancel.clone();
 
-        // Dummy receiver for the ChannelInner receiver field (the real receiver is
-        // consumed by the bridge task below). Users of watch-channel send to the update
-        // channel; they never recv from it.
-        let (_dummy_update_tx, dummy_update_rx) = tokio::sync::mpsc::channel::<Value>(1);
+        // Spawn the filesystem polling task
+        let handle = crate::async_rt::spawn_local(async move {
+            // Get the initial metadata to establish a baseline
+            let mut last_modified = match dir.metadata(&path) {
+                Ok(meta) => meta.modified().ok(),
+                Err(_) => None,
+            };
 
-        // Bridge task: mpsc update channel → watch sender.
-        let mut update_rx_bridge = update_rx_bridge;
-        let cancel_token_bridge = ctx.cancel.clone();
-        let handle2 = crate::async_rt::spawn_local(async move {
             loop {
                 tokio::select! {
                     biased;
-                    _ = cancel_token_bridge.cancelled() => {
+                    _ = cancel_token.cancelled() => {
                         break;
                     }
-                    result = update_rx_bridge.recv() => {
-                        match result {
-                            Some(val) => {
-                                // Ignore errors (all readers dropped).
-                                let _ = watch_tx.send(val);
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                        // Check current metadata
+                        match dir.metadata(&path) {
+                            Ok(meta) => {
+                                if let Some(current_modified) = meta.modified().ok() {
+                                    // Compare with last known modification time
+                                    // Only send if we have a previous baseline AND it's different
+                                    if let Some(last) = last_modified {
+                                        if current_modified != last {
+                                            // File changed — send null on the channel
+                                            // Use try_send (non-blocking) for last-write-wins semantics
+                                            let _ = tx_clone.try_send(Value::Dict(IndexMap::new()));
+                                            last_modified = Some(current_modified);
+                                        }
+                                    } else {
+                                        // File appeared — treat as a change
+                                        let _ = tx_clone.try_send(Value::Dict(IndexMap::new()));
+                                        last_modified = Some(current_modified);
+                                    }
+                                }
                             }
-                            None => {
-                                // Channel closed
-                                break;
+                            Err(_) => {
+                                // File no longer exists or is inaccessible — treat as a change
+                                if last_modified.is_some() {
+                                    let _ = tx_clone.try_send(Value::Dict(IndexMap::new()));
+                                    last_modified = None;
+                                }
                             }
                         }
                     }
@@ -1302,51 +1332,15 @@ pub(crate) fn builtin_watch_channel(
         });
 
         // Register background task for drain tracking
-        ctx.task_registry.lock().unwrap().push(handle2);
+        ctx.task_registry.lock().unwrap().push(handle);
 
-        // Build the recv Channel value.
-        let recv_channel = Value::Channel(Arc::new(crate::value::ChannelInner {
-            sender: read_tx,
-            receiver: tokio::sync::Mutex::new(read_rx),
+        // Build and return the Channel value
+        let channel_inner = crate::value::ChannelInner {
+            sender: tx,
+            receiver: tokio::sync::Mutex::new(rx),
             capacity: 1,
-        }));
-
-        // Build the update Channel value.
-        // The receiver slot holds a stub rx; callers `send` to this channel to update the watch.
-        let update_channel = Value::Channel(Arc::new(crate::value::ChannelInner {
-            sender: update_tx_clone,
-            receiver: tokio::sync::Mutex::new(dummy_update_rx),
-            capacity: 8,
-        }));
-
-        // Return [recv-channel update-channel] as a Seq.
-        let recv_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            recv_channel,
-            call_span.clone(),
-        )));
-        let update_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            update_channel,
-            call_span.clone(),
-        )));
-        let empty_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(IndexMap::new()),
-            call_span.clone(),
-        )));
-        let tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Seq {
-                head: update_id,
-                tail: empty_id,
-            },
-            call_span.clone(),
-        )));
-        let seq_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Seq {
-                head: recv_id,
-                tail: tail_id,
-            },
-            call_span,
-        )));
-        Ok(ctx.get_thunk(seq_id))
+        };
+        ok_val(Value::Channel(Arc::new(channel_inner)), call_span)
     })
 }
 
@@ -1437,7 +1431,8 @@ pub(crate) fn builtin_with_cancel(
         let child_ctx_val = Value::Context(child_token);
         let cancel_val = Value::Context(cancel_token);
 
-        let mut result = IndexMap::new();
+        // Build the payload dict with the same structure as before
+        let mut payload_dict = IndexMap::new();
         let child_ctx_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             child_ctx_val,
             call_span.clone(),
@@ -1446,10 +1441,22 @@ pub(crate) fn builtin_with_cancel(
             cancel_val,
             call_span.clone(),
         )));
-        result.insert(Key::String("child-ctx".into()), child_ctx_id);
-        result.insert(Key::String("cancel".into()), cancel_id);
+        payload_dict.insert(Key::String("child-ctx".into()), child_ctx_id);
+        payload_dict.insert(Key::String("cancel".into()), cancel_id);
 
-        ok_val(Value::Dict(result), call_span)
+        // Wrap the dict in a Variant with tag "CancelHandle"
+        let payload_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Dict(payload_dict),
+            call_span.clone(),
+        )));
+
+        ok_val(
+            Value::Variant {
+                tag: "CancelHandle".to_string(),
+                payload: Some(payload_thunk_id),
+            },
+            call_span,
+        )
     })
 }
 

@@ -1,4 +1,4 @@
 # Interpolated strings - parser emits [tmpl "raw-template"]; macro expands to [str ...]
-i"Hello $name"
+[name: "World"  greeting: i"Hello $name"]
 === out
-[call tmpl "Hello $name"]
+[name: "World"  greeting: [call tmpl "Hello $name"]]

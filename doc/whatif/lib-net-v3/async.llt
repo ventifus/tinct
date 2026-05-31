@@ -1,8 +1,12 @@
-# stdlib/async.llt — async channel operators (extends runtime-v2 stdlib/async.llt).
+# stdlib/async.llt — async channel operators.
 # Part of: lib-net-v3
-# channel-map and channel-flat-map are not networking-specific; they live here so
-# protocol files (tls.llt, wireguard.llt, noise.llt) can import async.llt without
-# pulling in the full serve.llt protocol stack.
+#
+# MIGRATION NOTE: task, await, send, recv, channel, loop-select, context,
+# cancel-task, cancel-root, drain, exit, graceful-exit, etc. are all defined in
+# stdlib/prelude.llt. This file provides channel-map, channel-flat-map, and
+# collect-channel — higher-level channel combinators built on those prelude primitives.
+# Do NOT [include %libdir "async.llt"] from protocol files; all concurrency
+# primitives are available without any import.
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
@@ -16,21 +20,29 @@
   # 1:1 — apply f concurrently to each incoming element.
   # Inner tasks run to completion even after the outer loop exits (clean shutdown via drain/exit).
   # The ByteStream constraint on f's argument propagates to in-ch@[Channel element] at the call site.
+  # recv returns [Ok x] | [Closed]; the step loop exits naturally when the input channel closes.
   channel-map: [fn@[bind: [element result]] [let f]
     [fn@[return: [Channel result]] [let in-ch@[Channel element]  buffer-size@[type: Int  default: 64]]
       [out: [channel buffer-size]]
-      [task [loop [fn []
-        [x: [recv in-ch]]
-        [task [send out [f x]]]]]]
+      [task
+        [let step [fn []
+          [match [recv in-ch]
+            [Closed]: []
+            [Ok x]:   [[task [send out [f x]]] [step]]]]]
+        [step]]
       out]]
 
   # 1:N — apply f to each element; f emits multiple items to the shared output channel.
+  # recv returns [Ok x] | [Closed]; the step loop exits naturally when the input channel closes.
   channel-flat-map: [fn@[bind: [element item]] [let f]
     [fn@[return: [Channel item]] [let in-ch@[Channel element]  buffer-size@[type: Int  default: 256]]
       [out: [channel buffer-size]]
-      [task [loop [fn []
-        [x: [recv in-ch]]
-        [task [f x out]]]]]
+      [task
+        [let step [fn []
+          [match [recv in-ch]
+            [Closed]: []
+            [Ok x]:   [[task [f x out]] [step]]]]]
+        [step]]
       out]]
 
   # Snapshot items currently buffered in a channel without racing a concurrent producer.

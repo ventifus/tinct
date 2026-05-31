@@ -75,21 +75,22 @@ tinct run data.llt filter.llt
 
 **Interaction with `emit`:**
 
-When any file in the pipeline calls `emit`, the string is written directly to stdout. `emit` is purely additive — it does not affect whether the CLI produces output or what format is used. CLI output is controlled entirely by the `-o <formatter>` flag. `emit` is useful for logging, debugging, or producing side-channel text output:
+`emit v` sends a value to the `%emit` channel — a bounded `Channel@Any` created by `eval-programs` and injected into every program's scope. The output formatter (the final program in the pipeline) drains `%emit` concurrently, serializing each received value to `%stdout`. Output formatting is controlled entirely by the `-o <formatter>` flag; `emit` is agnostic to the serializer.
 
 ```tinct
-# log.llt (debugging example)
-[emit [str "processing " [str [length %.users]] " users\n"]]
+# filter.llt — emit matching spans; the output formatter serializes each
+[each [fn [let s]
+  [if [> s.stall-us 1000]
+    [emit s]
+    []]] %]
 ```
 
 ```bash
-tinct run data.llt log.llt -o json
-# Output to stdout:
-# processing 2 users
-# {"users": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]}
+tinct run filter.llt -o stream < spans.llt-stream   # stream-to-stream pipeline
+tinct run filter.llt -o json  < spans.llt-stream    # emit records as NDJSON
 ```
 
-Without the `-o` flag, `tinct run` produces no automatic output at the end (no JSON serialization). Any `emit` calls still write to stdout.
+Without the `-o` flag, `tinct run` uses `stdlib/cli/out/none.llt` as the default output program: it drains `%emit` discarding all values, forces `%` to drive the evaluation cascade for side effects, and writes nothing to stdout.
 
 **Pipeline semantics:**
 
@@ -739,10 +740,55 @@ The document pipeline and include mechanism are built on eight user-callable Rus
 
 These functions are defined in prelude and available to all tinct code:
 
+- **`eval-program`** — evaluate a `Program` value as a pipeline, threading `%` through its documents; gains `emit-ch` as a third parameter (see §Output Program Contract below)
+- **`eval-programs`** — evaluate a list of programs sequentially with `%` threading; creates the `%emit` channel once and injects it into every program via `eval-program`
 - **`eval-document-pipeline`** — evaluate a file's documents, threading `%` and named sections; injects `%include-dir` into every document's scope
-- **`eval-file`** — evaluate a parsed file AST dict with an explicit initial `%` and `include-dir`  
+- **`eval-file`** — evaluate a parsed file AST dict with an explicit initial `%` and `include-dir`
 - **`include`** — load, expand, and evaluate a file from a DirCap; content-addressed memoization with circular include detection
 - **`cli-pipeline`** — evaluate multiple files sequentially with `%` threading (the `tinct run` multi-file pipeline)
+
+## Output Program Contract
+
+Every `tinct run` pipeline ends with an output program — the file selected by `-o`, or `stdlib/cli/out/none.llt` by default. All output programs follow the same three-part concurrent contract:
+
+1. **Drain `%emit`** — receive emitted values as they arrive; serialize each to `%stdout`.
+2. **Force `%`** — materialize the lazy return value of the previous pipeline stage; serialize every Seq element or scalar return value, including null (`[]`).
+3. **Await both** before exiting — the drain task must finish consuming any emits triggered during forcing.
+
+`%emit` and `%stdout` are capability handles in every output program's scope:
+
+- **`%emit`** — a bounded `Channel@Any` (64 slots) created by `eval-programs` and shared across all programs in the pipeline. `emit v` is `[send %emit v]`. The output program is the last to hold a reference; when it exits, the channel closes.
+- **`%stdout`** — a writable `Handle` to actual stdout, injected by the CLI.
+
+Forcing `%` drives the evaluation cascade and triggers any `emit` calls deferred inside lazy structures, so the drain must run concurrently — not sequentially after forcing:
+
+```tinct
+# Output programs are sequential document expressions — NOT a single dict.
+# Dict entries are lazy thunks and would never execute.
+[drain: [task
+  [loop-select [context] [[%emit [fn [let v]
+    [write %stdout [SERIALIZER v]]]]] identity]]]
+
+[if [seq? %]
+  [reduce [fn [let _ x]
+    [write %stdout [SERIALIZER x]]] [] %]
+  [write %stdout [SERIALIZER %]]]
+
+[await drain]
+```
+
+`loop-select` returns `[Closed]` when all channels are exhausted — no exception for normal termination, no `try` needed.
+
+**Custom output formatters** follow the same contract: start a drain task on `%emit`, force `%`, await the task. Only `[SERIALIZER v]` changes. Custom formatters live in `stdlib/cli/out/` and are selected with `-o <name>`.
+
+**`eval-programs` wiring:**
+
+```text
+user program  ──%emit──▶  output program  ──%stdout──▶  actual stdout
+(emit producer)           (emit consumer + forces %)
+```
+
+`eval-programs` creates `%emit` once and injects it into every program's scope. `%` is threaded sequentially — each program's return value becomes `%` for the next. The CLI injects `%stdout` and other capability handles but does not create or touch `%emit`.
 
 ### `%include-dir`
 
@@ -943,37 +989,29 @@ This matches the document isolation property of DOC-PIPELINE (§Scope Chain Sema
 | DOC-PIPELINE (cross-ref) | `eval_surface_file_with_input` (`eval_pipeline.rs`) |
 | SEQ-SCOPE (cross-ref) | `eval_document_exprs` (canonical loop, `eval_pipeline.rs`); `eval_surface_document` delegates to it |
 
-## Pure Language, CLI Handles I/O
+## Side Effects and I/O
 
-Tinct is a pure data transformation language with no in-language side effects, modulo `$include`, which performs filesystem I/O as a controlled side effect with sandboxing (similar to Nix's `import` and Dhall's `import`). The program evaluates to a value; the CLI serializes it:
+Tinct is a lazy data transformation language. Side effects are explicit operations on capability handles that must be in scope — they cannot happen accidentally through lazy evaluation, because lazy dict entries are never forced unless something demands their value.
+
+**Explicit side effects:**
+
+- **`emit v`** = `[send %emit v]` — sends a value to the output channel. Returns `[]`. The output formatter serializes it.
+- **`write handle bytes`** — writes bytes or strings to a writable Handle (`%stdout`, a file, a socket).
+- **`send channel value`** — sends a value on any channel.
+- **`include path`** — loads, expands, and evaluates a file from a DirCap; content-addressed memoization with circular include detection.
+
+**Why explicit?** Side-effecting expressions buried in lazy dict entries may never execute, and execution order is unpredictable. Making side effects require explicit capability handles and explicit forcing (sequential document expressions, `task`, `await`) gives the programmer control over when and whether effects fire.
+
+**Capability model:** `%stdout`, `%stdin`, `%emit`, `%libdir` are capability handles injected at the CLI boundary. Programs receive only the handles they need; there is no ambient I/O. `%emit` is created and owned by `eval-programs`, not the CLI — programs produce output through the channel, not by writing to stdout directly.
 
 ```sh
-tinct run file.llt              # evaluate, output result as JSON
-tinct run --eval file.llt       # deep-materialize all thunks before serializing (surfaces errors before partial output)
-tinct run -                     # read Tinct source from stdin
-cat data.json | tinct run file.llt  # stdin JSON parsed and injected as % for first document
+tinct run file.llt                           # evaluate; none.llt forces %, discards output
+tinct run -o json file.llt                   # evaluate; json.llt serializes % and %emit to stdout
+tinct run -                                  # read tinct source from stdin
+cat data.json | tinct run file.llt           # stdin JSON parsed and injected as % for first document
 ```
 
-**Default output formatter:** The JSON output produced by `tinct run` is generated by `stdlib/out/json.llt` — a pure-tinct JSON serializer that lives in the standard library. This formatter is user-visible: you can inspect it, customize it, or use it directly in your own programs via `[include libdir "out/json.llt"]`. If `stdlib/out/json.llt` is not found (e.g. when running the binary without the stdlib installed), the CLI falls back to a built-in Rust serializer. The output is indented (2-space pretty-printed) by default.
-
-This is the Jsonnet/Nix model: the language produces data, an external tool handles I/O. Unreferenced dict entries are never computed. There is no `$write`, `$read`, `$stdout`, `$stdin`, or channel system.
-
-`$eval` is a runtime-supported function that recursively materializes all thunks in its argument. It performs full materialization: the entire structure is materialized in memory. The implementation caps recursion at depth 256 and returns an error if exceeded. On infinite or cyclic structures, `$eval` will hit the depth limit rather than diverging. Use `$take` to bound infinite sequences before passing them to `$eval`.
-
-```tinct
-# Without eval: CLI serializes lazily (streaming, may partially output then hit an error)
-[result: [map %.data [fn [x] [+ x 1]]]]
-
-# With eval: everything materialized in memory first (errors caught before any output)
-[result: [eval [map %.data [fn [x] [+ x 1]]]]]
-
-# Safe on infinite sequences: take bounds before eval
-[result: [eval [take 100 %.sequence]]]
-```
-
-**Why pure?** In-language I/O in a lazy language creates a materialization problem: side-effecting expressions buried in lazy dict entries may never execute, and execution order becomes unpredictable. By making the language pure, lazy evaluation is semantically transparent — the result is the same regardless of evaluation order. The CLI is the only I/O boundary, and it materializes exactly what it needs to serialize the output.
-
-**Security:** External input (stdin, files) is parsed by the CLI and injected as structured data (`%`). The language never evaluates untrusted input as code. `$from-json` is a pure function that converts a JSON string to a dict — safe on untrusted input.
+**Security:** External input (stdin, files) is parsed by the CLI and injected as structured data (`%`). The language evaluates tinct code only via explicit `[eval ...]` and `[load ...]` calls — `eval` operates on AST node values, not on untrusted strings. `[from-json s]` is a pure function that converts a JSON string to a tinct value — safe on untrusted input.
 
 ## Literate Mode
 

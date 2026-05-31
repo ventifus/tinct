@@ -1,12 +1,11 @@
 # stdlib/net.llt — core networking types, typeclasses, and transport functions.
 # Part of: lib-net-v3
 #
-# Circular import: net.llt → dns.llt → tls.llt → net.llt (ByteStream).
-# All type/typeclass declarations appear before the dns.llt import so tls.llt
-# can access ByteStream when it loads. Tinct's lazy evaluation handles the cycle.
-
-[include %rust "net"]     # tcp-bind, tcp-accept, tcp-connect, udp-socket, udp-recv, udp-send, try-recv, channel-count
-[include %rust "io"]      # read-bytes, write-bytes, channel, task, send, recv, loop, exit
+# Rust primitives are accessed via --- uses: headers (builtin-privacy design).
+# net.llt declares --- uses: ["net"] to bring transport and IO builtins into scope.
+# Other protocol files that use Rust primitives declare --- uses: ["net"] in their
+# own document headers — they do NOT get builtins by including net.llt.
+--- uses: ["net"]
 
 # ── IO Typeclasses ────────────────────────────────────────────────────────────────────────────────
 
@@ -19,8 +18,13 @@
   recv-datagram: [Fn@UdpDatagram [d]]]
 
 [class [let MessageStream s t]
-  send-message: [Fn@Null [s t]]
-  recv-message: [Fn@t [s]]]
+  # FD: s determines t (each MessageStream type has exactly one message type)
+  send: [Fn@Null [s t]]
+  recv: [Fn@[or [Ok t] [Closed]] [s]]]
+
+[class [let Codec c input output]
+  encode: [Fn@output [c input]]
+  decode: [Fn@input  [c output]]]
 
 [class [let Listener l]
   accept: [Fn@Handle [l]]]
@@ -40,40 +44,47 @@
 
 # ── Typeclass Instances ───────────────────────────────────────────────────────────────────────────
 
-[instance ByteStream [pattern [h@Handle]]:
+[instance [ByteStream Handle]
   read-bytes:  builtin-read-bytes
   write-bytes: builtin-write-bytes]
 
-[instance Datagram [pattern [d@UdpSocket]]:
+[instance [Datagram UdpSocket]
   send-datagram: builtin-udp-send
   recv-datagram: builtin-udp-recv]
 
-[instance MessageStream [pattern [s@[Channel t] t]]:
-  send-message: send
-  recv-message: recv]
+# ConnectedUdp: peer is fixed at creation; send-datagram ignores the address argument.
+[instance [Datagram ConnectedUdp]
+  send-datagram: [fn [let conn@ConnectedUdp _@SocketAddress data@Bytes]
+    [send-datagram conn.sock conn.peer data]]
+  recv-datagram: [fn [let conn@ConnectedUdp]
+    [recv-datagram conn.sock]]]
 
-[instance Listener [pattern [l@TcpListener]]:
+[instance@[bind: [t]] [MessageStream [Channel t] t]
+  send: builtin-send
+  recv: builtin-recv]   # returns [Ok v] | [Closed] (B-192)
+
+[instance [Listener TcpListener]
   accept: tcp-accept]
 
-[instance Indexed [pattern [s@Bytes e@UInt8]]:
+[instance [Indexed Bytes UInt8]
   get:    [fn [let b@Bytes i@Int]           builtin-bytes-get]
   slice:  [fn [let b@Bytes s@Int n@Int]     builtin-bytes-slice]
   length: [fn [let b@Bytes]                 builtin-bytes-length]]
 
-[instance Indexed [pattern [s@[Seq T] e@T]]:
+[instance@[bind: [T]] [Indexed [Seq T] T]
   get:    [fn [let s@[Seq T] i@Int]         builtin-seq-get]
   slice:  [fn [let s@[Seq T] s2@Int n@Int]  builtin-seq-slice]
   length: [fn [let s@[Seq T]]               builtin-seq-length]]
 
-[instance ByteLabel [pattern [t@ByteOrder a@UInt16 b@[Bytes 2]]]:
+[instance [ByteLabel ByteOrder UInt16 [Bytes 2]]
   encode: [fn [let order@ByteOrder v@UInt16]   builtin-encode-u16 order v]
   decode: [fn [let order@ByteOrder b@[Bytes 2]] builtin-decode-u16 order b]]
 
-[instance ByteLabel [pattern [t@ByteOrder a@UInt32 b@[Bytes 4]]]:
+[instance [ByteLabel ByteOrder UInt32 [Bytes 4]]
   encode: [fn [let order@ByteOrder v@UInt32]   builtin-encode-u32 order v]
   decode: [fn [let order@ByteOrder b@[Bytes 4]] builtin-decode-u32 order b]]
 
-[instance ByteLabel [pattern [t@ByteOrder a@UInt64 b@[Bytes 8]]]:
+[instance [ByteLabel ByteOrder UInt64 [Bytes 8]]
   encode: [fn [let order@ByteOrder v@UInt64]   builtin-encode-u64 order v]
   decode: [fn [let order@ByteOrder b@[Bytes 8]] builtin-decode-u64 order b]]
 
@@ -84,16 +95,19 @@
   happy-connect: [fn [let cap@NetCap port@Int addrs@[Seq IpAddress]]
     [result-ch:  [channel 1]
      attempt-ms: 250]
-    [tasks: [collect [map-indexed [fn [let i addr]
+    [tasks: [collect [map [fn [let e]
+      [i: e.0  addr: e.1]
       [task
-        [await [timer-channel %clock [millis (* i attempt-ms)]]]
+        [recv [timer-channel %clock [millis (* i attempt-ms)]]]
         [match [try [tcp-connect cap [addr: addr  port: [@Port port]]]]
           [Ok  h]: [try [send result-ch h]]
           [Err _]: null]]]
-      addrs]]]
-    [result: [recv result-ch]]
-    [par-map [fn [let t] [cancel-task t]] tasks]
-    result]
+      [entries addrs]]]]
+    [match [recv result-ch]
+      [Closed]: [error "happy-connect: all connection attempts failed"]
+      [Ok h]:
+        [par-map [fn [let t] [cancel-task t]] tasks]
+        h]]
 
   ipv6-canonical: [fn [let b@[Bytes 16]] builtin-ipv6-canonical]
 
@@ -110,9 +124,23 @@
     [Ipv6     [Bytes 16]]
     [Ipv6Zone [Bytes 16] zone@String]]
 
+  # Address extends IpAddress with a resolvable hostname.
+  # IpAddress stays IP-only (used for SocketAddress, DNS results, bind targets, etc.).
+  Address: [union
+    [Ipv4     [Bytes 4]]
+    [Ipv6     [Bytes 16]]
+    [Ipv6Zone [Bytes 16] zone@String]
+    [Hostname String]]
+
   Port: [type Int@[is: [between 0 65535]  repr: "u16"]]
 
   SocketAddress: [type [addr: IpAddress  port: Port]]
+
+  # HostPort: the subject of connect. Bundles Address + Port so the endpoint is a single value.
+  # Subject-last: [connect %net Tcp [HostPort [Hostname "api.example.com"] 443]]
+  # Partial application works: [connect %net Http] is a Fn@c [HostPort].
+  # Use SocketAddress for places that need a resolved IP (bind targets, UDP send, DNS results).
+  HostPort: [union [HostPort addr@Address port@Port]]
 
   UdpDatagram: [type
     [src:     SocketAddress
@@ -162,21 +190,40 @@
   udp-ephemeral: [fn [let cap@NetCap]
     [udp-socket cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: 0]]]]
 
-  # Happy Eyeballs v2 (RFC 8305). Respects %dns.single-request.
-  connect-host: [fn [let cap@NetCap host@String port@Int]
-    [config: %dns]
-    [resolved:
-      [if config.single-request
-        [v6: [match [try [dns-resolve cap host AAAA]] [Ok a]: a [Err _]: []]
-         v4: [match [try [dns-resolve cap host A]]    [Ok a]: a [Err _]: []]]
-        [v6-task: [task [dns-resolve cap host AAAA]]
-         v4-task: [task [dns-resolve cap host A]]
-         v6-first: [match [timeout [millis 50] v6-task] [Ok a]: a [Err _]: []]
-         v4: [await v4-task]
-         v6: [if [= [] v6-first]
-           [match [try [await v6-task]] [Ok a]: a [Err _]: []]
-           v6-first]]]]
-    [happy-connect cap port [interleave resolved.v6 resolved.v4]]]
+  # HttpConnect typeclass: generic request dispatch across H1/H2/H3 connections.
+  # Enables [request req conn] to resolve to the right implementation based on conn type.
+  # Subject-last: req first, connection (subject) last.
+  [class [HttpConnect c]
+    request: [Fn@[Task RawResponse] [c RawRequest]]]
+
+  # Transport typeclass: protocol type p determines connection type c.
+  # determines: [p → c] is a functional dependency: given p, c is uniquely determined.
+  # Transport instances live in dns.llt (they need dns-resolve-ip for [Hostname h]).
+  #
+  # HostPort is the subject (last) — subject-last enables partial application:
+  #   [connect %net Tcp]   → Fn@Handle [HostPort]
+  #   [connect %net Http]  → Fn@HttpConnection [HostPort]
+  #
+  # Usage — connect is always the bottom of a protocol stack:
+  #   [connect %net Tcp  [HostPort [Hostname "api.example.com"] 443]] | tls | h2
+  #   [connect %net Udp  [HostPort [Hostname "api.example.com"] 443]] | quic | h3
+  #   [connect %net Http [HostPort [Hostname "api.example.com"] 443]]  # SVCB-aware
+  #
+  # Resolution: Happy Eyeballs for all [Hostname h] — parallel A+AAAA, 50ms IPv6 head start,
+  # interleaved addresses. Tcp races connections (250ms stagger, first success wins).
+  # Udp picks the first from the interleaved list (no connection to race).
+  [class [Transport p] determines: [p → c]
+    connect: [Fn@c [NetCap p HostPort]]]
+
+  [type [Tcp]]
+  [type [Udp]]
+
+  # ConnectedUdp: a UDP socket with a fixed peer address (for use as Datagram in protocol stacks).
+  # Created by [connect cap addr Udp port]. No new Rust primitive needed — built from udp-socket.
+  # send-datagram ignores the address argument (peer is fixed); recv-datagram passes through.
+  ConnectedUdp: [type [sock: UdpSocket  peer: SocketAddress]]
+
+  # connect: see dns.llt for Transport instances (Tcp and Udp).
 
   ip->string: [fn [let addr@IpAddress]
     [match addr
@@ -214,7 +261,7 @@
       [[fn [let pairs]
          [reduce [fn [let acc pair]
            [kv: [str-split "=" pair]]
-           [assoc acc [get kv 0] [if [> [length kv] 1] [get kv 1] ""]]]
+           [merge acc [[get kv 0]: [if [> [length kv] 1] [get kv 1] ""]]]]
           [] pairs]]
        [str-split "&" q]]]]
 
@@ -226,9 +273,4 @@
       [if [null? u.query]    "" [str "?" u.query]]
       [if [null? u.fragment] "" [str "#" u.fragment]]]]
 
-  # Re-exported from dns.llt so callers have one import point.
-  resolve-host: dns-resolve-host
-  dns-resolve:  dns-resolve-ip
 ]
-
-[include %libdir "dns.llt"]

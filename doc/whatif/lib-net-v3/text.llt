@@ -1,5 +1,6 @@
-# stdlib/text.llt — TextCodec typeclass + encoding_rs backend (~38 WHATWG encodings).
+# stdlib/codecs/text.llt — TextCodec typeclass + encoding_rs backend (~38 WHATWG encodings).
 # Part of: lib-net-v3
+--- uses: ["text"]
 
 [include %libdir "net.llt"]
 
@@ -15,19 +16,19 @@
 [type [ISO2022JP]]
 # ... all ~38 WHATWG encodings backed by encoding_rs
 
-[instance TextCodec [pattern [c@UTF8]]:
+[instance [TextCodec UTF8]
   encode:       [fn [let _ s@String] [Ok [builtin-utf8-encode s]]]
   decode:       [fn [let _ b@Bytes]  [builtin-utf8-decode b]]
   decode-lossy: [fn [let _ b@Bytes]  [builtin-utf8-decode-lossy b]]
   codec-name:   [fn [let _] "utf-8"]]
 
-[instance TextCodec [pattern [c@UTF16LE]]:
+[instance [TextCodec UTF16LE]
   encode:       [fn [let _ s@String] [builtin-encoding-encode "utf-16le" s]]
   decode:       [fn [let _ b@Bytes]  [builtin-encoding-decode "utf-16le" b]]
   decode-lossy: [fn [let _ b@Bytes]  [builtin-encoding-decode-lossy "utf-16le" b]]
   codec-name:   [fn [let _] "utf-16le"]]
 
-[instance TextCodec [pattern [c@Windows1252]]:
+[instance [TextCodec Windows1252]
   encode:       [fn [let _ s@String] [builtin-encoding-encode "windows-1252" s]]
   decode:       [fn [let _ b@Bytes]  [builtin-encoding-decode "windows-1252" b]]
   decode-lossy: [fn [let _ b@Bytes]  [builtin-encoding-decode-lossy "windows-1252" b]]
@@ -38,7 +39,7 @@
 [
   # Returns the charset name as a bare String, or null if not found.
   extract-charset: [fn [let content-type@String]
-    [charset-parts: [filter [fn [let p] [str-contains? [str-lower p] "charset="]]
+    [charset-parts: [filter [fn [let p] [str-contains? [lower p] "charset="]]
                      [str-split ";" content-type]]]
     [match charset-parts
       []: null
@@ -50,27 +51,30 @@
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
-  Codec: [type
+  # TextEncoding: a runtime record for dynamic dispatch (e.g. from HTTP Content-Type header).
+  # Named TextEncoding to avoid collision with the Codec typeclass from net.llt.
+  # For static dispatch, use the TextCodec typeclass instances directly.
+  TextEncoding: [type
     [name:         String
      encode:       [Fn [String] [Result Bytes]]
      decode:       [Fn [Bytes] [Result String]]
      decode-lossy: [Fn [Bytes] String]]]
 
-  TextBytes: [type [data: Bytes  codec: Codec]]
+  TextBytes: [type [data: Bytes  encoding: TextEncoding]]
 
-  to-codec: [fn@[bind: [c]  return: Codec  constraint: [c: TextCodec]] [let c@c]
-    [Codec
+  to-encoding: [fn@[bind: [c]  return: TextEncoding  constraint: [c: TextCodec]] [let c@c]
+    [TextEncoding
       [name:         [codec-name c]
        encode:       [fn [let s] [encode c s]]
        decode:       [fn [let b] [decode c b]]
        decode-lossy: [fn [let b] [decode-lossy c b]]]]]
 
   # builtin-encoding-for-name returns the canonical WHATWG encoding name (bare String) or null.
-  codec-for-name: [fn [let name@String]
-    [internal: [builtin-encoding-for-name [str-lower name]]]
+  encoding-for-name: [fn [let name@String]
+    [internal: [builtin-encoding-for-name [lower name]]]
     [if [null? internal]
       [Err [str "Unknown charset: " name]]
-      [Ok [Codec
+      [Ok [TextEncoding
         [name:         internal
          encode:       [fn [let s] [builtin-encoding-encode internal s]]
          decode:       [fn [let b] [builtin-encoding-decode internal b]]
@@ -78,10 +82,10 @@
 
   text-encode: [fn@[bind: [c]  return: TextBytes  constraint: [c: TextCodec]] [let c@c s@String]
     [match [encode c s]
-      [Ok b]:  [TextBytes [data: b  codec: [to-codec c]]]
+      [Ok b]:  [TextBytes [data: b  encoding: [to-encoding c]]]
       [Err e]: [error e]]]
 
-  text-decode: [fn [let tb@TextBytes] [tb.codec.decode tb.data]]
+  text-decode: [fn [let tb@TextBytes] [tb.encoding.decode tb.data]]
 
   encode: [fn@[bind: [c]  return: [Result Bytes]  constraint: [c: TextCodec]] [let c@c s@String]
     [encode c s]]
@@ -94,8 +98,8 @@
 
   decode-http-body: [fn [let body@Bytes content-type@String]
     [cs: [extract-charset content-type]]   # bare String or null
-    [codec: [if [null? cs]
-      [to-codec UTF8]
-      [match [codec-for-name cs] [Ok c]: c [Err _]: [to-codec UTF8]]]]
-    [codec.decode-lossy body]]
+    [enc: [if [null? cs]
+      [to-encoding UTF8]
+      [match [encoding-for-name cs] [Ok e]: e [Err _]: [to-encoding UTF8]]]]
+    [enc.decode-lossy body]]
 ]

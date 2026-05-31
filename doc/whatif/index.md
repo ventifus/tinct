@@ -7,6 +7,16 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 
 ---
 
+## Accepted
+
+Proposals formally accepted into the project. Implementation sprints exist in the tracker.
+
+| Proposal | Summary | Accepted |
+|----------|---------|----------|
+| [Tinct Stream Format — Stdlib-Closed Normal Form](data-streaming.md) | SCN streaming format for tinct-to-tinct pipes; `emit` via `%emit` channel; concurrent output program contract; `-i stream`/`-o stream`; `to-tinct` serializer; eliminates serde_json from profiling | 2026-05-30 |
+
+---
+
 ## Type System
 
 | Proposal | Summary |
@@ -76,7 +86,7 @@ Completed proposals are archived in [doc/whatif/completed/](completed/).
 |----------|---------|
 | [Stdlib Architecture — The Rust/tinct Boundary](stdlib-architecture.md) | **Merged into async-eval.md.** See §Rust/tinct Boundary, §Serve and Connect Layers, §Stdlib Module Map. |
 | [Value Serializer Visitor](value-serializer-visitor.md) | Shared traversal for `value_to_json` + `value_to_display_string`; defer until a third format is needed |
-| [Tinct Stream Format — Stdlib-Closed Normal Form](data-streaming.md) | Stream records are stdlib-closed normal forms: tinct expressions with non-stdlib free variables inlined by value; `-o stream` uses `emit` to write SCN per record; `-i stream` evaluates each record in stdlib env; preserves computational structure across pipes; eliminates serde_json from profiling |
+| [Tinct Stream Format — Stdlib-Closed Normal Form](data-streaming.md) | **Accepted 2026-05-30.** See §Accepted above. |
 
 ## Formal Verification
 

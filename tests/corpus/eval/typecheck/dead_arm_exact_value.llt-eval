@@ -1,0 +1,7 @@
+[match 42
+  [case "hello" 1]
+  [case 42 2]]
+=== out
+Int(2)
+=== warn
+dead match arm

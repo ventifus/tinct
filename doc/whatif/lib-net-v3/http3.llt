@@ -1,7 +1,6 @@
-# stdlib/protocols/h3.llt — HTTP/3 (RFC 9114) + QPACK (RFC 9204) in tinct.
+# stdlib/protocols/http3.llt — HTTP/3 (RFC 9114) + QPACK (RFC 9204) in tinct.
 # Part of: lib-net-v3
 
-[include %libdir "async.llt"]
 [include %include-dir "quic.llt"]
 [include %include-dir "http1.llt"]
 
@@ -49,6 +48,16 @@
         frame.payload]]]
 ]
 
+# HttpConnect instance for Http3Connection.
+[instance [HttpConnect Http3Connection]
+  request: request]
+
+# QPACK codec: HTTP/3 header compression (RFC 9204).
+# encode: headers → QPACK-encoded Bytes; decode: QPACK Bytes → headers.
+[instance [Codec QpackCodec Headers Bytes]
+  encode: qpack-encode
+  decode: qpack-decode]
+
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
@@ -68,13 +77,16 @@
   h3-accept: [fn [let conn@QuicConnection]
     [error "TODO: h3-accept — open control/QPACK streams, send SETTINGS, recv peer SETTINGS"]]
 
-  h3-connect: [fn [let conn@QuicConnection]
-    [error "TODO: h3-connect — open control/QPACK streams, send SETTINGS, recv peer SETTINGS"]]
+  # h3: fires the QUIC+TLS handshake (adding alpn: ["h3"]) then sets up HTTP/3 streams.
+  # Receives PendingQuicHandle from | quic, not a committed QuicConnection.
+  h3: [fn [let pqh@PendingQuicHandle]
+    [conn: [quic-commit [with-alpn pqh ["h3"]]]]
+    [error "TODO: h3 — open control/QPACK streams, send SETTINGS, recv peer SETTINGS → Http3Connection"]]
 
-  http3-client: [fn [let conn@QuicConnection] [h3-connect conn]]
+  http3-client: [fn [let conn@QuicConnection] [h3 conn]]
 
-  h3-http-request: [fn [let conn@Http3Connection req@RawRequest]
-    [error "TODO: h3-http-request — open QUIC stream, send HEADERS (qpack-encode), send DATA, read response HEADERS+DATA"]]
+  request: [fn [let conn@Http3Connection req@RawRequest]
+    [error "TODO: request — open QUIC stream, send HEADERS (qpack-encode), send DATA, read response HEADERS+DATA"]]
 
   http3-req-conn: [fn [let conn@Http3Connection out@[Channel RawRequest]]
     [error "TODO: http3-req-conn — read incoming QUIC streams, qpack-decode HEADERS, emit RawRequest with respond fn"]]
@@ -90,4 +102,10 @@
 
   qpack-encode: [fn [let headers@[Map String String]]
     [error "TODO: qpack-encode — literal field line without name reference (safe default)"]]
+
+  # Serve layer: promote each incoming QUIC connection to an Http3Connection.
+  h3-serve: [_ | [channel-map h3-accept]]
+
+  # Request-extraction: each Http3Connection yields its request streams.
+  http3-requests: [_ | [channel-flat-map http3-req-conn]]
 ]

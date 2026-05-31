@@ -384,8 +384,7 @@ Only constructs that affect **binding structure** or **dict construction** are s
 | `quote` | Captures AST as data without evaluating |
 | `unquote` | Splices values into quoted templates |
 | `unquote-splice` | Splices sequence elements into quoted list positions |
-| `defmacro` | Registers compile-time AST transformation |
-| `macro` | Defines a syntax transformer (compile-time macro) |
+| `macro` | Registers compile-time AST transformation |
 | `syntax-class` | Declares a named syntactic pattern class with a diagnostic message |
 
 A keyword followed by `:` is a dict entry, not a special form: `[call: something]` is a dict with key `call`.
@@ -752,7 +751,7 @@ ast.fn                     # → "+" (field access on Expression values)
 
 ### Macro Definition
 
-`[macro name [let params] body]` registers a compile-time AST transformation. `[defmacro ...]` is a backward-compatible alias for `[macro ...]`.
+`[macro name [let params] body]` registers a compile-time AST transformation.
 
 ```tinct
 [macro my-when [let pred body]

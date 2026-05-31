@@ -402,6 +402,37 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
         }
     }
 
+    // Manual overrides for prelude functions whose types may be degraded to Error
+    // when the prelude has type-checking failures. These functions are called by
+    // core language features (triple-quoted strings → unindent, $include → include),
+    // so they must have correct types even if the prelude body has errors.
+    //
+    // Same pattern as `get`/`get?` restoration above: always inject the authoritative
+    // type signature to ensure these core language features work correctly.
+    //
+    // `unindent`: used by triple-quoted string desugaring `"""...""" → [unindent "..."]`
+    // Type: String → String
+    env.insert(
+        "unindent".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+        },
+    );
+
+    // `include`: used by $include expression desugaring
+    // Type: DirCap → String → Unknown (return type is Any in prelude)
+    // The third parameter (integrity-hash) has a default value, so it's not in params.
+    env.insert(
+        "include".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str)],
+            ret: Box::new(Type::Unknown),
+            variadic: true,
+        },
+    );
+
     // Propagate capability type aliases from the builtins env to the user-facing env.
     // These are registered in build_builtins_type_env() (e.g. NetCap, DirCap, Handle, Url)
     // and must be available for @NetCap / @DirCap / @Handle annotations in user code.

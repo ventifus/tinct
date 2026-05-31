@@ -4,14 +4,19 @@
 [include %libdir "net.llt"]
 [include %libdir "serve.llt"]
 [include %libdir "compress.llt"]
+[include %libdir "protocols/dns.llt"]   # for connect-host and dns-resolve
 [include %include-dir "http1.llt"]
-[include %include-dir "h2.llt"]
-[include %include-dir "h3.llt"]
-[include %include-dir "tls.llt"]
+[include %include-dir "http2.llt"]
+[include %include-dir "http3.llt"]
+[include %include-dir "tls13.llt"]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
+  # Alias the prelude async `timeout` before the public dict's `timeout` middleware shadows it.
+  async-timeout:   timeout
+
+  # TODO: verify get? exists in prelude (get-or with null default); map-from-pairs unverified
   svcb-alpn:       [fn [let p] [or [get? p "alpn"]     []]]
   svcb-ipv4-hints: [fn [let p] [or [get? p "ipv4hint"] []]]
   svcb-ipv6-hints: [fn [let p] [or [get? p "ipv6hint"] []]]
@@ -24,32 +29,36 @@
      h3?:       [any? [fn [let p] [= p "h3"]] alpn]
      h2?:       [any? [fn [let p] [= p "h2"]] alpn]]
     [h3-tasks: [if h3?
-      [collect [map-indexed [fn [let i addr]
+      [collect [map [fn [let e]
+        [i: e.0  addr: e.1]
         [task
-          [await [timer-channel %clock [millis (* i 250)]]]
+          [recv [timer-channel %clock [millis (* i 250)]]]
           [match [try [quic-h3-connect cap host addr port ech]]
             [Ok h]:  [try [send result-ch h]]
             [Err _]: null]]]
-       addrs]] []]]
+       [entries addrs]]] []]]
     [h2-tasks: [if h2?
-      [collect [map-indexed [fn [let i addr]
+      [collect [map [fn [let e]
+        [i: e.0  addr: e.1]
         [task
-          [await [timer-channel %clock [millis [+ [if h3? 250 0] (* i 250)]]]]
+          [recv [timer-channel %clock [millis [+ [if h3? 250 0] (* i 250)]]]]
           [match [try [tcp-h2-connect cap host addr port ech]]
             [Ok h]:  [try [send result-ch h]]
             [Err _]: null]]]
-       addrs]] []]]
-    [result: [recv result-ch]]
-    [par-map [fn [let t] [cancel-task t]] [append h3-tasks h2-tasks]]
-    result]
+       [entries addrs]]] []]]
+    [match [recv result-ch]
+      [Closed]: [error "http-connect: all protocol connection attempts failed"]
+      [Ok result]:
+        [par-map [fn [let t] [cancel-task t]] [append h3-tasks h2-tasks]]
+        result]]
 
   quic-h3-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Int ech@Bytes]
     [quic-connect cap [addr: addr  port: [@Port port]]
                   [sni: sni  alpn: ["h3"]  ech: ech  trust-roots: SystemRoots]]]
 
   tcp-h2-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Int ech@Bytes]
-    [tls-layer [tcp-connect cap [addr: addr  port: [@Port port]]]
-               [sni: sni  alpn: ["h2"]  ech: ech  trust-roots: SystemRoots]]]
+    [[tcp-connect cap [addr: addr  port: [@Port port]]]
+      | [tls-layer [sni: sni  alpn: ["h2"]  ech: ech  trust-roots: SystemRoots]]]]
 
   scheme-default-port: [fn [let scheme@String]
     [match scheme "https": 443  "http": 80  _: 443]]
@@ -57,13 +66,16 @@
   # max-decompressed: ceiling on decompressed output size (bytes).
   # Default 256 MB. Enforced by the Rust builtins (builtin-gzip-decode etc.)
   # which error if decompressed output would exceed the limit — prevents zip bombs.
+  # codec-for-encoding returns a CompressedCodec whose decode field closes over the limit.
   decompress-response: [fn [let resp@RawResponse  max-decompressed@[type: Int  default: 268435456]]
     [ce: [get? resp.headers "content-encoding"]]
     [body:
-      [if [= ce "gzip"]    [match [decode Gzip    resp.body max-decompressed] [Ok b]: b [Err _]: resp.body]
-      [if [= ce "br"]      [match [decode Brotli  resp.body max-decompressed] [Ok b]: b [Err _]: resp.body]
-      [if [= ce "zstd"]    [match [decode Zstd    resp.body max-decompressed] [Ok b]: b [Err _]: resp.body]
-                            resp.body]]]]
+      [match [codec-for-encoding [or ce "identity"]]
+        [let c@CompressedCodec]:
+          [if [= c.name "identity"]
+            resp.body
+            [match [try [c.decode resp.body]] [Ok b]: b [Err _]: resp.body]]
+        null: resp.body]]
     [if [= body resp.body]
       resp
       [RawResponse [status: resp.status  headers: resp.headers  body: body]]]]
@@ -85,7 +97,7 @@
     [http1-serve [tcp-listen-port cap port]]]
 
   http-channel-tls: [fn [let cap@NetCap port@Port cert@TlsServerConfig]
-    [http1-serve [tls-serve [tcp-listen-port cap port] cert]]]
+    [http1-serve [[tcp-listen-port cap port] | [tls-serve cert]]]]
 
   resolve-svcb: [fn [let cap@NetCap host@String depth@Int]
     [if [> depth 3]
@@ -109,7 +121,7 @@
     [svcb-task: [task [resolve-svcb cap host 0]]
      v6-task:   [task [dns-resolve cap host AAAA]]
      v4-task:   [task [dns-resolve cap host A]]]
-    [svcb: [match [timeout [millis 50] svcb-task] [Ok r]: r [Err _]: null]]
+    [svcb: [match [async-timeout [millis 50] svcb-task] [Ok r]: r [Err _]: null]]
     [match svcb
       [let sm@ServiceMode]:
         [v6: [if [empty? sm.ipv6]
@@ -124,7 +136,7 @@
           [match [try [await v6-task]] [Ok a]: a [Err _]: []]
           [await v4-task]]]
         [raw: [happy-connect cap port addrs]]
-        [tls-layer raw [sni: host  alpn: ["h2" "http/1.1"]  ech: []  trust-roots: SystemRoots]]]]
+        [raw | [tls-layer [sni: host  alpn: ["h2" "http/1.1"]  ech: []  trust-roots: SystemRoots]]]]]
 
   # max-decompressed: ceiling on decompressed body (default 256 MB); prevents zip bombs.
   fetch: [fn [let cap@NetCap url@Url  max-decompressed@[type: Int  default: 268435456]]
@@ -138,26 +150,26 @@
   fetch-h1: [fn [let cap@NetCap url@Url]
     [host: [or url.host [error "fetch-h1: no host"]]]
     [port: [or url.port [scheme-default-port url.scheme]]]
-    [raw:  [connect-host cap host port]]
+    [raw:  [connect cap [Hostname host] Tcp port]]
     [http1-request raw "GET" url.path [] [] host]]
 
   router: [fn [let routes@[Seq [Seq t]]]
     [fn [let req@RawRequest]
       # find returns [Some x] or [None] (prelude function — constructs explicit Maybe).
-      [match [find [fn [let route] [str-starts-with? req.path [get route 0]]] routes]
+      [match [find [fn [let route] [starts-with? req.path [get route 0]]] routes]
         [Some route]: [[get route 1] req]
         [None]:       not-found]]]
 
   headers-map: [fn [let req@RawRequest] req.headers]
 
-  # SECURITY: disable with-compression on endpoints that reflect user-controlled
+  # SECURITY: disable compression on endpoints that reflect user-controlled
   # input alongside secrets in the same compressed stream — CRIME/BREACH attacks
   # exploit compression ratio leakage when attacker-controlled and secret bytes
   # share a compressed context.
   #
   # registry: optional user codecs passed through to negotiate-encoding.
-  with-compression: [fn [let handler@[Fn [RawRequest] RawResponse]
-                          registry@[type: [Map String CompressedCodec]  default: []]]
+  compression: [fn [let registry@[type: [Map String CompressedCodec]  default: []]
+                        handler@[Fn [RawRequest] RawResponse]]
     [fn [let req@RawRequest]
       [resp: [handler req]]
       [ae: [get? req.headers "accept-encoding"]]
@@ -168,36 +180,36 @@
           resp
           [RawResponse
             [status:  resp.status
-             headers: [assoc resp.headers "content-encoding" codec.name]
+             headers: [merge resp.headers ["content-encoding": codec.name]]
              body:    [codec.encode resp.body]]]]]]]
 
-  with-logging: [fn [let handler@[Fn [RawRequest] RawResponse]]
+  logging: [fn [let handler@[Fn [RawRequest] RawResponse]]
     [fn [let req@RawRequest]
       [t0:   [now %clock]]
       [resp: [handler req]]
       [log [str req.method " " req.path " → " resp.status " (" [timestamp-diff [now %clock] t0] "ms)"]]
       resp]]
 
-  with-timeout: [fn [let ms@Int handler@[Fn [RawRequest] RawResponse]]
+  timeout: [fn [let ms@Int handler@[Fn [RawRequest] RawResponse]]
     [fn [let req@RawRequest]
-      [match [try [await [timeout [millis ms] [task [handler req]]]]]
+      [match [try [await [async-timeout [millis ms] [task [handler req]]]]]
         [Ok resp]: resp
         [Err _]:   [RawResponse [status: 503  headers: []  body: [str-bytes "Request timeout"]]]]]]
 
-  with-cors: [fn [let origins@[Seq String] handler@[Fn [RawRequest] RawResponse]]
+  cors: [fn [let origins@[Seq String] handler@[Fn [RawRequest] RawResponse]]
     [fn [let req@RawRequest]
       [origin:  [or [get? req.headers "origin"] "*"]]
       [allowed: [if [empty? origins] true [any? [fn [let o] [= o origin]] origins]]]
       [resp: [handler req]]
       [if allowed
         [RawResponse [status: resp.status  body: resp.body
-          headers: [merge resp.headers [map-from-pairs
-            [["access-control-allow-origin"  origin]
-             ["access-control-allow-methods" "GET, POST, PUT, DELETE, OPTIONS"]
-             ["access-control-allow-headers" "content-type, authorization"]]]]]]
+          headers: [merge resp.headers
+            ["access-control-allow-origin":  origin
+             "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS"
+             "access-control-allow-headers": "content-type, authorization"]]]]
         resp]]]
 
-  with-auth: [fn [let check@[Fn [RawRequest] Bool] handler@[Fn [RawRequest] RawResponse]]
+  auth: [fn [let check@[Fn [RawRequest] Bool] handler@[Fn [RawRequest] RawResponse]]
     [fn [let req@RawRequest]
       [if [check req]
         [handler req]

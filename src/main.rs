@@ -34,6 +34,22 @@ enum PipelineStage {
 #[derive(Parser)]
 #[command(name = "tinct", version, about)]
 struct Cli {
+    /// Maximum virtual address space (bytes) the process may use. Enforced via
+    /// RLIMIT_AS. Default: 512 MB. Set to 0 to disable. (Unix only)
+    #[arg(long, value_name = "BYTES", global = true)]
+    max_memory: Option<u64>,
+
+    /// Maximum CPU time (seconds) the process may consume. Enforced via
+    /// RLIMIT_CPU. Sends SIGXCPU on soft limit, SIGKILL on hard limit.
+    /// Complements --timeout (wall-clock). (Unix only)
+    #[arg(long, value_name = "SECONDS", global = true)]
+    max_cpu: Option<u64>,
+
+    /// Maximum number of open file descriptors. Enforced via RLIMIT_NOFILE.
+    /// Default: 64. Set to 0 to disable. (Unix only)
+    #[arg(long, value_name = "COUNT", global = true)]
+    max_fds: Option<u64>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -73,22 +89,6 @@ enum Commands {
         /// environments where Landlock is not available).
         #[arg(long)]
         no_landlock: bool,
-
-        /// Maximum virtual address space (bytes) the process may use. Enforced via
-        /// RLIMIT_AS. Default: 512 MB. Set to 0 to disable. (Unix only)
-        #[arg(long, value_name = "BYTES")]
-        max_memory: Option<u64>,
-
-        /// Maximum CPU time (seconds) the process may consume. Enforced via
-        /// RLIMIT_CPU. Sends SIGXCPU on soft limit, SIGKILL on hard limit.
-        /// Complements --timeout (wall-clock). (Unix only)
-        #[arg(long, value_name = "SECONDS")]
-        max_cpu: Option<u64>,
-
-        /// Maximum number of open file descriptors. Enforced via RLIMIT_NOFILE.
-        /// Default: 64. Set to 0 to disable. (Unix only)
-        #[arg(long, value_name = "COUNT")]
-        max_fds: Option<u64>,
 
         /// Disable environment variable access. $env returns Null for all names.
         #[arg(long)]
@@ -320,6 +320,8 @@ enum LiterateMode {
     Eval,
     /// Evaluate blocks and output the Markdown with JSON results as comments after each block.
     Weave,
+    /// Extract blocks, type-check without evaluating.
+    Lint,
 }
 
 /// Structure to hold actual output for each block in literate mode.
@@ -333,6 +335,23 @@ struct BlockOutput {
 
 fn main() {
     let cli = Cli::parse();
+
+    // Apply resource limits globally (before subcommand dispatch).
+    // Skipped in debug builds: the default 512 MB RLIMIT_AS causes OOM when
+    // running CLI tests under `cargo test` (debug mode uses more virtual memory).
+    #[cfg(all(unix, not(debug_assertions)))]
+    if let Err(e) = setup_rlimits(cli.max_memory, cli.max_cpu, cli.max_fds) {
+        eprintln!("error: {e}");
+        process::exit(EXIT_ERROR);
+    }
+    // On non-Unix platforms (or debug builds), rlimit flags are accepted for CLI
+    // compatibility but have no effect.
+    #[cfg(any(not(unix), debug_assertions))]
+    {
+        let _ = cli.max_memory;
+        let _ = cli.max_cpu;
+        let _ = cli.max_fds;
+    }
 
     // Raise the process stack soft limit to match the hard limit (or 512MB if
     // the hard limit is higher). This allows large eval thread stacks in debug
@@ -370,9 +389,6 @@ fn main() {
             strict,
             timeout,
             no_landlock,
-            max_memory,
-            max_cpu,
-            max_fds,
             no_env,
             allow_env,
             no_cwd,
@@ -396,9 +412,6 @@ fn main() {
             strict,
             timeout.as_deref(),
             no_landlock,
-            max_memory,
-            max_cpu,
-            max_fds,
             no_env,
             allow_env,
             no_cwd,
@@ -1306,9 +1319,6 @@ fn run_eval(
     strict: bool,
     timeout: Option<&str>,
     no_landlock: bool,
-    max_memory: Option<u64>,
-    max_cpu: Option<u64>,
-    max_fds: Option<u64>,
     no_env: bool,
     allow_env: Vec<String>,
     no_cwd: bool,
@@ -1415,20 +1425,7 @@ fn run_eval(
         }
     }
 
-    // Apply rlimit resource caps (Unix only). Must happen early, before any
-    // significant allocation, so that any heap limit is immediately enforced.
-    // Skipped in debug builds: the default 512 MB RLIMIT_AS causes OOM when
-    // running CLI tests under `cargo test` (debug mode uses more virtual memory).
-    #[cfg(all(unix, not(debug_assertions)))]
-    setup_rlimits(max_memory, max_cpu, max_fds)?;
-    // On non-Unix platforms (or debug builds), rlimit flags are accepted for CLI
-    // compatibility but have no effect.
-    #[cfg(any(not(unix), debug_assertions))]
-    {
-        let _ = max_memory;
-        let _ = max_cpu;
-        let _ = max_fds;
-    }
+    // Resource limits are now applied globally in main() before subcommand dispatch.
 
     // Create stdlib environment
     let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
@@ -2807,6 +2804,10 @@ fn run_literate(config: &LiterateConfig) -> Result<(), String> {
                 print!("{markdown}");
                 return Ok(());
             }
+            LiterateMode::Lint => {
+                // Nothing to lint — clean exit.
+                return Ok(());
+            }
         }
     }
 
@@ -2823,6 +2824,11 @@ fn run_literate(config: &LiterateConfig) -> Result<(), String> {
         }
 
         LiterateMode::Weave => run_literate_weave(&markdown, &blocks, config),
+
+        LiterateMode::Lint => {
+            let tangled = literate::tangle(blocks);
+            run_literate_lint(&tangled, config)
+        }
     }
 }
 
@@ -3057,6 +3063,104 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
 
     println!("{output}");
 
+    Ok(())
+}
+
+/// Lint mode: type-check tangled tinct source without evaluating.
+///
+/// Extracts code blocks from Markdown, tangles them into a single pipeline source,
+/// parses and type-checks the result, then reports type errors and warnings to stderr.
+///
+/// Exit codes:
+/// - 0 if no errors (warnings allowed without --strict)
+/// - 1 if type errors found, or if warnings found with --strict
+///
+/// The base directory is derived from the Markdown file's parent directory.
+/// AMBIENT-OK: CLI literate-lint opening markdown file directory for include resolution.
+#[allow(clippy::disallowed_methods)]
+fn run_literate_lint(tangled: &str, config: &LiterateConfig) -> Result<(), String> {
+    let markdown_path = config.file_path;
+    let strict = config.strict;
+
+    // Parse the tangled source.
+    let output = parse(tangled).map_err(|e| {
+        if strict {
+            tinct::format_parse_error(&e, tangled, markdown_path)
+        } else {
+            format!("parse error in tangled tinct source: {e}")
+        }
+    })?;
+
+    // Convert to SurfaceProgram and resolve (runtime-v2 pipeline proof-of-concept).
+    let _resolution_table = tinct::resolve::resolve_surface_program(output.as_surface_program());
+    // Typecheck the SurfaceProgram (runtime-v2 pipeline proof-of-concept).
+    let (_type_errors, _type_annotation_table, _expects_resolved) =
+        tinct::typecheck::typecheck_surface_program_annotation_table(output.as_surface_program());
+
+    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
+    // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
+    let lint_base_dir = open_file_base_dir(markdown_path, "literate lint")?;
+    // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+    let mut program = output.program;
+    tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
+        &mut program,
+        false,
+        &lint_base_dir,
+    ))
+    .map_err(|e| format!("{e}"))?;
+    // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
+    tinct::desugar::desugar_surface_program(&mut program);
+    // Variable resolution pass (Phase 1 of arena allocation strategy).
+    let _resolution_table = tinct::resolve::resolve_surface_program(&program);
+    // Type check with prelude environment
+    let env = tinct::build_prelude_env();
+    let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
+        tinct::typecheck::typecheck_surface_program(&program, env);
+
+    // Collect all errors and warnings
+    let mut all_messages = Vec::new();
+
+    for e in &type_errors {
+        all_messages.push(tinct::format_type_error(e, tangled, markdown_path));
+    }
+
+    // In --strict mode, bump each diagnostic's level before display (Info→Warn, Warn→Err),
+    // then treat Err-level diagnostics as fatal. Mirrors run_eval and run_fmt behavior.
+    let mut has_fatal_diag = false;
+    for d in &diagnostics {
+        let effective = if strict {
+            let bumped_level = d.level.bump();
+            if bumped_level == tinct::DiagnosticLevel::Err {
+                has_fatal_diag = true;
+            }
+            tinct::TypeDiagnostic {
+                level: bumped_level,
+                message: d.message.clone(),
+                span: d.span.clone(),
+                code: d.code,
+            }
+        } else {
+            d.clone()
+        };
+        all_messages.push(format_type_diagnostic(&effective, tangled, markdown_path));
+    }
+
+    // Type errors always fatal; diagnostics (warnings) fatal only with --strict (at Err level)
+    let fatal_count = if strict {
+        type_errors.len() + if has_fatal_diag { 1 } else { 0 }
+    } else {
+        type_errors.len()
+    };
+
+    if !all_messages.is_empty() {
+        eprintln!("{}", all_messages.join("\n"));
+    }
+
+    if fatal_count > 0 {
+        return Err(format!("lint failed with {} issue(s)", fatal_count));
+    }
+
+    // Clean — exit 0 (no output on success)
     Ok(())
 }
 
@@ -4850,13 +4954,33 @@ Fix: use [let _: ConstructorName] to match the constructor tag without binding,
 or use a constructor that carries a payload if you need to extract a value."
         }
 
+        "T020" => {
+            "\
+T020: Dead match arm — pattern type disjoint from scrutinee type (type checker)
+
+A match arm has a pattern type that is provably disjoint from the scrutinee type,
+meaning the arm can never match at runtime. The type checker has determined that
+no value can inhabit both the scrutinee type and the pattern type simultaneously.
+
+Common examples:
+  - Pattern expects Int, but scrutinee is Str
+  - Pattern expects a specific constructor tag that the scrutinee type cannot produce
+
+This is a WARNING, not a hard error — the arm is still evaluated if somehow reached
+at runtime (e.g., if the type checker's knowledge was incomplete). However, under
+normal circumstances, this arm is unreachable.
+
+Fix: remove the dead arm, or if the types are incorrect, update the pattern type
+annotation or the scrutinee expression to align with the intended logic."
+        }
+
         _ => {
             return Err(format!(
                 "unknown error code: {code}\n\
-                 Run 'tinct explain <code>' with a valid code, e.g. E001 through E099 or T000-T004, T018, T019.\n\
+                 Run 'tinct explain <code>' with a valid code, e.g. E001 through E099 or T000-T004, T018-T020.\n\
                  Known codes: E001, E002, E010, E011, E020-E024, E030-E036, \
                  E040, E042-E043, E050-E057, E060, E063, E070, E080, E090, E099, \
-                 T000, T001, T002, T003, T004, T018, T019."
+                 T000, T001, T002, T003, T004, T018, T019, T020."
             ));
         }
     };

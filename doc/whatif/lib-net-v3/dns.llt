@@ -1,19 +1,21 @@
-# stdlib/dns.llt — DNS wire format, resolver factories, name resolution.
+# stdlib/protocols/dns.llt — DNS wire format, resolver factories, name resolution.
 # Part of: lib-net-v3
-# Exports dns-resolve-host and dns-resolve-ip; re-exported by net.llt as resolve-host/dns-resolve.
+# Exports dns-resolve-host and dns-resolve-ip. Include this directly when DNS resolution is needed.
 
 [include %libdir "net.llt"]
 [include %libdir "protocols/quic.llt"]   # quic-connect, quic-open-stream (DoQ resolver)
-[include %libdir "protocols/h3.llt"]     # http3-client, h3-http-request (DoH resolver)
+[include %libdir "protocols/http3.llt"]  # http3-client, h3-http-request (DoH resolver)
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
+  # TODO: verify random-id exists in prelude; str-chars verified (builtin-str-chars); get? unverified
+
   encode-dns-name: [fn [let name@String]
     [labels: [filter [fn [let s] [not [= s ""]]]
                [str-split "." [if [ends-with? name "."] name [str name "."]]]]]
     [concat
-      [concat-map [fn [let label]
+      [flat-map [fn [let label]
         [concat [bytes [length label]] [str-bytes label]]]
        labels]
       [bytes 0]]]
@@ -58,6 +60,12 @@
          [cons absolute searched]
          [append searched [list absolute]]]]]]
 
+  dns-query-with-retry: [fn [let cap@NetCap nameservers@[Seq Nameserver]
+                              name@String qtype@DnsQtype
+                              attempts@Int rotate@Bool timeout@Duration]
+    [dns-try-servers cap [if rotate [rotate-list nameservers] nameservers]
+                     name qtype attempts timeout]]
+
   dns-try-names: [fn [let cap@NetCap config@DnsConfig names@[Seq String] qtype@DnsQtype
                        cname-depth@[type: Int  default: 0]]
     [match names
@@ -75,7 +83,7 @@
   records->addrs: [fn [let records@[Seq DnsRecord] qtype@DnsQtype cap@NetCap cname-depth@[type: Int  default: 0]]
     [if [>= cname-depth 8]
       [error "DNS: CNAME chain too long (max 8)"]
-      [concat-map [fn [let r]
+      [flat-map [fn [let r]
         [match r
           [let [ARecord    addr _]]: [if [= qtype [A]]    [list [Ipv4 addr]] []]
           [let [AAAARecord addr _]]: [if [= qtype [AAAA]] [list [Ipv6 addr]] []]
@@ -91,10 +99,9 @@
     [resp: [await [h3-http-request client
       [method:  "POST"
        path:    path
-       headers: [map-from-pairs
-                  [["content-type"   "application/dns-message"]
-                   ["accept"         "application/dns-message"]
-                   ["content-length" [str [length wire]]]]]
+       headers: ["content-type":   "application/dns-message"
+                 "accept":         "application/dns-message"
+                 "content-length": [str [length wire]]]
        body: wire]]]]
     [if [not [= resp.status 200]]
       [error [str "DoH: HTTP " resp.status]]
@@ -196,9 +203,9 @@
       [encode BigEndian [@UInt16 [length resp.answers]]]
       [encode BigEndian [@UInt16 [length resp.authority]]]
       [encode BigEndian [@UInt16 [length resp.additional]]]
-      [concat-map encode-rr resp.answers]
-      [concat-map encode-rr resp.authority]
-      [concat-map encode-rr resp.additional]]]
+      [flat-map encode-rr resp.answers]
+      [flat-map encode-rr resp.authority]
+      [flat-map encode-rr resp.additional]]]
 
   dns-udp-resolver: [fn [let cap@NetCap addr@SocketAddress]
     [fn [let q@DnsQuery]
@@ -213,8 +220,7 @@
   dns-tls-resolver: [fn [let cap@NetCap addr@SocketAddress sni@String]
     [fn [let q@DnsQuery]
       [task
-        [raw: [tcp-connect cap addr]]
-        [tls: [tls-layer raw [sni: sni  alpn: []  ech: []  trust-roots: SystemRoots]]]
+        [tls: [[tcp-connect cap addr] | [tls-layer [sni: sni  alpn: []  ech: []  trust-roots: SystemRoots]]]]
         [dns-framed-send tls q]]]]
 
   dns-https-resolver: [fn [let cap@NetCap addr@SocketAddress sni@String path@String]
@@ -247,11 +253,31 @@
       [let [DohNameserver  addr sni path]]: [dns-https-resolver cap addr sni path]
       [let [DoqNameserver  addr sni]]:      [dns-quic-resolver  cap addr sni]]]
 
-  dns-query-with-retry: [fn [let cap@NetCap nameservers@[Seq Nameserver]
-                              name@String qtype@DnsQtype
-                              attempts@Int rotate@Bool timeout@Duration]
-    [dns-try-servers cap [if rotate [rotate-list nameservers] nameservers]
-                     name qtype attempts timeout]]
+  # Re-exported from internal dict so callers have one import point.
+  dns-query-with-retry: dns-query-with-retry
+
+  # resolve-address: resolve an Address to an interleaved [Seq IpAddress] via Happy Eyeballs.
+  # [Hostname h]: parallel A+AAAA with 50ms IPv6 head start, interleaved v6-first.
+  # IpAddress variants: returned as a single-element list (no DNS needed).
+  resolve-address: [fn [let cap@NetCap addr@Address]   # takes Address, not HostPort — used internally
+    [match addr
+      [let [Hostname h]]:
+        [config: %dns]
+        [if config.single-request
+          [v6: [match [try [dns-resolve-ip cap h AAAA]] [Ok a]: a [Err _]: []]
+           v4: [match [try [dns-resolve-ip cap h A]]    [Ok a]: a [Err _]: []]
+           [interleave v6 v4]]
+          [v6-task: [task [dns-resolve-ip cap h AAAA]]
+           v4-task: [task [dns-resolve-ip cap h A]]
+           v6-first: [match [timeout [millis 50] v6-task] [Ok a]: a [Err _]: []]
+           v4: [await v4-task]
+           v6: [if [= [] v6-first]
+             [match [try [await v6-task]] [Ok a]: a [Err _]: []]
+             v6-first]
+           [interleave v6 v4]]]
+      [let ip@IpAddress]: [list ip]]]
+
+  dns-resolve: dns-resolve-ip   # alias used by http.llt
 
   # Exported as dns-resolve-host; re-exported by net.llt as resolve-host.
   dns-resolve-host: [fn [let cap@NetCap host@String]
@@ -269,22 +295,73 @@
 
   dns-server-loop: [fn [let query-ch@[Channel DnsQuery]
                          handler@[Fn [DnsQuery] DnsResponse]]
-    [loop [fn []
-      [q: [recv query-ch]]
-      [task [q.respond [handler q]]]]]]
+    [let step [fn []
+      [match [recv query-ch]
+        [Closed]: []
+        [Ok q]:   [[task [q.respond [handler q]]] [step]]]]]
+    [step]]
 
   dns-udp-server: [fn [let cap@NetCap port@Port]
     [sock: [udp-socket cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: port]]]]
     [out:  [channel 256]]
-    [task [loop [fn []
-      [dg: [recv-datagram sock]]
-      [match [decode-dns-wire dg.data]
-        [Ok q]:
-          [send out [DnsQuery
-            [id:        q.id         name:      q.name
-             qtype:     q.qtype      recursive: q.recursive
-             respond:   [fn [let resp@DnsResponse]
-               [send-datagram sock dg.src [encode-dns-response resp]]]]]]
-        [Err _]: null]]]]
+    [task
+      [let step [fn []
+        [dg: [recv-datagram sock]]
+        [match [decode-dns-wire dg.data]
+          [Ok q]:
+            [send out [DnsQuery
+              [id:        q.id         name:      q.name
+               qtype:     q.qtype      recursive: q.recursive
+               respond:   [fn [let resp@DnsResponse]
+                 [send-datagram sock dg.src [encode-dns-response resp]]]]]]
+          [Err _]: null]
+        [step]]]
+      [step]]
     out]
+
+  # resolve-address: exported so callers can resolve without connecting.
+  resolve-address: resolve-address
 ]
+
+# Transport typeclass instances — live here because they need dns-resolve-ip.
+#
+# connect is always used as the bottom of a protocol stack:
+#   [connect %net [Hostname "db.internal"] Tcp 5432]
+#     | [tls-layer cfg]
+#     | [codec PostgresCodec]
+#
+# Happy Eyeballs applies universally to [Hostname h]:
+#   Tcp — parallel A+AAAA, 50ms v6 head start, race connections with 250ms stagger.
+#   Udp — same address resolution; pick first from interleaved list (no connection to race).
+
+[instance [Transport Tcp]
+  connect: [fn [let cap@NetCap _@Tcp ep@HostPort]
+    [let [HostPort addr port]: ep]
+    [addrs: [resolve-address cap addr]]
+    [if [empty? addrs] [error "connect: no addresses resolved"] null]
+    # Race TCP connections to addrs with 250ms stagger. First success wins; rest cancelled.
+    [result-ch:  [channel 1]
+     attempt-ms: 250]
+    [tasks: [collect [map [fn [let e]
+      [i: e.0  ip: e.1]
+      [task
+        [recv [timer-channel %clock [millis [* i attempt-ms]]]]
+        [match [try [tcp-connect cap [addr: ip  port: [@Port port]]]]
+          [Ok h]:  [try [send result-ch h]]
+          [Err _]: null]]]
+      [entries addrs]]]]
+    [match [recv result-ch]
+      [Closed]: [error [str "connect: all TCP connection attempts failed for " [str addr]]]
+      [Ok h]:
+        [par-map [fn [let t] [cancel-task t]] tasks]
+        h]]]
+
+[instance [Transport Udp]
+  connect: [fn [let cap@NetCap _@Udp ep@HostPort]
+    [let [HostPort addr port]: ep]
+    [addrs: [resolve-address cap addr]]
+    [if [empty? addrs] [error "connect: no addresses resolved"] null]
+    [peer: [addr: [get addrs 0]  port: [@Port port]]]
+    [ConnectedUdp
+      [sock: [udp-socket cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: 0]]]
+       peer: peer]]]]

@@ -1,0 +1,5 @@
+[match 43
+  [case 42]: "hit"
+  _: "miss"]
+---
+String("miss")

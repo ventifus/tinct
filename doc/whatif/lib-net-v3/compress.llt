@@ -1,105 +1,108 @@
 # stdlib/compress.llt — CompressionCodec typeclass + Rust-backed instances.
 # Part of: lib-net-v3
 # Rust backends: flate2 (gzip/deflate), brotli, zstd
-# Bulk only — no streaming. Streaming through the thunk system is impractically slow for HTTP bodies.
 #
-# Extensibility: define [type [MyCodec]] + [instance CompressionCodec [pattern [c@MyCodec]]: ...],
-# then pass [assoc [] "mycodec" [to-compressed-codec MyCodec]] as the registry argument
-# to codec-for-encoding and negotiate-encoding.
+# CompressionCodec refines the general Codec typeclass (Codec Bytes Bytes)
+# with an additional codec-name method for HTTP content-encoding negotiation.
+#
+# Extensibility: define [type [MyCodec]] + [instance [Codec MyCodec Bytes Bytes] ...] +
+# [instance [CompressionCodec MyCodec] codec-name: [fn [let _] "my-codec"]],
+# then pass [merge [] ["my-codec": [to-compressed-codec MyCodec]]] as the registry
+# argument to codec-for-encoding and negotiate-encoding.
+--- uses: ["compress"]
 
 [include %libdir "net.llt"]
 
-[class [let CompressionCodec c]
-  encode:     [Fn@Bytes          [c Bytes]]          # compress; always succeeds
-  decode:     [Fn@[Result Bytes] [c Bytes Int]]      # decompress; Err if corrupt or exceeds max
-  codec-name: [Fn@String         [c]]]               # IANA/HTTP content-encoding name
+# CompressionCodec refines Codec Bytes Bytes with an HTTP content-encoding name.
+# Superclass constraint [Codec c Bytes Bytes] is positional per class declaration syntax.
+[class [CompressionCodec c] [Codec c Bytes Bytes]
+  codec-name: [Fn [c@c] String]]
 
-[type [Gzip]]    [type [Deflate]]  [type [Brotli]]
-[type [Zstd]]    [type [Identity]]
+[type [GzipCodec]] [type [DeflateCodec]] [type [BrotliCodec]]
+[type [ZstdCodec]] [type [IdentityCodec]]
 
-[instance CompressionCodec [pattern [c@Gzip]]:
-  encode:     [fn [let _ b@Bytes] [builtin-gzip-encode b]]
-  decode:     [fn [let _ b@Bytes max@Int] [builtin-gzip-decode b max]]
+[instance [Codec GzipCodec Bytes Bytes]
+  encode: [fn [let _ b] [builtin-gzip-encode b]]
+  decode: [fn [let _ b] [builtin-gzip-decode b]]]
+[instance [CompressionCodec GzipCodec]
   codec-name: [fn [let _] "gzip"]]
 
-[instance CompressionCodec [pattern [c@Deflate]]:
-  encode:     [fn [let _ b@Bytes] [builtin-deflate-encode b]]
-  decode:     [fn [let _ b@Bytes max@Int] [builtin-deflate-decode b max]]
+[instance [Codec DeflateCodec Bytes Bytes]
+  encode: [fn [let _ b] [builtin-deflate-encode b]]
+  decode: [fn [let _ b] [builtin-deflate-decode b]]]
+[instance [CompressionCodec DeflateCodec]
   codec-name: [fn [let _] "deflate"]]
 
-[instance CompressionCodec [pattern [c@Brotli]]:
-  encode:     [fn [let _ b@Bytes] [builtin-brotli-encode b]]
-  decode:     [fn [let _ b@Bytes max@Int] [builtin-brotli-decode b max]]
+[instance [Codec BrotliCodec Bytes Bytes]
+  encode: [fn [let _ b] [builtin-brotli-encode b]]
+  decode: [fn [let _ b] [builtin-brotli-decode b]]]
+[instance [CompressionCodec BrotliCodec]
   codec-name: [fn [let _] "br"]]
 
-[instance CompressionCodec [pattern [c@Zstd]]:
-  encode:     [fn [let _ b@Bytes] [builtin-zstd-encode b]]
-  decode:     [fn [let _ b@Bytes max@Int] [builtin-zstd-decode b max]]
+[instance [Codec ZstdCodec Bytes Bytes]
+  encode: [fn [let _ b] [builtin-zstd-encode b]]
+  decode: [fn [let _ b] [builtin-zstd-decode b]]]
+[instance [CompressionCodec ZstdCodec]
   codec-name: [fn [let _] "zstd"]]
 
-[instance CompressionCodec [pattern [c@Identity]]:
-  encode:     [fn [let _ b@Bytes] b]
-  decode:     [fn [let _ b@Bytes _max@Int] [Ok b]]
+[instance [Codec IdentityCodec Bytes Bytes]
+  encode: [fn [let _ b] b]
+  decode: [fn [let _ b] b]]
+[instance [CompressionCodec IdentityCodec]
   codec-name: [fn [let _] "identity"]]
 
-# ── Internal. ────────────────────────────────────────────────────────────────────────────────────
+# ── Internal. ────────────────────────────────────────────────────────────────
 
 [
-  # to-compressed-codec lives here (private) so builtin-codec-for-name can call it.
-  # The public dict re-exports it by name.
-  to-compressed-codec: [fn@[bind: [c]  return: CompressedCodec  constraint: [c: CompressionCodec]]
-                          [let c@c]
+  to-compressed-codec: [fn@[bind: [c]  return: CompressedCodec
+                            constraint: [[c: Codec Bytes Bytes] [c: CompressionCodec]]]
+                         [let c@c]
     [CompressedCodec
       [name:   [codec-name c]
        encode: [fn [let b] [encode c b]]
-       decode: [fn [let b] [decode c b 268435456]]]]]
+       decode: [fn [let b] [decode c b]]]]]
 
-  # Returns CompressedCodec or null (bare value, not [Some ...]/[None]).
   builtin-codec-for-name: [fn [let lower@String]
     [match lower
-      "gzip":     [to-compressed-codec Gzip]
-      "deflate":  [to-compressed-codec Deflate]
-      "br":       [to-compressed-codec Brotli]
-      "brotli":   [to-compressed-codec Brotli]
-      "zstd":     [to-compressed-codec Zstd]
-      "identity": [to-compressed-codec Identity]
-      "*":        [to-compressed-codec Gzip]
-      _:          null]]
+      "gzip":     [to-compressed-codec GzipCodec]
+      "deflate":  [to-compressed-codec DeflateCodec]
+      "br":       [to-compressed-codec BrotliCodec]
+      "brotli":   [to-compressed-codec BrotliCodec]
+      "zstd":     [to-compressed-codec ZstdCodec]
+      "identity": [to-compressed-codec IdentityCodec]
+      "*":        [to-compressed-codec GzipCodec]
+      _:          []]]
 ]
 
-# ── Public API. ───────────────────────────────────────────────────────────────────────────────────
+# ── Public API. ───────────────────────────────────────────────────────────────
 
 [
-  CompressedBytes: [type [data: Bytes  codec: CompressedCodec]]
-
+  # CompressedCodec: a runtime record for dynamic dispatch (e.g. from HTTP headers).
+  # For static dispatch, use the Codec typeclass instances directly.
   CompressedCodec: [type
     [name:   String
-     encode: [Fn@Bytes          [Bytes]]
-     decode: [Fn@[Result Bytes] [Bytes]]]]
+     encode: [Fn [Bytes] Bytes]
+     decode: [Fn [Bytes] Bytes]]]
 
-  # Re-exported from private dict. CompressedCodec.decode uses 256 MB default max-decompressed.
   to-compressed-codec: to-compressed-codec
 
-  # Compile-time dispatch. encode/decode are shared with text.llt (TextCodec) and net.llt
-  # (ByteLabel) — dispatch is unambiguous: CompressionCodec, TextCodec, ByteLabel instances
-  # are disjoint. [encode Gzip b] → CompressionCodec; [encode UTF8 s] → TextCodec.
-  encode: [fn@[bind: [c]  return: Bytes         constraint: [c: CompressionCodec]] [let c@c b@Bytes] [encode c b]]
-  decode: [fn@[bind: [c]  return: [Result Bytes] constraint: [c: CompressionCodec]]
-           [let c@c b@Bytes  max@[type: Int  default: 268435456]]
-    [decode c b max]]
+  # Compose a CompressionCodec into a codec-stream pipeline.
+  # Applies compression to each chunk as it flows through the stream.
+  # Subject-last: byte-sink is last so this works as a pipeline stage.
+  compression-codec-stream: [fn@[bind: [c]] [let c@[CompressionCodec c] source byte-sink]
+    [source | [codec c] | [sink byte-sink]]]
 
-  encode-compressed: [fn [let c@CompressedCodec b@Bytes] [c.encode b]]
-  decode-compressed: [fn [let c@CompressedCodec b@Bytes] [c.decode b]]
-
+  # HTTP content negotiation.
   codec-for-encoding: [fn [let name@String  registry@[type: [Map String CompressedCodec]  default: []]]
-    [lower: [str-lower name]]
+    [lower: [lower name]]
     [or [get? registry lower] [builtin-codec-for-name lower]]]
 
   negotiate-encoding: [fn [let accept-encoding@String  registry@[type: [Map String CompressedCodec]  default: []]]
-    [candidates: [filter-map [fn [let part]
-                   [codec-for-encoding [str-trim [get [str-split ";" part] 0]] registry]]
-                 [str-split "," accept-encoding]]]
+    [candidates: [filter [fn [let c] [not [null? c]]]
+                   [map [fn [let part]
+                     [codec-for-encoding [str-trim [get [str-split ";" part] 0]] registry]]
+                   [str-split "," accept-encoding]]]]
     [if [empty? candidates]
-      [to-compressed-codec Identity]
+      [to-compressed-codec IdentityCodec]
       [get candidates 0]]]
 ]

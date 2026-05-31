@@ -928,15 +928,15 @@ For services that evaluate attacker-controlled tinct programs (playgrounds, API 
 **Flags for adversarial use:**
 
 ```bash
-tinct run --no-fs --timeout 5s --max-memory 64M --max-cpu 10 main.llt
+tinct --max-memory 64M --max-cpu 10 run --no-fs --timeout 5s main.llt
 ```
 
 | Flag | Effect |
 |------|--------|
 | `--no-fs` | Disables `$include` entirely (empty filesystem allowlist) |
 | `--timeout <dur>` | Wall-clock limit (e.g. `5s`, `500ms`); exit code 2 on expiry |
-| `--max-memory <size>` | Address space limit (e.g. `64M`, `512M`) |
-| `--max-cpu <secs>` | CPU time limit in seconds |
+| `--max-memory <size>` | Address space limit (e.g. `64M`, `512M`) — global flag |
+| `--max-cpu <secs>` | CPU time limit in seconds — global flag |
 
 **Exit codes:**
 
@@ -947,7 +947,7 @@ tinct run --no-fs --timeout 5s --max-memory 64M --max-cpu 10 main.llt
 | 2 | Timeout — wall-clock limit exceeded (`--timeout`) |
 | 3 | Resource limit — memory or CPU cap hit (SIGXCPU/SIGXFSZ) |
 
-**Architecture:** `tinct run` is the sandboxed process. The parent service uses the exit code to distinguish timeout (code 2) from hard resource exhaustion (code 3) from user errors (code 1). All four sandboxing layers (filesystem allowlist, network seccomp, rlimit, process seccomp) compose — `--no-fs --timeout 5s --max-memory 64M` enables all simultaneously.
+**Architecture:** `tinct run` is the sandboxed process. The parent service uses the exit code to distinguish timeout (code 2) from hard resource exhaustion (code 3) from user errors (code 1). All four sandboxing layers (filesystem allowlist, network seccomp, rlimit, process seccomp) compose — `--max-memory 64M run --no-fs --timeout 5s` enables all simultaneously.
 
 **Security note:** The `IncludeForbidden` error raised by `$include` in `--no-fs` mode is catchable via `$try` (intentional, following the Nix `tryEval` model for graceful degradation). An attacker can detect `--no-fs` mode by wrapping `$include` in `$try`. This is accepted because making the error uncatchable would prevent legitimate programs from falling back to embedded defaults when external config files are unavailable. See doc/10-errors.md §Special error properties for the full rationale.
 

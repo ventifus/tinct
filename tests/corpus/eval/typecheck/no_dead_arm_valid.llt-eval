@@ -1,0 +1,5 @@
+[match 42
+  [case [let n@Int] n]
+  [case [let m@Int] [+ m 1]]]
+=== out
+Int(42)

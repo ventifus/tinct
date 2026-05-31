@@ -266,113 +266,17 @@ pub struct ExpandSurfaceResult {
 /// a stdlib failure here surfaces as a missing macro error at call time rather than a
 /// hard crash during stdlib loading.
 async fn register_stdlib_macros_from_env(
-    env_macro: &mut MacroEnv,
-    stdlib_env: &Arc<RwLock<Environment>>,
+    _env_macro: &mut MacroEnv,
+    _stdlib_env: &Arc<RwLock<Environment>>,
 ) {
     // Register stdlib macros defined as dict entries in prelude.llt.
     // These functions are already evaluated and stored in stdlib_env by the prelude
     // bootstrap (create_stdlib_env_inner Phase 3+4). We register them here with their
     // param patterns so expand_macro_call_surface can quote args and invoke them as macros.
     //
-    // Each entry is: (macro_name, params_spec)
-    // params_spec is a slice of (&str, bool) = (param_name, is_variadic).
-    let stdlib_macro_specs: &[(&str, &[(&str, bool)])] = &[
-        ("tmpl", &[("template", false), ("parts", true)]),
-        ("do", &[("first", false), ("rest", true)]),
-        ("begin", &[("exprs", true)]),
-        ("syntax-fn", &[("p-params", false), ("macro-body", false)]),
-        ("syntax-class", &[("tvars", false)]),
-        ("syntax-type", &[("p-params", false), ("p-body", false)]),
-    ];
-
-    for (macro_name, param_specs) in stdlib_macro_specs {
-        register_stdlib_macro_by_name(env_macro, stdlib_env, macro_name, param_specs);
-    }
-
-    // Register "fn" as an alias for "syntax-fn" so macros that generate Call(VarRef("fn"), ...)
-    // nodes are intercepted by the syntax-fn transformer.
-    if let Some(transformer) = stdlib_env.read().unwrap().get("syntax-fn") {
-        let span = crate::ast::Span::origin();
-        let span_clone = span.clone();
-        let bindings: Vec<Arc<SurfaceNode>> = [("p-params", false), ("macro-body", false)]
-            .iter()
-            .map(|(name, variadic)| {
-                let expr = if *variadic {
-                    crate::ast::SurfaceExpression::Rest(Some(name.to_string()))
-                } else {
-                    crate::ast::SurfaceExpression::VarRef {
-                        name: name.to_string(),
-                        escaped: false,
-                    }
-                };
-                Arc::new(SurfaceNode {
-                    expr,
-                    span: span_clone.clone(),
-                })
-            })
-            .collect();
-        let params_node = Arc::new(SurfaceNode {
-            expr: crate::ast::SurfaceExpression::LetDecl { bindings },
-            span: span_clone.clone(),
-        });
-        let _ =
-            env_macro.register_macro("fn".to_string(), transformer, params_node, None, span_clone);
-    }
-}
-
-/// Register a single stdlib macro by looking up its transformer function from `stdlib_env`.
-///
-/// The function must already be evaluated in `stdlib_env` (as part of prelude evaluation).
-/// We construct a synthetic `[let ...]` params node for `expand_macro_call_surface` to use
-/// for syntax-class validation (no annotations here, so validation is a no-op).
-fn register_stdlib_macro_by_name(
-    env_macro: &mut MacroEnv,
-    stdlib_env: &Arc<RwLock<Environment>>,
-    macro_name: &str,
-    param_specs: &[(&str, bool)],
-) {
-    use crate::ast::SurfaceExpression;
-
-    // Look up the transformer function from stdlib_env.
-    let transformer = match stdlib_env.read().unwrap().get(macro_name) {
-        Some(thunk) => thunk,
-        None => return, // silently skip: transformer not yet loaded
-    };
-
-    // Construct a synthetic [let param1 ...param2 ...] LetDecl SurfaceNode.
-    // This is used by expand_macro_call_surface for syntax-class annotation validation;
-    // since stdlib macros have no annotations, validation is always a no-op.
-    let span = crate::ast::Span::origin();
-    let span_clone = span.clone();
-    let bindings: Vec<Arc<SurfaceNode>> = param_specs
-        .iter()
-        .map(|(name, variadic)| {
-            let expr = if *variadic {
-                SurfaceExpression::Rest(Some(name.to_string()))
-            } else {
-                SurfaceExpression::VarRef {
-                    name: name.to_string(),
-                    escaped: false,
-                }
-            };
-            Arc::new(SurfaceNode {
-                expr,
-                span: span_clone.clone(),
-            })
-        })
-        .collect();
-    let params_node = Arc::new(SurfaceNode {
-        expr: SurfaceExpression::LetDecl { bindings },
-        span: span_clone.clone(),
-    });
-
-    let _ = env_macro.register_macro(
-        macro_name.to_string(),
-        transformer,
-        params_node,
-        None, // no inject: default
-        span_clone,
-    );
+    // NOTE: All stdlib macros (tmpl, do, begin) are now [macro ...] declarations
+    // in prelude.llt and are auto-discovered by the pre-scan pass.
+    // syntax-fn/class/type were removed in T-789 (unified-bindings migration).
 }
 
 // Reentrance depth guard for expand_surface_program → create_stdlib_env calls.
@@ -499,6 +403,26 @@ pub async fn expand_surface_program(
         (env, ctx)
     };
     let ctx = Rc::new(ctx);
+
+    // Pre-scan prelude.llt to discover [macro] declarations (tmpl, do, begin).
+    // Macros are defined in prelude.llt but not expanded during bootstrap (the expand
+    // call was removed from create_stdlib_env_inner to avoid circular recursion).
+    // We parse and pre-scan here where the stdlib env is available for evaluating
+    // transformer bodies. Only needed at depth 0 (first entry).
+    if depth == 0 {
+        let prelude_source = include_str!("../stdlib/prelude.llt");
+        let prelude_sf = std::sync::Arc::new(crate::ast::SourceFile {
+            path: std::sync::Arc::from("stdlib/prelude.llt"),
+            content: std::sync::Arc::from(prelude_source),
+        });
+        if let Ok(prelude_parsed) = crate::parser::parse_with_file(prelude_source, prelude_sf) {
+            for doc_spanned in &prelude_parsed.program.documents {
+                let _ =
+                    pre_scan_surface_document(&doc_spanned.node, &mut env_macro, &ctx, &stdlib_env)
+                        .await;
+            }
+        }
+    }
 
     // Process each document in the program
     for doc_spanned in &mut program.documents {

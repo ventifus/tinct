@@ -1,18 +1,14 @@
-# stdlib/protocols/tls.llt — TLS 1.3 (RFC 8446) in tinct.
+# stdlib/protocols/tls13.llt — TLS 1.3 (RFC 8446) in tinct.
 # Part of: lib-net-v3
 # Rust primitives: chacha20-poly1305-seal/open, aes-128/256-gcm-seal/open,
 #   x25519-keypair, x25519-dh, p256-keypair, hkdf-extract, hkdf-expand,
 #   hmac-sha256, sha256, crypto-random, bytes-xor, rsa-pss-sign, p256-sign, ed25519-sign
+--- uses: ["crypto"]
 
-[include %libdir "async.llt"]
 [include %libdir "net.llt"]
-[include %libdir "crypto.llt"]
+[include %libdir "crypto.llt"]   # provides HkdfHash, Sha256, Sha384, Sha512, Blake2s
 
-# Hash algorithm selector for all HKDF calls.
-# [type [X]] is a valid top-level TypeDecl; HkdfHash: union goes in the public dict.
-[type [Sha256]] [type [Sha384]] [type [Sha512]] [type [Blake2s]]
-
-[instance ByteStream [pattern [h@[TlsConnection h]]]:
+[instance@[bind: [h]] [ByteStream [TlsConnection h]]
   read-bytes:  tls-read-bytes
   write-bytes: tls-write-bytes]
 
@@ -68,21 +64,30 @@
     [concat [bytes 0x17] [0x03 0x03] [encode BigEndian [@UInt16 ct-len]]]]
 
   tls-write-record: [fn [let conn@TlsConnection ct@ContentType plain@Bytes]
-    [seq:   [recv conn.write-seq]]
-    [send conn.write-seq [+ seq 1]]
-    [inner:  [concat plain [bytes [ct->int ct]]]]    # inner = data || content-type byte
-    [ct-len: [+ [length inner] 16]]                  # ciphertext = inner + 16-byte tag
-    [aad:    [tls-record-aad ct-len]]
-    [ciphertext: [tls-seal conn inner [tls-nonce conn.write-iv seq] aad]]
-    [write-tls-record conn.underlying
-      [TlsRecord [content-type: [ApplicationData]  payload: ciphertext]]]]
+    # write-seq channel holds exactly one value (atomic counter). [Closed] is impossible.
+    [match [recv conn.write-seq]
+      [Closed]: [error "TLS: write-seq channel closed unexpectedly"]
+      [Ok seq]:
+        [send conn.write-seq [+ seq 1]]
+        [inner:  [concat plain [bytes [ct->int ct]]]]    # inner = data || content-type byte
+        [ct-len: [+ [length inner] 16]]                  # ciphertext = inner + 16-byte tag
+        [aad:    [tls-record-aad ct-len]]
+        [ciphertext: [tls-seal conn inner [tls-nonce conn.write-iv seq] aad]]
+        [write-tls-record conn.underlying
+          [TlsRecord [content-type: [ApplicationData]  payload: ciphertext]]]]]
 
-  tls-decrypt-record: [fn [let conn@TlsConnection record@TlsRecord]
-    [seq: [recv conn.read-seq]]
-    [send conn.read-seq [+ seq 1]]
-    [aad: [tls-record-aad [length record.payload]]]  # ciphertext length is payload length
-    [plain: [tls-open conn record.payload [tls-nonce conn.read-iv seq] aad]]
-    [strip-inner-ct plain]]
+  # tls-decrypt-conn-record: decrypt a TlsRecord using connection keys + sequence counter.
+  # Named tls-decrypt-conn-record (not tls-decrypt-record) to avoid collision with any
+  # stateless Bytes→Bytes stub. Used internally by tls-read-acc and tls-recv-record.
+  tls-decrypt-conn-record: [fn [let conn@TlsConnection record@TlsRecord]
+    # read-seq channel holds exactly one value (atomic counter). [Closed] is impossible.
+    [match [recv conn.read-seq]
+      [Closed]: [error "TLS: read-seq channel closed unexpectedly"]
+      [Ok seq]:
+        [send conn.read-seq [+ seq 1]]
+        [aad: [tls-record-aad [length record.payload]]]  # ciphertext length is payload length
+        [plain: [tls-open conn record.payload [tls-nonce conn.read-iv seq] aad]]
+        [strip-inner-ct plain]]]
 
   strip-inner-ct: [fn [let plain@Bytes]
     [find-last-nonzero plain [- [length plain] 1]]]
@@ -97,7 +102,7 @@
   tls-read-acc: [fn [let conn@TlsConnection remaining@Int acc@[Seq Bytes]]
     [if [= remaining 0]
       [reduce concat [] acc]
-      [plain: [tls-decrypt-record conn [read-tls-record conn.underlying]]]
+      [plain: [tls-decrypt-conn-record conn [read-tls-record conn.underlying]]]
       [got:   [min remaining [length plain]]]
       [tls-read-acc conn [- remaining got] [append acc [list [slice plain 0 got]]]]]]
 
@@ -158,9 +163,7 @@
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
-  # The [type [X]] top-level declarations above define Sha256/Sha384/Sha512/Blake2s.
-  # HkdfHash must be in a dict because Name: value is dict syntax.
-  HkdfHash: [union [Sha256] [Sha384] [Sha512] [Blake2s]]
+  # HkdfHash, Sha256, Sha384, Sha512, Blake2s — re-exported from crypto.llt (included above).
 
   TlsServerConfig: [type
     [certificate: Bytes
@@ -169,7 +172,7 @@
      min-version: Symbol]]
 
   TlsClientConfig: [type
-    [sni:         String
+    [sni:         [or String Null]    # null = infer from [Hostname h] in pending connection
      alpn:        [Seq String]
      ech:         Bytes
      trust-roots: [or [Seq Bytes] Symbol]]]
@@ -195,6 +198,18 @@
   ContentType: [union [ChangeCipherSpec] [Alert] [Handshake] [ApplicationData]]
 
   TlsRecord: [type [content-type: ContentType  payload: Bytes]]
+
+  # MessageStream instance helpers for TlsConnection.
+  # tls-send-record sends a TlsRecord to the peer.
+  # tls-recv-record reads a TlsRecord from the peer, returns [Ok TlsRecord] | [Closed].
+  tls-send-record: [fn [let conn@TlsConnection record@TlsRecord]
+    [tls-write-record conn record.content-type record.payload]]
+
+  tls-recv-record: [fn [let conn@TlsConnection]
+    [match [try [read-tls-record conn.underlying]]
+      [Ok record]: [Ok [TlsRecord [content-type: record.content-type
+                                   payload: [tls-decrypt-conn-record conn record]]]]
+      [Err _]:     [Closed]]]
 
   tls-read-bytes: [fn [let conn@TlsConnection n@Int]
     [tls-read-acc conn n []]]
@@ -248,16 +263,16 @@
      app-server-iv:  [hkdf-expand-label s-ap "iv"       [] p.iv-len  p.hash]]]
 
   tls-accept: [fn@[bind: [h]  return: [TlsConnection h]  constraint: [h: ByteStream]]
-                [let h@h cfg@TlsServerConfig]
+                [let cfg@TlsServerConfig h@h]
     [error "TODO: tls-accept — read ClientHello; choose-cipher → CipherSuite; choose-group; send ServerHello; tls13-key-schedule dh-shared ch-bytes sh-bytes cipher → keys; send EncryptedExtensions+Certificate+CertificateVerify+Finished; verify client Finished; install app keys with cipher-specific key lengths"]]
 
-  tls-layer: [fn@[bind: [h]  return: [TlsConnection h]  constraint: [h: ByteStream]]
-               [let h@h cfg@TlsClientConfig]
-    [error "TODO: tls-layer — send ClientHello, read ServerHello, derive keys, read and verify server Finished + cert chain (verify-cert-chain), send client Finished, install app keys"]]
+  tls: [fn@[bind: [h]  return: [TlsConnection h]  constraint: [h: ByteStream]]
+               [let cfg@TlsClientConfig h@h]
+    [error "TODO: tls — send ClientHello, read ServerHello, derive keys, read and verify server Finished + cert chain (verify-cert-chain), send client Finished, install app keys"]]
 
   # Serve layer: promotes a Channel@ByteStream to Channel@TlsConnection.
   # Lives here (not serve.llt) because it closes over TlsServerConfig.
   tls-serve: [fn@[bind: [h]  constraint: [h: ByteStream]]
-               [let in-ch@[Channel h] cfg@TlsServerConfig]
-    [channel-map [fn [let s@h] [tls-accept s cfg]] in-ch]]
+               [let cfg@TlsServerConfig in-ch@[Channel h]]
+    [channel-map [fn [let s@h] [tls-accept cfg s]] in-ch]]
 ]

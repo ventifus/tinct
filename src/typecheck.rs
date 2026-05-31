@@ -4877,6 +4877,23 @@ fn check_call_with_scheme(
         tm.insert(key, func_ty.clone());
     }
 
+    // Error cascade suppression: if the instantiated type is Error (e.g., a scheme with
+    // Type::Error body — unlikely but possible if a prelude binding was recorded as Error),
+    // infer arguments for side effects and return Unknown rather than propagating T003.
+    // This prevents spurious "expected function type, got <error>" on call sites when the
+    // function definition itself failed type-checking. The root cause has already been reported.
+    if matches!(func_ty, Type::Error) {
+        // Infer positional args for type map population and error propagation.
+        for arg in args {
+            let _ = infer_surface_expr(arg, env, state, type_map);
+        }
+        // Infer named args for type map population and error propagation.
+        for na in named_args {
+            let _ = infer_surface_expr(&na.node.value, env, state, type_map);
+        }
+        return Ok(Type::Unknown);
+    }
+
     match &func_ty {
         Type::Function {
             params,
@@ -5231,6 +5248,24 @@ fn check_call(
     } else {
         state.subst.apply(&func_ty)
     };
+
+    // Error cascade suppression: if the function type is Error (e.g., `include` failed prelude
+    // type-checking and was recorded as Type::Error in TypeEnv), infer arguments for side effects
+    // and return Unknown rather than propagating "expected function type, got <error>" (T003).
+    // This prevents spurious T003 errors on every [include %libdir "..."] call when the prelude's
+    // self-type-check encounters errors. The underlying cause (prelude type error) has already
+    // been reported; cascading T003 on every call site is noise.
+    if matches!(func_ty, Type::Error) {
+        // Infer positional args for type map population and error propagation.
+        for arg in args {
+            let _ = infer_surface_expr(arg, env, state, type_map);
+        }
+        // Infer named args for type map population and error propagation.
+        for na in named_args {
+            let _ = infer_surface_expr(&na.node.value, env, state, type_map);
+        }
+        return Ok(Type::Unknown);
+    }
 
     match &func_ty {
         Type::Function {
@@ -5918,6 +5953,21 @@ fn typecheck_case_arm(
                             )
                             .map_err(|e| vec![e])?;
 
+                            // T020: Dead-arm warning — check if pattern type is disjoint from scrutinee type.
+                            // If types_are_disjoint(scrutinee_ty, ann_ty) is true, the arm can never match
+                            // at runtime because the scrutinee will never have a value of the pattern type.
+                            if Type::types_are_disjoint(scrutinee_ty, &ann_ty) {
+                                state.diagnostics.push(crate::error::TypeDiagnostic {
+                                    message: format!(
+                                        "dead match arm — pattern type `{}` is disjoint from scrutinee type `{}`",
+                                        ann_ty, scrutinee_ty
+                                    ),
+                                    span: binding.span.clone(),
+                                    code: "T020",
+                                    level: crate::error::DiagnosticLevel::Warn,
+                                });
+                            }
+
                             // Narrow: scrutinee_ty ∩ ann_ty (BAS type narrowing).
                             // normalize_intersection handles Unknown-as-identity and Top-as-identity.
                             let narrowed_ty =
@@ -5977,6 +6027,21 @@ fn typecheck_case_arm(
             // Exact-value match: infer pattern expression type, then infer body.
             // Both pattern and body are already Arc<SurfaceNode> — no conversion needed.
             let pattern_ty = infer_surface_expr(pattern, env, state, type_map)?;
+
+            // T020: Dead-arm warning — check if pattern type is disjoint from scrutinee type.
+            // If types_are_disjoint(scrutinee_ty, pattern_ty) is true, the arm can never match
+            // at runtime because the scrutinee will never have a value of the pattern type.
+            if Type::types_are_disjoint(scrutinee_ty, &pattern_ty) {
+                state.diagnostics.push(crate::error::TypeDiagnostic {
+                    message: format!(
+                        "dead match arm — pattern type `{}` is disjoint from scrutinee type `{}`",
+                        pattern_ty, scrutinee_ty
+                    ),
+                    span: pattern.span.clone(),
+                    code: "T020",
+                    level: crate::error::DiagnosticLevel::Warn,
+                });
+            }
 
             // Check that pattern is scalar or nullary (design doc requirement)
             // For now, just issue a warning if it's not - don't block
@@ -12330,6 +12395,47 @@ mod tests {
         assert!(
             subst.type_map.borrow().is_empty(),
             "TypeVar must NOT be bound when unified with Error (Error carries no type info)"
+        );
+    }
+
+    #[test]
+    fn test_calling_error_function_does_not_produce_t003() {
+        // B-180: calling a function typed as Error (e.g., because its definition failed
+        // type-checking) should suppress the "expected function type, got <error>" T003
+        // rather than cascading it to every call site. This tests the check_call path.
+        //
+        // We simulate this by having a binding `broken` that the type checker cannot infer
+        // (e.g., a function with a type error in its body). When we call `broken`, the
+        // type checker should return Unknown without producing a T003 error.
+        let input = r#"
+            [
+                broken: [fn [let x] [call $undefined]]
+                result: [call $broken 42]
+            ]
+        "#;
+        let mut program = crate::parse(input).unwrap().program;
+        crate::desugar::desugar_surface_program(&mut program);
+        let (errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
+            typecheck_surface_program(&program, crate::imports::build_prelude_env());
+
+        // Should have an error about undefined variable inside `broken`
+        let has_undefined = errors
+            .iter()
+            .any(|e| e.message.contains("undefined variable"));
+        assert!(
+            has_undefined,
+            "expected undefined variable error inside broken function, got: {:?}",
+            errors
+        );
+
+        // Should NOT have a T003 "expected function type, got <error>" when calling broken
+        let has_t003 = errors
+            .iter()
+            .any(|e| e.message.contains("expected function type"));
+        assert!(
+            !has_t003,
+            "calling a Type::Error function should suppress T003, got: {:?}",
+            errors
         );
     }
 

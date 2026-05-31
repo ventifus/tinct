@@ -321,7 +321,7 @@ The `--no-*` flags suppress individual runtime-injected values by name, mirrorin
 A fully sandboxed invocation:
 
 ```bash
-llt eval --no-pwd --no-stdin --no-env --timeout 5s --max-memory 64M script.llt
+llt --max-memory 64M eval --no-pwd --no-stdin --no-env --timeout 5s script.llt
 ```
 
 (`libdir` is retained even in sandboxed invocations so stdlib is accessible. Suppress it explicitly with `--no-libdir` if needed.)

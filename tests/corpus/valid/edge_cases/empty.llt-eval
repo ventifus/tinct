@@ -1,4 +1,4 @@
-# empty input parses without error (zero documents; eval returns empty dict which serializes to null)
+# empty input parses without error (zero documents; eval returns empty dict)
 
 === out
-Null
+Dict({})

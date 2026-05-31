@@ -2300,15 +2300,15 @@ pub fn core_type_env(env: &mut TypeEnv) {
     );
 
     // ── Sequences: transforms ─────────────────────────────────────────────────
-    // map: ∀a b. (a → b) → Unknown → Seq b
-    // The collection parameter accepts any Mappable (Seq or Dict), using Unknown for now
-    // to avoid false type errors for dict callers.
-    // TODO(map-hkt): upgrade to ∀(f: Operator) a b. Mappable f ⇒ (a → b) → f a → f b
+    // map: ∀(f: Operator) a b. Mappable f ⇒ (a → b) → f a → f b
+    // HKT type scheme with Operator-kinded variable f.
+    // The UNIFY-APP-OPERATOR-SEQ rule (type_unify.rs) enables unification of
+    // App(Operator(f), a) with concrete collection types like Seq(T).
     env.insert_scheme(
         "map".to_string(),
         TypeScheme {
             type_vars: vec!["a".to_string(), "b".to_string()],
-            kind_vars: vec![],
+            kind_vars: vec![("f".to_string(), Kind::Operator)],
             constraints: vec![],
             body: Type::Function {
                 params: vec![
@@ -2320,9 +2320,18 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             variadic: false,
                         },
                     ),
-                    (Some("xs".to_string()), Type::Unknown),
+                    (
+                        Some("xs".to_string()),
+                        Type::App(
+                            Box::new(Type::Operator("f".to_string())),
+                            Box::new(Type::TypeVar("a".to_string(), 0)),
+                        ),
+                    ),
                 ],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
+                ret: Box::new(Type::App(
+                    Box::new(Type::Operator("f".to_string())),
+                    Box::new(Type::TypeVar("b".to_string(), 0)),
+                )),
                 variadic: false,
             },
             label_vars: vec![],
@@ -2851,8 +2860,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
             variadic: false,
         },
     );
-    // builtin-timer-channel: Unknown → Unknown
-    // Creates a timer channel; argument is a duration or interval.
+    // builtin-timer-channel: (Duration | Int) → Unknown
+    // Creates a timer channel; argument is a Duration (preferred) or bare Int (milliseconds, backward compat).
+    // Returns Channel@Timestamp.
     env.insert(
         "builtin-timer-channel".to_string(),
         Type::Function {
@@ -2861,13 +2871,13 @@ pub fn core_type_env(env: &mut TypeEnv) {
             variadic: false,
         },
     );
-    // builtin-watch-channel: Unknown → Unknown
-    // Creates a filesystem watch channel; argument is a path or DirCap.
+    // builtin-watch-channel: DirCap → String → Channel@Null
+    // Filesystem watch channel — sends null when the file/directory at path changes.
     env.insert(
         "builtin-watch-channel".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
-            ret: Box::new(Type::Unknown), // Channel — opaque
+            params: vec![(None, Type::Unknown), (None, Type::Unknown)], // DirCap, String
+            ret: Box::new(Type::Unknown),                               // Channel@Null — opaque
             variadic: false,
         },
     );

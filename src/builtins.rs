@@ -1318,9 +1318,8 @@ fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvWit
     // Phase 3: Evaluate prelude.llt DIRECTLY in a child of loader_env → prelude_dict
     // Phase 4: Convert prelude_dict to stdlib_env
     //
-    // Macro transformer functions (tmpl, do, begin, syntax-fn, syntax-class, syntax-type)
-    // are now defined directly in prelude.llt and exported from the final dict.
-    // register_stdlib_macros_from_env() picks them up by name from stdlib_env.
+    // Macro transformer functions (tmpl, do, begin) are now defined directly in
+    // prelude.llt as [macro ...] declarations and auto-discovered by the pre-scan pass.
 
     // ========== Phase 1 & 2: Parse loader.llt and create bootstrap context ==========
     // We need to create the loader context first so we have an arena to allocate
@@ -1443,6 +1442,14 @@ fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvWit
             EvalError::internal(format!("prelude.llt parse error: {e}"), Span::origin())
         })?;
     let mut prelude_program = prelude_parsed.program.clone();
+
+    // NOTE: We do NOT call expand_surface_program() here. Macro expansion requires
+    // the stdlib env (for evaluating transformer bodies), but we are building the
+    // stdlib env — calling expand would cause infinite recursion. The prelude does not
+    // USE any macros; it only DEFINES them via [macro ...] declarations. These are
+    // discovered later when expand_surface_program() runs on user files (depth == 0),
+    // at which point STDLIB_RESULT_CACHE is populated and the macros can be registered.
+
     crate::desugar::desugar_surface_program(&mut prelude_program);
     let prelude_resolution_table =
         std::sync::Arc::new(crate::resolve::resolve_surface_program(&prelude_program));
@@ -6916,8 +6923,8 @@ mod tests {
     }
 
     // Note: macros_parses_without_error test removed — macro transformer definitions
-    // (tmpl, do, begin, syntax-fn, syntax-class, syntax-type) were merged into
-    // prelude.llt and are now covered by the prelude_parses_without_error test above.
+    // (tmpl, do, begin) were merged into prelude.llt and are now covered by the
+    // prelude_parses_without_error test above.
 
     #[test]
     #[ignore = "pre-existing regression from runtime-v2 merge: stdlib loading fails"]

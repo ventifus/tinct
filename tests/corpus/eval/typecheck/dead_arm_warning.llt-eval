@@ -1,0 +1,7 @@
+[match 42
+  [case [let s@String] s]
+  [case [let n@Int] n]]
+=== out
+Int(42)
+=== warn
+dead match arm

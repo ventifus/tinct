@@ -6,6 +6,9 @@
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
+  # TODO: verify get? exists in prelude (get-or with null default)
+  # TODO: verify str-slice exists in prelude
+
   # Reject strings containing CR or LF — prevents CRLF injection in HTTP headers.
   validate-no-crlf: [fn [let s@String ctx@String]
     [if [or [str-contains? s "\r"] [str-contains? s "\n"]]
@@ -34,9 +37,9 @@
       [colon: [str-index-of ":" line]]
       [if [< colon 0]
         acc
-        [assoc acc
-          [str-lower [str-trim [str-slice line 0 colon]]]
-          [str-trim [str-slice line [+ colon 1] [- [length line] [+ colon 1]]]]]]]
+        [merge acc
+          [[lower [str-trim [str-slice line 0 colon]]]:
+           [str-trim [str-slice line [+ colon 1] [- [length line] [+ colon 1]]]]]]]]
      []
      lines]]
 
@@ -87,11 +90,11 @@
      body:    Bytes]]
 
   ok:           [fn [let body@String]
-    [RawResponse [status: 200  headers: [map-from-pairs [["content-type" "text/plain; charset=utf-8"]]]  body: [str-bytes body]]]]
+    [RawResponse [status: 200  headers: ["content-type": "text/plain; charset=utf-8"]  body: [str-bytes body]]]]
   json-ok:      [fn [let body@Bytes]
-    [RawResponse [status: 200  headers: [map-from-pairs [["content-type" "application/json"]]]  body: body]]]
+    [RawResponse [status: 200  headers: ["content-type": "application/json"]  body: body]]]
   redirect:     [fn [let location@String]
-    [RawResponse [status: 302  headers: [map-from-pairs [["location" location]]]  body: []]]]
+    [RawResponse [status: 302  headers: ["location": location]  body: []]]]
   not-found:    [RawResponse [status: 404  headers: []  body: [str-bytes "Not Found"]]]
   server-error: [fn [let msg@String]
     [RawResponse [status: 500  headers: []  body: [str-bytes msg]]]]
@@ -123,19 +126,21 @@
         [str-bytes [str "HTTP/1.1 " resp.status " " [status->text resp.status] "\r\n"]]
         [str-bytes [str "content-length: " [length resp.body] "\r\n"]]
         [reduce concat []
-          [concat-map [fn [let [k v]] [list [str-bytes [str k ": " v "\r\n"]]]]
-           [map-pairs resp.headers]]]
+          [map [fn [let e] [str-bytes [str e.key ": " e.value "\r\n"]]]
+           [entries resp.headers]]]
         [str-bytes "\r\n"]
         resp.body]]]
 
   # Serve one HTTP/1.1 connection: parse requests, emit to out channel, support keep-alive.
+  # Terminates when the client closes the connection or sends Connection: close.
   http1-conn: [fn [let h@Handle out@[Channel RawRequest]]
-    [loop [fn []
+    [let step [fn []
       [match [try [parse-request h [fn [let resp] [write-response h resp]]]]
         [Ok req]:
           [send out req]
-          [if [= [get? req.headers "connection"] "close"] [exit] null]
-        [Err _]: [exit]]]]]
+          [if [= [get? req.headers "connection"] "close"] [] [step]]
+        [Err _]: []]]]
+    [step]]
 
   http1-request: [fn@[bind: [h]  constraint: [h: ByteStream]]
                    [let h@h method@String path@String
@@ -151,9 +156,12 @@
         [str-bytes [str "content-length: " [length body] "\r\n"]]
         [str-bytes "connection: close\r\n"]
         [reduce concat []
-          [concat-map [fn [let [k v]] [list [str-bytes [str k ": " v "\r\n"]]]]
-           [map-pairs headers]]]
+          [map [fn [let e] [str-bytes [str e.key ": " e.value "\r\n"]]]
+           [entries headers]]]
         [str-bytes "\r\n"]
         body]]
     [parse-http1-response h]]
+
+  # Serve layer: 1:N — each incoming Handle yields its HTTP/1.1 request stream.
+  http1-serve: [_ | [channel-flat-map http1-conn]]
 ]

@@ -3,25 +3,34 @@
 # Connection migration (RFC 9000 §9) is NOT supported in the initial implementation.
 
 [include %libdir "net.llt"]
-[include %include-dir "tls.llt"]
+[include %include-dir "tls13.llt"]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
+  # TODO: verify get? exists in prelude; verify bshl/bnot/pow exist in prelude
   quic-accept-loop: [fn [let sock@UdpSocket out@[Channel QuicConnection]]
     [conns-ch: [channel 1]]
     [send conns-ch []]
-    [loop [fn []
+    [let step [fn []
       [dg:    [recv-datagram sock]]
       [dcid:  [quic-extract-dcid dg.data]]
-      [table: [recv conns-ch]]
-      [if [get? table dcid]
-        [send [get table dcid] dg]
-        [conn-ch: [channel 64]]
-        [send conns-ch [assoc table dcid conn-ch]]
-        [task
-          [conn: [quic-new-conn sock dg.src dcid conn-ch]]
-          [send out conn]]]]]]
+      [match [recv conns-ch]
+        [Closed]: []
+        [Ok table]:
+          [if [get? table dcid]
+            # Existing connection — deliver datagram to its handler task.
+            [[send [get table dcid] dg]
+             [send conns-ch table]   # put table back
+             [step]]
+            # New connection — register it and spawn handler task.
+            [conn-ch: [channel 64]]
+            [send conns-ch [merge table [dcid: conn-ch]]]   # TODO: dynamic key — needs set or merge with computed key
+            [task
+              [conn: [quic-new-conn sock dg.src dcid conn-ch]]
+              [send out conn]]
+            [step]]]]]
+    [step]]
 
   quic-extract-dcid: [fn [let pkt@Bytes]
     [byte0: [get pkt 0]]
@@ -34,10 +43,10 @@
 
   decode-pn: [fn [let truncated@Int pn-bits@Int largest-acked@Int]
     [expected:  [+ largest-acked 1]]
-    [pn-win:    [bit-shift-left 1 pn-bits]]
+    [pn-win:    [bshl 1 pn-bits]]
     [pn-hwin:   [/ pn-win 2]]
     [pn-mask:   [- pn-win 1]]
-    [candidate: [bit-or [bit-and expected [bit-not pn-mask]] truncated]]
+    [candidate: [bit-or [bit-and expected [bnot pn-mask]] truncated]]
     [if [and [<= candidate [- expected pn-hwin]] [< candidate [- [pow 2 62] pn-win]]]
       [+ candidate pn-win]
       [if [and [> candidate [+ expected pn-hwin]] [>= candidate pn-win]]
@@ -53,6 +62,15 @@
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
+  # PendingQuicHandle: QUIC+TLS config accumulated before handshake fires.
+  # quic creates it (sni inferred, ALPN open); h3/doq/etc add ALPN via with-alpn then quic-commit.
+  PendingQuicHandle: [type
+    [pending:     [or ConnectedUdp UdpSocket]
+     sni:         [or String Null]    # null = infer from [Hostname h] in peer address
+     alpn:        [Seq String]        # set by downstream layer
+     ech:         Bytes
+     trust-roots: [or [Seq Bytes] Symbol]]]
+
   QuicPacketType: [union [Initial] [ZeroRTT] [Handshake] [Retry] [OneRTT]]
 
   QuicFrame: [union
@@ -115,10 +133,37 @@
      loss-state:    QuicLossState
      flow:          QuicFlowState]]
 
-  quic-connect: [fn [let cap@NetCap addr@SocketAddress cfg@TlsClientConfig]
-    [error "TODO: quic-connect — bind UDP, generate SCID, send Initial + ClientHello CRYPTO frame, process server packets, complete TLS, install 1-RTT keys"]]
+  # quic — QUIC pending layer. Subject-last: sock last.
+  # Creates PendingQuicHandle — sni inferred from [Hostname h], ALPN open.
+  # The downstream layer (h3, dns-quic-resolver, etc.) adds alpn before commit fires.
+  # Usage: [connect %net [Hostname h] Udp 443] | quic | h3 | [request req]
+  quic: [fn@[bind: [d]  constraint: [d: Datagram]  return: PendingQuicHandle]
+          [let sock@d]
+    [PendingQuicHandle
+      [pending: sock
+       sni:     null          # infer from [Hostname h] in sock peer
+       alpn:    []            # set by downstream layer (h3, doq, etc.)
+       ech:     []
+       trust-roots: SystemRoots]]]
 
-  quic-connect-addr: quic-connect
+  # quic-commit: fire the QUIC+TLS handshake with accumulated config.
+  quic-commit: [fn [let pqh@PendingQuicHandle]
+    [error "TODO: quic-commit — resolve sni, generate SCID, send Initial + ClientHello, complete TLS 1.3, install 1-RTT keys → QuicConnection"]]
+
+  # with-alpn: accumulate ALPN into a PendingQuicHandle before commit.
+  with-alpn: [fn [let pqh@PendingQuicHandle alpn@[Seq String]]
+    [PendingQuicHandle [pending: pqh.pending  sni: pqh.sni  alpn: alpn
+                        ech: pqh.ech  trust-roots: pqh.trust-roots]]]
+
+  # quic-connect: sugar for a resolved SocketAddress (skips DNS + HostPort).
+  # For hostname-based connections prefer: [connect %net Udp [HostPort [Hostname h] port]] | quic | h3
+  quic-connect: [fn [let cap@NetCap addr@SocketAddress cfg@TlsClientConfig]
+    [quic-commit
+      [PendingQuicHandle
+        [pending: [ConnectedUdp
+                    [sock: [udp-socket cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: 0]]]
+                     peer: addr]]
+         sni: cfg.sni  alpn: cfg.alpn  ech: cfg.ech  trust-roots: cfg.trust-roots]]]]
 
   quic-listen: [fn [let cap@NetCap port@Port]
     [sock: [udp-socket cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: port]]]]
@@ -130,5 +175,9 @@
     [error "TODO: quic-open-stream — allocate next client bidi stream ID, send STREAM frame, return Handle"]]
 
   quic-incoming: [fn [let conn@QuicConnection]
+    # Returns [Ok QuicStream] | [Closed] — caller must match both cases.
     [recv conn.streams]]
+
+  # Stream adapter: open one QUIC stream per incoming connection.
+  quic-stream-ch: [_ | [channel-map [fn [let c] [quic-open-stream c]]]]
 ]

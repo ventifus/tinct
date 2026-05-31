@@ -2678,7 +2678,7 @@ fn validate_value(
 }
 
 /// Helper to compare two values for equality (for enum checking).
-fn values_equal(a: &Value, b: &Value) -> bool {
+pub(crate) fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => (x - y).abs() < f64::EPSILON,

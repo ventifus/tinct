@@ -2189,6 +2189,36 @@ pub fn unify(
             unify(a1, a2, subst, state, span)
         }
 
+        // UNIFY-APP-OPERATOR-SEQ: App(Operator(m), a) ~ Seq(T)
+        // Bind m → Operator("Seq"), unify a ~ T.
+        // This enables HKT map type: when unifying `App(Operator(f), Int)` with `Seq Int`,
+        // bind f to the Seq type constructor and unify element types.
+        // The apply_type normalization (lines 1281-1285) handles App(Operator("Seq"), T) → Seq(T).
+        (Type::App(f, a), Type::Seq(t)) if matches!(f.as_ref(), Type::Operator(_)) => {
+            // Bind the operator variable to Seq constructor
+            unify(
+                f.as_ref(),
+                &Type::Operator("Seq".to_string()),
+                subst,
+                state,
+                span.clone(),
+            )?;
+            // Unify the argument types
+            unify(a.as_ref(), t.as_ref(), subst, state, span)
+        }
+
+        // Symmetric: Seq(T) ~ App(Operator(m), a)
+        (Type::Seq(t), Type::App(f, a)) if matches!(f.as_ref(), Type::Operator(_)) => {
+            unify(
+                f.as_ref(),
+                &Type::Operator("Seq".to_string()),
+                subst,
+                state,
+                span.clone(),
+            )?;
+            unify(t.as_ref(), a.as_ref(), subst, state, span)
+        }
+
         // Record unification: delegate to row unification
         (Type::Record(row1), Type::Record(row2)) => unify_rows(row1, row2, subst, state, span),
 

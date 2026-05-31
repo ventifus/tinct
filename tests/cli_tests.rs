@@ -2145,11 +2145,11 @@ fn max_memory_flag_accepted() {
     let (path, _dir) = write_temp_llt("max_memory_flag", "[x: 1]");
     let output = Command::new(tinct_bin())
         .args([
+            "--max-memory",
+            "268435456", // 256 MB
             "run",
             "-o",
             "json",
-            "--max-memory",
-            "268435456", // 256 MB
             path.to_str().unwrap(),
         ])
         .output()
@@ -2173,11 +2173,11 @@ fn max_memory_zero_disables_limit() {
     let (path, _dir) = write_temp_llt("max_memory_zero", "[x: 1]");
     let output = Command::new(tinct_bin())
         .args([
+            "--max-memory",
+            "0",
             "run",
             "-o",
             "json",
-            "--max-memory",
-            "0",
             path.to_str().unwrap(),
         ])
         .output()
@@ -2201,11 +2201,11 @@ fn max_cpu_flag_accepted() {
     let (path, _dir) = write_temp_llt("max_cpu_flag", "[x: 1]");
     let output = Command::new(tinct_bin())
         .args([
+            "--max-cpu",
+            "10",
             "run",
             "-o",
             "json",
-            "--max-cpu",
-            "10",
             path.to_str().unwrap(),
         ])
         .output()
@@ -2230,11 +2230,11 @@ fn max_fds_flag_accepted() {
     let (path, _dir) = write_temp_llt("max_fds_flag", "[x: 1]");
     let output = Command::new(tinct_bin())
         .args([
+            "--max-fds",
+            "32",
             "run",
             "-o",
             "json",
-            "--max-fds",
-            "32",
             path.to_str().unwrap(),
         ])
         .output()
@@ -2257,11 +2257,11 @@ fn max_fds_zero_disables_limit() {
     let (path, _dir) = write_temp_llt("max_fds_zero", "[x: 1]");
     let output = Command::new(tinct_bin())
         .args([
+            "--max-fds",
+            "0",
             "run",
             "-o",
             "json",
-            "--max-fds",
-            "0",
             path.to_str().unwrap(),
         ])
         .output()
@@ -2286,15 +2286,15 @@ fn all_sandbox_flags_compose() {
     let (path, _dir) = write_temp_llt("all_sandbox_flags", "[x: 1]");
     let output = Command::new(tinct_bin())
         .args([
+            "--max-memory",
+            "268435456", // 256 MB
+            "--max-fds",
+            "32",
             "run",
             "-o",
             "json",
             "--no-fs",
             "--no-landlock",
-            "--max-memory",
-            "268435456", // 256 MB
-            "--max-fds",
-            "32",
             "--timeout",
             "5s",
             path.to_str().unwrap(),

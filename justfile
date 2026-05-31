@@ -201,7 +201,7 @@ fmt:
 
 # Run a tinct file
 run-file FILE:
-    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- run --max-memory {{tinct_max_memory}} {{FILE}}
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run {{FILE}}
 
 # Clean build artifacts
 clean:
@@ -235,6 +235,7 @@ lint-file FILE: build-release
 ci:
     {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo check
     just test
+    just lint-stdlib
     just lint
     just fmt-check
     just audit
@@ -295,13 +296,13 @@ version:
 versions:
     {{container}} run {{run_flags}} --network=host \
         -e RUST_VERSION={{rust_version}} \
-        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --bin tinct -- run --max-memory {{tinct_max_memory}} --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 --profile samples/versions-spans.ndjson samples/versions.llt && cargo run --bin tinct -- run --max-memory {{tinct_max_memory}} -i ndjson -o json --strict scripts/profile/trace.llt < samples/versions-spans.ndjson > samples/versions-trace.json"
+        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 --profile samples/versions-spans.ndjson samples/versions.llt && cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run -i ndjson -o json --strict scripts/profile/trace.llt < samples/versions-spans.ndjson > samples/versions-trace.json"
 
 # Generate stdlib API reference from @[doc: "..."] annotations.
 # Writes one file per module to doc/lib/<module>.md.
 # The module index is now maintained manually in doc/11-stdlib.md §Supplemental Module Reference.
 docgen:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "mkdir -p doc/lib && cargo run --bin tinct -- run --max-memory {{tinct_max_memory}} --strict --cap-fs docdir=doc/lib:w scripts/docgen.llt"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "mkdir -p doc/lib && cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run --strict --cap-fs docdir=doc/lib:w scripts/docgen.llt"
 
 # Weave tinct code block outputs into doc/*.md (living documentation).
 # Updates the === out / === warn / === info sections inside each ```tinct block.
@@ -382,9 +383,9 @@ clean-all: clean-images clean-volumes
 
 # Profile a tinct file and show materialization hotspots
 profile FILE:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- run --max-memory {{tinct_max_memory}} --profile /tmp/spans.ndjson {{FILE}} && cargo run --release -- run --max-memory {{tinct_max_memory}} -i ndjson scripts/profile/materialize.llt < /tmp/spans.ndjson"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- --max-memory {{tinct_max_memory}} run --profile /tmp/spans.ndjson {{FILE}} && cargo run --release -- --max-memory {{tinct_max_memory}} run -i ndjson scripts/profile/materialize.llt < /tmp/spans.ndjson"
 
 # Profile a tinct file and output Perfetto trace
 profile-trace FILE:
-    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- run --max-memory {{tinct_max_memory}} --profile /tmp/spans.ndjson {{FILE}} && cargo run --release -- run --max-memory {{tinct_max_memory}} -i ndjson -o json scripts/profile/trace.llt < /tmp/spans.ndjson"
+    {{container}} run {{run_flags}} {{rust_image}} sh -c "cargo run --release -- --max-memory {{tinct_max_memory}} run --profile /tmp/spans.ndjson {{FILE}} && cargo run --release -- --max-memory {{tinct_max_memory}} run -i ndjson -o json scripts/profile/trace.llt < /tmp/spans.ndjson"
 
