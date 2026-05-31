@@ -427,14 +427,19 @@ retry-impl: [fn [let n@Int thunk@Fn]
 
 # loop-select-impl: recursive event-loop body.
 # Calls select-once on sources, passes result to handler, then loops.
+# Stops when select-once returns [Closed] (channel closed).
 # Checks ctx cancellation before each iteration so callers can bound the loop.
 # Tail-recursive with TCO support (O(1) stack depth in the CEK machine).
 loop-select-impl: [fn [let ctx sources@Seq handler@Fn]
     [builtin-if [builtin-cancelled-q ctx]
         null
-        [do
-            [handler [builtin-select-once sources]]
-            [loop-select-impl ctx sources handler]]]]
+        [match [builtin-select-once ctx sources]
+            [case [let v: Ok]
+                [do
+                    [handler v]
+                    [loop-select-impl ctx sources handler]]]
+            [case [let _: Closed]
+                [variant "Closed"]]]]]
 
 ]
 
@@ -2187,7 +2192,7 @@ trim@[doc: "Remove leading and trailing whitespace from a string"]: builtin-trim
 # here so user code can access them with bare names.
 
 # Core I/O operations
-emit@[doc: "Emit a string to stdout without a trailing newline"]: builtin-emit
+emit@[doc: "Emit a value to the %emit channel (data-streaming)"]: [fn@Null [let v@Any] [send %emit v]]
 env@[doc: "Read an environment variable by name; returns null if unset"]: builtin-env
 open@[doc: "Open a file under a DirCap. Returns a Handle."]: builtin-open
 list-dir@[doc: "List directory entries under a DirCap. Returns a Seq of {name: String, type: String} dicts."]: builtin-list-dir
@@ -2259,17 +2264,20 @@ Evaluate all runtime-stage documents in a Program, threading %.
 
 prog:          Program value from [expand [load source name: path]]
 initial-input: initial % value for the first document
+emit-ch:       Channel for %emit — emitted values are sent here
 
 Returns the final document's result. Named document sections (--- %name) accumulate
 as %name bindings available to subsequent documents via scope injection.
-"""]: [fn [let prog initial-input]
+"""]: [fn [let prog initial-input emit-ch]
   [state: [builtin-reduce
     [fn [let state doc]
       [val: [builtin-eval doc.expressions
                scope:   [builtin-merge
-                           state.named
-                           [builtin-reduce builtin-merge []
-                             [builtin-map module doc.uses]]]
+                           [%emit: emit-ch]
+                           [builtin-merge
+                             state.named
+                             [builtin-reduce builtin-merge []
+                               [builtin-map module doc.uses]]]]
                program: prog
                expects: doc.expects
                %: state.percent]]
@@ -2289,6 +2297,8 @@ as %name bindings available to subsequent documents via scope injection.
 #
 # programs:      Seq of Program values
 # initial-input: initial % value for the first Program
+#
+# Creates a single %emit channel shared by all programs in the pipeline.
 eval-programs@[doc: """
 Evaluate a sequence of Programs in pipeline order, threading %.
 
@@ -2297,9 +2307,10 @@ initial-input: initial % value for the first Program
 
 Returns the final Program's result.
 """]: [fn [let programs initial-input]
+  [emit-ch: [channel 64]]
   [builtin-reduce
     [fn [let percent prog]
-      [eval-program prog percent]]
+      [eval-program prog percent emit-ch]]
     initial-input
     programs]]
 
@@ -2970,6 +2981,10 @@ SIGUSR2: [variant "SIGUSR2"]
 # Action: zero-arg side-effecting function (Moggi/Haskell IO distinction)
 Action: [type [Fn@Null []]]
 
+# Channel recv/select result types
+Closed: [type [Closed]]
+Lagged: [type [Lagged count: Int]]
+
 CancelHandle: [type [child-ctx: Context  cancel: Context]]  # return value of with-cancel; cancel is a Context, not an Action — fire with [cancel-task pair.cancel]
 # SelectSource: [type [let t r] [SelectSource  ch: [Channel t]  handler: [Fn@r [t]]]]  — one source entry for select-once
 
@@ -2981,10 +2996,13 @@ par-map:       builtin-par-map
 par-filter:    builtin-par-filter
 
 # Channels
-channel:       builtin-channel
-send:          builtin-send
-recv:          builtin-recv
-select-once:   builtin-select-once
+channel:            builtin-channel
+send:               builtin-send
+recv:               builtin-recv
+broadcast-channel:  builtin-broadcast-channel
+oneshot-channel:    builtin-oneshot-channel
+try-send:           builtin-try-send
+select-once:        builtin-select-once
 
 # Event-source channels
 signal-channel:  builtin-signal-channel
@@ -3089,16 +3107,20 @@ If drain times out, exits immediately without waiting for remaining tasks.
 # cancelled. On each iteration the handler is called with the received value.
 # Tail-recursive implementation with O(1) stack depth via TCO.
 #
-# Type: (Context -> [Seq [Channel Fn]] -> Fn -> Null)
+# Type: (Context -> [Seq {ch: Channel  handler: Fn}] -> Fn -> Null)
 # Example:
-#   [loop-select [context] [[sig-ch [fn [_] [exit 0]]]] identity]
+#   [loop-select [context]
+#     [seq [ch: sig-ch  handler: [fn [let _] [exit 0]]] []]
+#     identity]
 loop-select@[doc: """
 Repeatedly select from channels until the context is cancelled.
 
+Sources must be a Seq of dicts with `ch:` (Channel) and `handler:` (Fn) fields.
+
 Example:
   [loop-select [context]
-    [[sig-ch  [fn [_] [exit 0]]]
-     [req-ch  [fn [req] [task [handle req]]]]]
+    [seq [ch: sig-ch   handler: [fn [let _] [exit 0]]]
+     [seq [ch: req-ch  handler: [fn [let req] [task [handle req]]]] []]]
     identity]
 
 Note: Tail-recursive with O(1) stack depth. TCO was implemented in tco-proper sprint.

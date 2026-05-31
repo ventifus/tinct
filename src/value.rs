@@ -687,6 +687,18 @@ pub enum Value {
     /// Uses tokio::sync::mpsc for async send/recv operations.
     Channel(Arc<ChannelInner>),
 
+    /// Broadcast channel — created by `broadcast-channel` builtin.
+    /// Each subscriber receives all values. Uses tokio::sync::broadcast.
+    BroadcastChannel(Arc<BroadcastChannelInner>),
+
+    /// Oneshot sender half — created by `oneshot-channel` builtin.
+    /// Can send exactly one value. Uses tokio::sync::oneshot.
+    OneshotSender(Arc<OneshotSenderInner>),
+
+    /// Oneshot receiver half — created by `oneshot-channel` builtin.
+    /// Can recv exactly one value. Uses tokio::sync::oneshot.
+    OneshotReceiver(Arc<OneshotReceiverInner>),
+
     /// Cancellation context — created by `context` builtin, consumed by `with-cancel`,
     /// `with-timeout`, `with-deadline`, `cancelled?`, and `cancel-task`.
     /// Backed by `tokio_util::sync::CancellationToken` which is `Clone` (cheap Arc internally).
@@ -721,6 +733,33 @@ pub struct ChannelInner {
     pub receiver: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Value>>,
     /// Channel capacity (for debugging/introspection).
     pub capacity: i64,
+}
+
+/// Inner state for a broadcast channel created via `broadcast-channel` builtin.
+/// Uses tokio::sync::broadcast for multi-subscriber semantics.
+/// Each subscriber gets a clone of the sender and calls `subscribe()` to get a receiver.
+pub struct BroadcastChannelInner {
+    /// Sender half — cloned for each send operation.
+    /// Also used via `subscribe()` to create new receivers.
+    pub sender: tokio::sync::broadcast::Sender<Value>,
+    /// Channel capacity (for debugging/introspection).
+    pub capacity: i64,
+}
+
+/// Inner state for the sender half of a oneshot channel created via `oneshot-channel` builtin.
+/// Uses tokio::sync::oneshot::Sender wrapped in Mutex+Option for exclusive single-use semantics.
+pub struct OneshotSenderInner {
+    /// Sender half — wrapped in Mutex+Option so it can be taken on first send.
+    /// After the first send, the Option is None and subsequent sends fail.
+    pub sender: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<Value>>>,
+}
+
+/// Inner state for the receiver half of a oneshot channel created via `oneshot-channel` builtin.
+/// Uses tokio::sync::oneshot::Receiver wrapped in Mutex+Option for exclusive single-use semantics.
+pub struct OneshotReceiverInner {
+    /// Receiver half — wrapped in Mutex+Option so it can be taken on first recv.
+    /// After the first recv, the Option is None and subsequent recvs fail.
+    pub receiver: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<Value>>>,
 }
 
 /// Inner state for a reactive cell created via `reactive-cell` builtin.
@@ -828,6 +867,9 @@ impl Value {
             Value::Expression(_) => "Expression",
             Value::Task(_) => "Task",
             Value::Channel(_) => "Channel",
+            Value::BroadcastChannel(_) => "BroadcastChannel",
+            Value::OneshotSender(_) => "OneshotSender",
+            Value::OneshotReceiver(_) => "OneshotReceiver",
             Value::Context(_) => "Context",
             Value::ReactiveCell(_) => "ReactiveCell",
         }
@@ -927,6 +969,9 @@ impl fmt::Debug for Value {
             Value::Channel(_) => write!(f, "Channel"),
             Value::Context(_) => write!(f, "Context"),
             Value::ReactiveCell(_) => write!(f, "ReactiveCell"),
+            Value::BroadcastChannel(_) => write!(f, "BroadcastChannel"),
+            Value::OneshotSender(_) => write!(f, "OneshotSender"),
+            Value::OneshotReceiver(_) => write!(f, "OneshotReceiver"),
         }
     }
 }
@@ -1023,6 +1068,9 @@ impl fmt::Display for Value {
             Value::Channel(_) => write!(f, "<channel>"),
             Value::Context(_) => write!(f, "<context>"),
             Value::ReactiveCell(_) => write!(f, "<reactive-cell>"),
+            Value::BroadcastChannel(_) => write!(f, "<broadcast-channel>"),
+            Value::OneshotSender(_) => write!(f, "<oneshot-sender>"),
+            Value::OneshotReceiver(_) => write!(f, "<oneshot-receiver>"),
         }
     }
 }

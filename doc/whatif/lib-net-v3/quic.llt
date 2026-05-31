@@ -13,7 +13,7 @@
     [conns-ch: [channel 1]]
     [send conns-ch []]
     [let step [fn []
-      [dg:    [recv-datagram sock]]
+      [dg:    [recv sock]]
       [dcid:  [quic-extract-dcid dg.data]]
       [match [recv conns-ch]
         [Closed]: []
@@ -58,6 +58,13 @@
   detect-lost-packets:      [fn [let state@QuicLossState now@Duration] [error "TODO: detect-lost-packets"]]
   apply-hp:                 [fn [let hp-key@[Bytes 32] header@Bytes sample@[Bytes 16]] [error "TODO: apply-hp — AES-ECB(hp-key, sample) → mask"]]
 ]
+
+# QuicStream implements ByteStream — readable/writable channels give byte access.
+[instance [ByteStream QuicStream]
+  read-bytes:  [fn [let s@QuicStream n@Int]
+    [error "TODO: read-bytes from QuicStream — drain s.readable until n bytes accumulated"]]
+  write-bytes: [fn [let s@QuicStream data@Bytes]
+    [error "TODO: write-bytes to QuicStream — send data on s.writable channel"]]]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
@@ -121,7 +128,7 @@
      peer-addr:     SocketAddress
      scid:          Bytes
      dcid:          Bytes
-     streams:       [Channel QuicStream]
+     substreams:       [Channel QuicStream]
      tls-in:        [Channel Bytes]
      tls-out:       [Channel Bytes]
      pn-initial:    [Channel Int]
@@ -176,8 +183,32 @@
 
   quic-incoming: [fn [let conn@QuicConnection]
     # Returns [Ok QuicStream] | [Closed] — caller must match both cases.
-    [recv conn.streams]]
+    [recv conn.substreams]]
 
   # Stream adapter: open one QUIC stream per incoming connection.
   quic-stream-ch: [_ | [channel-map [fn [let c] [quic-open-stream c]]]]
 ]
+
+# ── QuicLayer typeclass — bidirectional quic ──────────────────────────────────
+
+[class [QuicLayer input output]
+  quic: [Fn@output [input]]]
+
+# Client: ConnectedUdp → QuicHandle (sni inferred from peer addr, ALPN open for h3/doq)
+[instance [QuicLayer ConnectedUdp QuicHandle]
+  quic: [fn [let sock@ConnectedUdp]
+    [QuicHandle [pending: sock  sni: null  alpn: []  ech: []  trust-roots: SystemRoots]]]]
+
+# Server: UdpSocket → Channel@QuicConnection (starts the QUIC accept loop)
+# Usage: [udp-listen cap 443] | quic | h3 | recv
+[instance [QuicLayer UdpSocket [Channel QuicConnection]]
+  quic: [fn [let sock@UdpSocket]
+    [out: [channel 64]]
+    [task [quic-accept-loop sock out]]
+    out]]
+
+# ── Multiplexed QuicConnection ────────────────────────────────────────────────
+
+[instance [Multiplexed QuicConnection QuicStream]
+  substreams: [fn [let ch@[Channel QuicConnection]]
+    [channel-map [fn [let c] [quic-open-stream c]] ch]]]

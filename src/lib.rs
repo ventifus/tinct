@@ -867,6 +867,16 @@ pub fn visit_value<V: ValueVisitor>(
             "Builder".to_string(),
             span,
         ))),
+        value::Value::BroadcastChannel(_) => Err(Box::new(
+            error::EvalError::value_not_serializable("BroadcastChannel".to_string(), span),
+        )),
+        value::Value::OneshotSender(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "OneshotSender".to_string(),
+            span,
+        ))),
+        value::Value::OneshotReceiver(_) => Err(Box::new(
+            error::EvalError::value_not_serializable("OneshotReceiver".to_string(), span),
+        )),
     }
 }
 

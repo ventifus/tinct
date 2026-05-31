@@ -103,7 +103,7 @@
 
   root-trusted?: [fn [let cert-der@Bytes trust-roots@[or [Seq Bytes] Symbol]]
     [match trust-roots
-      [let [SystemRoots]]:      [builtin-verify-cert-trusted cert-der]
+      [SystemRoots _]:      [builtin-verify-cert-trusted cert-der]
       [let roots@[Seq Bytes]]:  [any? [fn [let root] [cert-signed-by? cert-der root]] roots]]]
 ]
 

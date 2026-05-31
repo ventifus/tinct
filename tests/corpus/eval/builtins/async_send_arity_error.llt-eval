@@ -1,0 +1,6 @@
+# send arity error: insufficient arguments
+# Ensures send validates argument count (requires channel and value)
+
+[send]
+=== error
+[E080] send expects 2 arguments, got 0

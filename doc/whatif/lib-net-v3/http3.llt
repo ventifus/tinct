@@ -75,13 +75,13 @@
      settings:     [Map String Int]]]
 
   h3-accept: [fn [let conn@QuicConnection]
-    [error "TODO: h3-accept — open control/QPACK streams, send SETTINGS, recv peer SETTINGS"]]
+    [error "TODO: h3-accept — open control/QPACK substreams, send SETTINGS, recv peer SETTINGS"]]
 
-  # h3: fires the QUIC+TLS handshake (adding alpn: ["h3"]) then sets up HTTP/3 streams.
+  # h3: fires the QUIC+TLS handshake (adding alpn: ["h3"]) then sets up HTTP/3 substreams.
   # Receives QuicHandle from | quic, not a committed QuicConnection.
   h3: [fn [let pqh@QuicHandle]
     [conn: [quic-commit [with-alpn pqh ["h3"]]]]
-    [error "TODO: h3 — open control/QPACK streams, send SETTINGS, recv peer SETTINGS → Http3Connection"]]
+    [error "TODO: h3 — open control/QPACK substreams, send SETTINGS, recv peer SETTINGS → Http3Connection"]]
 
   http3-client: [fn [let conn@QuicConnection] [h3 conn]]
 
@@ -89,7 +89,7 @@
     [error "TODO: request — open QUIC stream, send HEADERS (qpack-encode), send DATA, read response HEADERS+DATA"]]
 
   http3-req-conn: [fn [let conn@Http3Connection out@[Channel RawRequest]]
-    [error "TODO: http3-req-conn — read incoming QUIC streams, qpack-decode HEADERS, emit RawRequest with respond fn"]]
+    [error "TODO: http3-req-conn — read incoming QUIC substreams, qpack-decode HEADERS, emit RawRequest with respond fn"]]
 
   h3-open-stream: [fn [let conn@Http3Connection]
     [quic-open-stream conn.quic]]
@@ -106,6 +106,41 @@
   # Serve layer: promote each incoming QUIC connection to an Http3Connection.
   h3-serve: [_ | [channel-map h3-accept]]
 
-  # Request-extraction: each Http3Connection yields its request streams.
+  # Request-extraction: each Http3Connection yields its request substreams.
   http3-requests: [_ | [channel-flat-map http3-req-conn]]
 ]
+
+# ── H3Layer typeclass — bidirectional h3 ─────────────────────────────────────
+
+[class [H3Layer input output]
+  h3: [Fn@output [input]]]
+
+# Client: QuicHandle → Http3Connection (fires QUIC+TLS with alpn:["h3"] + H3 setup)
+[instance [H3Layer QuicHandle Http3Connection]
+  h3: [fn [let qh@QuicHandle]
+    [conn: [quic-commit [with-alpn qh ["h3"]]]]
+    [error "TODO: h3 — open control/QPACK substreams, send SETTINGS → Http3Connection"]]]
+
+# Server: Channel@QuicConnection → Channel@Http3Connection
+[instance [H3Layer [Channel QuicConnection] [Channel Http3Connection]]
+  h3: [fn [let ch@[Channel QuicConnection]]
+    [channel-map h3-accept ch]]]
+
+# ── HttpStream Http3Connection ────────────────────────────────────────────────
+
+[instance [HttpStream Http3Connection]
+  send: [fn [let conn@Http3Connection req@RawRequest]
+    [error "TODO: send — open QUIC stream, send HEADERS+DATA, return Task@RawResponse"]]
+  recv: [fn [let conn@Http3Connection]
+    [error "TODO: recv — yield incoming requests as Channel@RawRequest"]]]
+
+[instance [HttpStream [Channel Http3Connection]]
+  send: [error "TODO: send on Channel@Http3Connection — not typical"]
+  recv: [fn [let ch@[Channel Http3Connection]]
+    [channel-flat-map http3-req-conn ch]]]
+
+# ── Multiplexed Http3Connection ───────────────────────────────────────────────
+
+[instance [Multiplexed Http3Connection QuicStream]
+  substreams: [fn [let ch@[Channel Http3Connection]]
+    [channel-map h3-open-stream ch]]]

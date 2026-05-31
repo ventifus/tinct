@@ -108,9 +108,9 @@
             []: null
             [let [rec ...rest]]:
               [match rec
-                [let [HttpsRecord 0 target _]]:
+                [HttpsRecord [prio: 0  target: target]]:
                   [resolve-svcb cap target [+ depth 1]]
-                [let [HttpsRecord _ _ params]]:
+                [HttpsRecord [params: params]]:
                   [ServiceMode
                     [alpn:  [svcb-alpn params]   ipv4: [svcb-ipv4-hints params]
                      ipv6:  [svcb-ipv6-hints params]   ech:  [svcb-ech params]

@@ -185,3 +185,17 @@
   noise-read: [fn [let conn@NoiseConnection wanted@Int]
     [noise-read-acc conn wanted []]]
 ]
+
+# ── NoiseLayer typeclass — bidirectional noise ────────────────────────────────
+
+[class [NoiseLayer input output]
+  noise: [Fn@output [NoiseConfig input]]]
+
+[instance@[bind: [h]  constraint: [h: ByteStream]]
+    [NoiseLayer h [NoiseConnection h]]
+  noise: [fn [let cfg@NoiseConfig h@h] [noise-accept cfg h]]]
+
+[instance@[bind: [h]  constraint: [h: ByteStream]]
+    [NoiseLayer [Channel h] [Channel [NoiseConnection h]]]
+  noise: [fn [let cfg@NoiseConfig ch@[Channel h]]
+    [channel-map [fn [let s@h] [noise-accept cfg s]] ch]]]

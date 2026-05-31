@@ -262,10 +262,21 @@
      app-server-key: [hkdf-expand-label s-ap "key"      [] p.key-len p.hash]
      app-server-iv:  [hkdf-expand-label s-ap "iv"       [] p.iv-len  p.hash]]]
 
+  # ── TlsLayer typeclass ────────────────────────────────────────────────────────
+  #
+  # tls is bidirectional — same name for client and server, dispatched by input type:
+  #
+  #   Client: [connect ... Tcp ep] | tls | h2 | [send req]
+  #   Server: [tcp-listen cap 443] | [tls cert] | h2 | recv
+  #
+  # Client takes TcpHandle (no config — sni inferred from addr, ALPN left open for h2/h3).
+  # Server takes TlsServerConfig (cert + key) and returns a fn Channel@h → Channel@TlsConnection h,
+  # which the pipeline applies to the incoming channel (subject-last currying).
+
   # ── Client TLS ────────────────────────────────────────────────────────────────
 
   # TlsHandle: TLS config open, not yet committed. tls creates it from a TcpHandle;
-  # downstream layers (h2, grpc, doq) set ALPN via with-tls-alpn then fire tls-commit.
+  # downstream layers (h2, grpc, doq) set ALPN via with-alpn then fire tls-commit.
   TlsHandle: [type
     [handle:      TcpHandle
      sni:         [or String Null]    # null = infer from handle.addr on commit
@@ -279,8 +290,8 @@
     [TlsHandle
       [handle: h  sni: null  alpn: []  ech: []  trust-roots: SystemRoots]]]
 
-  # with-tls-alpn: accumulate ALPN into a TlsHandle before commit.
-  with-tls-alpn: [fn [let th@TlsHandle alpn@[Seq String]]
+  # with-alpn: accumulate ALPN into a TlsHandle before commit.
+  with-alpn: [fn [let th@TlsHandle alpn@[Seq String]]
     [TlsHandle [handle: th.handle  sni: th.sni  alpn: alpn
                        ech: th.ech  trust-roots: th.trust-roots]]]
 
@@ -289,7 +300,7 @@
   tls-commit: [fn [let th@TlsHandle]
     [sni: [or th.sni
       [match th.handle.addr
-        [let [Hostname h]]: h
+        [Hostname h]: h
         _: [error "tls-commit: no hostname for SNI — use [Hostname h] in connect or set sni explicitly"]]]]
     [tls-handshake th.handle.stream
       [TlsClientConfig [sni: sni  alpn: th.alpn  ech: th.ech  trust-roots: th.trust-roots]]]]
@@ -305,8 +316,26 @@
                 [let cfg@TlsServerConfig h@h]
     [error "TODO: tls-accept — read ClientHello; choose-cipher; tls13-key-schedule; send ServerHello + EncryptedExtensions + Certificate + CertificateVerify + Finished; verify client Finished"]]
 
-  # Serve layer: promotes a Channel@ByteStream to Channel@TlsConnection.
+  # Serve layer kept for explicit use; TlsLayer server instance uses it internally.
   tls-serve: [fn@[bind: [h]  constraint: [h: ByteStream]]
                [let cfg@TlsServerConfig in-ch@[Channel h]]
     [channel-map [fn [let s@h] [tls-accept cfg s]] in-ch]]
 ]
+
+# ── TlsLayer typeclass — bidirectional tls ────────────────────────────────────
+
+[class [TlsLayer input output]
+  tls: [Fn@output [input]]]
+
+# Client: TcpHandle → TlsHandle (sni inferred from addr, ALPN open for downstream layer)
+[instance [TlsLayer TcpHandle TlsHandle]
+  tls: [fn [let h@TcpHandle]
+    [TlsHandle [handle: h  sni: null  alpn: []  ech: []  trust-roots: SystemRoots]]]]
+
+# Server: TlsServerConfig → (Channel@h → Channel@TlsConnection h)
+# Usage: [tcp-listen cap 443] | [tls cert] | h2 | recv
+[instance@[bind: [h]  constraint: [h: ByteStream]] [TlsLayer TlsServerConfig
+    [Fn@[Channel [TlsConnection h]] [[Channel h]]]]
+  tls: [fn [let cfg@TlsServerConfig]
+    [fn [let ch@[Channel h]]
+      [channel-map [fn [let s@h] [tls-accept cfg s]] ch]]]]

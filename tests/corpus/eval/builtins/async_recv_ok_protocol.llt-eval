@@ -1,0 +1,18 @@
+# recv returns [Ok v] on successful receive
+# Phase 3: recv protocol redesign (T-811)
+#
+# Strategy: force send before recv by making result depend on sent.
+# [= sent []] forces the send call (send returns []), then recv runs.
+# The dict's ch: field is never serialized — only %.result is accessed.
+# Multi-doc pipeline: doc 1 returns the computation dict; doc 2 matches.
+[
+  ch: [channel 10]
+  sent: [send ch 42]
+  result: [if [= sent []] [recv ch] [recv ch]]
+]
+---
+[match %.result
+  [Ok v]: v
+  [Closed]: -1]
+=== out
+Int(42)

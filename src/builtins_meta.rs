@@ -1283,6 +1283,9 @@ fn type_name(val: &Value) -> String {
         Value::Context(_) => "Context",
         Value::ReactiveCell(_) => "ReactiveCell",
         Value::Builder(_) => "Builder",
+        Value::BroadcastChannel(_) => "BroadcastChannel",
+        Value::OneshotSender(_) => "OneshotSender",
+        Value::OneshotReceiver(_) => "OneshotReceiver",
     }
     .to_string()
 }

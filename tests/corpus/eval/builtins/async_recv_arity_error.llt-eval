@@ -1,0 +1,6 @@
+# recv arity error: no arguments
+# Phase 3: ensures recv validates argument count
+
+[recv]
+=== error
+[E080] recv expects 1 argument, got 0

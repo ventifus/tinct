@@ -86,12 +86,13 @@ use crate::builtins::{
 };
 // Async concurrency implementations.
 use crate::builtins_async::{
-    builtin_await, builtin_cancel_root, builtin_cancel_task, builtin_cancelled_q, builtin_cell_get,
-    builtin_cell_set, builtin_channel, builtin_context, builtin_drain, builtin_exit_now,
-    builtin_non_cancellable, builtin_par, builtin_par_filter, builtin_par_map,
-    builtin_reactive_cell, builtin_recv, builtin_select_once, builtin_send, builtin_signal_channel,
-    builtin_task, builtin_timer_channel, builtin_watch_channel, builtin_with_cancel,
-    builtin_with_context, builtin_with_deadline, builtin_with_timeout,
+    builtin_await, builtin_broadcast_channel, builtin_cancel_root, builtin_cancel_task,
+    builtin_cancelled_q, builtin_cell_get, builtin_cell_set, builtin_channel, builtin_context,
+    builtin_drain, builtin_exit_now, builtin_non_cancellable, builtin_oneshot_channel, builtin_par,
+    builtin_par_filter, builtin_par_map, builtin_reactive_cell, builtin_recv, builtin_select_once,
+    builtin_send, builtin_signal_channel, builtin_task, builtin_timer_channel, builtin_try_send,
+    builtin_watch_channel, builtin_with_cancel, builtin_with_context, builtin_with_deadline,
+    builtin_with_timeout,
 };
 
 use crate::value::{BuiltinDef, Strictness};
@@ -753,6 +754,9 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!("builtin-channel", builtin_channel),
         builtin!("builtin-send", builtin_send),
         builtin!("builtin-recv", builtin_recv),
+        builtin!("builtin-broadcast-channel", builtin_broadcast_channel),
+        builtin!("builtin-oneshot-channel", builtin_oneshot_channel),
+        builtin!("builtin-try-send", builtin_try_send),
         builtin!("builtin-select-once", builtin_select_once),
         builtin!("builtin-par", builtin_par),
         builtin!("builtin-par-map", builtin_par_map),
@@ -2922,12 +2926,45 @@ pub fn core_type_env(env: &mut TypeEnv) {
             variadic: false,
         },
     );
-    // builtin-select-once: Unknown → Unknown
+    // builtin-select-once: Unknown → Unknown → Unknown
     // Selects the first ready channel from a seq of SelectSource values.
+    // First arg is a context (for cancellation), second arg is the sources Seq.
     env.insert(
         "builtin-select-once".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
+            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
+            ret: Box::new(Type::Unknown),
+            variadic: false,
+        },
+    );
+    // builtin-broadcast-channel: Int → Unknown
+    // Creates a broadcast channel of the given capacity.
+    // Each subscriber (via recv) receives every value sent after it subscribes.
+    env.insert(
+        "builtin-broadcast-channel".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int)],
+            ret: Box::new(Type::Unknown), // BroadcastChannel — opaque
+            variadic: false,
+        },
+    );
+    // builtin-oneshot-channel: () → Unknown
+    // Creates a one-shot channel (single send/recv pair).
+    // Returns a dict with sender and receiver fields.
+    env.insert(
+        "builtin-oneshot-channel".to_string(),
+        Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Unknown), // {sender, receiver} dict — opaque
+            variadic: false,
+        },
+    );
+    // builtin-try-send: Unknown → Unknown → Unknown
+    // Non-blocking send: returns [Ok null] if sent, [Full] if buffer is full.
+    env.insert(
+        "builtin-try-send".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
             ret: Box::new(Type::Unknown),
             variadic: false,
         },

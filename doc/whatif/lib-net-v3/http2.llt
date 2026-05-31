@@ -2,7 +2,7 @@
 # Part of: lib-net-v3
 
 [include %libdir "net.llt"]
-[include %include-dir "tls13.llt"]   # for TlsHandle, tls-commit, with-tls-alpn
+[include %include-dir "tls13.llt"]   # for TlsHandle, tls-commit, with-alpn
 [include %include-dir "http1.llt"]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
@@ -118,7 +118,7 @@
 
   Http2Connection: [type
     [handle:      Handle
-     streams:     [Map Int H2Stream]
+     substreams:     [Map Int H2Stream]
      hpack-send:  HpackTable
      hpack-recv:  HpackTable
      next-stream: [Channel Int]
@@ -148,7 +148,7 @@
 
   # h2: fires TLS with alpn: ["h2"] via tls-commit, then H2 preface.
   h2: [fn [let pth@TlsHandle]
-    [conn: [tls-commit [with-tls-alpn pth ["h2"]]]]
+    [conn: [tls-commit [with-alpn pth ["h2"]]]]
     [error "TODO: h2 — send client preface, exchange SETTINGS → Http2Connection"]]
 
   request: [fn [let req@RawRequest conn@Http2Connection]
@@ -172,9 +172,45 @@
   h2-push: [fn [let conn@Http2Connection stream-id@Int req@RawRequest resp@RawResponse]
     [error "TODO: h2-push — send PUSH_PROMISE + HEADERS+DATA on new server-initiated stream"]]
 
-  # Serve layer: promote each incoming Handle to an Http2Connection. Subject-last for |.
+  # Serve layer kept for explicit use; H2Layer server instance uses it internally.
   h2-serve: [_ | [channel-map h2-accept]]
 
-  # Request-extraction: each Http2Connection yields its request streams.
+  # Request-extraction: each Http2Connection yields its request substreams.
   http2-requests: [_ | [channel-flat-map http2-req-conn]]
 ]
+
+# ── H2Layer typeclass — bidirectional h2 ─────────────────────────────────────
+
+[class [H2Layer input output]
+  h2: [Fn@output [input]]]
+
+# Client: TlsHandle → Http2Connection (fires TLS with alpn:["h2"] + H2 preface)
+[instance [H2Layer TlsHandle Http2Connection]
+  h2: [fn [let th@TlsHandle]
+    [conn: [tls-commit [with-alpn th ["h2"]]]]
+    [error "TODO: h2 — send client preface, exchange SETTINGS → Http2Connection"]]]
+
+# Server: Channel@TlsConnection → Channel@Http2Connection
+[instance@[bind: [h]] [H2Layer [Channel [TlsConnection h]] [Channel Http2Connection]]
+  h2: [fn [let ch@[Channel [TlsConnection h]]]
+    [channel-map h2-accept ch]]]
+
+# ── HttpStream Http2Connection ────────────────────────────────────────────────
+
+[instance [HttpStream Http2Connection]
+  send: [fn [let conn@Http2Connection req@RawRequest]
+    [error "TODO: send — allocate H2 stream, send HEADERS+DATA, return Task@RawResponse"]]
+  recv: [fn [let conn@Http2Connection]
+    [error "TODO: recv — yield incoming requests as Channel@RawRequest (H2 stream multiplexing)"]]]
+
+# Channel variant: Channel@Http2Connection → Channel@RawRequest (all connections flattened)
+[instance [HttpStream [Channel Http2Connection]]
+  send: [error "TODO: send on Channel@Http2Connection — not typical"]
+  recv: [fn [let ch@[Channel Http2Connection]]
+    [channel-flat-map http2-req-conn ch]]]
+
+# ── Multiplexed Http2Connection ───────────────────────────────────────────────
+
+[instance [Multiplexed Http2Connection H2Stream]
+  substreams: [fn [let ch@[Channel Http2Connection]]
+    [channel-map h2-open-stream ch]]]

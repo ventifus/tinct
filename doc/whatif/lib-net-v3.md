@@ -2,7 +2,7 @@
 
 **State:** Draft — 2026-05-21
 
-**Depends on:** [`runtime-v2.md`](runtime-v2.md) ✓ complete — `task`/`await`/`channel`/`recv`/`send`/`select-once`/`loop-select`, `Arc`-based thunks, async Tokio runtime. All async utilities are in `stdlib/prelude.llt` (merged from the now-deleted `stdlib/async.llt`). All concurrency primitives are used here without redefinition. `tcp-connect`, `quic-connect`, and `tls-layer` are **not** runtime-v2 primitives — they are tinct stdlib functions defined in this whatif.
+**Depends on:** [`runtime-v2.md`](runtime-v2.md) ✓ complete — `task`/`await`/`channel`/`recv`/`send`/`select-once`/`loop-select`, `Arc`-based thunks, async Tokio runtime. All async utilities are in `stdlib/prelude.llt` (merged from the now-deleted `stdlib/async.llt`). All concurrency primitives are used here without redefinition. `tcp-connect` is the only Rust primitive here — `tls`, `quic`, `h2`, `h3`, and `connect` are tinct stdlib functions defined in this whatif.
 
 **Depends on:** [`builtin-privacy.md`](builtin-privacy.md) ✓ complete — `--- uses: ["net"]` headers, `builtin_module("net")` registry, `eval-programs`, `eval-program`, `module` and related bootstrap machinery are all in place. Net stdlib files declare `--- uses: ["net"]` to access their Rust builtins. `select-once` returns `[Ok v]` | `[Closed]` (B-192); `loop-select` is pure tinct. `recv` also returns `[Ok v]` | `[Closed]` for uniform channel semantics.
 
@@ -59,9 +59,9 @@ Three API levels, all built from the same components:
 
 **Level 3 — Raw composition.** Full pipeline control for custom stacks:
 ```tinct
-[[connect %nc [Hostname "api.example.com"] Tcp 443] | tls | h2 | [http-request req]]
-[[connect %nc [Hostname "redis.internal"]  Tcp 6379] | [codec RedisCodec]]
-[[connect %nc [Hostname "vpn.example.com"] Udp 51820] | [wireguard cfg]]
+[[connect %nc Tcp [HostPort [Hostname "api.example.com"] 443]] | tls | h2 | [http-request req]]
+[[connect %nc Tcp [HostPort [Hostname "redis.internal"]  6379]] | [codec RedisCodec]]
+[[connect %nc Udp [HostPort [Hostname "vpn.example.com"] 51820]] | [wireguard cfg]]
 ```
 
 `fetch` is not a special case — it uses `connect Http` which wires `connect Tcp | tls | h2` (or `quic | h3` if SVCB indicates). No hidden implementations. Users who define a new `Transport` instance and `Protocol` instance get Level 1 for free.
@@ -73,12 +73,30 @@ Three API levels, all built from the same components:
 ```text
                   Server (receive)                Client (initiate)
                   ──────────────────────          ──────────────────────
-Transport     resource → Channel@A            connect %net Proto [HostPort h p] → A
-1:1 layer     Channel@A → Config → Channel@B  A → Config → B
-1:N layer     Channel@A → Channel@B           A → RequestClient@B
+Transport     [listen/bind] → Channel@A       connect %net Proto [HostPort h p] → A
+1:1 layer     [layer cfg] Channel@A→Channel@B [layer] A → B   (same name, dispatch by type)
+data exchange Channel@conn | recv → Channel@req   conn | [send req] → Task@resp
 ```
 
-`HostPort` bundles address + port as a single subject — subject-last means `[connect %net Tcp]` is a partial application waiting for an endpoint. On the client side, `connect` is always the bottom of the protocol stack:
+Protocol layer functions are **bidirectional**: the same verb dispatches to client or server instance based on input type. `Channel@X` → server instance; single `X` → client instance:
+
+```tinct
+# Client: starts from connect
+[connect %net Tcp [HostPort [Hostname "api.example.com"] 443]]
+  | tls | h2 | [send req]                    # TcpHandle → TlsHandle → Http2Connection
+
+[connect %net Udp [HostPort [Hostname "api.example.com"] 443]]
+  | quic | h3 | [send req]                   # ConnectedUdp → QuicHandle → Http3Connection
+
+# Server: starts from a listener
+[tcp-listen cap 443] | [tls cert] | h2 | recv      # Channel@h → Channel@TlsConnection → Channel@Http2Connection
+[udp-listen cap 443] | quic | h3 | recv             # UdpSocket → Channel@QuicConnection → Channel@Http3Connection
+
+# Arbitrary stacking — same verbs, direction implicit from source
+[udp-listen cap 443] | quic | h3 | substreams | [wireguard wg-cfg]
+```
+
+`HostPort` bundles address + port as a single subject — `[connect %net Tcp]` is a partial application waiting for an endpoint. On the client side, `connect` is always the bottom of the stack:
 
 ```tinct
 # HTTPS/2 — sni and alpn inferred by tls/h2 layers
@@ -140,20 +158,22 @@ Two typeclasses partition the connection lifecycle. Together they make every pro
 # DNS over TLS — user-defined
 DoT: [type [server: Address  port: Port]]
 
-[instance [Transport DoT] determines: [DoT → TlsConnection]
-  connect: [fn [let cap _@Address _@Port proto@DoT]
-    [[connect cap proto.server Tcp proto.port] | tls]]]
+[instance [Transport DoT] determines: [DoT → TlsHandle]
+  connect: [fn [let cap@NetCap _@DoT ep@HostPort]
+    [TlsHandle [handle: [connect cap Tcp ep]  sni: null  alpn: []  ech: []  trust-roots: SystemRoots]]]]
 
 [instance [Protocol DoT DnsQuery DnsResponse]
   fetch: [fn [let cap@NetCap proto@DoT req@DnsQuery]
-    [[connect cap proto Tcp 0] | [dns-framed-send req]]]]
+    [th: [connect cap DoT [HostPort proto.server proto.port]]]
+    [tls-commit th | [dns-framed-send req]]]]
 
 # One definition — three call sites work:
 cloudflare-dot: [DoT [server: [Hostname "dns.cloudflare.com"]  port: 853]]
 
-[fetch %nc cloudflare-dot [dns-query "IN" "A" "example.com"]]         # Level 1
-[c: [connect %nc cloudflare-dot Tcp 0]  [dns-framed-send c query]]    # Level 2
-[[connect %nc [Hostname "dns.cloudflare.com"] Tcp 853] | tls | ...]   # Level 3
+[fetch %nc cloudflare-dot [dns-query "IN" "A" "example.com"]]                              # Level 1
+[c: [connect %nc DoT [HostPort [Hostname "dns.cloudflare.com"] 853]]                       # Level 2
+ [dns-framed-send [tls-commit c] query]]
+[[connect %nc Tcp [HostPort [Hostname "dns.cloudflare.com"] 853]] | tls | [dns-framed-send q]] # Level 3
 ```
 
 The same pattern works for any protocol: gRPC (HTTP/2 with ALPN `"h2"`), MQTT, custom binary protocols over TLS. Implement `Transport` + `Protocol`; the rest of the stack composes automatically.
@@ -186,7 +206,7 @@ Http2Connection:[type [...]]                                               # | h
 ```tinct
 tls:         TcpHandle       → TlsHandle    (sni open, ALPN open)
 tls-commit:  TlsHandle→ TlsConnection       (fires handshake with accumulated config)
-h2:          TlsHandle→ Http2Connection     (with-tls-alpn ["h2"] + tls-commit)
+h2:          TlsHandle→ Http2Connection     (with-alpn ["h2"] + tls-commit)
 quic:        ConnectedUdp    → QuicHandle   (sni open, ALPN open)
 quic-commit: QuicHandle→QuicConnection      (fires QUIC+TLS handshake)
 h3:          QuicHandle→Http3Connection     (with-alpn ["h3"] + quic-commit)
@@ -197,7 +217,7 @@ h3:          QuicHandle→Http3Connection     (with-alpn ["h3"] + quic-commit)
 ```tinct
 [connect %net Tcp [HostPort [Hostname "api.example.com"] 443]]   # TcpHandle
   | tls      # TlsHandle — sni open (inferred from addr.addr on commit), alpn open
-  | h2       # with-tls-alpn ["h2"] + tls-commit + H2 preface → Http2Connection
+  | h2       # with-alpn ["h2"] + tls-commit + H2 preface → Http2Connection
   | [http-request "GET" "/data"]
 ```
 
@@ -288,8 +308,8 @@ An unordered, unreliable packet socket. Each send and receive is a discrete unit
 
 ```tinct
 [class [Datagram d]
-  send-datagram: [Fn [d@d addr@SocketAddress data@Bytes] Null]
-  recv-datagram: [Fn [d@d] UdpDatagram]]
+  send: [Fn [d@d addr@SocketAddress data@Bytes] Null]
+  recv: [Fn [d@d] UdpDatagram]]
 ```
 
 `UdpSocket` (from `udp-socket`) is the base instance:
@@ -297,8 +317,8 @@ An unordered, unreliable packet socket. Each send and receive is a discrete unit
 ```tinct
 # stdlib/net.llt
 [instance [Datagram UdpSocket]
-  send-datagram: builtin-udp-send   # Rust: UdpSocket::send_to
-  recv-datagram: builtin-udp-recv]  # Rust: UdpSocket::recv_from
+  send: builtin-udp-send   # Rust: UdpSocket::send_to
+  recv: builtin-udp-recv]  # Rust: UdpSocket::recv_from
 ```
 
 QUIC is built on `Datagram` — `quic-accept-loop` in `stdlib/protocols/quic.llt` receives datagrams from a `UdpSocket`, demultiplexes by connection ID, and hands each QUIC stream to the caller as a `ByteStream`. The same `quic-accept-loop` would work over any `Datagram d`, enabling QUIC over custom datagram transports.
@@ -362,7 +382,7 @@ WebSocketConnection: [type [underlying: Handle  server-side: Bool]]
   recv: ws-recv-frame]   # reads from underlying, strips WS framing + mask, returns frame
 ```
 
-`ws-serve` produces `Channel@WebSocketConnection`; the application calls `recv wsconn` to get `[Ok WsFrame]` or `[Closed]`, and calls `send wsconn reply`. gRPC bidirectional streams, MQTT connections, and custom application protocols all implement `MessageStream T` for their respective message types.
+`ws-serve` produces `Channel@WebSocketConnection`; the application calls `recv wsconn` to get `[Ok WsFrame]` or `[Closed]`, and calls `send wsconn reply`. gRPC bidirectional substreams, MQTT connections, and custom application protocols all implement `MessageStream T` for their respective message types.
 
 ### `%emit` as a `MessageStream` — the protocol stack model applied to CLI I/O
 
@@ -537,7 +557,7 @@ The `Codec` typeclass declaration lives in `stdlib/net.llt` alongside `ByteStrea
 | `H2FrameCodec` | `H2Frame` | `Bytes` | MessageStream → ByteStream |
 | `DtlsCodec` | `Datagram` | `Datagram` | Datagram → Datagram |
 
-The existing protocol layers (`tls-layer`, `h2-layer`, `ws-layer`, etc.) are `Codec` implementations — they just happen to compose with `ByteStream` instances via `encode`/`decode`. A `Codec` instance for compression sits between two `ByteStream` layers; one for NDJSON sits between a `MessageStream` and a `ByteStream` sink.
+The existing protocol layers (`tls`, `h2`, `ws`, etc.) are `Codec` implementations — they just happen to compose with `ByteStream` instances via `encode`/`decode`. A `Codec` instance for compression sits between two `ByteStream` layers; one for NDJSON sits between a `MessageStream` and a `ByteStream` sink.
 
 **Codec layers compose by type** — the `output` type of one codec is the `input` type of the next. This enables separating framing from serialization into distinct composable stages. The `%emit → JSON → %stdout` path for example can be decomposed into two explicit codec stages:
 
@@ -588,7 +608,7 @@ The type chain: `MessageStream@Any → MessageStream@String → ByteStream → B
 - **New**: `MessageStreamHandle` — the repluggable handle type; holds a `ReactiveCell` (backed by `builtin-reactive-cell` / `tokio::sync::watch`) carrying the current routing implementation. `send`/`recv` on a handle transparently delegate to the current impl; `rebind` replaces it atomically. All `MessageStream` handles are `MessageStreamHandle` instances.
 - **New**: `rebind` — universal operation that swaps the routing implementation on any `MessageStream` handle without the senders knowing. Defined in `stdlib/serve.llt`.
 - **New**: `message-stream` — constructor that wraps an initial implementation in a `MessageStreamHandle`. Defined in `stdlib/serve.llt`.
-- **New**: `codec-stream source codec sink → MessageStream` — wraps a source `MessageStream` with a `Codec` instance and a `ByteStream` sink. Returns a write-through `MessageStream` that calls `encode` on each value via the codec, then routes the output to the sink. The codec instance's `output` type determines which route is taken (write-bytes for ByteStream, send for MessageStream, send-datagram for Datagram). Defined in `stdlib/serve.llt`.
+- **New**: `codec-stream source codec sink → MessageStream` — wraps a source `MessageStream` with a `Codec` instance and a `ByteStream` sink. Returns a write-through `MessageStream` that calls `encode` on each value via the codec, then routes the output to the sink. The codec instance's `output` type determines which route is taken (write-bytes for ByteStream, send for MessageStream, send for Datagram). Defined in `stdlib/serve.llt`.
 - **New**: `codec-sink source codec sink → Task` — drains a source `MessageStream`, applies codec to each value, writes to sink. Returns a Task (await it when done). `drain-emit codec sink` is sugar for `codec-sink %emit codec sink`. Defined in `stdlib/serve.llt`.
 - **New**: `codec C source` — wraps source through a Codec stage; argument order (C, source) enables `|` pipelines. `sink S source` — terminal stage, drains source to ByteStream S. Both in `stdlib/serve.llt`.
 - **New**: `to-messages v` — adapter from any tinct value to a `MessageStream`. Bridges arbitrary shapes into the MessageStream world: Seq → yields each element, scalar → yields one element. Follows the `to-json`/`to-tinct` naming convention. Enables `[[to-messages %] | out]` and, once `out` is made polymorphic, `[% | out]`. Defined in `stdlib/serve.llt`.
@@ -604,7 +624,7 @@ The type chain: `MessageStream@Any → MessageStream@String → ByteStream → B
 
 Three codec utilities in `stdlib/serve.llt` complete the `MessageStream` replugging model. All three take a `Codec` instance (not a raw `Fn` lambda) — the codec handles both serialization and framing. The caller does not need to know about `\n` separators, length prefixes, or any other framing detail; that is the codec's job.
 
-- **`codec-stream source codec sink`** — wraps a source `MessageStream` with a `Codec` instance and a `ByteStream` sink. Each `send` to the returned `MessageStream` calls `encode` on the `Codec`, then dispatches the output to `sink` based on the codec's `output` type (`write-bytes` for `ByteStream`, `send` for `MessageStream`, `send-datagram` for `Datagram`). Used by output formatters to `rebind %emit` to a write-through pipeline.
+- **`codec-stream source codec sink`** — wraps a source `MessageStream` with a `Codec` instance and a `ByteStream` sink. Each `send` to the returned `MessageStream` calls `encode` on the `Codec`, then dispatches the output to `sink` based on the codec's `output` type (`write-bytes` for `ByteStream`, `send` for `MessageStream`, `send` for `Datagram`). Used by output formatters to `rebind %emit` to a write-through pipeline.
 
 ```tinct
 codec-stream: [fn@[bind: [c input output]]
@@ -614,7 +634,7 @@ codec-stream: [fn@[bind: [c input output]]
     identity]]]
 ```
 
-Where `route-encoded` dispatches based on the encoded output type: `write-bytes` for `ByteStream`, `send` for `MessageStream`, `send-datagram` for `Datagram`. The concrete codec instance's type signature determines which branch is taken.
+Where `route-encoded` dispatches based on the encoded output type: `write-bytes` for `ByteStream`, `send` for `MessageStream`, `send` for `Datagram`. The concrete codec instance's type signature determines which branch is taken.
 
 - **`codec-sink source codec sink`** — drains a source `MessageStream` in a background task, applies `encode` on the `Codec` for each value, and routes the output to `sink`. Returns a `Task`; await it when the drain must complete before the program exits.
 - **`drain-emit codec sink`** — sugar for `codec-sink %emit codec sink`. The common case: drain `%emit` through a `Codec` instance into a `ByteStream` sink.
@@ -642,7 +662,7 @@ channel-map: [fn@[bind: [element result]] [let f@[Fn [element] result]]
 
 # 1:N — apply f to each element; f emits multiple items to the shared out channel.
 # buf: output buffer; size to absorb bursts when concurrent f calls complete together.
-# (HTTP/1.1 keep-alive requests, HTTP/2 streams, log lines from files, ...)
+# (HTTP/1.1 keep-alive requests, HTTP/2 substreams, log lines from files, ...)
 channel-flat-map: [fn@[bind: [element item]] [let f@[Fn [element [Channel item]] Null]]
   [fn@[return: [Channel item]] [let in-ch@[Channel element]  buffer-size@[type: Int  default: 256]]
     [out: [channel buffer-size]]
@@ -700,7 +720,7 @@ Constraint propagation: the closure `[fn [let h] [tls-accept cfg h]]` has type `
 
 WireGuard is a user-mode protocol: Noise_IKpsk2 handshake delegated to `noise.llt` (IKpsk2 + Blake2s + ChaChaPoly + X25519), with WireGuard-specific message framing (type bytes, sender/receiver index fields, mac1/mac2 fields) layered on top. Data plane over `udp-socket`; no kernel TUN/TAP.
 
-`h2-serve` and `h3-serve` call tinct-implemented `h2-accept`/`h3-accept` from `stdlib/protocols/http2.llt` and `stdlib/protocols/http3.llt`. `Http2Connection` and `Http3Connection` are tinct records holding frame-parsing state, HPACK/QPACK tables, and stream channels — not opaque Rust types. They do **not** implement `ByteStream` — they are stream multiplexers, not byte pipes. Individual streams are accessed via `h2-open-stream`/`h3-open-stream` which return `Handle` (a `ByteStream`). The extraction layers (`http2-requests`, `http3-requests`) pull request streams from those records using tinct loops and channels.
+`h2-serve` and `h3-serve` call tinct-implemented `h2-accept`/`h3-accept` from `stdlib/protocols/http2.llt` and `stdlib/protocols/http3.llt`. `Http2Connection` and `Http3Connection` are tinct records holding frame-parsing state, HPACK/QPACK tables, and stream channels — not opaque Rust types. They do **not** implement `ByteStream` — they are stream multiplexers, not byte pipes. Individual substreams are accessed via `h2-open-stream`/`h3-open-stream` which return `Handle` (a `ByteStream`). The extraction layers (`http2-requests`, `http3-requests`) pull request substreams from those records using tinct loops and channels.
 
 A complete stack (HTTP over TLS over WireGuard over Unix socket):
 
@@ -715,25 +735,25 @@ A complete stack (HTTP over TLS over WireGuard over Unix socket):
 
 ## Client Layers
 
-Client-side layers are named after their protocol. `connect` is always the bottom; layers accumulate upward. Each layer is a pending builder or a committed handshake — the pattern is uniform across protocols.
+Client-side layers are named after their protocol. `connect` is always the bottom; layers accumulate upward. Each layer either accumulates config (returning a handle type with open fields) or fires a handshake (returning a committed connection). The pattern is uniform across protocols.
 
 ```tinct
-# Tcp path: PendingHandle → TlsHandle → Http2Connection
+# Tcp path: TcpHandle → TlsHandle → Http2Connection
 [connect %net Tcp [HostPort [Hostname "api.example.com"] 443]]
-  | tls   # TlsHandle — sni inferred, ALPN open
-  | h2    # adds alpn: ["h2"], fires TLS + H2 preface → Http2Connection
+  | tls   # TlsHandle — sni inferred from addr, ALPN open
+  | h2    # with-alpn ["h2"] + tls-commit + H2 preface → Http2Connection
 
 # Udp path: ConnectedUdp → QuicHandle → Http3Connection
 [connect %net Udp [HostPort [Hostname "api.example.com"] 443]]
-  | quic  # QuicHandle — sni inferred, ALPN open
-  | h3    # adds alpn: ["h3"], fires QUIC+TLS + H3 setup → Http3Connection
+  | quic  # QuicHandle — sni inferred from peer addr, ALPN open
+  | h3    # with-alpn ["h3"] + quic-commit + H3 setup → Http3Connection
 
-# WireGuard (Noise-based — no TLS pending, wireguard fires immediately)
-[connect %net [Hostname "vpn.example.com"] Udp 51820]
+# WireGuard (Noise-based — wireguard fires immediately on ConnectedUdp)
+[connect %net Udp [HostPort [Hostname "vpn.example.com"] 51820]]
   | [wireguard cfg]   # Noise IKpsk2 handshake → WireguardConnection
 
-# DoT (DNS over TLS — tls fires on first dns-framed-send write)
-[connect %net [Hostname "dns.cloudflare.com"] Tcp 853]
+# DoT (DNS over TLS — tls-commit fires when dns-framed-send writes first byte)
+[connect %net Tcp [HostPort [Hostname "dns.cloudflare.com"] 853]]
   | tls | [dns-framed-send query]
 ```
 
@@ -759,7 +779,7 @@ resp:   [http-request c "GET" "/data"  accept: "application/json"]
 
 ## Bidirectional Connections
 
-For protocols where either side can initiate — HTTP/2 server push, HTTP/3, WebSocket — the connection type is the same on both sides. `h2-serve` and `h2-connect` both produce `Http2Connection`; `h3-serve` and `h3-connect` both produce `Http3Connection`. These are tinct records, so stream access and channel adapters are tinct stdlib functions in `http2.llt`/`http3.llt`/`quic.llt`:
+For protocols where either side can initiate — HTTP/2 server push, HTTP/3, WebSocket — the connection type is the same on both sides. `h2-serve` and `h2` both produce `Http2Connection`; `h3-serve` and `h3` both produce `Http3Connection`. These are tinct records, so stream access and channel adapters are tinct stdlib functions in `http2.llt`/`http3.llt`/`quic.llt`:
 
 ```tinct
 # Stream access for byte-level tunneling (stdlib/protocols/http2.llt, http3.llt)
@@ -771,14 +791,14 @@ quic-stream-ch:  [Fn [ch@[Channel QuicConnection]] [Channel Handle]]
 h2-stream-ch:    [Fn [ch@[Channel Http2Connection]]   [Channel Handle]]
 h3-stream-ch:    [Fn [ch@[Channel Http3Connection]]   [Channel Handle]]
 
-# WireGuard tunnelled over H3 streams — all tinct
+# WireGuard tunnelled over H3 substreams — all tinct
 wg-ch: [quic-listen cap 443]
          | h3-serve
          | h3-stream-ch
          | [wireguard-serve config]
 ```
 
-`quic-stream-ch`, `h2-stream-ch`, and `h3-stream-ch` open exactly one stream per incoming connection. Use `h2-open-stream`/`h3-open-stream` directly when a single `Http2Connection`/`Http3Connection` needs multiple streams.
+`quic-stream-ch`, `h2-stream-ch`, and `h3-stream-ch` open exactly one stream per incoming connection. Use `h2-open-stream`/`h3-open-stream` directly when a single `Http2Connection`/`Http3Connection` needs multiple substreams.
 
 ---
 
@@ -825,17 +845,20 @@ dns-resolve: [fn [let resolver name type]
 dns-udp-resolver: [fn [let cap addr@SocketAddress]
   [sock: [udp-ephemeral cap]]  # bind 0.0.0.0:0 — ephemeral port assigned by OS
   [fn [let q] [task
-    [send-datagram sock addr [encode-dns-wire q]]
-    [decode-dns-wire [recv-datagram sock].data]]]]
+    [send sock addr [encode-dns-wire q]]
+    [decode-dns-wire [recv sock].data]]]]
 
 dns-tls-resolver: [fn [let cap addr@SocketAddress sni@String]
   [fn [let q] [task
-    [tls: [[tcp-connect cap addr] | [tls-layer [sni: sni ...]]]]
-    [dns-framed-send tls q]]]]
+    # tcp-connect gives a raw Handle; wrap in TcpHandle for tls, set sni explicitly
+    [th: [TcpHandle [addr: [Ipv4 addr.addr]  port: addr.port  stream: [tcp-connect cap addr]]]]
+    [conn: [tls-commit [TlsHandle [handle: th  sni: sni  alpn: []  ech: []  trust-roots: SystemRoots]]]]
+    [dns-framed-send conn q]]]]
 
-dns-https-resolver: [fn [let cap url]
-  [client: [http3-client [quic-connect cap url.host url.port]]]
-  [fn [let q] [task [dns-https-send client q]]]]
+dns-https-resolver: [fn [let cap addr@SocketAddress sni@String path@String]
+  [ep: [HostPort [Ipv4 addr.addr] addr.port]]
+  [client: [h3-client [[connect cap Udp ep] | [quic-with-sni sni]]]]
+  [fn [let q] [task [dns-https-send client q path]]]]
 
 # Server — loop is transport-agnostic
 dns-server-loop: [fn [let query-ch]
@@ -855,26 +878,32 @@ dns-server-loop [dns-https-server [[quic-listen net-cap 443] | h3-serve | http3-
 
 ## Worked Example: ICMP Ping Tunnel over H3
 
+H3 used as byte transport — not HTTP. Each QUIC substream carries raw ICMP echo packets. The pipeline: `udp-listen | quic | h3 | substreams` yields a `Channel@QuicStream`, each stream a bidirectional byte channel (ICMP request/reply on both sides).
+
 ```tinct
 [
   cap:            %net-cap
   port:           [@Port 4500]
   probe-interval: [seconds 5]
 
-  stream-ch: [quic-listen cap port] | h3-serve | h3-stream-ch
+  # udp-listen → QuicLayer server instance → H3Layer server instance → substreams
+  # Result: Channel@QuicStream, one stream per incoming H3 connection.
+  stream-ch: [udp-listen cap port] | quic | h3 | substreams
 
   clients:   [channel 256]
   tick:      [timer-channel %clock probe-interval]
 
-  serve-icmp-stream: [fn@Null [let stream@Handle]
+  serve-icmp-stream: [fn@Null [let stream@QuicStream]
     [let step [fn []
       [match [read-icmp stream]
         [Closed]: []
         [Ok pkt]:
           [match pkt
-            [case [let req: EchoRequest]  [send-icmp stream [EchoReply req.id req.seq req.data]]]
-            [case [let rep: EchoReply]    [log [str "RTT reply seq=" rep.seq]]]
-            [case [let _]                 null]]
+            [EchoRequest [id: id  seq: seq  data: data]]:
+              [send-icmp stream [EchoReply id seq data]]
+            [EchoReply [seq: seq]]:
+              [log [str "RTT reply seq=" seq]]
+            _: null]
           [step]]]]
     [step]]
 
@@ -892,7 +921,7 @@ dns-server-loop [dns-https-server [[quic-listen net-cap 443] | h3-serve | http3-
   identity]
 ```
 
-**What this demonstrates:** H3 as byte transport (not HTTP), bidirectional Http3Connection, per-connection tasks, shared client registry via channel, timer-driven server-initiated work, `par-map` fan-out, transport-agnostic ICMP logic.
+**What this demonstrates:** `udp-listen | quic | h3 | substreams` as a fully composed server stack; H3 as byte transport (not HTTP); per-connection tasks; shared client registry via channel; timer-driven server-initiated probes via `par-map`; transport-agnostic ICMP logic; `loop-select` coordinating two event sources.
 
 ---
 
@@ -1012,16 +1041,10 @@ http-connect: [fn [let cap@NetCap host@String port@Int]
                           sm.alpn [interleave v6-addrs v4-addrs] sm.ech]
 
     null
-      # No SVCB — plain Happy Eyeballs, negotiate h2/h1 via ALPN in TLS
-      [addrs: [interleave
-        [match [try [await v6-task]] [Ok a]: a [Err _]: []]
-        [await v4-task]]]
-      [raw: [happy-connect cap port addrs]]
-      [raw | [tls-layer [sni: host  alpn: ["h2" "http/1.1"]]]]]
+      # No SVCB — use connect Http which does Happy Eyeballs + h2/h1 ALPN negotiation
+      [connect cap Http [HostPort [Hostname host] port]]]
 
 # Race h3/QUIC and h2/TCP with 250ms stagger in ALPN preference order.
-# QUIC gets a 250ms head start over TCP — enough to detect QUIC-blocking
-# firewalls without adding perceptible latency when QUIC works.
 http-protocol-race: [fn [let cap@NetCap host@String port@Int
                           alpn@[Seq String] addrs@[Seq IpAddress] ech@Bytes]
   [result-ch:  [channel 1]
@@ -1033,7 +1056,8 @@ http-protocol-race: [fn [let cap@NetCap host@String port@Int
       [i: e.0  addr: e.1]
       [task
         [recv [timer-channel %clock [millis (* i 250)]]]
-        [match [try [quic-h3-connect cap host addr port ech]]
+        [ep: [HostPort addr port]]
+        [match [try [[connect cap Udp ep] | [quic-with-sni-ech host ech] | h3]]
           [Ok h]:  [try [send result-ch h]]
           [Err _]: null]]]
       [entries addrs]]]
@@ -1044,7 +1068,8 @@ http-protocol-race: [fn [let cap@NetCap host@String port@Int
       [i: e.0  addr: e.1]
       [task
         [recv [timer-channel %clock [millis (+ [if h3? 250 0] (* i 250))]]]
-        [match [try [tcp-h2-connect cap host addr port ech]]
+        [ep: [HostPort addr port]]
+        [match [try [[connect cap Tcp ep] | [tls-with-sni-ech host ech] | h2]]
           [Ok h]:  [try [send result-ch h]]
           [Err _]: null]]]
       [entries addrs]]]
@@ -1054,12 +1079,13 @@ http-protocol-race: [fn [let cap@NetCap host@String port@Int
   [par-map [fn [let t] [cancel-task t]] [append h3-tasks h2-tasks]]
   result]
 
-quic-h3-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Int ech@Bytes]
-  [quic-connect cap [addr: addr  port: port] [sni: sni  ech: ech]]]
+# Helpers: create TlsHandle/QuicHandle with explicit sni (for SVCB-aware race where
+# sni comes from the original hostname, not the resolved IP in TcpHandle.addr).
+tls-with-sni-ech:  [fn [let sni@String ech@Bytes th@TcpHandle]
+  [TlsHandle [handle: th  sni: sni  alpn: []  ech: ech  trust-roots: SystemRoots]]]
 
-tcp-h2-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Int ech@Bytes]
-  [[tcp-connect cap [addr: addr  port: port]]
-    | [tls-layer [sni: sni  alpn: ["h2"]  ech: ech]]]]
+quic-with-sni-ech: [fn [let sni@String ech@Bytes qh@QuicHandle]
+  [QuicHandle [pending: qh.pending  sni: sni  alpn: []  ech: ech  trust-roots: SystemRoots]]]
 ```
 
 **What this demonstrates:** recursive SVCB alias-chain following with depth limiting; parallel HTTPS + A/AAAA DNS lookups with 50ms window; IP hint extraction eliminating A/AAAA round-trips; simultaneous h3/QUIC and h2/TCP racing with 250ms stagger; ECH parameter threading end-to-end; first-success-wins with `par-map` cancellation — all in tinct, using only OS-level primitives and runtime-v2 async machinery.
@@ -1151,18 +1177,18 @@ Each module is fully specified as a draft `.llt` file in [`doc/whatif/lib-net-v3
 | Draft file | Target stdlib path | Key exports |
 |---|---|---|
 | [`async.llt`](lib-net-v3/async.llt) | `stdlib/prelude.llt` (merged — `stdlib/async.llt` deleted by builtin-privacy S-786) | `channel-map`, `channel-flat-map`, `collect-channel` |
-| [`net.llt`](lib-net-v3/net.llt) | `stdlib/net.llt` | IO typeclasses (`ByteStream`, `Datagram`, `MessageStream`, `Codec`, `Listener`, `Indexed`); `Transport` typeclass (`determines: [p → c]`); `Protocol` typeclass (`fetch`); `HttpConnect` typeclass (`http-request`); `IpAddress`, `Address` (`IpAddress` + `[Hostname String]`), `Port`, `SocketAddress`, `HostPort` (subject of `connect`), `UdpDatagram`; `BindTarget`, `BindScope`; `ByteLabel`/`ByteOrder`; `Handle` (opaque Rust, base `ByteStream`); `TcpHandle` (transparent: `addr`, `port`, lazy `stream: Handle`); `FileHandle` (transparent: `path`, `mode`, lazy `file: Handle`); `ConnectedUdp`; `tcp-listen`, `udp-bind`, `udp-ephemeral`, `listen-loop`, `ip->string`, `Url`, `parse-url`, `url-decode`. Rust boundary: `Handle` + `UdpSocket` (two opaque types). |
+| [`net.llt`](lib-net-v3/net.llt) | `stdlib/net.llt` | IO typeclasses (`ByteStream`, `Datagram`, `MessageStream`, `Codec`, `Listener`, `Indexed`); `Transport` typeclass; `Protocol` typeclass (`fetch`); `HttpConnect` typeclass (`http-request`); `HttpStream` typeclass (`send`/`recv` — bidirectional request/response); `Multiplexed` typeclass (`substreams` — Channel of connections → Channel of subsubstreams); `IpAddress`, `Address`, `Port`, `SocketAddress`, `HostPort`; `TcpHandle`, `FileHandle`, `ConnectedUdp`; `tcp-listen`, `udp-bind`, `udp-ephemeral`, `listen-loop`, `ip->string`, `Url`, `parse-url`, `url-decode`. Rust boundary: `Handle` + `UdpSocket`. |
 | *(not yet written)* | `stdlib/codecs/json.llt` | `NdjsonCodec` (`Codec Any Bytes`) — NDJSON serialization with `\n` framing; used by `cli/out/json.llt` via `codec-stream` |
-| [`dns.llt`](lib-net-v3/dns.llt) | `stdlib/dns.llt` | `DnsQuery`, `DnsRecord`, `DnsResponse`, `Nameserver`, `DnsConfig`; `encode-dns-wire`, `decode-dns-wire`; resolver factories (`dns-udp-resolver`, `dns-tls-resolver`, `dns-https-resolver`, `dns-quic-resolver`); `dns-framed-send`; `resolve-address` (Happy Eyeballs address resolution for `Address`); `Transport Tcp` + `Transport Udp` instances (the `connect` typeclass method — lives here because it needs `dns-resolve-ip`); `dns-resolve-host`, `dns-resolve-ip`, `dns-resolve` (alias), `dns-server-loop` |
-| [`tls13.llt`](lib-net-v3/tls13.llt) | `stdlib/protocols/tls13.llt` | `TlsServerConfig`, `TlsClientConfig` (`sni: [or String Null]` — null infers from `TcpHandle.addr` on commit), `CipherSuite`, `TlsConnection`; `TlsHandle` (TLS config open — `tls` creates it; `h2`/`grpc`/etc. set ALPN via `with-tls-alpn` then fire `tls-commit`); `tls` (takes `TcpHandle` → `TlsHandle`); `tls-commit` (fires TLS handshake, reading SNI from `handle.addr`); `with-tls-alpn`; `tls-handshake` (low-level, takes `Handle`); `hkdf-expand-label`, `derive-secret`, `tls13-key-schedule`; `tls-accept`, `tls-serve` |
-| [`quic.llt`](lib-net-v3/quic.llt) | `stdlib/protocols/quic.llt` | `QuicFrame` (all RFC 9000 types), `QuicConnection`, `QuicKeys`, `QuicLossState`; `QuicHandle` (QUIC+TLS config pending, sni inferred, ALPN open); `quic` (creates `QuicHandle` from any `Datagram`); `quic-commit` (fires QUIC+TLS handshake); `with-alpn` (accumulates ALPN into pending); `quic-connect` (sugar for resolved `SocketAddress`); `quic-listen`, `quic-open-stream` |
-| [`http2.llt`](lib-net-v3/http2.llt) | `stdlib/protocols/http2.llt` | `H2Frame`, `HpackTable`, `Http2Connection`; `hpack-static-table` (61 entries); `hpack-decode`, `hpack-encode`; `h2` (fires TLS with `alpn: ["h2"]` + H2 preface → `Http2Connection`); `h2-accept`; `http-request` (takes `conn method path ...headers` — named args as headers, subject first, not last for readability); `HpackCodec` (`Codec Headers Bytes`), `H2FrameCodec` (`Codec H2Frame Bytes`); `[instance [HttpConnect Http2Connection] ...]` |
-| [`http3.llt`](lib-net-v3/http3.llt) | `stdlib/protocols/http3.llt` | `H3Frame`, `Http3Connection`; `read-varint`/`encode-varint`; `h3` (fires QUIC with `alpn: ["h3"]` + H3 setup → `Http3Connection`); `h3-accept`; `request` (HTTP/3 request); `http3-req-conn`; `qpack-decode`, `qpack-encode`; `[instance [HttpConnect Http3Connection] ...]` |
+| [`dns.llt`](lib-net-v3/dns.llt) | `stdlib/dns.llt` | `DnsQuery`, `DnsRecord`, `DnsResponse`, `Nameserver`, `DnsConfig`; `encode-dns-wire`, `decode-dns-wire`; resolver factories (`dns-udp-resolver`, `dns-tls-resolver`, `dns-https-resolver`, `dns-quic-resolver`); `dns-framed-send`; `resolve-address` (Happy Eyeballs address resolution for `Address`); `Transport Tcp` + `Transport Udp` instances (the `connect` typeclass method — lives here because it needs `dns-resolve`); `dns-resolve-host`, `dns-resolve`, `dns-resolve` (alias), `dns-server-loop` |
+| [`tls13.llt`](lib-net-v3/tls13.llt) | `stdlib/protocols/tls13.llt` | `TlsLayer` typeclass (`tls` — bidirectional: client `TcpHandle→TlsHandle`, server `TlsServerConfig→fn`); `TlsHandle`, `TlsServerConfig`, `TlsClientConfig`, `CipherSuite`, `TlsConnection`; `tls-commit`, `with-alpn`, `tls-handshake`; `hkdf-expand-label`, `derive-secret`, `tls13-key-schedule`; `tls-accept`, `tls-serve` |
+| [`quic.llt`](lib-net-v3/quic.llt) | `stdlib/protocols/quic.llt` | `QuicLayer` typeclass (`quic` — bidirectional: client `ConnectedUdp→QuicHandle`, server `UdpSocket→Channel@QuicConnection`); `Multiplexed QuicConnection QuicStream` instance (`substreams`); `QuicFrame`, `QuicConnection`, `QuicKeys`, `QuicLossState`, `QuicHandle`; `quic-commit`, `with-alpn`; `quic-connect` (sugar); `quic-open-stream` |
+| [`http2.llt`](lib-net-v3/http2.llt) | `stdlib/protocols/http2.llt` | `H2Layer` typeclass (`h2` — bidirectional: client `TlsHandle→Http2Connection`, server `Channel@TlsConnection→Channel@Http2Connection`); `HttpStream Http2Connection` instance (`send`/`recv`); `Multiplexed Http2Connection H2Stream` instance (`substreams`); `H2Frame`, `HpackTable`, `Http2Connection`; `hpack-decode`, `hpack-encode`; `h2-accept`; `http-request`; `HpackCodec`, `H2FrameCodec` |
+| [`http3.llt`](lib-net-v3/http3.llt) | `stdlib/protocols/http3.llt` | `H3Layer` typeclass (`h3` — bidirectional: client `QuicHandle→Http3Connection`, server `Channel@QuicConnection→Channel@Http3Connection`); `HttpStream Http3Connection` instance (`send`/`recv`); `Multiplexed Http3Connection QuicStream` instance (`substreams`); `H3Frame`, `Http3Connection`; `h3-accept`; `http-request`; `qpack-decode`, `qpack-encode` |
 | [`http1.llt`](lib-net-v3/http1.llt) | `stdlib/protocols/http1.llt` | `RawRequest`, `RawResponse`; `ok`, `json-ok`, `redirect`, `not-found`, `server-error`; `parse-request`, `write-response`, `http1-conn`, `http1-request` |
-| [`http.llt`](lib-net-v3/http.llt) | `stdlib/protocols/http.llt` | `Http` transport type + `Transport Http` instance (SVCB-first, selects H3/H2/H1 — the `Http` in `[connect %nc addr Http port]`); `HttpConnection` (wraps `Http2Connection` or `Http3Connection`); `fetch` (Level 1: `[fetch %nc url]`); `[instance [Protocol Http Url RawResponse] ...]`; `SvcbRecord`; `http-channel`, `http-channel-tls`, `resolve-svcb`; `router`, `headers-map`; `compression`, `logging`, `timeout`, `cors`, `auth` |
-| [`websocket.llt`](lib-net-v3/websocket.llt) | `stdlib/protocols/websocket.llt` | `WsFrame`, `WebSocketConnection`; `ws-accept`, `ws-connect`, `ws-recv-frame`, `ws-send-frame` |
-| [`wireguard.llt`](lib-net-v3/wireguard.llt) | `stdlib/protocols/wireguard.llt` | `WireguardConfig`, `WireguardConnection`; `wireguard-serve`, `wireguard-accept` (TODO — WireGuard framing differs from Noise framing; cannot delegate to `noise-accept` directly), `wireguard-layer` (TODO); `wg-read-bytes`, `wg-write-bytes`; framing helpers (`wg-frame-initiation`, `wg-frame-response`, `wg-strip-*`). Data plane: ChaCha20-Poly1305 with little-endian nonce counter. |
-| [`noise.llt`](lib-net-v3/noise.llt) | `stdlib/protocols/noise.llt` | `NoisePattern`, `NoiseDh`, `NoiseCipher`, `NoiseConfig`, `NoiseState`, `NoiseConnection`; `noise-serve`, `noise-accept`, `noise-layer`, `noise-read`, `noise-write`; patterns XX, IK, IKpsk2, NK |
+| [`http.llt`](lib-net-v3/http.llt) | `stdlib/protocols/http.llt` | `Http` transport type + `Transport Http` instance (SVCB-first, selects H3/H2/H1 — the `Http` in `[connect %nc Http [HostPort ...]]`); `HttpConnection` (wraps `Http2Connection` or `Http3Connection`); `fetch` (Level 1: `[fetch %nc url]`); `[instance [Protocol Http Url RawResponse] ...]`; `SvcbRecord`; `http-channel`, `http-channel-tls`, `resolve-svcb`; `router`, `headers-map`; `compression`, `logging`, `timeout`, `cors`, `auth` |
+| [`websocket.llt`](lib-net-v3/websocket.llt) | `stdlib/protocols/websocket.llt` | `WsFrame`, `WebSocketConnection`; `ws-accept`, `ws` (client handshake), `ws-recv-frame`, `ws-send-frame`; `ws-serve` |
+| [`wireguard.llt`](lib-net-v3/wireguard.llt) | `stdlib/protocols/wireguard.llt` | `WireguardLayer` typeclass (`wireguard` — bidirectional: `[wireguard cfg]` on single handle or channel); `WireguardConfig`, `WireguardConnection`; `wireguard-accept` (TODO — WireGuard framing differs from Noise framing); `wg-read-bytes`, `wg-write-bytes`; framing helpers. Data plane: ChaCha20-Poly1305 with little-endian nonce counter. |
+| [`noise.llt`](lib-net-v3/noise.llt) | `stdlib/protocols/noise.llt` | `NoiseLayer` typeclass (`noise` — bidirectional: `[noise cfg]` on single handle or channel); `NoisePattern`, `NoiseDh`, `NoiseCipher`, `NoiseConfig`, `NoiseState`, `NoiseConnection`; `noise-accept`, `noise-read`, `noise-write`; patterns XX, IK, IKpsk2, NK |
 | [`crypto.llt`](lib-net-v3/crypto.llt) | `stdlib/crypto.llt` | `HkdfHash` union; `Sha256`, `Sha384`, `Sha512`, `Blake2s` (hash algorithm selectors for HKDF — used by TLS, WireGuard, Noise, etc.); `AsnValue` union; `parse-cert`, `cert-san`, `cert-public-key`, `verify-cert-chain` |
 | [`text.llt`](lib-net-v3/text.llt) | `stdlib/text.llt` | `TextCodec` typeclass + instances (UTF-8, UTF-16, Windows-1252, ~38 WHATWG encodings); `TextEncoding` runtime record (renamed from `Codec` to avoid collision with `Codec` typeclass); `TextBytes`; `to-encoding`, `encoding-for-name`, `text-encode`, `text-decode`, `decode-http-body` |
 | [`compress.llt`](lib-net-v3/compress.llt) | `stdlib/compress.llt` | `CompressionCodec` typeclass (superclass `[Codec c Bytes Bytes]`, with `codec-name`) + instances (`GzipCodec`, `DeflateCodec`, `BrotliCodec`, `ZstdCodec`, `IdentityCodec`); `CompressedCodec` runtime record; `to-compressed-codec`; `codec-for-encoding`, `negotiate-encoding` (both accept optional `registry@[Map String CompressedCodec]` for user codecs) |
@@ -1631,7 +1657,7 @@ ns-to-resolver: [fn [let cap@NetCap ns@Nameserver]
 
 ## Prerequisites
 
-- [`runtime-v2.md`](runtime-v2.md) complete — `task`, `await`, `channel`, `recv`, `send`, `select-once`, `loop-select`, `context`, `with-timeout`, `finally`, `Arc`-based async runtime, and async utilities (`loop-select`, `retry`, `finally`, etc.) all present in `stdlib/prelude.llt` (`stdlib/async.llt` was merged into prelude in the builtin-privacy-stdlib sprint). (`tcp-connect`, `quic-connect`, and `tls-layer` are tinct functions defined in this whatif's stdlib, not runtime-v2 primitives.)
+- [`runtime-v2.md`](runtime-v2.md) complete — `task`, `await`, `channel`, `recv`, `send`, `select-once`, `loop-select`, `context`, `with-timeout`, `finally`, `Arc`-based async runtime, and async utilities (`loop-select`, `retry`, `finally`, etc.) all present in `stdlib/prelude.llt` (`stdlib/async.llt` was merged into prelude in the builtin-privacy-stdlib sprint). (`tcp-connect` is the only Rust primitive here; `tls`, `quic`, `h2`, `h3`, and `connect` are tinct stdlib functions defined in this whatif.)
 
 ---
 

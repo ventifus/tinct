@@ -32,61 +32,50 @@ csv-row: [fn@String [let row@Dict ks@Dict i@Int acc@String]
 
 # Streaming contract implementation — sequential document expressions
 [
-# 1. Try to pull the first record from %emit to establish column headers.
-#    If the channel is already closed (no emitted values), fall through to %.
-first-result: [try [fn [let] [recv %emit]]]
+# 1. Reactive cell to hold column headers once the first record arrives.
+#    Starts empty; set atomically by whichever record arrives first.
+headers: [reactive-cell []]
 
-# 2. If we got a first record, extract column headers and write header + first row.
-#    Capture column keys for all subsequent rows.
-columns: [match first-result
-  [Ok record]:
-    [header-keys: [keys record]]
-    [write-handle %stdout [csv-header header-keys 0 ""]]
-    [write-handle %stdout [csv-row record header-keys 0 ""]]
-    header-keys
-  [Error _]:
-    []]  # No first record from %emit — columns will be set by % if it's a dict
-
-# 3. Drain remaining %emit records concurrently.
-#    If columns are already set, write each record using the captured column order.
-#    If columns are not yet set (no first record), the drain task does nothing
-#    (all records will be handled by forcing % below).
+# 2. Start the drain task BEFORE forcing %, so lazy emits are consumed as
+#    they are triggered. The drain sets headers from the first record and
+#    writes the header line + every data row.
 drain: [task
-  [if [not [= columns []]]
-    [loop-select [context] [[%emit [fn [let v]
-      [write-handle %stdout [csv-row v columns 0 ""]]]]] identity]
-    []]]
+  [loop-select [context]
+    [seq [ch: %emit  handler: [fn [let v]
+      [if [= [cell-get headers] []]
+        # First record: establish column order, write header + first row
+        [do [cell-set headers [keys v]]
+            [write-handle %stdout [csv-header [keys v] 0 ""]]
+            [write-handle %stdout [csv-row v [keys v] 0 ""]]]
+        # Subsequent records: use captured column order
+        [write-handle %stdout [csv-row v [cell-get headers] 0 ""]]]]] []]
+    identity]]
 
-# 4. Force % to drive the lazy evaluation cascade.
+# 3. Force % to drive the lazy evaluation cascade.
 #    If % is a Seq, write each element as a data row.
-#    If % is a scalar dict and columns are not yet set, use its keys as headers.
-#    If columns are already set, just write the row.
+#    If % is a scalar dict, write it as a data row.
+#    Column headers are set by whichever record (from %emit or %) arrives first.
 [if [seq? %]
   # % is a Seq — write each element as a row
-  [reduce [fn [let cols-so-far x]
-    [if [= cols-so-far []]
+  [reduce [fn [let _ x]
+    [if [= [cell-get headers] []]
       # First element sets the columns
-      [new-cols: [keys x]]
-      [write-handle %stdout [csv-header new-cols 0 ""]]
-      [write-handle %stdout [csv-row x new-cols 0 ""]]
-      new-cols
+      [do [cell-set headers [keys x]]
+          [write-handle %stdout [csv-header [keys x] 0 ""]]
+          [write-handle %stdout [csv-row x [keys x] 0 ""]]]
       # Subsequent elements use existing columns
-      [write-handle %stdout [csv-row x cols-so-far 0 ""]]
-      cols-so-far]]
-    columns
+      [write-handle %stdout [csv-row x [cell-get headers] 0 ""]]]]
+    []
     %]
-  # % is a scalar — if it's a dict and columns are not yet set, set them now
+  # % is a scalar — if it's a dict, write it as a row
   [if [dict? %]
-    [if [= columns []]
-      [new-cols: [keys %]]
-      [write-handle %stdout [csv-header new-cols 0 ""]]
-      [write-handle %stdout [csv-row % new-cols 0 ""]]
-      []
-      # columns already set, just write the row
-      [write-handle %stdout [csv-row % columns 0 ""]]
-      []]
+    [if [= [cell-get headers] []]
+      [do [cell-set headers [keys %]]
+          [write-handle %stdout [csv-header [keys %] 0 ""]]
+          [write-handle %stdout [csv-row % [keys %] 0 ""]]]
+      [write-handle %stdout [csv-row % [cell-get headers] 0 ""]]]
     []]]
 
-# 5. Wait for drain to finish consuming any emits triggered during forcing.
+# 4. Wait for drain to finish consuming any emits triggered during forcing.
 [await drain]
 ]

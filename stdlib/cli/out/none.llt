@@ -10,7 +10,9 @@
 
 # 1. Drain the emit channel concurrently, discarding all values.
 [drain: [task
-  [loop-select [context] [[%emit [fn [let v] []]]] identity]]]
+  [loop-select [context]
+    [seq [ch: %emit  handler: [fn [let v] []]] []]
+    identity]]]
 
 # 2. Force % to drive the evaluation cascade (for side effects).
 [if [seq? %]

@@ -1,0 +1,6 @@
+# send type error: non-Channel first argument
+# Ensures send validates Channel type for first argument
+
+[send 42 "value"]
+=== error
+[E004] type mismatch: expected Channel, BroadcastChannel, or OneshotSender, got Int

@@ -30,11 +30,11 @@
 
   ws-frame->opcode-payload: [fn [let frame@WsFrame]
     [match frame
-      [let [Text   s]]:            [opcode: 1   payload: [str-bytes s]]
-      [let [Binary b]]:            [opcode: 2   payload: b]
-      [let [Close  code reason]]:  [opcode: 8   payload: [concat [encode BigEndian [@UInt16 code]] [str-bytes reason]]]
-      [let [Ping   b]]:            [opcode: 9   payload: b]
-      [let [Pong   b]]:            [opcode: 10  payload: b]]]
+      [Text s]:            [opcode: 1   payload: [str-bytes s]]
+      [Binary b]:            [opcode: 2   payload: b]
+      [Close code reason]:  [opcode: 8   payload: [concat [encode BigEndian [@UInt16 code]] [str-bytes reason]]]
+      [Ping b]:            [opcode: 9   payload: b]
+      [Pong b]:            [opcode: 10  payload: b]]]
 
   base64-encode: [fn [let data@Bytes] [error "TODO: base64-encode — RFC 4648 §4"]]
 ]

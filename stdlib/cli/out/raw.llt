@@ -16,8 +16,10 @@
 
 # 1. Drain the emit channel concurrently.
 [drain: [task
-  [loop-select [context] [[%emit [fn [let v]
-    [write-handle %stdout [raw v]]]]] identity]]]
+  [loop-select [context]
+    [seq [ch: %emit  handler: [fn [let v]
+      [write-handle %stdout [raw v]]]] []]
+    identity]]]
 
 # 2. Force the return value to drive the lazy evaluation cascade.
 [if [seq? %]

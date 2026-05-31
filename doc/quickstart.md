@@ -310,38 +310,62 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
 [
   data: [host: "localhost"  port: 8080]
 
-  # Structural dict match
+  # Structural dict match — destructures named fields into bindings
   url: [match data
     [host: h  port: p]: [str h ":" p]
     _:                   "unknown"]
   # → "localhost:8080"
 
-  # Multiple patterns
+  # Literal match
   label: [match 42
     0:   "zero"
     42:  "the answer"
     _:   "other"]
   # → "the answer"
+
+  # Nested dict destructuring
+  city: [match [user: [name: "Alice"  city: "Portland"]]
+    [user: [city: c]]: c
+    _:                  "unknown"]
+  # → "Portland"
 ]
 ```
 
-**Brackets are required for constructor patterns.** A bare name is a *variable capture* — it matches anything. Use `[Tag _]` to match a unit variant (discarding its empty payload):
+**Constructor patterns** match nominal variants. `[Tag binding]` binds the payload to a single name; the binding itself can be a full destructuring pattern:
 
 ```tinct
 [
   [type Colors [Red] [Green] [Blue]]
   color: Red
 
-  # Correct — [Red _] matches the Red constructor
-  hex:   [match color
+  # Unit variant — [Tag _] discards the empty payload
+  hex: [match color
     [Red _]:   "#ff0000"
     [Green _]: "#00ff00"
     [Blue _]:  "#0000ff"]
+  # → "#ff0000"
 
-  # WRONG — Red: is a variable capture, always matches first arm
-  # [match color  Red: "#ff0000"  Green: "#00ff00"  _: "unknown"]
+  # Payload variant — single binding then field access
+  [type Shape [Circle r: Float] [Rect w: Float  h: Float]]
+  s: [Circle r: 2.0]
+
+  area: [match s
+    [Circle c]:  [* 3.14159 c.r c.r]
+    [Rect dims]: [* dims.w dims.h]]
+  # → 12.56636
+
+  # Nested destructuring inside constructor — bind payload fields directly
+  desc: [match s
+    [Circle [r: radius]]:      [str "circle r=" radius]
+    [Rect   [w: w  h: h]]:    [str "rect " w "×" h]]
+  # → "circle r=2.0"
+
+  # WRONG — bare name is a variable capture, not a constructor match
+  # [match color  Red: "#ff0000"  ...]  ← Red: captures anything
 ]
 ```
+
+Patterns compose: a constructor pattern's binding can itself be a dict pattern, a literal, another constructor, or a wildcard `_`.
 
 ---
 

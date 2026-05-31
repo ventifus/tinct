@@ -153,3 +153,24 @@
       [Ok plain]: [slice 0 n plain]
       [Err _]:    [error "WireGuard: decryption failed"]]]
 ]
+
+# ── WireguardLayer typeclass — bidirectional wireguard ────────────────────────
+#
+# wireguard takes config first (subject-last), then connection or channel:
+#   Client: [connect %net Udp ep] | [wireguard cfg]    → WireguardConnection
+#   Server: [udp-listen cap 51820] | quic | [wireguard cfg] | ...
+
+[class [WireguardLayer input output]
+  wireguard: [Fn@output [WireguardConfig input]]]
+
+# Client/Server single connection
+[instance@[bind: [h]  constraint: [h: ByteStream]]
+    [WireguardLayer h [WireguardConnection h]]
+  wireguard: [fn [let cfg@WireguardConfig h@h]
+    [error "TODO: wireguard — see wireguard-accept for full step sequence"]]]
+
+# Channel of connections (server pipeline)
+[instance@[bind: [h]  constraint: [h: ByteStream]]
+    [WireguardLayer [Channel h] [Channel [WireguardConnection h]]]
+  wireguard: [fn [let cfg@WireguardConfig ch@[Channel h]]
+    [channel-map [fn [let s@h] [wireguard-accept cfg s]] ch]]]

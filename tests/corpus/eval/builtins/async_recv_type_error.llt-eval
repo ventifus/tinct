@@ -1,0 +1,6 @@
+# recv type error: non-Channel argument
+# Phase 3: ensures recv validates Channel type
+
+[recv 42]
+=== error
+[E004] type mismatch: expected Channel, BroadcastChannel, or OneshotReceiver, got Int

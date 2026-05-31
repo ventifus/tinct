@@ -14,8 +14,8 @@
   write-bytes: [Fn@Null [h Bytes]]]
 
 [class [let Datagram d]
-  send-datagram: [Fn@Null [d SocketAddress Bytes]]
-  recv-datagram: [Fn@UdpDatagram [d]]]
+  send: [Fn@Null [d SocketAddress Bytes]]
+  recv: [Fn@UdpDatagram [d]]]
 
 [class [let MessageStream s t]
   # FD: s determines t (each MessageStream type has exactly one message type)
@@ -61,15 +61,15 @@
   write-bytes: [fn [let h@FileHandle b@Bytes] [write-bytes h.file b]]]
 
 [instance [Datagram UdpSocket]
-  send-datagram: builtin-udp-send
-  recv-datagram: builtin-udp-recv]
+  send: builtin-udp-send
+  recv: builtin-udp-recv]
 
-# ConnectedUdp: peer is fixed at creation; send-datagram ignores the address argument.
+# ConnectedUdp: peer is fixed at creation; send ignores the address argument.
 [instance [Datagram ConnectedUdp]
-  send-datagram: [fn [let conn@ConnectedUdp _@SocketAddress data@Bytes]
-    [send-datagram conn.sock conn.peer data]]
-  recv-datagram: [fn [let conn@ConnectedUdp]
-    [recv-datagram conn.sock]]]
+  send: [fn [let conn@ConnectedUdp _@SocketAddress data@Bytes]
+    [send conn.sock conn.peer data]]
+  recv: [fn [let conn@ConnectedUdp]
+    [recv conn.sock]]]
 
 [instance@[bind: [t]] [MessageStream [Channel t] t]
   send: builtin-send
@@ -196,21 +196,37 @@
   udp-bind: [fn [let cap@NetCap target@BindTarget]
     [sock: [udp-socket cap target]]
     [out:  [channel 256]]
-    [task [loop [fn [] [send out [recv-datagram sock]]]]]
+    [task [loop [fn [] [send out [recv sock]]]]]
     out]
 
   udp-ephemeral: [fn [let cap@NetCap]
     [udp-socket cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: 0]]]]
 
+  # udp-listen: bind a UdpSocket on all interfaces at port (for use with | quic server instance).
+  udp-listen: [fn [let cap@NetCap port@Port]
+    [udp-socket cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: port]]]]
+
+  # HttpStream: bidirectional HTTP request/response typeclass.
+  # send (client): initiate request on established connection → Task@RawResponse
+  # recv (server): pull next RawRequest from a connection or channel of connections
+  [class [HttpStream c]
+    send: [Fn@[Task RawResponse] [c RawRequest]]
+    recv: [Fn@[Channel RawRequest] [c]]]
+
+  # Multiplexed: connection types that expose subsubstreams as a Channel.
+  # substreams: Channel@c → Channel@s — opens one stream per incoming connection.
+  [class [Multiplexed c s]
+    substreams: [Fn@[Channel s] [[Channel c]]]]
+
   # HttpConnect typeclass: generic request dispatch across H1/H2/H3 connections.
-  # Enables [request req conn] to resolve to the right implementation based on conn type.
+  # Enables [http-request req conn] to resolve based on conn type.
   # Subject-last: req first, connection (subject) last.
   [class [HttpConnect c]
     request: [Fn@[Task RawResponse] [c RawRequest]]]
 
   # Transport typeclass: protocol type p determines connection type c.
   # determines: [p → c] is a functional dependency: given p, c is uniquely determined.
-  # Transport instances live in dns.llt (they need dns-resolve-ip for [Hostname h]).
+  # Transport instances live in dns.llt (they need dns-resolve for [Hostname h]).
   #
   # HostPort is the subject (last) — subject-last enables partial application:
   #   [connect %net Tcp]   → Fn@TcpHandle [HostPort]
@@ -232,7 +248,7 @@
 
   # ConnectedUdp: a UDP socket with a fixed peer address (for use as Datagram in protocol stacks).
   # Created by [connect cap addr Udp port]. No new Rust primitive needed — built from udp-socket.
-  # send-datagram ignores the address argument (peer is fixed); recv-datagram passes through.
+  # send ignores the address argument (peer is fixed); recv passes through.
   ConnectedUdp: [type [sock: UdpSocket  peer: SocketAddress]]
 
   # TcpHandle: transparent wrapper around Handle. addr/port visible to upstream layers.
@@ -247,21 +263,21 @@
 
   ip->string: [fn [let addr@IpAddress]
     [match addr
-      [let [Ipv4 b]]:       [str [get b 0] "." [get b 1] "." [get b 2] "." [get b 3]]
-      [let [Ipv6 b]]:       [ipv6-canonical b]
-      [let [Ipv6Zone b z]]: [str "[" [ipv6-canonical b] "%" z "]"]]]
+      [Ipv4 b]:       [str [get b 0] "." [get b 1] "." [get b 2] "." [get b 3]]
+      [Ipv6 b]:       [ipv6-canonical b]
+      [Ipv6Zone b z]: [str "[" [ipv6-canonical b] "%" z "]"]]]
 
   ip-is-loopback?: [fn [let addr@IpAddress]
     [match addr
-      [let [Ipv4 b]]:       [= [get b 0] 127]
-      [let [Ipv6 b]]:       [= b [0 0 0 0  0 0 0 0  0 0 0 0  0 0 0 1]]
-      [let [Ipv6Zone b _]]: [= b [0 0 0 0  0 0 0 0  0 0 0 0  0 0 0 1]]]]
+      [Ipv4 b]:       [= [get b 0] 127]
+      [Ipv6 b]:       [= b [0 0 0 0  0 0 0 0  0 0 0 0  0 0 0 1]]
+      [Ipv6Zone b _]: [= b [0 0 0 0  0 0 0 0  0 0 0 0  0 0 0 1]]]]
 
   ip-is-link-local?: [fn [let addr@IpAddress]
     [match addr
-      [let [Ipv4 b]]:       [and [= [get b 0] 169] [= [get b 1] 254]]
-      [let [Ipv6 b]]:       [= [bit-and [decode-u16-be b 0] 0xFFC0] 0xFE80]
-      [let [Ipv6Zone b _]]: [= [bit-and [decode-u16-be b 0] 0xFFC0] 0xFE80]]]
+      [Ipv4 b]:       [and [= [get b 0] 169] [= [get b 1] 254]]
+      [Ipv6 b]:       [= [bit-and [decode-u16-be b 0] 0xFFC0] 0xFE80]
+      [Ipv6Zone b _]: [= [bit-and [decode-u16-be b 0] 0xFFC0] 0xFE80]]]
 
   Url: [type
     [scheme:   String

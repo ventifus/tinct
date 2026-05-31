@@ -366,10 +366,25 @@ fn collect_free_vars(
 
         CoreExpr::CaseArm { pattern, body } => {
             // Note: CoreExpr::CaseArm.pattern is a CoreExpr (not Pattern), so we cannot
-            // use collect_pattern_bindings here. The pattern CoreExpr is processed for
-            // free variable collection but doesn't extend param scope.
+            // use collect_pattern_bindings here. However, if the pattern is a LetDecl,
+            // we need to extract the variable names from the bindings and add them to
+            // scope before recursing into the body.
+            let mut arm_scope = param_scope.clone();
+
+            // If the pattern is a LetDecl, extract variable names from bindings
+            if let CoreExpr::LetDecl { bindings } = &pattern.node {
+                for binding in bindings {
+                    // Each binding in a LetDecl should be a Str (the variable name)
+                    if let CoreExpr::Str(name) = &binding.node {
+                        arm_scope.insert(name.clone());
+                    } else if let CoreExpr::Annotated { name, .. } = &binding.node {
+                        arm_scope.insert(name.clone());
+                    }
+                }
+            }
+
             collect_free_vars(&pattern.node, param_scope, stdlib_env, out);
-            collect_free_vars(&body.node, param_scope, stdlib_env, out);
+            collect_free_vars(&body.node, &arm_scope, stdlib_env, out);
         }
     }
 }
@@ -459,8 +474,21 @@ fn collect_free_vars_in_quote(
             collect_free_vars_in_quote(&expr.node, depth, param_scope, stdlib_env, out);
         }
         CoreExpr::CaseArm { pattern, body } => {
+            // If the pattern is a LetDecl, extract variable names and extend scope
+            let mut arm_scope = param_scope.clone();
+
+            if let CoreExpr::LetDecl { bindings } = &pattern.node {
+                for binding in bindings {
+                    if let CoreExpr::Str(name) = &binding.node {
+                        arm_scope.insert(name.clone());
+                    } else if let CoreExpr::Annotated { name, .. } = &binding.node {
+                        arm_scope.insert(name.clone());
+                    }
+                }
+            }
+
             collect_free_vars_in_quote(&pattern.node, depth, param_scope, stdlib_env, out);
-            collect_free_vars_in_quote(&body.node, depth, param_scope, stdlib_env, out);
+            collect_free_vars_in_quote(&body.node, depth, &arm_scope, stdlib_env, out);
         }
         CoreExpr::PatternDecl { bindings } | CoreExpr::LetDecl { bindings } => {
             for b in bindings {
@@ -851,10 +879,24 @@ fn core_expr_to_tinct(
         }
 
         CoreExpr::CaseArm { pattern, body } => {
+            // If the pattern is a LetDecl, extract variable names from bindings and
+            // add them to scope before recursing into the body.
+            let mut arm_scope = param_scope.clone();
+
+            if let CoreExpr::LetDecl { bindings } = &pattern.node {
+                for binding in bindings {
+                    if let CoreExpr::Str(name) = &binding.node {
+                        arm_scope.insert(name.clone());
+                    } else if let CoreExpr::Annotated { name, .. } = &binding.node {
+                        arm_scope.insert(name.clone());
+                    }
+                }
+            }
+
             let pattern_str =
                 core_expr_to_tinct(&pattern.node, param_scope, substitutions, rename_map, ctx)?;
             let body_str =
-                core_expr_to_tinct(&body.node, param_scope, substitutions, rename_map, ctx)?;
+                core_expr_to_tinct(&body.node, &arm_scope, substitutions, rename_map, ctx)?;
             Ok(format!("[{}: {}]", pattern_str, body_str))
         }
     }
@@ -1170,6 +1212,19 @@ fn core_expr_to_tinct_raw(
             Ok(format!("[let {}]", parts.join(" ")))
         }
         CoreExpr::CaseArm { pattern, body } => {
+            // If the pattern is a LetDecl, extract variable names and extend scope
+            let mut arm_scope = param_scope.clone();
+
+            if let CoreExpr::LetDecl { bindings } = &pattern.node {
+                for binding in bindings {
+                    if let CoreExpr::Str(name) = &binding.node {
+                        arm_scope.insert(name.clone());
+                    } else if let CoreExpr::Annotated { name, .. } = &binding.node {
+                        arm_scope.insert(name.clone());
+                    }
+                }
+            }
+
             let ps = core_expr_to_tinct_in_quote(
                 &pattern.node,
                 depth,
@@ -1181,7 +1236,7 @@ fn core_expr_to_tinct_raw(
             let bs = core_expr_to_tinct_in_quote(
                 &body.node,
                 depth,
-                param_scope,
+                &arm_scope,
                 substitutions,
                 rename_map,
                 ctx,
@@ -1339,44 +1394,101 @@ pub fn fmt_expression(node: &Arc<crate::ast::SurfaceNode>) -> Result<String, Str
             None => Ok("...".to_string()),
         },
 
-        // Uncommon variants — return fallback error
-        SurfaceExpression::TypeAssert { .. } => {
-            Err("Expression serialization for TypeAssert not yet implemented".to_string())
+        // Match — [match scrutinee [pattern: body] ...]
+        SurfaceExpression::Match { scrutinee, arms } => {
+            let scrutinee_str = fmt_expression(scrutinee)?;
+            let mut arm_parts = Vec::with_capacity(arms.len());
+            for arm in arms {
+                let pattern_str = arm.pattern.node.to_string();
+                let body_str = fmt_expression(&arm.body)?;
+
+                if let Some(guard) = &arm.guard {
+                    let guard_str = fmt_expression(guard)?;
+                    arm_parts.push(format!(
+                        "[{}: [if {} {} []]]",
+                        pattern_str, guard_str, body_str
+                    ));
+                } else {
+                    arm_parts.push(format!("[{}: {}]", pattern_str, body_str));
+                }
+            }
+            Ok(format!(
+                "[match {}  {}]",
+                scrutinee_str,
+                arm_parts.join("  ")
+            ))
         }
-        SurfaceExpression::Annotated { .. } => {
-            Err("Expression serialization for Annotated not yet implemented".to_string())
+
+        // Quote — [quote expr]
+        SurfaceExpression::Quote(inner) => {
+            let inner_str = fmt_expression(inner)?;
+            Ok(format!("[quote {}]", inner_str))
         }
-        SurfaceExpression::Match { .. } => {
-            Err("Expression serialization for Match not yet implemented".to_string())
+
+        // Unquote — [unquote expr]
+        SurfaceExpression::Unquote(inner) => {
+            let inner_str = fmt_expression(inner)?;
+            Ok(format!("[unquote {}]", inner_str))
         }
-        SurfaceExpression::Quote(_) => {
-            Err("Expression serialization for Quote not yet implemented".to_string())
+
+        // UnquoteSplice — [unquote-splice expr]
+        SurfaceExpression::UnquoteSplice(inner) => {
+            let inner_str = fmt_expression(inner)?;
+            Ok(format!("[unquote-splice {}]", inner_str))
         }
-        SurfaceExpression::Unquote(_) => {
-            Err("Expression serialization for Unquote not yet implemented".to_string())
+
+        // Pipe — lhs | rhs
+        SurfaceExpression::Pipe { lhs, rhs } => {
+            let lhs_str = fmt_expression(lhs)?;
+            let rhs_str = fmt_expression(rhs)?;
+            Ok(format!("{} | {}", lhs_str, rhs_str))
         }
-        SurfaceExpression::UnquoteSplice(_) => {
-            Err("Expression serialization for UnquoteSplice not yet implemented".to_string())
+
+        // TypeAssert — [@Type expr]
+        SurfaceExpression::TypeAssert { annotation, expr } => {
+            let expr_str = fmt_expression(expr)?;
+            Ok(format!("[@{} {}]", annotation.node, expr_str))
         }
-        SurfaceExpression::Pipe { .. } => {
-            Err("Expression serialization for Pipe not yet implemented".to_string())
+
+        // Annotated — name@annotation
+        SurfaceExpression::Annotated { name, annotation } => {
+            Ok(format!("{}@{}", name, annotation.node))
         }
-        SurfaceExpression::PatternDecl { .. } => {
-            Err("Expression serialization for PatternDecl not yet implemented".to_string())
+
+        // CaseArm — [pattern: body]
+        SurfaceExpression::CaseArm { pattern, body } => {
+            let pattern_str = fmt_expression(pattern)?;
+            let body_str = fmt_expression(body)?;
+            Ok(format!("[{}: {}]", pattern_str, body_str))
         }
-        SurfaceExpression::LetDecl { .. } => {
-            Err("Expression serialization for LetDecl not yet implemented".to_string())
+
+        // TypeApp — @[func arg]
+        SurfaceExpression::TypeApp { func, arg } => {
+            let func_str = fmt_expression(func)?;
+            let arg_str = fmt_expression(arg)?;
+            Ok(format!("@[{} {}]", func_str, arg_str))
         }
-        SurfaceExpression::CaseArm { .. } => {
-            Err("Expression serialization for CaseArm not yet implemented".to_string())
+
+        // PatternDecl — [pattern bindings...]
+        SurfaceExpression::PatternDecl { bindings } => {
+            let mut parts = Vec::with_capacity(bindings.len());
+            for b in bindings {
+                parts.push(fmt_expression(b)?);
+            }
+            Ok(format!("[pattern {}]", parts.join(" ")))
         }
-        SurfaceExpression::TypeApp { .. } => {
-            Err("Expression serialization for TypeApp not yet implemented".to_string())
+
+        // LetDecl — [let bindings...]
+        SurfaceExpression::LetDecl { bindings } => {
+            let mut parts = Vec::with_capacity(bindings.len());
+            for b in bindings {
+                parts.push(fmt_expression(b)?);
+            }
+            Ok(format!("[let {}]", parts.join(" ")))
         }
+
         SurfaceExpression::Error(_) => Err("Cannot serialize SurfaceExpression::Error".to_string()),
-        _ => {
-            Err("Expression serialization not yet implemented for this variant".to_string())
-        }
+        SurfaceExpression::Decl(_) => Err("Cannot serialize SurfaceExpression::Decl".to_string()),
     }
 }
 
@@ -1538,6 +1650,9 @@ impl Value {
             Value::Document(_) => Err(format!("no tinct representation for {}", self.type_name())),
             Value::Uri { .. } => Err(format!("no tinct representation for {}", self.type_name())),
             Value::ReactiveCell(_) => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
+            Value::BroadcastChannel(_) | Value::OneshotSender(_) | Value::OneshotReceiver(_) => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
         }

@@ -1,0 +1,20 @@
+# select-once returns [Ok v] on successful receive
+# Phase 3: select-once protocol redesign (T-810)
+#
+# Strategy: force send before select-once by making result depend on sent.
+# [if [= sent []] ...] forces the send call (send returns []), then select-once runs.
+# Sources use {ch: handler:} dict format. The channel value is never serialized —
+# only %.result (a Variant) is accessed in doc 2.
+# Multi-doc pipeline: doc 1 returns the computation dict; doc 2 matches.
+[
+  ch: [channel 10]
+  sent: [send ch 42]
+  sources: [seq [{ch: ch  handler: [fn [let v] v]}] []]
+  result: [if [= sent []] [select-once [context] sources] [select-once [context] sources]]
+]
+---
+[match %.result
+  [Ok v]: v
+  [Closed]: -1]
+=== out
+Int(42)

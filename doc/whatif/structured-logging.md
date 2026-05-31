@@ -1,7 +1,5 @@
 # What If: Structured Logging for tinct
 
-TODO: use async channels for this. Perhaps injected arbitrary channel handlers ("channel programs"?), like we do with output programs?
-
 **State:** Proposal
 
 What would it take to give tinct programs a structured diagnostic output channel — distinct from `emit` (final result) and from type-checker warnings — with well-defined semantics for literate documentation, application tracing, and log redirection?
@@ -45,93 +43,120 @@ The corpus/literate section labels reflect the SOURCE of the output, not a level
 
 This mirrors the three-tier type diagnostic design: Info-level type notes (e.g., "you explicitly annotated `@Unknown` — that's fine") go to `=== info`; Warn-level type warnings go to `=== warn`. User programs have no access to the `=== info` channel.
 
-### Design
+### Settled Design
 
-**Keep the log entry as a `LogLine` dict for as long as possible.** Only serialize to a string at the last moment — in the router, just before output to each sink. The router receives the full `LogLine` and can dispatch on any field — not just level.
+**Unified `%log: Channel@LogMessage` channel.** Both user code and the runtime send structured log entries to the same channel. The runtime sends type warnings, evaluator diagnostics, and informational notes. User code sends application-level logging. Both use identical `LogMessage` values.
 
-**Log levels as nominal variants:**
+**`LogLevel` — extensible open record, not a closed nominal type:**
 
 ```tinct
 # stdlib/log.llt
-[union Level [Debug] [Info] [Warn] [Error]]
+# LogLevel is a record shape, not a closed enum.
+# Standard levels are named constants; users add custom levels as records.
+LogLevel: [type [ordinal: Int  name: String]]
+
+Trace: [ordinal: 0  name: "TRACE"]
+Debug: [ordinal: 1  name: "DEBUG"]
+Info:  [ordinal: 2  name: "INFO"]
+Warn:  [ordinal: 3  name: "WARN"]
+Error: [ordinal: 4  name: "ERROR"]
+
+# User-defined custom levels follow the same shape:
+# Audit:   [ordinal: 5  name: "AUDIT"]
+# Verbose: [ordinal: -1 name: "VERBOSE"]
 ```
 
-Level values are ordered (`Debug < Info < Warn < Error`) for filtering.
+Level comparison uses ordinal arithmetic: `[>= level.ordinal Warn.ordinal]`. No typeclass needed.
 
-**`LogLine` — the canonical log entry type:**
+**`LogMessage` — the canonical structured log entry:**
 
 ```tinct
-# Open record: level and message are required; any additional app-defined fields allowed.
-# {level: Warn, message: "disk full", component: "storage", used: 0.95, request-id: rid}
-LogLine: [type [record level: Level  message: Str]]
+# Richer than "log line" — carries structured fields, not just text.
+LogMessage: [type [LogMessage
+  level:  LogLevel    # {ordinal: Int  name: String}
+  parts:  [Seq Any]   # positional message parts — strings, values, anything; formatter decides how to join
+  source: Span        # source-code location of the log call (captured by [call-site])
+  ...kv]]             # arbitrary structured fields (request-id, component, user-id, etc.)
 ```
 
-**Base `log` function — builds a `LogLine`, dispatches to ambient router:**
+`parts` is a `[Seq Any]` — the raw positional arguments to the log call, preserving their types. The formatter decides how to serialize them: text formatters join with spaces, JSON formatters keep them as typed values, structured formatters inspect them individually. Named fields are merged alongside `level`, `parts`, and `source`.
+
+**`[call-site]` — macro-context primitive that captures the invocation span:**
+
+`trace`, `debug`, `info`, `warn`, `error` are **macros**, not functions or partial applications. Partial application breaks call-site capture because by the time the underlying function runs, the stack says "called from partial application machinery" rather than from the user's source location. Macros expand at the call site so the span is correct.
 
 ```tinct
-log: [fn [let level@Level message@Str ...kv]
-  [emit-log [merge [level: level  message: message] kv]]]
-  # emit-log: Rust builtin — dispatches the full LogLine dict to the ambient router
+# stdlib/log.llt — log macros, not functions
+# Variadic positional parts + variadic named fields.
+[macro trace [let ...parts ...kv]
+  [send %log [LogMessage level: Trace parts: parts source: [call-site] ...kv]]]
+
+[macro debug [let ...parts ...kv]
+  [send %log [LogMessage level: Debug parts: parts source: [call-site] ...kv]]]
+
+[macro info  [let ...parts ...kv]
+  [send %log [LogMessage level: Info  parts: parts source: [call-site] ...kv]]]
+
+[macro warn  [let ...parts ...kv]
+  [send %log [LogMessage level: Warn  parts: parts source: [call-site] ...kv]]]
+
+[macro error [let ...parts ...kv]
+  [send %log [LogMessage level: Error parts: parts source: [call-site] ...kv]]]
 ```
 
-`message` is a positional `Str` — the human-readable summary. The variadic `...kv`
-merges into the `LogLine` alongside `level` and `message`. No string formatting at the
-call site; the entry stays as a dict until the router runs.
+`[call-site]` is a new zero-arg builtin available only inside macro expansion. It returns the Span of the macro invocation — the `[trace "foo"]` expression's location in source. Implementation: the `call_span` already present in `expand_macro_call_surface` is threaded into EvalContext and read by the builtin. Low-complexity Rust addition.
 
-**Convenience functions via `partial`:**
-
-```tinct
-debug: [partial log Debug]
-info:  [partial log Info]
-warn:  [partial log Warn]
-error: [partial log Error]
-```
+Note: `[macro-enclosing-fn]` (the name of the enclosing function) is **not implemented** — `SurfaceNode` has no parent pointers, so walking up the AST to find the enclosing `[fn ...]` binding is not feasible without significant infrastructure changes. Callers who want the function name pass it explicitly: `[info "processing" function: "handle-request"]`.
 
 **Usage:**
 
 ```tinct
-[warn  "disk almost full"    used: 0.95   path: "/var"  component: "storage"]
-[info  "request completed"   status: 200  duration-ms: 42  request-id: rid]
-[debug "computed"            x: x]
-[error "connection refused"  peer: addr   retries: 3]
+# Multiple positional parts — strings, values, anything. Named fields alongside.
+[trace "received value:" foo "with status" bar   pid: 42  cycle-count: 6]
+[warn  "disk almost full"                        used: 0.95  path: "/var"  component: "storage"]
+[info  "request completed"                       status: 200  duration-ms: 42  request-id: rid]
+[error "connection refused to" peer "after" retries "retries"]
 ```
 
-**Logger — a router over `LogLine`:**
+Parts are preserved as typed values. The text formatter joins them with spaces; the JSON formatter serializes each part individually.
 
-The router receives the full `LogLine` dict and dispatches on any field — not just level.
-Each match arm returns a handler (a fn or partial) that performs the I/O for that case.
-The logger builds the `LogLine`, calls `[router line]` to get the handler, invokes it.
+**Corpus/literate routing — level determines section, span determines provenance:**
+
+```
+ordinal >= Error.ordinal  →  === error
+ordinal >= Warn.ordinal   →  === warn
+else                      →  === out
+```
+
+User code calling `[error "db down"]` goes to `=== out` (user output), not `=== error` — the source section reflects the SOURCE of the message, not the level. Runtime T003 warning goes to `=== warn` (runtime warning) because the runtime sends it with `level: Warn`. The `source.file` span tells you exactly where the message originated — user file, stdlib file, or runtime.
+
+**The log router program** (draining `%log` → formatting → routing to sinks) follows the same output program contract as `%emit` formatters: drain the channel, format each `LogMessage`, write to appropriate sinks (`%stderr`, syslog, file). App code assembles the router from building blocks in `stdlib/log.llt` and `stdlib/syslog.llt`.
 
 ```tinct
-# Formatters: LogLine → Str
-text-formatter: [fn [let line@LogLine]
-  [str [level-name line.level] "  " line.message " " [format-kv [dissoc line "level" "message"]]]]
-
-json-formatter: [fn [let line@LogLine]
-  [to-json [merge [level: [level-name line.level]] line]]]
-
-# Router: LogLine → Fn@Null[Str]
-# Match on the full LogLine — dispatch by level, component, or any app key.
-default-router: [fn [let line@LogLine]
-  [match line.level
-    [case [let _: Error] [partial write-handle %stderr]]   # Fn@Null[Str]
-    [case [let _]        emit]]]                            # Fn@Null[Str]
-
-# Logger constructor: (formatter, router) → log fn
+# Logger constructor: (formatter, router) → LogMessage → Null
 make-logger: [fn [let formatter router]
-  [fn [let level@Level message@Str ...kv]
-    [line:    [merge [level: level  message: message] kv]]
-    [fmt:     [formatter line]]
-    [handler: [router line]]
-    [handler fmt]]]
+  [fn [let msg@LogMessage]
+    [formatted: [formatter msg]]
+    [router msg formatted]]]
 
-# Default logger: text format, errors → %stderr, rest → emit
-default-logger: [make-logger text-formatter default-router]
+# Formatters: LogMessage → String
+# text-formatter: joins parts with spaces, appends named fields
+text-formatter: [fn [let msg@LogMessage]
+  [fields: [dissoc msg "level" "parts" "source"]]
+  [str msg.level.name "  "
+       [join " " [map str msg.parts]]
+       [if [empty? fields] "" [str "  " [format-kv fields]]]]]
 
-debug: [partial default-logger Debug]
-info:  [partial default-logger Info]
-warn:  [partial default-logger Warn]
-error: [partial default-logger Error]
+# json-formatter: parts as array, named fields alongside — preserves types
+json-formatter: to-json
+
+json-formatter: to-json
+
+# Default router: errors → %stderr, rest → %log channel (emit)
+default-router: [fn [let msg@LogMessage formatted@String]
+  [if [>= msg.level.ordinal Error.ordinal]
+    [write %stderr formatted]
+    [send %log-out formatted]]]  # %log-out: a separate string-output channel
 ```
 
 Because the router gets the full `LogLine`, it can dispatch on any app-controlled field:
@@ -148,9 +173,58 @@ app-router: [fn [let line@LogLine]
 
 ```text
 
-**`with-log-handler` — scope-local logger rebinding (future):**
+### Bound Loggers — First-Class Anonymous Macro Values
 
-A `with-log-handler` combinator that rebinds `debug`/`info`/`warn`/`error` for a scope requires a dynamic binding mechanism. This is deferred — for now, custom loggers are used explicitly. The design is compatible with a future `with-log-handler` that swaps the ambient logger.
+A common pattern is to create a logger with fields already set — a component name, request ID, service name — so they don't have to be repeated at every call site:
+
+```tinct
+storage: [logger component: "storage"  service: "myapp"]
+
+[storage Info "nearing disk exhaustion"  used: 0.95]
+[storage Warn "write latency elevated"   latency-ms: 340]
+```
+
+`storage` is a **bound logger**: a callable value that pre-merges fields and still captures `[call-site]` at each invocation. This requires **first-class anonymous macro values** — a general mechanism that is part of this whatif.
+
+**Anonymous macro values.** `[macro [let params] body]` without a name creates a macro value, parallel to how `[fn [let params] body]` creates a function value. When the expander encounters a Call where the function resolves to a macro value (not just a registered macro name), it applies macro expansion semantics — the body runs at expansion time, `[call-site]` is available, arguments are passed as quoted expressions.
+
+This is a generic feature, not specific to logging. Any user can create anonymous macro values for other purposes: assertion libraries, tracing, DSLs.
+
+**`logger` returns an anonymous macro value:**
+
+```tinct
+# logger is a regular function that closes over base-kv
+# and returns an anonymous macro value
+logger: [fn [let ...base-kv]
+  [macro [let level ...parts ...kv]
+    [send %log [LogMessage
+      level:  level
+      parts:  parts
+      source: [call-site]   # span of [storage Info "..."] — captured at invocation
+      ...base-kv            # closed over from logger's enclosing scope
+      ...kv]]]]             # call-site fields (override bound fields with same key)
+```
+
+`base-kv` is captured in the anonymous macro's closure at the time `[logger ...]` is called. When `[storage Info "..."]` is expanded, `[call-site]` captures the span of that expression, not of `[logger ...]` or anything inside `logger`'s body.
+
+**Expander changes required (part of this whatif):**
+
+Currently the expander only recognises macros by name (strings registered in `MacroEnv`). Two additions are needed:
+
+1. `[macro [let params] body]` without a name produces a `Value::Macro` — an anonymous macro value that can be stored in any binding, returned from functions, or passed as arguments. It captures its defining environment as a closure.
+
+2. When processing a Call node, the expander evaluates the function position against the current environment. If the result is a `Value::Macro`, it applies macro expansion (calling the transformer with quoted arguments, making `[call-site]` available, applying the expansion result). This is the generalisation of "macro by name" to "macro by value."
+
+**The calling convention for bound loggers:**
+
+The first positional argument is always the level; remaining positional args are `parts`; named args are merged with the bound fields (call-site named args override bound fields of the same key):
+
+```tinct
+[storage Info "disk full"]                        # level + one part
+[storage Warn "high latency" latency-ms: 340]     # level + part + named field
+[storage Error "failed after" retries "retries"]  # level + multiple parts
+[storage Debug "state:" x "→" y  step: n]         # level + mixed parts + named field
+```
 
 ### Worked Example: Dual-sink logging (console + syslog)
 
@@ -257,32 +331,53 @@ WARN  msg="using fallback config"
 {"port": 8080}
 ```
 
-### Open Questions
+## What Would Change
 
-**`emit` suppression — resolved.** The `emitted` flag that currently suppresses final
-JSON serialization predates the tinct-native output formatter (`-o` flag / `json.llt`)
-and will be removed (`remove-emitted-flag` sprint). After that sprint, `emit` is purely
-additive: log calls and the final result both appear in `=== out`. `stdlib/log.llt`
-depends on `remove-emitted-flag`.
+### `src/expand.rs` — first-class anonymous macro values
 
-**Redirect mechanism.** In a running application (not literate mode), where does `emit` output go when used for logging? Currently stdout. Options for log filtering/routing:
+**Current:** Macros are registered by name in `MacroEnv::macros`. The expander checks names only.
 
-- A `with-log-handler` combinator: `[with-log-handler handler body]` — handler receives each `emit` call
-- A `LogCap` capability controlling the log destination
-- CLI flags like `--log-output path`
+**Proposed:**
+1. `[macro [let params] body]` without a name → produces `Value::Macro { transformer: Arc<Thunk>, params: Arc<SurfaceNode> }` — an anonymous macro value. Works like `[fn ...]` for functions.
+2. When expanding a Call, after checking registered macro names, the expander evaluates the function position against the stdlib env. If the result is `Value::Macro`, it applies expansion: passes args as `Value::Expression`, makes `[call-site]` available (from `call_span`), substitutes the expansion result.
 
-**Log level filtering.** How does a program suppress DEBUG messages in production? The level is in the formatted string currently. A structured entry form (Dict) would enable runtime filtering:
+**Impact:** Moderate. Macros become genuinely first-class; any user can create, store, and pass anonymous macro values. The "logger returning a macro value" pattern works as a consequence.
 
-```tinct
-[log [level: "debug"  msg: "computing"  x: val]]
-```
+### `src/builtins_meta.rs` — `[call-site]` builtin
 
-But this requires the runtime to understand the `level:` key, or a `with-log-handler` to filter.
+**Current:** Nothing.
+
+**Proposed:** A new zero-arg builtin available only during macro expansion. Returns the `Span` of the current macro invocation (the `call_span` from `expand_macro_call_surface`). Represented as a tinct Dict: `[file: "path.llt" line: 42 col: 8 offset: 1234]`. Errors if called outside macro expansion context.
+
+**Impact:** Minor. One new builtin, one new EvalContext field (`current_macro_call_span: Option<Span>`).
+
+### `stdlib/log.llt` — new file
+
+**Current:** Nothing.
+
+**Proposed:** `LogLevel` constants (`Trace`, `Debug`, `Info`, `Warn`, `Error`), `LogMessage` type declaration, `trace`/`debug`/`info`/`warn`/`error` macros, `logger` function, `make-logger` (router + formatter constructor), `text-formatter`, `json-formatter`, `format-kv` helper.
+
+**Impact:** New file, ~80 lines.
+
+### Runtime — `%log: Channel@LogMessage` injection
+
+**Current:** No `%log` channel.
+
+**Proposed:** `eval-programs` injects `%log` into every program's scope alongside `%emit`. The type checker and evaluator send runtime diagnostics (type warnings, errors, info notes) into `%log` with appropriate `level`. A log router tinct program (the last in the pipeline or a separate task) drains `%log` and routes by level.
+
+**Impact:** Moderate. Requires threading `log-ch` through `eval-program` and `builtin-eval`, similar to `emit-ch`. The type checker must send `LogMessage` values into `log-ch` rather than returning `Vec<TypeDiagnostic>` — significant change to the type checker entry points.
+
+### `remove-emitted-flag` sprint
+
+**Current:** `emit` suppresses final JSON serialization. Log output (which calls `emit`) prevents the final result from appearing.
+
+**Proposed:** Remove the `emitted` flag. `emit` is purely additive — log output and the final result both appear. Literate `=== out` contains both.
+
+**Impact:** Moderate. Behaviour change; existing programs using `emit` for logging get the final result in output too. The output formatter (`none.llt`, `json.llt`) already drives this correctly via the new `%emit`/`%stdout` model from `data-streaming`.
 
 ## Prerequisites
 
-- `literate-flags` — defines `=== info` section label and corpus-in-markdown format; the logging design must be consistent with how `=== info` is captured and displayed.
-- Decision on the output model (Option A vs B above) before implementation.
+`data-streaming` acceptance (S-795–S-799) — the `%emit`/`%stdout` output program model that `remove-emitted-flag` depends on. Both sprints must complete before `stdlib/log.llt` can be fully wired.
 
 ## References
 

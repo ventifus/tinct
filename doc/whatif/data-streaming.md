@@ -362,15 +362,17 @@ The three responsibilities:
 # Sequential document expressions — each is forced in order.
 # 1. Drain the emit channel concurrently.
 [drain: [task
-  [loop-select [context] [[%emit [fn [let v]
-    [write %stdout [to-tinct v]]]]] identity]]]
+  [loop-select [context]
+    [seq [ch: %emit  handler: [fn [let v]
+      [write-handle %stdout [to-tinct v]]]] []]
+    identity]]]
 
 # 2. Force the return value to drive the lazy evaluation cascade.
 #    Forcing % drives program evaluation, triggering any emit calls.
 [if [seq? %]
   [reduce [fn [let _ x]
-    [write %stdout [to-tinct x]]] [] %]
-  [write %stdout [to-tinct %]]]
+    [write-handle %stdout [to-tinct x]]] [] %]
+  [write-handle %stdout [to-tinct %]]]
 
 # 3. Wait for drain to finish consuming any emits triggered during forcing.
 [await drain]
@@ -585,7 +587,7 @@ Every existing output formatter follows the old contract: receive `%`, compute a
 
 The shared rewrite pattern — substituting only the serializer. Output programs are emit consumers: they receive from `%emit` and write to `%stdout`. They never call `emit`.
 
-**`loop-select` calling convention:** `loop-select` takes three arguments: `context` (a Context value), `sources` (a `[Seq [Channel Fn]]` — each element is a `[channel handler]` pair), and `handler` (a function applied to each received value, usually `identity`). When all channels are exhausted (all senders dropped), `loop-select` returns `[Closed]`.
+**`loop-select` calling convention:** `loop-select` takes three arguments: `context` (a Context value), `sources` (a `[Seq {ch: Channel  handler: Fn}]` — each element is a dict with `ch:` and `handler:` fields), and `handler` (a function applied to each received value, usually `identity`). When all channels are exhausted (all senders dropped), `loop-select` returns `[Closed]`.
 
 **`select-once` returns a nominal result, not an error.** The underlying `select-once` primitive (B-192) returns `[Ok v]` when a value arrives on any channel, or `[Closed]` when all channels are closed. `[Closed]` is a nominally-typed unit constructor that can only ever mean "channel exhausted" — it cannot be confused with any emitted value regardless of what producers emit. `[Ok v]` wraps the actual received value, so a producer emitting `[]` produces `[Ok []]`, which the match correctly handles as a legitimate received value.
 
@@ -607,13 +609,15 @@ loop-select: [fn [let context sources handler]
 # Dict entries are lazy thunks; only sequential expressions are forced in order.
 # loop-select returns [Closed] when channels exhaust — no try needed for normal termination.
 [drain: [task
-  [loop-select [context] [[%emit [fn [let v]
-    [write %stdout [SERIALIZER v]]]]] identity]]]
+  [loop-select [context]
+    [seq [ch: %emit  handler: [fn [let v]
+      [write-handle %stdout [SERIALIZER v]]]] []]
+    identity]]]
 
 [if [seq? %]
   [reduce [fn [let _ x]
-    [write %stdout [SERIALIZER x]]] [] %]
-  [write %stdout [SERIALIZER %]]]
+    [write-handle %stdout [SERIALIZER x]]] [] %]
+  [write-handle %stdout [SERIALIZER %]]]
 
 [await drain]
 ```
@@ -651,7 +655,9 @@ Column order is fixed at step 2 and never changes. Records that don't match the 
 ```tinct
 # stdlib/cli/out/none.llt — sequential document expressions.
 [drain: [task
-  [loop-select [context] [[%emit [fn [let v] []]]] identity]]]
+  [loop-select [context]
+    [seq [ch: %emit  handler: [fn [let v] []]] []]
+    identity]]]
 
 # Force % to drive the evaluation cascade (for side effects).
 [if [seq? %]
@@ -744,7 +750,7 @@ Token-level formatters (`fmt_int`, `fmt_float`, `fmt_string`, etc.) live in `src
 
 Three new channel primitives needed for streaming pipelines. All are backed by Tokio; higher-level patterns (pub/sub routing, fan-out trees) are built in tinct on top of these.
 
-**`broadcast-channel N → [Seq Channel Channel]`** — backed by `tokio::sync::broadcast::channel(N)`. Returns a 2-element seq `[subscriber-channel publish-channel]`. Multiple subscribers can each call `recv` on their own subscriber-channel. When a value is sent on `publish-channel`, all subscribers receive it. The backing ring buffer holds at most N messages; slow subscribers receive `[Lagged n]` (a variant indicating they missed `n` messages) instead of a value. When all publishers drop, subscribers receive `[Closed]`. Multiple senders are supported by passing `publish-channel` to multiple tasks. In tinct, fan-out is straightforward:
+**`broadcast-channel N → BroadcastChannel`** — backed by `tokio::sync::broadcast::channel(N)`. Returns a single `BroadcastChannel` value from which subscribers and publishers are derived. Multiple subscribers can each call `recv` on their own subscriber-channel. When a value is sent on the publish side, all subscribers receive it. The backing ring buffer holds at most N messages; slow subscribers receive `[Lagged n]` (a variant indicating they missed `n` messages) instead of a value. When all publishers drop, subscribers receive `[Closed]`. Multiple senders are supported by sharing the publish side with multiple tasks. In tinct, fan-out is straightforward:
 
 ```tinct
 [
@@ -768,13 +774,13 @@ Pub/sub topic routing, filtering, and subscription management are implemented in
 [recv reply-recv]  # blocks until the reply arrives
 ```
 
-**`try-send channel value → Bool`** — non-blocking send backed by `mpsc::try_send`. Returns `true` if the value was sent, `false` if the channel was full (value dropped). Never suspends. Used for drop-newest lossy channels where producers must not stall:
+**`try-send channel value → [Ok] | [Full]`** — non-blocking send backed by `mpsc::try_send`. Returns `[Ok]` if the value was sent, `[Full]` if the channel was full (value dropped). Never suspends. Used for drop-newest lossy channels where producers must not stall:
 
 ```tinct
 # Telemetry that drops metrics when the consumer is slow
-[if [not [try-send metrics-channel datapoint]]
-  []  # dropped — that's fine
-  []]
+[match [try-send metrics-channel datapoint]
+  [Ok]:   []  # sent successfully
+  [Full]: []]  # dropped — that's fine
 ```
 
 `try-send` on a full `broadcast-channel` always succeeds (oldest message dropped) — `try-send` is only meaningful for mpsc channels where "full = drop newest" is the desired behaviour.

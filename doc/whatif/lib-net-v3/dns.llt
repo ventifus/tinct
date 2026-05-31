@@ -1,6 +1,6 @@
 # stdlib/protocols/dns.llt — DNS wire format, resolver factories, name resolution.
 # Part of: lib-net-v3
-# Exports dns-resolve-host and dns-resolve-ip. Include this directly when DNS resolution is needed.
+# Exports dns-resolve-host and dns-resolve. Include this directly when DNS resolution is needed.
 
 [include %libdir "net.llt"]
 [include %libdir "protocols/quic.llt"]   # quic-connect, quic-open-stream (DoQ resolver)
@@ -85,9 +85,9 @@
       [error "DNS: CNAME chain too long (max 8)"]
       [flat-map [fn [let r]
         [match r
-          [let [ARecord    addr _]]: [if [= qtype [A]]    [list [Ipv4 addr]] []]
-          [let [AAAARecord addr _]]: [if [= qtype [AAAA]] [list [Ipv6 addr]] []]
-          [let [CNameRecord name _]]:
+          [ARecord [addr: addr]]: [if [= qtype [A]]    [list [Ipv4 addr]] []]
+          [AAAARecord [addr: addr]]: [if [= qtype [AAAA]] [list [Ipv6 addr]] []]
+          [CNameRecord [name: name]]:
             [match [try [dns-try-names cap %dns [list [str name "."]] qtype [+ cname-depth 1]]]
               [Ok addrs]: addrs
               [Err _]:    []]
@@ -111,12 +111,12 @@
 
   encode-rr: [fn [let r@DnsRecord]
     [match r
-      [let [ARecord    addr ttl]]:
+      [ARecord [addr: addr  ttl: ttl]]:
         [concat [encode-dns-name ""]
                 [encode BigEndian [@UInt16 1]]   [encode BigEndian [@UInt16 1]]
                 [encode BigEndian [@UInt32 ttl]] [encode BigEndian [@UInt16 4]]
                 addr]
-      [let [AAAARecord addr ttl]]:
+      [AAAARecord [addr: addr  ttl: ttl]]:
         [concat [encode-dns-name ""]
                 [encode BigEndian [@UInt16 28]]  [encode BigEndian [@UInt16 1]]
                 [encode BigEndian [@UInt32 ttl]] [encode BigEndian [@UInt16 16]]
@@ -211,8 +211,8 @@
     [fn [let q@DnsQuery]
       [task
         [sock: [udp-ephemeral cap]]
-        [send-datagram sock addr [encode-dns-wire q]]
-        [resp: [recv-datagram sock]]
+        [send sock addr [encode-dns-wire q]]
+        [resp: [recv sock]]
         [match [decode-dns-wire resp.data]
           [Ok r]:  r
           [Err e]: [error [str "dns-udp: " e]]]]]]
@@ -248,10 +248,10 @@
 
   ns-to-resolver: [fn [let cap@NetCap ns@Nameserver]
     [match ns
-      [let [UdpNameserver  addr]]:          [dns-udp-resolver   cap addr]
-      [let [DotNameserver  addr sni]]:      [dns-tls-resolver   cap addr sni]
-      [let [DohNameserver  addr sni path]]: [dns-https-resolver cap addr sni path]
-      [let [DoqNameserver  addr sni]]:      [dns-quic-resolver  cap addr sni]]]
+      [UdpNameserver [addr: addr]]:          [dns-udp-resolver   cap addr]
+      [DotNameserver [addr: addr  sni: sni]]:      [dns-tls-resolver   cap addr sni]
+      [DohNameserver [addr: addr  sni: sni  path: path]]: [dns-https-resolver cap addr sni path]
+      [DoqNameserver [addr: addr  sni: sni]]:      [dns-quic-resolver  cap addr sni]]]
 
   # Re-exported from internal dict so callers have one import point.
   dns-query-with-retry: dns-query-with-retry
@@ -261,14 +261,14 @@
   # IpAddress variants: returned as a single-element list (no DNS needed).
   resolve-address: [fn [let cap@NetCap addr@Address]   # takes Address, not HostPort — used internally
     [match addr
-      [let [Hostname h]]:
+      [Hostname h]:
         [config: %dns]
         [if config.single-request
-          [v6: [match [try [dns-resolve-ip cap h AAAA]] [Ok a]: a [Err _]: []]
-           v4: [match [try [dns-resolve-ip cap h A]]    [Ok a]: a [Err _]: []]
+          [v6: [match [try [dns-resolve cap h AAAA]] [Ok a]: a [Err _]: []]
+           v4: [match [try [dns-resolve cap h A]]    [Ok a]: a [Err _]: []]
            [interleave v6 v4]]
-          [v6-task: [task [dns-resolve-ip cap h AAAA]]
-           v4-task: [task [dns-resolve-ip cap h A]]
+          [v6-task: [task [dns-resolve cap h AAAA]]
+           v4-task: [task [dns-resolve cap h A]]
            v6-first: [match [timeout [millis 50] v6-task] [Ok a]: a [Err _]: []]
            v4: [await v4-task]
            v6: [if [= [] v6-first]
@@ -277,21 +277,21 @@
            [interleave v6 v4]]]
       [let ip@IpAddress]: [list ip]]]
 
-  dns-resolve: dns-resolve-ip   # alias used by http.llt
+  # dns-resolve: resolve a hostname to IPs for a specific query type.
+  # The -ip suffix was defensive — DNS inherently resolves to IPs.
+  dns-resolve: [fn [let cap@NetCap host@String qtype@DnsQtype]
+    [config: %dns]
+    [if [empty? config.nameservers]
+      [error "DNS disabled"]
+      [dns-try-names cap config [candidate-names host config.search config.ndots] qtype]]]
 
-  # Exported as dns-resolve-host; re-exported by net.llt as resolve-host.
+  # dns-resolve-host: resolve a hostname to IPv4 addresses (A record).
+  # For full qtype control use dns-resolve directly.
   dns-resolve-host: [fn [let cap@NetCap host@String]
     [config: %dns]
     [if [empty? config.nameservers]
       [error "DNS disabled — use --nameservers or --no-dns"]
       [dns-try-names cap config [candidate-names host config.search config.ndots] [A]]]]
-
-  # Exported as dns-resolve-ip; re-exported by net.llt as dns-resolve.
-  dns-resolve-ip: [fn [let cap@NetCap host@String qtype@DnsQtype]
-    [config: %dns]
-    [if [empty? config.nameservers]
-      [error "DNS disabled"]
-      [dns-try-names cap config [candidate-names host config.search config.ndots] qtype]]]
 
   dns-server-loop: [fn [let query-ch@[Channel DnsQuery]
                          handler@[Fn [DnsQuery] DnsResponse]]
@@ -306,14 +306,14 @@
     [out:  [channel 256]]
     [task
       [let step [fn []
-        [dg: [recv-datagram sock]]
+        [dg: [recv sock]]
         [match [decode-dns-wire dg.data]
           [Ok q]:
             [send out [DnsQuery
               [id:        q.id         name:      q.name
                qtype:     q.qtype      recursive: q.recursive
                respond:   [fn [let resp@DnsResponse]
-                 [send-datagram sock dg.src [encode-dns-response resp]]]]]]
+                 [send sock dg.src [encode-dns-response resp]]]]]]
           [Err _]: null]
         [step]]]
       [step]]
@@ -323,7 +323,7 @@
   resolve-address: resolve-address
 ]
 
-# Transport typeclass instances — live here because they need dns-resolve-ip.
+# Transport typeclass instances — live here because they need dns-resolve.
 #
 # connect is always used as the bottom of a protocol stack:
 #   [connect %net [Hostname "db.internal"] Tcp 5432]
@@ -336,7 +336,8 @@
 
 [instance [Transport Tcp]
   connect: [fn [let cap@NetCap _@Tcp ep@HostPort]
-    [let [HostPort addr port]: ep]
+    [ep-inner: [match ep [HostPort inner]: inner]
+     addr: ep-inner.addr  port: ep-inner.port]
     # TcpHandle wraps the original addr (for SNI inference etc.) + a lazy stream thunk.
     # The stream thunk evaluates on first read/write; tinct memoizes the result.
     [TcpHandle
@@ -363,7 +364,8 @@
 
 [instance [Transport Udp]
   connect: [fn [let cap@NetCap _@Udp ep@HostPort]
-    [let [HostPort addr port]: ep]
+    [ep-inner: [match ep [HostPort inner]: inner]
+     addr: ep-inner.addr  port: ep-inner.port]
     [addrs: [resolve-address cap addr]]
     [if [empty? addrs] [error "connect: no addresses resolved"] null]
     [peer: [addr: [get addrs 0]  port: [@Port port]]]

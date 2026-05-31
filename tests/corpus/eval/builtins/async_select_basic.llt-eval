@@ -10,7 +10,7 @@
   pair1: [ch: ch1  handler: [fn [let x] [str "ch1:" x]]]
   pair2: [ch: ch2  handler: [fn [let x] [str "ch2:" x]]]
   sources: [seq pair1 [seq pair2 []]]
-  result: [select-once sources]
+  result: [select-once [context] sources]
 ]
 .result
 === error

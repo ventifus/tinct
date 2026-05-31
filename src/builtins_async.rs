@@ -1,6 +1,6 @@
-//! Async concurrency primitives: task, await, channel, send, recv, select-once, par, par-map,
-//! par-filter, and cancellation context primitives (context, with-cancel, with-timeout,
-//! with-deadline, cancelled?, cancel-task).
+//! Async concurrency primitives: task, await, channel, send, recv, select-once,
+//! broadcast-channel, oneshot-channel, try-send, par, par-map, par-filter, and cancellation
+//! context primitives (context, with-cancel, with-timeout, with-deadline, cancelled?, cancel-task).
 //!
 //! Design notes (from doc/whatif/async-eval.md):
 //! - `task` spawns a concurrent evaluation via tokio::task::spawn_local
@@ -8,7 +8,10 @@
 //! - `channel N` creates a bounded channel with capacity N (minimum 1)
 //! - `send chan value` sends a value on the channel (suspends if full)
 //! - `recv chan` receives a value from the channel (suspends until available)
-//! - `select-once sources` waits for first channel to fire, calls its handler
+//! - `select-once context sources` waits for first channel to fire, calls its handler
+//! - `broadcast-channel N` creates a broadcast channel with capacity N
+//! - `oneshot-channel` creates a one-shot channel, returns [receiver sender]
+//! - `try-send chan value` sends without blocking; returns [Ok] or [Full] or [Closed]
 //! - `par expr` eagerly spawns a task (hint for parallel evaluation)
 //! - `par-map fn seq` applies fn to each element concurrently
 //! - `par-filter pred seq` filters sequence in parallel
@@ -423,16 +426,61 @@ pub(crate) fn builtin_send(
                 // Return null (empty dict)
                 ok_val(Value::Dict(IndexMap::new()), call_span)
             }
-            _ => Err(EvalError::type_mismatch("Channel", chan_val.type_name(), call_span).into()),
+            Value::BroadcastChannel(channel_inner) => {
+                // Materialize the value to send
+                let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
+
+                // Send to all subscribers. broadcast::send doesn't block.
+                channel_inner.sender.send(value).map_err(|_| {
+                    EvalError::user_error(
+                        "broadcast channel closed (all receivers dropped)".to_string(),
+                        call_span.clone(),
+                    )
+                })?;
+
+                // Return null (empty dict)
+                ok_val(Value::Dict(IndexMap::new()), call_span)
+            }
+            Value::OneshotSender(sender_inner) => {
+                // Materialize the value to send
+                let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
+
+                // Take the sender (single-use)
+                let mut tx_opt = sender_inner.sender.lock().await;
+                let tx = tx_opt.take().ok_or_else(|| {
+                    EvalError::user_error(
+                        "oneshot sender already used".to_string(),
+                        call_span.clone(),
+                    )
+                })?;
+
+                // Send the value. oneshot::send is non-blocking.
+                tx.send(value).map_err(|_| {
+                    EvalError::user_error(
+                        "oneshot receiver dropped before send".to_string(),
+                        call_span.clone(),
+                    )
+                })?;
+
+                // Return null (empty dict)
+                ok_val(Value::Dict(IndexMap::new()), call_span)
+            }
+            _ => Err(EvalError::type_mismatch(
+                "Channel, BroadcastChannel, or OneshotSender",
+                chan_val.type_name(),
+                call_span,
+            )
+            .into()),
         }
     })
 }
 
 /// `recv`: Receive a value from a channel.
 ///
-/// Signature: `Channel@T → T`
+/// Signature: `Channel@T → [Ok T] | [Closed]`
 ///
-/// Suspends until a value is available. Returns an error if the channel is closed.
+/// Suspends until a value is available. Returns `[Ok v]` on success, `[Closed]` if the
+/// channel is closed (sender dropped). Context cancellation still raises an exception.
 pub(crate) fn builtin_recv(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -452,12 +500,8 @@ pub(crate) fn builtin_recv(
                 let mut rx = channel_inner.receiver.lock().await;
 
                 // Receive a value, racing against context cancellation.
-                let value = tokio::select! {
-                    result = rx.recv() => {
-                        result.ok_or_else(|| {
-                            EvalError::user_error("channel closed (sender dropped)".to_string(), call_span.clone())
-                        })?
-                    }
+                let result = tokio::select! {
+                    result = rx.recv() => result,
                     _ = ctx.cancel.cancelled() => {
                         return Err(EvalError::user_error(
                             "recv: cancelled".to_string(),
@@ -466,29 +510,166 @@ pub(crate) fn builtin_recv(
                     }
                 };
 
-                // Return the received value
-                ok_val(value, call_span)
+                // Return [Ok v] or [Closed]
+                match result {
+                    Some(value) => {
+                        let value_thunk =
+                            Arc::new(Thunk::new_materialized(value, call_span.clone()));
+                        let value_thunk_id = ctx.alloc_thunk(value_thunk);
+                        ok_val(
+                            Value::Variant {
+                                tag: "Ok".to_string(),
+                                payload: Some(value_thunk_id),
+                            },
+                            call_span,
+                        )
+                    }
+                    None => {
+                        // Channel closed
+                        ok_val(
+                            Value::Variant {
+                                tag: "Closed".to_string(),
+                                payload: None,
+                            },
+                            call_span,
+                        )
+                    }
+                }
             }
-            _ => Err(EvalError::type_mismatch("Channel", chan_val.type_name(), call_span).into()),
+            Value::BroadcastChannel(channel_inner) => {
+                // Create a new subscriber
+                let mut rx = channel_inner.sender.subscribe();
+
+                // Receive a value, racing against context cancellation.
+                let result = tokio::select! {
+                    result = rx.recv() => result,
+                    _ = ctx.cancel.cancelled() => {
+                        return Err(EvalError::user_error(
+                            "recv: cancelled".to_string(),
+                            call_span.clone(),
+                        ).into());
+                    }
+                };
+
+                // Return [Ok v], [Closed], or [Lagged n]
+                match result {
+                    Ok(value) => {
+                        let value_thunk =
+                            Arc::new(Thunk::new_materialized(value, call_span.clone()));
+                        let value_thunk_id = ctx.alloc_thunk(value_thunk);
+                        ok_val(
+                            Value::Variant {
+                                tag: "Ok".to_string(),
+                                payload: Some(value_thunk_id),
+                            },
+                            call_span,
+                        )
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // Subscriber too slow, missed n messages
+                        let count_thunk = Arc::new(Thunk::new_materialized(
+                            Value::Int(n as i64),
+                            call_span.clone(),
+                        ));
+                        let count_thunk_id = ctx.alloc_thunk(count_thunk);
+                        ok_val(
+                            Value::Variant {
+                                tag: "Lagged".to_string(),
+                                payload: Some(count_thunk_id),
+                            },
+                            call_span,
+                        )
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        // Channel closed
+                        ok_val(
+                            Value::Variant {
+                                tag: "Closed".to_string(),
+                                payload: None,
+                            },
+                            call_span,
+                        )
+                    }
+                }
+            }
+            Value::OneshotReceiver(receiver_inner) => {
+                // Take the receiver (single-use)
+                let mut rx_opt = receiver_inner.receiver.lock().await;
+                let rx = rx_opt.take().ok_or_else(|| {
+                    EvalError::user_error(
+                        "oneshot receiver already used".to_string(),
+                        call_span.clone(),
+                    )
+                })?;
+
+                // Receive the single value, racing against context cancellation.
+                let result = tokio::select! {
+                    result = rx => result,
+                    _ = ctx.cancel.cancelled() => {
+                        return Err(EvalError::user_error(
+                            "recv: cancelled".to_string(),
+                            call_span.clone(),
+                        ).into());
+                    }
+                };
+
+                // Return [Ok v] or [Closed]
+                match result {
+                    Ok(value) => {
+                        let value_thunk =
+                            Arc::new(Thunk::new_materialized(value, call_span.clone()));
+                        let value_thunk_id = ctx.alloc_thunk(value_thunk);
+                        ok_val(
+                            Value::Variant {
+                                tag: "Ok".to_string(),
+                                payload: Some(value_thunk_id),
+                            },
+                            call_span,
+                        )
+                    }
+                    Err(_) => {
+                        // Sender dropped before sending
+                        ok_val(
+                            Value::Variant {
+                                tag: "Closed".to_string(),
+                                payload: None,
+                            },
+                            call_span,
+                        )
+                    }
+                }
+            }
+            _ => Err(EvalError::type_mismatch(
+                "Channel, BroadcastChannel, or OneshotReceiver",
+                chan_val.type_name(),
+                call_span,
+            )
+            .into()),
         }
     })
 }
 
-/// `select-once`: Wait for the first of multiple sources to complete.
+/// `broadcast-channel`: Create a broadcast channel where each subscriber receives all values.
 ///
-/// Signature: `[Seq [Seq Channel Fn]] → T`
+/// Signature: `Int → BroadcastChannel`
 ///
-/// Takes a sequence of [channel, handler] pairs. Waits for the FIRST channel to have
-/// a value available, then calls that channel's handler with the received value.
-/// Returns the handler's result.
+/// Uses tokio::sync::broadcast::channel(capacity). Returns a BroadcastChannel value
+/// that can be passed to `recv` (each subscriber gets every value sent).
+/// Multiple subscribers can each call `recv` on the same channel.
 ///
-/// Implementation note: uses a manual polling loop over all channels. When a channel
-/// produces a value, we call its handler and return. Closed channels are removed from
-/// consideration. If all channels are closed, returns an error.
+/// SUBSCRIPTION SEMANTICS: Each call to `recv` on a BroadcastChannel creates a new
+/// subscriber via `tokio::sync::broadcast::Sender::subscribe()`. Tokio broadcast
+/// receivers only receive messages sent *after* `subscribe()` is called. This means
+/// values sent before the first `recv` call are not visible to that receiver:
 ///
-/// Fairness: channels are checked in order, but since this is a cooperative runtime,
-/// fairness emerges naturally from the event loop.
-pub(crate) fn builtin_select_once(
+///   ch: [broadcast-channel 10]
+///   _:  [send ch 42]   # sent before any subscriber — lost
+///   v:  [recv ch]      # subscribes NOW — misses 42, blocks forever
+///
+/// This is expected tokio::sync::broadcast semantics. To use broadcast-channel
+/// correctly, ensure subscribers (`recv` calls) are established before senders
+/// produce values — typically by spawning the receiver task first.
+pub(crate) fn builtin_broadcast_channel(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
@@ -498,8 +679,230 @@ pub(crate) fn builtin_select_once(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let sources_thunk =
-            take_one_thunk("select-once", &args, named.as_ref(), call_span.clone())?;
+        let capacity_thunk = take_one_thunk(
+            "broadcast-channel",
+            &args,
+            named.as_ref(),
+            call_span.clone(),
+        )?;
+        let capacity_val = materialize(&capacity_thunk, Some(&call_span), &ctx).await?;
+
+        match capacity_val {
+            Value::Int(n) if n >= 1 => {
+                // Create the broadcast channel
+                let (tx, _rx) = tokio::sync::broadcast::channel(n as usize);
+                let channel_inner = crate::value::BroadcastChannelInner {
+                    sender: tx,
+                    capacity: n,
+                };
+                ok_val(Value::BroadcastChannel(Arc::new(channel_inner)), call_span)
+            }
+            Value::Int(n) if n < 1 => Err(EvalError::user_error(
+                format!("broadcast-channel capacity must be ≥ 1, got {n}"),
+                call_span,
+            )
+            .into()),
+            _ => Err(EvalError::type_mismatch("Int", capacity_val.type_name(), call_span).into()),
+        }
+    })
+}
+
+/// `oneshot-channel`: Create a oneshot channel for single-value request/response patterns.
+///
+/// Signature: `→ [Seq Channel Channel]`
+///
+/// Uses tokio::sync::oneshot::channel(). Returns a 2-element Seq: [receiver, sender].
+/// Exactly one value can be sent on the sender channel; subsequent sends fail.
+/// The receiver can recv exactly once; subsequent recvs fail.
+pub(crate) fn builtin_oneshot_channel(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        if !named.as_ref().is_none_or(|n| n.is_empty()) {
+            return Err(EvalError::user_error(
+                "oneshot-channel does not accept named arguments".to_string(),
+                call_span,
+            )
+            .into());
+        }
+        if !args.is_empty() {
+            return Err(EvalError::user_error(
+                format!("oneshot-channel expects 0 arguments, got {}", args.len()),
+                call_span,
+            )
+            .into());
+        }
+
+        // Create the oneshot channel
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let sender_inner = crate::value::OneshotSenderInner {
+            sender: tokio::sync::Mutex::new(Some(tx)),
+        };
+        let receiver_inner = crate::value::OneshotReceiverInner {
+            receiver: tokio::sync::Mutex::new(Some(rx)),
+        };
+
+        // Build [receiver, sender] Seq
+        let sender_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::OneshotSender(Arc::new(sender_inner)),
+            call_span.clone(),
+        )));
+        let receiver_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::OneshotReceiver(Arc::new(receiver_inner)),
+            call_span.clone(),
+        )));
+
+        // Build empty dict tail
+        let tail_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Dict(IndexMap::new()),
+            call_span.clone(),
+        )));
+
+        // Build sender cons cell
+        let sender_cons = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Seq {
+                head: sender_thunk,
+                tail: tail_thunk,
+            },
+            call_span.clone(),
+        )));
+
+        // Build receiver cons cell (head of the list)
+        ok_val(
+            Value::Seq {
+                head: receiver_thunk,
+                tail: sender_cons,
+            },
+            call_span,
+        )
+    })
+}
+
+/// `try-send`: Non-blocking send. Returns [Ok] on success, [Full] if channel is at capacity.
+///
+/// Signature: `Channel@T → T → [or [Ok] [Full]]`
+///
+/// Uses mpsc::try_send. Never suspends. If the channel buffer is full, returns [Full]
+/// and the value is dropped.
+pub(crate) fn builtin_try_send(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        let (chan_thunk, val_thunk) =
+            take_two_thunks("try-send", &args, named.as_ref(), call_span.clone())?;
+        let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
+
+        match chan_val {
+            Value::Channel(channel_inner) => {
+                // Materialize the value to send
+                let value = materialize(&val_thunk, Some(&call_span), &ctx).await?;
+
+                // Try to send the value
+                match channel_inner.sender.try_send(value) {
+                    Ok(_) => {
+                        // Success: return [Ok]
+                        ok_val(
+                            Value::Variant {
+                                tag: "Ok".to_string(),
+                                payload: None,
+                            },
+                            call_span,
+                        )
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        // Channel full: return [Full]
+                        ok_val(
+                            Value::Variant {
+                                tag: "Full".to_string(),
+                                payload: None,
+                            },
+                            call_span,
+                        )
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        // Channel closed: error
+                        Err(EvalError::user_error(
+                            "channel closed (receiver dropped)".to_string(),
+                            call_span,
+                        )
+                        .into())
+                    }
+                }
+            }
+            _ => Err(EvalError::type_mismatch("Channel", chan_val.type_name(), call_span).into()),
+        }
+    })
+}
+
+/// `select-once`: Wait for the first of multiple sources to complete.
+///
+/// Signature: `Context → [Seq {ch: Channel  handler: Fn}] → [Ok T] | [Closed]`
+///
+/// Takes a context (for cancellation checking) and a sequence of [channel, handler] pairs.
+/// Waits for the FIRST channel to have a value available, then calls that channel's handler
+/// with the received value. Returns `[Ok result]` where result is the handler's return value.
+///
+/// If all channels are closed, returns `[Closed]` (not an error). Context cancellation still
+/// raises an exception.
+///
+/// Implementation note: uses a manual polling loop over all channels. When a channel
+/// produces a value, we call its handler and return. Closed channels are removed from
+/// consideration. If all channels are closed, returns `[Closed]`.
+///
+/// Fairness: channels are checked in order, but since this is a cooperative runtime,
+/// fairness emerges naturally from the event loop.
+pub(crate) fn builtin_select_once(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named: _,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        // First arg: context (for cancellation checking)
+        if args.is_empty() {
+            return Err(EvalError::user_error(
+                "select-once requires a context argument".to_string(),
+                call_span,
+            )
+            .into());
+        }
+
+        // Second arg: sources
+        if args.len() < 2 {
+            return Err(EvalError::user_error(
+                "select-once requires sources as second argument".to_string(),
+                call_span,
+            )
+            .into());
+        }
+
+        // Materialize and validate the context argument.
+        let user_ctx_thunk = args[0].clone();
+        let user_ctx_val = materialize(&user_ctx_thunk, Some(&call_span), &ctx).await?;
+        let user_token = match user_ctx_val {
+            Value::Context(token) => token,
+            other => {
+                return Err(EvalError::type_mismatch("Context", other.type_name(), call_span)
+                    .into())
+            }
+        };
+
+        let sources_thunk = args[1].clone();
         let sources_val = materialize(&sources_thunk, Some(&call_span), &ctx).await?;
 
         // Collect the sequence of sources into a vec
@@ -609,7 +1012,7 @@ pub(crate) fn builtin_select_once(
                             materialize(&handler_thunk, Some(&call_span), &ctx).await?;
 
                         // Call the handler with the received value.
-                        match handler_val {
+                        let handler_result = match handler_val {
                             Value::Function {
                                 params,
                                 body,
@@ -639,8 +1042,7 @@ pub(crate) fn builtin_select_once(
                                 // Evaluate and return the body.
                                 let result_thunk =
                                     eval_core_expr_pub(&body, &call_env, &ctx).await?;
-                                let v = materialize(&result_thunk, None, &ctx).await?;
-                                return ok_val(v, call_span);
+                                materialize(&result_thunk, None, &ctx).await?
                             }
                             Value::Builtin(def) => {
                                 // Call builtin with the value.
@@ -653,8 +1055,7 @@ pub(crate) fn builtin_select_once(
                                     ctx: Arc::clone(&ctx),
                                 })
                                 .await?;
-                                let v = materialize(&result, None, &ctx).await?;
-                                return ok_val(v, call_span);
+                                materialize(&result, None, &ctx).await?
                             }
                             _ => {
                                 return Err(EvalError::type_mismatch(
@@ -664,7 +1065,20 @@ pub(crate) fn builtin_select_once(
                                 )
                                 .into())
                             }
-                        }
+                        };
+
+                        // Wrap the handler result in [Ok v]
+                        let result_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                            handler_result,
+                            call_span.clone(),
+                        )));
+                        return ok_val(
+                            Value::Variant {
+                                tag: "Ok".to_string(),
+                                payload: Some(result_thunk_id),
+                            },
+                            call_span,
+                        );
                     }
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                         // Channel is empty, try next one.
@@ -674,11 +1088,14 @@ pub(crate) fn builtin_select_once(
                         // Channel is closed — mark it and check if all are closed.
                         closed[i] = true;
                         if closed.iter().all(|&c| c) {
-                            return Err(EvalError::user_error(
-                                "select-once: all channels are closed".to_string(),
+                            // All channels closed — return [Closed]
+                            return ok_val(
+                                Value::Variant {
+                                    tag: "Closed".to_string(),
+                                    payload: None,
+                                },
                                 call_span,
-                            )
-                            .into());
+                            );
                         }
                         continue;
                     }
@@ -686,7 +1103,8 @@ pub(crate) fn builtin_select_once(
             }
 
             // Check for context cancellation before yielding.
-            if ctx.cancel.is_cancelled() {
+            // Honour both the EvalContext token and the user-supplied Context token.
+            if ctx.cancel.is_cancelled() || user_token.is_cancelled() {
                 return Err(
                     EvalError::user_error("select-once: cancelled".to_string(), call_span).into(),
                 );
@@ -2263,22 +2681,24 @@ mod tests {
         );
     }
 
-    /// [builtin-select-once {}] must return an error: at least one source is required.
+    /// [builtin-select-once {} {}] must return an error: at least one source is required.
     ///
-    /// The empty dict `{}` is the Seq terminator, so collect_seq_to_vec returns an
+    /// builtin-select-once now takes two positional args: context (first) and sources (second).
+    /// The first `{}` is the context argument (a valid empty-dict stand-in for testing).
+    /// The second `{}` is the sources Seq terminator, so collect_seq_to_vec returns an
     /// empty Vec, triggering the "select-once requires at least one source" guard.
     ///
     /// Uses builtin-select-once (bare name removed in builtin-privacy-primary-names sprint).
     #[test]
     fn test_select_once_empty_sources_returns_error() {
-        let result = crate::eval_source_with_config("[builtin-select-once {}]", false);
+        let result = crate::eval_source_with_config("[builtin-select-once {} {}]", false);
         assert!(
             result.is_err(),
-            "expected [builtin-select-once {{}}] to return an error, got: {result:?}"
+            "expected [builtin-select-once {{}} {{}}] to return an error, got: {result:?}"
         );
         let msg = result.unwrap_err();
         assert!(
-            msg.contains("at least one source") || msg.contains("select-once"),
+            msg.contains("at least one source"),
             "expected 'at least one source' error message, got: {msg:?}"
         );
     }
