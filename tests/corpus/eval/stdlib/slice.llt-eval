@@ -1,4 +1,4 @@
 # slice: take a slice by position (preserves original keys)
-[slice ["a" "b" "c" "d" "e"] 1 4]
+[slice 1 4 ["a" "b" "c" "d" "e"]]
 === out
 Dict({1: String("b"), 2: String("c"), 3: String("d")})

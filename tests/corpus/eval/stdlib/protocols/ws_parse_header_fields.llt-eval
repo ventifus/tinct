@@ -7,12 +7,12 @@
 [include %libdir "protocols/websocket.llt"]
 ---
 [call [fn [p]
-    [set [set [set [set [set []
-        "fin"         p.fin]
-        "opcode"      p.opcode]
-        "masked"      p.masked]
-        "payload-len" p.payload-len]
-        "header-len"  p.header-len]]
+    [set []
+        fin:         p.fin
+        opcode:      p.opcode
+        masked:      p.masked
+        payload-len: p.payload-len
+        header-len:  p.header-len]]
     [call %.parse-ws-frame-header
         [str [chr 129] [chr 130] [chr 1] [chr 2] [chr 3] [chr 4]]]]
 === out

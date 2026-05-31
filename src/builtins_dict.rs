@@ -182,7 +182,7 @@ pub(crate) fn builtin_merge(
     })
 }
 
-/// `append`: Takes 2 args: a Dict and any value. Returns a new dict with the
+/// `append`: Takes 2 args: any value and a Dict. Returns a new dict with the
 /// value inserted at the next integer key (one past the current maximum integer
 /// key, or 0 for empty dicts / dicts with no integer keys).
 ///
@@ -203,16 +203,16 @@ pub(crate) fn builtin_append(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        // arg[0] is pre-forced by force_count.
-        // arg[1] (the value to append) is NOT materialized — it is inserted as a thunk
+        // arg[0] (the value to append) is NOT materialized — it is inserted as a thunk
         // (Arc::clone at line below), preserving laziness of the appended value.
-        let dict_val = args[0]
+        // arg[1] (dict) is pre-forced by W1 pos_strictness[1]=Seq scan.
+        let dict_val = args[1]
             .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .expect("pre-materialized by pos_strictness[1]=Seq via W1 scan");
         let mut map = crate::builtins::require_dict(
             "append",
             dict_val,
-            args[0].span.clone(),
+            args[1].span.clone(),
             &ctx,
             call_span.clone(),
         )?;
@@ -234,7 +234,7 @@ pub(crate) fn builtin_append(
             None => 0,
         };
 
-        let value_id = ctx.alloc_thunk(Arc::clone(&args[1]));
+        let value_id = ctx.alloc_thunk(Arc::clone(&args[0]));
         map.insert(Key::Int(next_idx), value_id);
         ok_val(Value::Dict(map), call_span)
     })
@@ -726,14 +726,14 @@ pub(crate) fn builtin_each_kv(
 
 /// `builder-get-or`: Atomically get-or-insert in a builder.
 ///
-/// Takes 3 args: builder, key (Int or String), default_value (any).
+/// Takes 3 args: key (Int or String), default_value (any), builder.
 /// If `key` exists, returns the existing value. Otherwise inserts `default_value` at `key`
 /// and returns it. Single mutex acquisition — no race between has? and set.
 /// Returns the builder for chaining (NOT the looked-up value — returns builder so callers
 /// can chain further operations).
 ///
 /// NOTE: Returns the looked-up/inserted ThunkId value (not the builder).
-/// Usage pattern: `[builder-set b k [cons x [builder-get-or b k []]]]`
+/// Usage pattern: `[builder-set k [cons x [builder-get-or k [] b]] b]`
 pub(crate) fn builtin_builder_get_or(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -749,25 +749,8 @@ pub(crate) fn builtin_builder_get_or(
             return Err(EvalError::arity_mismatch(3, args.len(), call_span.clone()).into());
         }
 
-        // args[0] (builder) is pre-forced by force_count
-        let builder_val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count");
-        let builder = match builder_val {
-            Value::Builder(b) => b,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builder-get-or".to_string(),
-                    "Builder",
-                    other.type_name(),
-                    args[0].span.clone(),
-                )
-                .into())
-            }
-        };
-
-        // args[1] (key) is pre-forced by force_count
-        let key_val = args[1]
+        // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
+        let key_val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count");
         let key = match key_val {
@@ -785,14 +768,31 @@ pub(crate) fn builtin_builder_get_or(
                     "builder-get-or".to_string(),
                     "Int or String (for key)",
                     other.type_name(),
-                    args[1].span.clone(),
+                    args[0].span.clone(),
                 )
                 .into())
             }
         };
 
-        // args[2] (default value) is NOT materialized — inserted as a thunk if key absent.
-        let default_id = ctx.alloc_thunk(Arc::clone(&args[2]));
+        // args[1] (default value) is NOT materialized — inserted as a thunk if key absent.
+        let default_id = ctx.alloc_thunk(Arc::clone(&args[1]));
+
+        // args[2] (builder) is pre-forced by W1 pos_strictness[2]=Seq scan
+        let builder_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[2]=Seq via W1 scan");
+        let builder = match builder_val {
+            Value::Builder(b) => b,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-get-or".to_string(),
+                    "Builder",
+                    other.type_name(),
+                    args[2].span.clone(),
+                )
+                .into())
+            }
+        };
 
         // Atomic get-or-insert: single mutex acquisition
         let result_id = builder
@@ -1048,7 +1048,7 @@ pub(crate) fn builtin_make_builder(
 }
 
 /// `builder-set`: Set a key-value pair in a builder. Returns the builder for chaining.
-/// Takes 3 args: builder, key (Int or String), value (any).
+/// Takes 3 args: key (Int or String), value (any), builder.
 /// Errors if the builder is frozen.
 pub(crate) fn builtin_builder_set(
     ctx_arg: BuiltinArgs,
@@ -1065,25 +1065,8 @@ pub(crate) fn builtin_builder_set(
             return Err(EvalError::arity_mismatch(3, args.len(), call_span.clone()).into());
         }
 
-        // args[0] (builder) is pre-forced by force_count
-        let builder_val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count");
-        let builder = match builder_val {
-            Value::Builder(b) => b,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builder-set".to_string(),
-                    "Builder",
-                    other.type_name(),
-                    args[0].span.clone(),
-                )
-                .into())
-            }
-        };
-
-        // args[1] (key) is pre-forced by force_count
-        let key_val = args[1]
+        // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
+        let key_val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count");
         let key = match key_val {
@@ -1101,14 +1084,31 @@ pub(crate) fn builtin_builder_set(
                     "builder-set".to_string(),
                     "Int or String (for key)",
                     other.type_name(),
-                    args[1].span.clone(),
+                    args[0].span.clone(),
                 )
                 .into())
             }
         };
 
-        // args[2] (value) is NOT materialized — inserted as a thunk
-        let value_id = ctx.alloc_thunk(Arc::clone(&args[2]));
+        // args[1] (value) is NOT materialized — inserted as a thunk
+        let value_id = ctx.alloc_thunk(Arc::clone(&args[1]));
+
+        // args[2] (builder) is pre-forced by W1 pos_strictness[2]=Seq scan
+        let builder_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[2]=Seq via W1 scan");
+        let builder = match builder_val {
+            Value::Builder(b) => b,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-set".to_string(),
+                    "Builder",
+                    other.type_name(),
+                    args[2].span.clone(),
+                )
+                .into())
+            }
+        };
 
         // Set the key-value pair
         builder
@@ -1116,12 +1116,12 @@ pub(crate) fn builtin_builder_set(
             .map_err(|_| EvalError::builder_already_finished("builder-set", call_span))?;
 
         // Return the builder for chaining
-        Ok(Arc::clone(&args[0]))
+        Ok(Arc::clone(&args[2]))
     })
 }
 
 /// `builder-delete`: Remove a key from a builder. Returns the builder for chaining.
-/// Takes 2 args: builder, key (Int or String).
+/// Takes 2 args: key (Int or String), builder.
 /// Errors if the builder is frozen.
 pub(crate) fn builtin_builder_delete(
     ctx_arg: BuiltinArgs,
@@ -1138,25 +1138,8 @@ pub(crate) fn builtin_builder_delete(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
         }
 
-        // args[0] (builder) is pre-forced by force_count
-        let builder_val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count");
-        let builder = match builder_val {
-            Value::Builder(b) => b,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builder-delete".to_string(),
-                    "Builder",
-                    other.type_name(),
-                    args[0].span.clone(),
-                )
-                .into())
-            }
-        };
-
-        // args[1] (key) is pre-forced by force_count
-        let key_val = args[1]
+        // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
+        let key_val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count");
         let key = match key_val {
@@ -1174,6 +1157,23 @@ pub(crate) fn builtin_builder_delete(
                     "builder-delete".to_string(),
                     "Int or String (for key)",
                     other.type_name(),
+                    args[0].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        // args[1] (builder) is pre-forced by force_count
+        let builder_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let builder = match builder_val {
+            Value::Builder(b) => b,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-delete".to_string(),
+                    "Builder",
+                    other.type_name(),
                     args[1].span.clone(),
                 )
                 .into())
@@ -1186,7 +1186,7 @@ pub(crate) fn builtin_builder_delete(
             .map_err(|_| EvalError::builder_already_finished("builder-delete", call_span))?;
 
         // Return the builder for chaining
-        Ok(Arc::clone(&args[0]))
+        Ok(Arc::clone(&args[1]))
     })
 }
 
@@ -1279,7 +1279,7 @@ pub(crate) fn builtin_builder_snapshot(
 }
 
 /// `builder-has?`: Check if a key exists in a builder.
-/// Takes 2 args: builder, key (Int or String). Returns Bool.
+/// Takes 2 args: key (Int or String), builder. Returns Bool.
 pub(crate) fn builtin_builder_has(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -1295,25 +1295,8 @@ pub(crate) fn builtin_builder_has(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
         }
 
-        // args[0] (builder) is pre-forced by force_count
-        let builder_val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count");
-        let builder = match builder_val {
-            Value::Builder(b) => b,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builder-has?".to_string(),
-                    "Builder",
-                    other.type_name(),
-                    args[0].span.clone(),
-                )
-                .into())
-            }
-        };
-
-        // args[1] (key) is pre-forced by force_count
-        let key_val = args[1]
+        // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
+        let key_val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count");
         let key = match key_val {
@@ -1330,6 +1313,23 @@ pub(crate) fn builtin_builder_has(
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-has?".to_string(),
                     "Int or String (for key)",
+                    other.type_name(),
+                    args[0].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        // args[1] (builder) is pre-forced by force_count
+        let builder_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let builder = match builder_val {
+            Value::Builder(b) => b,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-has?".to_string(),
+                    "Builder",
                     other.type_name(),
                     args[1].span.clone(),
                 )
@@ -1351,7 +1351,7 @@ pub(crate) fn builtin_builder_has(
 }
 
 /// `builder-get`: Get a value from a builder by key.
-/// Takes 2 args: builder, key (Int or String). Returns the value or errors if key not found.
+/// Takes 2 args: key (Int or String), builder. Returns the value or errors if key not found.
 pub(crate) fn builtin_builder_get(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -1367,25 +1367,8 @@ pub(crate) fn builtin_builder_get(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
         }
 
-        // args[0] (builder) is pre-forced by force_count
-        let builder_val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count");
-        let builder = match builder_val {
-            Value::Builder(b) => b,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builder-get".to_string(),
-                    "Builder",
-                    other.type_name(),
-                    args[0].span.clone(),
-                )
-                .into())
-            }
-        };
-
-        // args[1] (key) is pre-forced by force_count
-        let key_val = args[1]
+        // args[0] (key) is pre-forced by pos_strictness[0]=Seq via W1 scan
+        let key_val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count");
         let key = match key_val {
@@ -1402,6 +1385,23 @@ pub(crate) fn builtin_builder_get(
                 return Err(EvalError::type_mismatch_ctx(
                     "builder-get".to_string(),
                     "Int or String (for key)",
+                    other.type_name(),
+                    args[0].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        // args[1] (builder) is pre-forced by force_count
+        let builder_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count");
+        let builder = match builder_val {
+            Value::Builder(b) => b,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builder-get".to_string(),
+                    "Builder",
                     other.type_name(),
                     args[1].span.clone(),
                 )

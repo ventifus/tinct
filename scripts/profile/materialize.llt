@@ -31,7 +31,7 @@
   # Self time: wall time minus children's wall time
   self-us: [fn [let s]
     [- [- s.end-us s.start-us]
-       [get-or children-wall s.id 0]]]
+       [get-or s.id 0 children-wall]]]
 
   # CPU time: self time minus stall time
   cpu-us: [fn [let s] [- [self-us s] s.stall-us]]

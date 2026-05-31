@@ -1,6 +1,6 @@
 [x: 42]
 
-[slice x 0 2]
+[slice 0 2 x]
 === error
 [E010] keys: expected Dict, got Int
 

@@ -34,7 +34,7 @@ use crate::ast::Span;
 use crate::builtins::{ok_val, MAX_COLLECT_SIZE};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{eval_core_expr_pub, materialize};
-use crate::value::{BuiltinArgs, Key, Thunk, ThunkId, Value};
+use crate::value::{BuiltinArgs, Key, StrKey, Thunk, ThunkId, Value};
 
 /// Helper to check argument count and extract first argument as a thunk.
 /// Returns the thunk without materializing it. Named `take_one_thunk` to
@@ -514,47 +514,29 @@ pub(crate) fn builtin_select_once(
             .into());
         }
 
-        // Parse each source as [channel, handler]
+        // Parse each source as a {ch:, handler:} Dict
         let mut sources: Vec<(Arc<crate::value::ChannelInner>, ThunkId)> = Vec::new();
         for source_id in source_ids {
             let source_thunk = ctx.get_thunk(source_id);
             let source_val = materialize(&source_thunk, Some(&call_span), &ctx).await?;
 
             match source_val {
-                Value::Seq { head, tail } => {
-                    // Get the channel (head)
-                    let chan_thunk = ctx.get_thunk(head);
-                    let chan_val = materialize(&chan_thunk, Some(&call_span), &ctx).await?;
-
-                    // Get the handler (second element)
-                    let tail_thunk = ctx.get_thunk(tail);
-                    let tail_val = materialize(&tail_thunk, Some(&call_span), &ctx).await?;
-
-                    match tail_val {
-                        Value::Seq {
-                            head: handler_id,
-                            tail: rest_id,
-                        } => {
-                            // Verify rest is empty dict (2-element list)
-                            let rest_thunk = ctx.get_thunk(rest_id);
-                            let rest_val = materialize(&rest_thunk, Some(&call_span), &ctx).await?;
-                            if !matches!(rest_val, Value::Dict(ref d) if d.is_empty()) {
-                                return Err(EvalError::user_error(
-                                    "select-once expects [Channel Fn] pairs (2 elements each)"
-                                        .to_string(),
-                                    call_span,
-                                )
-                                .into());
-                            }
-
-                            match chan_val {
+                Value::Dict(ref map) => {
+                    // Validate that the dict has the required `ch:` and `handler:` keys.
+                    let ch_id = map.get(&StrKey("ch")).copied();
+                    let handler_id = map.get(&StrKey("handler")).copied();
+                    match (ch_id, handler_id) {
+                        (Some(ch_id), Some(handler_id)) => {
+                            let ch_thunk = ctx.get_thunk(ch_id);
+                            let ch_val = materialize(&ch_thunk, Some(&call_span), &ctx).await?;
+                            match ch_val {
                                 Value::Channel(ch) => {
                                     sources.push((ch, handler_id));
                                 }
                                 _ => {
                                     return Err(EvalError::type_mismatch(
                                         "Channel",
-                                        chan_val.type_name(),
+                                        ch_val.type_name(),
                                         call_span,
                                     )
                                     .into())
@@ -562,17 +544,19 @@ pub(crate) fn builtin_select_once(
                             }
                         }
                         _ => {
-                            return Err(EvalError::user_error(
-                                "select-once expects [Channel Fn] pairs".to_string(),
+                            return Err(EvalError::type_mismatch(
+                                "Dict with ch: and handler: fields",
+                                "Dict",
                                 call_span,
                             )
-                            .into())
+                            .into());
                         }
                     }
                 }
-                _ => {
-                    return Err(EvalError::user_error(
-                        "select-once expects [Channel Fn] pairs".to_string(),
+                other => {
+                    return Err(EvalError::type_mismatch(
+                        "Dict with ch: and handler: fields",
+                        other.type_name(),
                         call_span,
                     )
                     .into())
@@ -829,12 +813,28 @@ pub(crate) fn builtin_par_map(
             tasks.push(handle);
         }
 
-        // Await all tasks and collect results
+        // Await all tasks and collect results, aborting remaining handles on cancellation.
         let mut result_ids = Vec::new();
-        for handle in tasks {
-            let result_val = handle.await.map_err(|e| {
-                EvalError::user_error(format!("par-map task panicked: {e}"), call_span.clone())
-            })??;
+        let mut remaining = tasks.into_iter();
+        for handle in remaining.by_ref() {
+            // Race each handle against context cancellation.
+            let result_val = tokio::select! {
+                join_result = handle => {
+                    join_result.map_err(|e| {
+                        EvalError::user_error(format!("par-map task panicked: {e}"), call_span.clone())
+                    })??
+                }
+                _ = ctx.cancel.cancelled() => {
+                    // Abort all handles that have not yet been awaited.
+                    for h in remaining {
+                        h.abort();
+                    }
+                    return Err(EvalError::user_error(
+                        "par-map: cancelled".to_string(),
+                        call_span,
+                    ).into());
+                }
+            };
             let result_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 result_val,
                 call_span.clone(),
@@ -962,12 +962,28 @@ pub(crate) fn builtin_par_filter(
             tasks.push(handle);
         }
 
-        // Await all tasks and collect passing items
+        // Await all tasks and collect passing items, aborting remaining handles on cancellation.
         let mut results_with_idx = Vec::new();
-        for handle in tasks {
-            let result = handle.await.map_err(|e| {
-                EvalError::user_error(format!("par-filter task panicked: {e}"), call_span.clone())
-            })??;
+        let mut remaining = tasks.into_iter();
+        for handle in remaining.by_ref() {
+            // Race each handle against context cancellation.
+            let result = tokio::select! {
+                join_result = handle => {
+                    join_result.map_err(|e| {
+                        EvalError::user_error(format!("par-filter task panicked: {e}"), call_span.clone())
+                    })??
+                }
+                _ = ctx.cancel.cancelled() => {
+                    // Abort all handles that have not yet been awaited.
+                    for h in remaining {
+                        h.abort();
+                    }
+                    return Err(EvalError::user_error(
+                        "par-filter: cancelled".to_string(),
+                        call_span,
+                    ).into());
+                }
+            };
             if let Some(item) = result {
                 results_with_idx.push(item);
             }
@@ -1916,6 +1932,126 @@ pub(crate) fn builtin_with_context(
             .unwrap_or_else(|| Arc::clone(&expr_thunk));
         let result = materialize(&thunk_to_eval, Some(&call_span), &new_ctx).await?;
         ok_val(result, call_span)
+    })
+}
+
+// =============================================================================
+// Reactive cell primitives (T-831)
+// =============================================================================
+
+/// `reactive-cell`: Create a new reactive cell with an initial value.
+///
+/// Signature: `T → ReactiveCell@T`
+///
+/// Creates a `tokio::sync::watch` channel seeded with the given value. The cell
+/// stores the Sender (for writes) and a Receiver clone (for reads). All readers
+/// always see the most recently written value — last-write-wins broadcast.
+///
+/// The initial value is materialized before the channel is created so that the
+/// watch sender has a concrete `Value` to hold.
+pub(crate) fn builtin_reactive_cell(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        let initial_thunk =
+            take_one_thunk("reactive-cell", &args, named.as_ref(), call_span.clone())?;
+        // Materialize the initial value — the watch sender must hold a concrete Value.
+        let initial_val = materialize(&initial_thunk, Some(&call_span), &ctx).await?;
+
+        let (tx, rx) = tokio::sync::watch::channel(initial_val);
+        let cell_inner = crate::value::ReactiveCellInner {
+            sender: tokio::sync::Mutex::new(tx),
+            receiver: rx,
+        };
+        ok_val(Value::ReactiveCell(Arc::new(cell_inner)), call_span)
+    })
+}
+
+/// `cell-get`: Read the latest value from a reactive cell (non-blocking).
+///
+/// Signature: `ReactiveCell@T → T`
+///
+/// Borrows the current value from the watch receiver. Never blocks — always
+/// returns the most recently written value immediately.
+pub(crate) fn builtin_cell_get(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        let cell_thunk = take_one_thunk("cell-get", &args, named.as_ref(), call_span.clone())?;
+        let cell_val = materialize(&cell_thunk, Some(&call_span), &ctx).await?;
+
+        match cell_val {
+            Value::ReactiveCell(cell_inner) => {
+                // borrow() returns a reference to the current value; clone it to get ownership.
+                let current = cell_inner.receiver.borrow().clone();
+                ok_val(current, call_span)
+            }
+            _ => Err(
+                EvalError::type_mismatch("ReactiveCell", cell_val.type_name(), call_span).into(),
+            ),
+        }
+    })
+}
+
+/// `cell-set`: Replace the value in a reactive cell.
+///
+/// Signature: `ReactiveCell@T → T → Null`
+///
+/// Sends a new value on the watch channel. All current and future `cell-get`
+/// callers will see this new value. Returns null on success. Concurrent writes
+/// are serialized by the Mutex on the sender.
+///
+/// The new value is materialized before writing so that the watch sender always
+/// holds a concrete `Value` (not a lazy thunk that could be freed after the call).
+pub(crate) fn builtin_cell_set(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+    } = ctx_arg;
+    Box::pin(async move {
+        let (cell_thunk, val_thunk) =
+            take_two_thunks("cell-set", &args, named.as_ref(), call_span.clone())?;
+        let cell_val = materialize(&cell_thunk, Some(&call_span), &ctx).await?;
+
+        match cell_val {
+            Value::ReactiveCell(cell_inner) => {
+                // Materialize the new value before acquiring the sender lock.
+                let new_val = materialize(&val_thunk, Some(&call_span), &ctx).await?;
+
+                // Lock the sender and send. `watch::Sender::send` fails only when all
+                // receivers have been dropped — which cannot happen here because we hold
+                // a Receiver in ReactiveCellInner for the lifetime of the cell.
+                let tx = cell_inner.sender.lock().await;
+                tx.send(new_val).map_err(|_| {
+                    EvalError::user_error(
+                        "cell-set: reactive cell has been dropped (no receivers)".to_string(),
+                        call_span.clone(),
+                    )
+                })?;
+
+                // Return null (empty dict)
+                ok_val(Value::Dict(IndexMap::new()), call_span)
+            }
+            _ => Err(
+                EvalError::type_mismatch("ReactiveCell", cell_val.type_name(), call_span).into(),
+            ),
+        }
     })
 }
 

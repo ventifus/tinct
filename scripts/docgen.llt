@@ -43,8 +43,8 @@ scan-dir: [fn [let prefix@String acc]
         [full: [if [= prefix ""] [str entry.name] [str prefix "/" entry.name]]]
         [if [= entry.type "dir"]
           [scan-dir full files]
-          [if [ends-with? entry.name ".llt"]
-            [append files full]
+          [if [ends-with? ".llt" entry.name]
+            [append full files]
             files]]]
       acc
       entries]]
@@ -191,7 +191,7 @@ extract-from-doc: [fn [let doc]
   [if [null? last-dict]
     []
     [collect [filter
-      [fn@Bool [let e] [has? e "name"]]  # filter out [] (skipped entries)
+      [fn@Bool [let e] [has? "name" e]]  # filter out [] (skipped entries)
       [map parse-entry last-dict.entries]]]]]
 
 # Extract documented bindings from a Program.
@@ -203,7 +203,7 @@ extract-from-program: [fn [let program]
       [stage-tag: [try-str [fn [let] [tag-of doc.stage]]]]
       [if [= stage-tag "Type"]
         acc
-        [reduce [fn [let a e] [append a e]] acc [extract-from-doc doc]]]]
+        [reduce [fn [let a e] [append e a]] acc [extract-from-doc doc]]]]
     []
     docs]]
 

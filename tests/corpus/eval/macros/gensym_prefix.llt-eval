@@ -1,5 +1,5 @@
 # gensym with optional prefix argument — names start with ℊꜱʏᴍ⧼x⧽ and are unique
 [a: [gensym "x"]  b: [gensym "x"]]
-[and [starts-with? a "ℊꜱʏᴍ⧼x⧽"] [not [= a b]]]
+[and [starts-with? "ℊꜱʏᴍ⧼x⧽" a] [not [= a b]]]
 === out
 Bool(true)

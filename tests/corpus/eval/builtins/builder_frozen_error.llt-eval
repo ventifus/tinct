@@ -1,7 +1,7 @@
 # builder: set after finish is an error (builder is frozen)
 [call [fn [let b]
     [call [fn [let _]
-        [builder-set b "x" 1]]
+        [builder-set "x" 1 b]]
     [builder-finish b]]]
  [make-builder]]
 === error

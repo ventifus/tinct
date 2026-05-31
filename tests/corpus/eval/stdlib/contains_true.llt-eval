@@ -1,4 +1,4 @@
 # contains?: returns true when element is present
-[contains? [1 2 3 4 5] 3]
+[contains? 3 [1 2 3 4 5]]
 === out
 Bool(true)

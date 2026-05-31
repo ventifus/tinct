@@ -4,6 +4,6 @@
 
 [include %libdir "protocols/dns.llt"]
 ---
-[char-code [str-slice [call %.build-dns-query 257 "a.b" %.A] 0 1]]
+[char-code [str-slice 0 1 [call %.build-dns-query 257 "a.b" %.A]]]
 === out
 Int(1)

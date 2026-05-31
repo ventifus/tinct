@@ -2,6 +2,6 @@
 # so this error does not include the "(available keys: ...)" suffix that direct
 # dot/bracket access errors show. This is a known inconsistency until stdlib
 # paths are updated to pass available_keys to key_not_found().
-[find-deep [a: 1 b: [c: 2]] "missing"]
+[find-deep "missing" [a: 1 b: [c: 2]]]
 === error
 [E080] key not found: missing

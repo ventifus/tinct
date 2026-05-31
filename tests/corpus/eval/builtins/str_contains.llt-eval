@@ -1,4 +1,4 @@
 # str-contains? : check if string contains substring
-[str-contains? "hello world" "world"]
+[str-contains? "world" "hello world"]
 === out
 Bool(true)

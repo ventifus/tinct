@@ -14,10 +14,10 @@ after-first: [fn@String [let needle@String s@String]
   [start:  [trunc [+ [length before] [length needle]]]]
   [if [= before s]
     ""
-    [str-slice s start [length s]]]]
+    [str-slice start [length s] s]]]
 
 find-close: [fn [let s@String depth@Int i@Int]
-  [c: [str-slice s i [trunc [+ i 1]]]]
+  [c: [str-slice i [trunc [+ i 1]] s]]
   [if [>= i [length s]]
     -1
     [if [= c "["]
@@ -30,15 +30,15 @@ extract-return: [fn@String [let s@String]
   [t:     [trim s]]
   [close: [find-close t 1 1]]
   [if [starts-with? t "["]
-    [if [= close -1] t [str-slice t 0 [trunc [+ close 1]]]]
+    [if [= close -1] t [str-slice 0 [trunc [+ close 1]] t]]
     [before-first " [" t]]]
 
 extract-params: [fn@String [let s@String]
   [ret:       [extract-return s]]
-  [after-ret: [trim [str-slice s [length ret] [length s]]]]
+  [after-ret: [trim [str-slice [length ret] [length s] s]]]
   [close:     [find-close after-ret 1 1]]
   [if [starts-with? after-ret "["]
-    [if [= close -1] "" [str-slice after-ret 1 close]]
+    [if [= close -1] "" [str-slice 1 close after-ret]]
     ""]]
 
 sig-from-line: [fn@String [let line@String]
@@ -75,25 +75,25 @@ entry-pi:    [parse-doc-line line-pi]
 
 [emit [str
   "=== abs (should appear) ===\n"
-  "has-name: " [str [has? entry-abs "name"]] "\n"
-  "name: "     [get-or entry-abs "name" "(missing)"] "\n"
-  "doc:  "     [get-or entry-abs "doc"  "(missing)"] "\n"
-  "sig:  "     [get-or entry-abs "sig"  "(missing)"] "\n"
+  "has-name: " [str [has? "name" entry-abs]] "\n"
+  "name: "     [get-or "name" "(missing)" entry-abs] "\n"
+  "doc:  "     [get-or "doc"  "(missing)" entry-abs] "\n"
+  "sig:  "     [get-or "sig"  "(missing)" entry-abs] "\n"
   "\n"
   "=== sign (missing from reference) ===\n"
-  "has-name: " [str [has? entry-sign "name"]] "\n"
-  "name: "     [get-or entry-sign "name" "(missing)"] "\n"
-  "doc:  "     [get-or entry-sign "doc"  "(missing)"] "\n"
-  "sig:  "     [get-or entry-sign "sig"  "(missing)"] "\n"
+  "has-name: " [str [has? "name" entry-sign]] "\n"
+  "name: "     [get-or "name" "(missing)" entry-sign] "\n"
+  "doc:  "     [get-or "doc"  "(missing)" entry-sign] "\n"
+  "sig:  "     [get-or "sig"  "(missing)" entry-sign] "\n"
   "\n"
   "=== UInt8 (missing from reference) ===\n"
-  "has-name: " [str [has? entry-uint8 "name"]] "\n"
-  "name: "     [get-or entry-uint8 "name" "(missing)"] "\n"
-  "doc:  "     [get-or entry-uint8 "doc"  "(missing)"] "\n"
-  "sig:  "     [get-or entry-uint8 "sig"  "(missing)"] "\n"
+  "has-name: " [str [has? "name" entry-uint8]] "\n"
+  "name: "     [get-or "name" "(missing)" entry-uint8] "\n"
+  "doc:  "     [get-or "doc"  "(missing)" entry-uint8] "\n"
+  "sig:  "     [get-or "sig"  "(missing)" entry-uint8] "\n"
   "\n"
   "=== pi (missing from reference) ===\n"
-  "has-name: " [str [has? entry-pi "name"]] "\n"
-  "name: "     [get-or entry-pi "name" "(missing)"] "\n"
-  "doc:  "     [get-or entry-pi "doc"  "(missing)"] "\n"
-  "sig:  "     [get-or entry-pi "sig"  "(missing)"] "\n"]]
+  "has-name: " [str [has? "name" entry-pi]] "\n"
+  "name: "     [get-or "name" "(missing)" entry-pi] "\n"
+  "doc:  "     [get-or "doc"  "(missing)" entry-pi] "\n"
+  "sig:  "     [get-or "sig"  "(missing)" entry-pi] "\n"]]

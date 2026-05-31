@@ -51,10 +51,10 @@ person.name                     # dot access: Key::String("name") lookup
 config.database.host            # chained dot access
 
 # Position-based access (functions, not syntax)
-[nth data 0]                    # first entry by position
-[nth data -1]                   # last entry (negative = from end)
+[nth 0 data]                    # first entry by position
+[nth -1 data]                   # last entry (negative = from end)
 [last data]                     # last entry (alias)
-[slice data 2 5]                # entries at positions 2, 3, 4
+[slice 2 5 data]                # entries at positions 2, 3, 4
 
 # Function application — implied call (preferred)
 [f arg1 arg2]                   # Positional args
@@ -471,9 +471,9 @@ For position-based access, use stdlib functions:
 
 ```tinct
 [get 0 data]             # Integer key access (key-based)
-[nth data 0]             # Position-based: first entry
-[nth data -1]            # Position-based: last entry
-[slice data 2 5]         # Subsequence by position
+[nth 0 data]             # Position-based: first entry
+[nth -1 data]            # Position-based: last entry
+[slice 2 5 data]         # Subsequence by position
 ```
 
 ---

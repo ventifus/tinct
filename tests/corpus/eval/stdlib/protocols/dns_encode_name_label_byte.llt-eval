@@ -3,6 +3,6 @@
 
 [include %libdir "protocols/dns.llt"]
 ---
-[char-code [str-slice [call %.encode-dns-name "example.com"] 0 1]]
+[char-code [str-slice 0 1 [call %.encode-dns-name "example.com"]]]
 === out
 Int(7)

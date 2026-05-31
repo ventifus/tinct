@@ -55,7 +55,7 @@
 
   wg-strip-initiation-framing: [fn [let msg@Bytes]
     # Strip 4-byte type + 4-byte sender-index prefix; drop 32-byte mac1/mac2 suffix.
-    [slice msg 8 [- [length msg] 32]]]
+    [slice 8 [- [length msg] 32] msg]]
 
   wg-frame-response: [fn [let cfg@WireguardConfig sender-index@Int receiver-index@Int noise-msg@Bytes]
     [mac1-key: [blake2s [concat [str-bytes wg-label-mac1] cfg.peer-key]]]
@@ -68,7 +68,7 @@
 
   wg-strip-response-framing: [fn [let msg@Bytes]
     # Strip 4-byte type + 4-byte sender + 4-byte receiver prefix; drop 32-byte mac1/mac2.
-    [slice msg 12 [- [length msg] 32]]]
+    [slice 12 [- [length msg] 32] msg]]
 
   init-nonce-ch: [fn []
     [ch: [channel 1]]
@@ -147,9 +147,9 @@
     [header:   [read-bytes conn.underlying 16]]
     [pkt-type: [get header 0]]
     [if [not [= pkt-type 4]] [error [str "WireGuard: unexpected packet type: " pkt-type]] null]
-    [nonce12:  [concat [0 0 0 0] [slice header 8 8]]]
+    [nonce12:  [concat [0 0 0 0] [slice 8 16 header]]]
     [ct:       [read-bytes conn.underlying [+ n 16]]]
     [match [chacha20-poly1305-open conn.rx-key nonce12 ct []]
-      [Ok plain]: [slice plain 0 n]
+      [Ok plain]: [slice 0 n plain]
       [Err _]:    [error "WireGuard: decryption failed"]]]
 ]

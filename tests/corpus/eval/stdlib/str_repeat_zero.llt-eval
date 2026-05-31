@@ -1,5 +1,5 @@
 # str-repeat: zero repetitions yields empty string
 ---
-[str-repeat "x" 0]
+[str-repeat 0 "x"]
 === out
 String("")

@@ -22,23 +22,19 @@ type errors:
 
 Each function receives data as its **last** parameter: `[map fn data]`, `[filter pred data]`, etc. This aligns with Unix pipe semantics (`data | transform`) and allows partial application patterns in languages with currying.
 
-**Exceptions: `get-or` and `get-in-or` are data-first**:
+**`get-or` and `get-in-or` are subject-last** (dict last), consistent with all other stdlib functions:
 
 ```tinct
-[get-or config key default]      # data-first
-[get-in-or config path default]  # data-first
+[get-or "timeout" 30 config]      # key, default, dict
+[get-in-or ["db" "host"] "localhost" config]  # path, default, dict
 === error
 type errors:
-  undefined variable: config at 1:9-1:15
-  undefined variable: key at 1:16-1:19
-  undefined variable: default at 1:20-1:27
-  undefined variable: config at 2:12-2:18
-  undefined variable: path at 2:19-2:23
-  undefined variable: default at 2:24-2:31
+  undefined variable: config at 1:22-1:28
+  undefined variable: config at 2:37-2:43
 
 ```
 
-**Rationale:** Data-first order follows Clojure's `get` convention, making lookups read naturally as "from collection, get key, or default." The trade-off: these functions don't compose directly with `->` threading (they would require wrapping in a lambda to reorder arguments).
+**Rationale:** Subject-last order aligns with Unix pipe semantics — `config | [get-or "timeout" 30]` works naturally. The dict (subject) is the last argument so it can be piped in.
 
 ### Special Forms vs Stdlib Functions
 
@@ -487,8 +483,8 @@ Functions primarily used internally by other stdlib functions, but also availabl
 |----------|-----------|-------------|
 | `join` | Rust native builtin — no LLT wrapper | Join values as strings with separator (O(n) string builder; dual-dispatch Dict/Seq) |
 | `words` | `[fn [s] ...]` | Split a string by spaces, filtering empty strings (returns Seq). Derived from `str`, `split`, and `filter`. |
-| `str-repeat` | `fn@Str [s@Str n@Int]` | Repeat string `s` exactly `n` times. Pure LLT implementation using `reduce` over `range` |
-| `str-find` | `fn@Int [haystack@String needle@String]` | Find first occurrence of `needle` in `haystack`; returns byte index or -1 if not found. Pure LLT implementation |
+| `str-repeat` | `fn@Str [n@Int s@Str]` | Repeat string `s` exactly `n` times. Pure LLT implementation using `reduce` over `range` |
+| `str-find` | `fn@Int [needle@String haystack@String]` | Find first occurrence of `needle` in `haystack`; returns byte index or -1 if not found. Pure LLT implementation |
 | `unindent` | `fn@String [s@String]` | Strip common leading indentation from multi-line string. Algorithm: last line (whitespace-only) determines indent depth; strips that many characters from each content line |
 
 **Control Flow:**
@@ -511,14 +507,14 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `get` | `fn@Unknown [k xs@Dict]` | Key accessor, curried for pipeline composition: `[get "name" dict]`, `dict \| [get $key]` |
-| `has?` | `[fn [xs k] ...]` | Check if a key exists (uses `try` around access) |
-| `get-or` | `fn@a [xs@Dict k default@a]` | Get value by key with fallback default |
-| `get-in` | `fn@Unknown [xs path@Dict]` | Traverse nested dicts by a list of keys; errors on missing key |
-| `get-in-or` | `fn@Unknown [xs path@Dict default]` | Traverse nested dicts with fallback default |
+| `has?` | `[fn [k xs] ...]` | Check if a key exists (uses `try` around access) |
+| `get-or` | `fn@a [k default@a xs@Dict]` | Get value by key with fallback default |
+| `get-in` | `fn@Unknown [path@Dict xs]` | Traverse nested dicts by a list of keys; errors on missing key |
+| `get-in-or` | `fn@Unknown [path@Dict default xs]` | Traverse nested dicts with fallback default |
 | `empty?` | `[fn [xs] ...]` | Check if a collection has zero entries |
-| `set` | `[fn [xs k v] ...]` | Return new dict with key added/updated |
-| `remove` | `[fn [xs k] ...]` | Return new dict with key removed |
-| `update` | `[fn [xs k f] ...]` | Apply function `f` to the value at key `k` |
+| `set` | `[fn [xs ...kvs] ...]` | Return new dict merged with variadic named key-value pairs |
+| `remove` | `[fn [k xs] ...]` | Return new dict with key removed |
+| `update` | `[fn [k f xs] ...]` | Apply function `f` to the value at key `k` |
 | `values` | `[fn [xs] ...]` | Get all values as an integer-indexed list; preserves dict insertion order |
 | `entries` | `[fn [xs] ...]` | Get all entries as a list of `[key: k value: v]` dicts; preserves dict insertion order |
 | `from-entries` | `[fn [pairs] ...]` | Reconstruct a dict from a list or Seq of `[key: k value: v]` pairs |
@@ -529,11 +525,11 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `first` | `[fn [xs] ...]` | Get the first element (key 0) |
-| `nth` | `[fn [xs n] ...]` | Get element by insertion-order position (supports negative indices) |
+| `nth` | `[fn [n xs] ...]` | Get element by insertion-order position (supports negative indices) |
 | `last` | `[fn [xs] ...]` | Get the last element by insertion-order position |
 | `rest` | `[fn [xs] ...]` | All elements except the first, reindexed from 0 |
 | `cons` | `[fn [x xs] ...]` | Prepend an element, reindexing from 0 |
-| `conj` | `[fn [xs x] ...]` | Append an element (delegates to `$append`) |
+| `conj` | `[fn [x xs] ...]` | Append an element (delegates to `$append`) |
 | `concat` | Rust native builtin — no LLT wrapper | Concatenate two collections; Seq concat is lazy (O(1) chain), Dict concat reindexes to 0..n |
 | `reverse` | `[fn [xs] ...]` | Reverse a list |
 | `reindex` | `[fn [xs] ...]` | Rebuild with dense 0..n integer keys |
@@ -557,7 +553,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `reduce` | `[fn [f init xs] ...]` | Left fold (Rust builtin; dual-dispatch Dict/Seq) |
 | `fold` | `[fn [f init xs] ...]` | Alias for `reduce` — left fold, identical semantics; use whichever name fits context |
 | `foldr` | `[fn [f acc xs] ...]` | Right fold: fold from the right, equivalent to `fold(f, acc, reverse(xs))` |
-| `slice` | `[fn [xs start end] ...]` | Positional slice (start inclusive, end exclusive) |
+| `slice` | `[fn [start end xs] ...]` | Positional slice (start inclusive, end exclusive) |
 | `take` | `[fn [n xs] ...]` | Take the first n entries, preserving keys |
 | `take-while` | `[fn [pred xs] ...]` | Take elements from beginning while predicate holds; stop at first failure |
 | `drop` | `[fn [n xs] ...]` | Skip first n entries (Rust builtin; dual-dispatch Dict/Seq) |
@@ -565,13 +561,13 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `zip` | `[fn [xs ys] ...]` | Pair entries from two collections by position |
 | `unzip` | `[fn [pairs] ...]` | Unzip a list of pairs into a pair of lists |
 | `flatten` | `[fn [xs] ...]` | Flatten nested lists one level deep |
-| `find-deep` | `[fn [xs@Dict target] ...]` | Recursively search for a key in nested dicts |
+| `find-deep` | `[fn [target xs@Dict] ...]` | Recursively search for a key in nested dicts |
 
 **Higher-Order Dict/List Utilities:**
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `with-entries` | `[fn [xs f] ...]` | Transform a dict via entries: `entries → map(f) → from-entries` |
+| `with-entries` | `[fn [f xs] ...]` | Transform a dict via entries: `entries → map(f) → from-entries` |
 | `partition` | `[fn [pred xs] ...]` | Split into two groups: elements satisfying pred (`pass`) and those that don't (`fail`) |
 | `flat-map` | `[fn [f xs] ...]` | Map function over collection and flatten (concatenate) the results |
 | `find-first` | `[fn [pred xs] ...]` | Return the first element satisfying pred, or error if none found |
@@ -590,7 +586,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `min` | `[fn [xs] ...]` | Return the minimum element (errors on empty collection) |
 | `max` | `[fn [xs] ...]` | Return the maximum element (errors on empty collection) |
 | `count` | `[fn [pred xs] ...]` | Count elements satisfying predicate |
-| `contains?` | `[fn [xs val] ...]` | Check if a collection contains val (structural equality) |
+| `contains?` | `[fn [val xs] ...]` | Check if a collection contains val (structural equality) |
 | `uniq` | `[fn [xs] ...]` | Remove duplicate elements, keeping the first occurrence of each |
 
 **Composition:**
@@ -744,7 +740,7 @@ Instances: `Str`, `[Seq b]`, `Record`.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `and-then` | `fn@Unknown [result f]` | Monadic bind for Result: if `res` is `[Ok v]`, apply `f(v)` (which must return a Result); if `[Error e]`, propagate the error |
+| `and-then` | `fn@Unknown [f result]` | Monadic bind for Result: if `res` is `[Ok v]`, apply `f(v)` (which must return a Result); if `[Error e]`, propagate the error |
 | `result-map` | `fn@Unknown [f result]` | Map over Result: if `res` is `[Ok v]`, return `[Ok [f v]]`; if `[Error e]`, propagate the error |
 | `result-or` | `fn@Unknown [default result]` | Extract value from Result with fallback: if `res` is `[Ok v]`, return `v`; if `[Error e]`, return `default` |
 | `result` | Dict (monad dict) | Result monad dict with fields: `[bind: and-then  pure: Ok]`. Use `[Ok v]` directly to lift a plain value into Result. |
@@ -1522,14 +1518,14 @@ The `Maybe` type is declared in the prelude: `Maybe: [type [a] [Some a] | [None]
 | Function | Type signature | Notes |
 |----------|---------------|-------|
 | `get` | `(a -> Dict b -> b)` | `fn@Unknown [k xs@Dict]` — polymorphic value type |
-| `has?` | `(Dict a -> b -> Bool)` | `fn@Bool [xs@Dict k]` |
-| `get-or` | `(Dict a -> b -> a -> a)` | `fn@a [xs@Dict k default@a]` — polymorphic; return type unified with default type |
-| `get-in` | `(Dict a -> Dict -> a)` | `fn@Unknown [xs path@Dict]` — polymorphic; errors on missing key |
-| `get-in-or` | `(Dict a -> Dict -> a -> a)` | `fn@Unknown [xs path@Dict default]` — polymorphic; returns default on missing key |
+| `has?` | `(b -> Dict a -> Bool)` | `fn@Bool [k xs@Dict]` |
+| `get-or` | `(b -> a -> Dict a -> a)` | `fn@a [k default@a xs@Dict]` — polymorphic; return type unified with default type |
+| `get-in` | `(Dict -> Dict a -> a)` | `fn@Unknown [path@Dict xs]` — polymorphic; errors on missing key |
+| `get-in-or` | `(Dict -> a -> Dict a -> a)` | `fn@Unknown [path@Dict default xs]` — polymorphic; returns default on missing key |
 | `empty?` | `(Any -> Bool)` | `fn@Bool [xs]` — false for Seq (never empty by definition) |
-| `set` | `(Dict a -> b -> a -> Dict a)` | `fn@Dict [xs@Dict k v]` |
-| `remove` | `(Dict a -> b -> Dict a)` | `fn@Dict [xs@Dict k]` |
-| `update` | `(Dict a -> b -> (a -> a) -> Dict a)` | `fn@Dict [xs@Dict k f@Fn]` |
+| `set` | `(Dict a -> ...Dict -> Dict a)` | `fn@Dict [xs@Dict ...kvs@Dict]` — variadic named key-value pairs merged into xs |
+| `remove` | `(b -> Dict a -> Dict a)` | `fn@Dict [k xs@Dict]` |
+| `update` | `(b -> (a -> a) -> Dict a -> Dict a)` | `fn@Dict [k f@Fn xs@Dict]` |
 | `values` | `(Dict a -> Dict a)` | `fn@Dict [xs@Dict]` — integer-indexed list of values |
 | `entries` | `(Dict a -> Dict [key: b  value: a])` | `fn@Dict [xs@Dict]` |
 | `from-entries` | `(Dict [key: a  value: b] -> Dict b)` | `fn@Dict [pairs]` — return annotation `@Dict`; parameter unannotated (accepts any collection with `.key`/`.value` entries) |
@@ -1553,7 +1549,7 @@ The `Maybe` type is declared in the prelude: `Maybe: [type [a] [Some a] | [None]
 [builder-finish
     [builtin-reduce
         [fn [b x]
-            [builder-set b [f x] x]]
+            [builder-set [f x] x b]]
         [make-builder]
         xs]]
 ```
@@ -1563,12 +1559,12 @@ The `Maybe` type is declared in the prelude: `Maybe: [type [a] [Some a] | [None]
 | Function | Type | Notes |
 |----------|------|-------|
 | `make-builder` | `(-> Builder)` | Create empty mutable builder |
-| `builder-set` | `(Builder -> Key -> a -> Builder)` | Set key-value pair; returns builder for chaining; errors if frozen |
-| `builder-delete` | `(Builder -> Key -> Builder)` | Remove key; returns builder for chaining; errors if frozen |
+| `builder-set` | `(Key -> a -> Builder -> Builder)` | Set key-value pair; returns builder for chaining; errors if frozen |
+| `builder-delete` | `(Key -> Builder -> Builder)` | Remove key; returns builder for chaining; errors if frozen |
 | `builder-finish` | `(Builder -> Dict a)` | Take inner dict, freeze builder permanently; errors if already frozen |
 | `builder-snapshot` | `(Builder -> Dict a)` | Clone inner dict without freezing; errors if frozen |
-| `builder-has?` | `(Builder -> Key -> Bool)` | Check if key exists; errors if frozen |
-| `builder-get` | `(Builder -> Key -> a)` | Get value by key; errors if key not found or frozen |
+| `builder-has?` | `(Key -> Builder -> Bool)` | Check if key exists; errors if frozen |
+| `builder-get` | `(Key -> Builder -> a)` | Get value by key; errors if key not found or frozen |
 
 **Example — `group-by` (O(n) with builder):**
 
@@ -1579,7 +1575,7 @@ group-by: [fn [let f xs]
             [builtin-reduce
                 [fn [let b x]
                     [let k [f x]]
-                    [builder-set b k [cons x [builder-get-or b k []]]]]
+                    [builder-set k [cons x [builder-get-or k [] b]] b]]
                 [make-builder]
                 xs]]]
     [map-entries [fn [let e] [reverse e.value]] raw]]
@@ -1594,9 +1590,9 @@ Each bucket accumulates elements via `cons` (O(1) prepend onto the bucket Dict).
 | Function | Type signature | Notes |
 |----------|---------------|-------|
 | `first` | `(Dict a -> a)` | `fn [xs@Dict]` — no return annotation; polymorphic element type |
-| `nth` | `(Dict a -> Int -> a)` | `fn [xs@Dict n@Int]` — no return annotation |
+| `nth` | `(Int -> Dict a -> a)` | `fn [n@Int xs@Dict]` — no return annotation |
 | `last` | `(Dict a -> a)` | `fn [xs@Dict]` — no return annotation |
-| `conj` | `(Dict a -> a -> Dict a)` | `fn@Dict [xs@Dict x]` |
+| `conj` | `(a -> Dict a -> Dict a)` | `fn@Dict [x xs@Dict]` |
 | `reindex` | `(Dict a -> Dict a)` | `fn@Dict [xs@Dict]` |
 
 ### Sequence Constructors
@@ -1618,10 +1614,10 @@ Each bucket accumulates elements via `cons` (O(1) prepend onto the bucket Dict).
 | `map-entries` | `(([key: k  value: a] -> b) -> Dict a -> Dict b)` | `fn@Dict [f@Fn xs@Dict]` |
 | `fold` | `((b -> a -> b) -> b -> c -> b)` | `fn@Unknown [f@Fn init xs]` — delegates to `builtin-reduce` |
 | `foldr` | `((b -> a -> b) -> b -> c -> b)` | `fn [f@Fn acc xs]` — no return annotation |
-| `slice` | `(Dict a -> Int -> Int -> Dict a)` | `fn@Dict [xs@Dict start@Int end@Int]` |
+| `slice` | `(Int -> Int -> Dict a -> Dict a)` | `fn@Dict [start@Int end@Int xs@Dict]` |
 | `zip` | `(a -> b -> Dict [Dict, Dict])` | `fn@Unknown [xs ys]` — lazy for Seq+Seq, eager for Dict |
 | `flatten` | `(Dict a -> Dict b)` | `fn@Dict [xs@Dict]` — one level deep |
-| `find-deep` | `(Dict a -> b -> a)` | `fn [xs@Dict target]` — no return annotation; searches recursively for key; errors with E000 if key not found |
+| `find-deep` | `(b -> Dict a -> a)` | `fn [target xs@Dict]` — no return annotation; searches recursively for key; errors with E000 if key not found |
 | `sort-by` | `((a -> a -> Bool) -> Dict a -> Dict a)` | `fn@Dict [cmp@Fn xs@Dict]` |
 | `filter` | `((a -> Bool) -> b -> Seq a)` | `fn [pred@Fn xs]` — no return annotation; shadowable; returns Seq |
 | `map` | `((a -> b) -> c -> d)` | `fn [f@Fn xs]` — no return annotation; shadowable |
@@ -1634,7 +1630,7 @@ Each bucket accumulates elements via `cons` (O(1) prepend onto the bucket Dict).
 
 | Function | Type signature | Notes |
 |----------|---------------|-------|
-| `with-entries` | `(Dict a -> ([key: k  value: a] -> b) -> Dict b)` | `fn@Dict [xs@Dict f@Fn]` |
+| `with-entries` | `(([key: k  value: a] -> b) -> Dict a -> Dict b)` | `fn@Dict [f@Fn xs@Dict]` |
 | `partition` | `((a -> Bool) -> b -> [pass: Dict a  fail: Dict a])` | `fn@Dict [pred@Fn xs]` |
 | `flat-map` | `((a -> Dict b) -> c -> Dict b)` | `fn@Dict [f@Fn xs]` |
 | `find-first` | `((a -> Bool) -> b -> a)` | `fn@a [pred@Fn xs]` — returns first matching element; errors if none found |
@@ -1656,7 +1652,7 @@ Each bucket accumulates elements via `cons` (O(1) prepend onto the bucket Dict).
 | `min` | `(c -> a)` | `fn@Unknown [xs]` — polymorphic; errors on empty |
 | `max` | `(c -> a)` | `fn@Unknown [xs]` — polymorphic; errors on empty |
 | `count` | `((a -> Bool) -> c -> Int)` | `fn@Int [pred@Fn xs]` |
-| `contains?` | `(c -> a -> Bool)` | `fn@Bool [xs val]` |
+| `contains?` | `(a -> c -> Bool)` | `fn@Bool [val xs]` |
 | `uniq` | `(Dict a -> Dict a)` | `fn@Dict [xs@Dict]` |
 
 ### Type Predicates

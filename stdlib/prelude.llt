@@ -787,8 +787,8 @@ unindent@[doc: "Strip common leading indentation from a multi-line string"]: [fn
     [ls: [split "\n" s]
      last-line: [builtin-last ls]
      indent: [str-length last-line]
-     strip-line: [fn [let l] [builtin-if [builtin-lt [str-length l] indent] "" [str-slice l indent [str-length l]]]]
-     inner: [slice ls 1 [builtin-sub [length ls] 1]]]
+     strip-line: [fn [let l] [builtin-if [builtin-lt [str-length l] indent] "" [str-slice indent [str-length l] l]]]
+     inner: [slice 1 [builtin-sub [length ls] 1] ls]]
     [builtin-join "\n" [builtin-map strip-line inner]]]
 
 # ============================================================================
@@ -840,59 +840,63 @@ Note: Signature is Key → Dict → Any (curried for pipeline composition).
 has?: [fn@[return: Bool  doc: """
 Check if dict has key.
 
-Example: [has? [x: 1] "x"] => true
-Example: [has? [x: 1] "y"] => false
+Example: [has? "x" [x: 1]] => true
+Example: [has? "y" [x: 1]] => false
 
-Note: Uses try around get access to check existence.
-"""] [let xs@Dict k]
+Note: Signature is Key -> Dict -> Bool (key-first for pipeline composition).
+Uses try around get access to check existence.
+"""] [let k xs@Dict]
     [has?-impl [try [fn [let] [get k xs]]]]]
 
 get-or: [fn@[return: a  doc: """
 Get value by key with default if missing.
 
-Example: [get-or [x: 1] "x" 99] => 1
-Example: [get-or [x: 1] "y" 99] => 99
+Example: [get-or "x" 99 [x: 1]] => 1
+Example: [get-or "y" 99 [x: 1]] => 99
 
-Note: Returns default value when key is missing.
-"""] [let dict@Dict key default@a]
-    [builtin-if [has? dict key] [get key dict] default]]
+Note: Signature is Key -> Default -> Dict -> Any (subject-last for pipeline composition).
+Returns default value when key is missing.
+"""] [let key default@a dict@Dict]
+    [builtin-if [has? key dict] [get key dict] default]]
 
 get-in: [fn@[return: Unknown  doc: """
 Traverse nested dicts by a list of keys.
 
-Example: [get-in [a: [b: [c: 42]]] ["a" "b" "c"]] => 42
+Example: [get-in ["a" "b" "c"] [a: [b: [c: 42]]]] => 42
 
-Note: Returns error when any intermediate key is missing. Use get-in-or for a default fallback on missing keys. Inherently materializing: must traverse nested dict path, accessing each level.
-"""] [let xs path@Dict]
+Note: Signature is Path -> Dict -> Any (subject-last for pipeline composition).
+Returns error when any intermediate key is missing. Use get-in-or for a default fallback on missing keys. Inherently materializing: must traverse nested dict path, accessing each level.
+"""] [let path@Dict xs]
     [builtin-if [builtin-eq [length path] 0]
         xs
-        [builtin-if [has? xs path.0]
-            [get-in [get path.0 xs] [builtin-rest path]]
+        [builtin-if [has? path.0 xs]
+            [get-in [builtin-rest path] [get path.0 xs]]
             [error [str "key not found: " path.0]]]]]
 
 get-in-or: [fn@[return: Unknown  doc: """
 Traverse nested dicts by a list of keys with default fallback.
 
-Example: [get-in-or [a: [b: 1]] ["a" "b"] 99] => 1
-Example: [get-in-or [a: [b: 1]] ["a" "c"] 99] => 99
+Example: [get-in-or ["a" "b"] 99 [a: [b: 1]]] => 1
+Example: [get-in-or ["a" "c"] 99 [a: [b: 1]]] => 99
 
-Note: Returns default when any intermediate key is missing. Inherently materializing: must traverse nested dict path, accessing each level.
-"""] [let xs path@Dict default]
+Note: Signature is Path -> Default -> Dict -> Any (subject-last for pipeline composition).
+Returns default when any intermediate key is missing. Inherently materializing: must traverse nested dict path, accessing each level.
+"""] [let path@Dict default xs]
     [builtin-if [builtin-eq [length path] 0]
         xs
-        [builtin-if [has? xs path.0]
-            [get-in-or [get path.0 xs] [builtin-rest path] default]
+        [builtin-if [has? path.0 xs]
+            [get-in-or [builtin-rest path] default [get path.0 xs]]
             default]]]
 
 pick: [fn@[return: Dict  doc: """
 Return a sub-dict containing only the specified keys.
 
-Example: [pick [a: 1  b: 2  c: 3] ["a" "c"]] => [a: 1  c: 3]
+Example: [pick ["a" "c"] [a: 1  b: 2  c: 3]] => [a: 1  c: 3]
 
-Note: Key order follows insertion order of xs, not the order of keys.
-Pipeline: data | [pick keys: ["k1" "k2"]]
-"""] [let xs@Dict keys@Dict]
-  [collect-kv [filter [fn [let kv] [contains? keys kv.key]] [each-kv xs]]]]
+Note: Signature is Keys -> Dict -> Dict (subject-last for pipeline composition).
+Key order follows insertion order of xs, not the order of keys.
+"""] [let keys@Dict xs@Dict]
+  [collect-kv [filter [fn [let kv] [contains? kv.key keys]] [each-kv xs]]]]
 
 # Check if a collection is empty.
 # Seq values are never empty (always have a head), so return false immediately.
@@ -906,23 +910,25 @@ empty?@[doc: "Check if collection is empty"]: [fn@Bool [let xs] [builtin-if [seq
 # assert: [make-entry "x" 42] => [x: 42]
 make-entry@[doc: "Construct single-entry dict from key and value"]: [fn@Dict [let k v] [$k: v]]
 
-# Set a key in a dict (returns new dict with key added/updated).
-# assert: [set [a: 1] "b" 2] => [a: 1  b: 2]
-set@[doc: "Set key in dict"]: [fn@Dict [let xs@Dict k v] [merge xs [make-entry k v]]]
+# Merge additional key-value pairs into a dict (returns updated dict).
+# Variadic: accepts xs as base dict, and ...kvs as an inline dict of entries to merge in.
+# assert: [set [a: 1] b: 2] => [a: 1  b: 2]
+set: [fn@Dict [let xs@Dict ...kvs] [merge xs kvs]]
 
 remove: [fn@[return: Dict  doc: """
 Remove a key from a dict.
 
-Example: [remove [a: 1  b: 2  c: 3] "b"] => [a: 1  c: 3]
+Example: [remove "b" [a: 1  b: 2  c: 3]] => [a: 1  c: 3]
 
-Note: Preserves remaining keys in insertion order. Returns dict unchanged if key is not present. O(n) via build-dict.
-"""] [let xs@Dict k]
+Note: Signature is Key -> Dict -> Dict (subject-last for pipeline composition).
+Preserves remaining keys in insertion order. Returns dict unchanged if key is not present. O(n) via build-dict.
+"""] [let k xs@Dict]
   [build-dict [filter [fn [let e] [not [builtin-eq e.key k]]] [each-kv xs]]]]
 
 # Update a key by applying a function to its current value.
-# assert: [update [x: 5] "x" [fn [v] [+ v 1]]] => [x: 6]
-update@[doc: "Update dict value by applying function"]: [fn@Dict [let xs@Dict k f@Fn]
-    [set xs k [f [get k xs]]]]
+# assert: [update "x" [fn [v] [+ v 1]] [x: 5]] => [x: 6]
+update@[doc: "Update dict value by applying function"]: [fn@Dict [let k f@Fn xs@Dict]
+    [merge xs [make-entry k [f [get k xs]]]]]
 
 values: [fn@[return: Dict  doc: """
 Get all values from a dict as an integer-indexed list.
@@ -962,9 +968,9 @@ Note: Inverse of entries. O(n) via build-dict builtin.
 
 # Get the nth element by insertion-order position.
 # Supports negative indices: -1 is last, -2 is second-to-last, etc.
-# assert: [nth [10 20 30] 1] => 20
-# assert: [nth [10 20 30] -1] => 30
-nth@[doc: "Get nth element (supports negative indices)"]: [fn [let xs@Dict n@Int]
+# assert: [nth 1 [10 20 30]] => 20
+# assert: [nth -1 [10 20 30]] => 30
+nth@[doc: "Get nth element (supports negative indices)"]: [fn [let n@Int xs@Dict]
     [nth-impl xs [keys xs] n [length xs]]]
 
 # Get the last element by insertion-order position, last character of a string, or last byte of Bytes (as Int).
@@ -977,9 +983,9 @@ nth@[doc: "Get nth element (supports negative indices)"]: [fn [let xs@Dict n@Int
 # cons: delegates to builtin-cons (see wrappers section at bottom of this dict).
 
 # Append an element to the end of a list. Delegates to append.
-# Type: (Dict a -> a -> Dict a)
-# Example: [conj [1 2 3] 4] => [1 2 3 4]
-conj@[doc: "Append element to end of list"]: [fn@Dict [let xs@Dict x] [append xs x]]
+# Type: (a -> Dict a -> Dict a)
+# Example: [conj 4 [1 2 3]] => [1 2 3 4]
+conj@[doc: "Append element to end of list"]: [fn@Dict [let x xs@Dict] [append x xs]]
 
 # concat, reverse, sort: delegate to their builtin-* aliases (see wrappers section).
 
@@ -1076,10 +1082,11 @@ fold@[doc: "Left fold (alias for reduce)"]: [fn@a [let f@Fn init@a xs] [builtin-
 slice: [fn@[return: Dict  doc: """
 Take a slice by position (start inclusive, end exclusive).
 
-Example: [slice [a: 1 b: 2 c: 3 d: 4] 1 3] => [b: 2 c: 3]
+Example: [slice 1 3 [a: 1 b: 2 c: 3 d: 4]] => [b: 2 c: 3]
 
-Note: Preserves original keys. O(n) via build-dict.
-"""] [let xs@Dict start@Int end@Int]
+Note: Signature is Start -> End -> Dict -> Dict (subject-last for pipeline composition).
+Preserves original keys. O(n) via build-dict.
+"""] [let start@Int end@Int xs@Dict]
   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
 
 zip: [fn@[return: Unknown  doc: """
@@ -1127,7 +1134,7 @@ find-deep-check@[doc: "Find-deep check (internal helper)"]: [fn@Any [let xs@Dict
 
 find-deep-try@[doc: "Find-deep try (internal helper)"]: [fn@Any [let subtree@Dict target parent@Dict ks i@Int]
     [find-deep-try-check
-        [try [fn [let] [find-deep subtree target]]]
+        [try [fn [let] [find-deep target subtree]]]
         parent target ks i]]
 
 find-deep-try-check@[doc: "Find-deep try-check (internal helper)"]: [fn@Any [let result parent@Dict target ks i@Int]
@@ -1138,10 +1145,11 @@ find-deep-try-check@[doc: "Find-deep try-check (internal helper)"]: [fn@Any [let
 find-deep: [fn@[return: Any  doc: """
 Recursively search for a key in nested dicts.
 
-Example: [find-deep [a: [b: [c: 42]]] "c"] => 42
+Example: [find-deep "c" [a: [b: [c: 42]]]] => 42
 
-Note: Depth-first search through nested dict structure. Errors if key not found. Inherently materializing: must traverse nested structure recursively.
-"""] [let xs@Dict target]
+Note: Signature is Target -> Dict -> Any (subject-last for pipeline composition).
+Depth-first search through nested dict structure. Errors if key not found. Inherently materializing: must traverse nested structure recursively.
+"""] [let target xs@Dict]
     [find-deep-impl xs target [keys xs] 0]]
 
 # ============================================================================
@@ -1151,10 +1159,11 @@ Note: Depth-first search through nested dict structure. Errors if key not found.
 with-entries: [fn@[return: Dict  doc: """
 Transform a dict via entries pipeline: entries → map(f) → from-entries.
 
-Example: [with-entries [a: 1 b: 2] [fn [e] [key: e.key  value: [* e.value 10]]]] => [a: 10 b: 20]
+Example: [with-entries [fn [e] [key: e.key  value: [* e.value 10]]] [a: 1 b: 2]] => [a: 10 b: 20]
 
-Note: Each entry passed to f has the shape [key: k value: v]. Function f must return a new entry dict.
-"""] [let xs@Dict f@Fn] [from-entries [builtin-map f [entries xs]]]]
+Note: Signature is Fn -> Dict -> Dict (subject-last for pipeline composition).
+Each entry passed to f has the shape [key: k value: v]. Function f must return a new entry dict.
+"""] [let f@Fn xs@Dict] [from-entries [builtin-map f [entries xs]]]]
 
 partition: [fn@[return: Dict  doc: """
 Split a collection into two groups: elements satisfying pred and those that do not.
@@ -1210,7 +1219,7 @@ Uses builder-get-or for atomic get-or-insert (single mutex acquisition per eleme
             [builtin-reduce
                 [fn [let b x]
                     [let k [f x]]
-                    [builder-set b k [cons x [builder-get-or b k []]]]]
+                    [builder-set k [cons x [builder-get-or k [] b]] b]]
                 [make-builder]
                 xs]]]
     [map-entries [fn [let e] [reverse e.value]] raw]]
@@ -1224,7 +1233,7 @@ deep-merge-step@[doc: "Deep-merge step (internal helper)"]: [fn@Dict [let a@Dict
      value:
         [builtin-if
             [and
-                [has? a e.key]
+                [has? e.key a]
                 [and
                     [dict? [get e.key a]]
                     [dict? e.value]]]
@@ -1241,7 +1250,7 @@ Returns a flat Dict (not an Overlay): keys only in a come first, then all keys f
 """] [let a@Dict b@Dict]
     [build-dict
         [concat
-            [filter [fn [let e] [not [has? b e.key]]] [each-kv a]]
+            [filter [fn [let e] [not [has? e.key b]]] [each-kv a]]
             [builtin-map [fn [let e] [deep-merge-step a b e]] [each-kv b]]]]]
 
 # Apply a function bottom-up to every node in a nested dict structure.
@@ -1345,9 +1354,10 @@ count@[doc: "Count elements satisfying predicate"]: [fn@Int [let pred@Fn xs]
 # Handles Dict input (uses any?), Seq input (uses filter then seq? to check non-empty),
 # Stringing input (uses str-contains? for substring search),
 # and Bytes input (uses bytes-find to search for a single-byte needle).
-contains?@[doc: "Check if collection contains element"]: [fn@Bool [let xs val]
+# Signature is Val -> Collection -> Bool (subject-last for pipeline composition).
+contains?@[doc: "Check if collection contains element"]: [fn@Bool [let val xs]
     [builtin-if [builtin-eq [type-of xs] "String"]
-        [str-contains? xs val]
+        [str-contains? val xs]
         [builtin-if [builtin-eq [type-of xs] "Bytes"]
             [builtin-if [int? val]
                 [builtin-if [builtin-gte val 0]
@@ -1547,11 +1557,12 @@ Note: Predicate for Result error case.
 and-then: [fn@[return: Result  doc: """
 Monad bind for Result (chain computations).
 
-Example: [and-then [Ok 21] [fn [x] [Ok [* x 2]]]] => [Ok 42]
-Example: [and-then [Error "bad"] [fn [x] [Ok [* x 2]]]] => [Error "bad"]
+Example: [and-then [fn [x] [Ok [* x 2]]] [Ok 21]] => [Ok 42]
+Example: [and-then [fn [x] [Ok [* x 2]]] [Error "bad"]] => [Error "bad"]
 
-Note: If Ok, applies f to the value; if Error, passes through. Matches Rust's .and_then(f) and Haskell's result >>= f. Equivalent to MonadResult.bind.
-"""] [let result f]
+Note: Signature is Fn -> Result -> Result (subject-last for pipeline composition).
+If Ok, applies f to the value; if Error, passes through. Matches Rust's .and_then(f) and Haskell's result >>= f. Equivalent to MonadResult.bind.
+"""] [let f result]
     [match result
         [Ok v]: [f v]
         [Error msg]: [Error msg]]]
@@ -1580,7 +1591,8 @@ Note: Maps a function over the Ok value; passes Error through unchanged.
         [Ok v]: [Ok [f v]]
         [Error msg]: [Error msg]]]
 
-result@[doc: "Result monad dict for [do result ...] chains"]: [bind: and-then  pure: Ok]
+result@[doc: "Result monad dict for [do result ...] chains"]:
+  [bind: [fn [let r f] [and-then f r]]  pure: Ok]
 
 # ============================================================================
 # Type Class Declarations: Functor, Applicative, Monad, Foldable, Traversable
@@ -1615,9 +1627,9 @@ ApplicativeResult@[doc: "Applicative instance for Result"]:
     [let f@Result]: [
       pure:  Ok
       lift2: [fn [let f ra rb]
-        [and-then ra [fn [let a]
-        [and-then rb [fn [let b]
-          [Ok [f a b]]]]]]]]]
+        [and-then [fn [let a]
+        [and-then [fn [let b]
+          [Ok [f a b]]] rb]] ra]]]]
 
 # Applicative instance for Seq type
 ApplicativeSeq@[doc: "Applicative instance for Seq"]:
@@ -1635,12 +1647,12 @@ Monad@[doc: "Type class for monads"]:
 # Monad instance for Result type
 MonadResult@[doc: "Monad instance for Result"]:
   [instance Monad
-    [let m@Result]: [bind: and-then]]
+    [let m@Result]: [bind: [fn [let r f] [and-then f r]]]]
 
 # Monad instance for Seq type
 MonadSeq@[doc: "Monad instance for Seq"]:
   [instance Monad
-    [let m@Seq]: [bind: flat-map]]
+    [let m@Seq]: [bind: [fn [let xs f] [flat-map f xs]]]]
 
 # Reduces a structure to a single value (fold, to-seq)
 Foldable@[doc: "Type class for foldable structures"]:
@@ -2062,43 +2074,42 @@ Note: For Seq values, prefer [count identity xs] (length forces a Seq to a Dict 
 # assert: [collect-kv [[key: "a" value: 1] [key: "b" value: 2]]] => [a: 1 b: 2]
 collect-kv@[doc: "Reconstruct dict from key-value pairs"]: [fn@Dict [let xs] [build-dict xs]]
 
-# Repeat a string n times.
 # String search helpers (build on str-index-of primitive)
 # str-contains?: String -> String -> Bool
-# assert: [str-contains? "hello world" "world"] => true
-# assert: [str-contains? "hello" "xyz"] => false
-str-contains?@[doc: "Check if haystack contains needle"]: [fn@Bool [let haystack@Stringing needle@Stringing]
+# assert: [str-contains? "world" "hello world"] => true
+# assert: [str-contains? "xyz" "hello"] => false
+str-contains?@[doc: "Check if haystack contains needle"]: [fn@Bool [let needle@Stringing haystack@Stringing]
   [builtin-gte [str-index-of haystack needle] 0]]
 
 # starts-with?: String -> String -> Bool
-# assert: [starts-with? "hello" "he"] => true
-# assert: [starts-with? "hello" "lo"] => false
-starts-with?@[doc: "Check if string starts with prefix"]: [fn@Bool [let s@Stringing prefix@Stringing]
+# assert: [starts-with? "he" "hello"] => true
+# assert: [starts-with? "lo" "hello"] => false
+starts-with?@[doc: "Check if string starts with prefix"]: [fn@Bool [let prefix@Stringing s@Stringing]
   [= [str-index-of s prefix] 0]]
 
 # ends-with?: String -> String -> Bool
-# assert: [ends-with? "hello" "lo"] => true
-# assert: [ends-with? "hello" "he"] => false
-ends-with?@[doc: "Check if string ends with suffix"]: [fn@Bool [let s@Stringing suffix@Stringing]
+# assert: [ends-with? "lo" "hello"] => true
+# assert: [ends-with? "he" "hello"] => false
+ends-with?@[doc: "Check if string ends with suffix"]: [fn@Bool [let suffix@Stringing s@Stringing]
   [if [< [str-length s] [str-length suffix]]
     false
-    [= [str-slice s [- [str-length s] [str-length suffix]] [str-length s]] suffix]]]
+    [= [str-slice [- [str-length s] [str-length suffix]] [str-length s] s] suffix]]]
 
-# str-repeat: String -> Int -> String
-# assert: [str-repeat "x" 3] => "xxx"
-# assert: [str-repeat "ab" 2] => "abab"
-# assert: [str-repeat "x" 0] => ""
-str-repeat@[doc: "Repeat string n times"]: [fn@Stringing [let s@Stringing n@Int]
+# str-repeat: Int -> String -> String
+# assert: [str-repeat 3 "x"] => "xxx"
+# assert: [str-repeat 2 "ab"] => "abab"
+# assert: [str-repeat 0 "x"] => ""
+str-repeat@[doc: "Repeat string n times"]: [fn@Stringing [let n@Int s@Stringing]
   [builtin-reduce [fn [let acc _] [str acc s]] "" [builtin-range 0 n]]]
 
 # Find the first occurrence of needle in haystack.
 # Returns the byte index of the first match, or -1 if not found.
 # For ASCII strings, byte index equals character index.
 # str-find: String -> String -> Int
-# assert: [str-find "hello world" "world"] => 6
-# assert: [str-find "hello world" "x"] => -1
-# assert: [str-find "abc" ""] => 0
-str-find@[doc: "Find first occurrence of needle in haystack; returns byte index or -1"]: [fn@Int [let haystack@Stringing needle@Stringing]
+# assert: [str-find "world" "hello world"] => 6
+# assert: [str-find "x" "hello world"] => -1
+# assert: [str-find "" "abc"] => 0
+str-find@[doc: "Find first occurrence of needle in haystack; returns byte index or -1"]: [fn@Int [let needle@Stringing haystack@Stringing]
   [str-index-of haystack needle]]
 
 # Split a string by a separator into a dict of substrings (integer-keyed list).
@@ -2953,7 +2964,7 @@ SIGUSR2: [variant "SIGUSR2"]
 # Action: zero-arg side-effecting function (Moggi/Haskell IO distinction)
 Action: [type [Fn@Null []]]
 
-CancelHandle: [type [child-ctx: Context  cancel: Action]]  # return value of with-cancel
+CancelHandle: [type [child-ctx: Context  cancel: Context]]  # return value of with-cancel; cancel is a Context, not an Action — fire with [cancel-task pair.cancel]
 # SelectSource: [type [let t r] [SelectSource  ch: [Channel t]  handler: [Fn@r [t]]]]  — one source entry for select-once
 
 # Task lifecycle
@@ -2973,6 +2984,11 @@ select-once:   builtin-select-once
 signal-channel:  builtin-signal-channel
 timer-channel:   builtin-timer-channel
 watch-channel:   builtin-watch-channel
+
+# Reactive cells (T-831) — last-write-wins broadcast via tokio::sync::watch
+reactive-cell:   builtin-reactive-cell
+cell-get:        builtin-cell-get
+cell-set:        builtin-cell-set
 
 # Cancellation contexts
 context:         builtin-context
@@ -3025,7 +3041,7 @@ Example: [recv-all ch 3]
 Note: Blocks until all n items have been received. Uses reduce over [range 0 n]
 to collect results; the accumulator grows by one item per step.
 """]: [fn [let ch@Channel n@Int]
-    [reduce [fn [let acc _] [append acc [recv ch]]] [] [range 0 n]]]
+    [reduce [fn [let acc _] [append [recv ch] acc]] [] [range 0 n]]]
 
 # exit: graceful shutdown — cancel all tasks, wait for drain, then exit.
 #
@@ -3045,20 +3061,23 @@ Note: Waits indefinitely for tasks to drain. For bounded wait, use graceful-exit
 
 # graceful-exit: bounded graceful shutdown with an explicit drain timeout.
 #
-# Type: (Int -> Null)
-# Example: [graceful-exit 0]
+# Type: (Int Int -> Null)
+# Example: [graceful-exit 0 5000]
 graceful-exit@[doc: """
-Bounded graceful shutdown: cancel tasks, drain, then exit.
+Bounded graceful shutdown: cancel tasks, drain with timeout, then exit.
 
-Example: [graceful-exit 0]
+Example: [graceful-exit 0 5000]  # 5-second drain timeout
 
-Note: MVP implementation waits indefinitely for drain. A future version will add
-a drain-timeout parameter (tracked in the issue tracker).
-"""]: [fn [let code@Int]
-    [do
-        [cancel-root]
-        [drain]
-        [exit-now code]]]
+Args:
+- code: exit code
+- timeout-ms: maximum milliseconds to wait for drain
+
+If drain times out, exits immediately without waiting for remaining tasks.
+"""]: [fn [let code@Int timeout-ms@Int]
+  [cancel-root]
+  [let timed-ctx [with-timeout [context] timeout-ms]]
+  [try [fn [] [with-context timed-ctx [drain]]]]
+  [exit-now code]]
 
 # loop-select: repeatedly call select-once on sources until the context is
 # cancelled. On each iteration the handler is called with the received value.
@@ -3164,14 +3183,14 @@ Rust-level EvalErrors bypass finally.
 # true if character c is a stop character for variable names in interpolated strings.
 # Mirrors the stop-char set in src/lexer.rs lex_interpolated_string VarRef branch.
 tmpl-is-stop: [fn [let c]
-  [str-contains? " \t\n[]:#;\"@.,!?" c]]
+  [str-contains? c " \t\n[]:#;\"@.,!?"]]
 
 # Find the byte-length of the variable name at the start of string s.
 # Walks from index i until a stop char is found or end of string.
 # Returns i when done (i = number of ident chars consumed).
 tmpl-var-len: [fn [let s len i]
   [if [< i len]
-    [if [tmpl-is-stop [str-slice s i [+ i 1]]]
+    [if [tmpl-is-stop [str-slice i [+ i 1] s]]
       i
       [tmpl-var-len s len [+ i 1]]]
     i]]
@@ -3192,17 +3211,17 @@ tmpl-var-node: [fn [let var-name]
 tmpl-append-suffix: [fn [let nodes suffix]
   [if [= suffix ""]
     nodes
-    [append nodes [tmpl-str-node suffix]]]]
+    [append [tmpl-str-node suffix] nodes]]]
 
 # Process a piece that starts with "{N}" (an expression placeholder).
 # Appends the expression AST node (and optional suffix literal) to nodes.
 # Returns the updated nodes list.
 # Called when the piece starts with "{" after splitting on "$".
 tmpl-process-expr-piece: [fn [let piece macro-args nodes]
-  [if [str-contains? piece "}"]
+  [if [str-contains? "}" piece]
     [tmpl-process-expr-with-close piece macro-args nodes]
     # Malformed ${}: no closing "}" found — emit "$" + piece as a literal
-    [append nodes [tmpl-str-node [str "$" piece]]]
+    [append [tmpl-str-node [str "$" piece]] nodes]
   ]]
 
 # Helper: piece has a "}" — extract index and suffix.
@@ -3220,13 +3239,13 @@ tmpl-process-expr-parts: [fn [let brace-split macro-args nodes]
 # idx-part is "{N", suffix is the text after "}"
 tmpl-process-expr-idx: [fn [let idx-part suffix macro-args nodes]
   [tmpl-process-expr-insert
-    [get [+ [to-int [str-slice idx-part 1 [length idx-part]]] 1] macro-args]
+    [get [+ [to-int [str-slice 1 [length idx-part] idx-part]] 1] macro-args]
     suffix
     nodes]]
 
 # Insert the expression node and optional suffix into nodes.
 tmpl-process-expr-insert: [fn [let expr-node suffix nodes]
-  [tmpl-append-suffix [append nodes expr-node] suffix]]
+  [tmpl-append-suffix [append expr-node nodes] suffix]]
 
 # Process a piece that represents a variable reference ($name).
 # Appends the var-node (and optional suffix literal) to nodes.
@@ -3239,8 +3258,8 @@ tmpl-process-var-split: [fn [let piece nodes len]
 
 tmpl-process-var-emit: [fn [let piece nodes var-end len]
   [tmpl-append-suffix
-    [append nodes [tmpl-var-node [str-slice piece 0 var-end]]]
-    [str-slice piece var-end len]]]
+    [append [tmpl-var-node [str-slice 0 var-end piece]] nodes]
+    [str-slice var-end len piece]]]
 
 # Accumulator step function for building the tmpl args node list.
 # acc = {nodes: [...], skip: false, is-first: true}
@@ -3258,8 +3277,8 @@ tmpl-reduce-step: [fn [let args] [fn [let acc piece]
       [tmpl-step-literal acc piece]
       [if [= piece ""]
         # Empty piece = $$ escape: emit literal "$" and mark next piece as skip.
-        [nodes: [append acc.nodes [tmpl-str-node "$"]]  skip: true  is-first: false]
-        [if [starts-with? piece "{"]
+        [nodes: [append [tmpl-str-node "$"] acc.nodes]  skip: true  is-first: false]
+        [if [starts-with? "{" piece]
           # ${N} expression placeholder
           [nodes: [tmpl-process-expr-piece piece args acc.nodes]  skip: false  is-first: false]
           # $name variable reference
@@ -3273,7 +3292,7 @@ tmpl-reduce-step: [fn [let args] [fn [let acc piece]
 # Append piece as a literal to acc.nodes (empty string → skip).
 # Returns a new accumulator with is-first=false and skip=false.
 tmpl-step-literal: [fn [let acc piece]
-  [nodes: [if [= piece ""] acc.nodes [append acc.nodes [tmpl-str-node piece]]]
+  [nodes: [if [= piece ""] acc.nodes [append [tmpl-str-node piece] acc.nodes]]
    skip: false
    is-first: false]]
 
@@ -3399,7 +3418,7 @@ do-fold: [fn [let monad-ast steps]
   [n: [length steps]]
   [if [= n 1]
     [get 0 steps]
-    [do-wrap monad-ast [get 0 steps] [do-fold monad-ast [reindex [slice steps 1 n]]]]]]
+    [do-wrap monad-ast [get 0 steps] [do-fold monad-ast [reindex [slice 1 n steps]]]]]]
 
 # Desugar the inferred [do] form: emit bind chain with unique sentinel monad.
 # Called when the first arg is NOT a monad (it's a binding step or other expression).
@@ -3429,7 +3448,7 @@ do-desugar-inferred: [fn [let steps]
     [tmpl-expand
       template.value
       [reduce
-        [fn [let acc i] [set acc [+ i 1] [get i parts-dict]]]
+        [fn [let acc i] [merge acc [make-entry [+ i 1] [get i parts-dict]]]]
         [0: template]
         [range 0 [length parts-dict]]]]]
    [collect parts]]]

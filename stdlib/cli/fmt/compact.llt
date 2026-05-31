@@ -41,7 +41,7 @@ format-pattern-literal: [fn@[return: String  doc: """Format a literal pattern va
     [str [get "value" pat]]]]
 
 has-binding?: [fn@[return: Bool  doc: """Check if a constructor pattern has a binding."""] [let pat@Dict]
-  [has? pat "binding"]]
+  [has? "binding" pat]]
 
 format-pattern: [fn@[return: String  doc: """Format a match pattern to source text."""] [let pat@Dict]
   [match [get "type" pat]

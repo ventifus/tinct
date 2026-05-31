@@ -1216,7 +1216,7 @@ Eight builtins expose cancellation context management to LLT programs:
 | `non-cancellable` | `→ Context` | Creates a fresh root cancellation token that nothing will ever cancel — for use in cleanup code that must run even when the parent context is cancelled |
 | `with-context` | `Context → Fn@[]@T → T` | Evaluates a zero-arg function under the given cancellation context — the thunk's blocking operations respond to the given context's cancellation state, not the caller's |
 
-**Implementation note (`with-cancel`):** The spec describes `cancel` as a zero-arg callable `Fn@[]@Null`. The current implementation returns a `Context` value instead, requiring `[cancel-task pair.cancel]` rather than `[pair.cancel]`. This deviation is documented in the memory palace and avoids the need to close over a Rust `CancellationToken` in a `Value::Function`. The functional semantics are equivalent.
+**`cancel` is a `Context`, not an `Action`:** The prelude type declaration `CancelHandle: [type [child-ctx: Context  cancel: Context]]` matches the implementation. Use `[cancel-task pair.cancel]` to fire it, not `[pair.cancel]`. The `cancel` field is a child `Context` backed by the same `CancellationToken` — this avoids closing over a Rust `CancellationToken` in a `Value::Function` while preserving the functional semantics.
 
 ### Cancellation in Blocking Builtins
 

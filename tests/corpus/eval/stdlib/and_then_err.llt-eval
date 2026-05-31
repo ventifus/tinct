@@ -1,4 +1,4 @@
-# and-then: result-first order. If Error, pass through unchanged.
-[and-then [Error "bad"] [fn [x] [Ok [* x 2]]]]
+# and-then: fn-first order. If Error, pass through unchanged.
+[and-then [fn [x] [Ok [* x 2]]] [Error "bad"]]
 === out
 Variant(Error, String("bad"))

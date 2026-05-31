@@ -13,7 +13,7 @@
 
   encode-dns-name: [fn [let name@String]
     [labels: [filter [fn [let s] [not [= s ""]]]
-               [str-split "." [if [ends-with? name "."] name [str name "."]]]]]
+               [str-split "." [if [ends-with? "." name] name [str name "."]]]]]
     [concat
       [flat-map [fn [let label]
         [concat [bytes [length label]] [str-bytes label]]]
@@ -31,7 +31,7 @@
       4: [NotImpl]  5: [Refused]  _: [ServFail]]]
 
   rotate-list: [fn [let xs]
-    [match xs [] [] [let [h ...t]]: [append t [list h]]]]
+    [match xs [] [] [let [h ...t]]: [append [list h] t]]]
 
   dns-try-servers: [fn [let cap@NetCap servers@[Seq Nameserver]
                          name@String qtype@DnsQtype remaining@Int timeout@Duration]
@@ -51,14 +51,14 @@
             [Err _]:   [dns-try-servers cap rest name qtype [- remaining 1] timeout]]]]]
 
   candidate-names: [fn [let host@String search@[Seq String] ndots@Int]
-    [if [ends-with? host "."]
+    [if [ends-with? "." host]
       [list host]
       [dot-count: [length [filter [fn [let c] [= c "."]] [str-chars host]]]
        absolute:  [str host "."]
        searched:  [map [fn [let d] [str host "." d "."]] search]
        [if [>= dot-count ndots]
          [cons absolute searched]
-         [append searched [list absolute]]]]]]
+         [append [list absolute] searched]]]]]
 
   dns-query-with-retry: [fn [let cap@NetCap nameservers@[Seq Nameserver]
                               name@String qtype@DnsQtype
@@ -220,7 +220,7 @@
   dns-tls-resolver: [fn [let cap@NetCap addr@SocketAddress sni@String]
     [fn [let q@DnsQuery]
       [task
-        [tls: [[tcp-connect cap addr] | [tls-layer [sni: sni  alpn: []  ech: []  trust-roots: SystemRoots]]]]
+        [tls: [[tcp-connect cap addr] | [tls-layer sni [alpn: []  ech: []  trust-roots: SystemRoots]]]]
         [dns-framed-send tls q]]]]
 
   dns-https-resolver: [fn [let cap@NetCap addr@SocketAddress sni@String path@String]

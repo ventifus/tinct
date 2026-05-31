@@ -116,18 +116,18 @@ in practice most nodes either always fit or never fit.
 ```tinct
 emit-comments: [fn [comments indent]
   [join "\n"
-    [map [fn [c] [str [str-repeat " " indent] "# " c]]
+    [map [fn [c] [str [str-repeat indent " "] "# " c]]
          comments]]]
 
 format-entry: [fn [entry indent]
   [str
     [if [blank-before? entry] "\n" ""]
-    [if [has? entry "leading-comments"] [emit-comments entry.leading-comments indent] ""]
-    [str-repeat " " indent]
+    [if [has? "leading-comments" entry] [emit-comments entry.leading-comments indent] ""]
+    [str-repeat indent " "]
     [format-entry-key entry indent]
     ": "
     [format-node entry.value indent]
-    [if [has? entry "trailing-comment"] [str "  # " entry.trailing-comment] ""]]]
+    [if [has? "trailing-comment" entry] [str "  # " entry.trailing-comment] ""]]]
 ```
 
 ### Integration with Quasiquoting and Macros

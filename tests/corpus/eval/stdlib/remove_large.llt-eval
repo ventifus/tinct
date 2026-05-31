@@ -1,5 +1,5 @@
 # remove: large input (n=1000) to verify O(n) performance via build-dict
 [let d [collect [range 0 1000]]]
-[length [remove d 500]]
+[length [remove 500 d]]
 === out
 Int(999)

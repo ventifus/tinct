@@ -1,4 +1,4 @@
 # str-find is now in prelude — no include needed
-[str-find "hello world" "world"]
+[str-find "world" "hello world"]
 === out
 Int(6)

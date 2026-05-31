@@ -48,7 +48,7 @@ field-has?: [
       Check if a key exists in a dict (returns false on missing key).
       """
   ] [let dict@Dict key@String]
-    [has? dict key]
+    [has? key dict]
 ]
 
 # ---- Pattern formatting ----
@@ -64,7 +64,7 @@ format-pattern: [fn@[return: String  doc: """Format a match pattern to source te
     "var":         [get "name" pat]
     "variable":    [get "name" pat]
     "literal":     [format-pattern-literal pat]
-    "constructor": [if [has? pat "binding"]
+    "constructor": [if [has? "binding" pat]
                      [str [get "tag" pat] " " [format-pattern [get "binding" pat]]]
                      [get "tag" pat]]
     "dict":        [format-pattern-dict pat]
@@ -178,7 +178,7 @@ fits-inline?: [fn@[return: Bool  doc: """Check if a dict node fits on one line (
 emit-leading-comments: [fn@[return: String  doc: """Render leading comment lines with indentation."""] [let comments@Dict indent@Int]
   [join-strings "\n"
     [map-list
-      [fn [let c] [str [str-repeat " " indent] "#" c]]
+      [fn [let c] [str [str-repeat indent " "] "#" c]]
       comments]]]
 
 emit-trailing-comment: [fn@[return: String  doc: """Render a trailing comment."""] [let comment@String]
@@ -249,7 +249,7 @@ format-dict: [fn@[return: String  doc: """Format dict: inline if small enough, b
       [str "[\n"
         [format-entries-block [get "entries" node] [+ indent indent-size]]
         "\n"
-        [str-repeat " " indent]
+        [str-repeat indent " "]
         "]"]]]]
 
 format-entries-block: [fn@[return: String  doc: """Format entries in block mode, one per line."""] [let entries@Dict indent@Int]
@@ -273,7 +273,7 @@ format-entry-block: [fn@[return: String  doc: """Format a single entry in block 
     [if [field-has? entry "leading-comments"]
       [str [emit-leading-comments [get "leading-comments" entry] indent] "\n"]
       ""]
-    [str-repeat " " indent]
+    [str-repeat indent " "]
     [if [empty? [get "key" entry]]
       [format-node [get "value" entry] indent]
       [str
@@ -401,7 +401,7 @@ format-match-arms-impl: [fn@[return: String] [let arms@Dict indent@Int i@Int acc
       [+ i 1]
       [str acc
         "\n"
-        [str-repeat " " [+ indent indent-size]]
+        [str-repeat [+ indent indent-size] " "]
         [format-pattern [get "pattern" [get i arms]]]
         ": "
         [format-node [get "body" [get i arms]] [+ indent indent-size]]]]]]

@@ -29,7 +29,7 @@ dirname-impl: [fn@String [let parts@Dict]
 dirname-drop-last: [fn@Dict [let parts@Dict ks i@Int acc@Dict]
     [if [= i [- [length parts] 1]]
         acc
-        [dirname-drop-last parts ks [+ i 1] [append acc [get [get i ks] parts]]]]]
+        [dirname-drop-last parts ks [+ i 1] [append [get [get i ks] parts] acc]]]]
 
 # Internal helper for extension. Takes a Dict of parts split by ".".
 # Returns "" if zero or one part; otherwise returns the last part.

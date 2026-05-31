@@ -30,8 +30,8 @@
   mix-key: [fn [let state@NoiseState input@[Bytes 32]]
     [prk:    [hkdf-extract [Sha256] state.ck input]]
     [both:   [hkdf-expand  [Sha256] prk [] 64]]
-    [new-ck: [slice both 0  32]]
-    [new-k:  [slice both 32 32]]
+    [new-ck: [slice 0  32 both]]
+    [new-k:  [slice 32 64 both]]
     [NoiseState [s: state.s  e: state.e  rs: state.rs  re: state.re
                  ck: new-ck  h: state.h  k: new-k  n: 0]]]
 
@@ -61,8 +61,8 @@
   # Single 64-byte expand per RFC 5869: T(1)||T(2); T(2) = HMAC(PRK, T(1)||0x02).
   noise-split: [fn [let state@NoiseState initiator@Bool]
     [both: [hkdf-expand [Sha256] state.ck [] 64]]
-    [k1:   [slice both 0  32]]
-    [k2:   [slice both 32 32]]
+    [k1:   [slice 0  32 both]]
+    [k2:   [slice 32 64 both]]
     [if initiator [send-key: k1  recv-key: k2]
                   [send-key: k2  recv-key: k1]]]
 
@@ -97,7 +97,7 @@
             [Ok p]:  p
             [Err _]: [error "Noise: decryption failed"]]]
           [got: [min remaining [length plain]]]
-          [noise-read-acc conn [- remaining got] [append acc [list [slice plain 0 got]]]]]]]]
+          [noise-read-acc conn [- remaining got] [append [list [slice 0 got plain]] acc]]]]]]
 
   init-nonce-ch: [fn []
     [ch: [channel 1]]

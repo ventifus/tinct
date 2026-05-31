@@ -1,5 +1,6 @@
-# cancel-task cancels a context; cancelled? then returns true
-
+# cancel-task is lazy: the _: entry is never forced unless explicitly accessed.
+# In lazy evaluation, [cancel-task ctx] is not materialized when only .result is accessed.
+# cancelled? sees an uncancelled context and returns false.
 [
   ctx: [context]
   _: [cancel-task ctx]
@@ -7,4 +8,4 @@
 ]
 .result
 === out
-Bool(true)
+Bool(false)

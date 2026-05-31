@@ -1,5 +1,5 @@
 # Range access migrated to slice function
 # Contrast with bare word "a..b" where ".." is part of an identifier.
-[slice: [slice xs 1 3]]
+[slice: [slice 1 3 xs]]
 === out
-["slice": [slice xs 1 3]]
+["slice": [slice 1 3 xs]]

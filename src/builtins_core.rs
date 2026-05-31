@@ -84,11 +84,12 @@ use crate::builtins::{
 };
 // Async concurrency implementations.
 use crate::builtins_async::{
-    builtin_await, builtin_cancel_root, builtin_cancel_task, builtin_cancelled_q, builtin_channel,
-    builtin_context, builtin_drain, builtin_exit_now, builtin_non_cancellable, builtin_par,
-    builtin_par_filter, builtin_par_map, builtin_recv, builtin_select_once, builtin_send,
-    builtin_signal_channel, builtin_task, builtin_timer_channel, builtin_watch_channel,
-    builtin_with_cancel, builtin_with_context, builtin_with_deadline, builtin_with_timeout,
+    builtin_await, builtin_cancel_root, builtin_cancel_task, builtin_cancelled_q, builtin_cell_get,
+    builtin_cell_set, builtin_channel, builtin_context, builtin_drain, builtin_exit_now,
+    builtin_non_cancellable, builtin_par, builtin_par_filter, builtin_par_map,
+    builtin_reactive_cell, builtin_recv, builtin_select_once, builtin_send, builtin_signal_channel,
+    builtin_task, builtin_timer_channel, builtin_watch_channel, builtin_with_cancel,
+    builtin_with_context, builtin_with_deadline, builtin_with_timeout,
 };
 
 use crate::value::{BuiltinDef, Strictness};
@@ -199,8 +200,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-append",
             builtin_append,
-            [Strictness::Seq, Strictness::Id],
-            1
+            [Strictness::Id, Strictness::Seq],
+            0
         ),
         builtin!(
             "builtin-get",
@@ -240,8 +241,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-builder-set",
             builtin_builder_set,
-            [Strictness::Seq, Strictness::Seq, Strictness::Id],
-            2
+            [Strictness::Seq, Strictness::Id, Strictness::Seq],
+            0
         ),
         builtin!(
             "builtin-builder-delete",
@@ -276,8 +277,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-builder-get-or",
             builtin_builder_get_or,
-            [Strictness::Seq, Strictness::Seq, Strictness::Id],
-            2
+            [Strictness::Seq, Strictness::Id, Strictness::Seq],
+            0
         ),
         // ── String ops ───────────────────────────────────────────────────────────────
         builtin!("builtin-str", builtin_str, [Strictness::Seq]),
@@ -793,6 +794,10 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!("builtin-cancel-root", builtin_cancel_root),
         builtin!("builtin-drain", builtin_drain),
         builtin!("builtin-exit-now", builtin_exit_now, [Strictness::Seq]),
+        // ── Reactive cells (T-831) ────────────────────────────────────────────────────
+        builtin!("builtin-reactive-cell", builtin_reactive_cell),
+        builtin!("builtin-cell-get", builtin_cell_get),
+        builtin!("builtin-cell-set", builtin_cell_set),
         // ── Meta / reflection ─────────────────────────────────────────────────────────
         builtin!("builtin-gensym", builtin_gensym, [Strictness::Seq]),
         builtin!("builtin-llt-repr", builtin_llt_repr, [Strictness::Seq]),
@@ -1214,17 +1219,111 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "append".to_string(),
         Type::Function {
             params: vec![
+                (Some("value".to_string()), Type::Top),
                 (
                     Some("dict".to_string()),
                     Type::Record(Row {
                         fields: HashMap::new(),
                     }),
                 ),
-                (Some("value".to_string()), Type::Top),
             ],
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
             })),
+            variadic: false,
+        },
+    );
+
+    // ── Builder primitives ────────────────────────────────────────────────────
+    // Transient mutable dict builders. Canonical names for inject_builtin_aliases().
+    // Parameter order follows T-777 (key-first, builder-last).
+    // make-builder: () → Unknown
+    env.insert(
+        "make-builder".to_string(),
+        Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Unknown), // Builder — opaque mutable container
+            variadic: false,
+        },
+    );
+    // builder-set: (key, value, builder) → Unknown
+    // T-777 parameter order: key-first, builder-last (was builder-first)
+    env.insert(
+        "builder-set".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Unknown), // key
+                (None, Type::Unknown), // value
+                (None, Type::Unknown), // builder
+            ],
+            ret: Box::new(Type::Unknown), // builder (mutated in-place)
+            variadic: false,
+        },
+    );
+    // builder-delete: (key, builder) → Unknown
+    env.insert(
+        "builder-delete".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Unknown), // key
+                (None, Type::Unknown), // builder
+            ],
+            ret: Box::new(Type::Unknown), // builder
+            variadic: false,
+        },
+    );
+    // builder-has?: (key, builder) → Bool
+    env.insert(
+        "builder-has?".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Unknown), // key
+                (None, Type::Unknown), // builder
+            ],
+            ret: Box::new(Type::Bool),
+            variadic: false,
+        },
+    );
+    // builder-get: (key, builder) → Unknown
+    env.insert(
+        "builder-get".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Unknown), // key
+                (None, Type::Unknown), // builder
+            ],
+            ret: Box::new(Type::Unknown), // value — opaque
+            variadic: false,
+        },
+    );
+    // builder-get-or: (key, default, builder) → Unknown
+    env.insert(
+        "builder-get-or".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Unknown), // key
+                (None, Type::Unknown), // default
+                (None, Type::Unknown), // builder
+            ],
+            ret: Box::new(Type::Unknown), // value or default
+            variadic: false,
+        },
+    );
+    // builder-finish: (builder) → Unknown
+    env.insert(
+        "builder-finish".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)], // builder
+            ret: Box::new(Type::Unknown),        // Dict — shape unknown statically
+            variadic: false,
+        },
+    );
+    // builder-snapshot: (builder) → Unknown
+    env.insert(
+        "builder-snapshot".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)], // builder
+            ret: Box::new(Type::Unknown),        // Dict snapshot
             variadic: false,
         },
     );
@@ -1379,11 +1478,11 @@ pub fn core_type_env(env: &mut TypeEnv) {
             variadic: false,
         },
     );
-    // str-slice: String → Int → Int → String
+    // str-slice: Int → Int → String → String
     env.insert(
         "str-slice".to_string(),
         Type::Function {
-            params: vec![(None, Type::Str), (None, Type::Int), (None, Type::Int)],
+            params: vec![(None, Type::Int), (None, Type::Int), (None, Type::Str)],
             ret: Box::new(Type::Str),
             variadic: false,
         },
@@ -2993,6 +3092,36 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
 
+    // ── Reactive cells (T-831) ────────────────────────────────────────────────
+    // ReactiveCell is opaque — all params and return are Unknown.
+    // builtin-reactive-cell: T → ReactiveCell@T
+    env.insert(
+        "builtin-reactive-cell".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)], // initial value
+            ret: Box::new(Type::Unknown),        // ReactiveCell — opaque
+            variadic: false,
+        },
+    );
+    // builtin-cell-get: ReactiveCell@T → T
+    env.insert(
+        "builtin-cell-get".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown)], // ReactiveCell
+            ret: Box::new(Type::Unknown),        // current value — opaque
+            variadic: false,
+        },
+    );
+    // builtin-cell-set: ReactiveCell@T → T → Null  [currently cell-first; T-B212 tracks flip to (val, cell)]
+    env.insert(
+        "builtin-cell-set".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Unknown), (None, Type::Unknown)], // cell, new value
+            ret: Box::new(Type::Unknown),                               // Null
+            variadic: false,
+        },
+    );
+
     // ── Builder / Proxy ───────────────────────────────────────────────────────
     // Builder and Proxy are opaque runtime types; use Unknown for all builder
     // I/O boundaries. The key requirement is that every entry has type Function
@@ -3010,27 +3139,27 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
     // builtin-builder-set: Unknown → Unknown → Unknown → Unknown
-    // (builder, key, value) → builder
+    // (key, value, builder) → builder  [T-777: subject-last order]
     env.insert(
         "builtin-builder-set".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::Unknown), // builder
                 (None, Type::Unknown), // key
                 (None, Type::Unknown), // value
+                (None, Type::Unknown), // builder
             ],
             ret: Box::new(Type::Unknown), // builder (mutated in-place, same ref)
             variadic: false,
         },
     );
     // builtin-builder-delete: Unknown → Unknown → Unknown
-    // (builder, key) → builder
+    // (key, builder) → builder  [T-777: subject-last order]
     env.insert(
         "builtin-builder-delete".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::Unknown), // builder
                 (None, Type::Unknown), // key
+                (None, Type::Unknown), // builder
             ],
             ret: Box::new(Type::Unknown), // builder
             variadic: false,
@@ -3057,40 +3186,40 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
     // builtin-builder-has?: Unknown → Unknown → Bool
-    // (builder, key) → Bool
+    // (key, builder) → Bool  [T-777: subject-last order]
     env.insert(
         "builtin-builder-has?".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::Unknown), // builder
                 (None, Type::Unknown), // key
+                (None, Type::Unknown), // builder
             ],
             ret: Box::new(Type::Bool),
             variadic: false,
         },
     );
     // builtin-builder-get: Unknown → Unknown → Unknown
-    // (builder, key) → value (errors if key absent)
+    // (key, builder) → value (errors if key absent)  [T-777: subject-last order]
     env.insert(
         "builtin-builder-get".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::Unknown), // builder
                 (None, Type::Unknown), // key
+                (None, Type::Unknown), // builder
             ],
             ret: Box::new(Type::Unknown), // value — genuinely opaque
             variadic: false,
         },
     );
     // builtin-builder-get-or: Unknown → Unknown → Unknown → Unknown
-    // (builder, key, default) → value
+    // (key, default, builder) → value  [T-777: subject-last order]
     env.insert(
         "builtin-builder-get-or".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::Unknown), // builder
                 (None, Type::Unknown), // key
                 (None, Type::Unknown), // default
+                (None, Type::Unknown), // builder
             ],
             ret: Box::new(Type::Unknown), // value or default — opaque
             variadic: false,

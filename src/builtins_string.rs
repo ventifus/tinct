@@ -389,7 +389,7 @@ pub(crate) fn builtin_str_length(
 
 /// `str-slice`: Extract a substring by character indices [start, end).
 ///
-/// Takes 3 args: `input` (String), `start` (Int), `end` (Int).
+/// Takes 3 args: `start` (Int), `end` (Int), `input` (String).
 /// Returns a zero-copy slice of the input string.
 /// Inherently materializing: must inspect string content to find character boundaries.
 pub(crate) fn builtin_str_slice(
@@ -408,13 +408,13 @@ pub(crate) fn builtin_str_slice(
         }
 
         // Get pre-materialized arguments
-        let input_val = args[0]
+        let start_val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let start_val = args[1]
+        let end_val = args[1]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let end_val = args[2]
+        let input_val = args[2]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -426,7 +426,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "String",
                     input_val.type_name(),
-                    args[0].span.clone(),
+                    args[2].span.clone(),
                 )
                 .into());
             }
@@ -440,7 +440,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "non-negative Int",
                     &format!("Int({n})"),
-                    args[1].span.clone(),
+                    args[0].span.clone(),
                 )
                 .into());
             }
@@ -449,7 +449,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "Int",
                     start_val.type_name(),
-                    args[1].span.clone(),
+                    args[0].span.clone(),
                 )
                 .into());
             }
@@ -462,7 +462,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "non-negative Int",
                     &format!("Int({n})"),
-                    args[2].span.clone(),
+                    args[1].span.clone(),
                 )
                 .into());
             }
@@ -471,7 +471,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "Int",
                     end_val.type_name(),
-                    args[2].span.clone(),
+                    args[1].span.clone(),
                 )
                 .into());
             }

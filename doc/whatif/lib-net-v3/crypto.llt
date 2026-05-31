@@ -30,7 +30,7 @@
          big-len:     [decode-be-int b [+ offset 2] n-len-bytes]
          len:         big-len
          value-offset: [+ offset 2 n-len-bytes]]]]
-    [raw: [slice b len-result.value-offset len-result.len]]
+    [raw: [slice len-result.value-offset [+ len-result.value-offset len-result.len] b]]
     [value:
       [if constructed
         # Then: sequence/set — bind children via immediately-invoked lambda (single if-arg).
@@ -61,7 +61,7 @@
       acc
       # Else: parse one node, recurse — immediately-invoked lambda binds result.
       [[fn [let result]
-         [der-parse-seq b result.next [append acc [list result.value]]]]
+         [der-parse-seq b result.next [append [list result.value] acc]]]
        [der-parse-one b offset]]]]
 
   decode-oid: [fn [let b@Bytes]
@@ -76,7 +76,7 @@
   decode-oid-arcs: [fn [let b@Bytes offset@Int acc@[Seq Int]]
     [if [>= offset [length b]] acc
       [arc-result: [decode-oid-arc b offset 0]]
-      [decode-oid-arcs b arc-result.next [append acc [list arc-result.arc]]]]]
+      [decode-oid-arcs b arc-result.next [append [list arc-result.arc] acc]]]]]
 
   decode-oid-arc: [fn [let b@Bytes offset@Int acc@Int]
     [byte:    [get b offset]]

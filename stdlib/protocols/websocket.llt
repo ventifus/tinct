@@ -103,8 +103,8 @@ ws-mask-payload-impl: [fn@String [let data@String mask-key@String i@Int len@Int 
         [ws-mask-payload-impl data mask-key [+ i 1] len
             [str acc
                 [chr [ws-xor
-                    [char-code [str-slice data i [+ i 1]]]
-                    [char-code [str-slice mask-key [ws-mod i 4] [+ [ws-mod i 4] 1]]]]]]]
+                    [char-code [str-slice i [+ i 1] data]]
+                    [char-code [str-slice [ws-mod i 4] [+ [ws-mod i 4] 1] mask-key]]]]]]
         acc]]
 
 # Build the 2-byte base frame header.
@@ -172,8 +172,10 @@ ws-build-frame-long: [fn@Dict [let opcode@Int data@String mask-key@String data-l
 
 # Assemble the result dict from header and payload strings.
 ws-build-frame-result: [fn@Dict [let header@String payload@String]
-    [set [set [set [] "header" header] "payload" payload]
-        "frame" [str header payload]]]
+    [set []
+        header:  header
+        payload: payload
+        frame:   [str header payload]]]
 
 # --------------------------------------------------------------------------
 # Frame parsing helpers
@@ -189,20 +191,21 @@ ws-parse-ext64-impl: [fn@Int [let bytes@String start@Int i@Int acc@Int]
     [if [< i 8]
         [ws-parse-ext64-impl bytes start [+ i 1]
             [+ [* acc 256]
-                [char-code [str-slice bytes
+                [char-code [str-slice
                     [+ start i]
-                    [+ start [+ i 1]]]]]]
+                    [+ start [+ i 1]]
+                    bytes]]]]
         acc]]
 
 # Build the header result dict from fully-computed fields.
 ws-parse-header-result: [fn@Dict [let fin rsv opcode@Int masked payload-len@Int header-len@Int]
-    [set [set [set [set [set [set []
-        "fin"         fin]
-        "rsv"         rsv]
-        "opcode"      opcode]
-        "masked"      masked]
-        "payload-len" payload-len]
-        "header-len"  header-len]]
+    [set []
+        fin:         fin
+        rsv:         rsv
+        opcode:      opcode
+        masked:      masked
+        payload-len: payload-len
+        header-len:  header-len]]
 
 # Dispatch on len7 to handle normal / 16-bit / 64-bit payload lengths.
 ws-parse-header-extended: [fn@Dict [let bytes@String fin rsv opcode@Int masked len7@Int]
@@ -211,8 +214,8 @@ ws-parse-header-extended: [fn@Dict [let bytes@String fin rsv opcode@Int masked l
             [error "parse-ws-frame-header: too short for 16-bit extended length"]
             [ws-parse-header-result fin rsv opcode masked
                 [ws-parse-ext16
-                    [char-code [str-slice bytes 2 3]]
-                    [char-code [str-slice bytes 3 4]]]
+                    [char-code [str-slice 2 3 bytes]]
+                    [char-code [str-slice 3 4 bytes]]]
                 [if masked 8 4]]]
         [if [= len7 127]
             [if [< [length bytes] 10]
@@ -290,8 +293,8 @@ parse-ws-frame-header@[doc: "Parse WebSocket frame header bytes (RFC 6455)"]:
         [if [< [length bytes] 2]
             [error "parse-ws-frame-header: need at least 2 bytes"]
             [ws-parse-header-bytes bytes
-                [char-code [str-slice bytes 0 1]]
-                [char-code [str-slice bytes 1 2]]]]]
+                [char-code [str-slice 0 1 bytes]]
+                [char-code [str-slice 1 2 bytes]]]]]
 
 # Build an HTTP/1.1 WebSocket upgrade request string.
 #

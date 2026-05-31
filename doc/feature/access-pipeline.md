@@ -174,15 +174,15 @@ there is no distinct "zero-value generator" value. Filtering is done with
 ambiguity.
 
 **Range and slice.** `[range 0 5]` already exists in stdlib and returns a `Seq`
-of integers 0–4. `[slice data 2 5]` already exists in stdlib for positional Dict
+of integers 0–4. `[slice 2 5 data]` already exists in stdlib for positional Dict
 slicing. Both names are correct and require no changes. The removed `$a[0..2]`
 syntax is replaced by `$a | [range 0 2]` for numeric range generation or
-`[slice a 0 2]` for positional Dict slicing.
+`[slice 0 2 a]` for positional Dict slicing.
 
 **Projection and path drilling:**
 
 ```tinct
-[pick data ["name" "age"]]           # sub-dict with only those keys
+[pick ["name" "age"] data]           # sub-dict with only those keys
 $data | [get-in path: ["users" 0 "name"]]  # deep path via named arg
 ```
 

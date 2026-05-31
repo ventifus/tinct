@@ -6,12 +6,12 @@
 [include %libdir "protocols/websocket.llt"]
 ---
 [call [fn [p]
-    [set [set [set [set [set []
-        "fin"         p.fin]
-        "opcode"      p.opcode]
-        "masked"      p.masked]
-        "payload-len" p.payload-len]
-        "header-len"  p.header-len]]
+    [set []
+        fin:         p.fin
+        opcode:      p.opcode
+        masked:      p.masked
+        payload-len: p.payload-len
+        header-len:  p.header-len]]
     [call %.parse-ws-frame-header [str [chr 138] [chr 0]]]]
 === out
 Dict({"fin": Bool(true), "opcode": Int(10), "masked": Bool(false), "payload-len": Int(0), "header-len": Int(2)})

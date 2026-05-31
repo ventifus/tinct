@@ -172,7 +172,7 @@ Generating documentation for a module is a one-liner with `describe` and `each-k
 ```tinct
 [io: [include %libdir "io.llt"]]
 
-[documented: [filter [fn [e] [not [= "" [get-or [describe e] "doc" ""]]]]
+[documented: [filter [fn [e] [not [= "" [get-or "doc" "" [describe e]]]]]
                      [each-kv io]]]
 # → all entries in io that have a @[doc: "..."] annotation
 ```
@@ -193,7 +193,7 @@ Building a full doc string per export:
 
 ```tinct
 assert-documented: [fn [f name]
-  [if [= "" [get-or [describe f] "doc" ""]]
+  [if [= "" [get-or "doc" "" [describe f]]]
     [error [str name " is missing a @[doc: ...] annotation"]]
     true]]
 

@@ -38,26 +38,26 @@
 not-blank-or-comment: [fn@Bool [let line@String]
     [builtin-if [builtin-eq [length line] 0]
         false
-        [not [starts-with? line "#"]]]]
+        [not [starts-with? "#" line]]]]
 
 # Parse section name, splitting on dots for nested sections.
 # Type: (String -> Dict String)
 parse-section-name: [fn@Dict [let name@String]
-    [builtin-if [str-contains? name "."]
+    [builtin-if [str-contains? "." name]
         [collect [split "." name]]
         [0: name]]]
 
 # Parse a [[array-table]] header into a path list.
 # Type: (String -> Dict String)
 parse-array-table-header: [fn@Dict [let line@String]
-    [parse-section-name [trim [str-slice line 2 [builtin-sub [length line] 2]]]]]
+    [parse-section-name [trim [str-slice 2 [builtin-sub [length line] 2] line]]]]
 
 # Split on = and build the key-value entry.
 # Type: (String -> Int -> Dict)
 parse-kv-split: [fn@Dict [let line@String eq-pos@Int]
     [parse-kv-build
-        [trim [str-slice line 0 eq-pos]]
-        [trim [str-slice line [builtin-add eq-pos 1] [length line]]]]]
+        [trim [str-slice 0 eq-pos line]]
+        [trim [str-slice [builtin-add eq-pos 1] [length line] line]]]]
 
 # Build the key-value dict entry.
 # Type: (String -> String -> Dict)
@@ -83,8 +83,8 @@ parse-value-try-bool: [fn [let value@String]
 # Parse a TOML value — internal impl.
 # Type: (String -> Any)
 parse-value-impl: [fn [let value@String]
-    [builtin-if [starts-with? value "\""]
-        [str-slice value 1 [builtin-sub [length value] 1]]
+    [builtin-if [starts-with? "\"" value]
+        [str-slice 1 [builtin-sub [length value] 1] value]
         [parse-value-try-int value]]]
 
 # Parse a key = value line into a single-entry dict — internal impl.
@@ -102,12 +102,12 @@ parse-lines-impl: [fn@Dict [let lines i@Int len@Int acc@Dict current-path]
 # Dispatch on line type: [section], [[array-table]], or key = value.
 # Type: (Dict String -> Int -> Int -> Dict -> Dict String -> String -> Dict)
 parse-line-dispatch: [fn@Dict [let lines i@Int len@Int acc@Dict current-path line@String]
-    [builtin-if [starts-with? line "[["]
+    [builtin-if [starts-with? "[[" line]
         # Array table: [[name]]
         [parse-lines-impl lines [builtin-add i 1] len
             [toml-append-array-table-impl acc [parse-array-table-header line]]
             [parse-array-table-header line]]
-        [builtin-if [starts-with? line "["]
+        [builtin-if [starts-with? "[" line]
             # Section: [name]
             [parse-lines-impl lines [builtin-add i 1] len acc [parse-section-header-impl line]]
             # Key-value pair
@@ -118,7 +118,7 @@ parse-line-dispatch: [fn@Dict [let lines i@Int len@Int acc@Dict current-path lin
 # Parse a [section] header into a path list — internal impl.
 # Type: (String -> Dict String)
 parse-section-header-impl: [fn@Dict [let line@String]
-    [parse-section-name [trim [str-slice line 1 [builtin-sub [length line] 1]]]]]
+    [parse-section-name [trim [str-slice 1 [builtin-sub [length line] 1] line]]]]
 
 # Process a list of non-blank, non-comment lines — internal impl.
 # Type: (Dict String -> Dict)
@@ -141,7 +141,7 @@ toml-set-at-path-rec: [fn@Dict [let root@Dict path kv@Dict depth@Int]
         [toml-set-at-path-final root [get depth path] kv]
         [merge root [make-entry [get depth path]
             [toml-set-at-path-rec
-                [get-or root [get depth path] []]
+                [get-or [get depth path] [] root]
                 path
                 kv
                 [builtin-add depth 1]]]]]]
@@ -149,7 +149,7 @@ toml-set-at-path-rec: [fn@Dict [let root@Dict path kv@Dict depth@Int]
 # Final path segment: check if target is an array, merge into last element.
 # Type: (Dict -> String -> Dict -> Dict)
 toml-set-at-path-final: [fn@Dict [let root@Dict key@String kv@Dict]
-    [toml-set-at-path-final-check root key kv [get-or root key []]]]
+    [toml-set-at-path-final-check root key kv [get-or key [] root]]]
 
 toml-set-at-path-final-check: [fn@Dict [let root@Dict key@String kv@Dict target]
     [builtin-if [is-array? target]
@@ -176,10 +176,10 @@ is-array?-check-keys: [fn@Bool [let xs@Dict]
 toml-append-array-rec: [fn@Dict [let root@Dict path depth@Int]
     [builtin-if [builtin-eq depth [builtin-sub [length path] 1]]
         [merge root [make-entry [get depth path]
-            [append [get-or root [get depth path] []] []]]]
+            [append [] [get-or [get depth path] [] root]]]]
         [merge root [make-entry [get depth path]
             [toml-append-array-rec
-                [get-or root [get depth path] []]
+                [get-or [get depth path] [] root]
                 path
                 [builtin-add depth 1]]]]]]
 
@@ -187,7 +187,7 @@ toml-append-array-rec: [fn@Dict [let root@Dict path depth@Int]
 # Type: (Dict -> Dict String -> Dict)
 toml-append-array-table-impl: [fn@Dict [let root@Dict path]
     [builtin-if [builtin-eq [type-of path] "String"]
-        [merge root [make-entry path [append [get-or root path []] []]]]
+        [merge root [make-entry path [append [] [get-or path [] root]]]]
         [builtin-if [builtin-eq [length path] 0]
             root
             [toml-append-array-rec root path 0]]]]

@@ -44,8 +44,8 @@ toml-partition: [fn@Dict [let d@Dict ks@Dict i@Int flat-keys@Dict table-keys@Dic
   [if [>= i [length ks]]
     [flat: flat-keys  tables: table-keys]
     [if [dict? [get [get i ks] d]]
-      [toml-partition d ks [+ i 1] flat-keys [append table-keys [get i ks]]]
-      [toml-partition d ks [+ i 1] [append flat-keys [get i ks]] table-keys]]]]
+      [toml-partition d ks [+ i 1] flat-keys [append [get i ks] table-keys]]
+      [toml-partition d ks [+ i 1] [append [get i ks] flat-keys] table-keys]]]]
 
 # Internal: format flat key-value pairs
 toml-flat: [fn@String [let d@Dict ks@Dict i@Int acc@String]

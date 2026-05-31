@@ -21,7 +21,7 @@ csv-row: [fn@String [let row@Dict ks@Dict i@Int acc@String]
   [if [>= i [length ks]]
     [str acc "\n"]
     [csv-row row ks [+ i 1]
-      [str acc [if [> i 0] "," ""] [csv-quote [str [get-or row [get i ks] ""]]]]]]]
+      [str acc [if [> i 0] "," ""] [csv-quote [str [get-or [get i ks] "" row]]]]]]]
 
 # Internal: format all data rows
 csv-rows: [fn@String [let rows@Dict ks@Dict i@Int acc@String]

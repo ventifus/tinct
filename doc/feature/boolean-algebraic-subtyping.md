@@ -172,7 +172,7 @@ call statically verifiable.
 Field presence guard:
 
 ```tinct
-[if [has? config "debug"]
+[if [has? "debug" config]
     [process config.debug]    # config has field debug
     [use-defaults]]           # config : ~{debug: ⊤}  — guaranteed no debug field
 ```

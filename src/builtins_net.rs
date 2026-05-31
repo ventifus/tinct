@@ -644,20 +644,20 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
         },
     );
 
-    // ── tls-layer: Handle → String → Dict → Handle[... Tls] ──────────────────
+    // ── tls-layer: String → Dict → Handle → Handle[... Tls] ──────────────────
     // Wraps an existing TCP Handle in TLS (STARTTLS pattern).
     env.insert(
         "builtin-tls-layer".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::Handle(Box::new(cap_flag("readable")))),
-                (None, Type::Str),
+                (None, Type::Str), // sni
                 (
                     None,
                     Type::Record(Row {
                         fields: HashMap::new(),
                     }),
                 ), // opts dict: no required fields (BAS width subtyping)
+                (None, Type::Handle(Box::new(cap_flag("readable")))), // handle
             ],
             ret: Box::new(Type::Handle(Box::new(cap_flag("readable")))),
             variadic: false,
@@ -675,16 +675,16 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
         },
     );
 
-    // ── send-datagram: DatagramHandle → (String | Bytes) → [] ────────────────
+    // ── send-datagram: (String | Bytes) → DatagramHandle → [] ────────────────
     env.insert(
         "builtin-send-datagram".to_string(),
         Type::Function {
             params: vec![
+                (None, Type::normalize_union(vec![Type::Str, Type::Bytes])),
                 (
                     None,
                     Type::normalize_union(vec![Type::DatagramHandle, Type::QuicDatagramHandle]),
                 ),
-                (None, Type::normalize_union(vec![Type::Str, Type::Bytes])),
             ],
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),

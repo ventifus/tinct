@@ -11,7 +11,7 @@
 
   # Reject strings containing CR or LF — prevents CRLF injection in HTTP headers.
   validate-no-crlf: [fn [let s@String ctx@String]
-    [if [or [str-contains? s "\r"] [str-contains? s "\n"]]
+    [if [or [str-contains? "\r" s] [str-contains? "\n" s]]
       [error [str "HTTP: CRLF injection attempt in " ctx ": " s]]
       s]]
 
@@ -27,9 +27,9 @@
     [next: [match [state byte]
       [0 13]: 1  [1 10]: 2  [2 13]: 3  [3 10]: 4
       [_ 13]: 1  [_ _]:  0]]
-    [new-acc: [append acc [list b]]]
+    [new-acc: [append [list b] acc]]
     [if [= next 4]
-      [reduce concat [] [slice new-acc 0 [- [length new-acc] 4]]]
+      [reduce concat [] [slice 0 [- [length new-acc] 4] new-acc]]
       [read-until-sep h new-acc next]]]
 
   parse-header-lines: [fn [let lines@[Seq String]]
@@ -38,8 +38,8 @@
       [if [< colon 0]
         acc
         [merge acc
-          [[lower [str-trim [str-slice line 0 colon]]]:
-           [str-trim [str-slice line [+ colon 1] [- [length line] [+ colon 1]]]]]]]]
+          [[lower [str-trim [str-slice 0 colon line]]]:
+           [str-trim [str-slice [+ colon 1] [length line] line]]]]]]]
      []
      lines]]
 

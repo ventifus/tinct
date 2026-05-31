@@ -83,9 +83,11 @@ The `and-then` combinator chains operations that each return `Ok`/`Error`:
 ```tinct
 result:
   [let [raw: [try [fn [] [slurp %fs "config.json"]]]]
-    [and-then raw [fn [text]
-      [and-then [try [fn [] [from-json text]]] [fn [data]
-        [Ok [get "host" data]]]]]]]
+    [and-then [fn [text]
+      [and-then [fn [data]
+        [Ok [get "host" data]]]
+        [try [fn [] [from-json text]]]]]
+      raw]]
 ```
 
 `Ok` is the constructor and also serves as `pure`/`return` for the Result monad — use it directly to lift a plain value into a Result chain:

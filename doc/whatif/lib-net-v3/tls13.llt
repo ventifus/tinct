@@ -97,14 +97,14 @@
       [error "TLS: all-zero decrypted record"]
       [if [= [get b i] 0]
         [find-last-nonzero b [- i 1]]
-        [slice b 0 i]]]]
+        [slice 0 i b]]]]
 
   tls-read-acc: [fn [let conn@TlsConnection remaining@Int acc@[Seq Bytes]]
     [if [= remaining 0]
       [reduce concat [] acc]
       [plain: [tls-decrypt-conn-record conn [read-tls-record conn.underlying]]]
       [got:   [min remaining [length plain]]]
-      [tls-read-acc conn [- remaining got] [append acc [list [slice plain 0 got]]]]]]
+      [tls-read-acc conn [- remaining got] [append [list [slice 0 got plain]] acc]]]]
 
   init-seq-ch: [fn []
     [ch: [channel 1]]
@@ -129,7 +129,7 @@
             [bytes [mod len 256]]
             body]]
 
-  parse-finished:    [fn [let payload@Bytes] [slice payload 4 32]]
+  parse-finished:    [fn [let payload@Bytes] [slice 4 32 payload]]
   encode-finished:   [fn [let mac@[Bytes 32]] [encode-hs 20 mac]]
   sign-with-key:     [fn [let private-key@Bytes input@Bytes] [error "TODO: sign-with-key — detect PKCS#8 OID, dispatch to rsa-pss-sign/p256-sign/ed25519-sign"]]
   verify-sig:        [fn [let public-key@Bytes input@Bytes sig@Bytes] [error "TODO: verify-sig"]]
@@ -217,8 +217,8 @@
   tls-write-bytes: [fn [let conn@TlsConnection data@Bytes]
     [if [<= [length data] 16384]
       [tls-write-record conn [ApplicationData] data]
-      [tls-write-record conn [ApplicationData] [slice data 0 16384]]
-      [tls-write-bytes conn [slice data 16384 [- [length data] 16384]]]]]
+      [tls-write-record conn [ApplicationData] [slice 0 16384 data]]
+      [tls-write-bytes conn [slice 16384 [length data] data]]]]
 
   # hash: the PRF hash for this cipher suite — passed from cipher-params.
   hkdf-expand-label: [fn [let secret@Bytes label@String context@Bytes len@Int hash@HkdfHash]

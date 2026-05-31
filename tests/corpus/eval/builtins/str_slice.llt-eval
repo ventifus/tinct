@@ -1,4 +1,4 @@
 # str-slice : extract substring by character indices
-[str-slice "hello" 1 3]
+[str-slice 1 3 "hello"]
 === out
 String("el")

@@ -1,6 +1,6 @@
 # builder-get-or: key present → returns existing, ignores default
 [b: [make-builder]
- _: [builder-set b "x" 42]
- result: [builder-get-or b "x" 99]]{result}
+ _: [builder-set "x" 42 b]
+ result: [builder-get-or "x" 99 b]]{result}
 === out
 Int(42)

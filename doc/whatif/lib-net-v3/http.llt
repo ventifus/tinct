@@ -57,8 +57,8 @@
                   [sni: sni  alpn: ["h3"]  ech: ech  trust-roots: SystemRoots]]]
 
   tcp-h2-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Int ech@Bytes]
-    [[tcp-connect cap [addr: addr  port: [@Port port]]]
-      | [tls-layer [sni: sni  alpn: ["h2"]  ech: ech  trust-roots: SystemRoots]]]]
+    [tcp-connect cap [addr: addr  port: [@Port port]]]
+      | [tls-layer sni [alpn: ["h2"]  ech: ech  trust-roots: SystemRoots]]]
 
   scheme-default-port: [fn [let scheme@String]
     [match scheme "https": 443  "http": 80  _: 443]]
@@ -156,7 +156,7 @@
   router: [fn [let routes@[Seq [Seq t]]]
     [fn [let req@RawRequest]
       # find returns [Some x] or [None] (prelude function — constructs explicit Maybe).
-      [match [find [fn [let route] [starts-with? req.path [get route 0]]] routes]
+      [match [find [fn [let route] [starts-with? [get route 0] req.path]] routes]
         [Some route]: [[get route 1] req]
         [None]:       not-found]]]
 

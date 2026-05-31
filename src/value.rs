@@ -690,6 +690,12 @@ pub enum Value {
     /// Backed by `tokio_util::sync::CancellationToken` which is `Clone` (cheap Arc internally).
     /// A root context is created by `[context]`; child contexts from `[with-cancel ctx]` etc.
     Context(tokio_util::sync::CancellationToken),
+
+    /// Reactive cell — created by `reactive-cell` builtin.
+    /// Last-write-wins broadcast: all readers always see the most recently set value.
+    /// Backed by `tokio::sync::watch::channel`. Stores both Sender and Receiver in an Arc
+    /// so that `cell-get` can borrow the latest value without requiring exclusive access.
+    ReactiveCell(Arc<ReactiveCellInner>),
 }
 
 /// State of an async task spawned via `task` builtin.
@@ -713,6 +719,18 @@ pub struct ChannelInner {
     pub receiver: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Value>>,
     /// Channel capacity (for debugging/introspection).
     pub capacity: i64,
+}
+
+/// Inner state for a reactive cell created via `reactive-cell` builtin.
+/// Backed by `tokio::sync::watch` for last-write-wins broadcast semantics.
+/// The Sender is behind a Mutex so that concurrent `cell-set` calls are serialized.
+/// The Receiver is cloned cheaply (watch receivers share the same backing cell).
+pub struct ReactiveCellInner {
+    /// Sender half — wrapped in Mutex so concurrent writers serialize naturally.
+    pub sender: tokio::sync::Mutex<tokio::sync::watch::Sender<Value>>,
+    /// Receiver half — kept here so `cell-get` can borrow the latest value.
+    /// `watch::Receiver` is `Clone` (cheap reference increment on the shared state).
+    pub receiver: tokio::sync::watch::Receiver<Value>,
 }
 
 /// State for an HTTP/3 session: the request sender and the background driver task.
@@ -809,6 +827,7 @@ impl Value {
             Value::Task(_) => "Task",
             Value::Channel(_) => "Channel",
             Value::Context(_) => "Context",
+            Value::ReactiveCell(_) => "ReactiveCell",
         }
     }
 
@@ -905,6 +924,7 @@ impl fmt::Debug for Value {
             Value::Task(_) => write!(f, "Task"),
             Value::Channel(_) => write!(f, "Channel"),
             Value::Context(_) => write!(f, "Context"),
+            Value::ReactiveCell(_) => write!(f, "ReactiveCell"),
         }
     }
 }
@@ -1000,6 +1020,7 @@ impl fmt::Display for Value {
             Value::Task(_) => write!(f, "<task>"),
             Value::Channel(_) => write!(f, "<channel>"),
             Value::Context(_) => write!(f, "<context>"),
+            Value::ReactiveCell(_) => write!(f, "<reactive-cell>"),
         }
     }
 }

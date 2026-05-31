@@ -203,7 +203,7 @@ Note: Bracket access is not supported. The old `config.services[0].host` syntax 
 **Input:**
 
 ```tinct
-[slice data 2 5]
+[slice 2 5 data]
 ```
 
 **AST:**
@@ -211,11 +211,11 @@ Note: Bracket access is not supported. The old `config.services[0].host` syntax 
 ```json
 Call {
     func: VarRef("slice"),
-    args: [VarRef("data"), Int(2), Int(5)],
+    args: [Int(2), Int(5), VarRef("data")],
 }
 ```
 
-Note: Range access syntax (`data[2..5]`) is not supported. Use the `slice`, `take`, and `drop` stdlib functions for subsequences. `[slice data 2 5]` returns entries at positions 2, 3, 4 (half-open interval). `[take 3 data]` returns the first 3 entries. `[drop 2 data]` returns all entries after the first 2.
+Note: Range access syntax (`data[2..5]`) is not supported. Use the `slice`, `take`, and `drop` stdlib functions for subsequences. `[slice 2 5 data]` returns entries at positions 2, 3, 4 (half-open interval). `[take 3 data]` returns the first 3 entries. `[drop 2 data]` returns all entries after the first 2.
 
 ### 13.9 Type Assertion
 

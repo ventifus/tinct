@@ -78,14 +78,14 @@ Core operations on dicts. All materialize the dict structure (the IndexMap) to p
 | `keys` | 1 | `S → D` | Dict | Return dict with same keys, values are the keys themselves (newly constructed Int/String/Float) |
 | `length` | 1 | `S → V` | Int | Count entries (works on Dict or Seq — materializes structure, not values) |
 | `merge` | 2 | `S × S → D` | Dict | Right-biased merge; materializes both dicts for key set, values are Rc::clone thunks |
-| `append` | 2 | `S × L → D` | Dict | Add entry to dict; materializes dict for key computation, value passes through as thunk |
+| `append` | 2 | `L × S → D` | Dict | Add entry to dict; materializes dict for key computation, value passes through as thunk |
 
 **Error cases:**
 
 - `keys`: Type mismatch if arg is not Dict or Seq
 - `length`: Type mismatch if arg is not Dict or Seq
 - `merge`: Type mismatch if either arg is not Dict
-- `append`: Type mismatch if first arg is not Dict or second arg is not a two-entry dict (key-value pair)
+- `append`: Type mismatch if second arg is not Dict; first arg is the value to append (a two-entry key-value pair dict)
 
 ## Dict Access (Seq-Producing)
 
@@ -246,7 +246,7 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 
 **Error cases:**
 
-- `send-datagram`: Type mismatch if first arg is not Handle or second arg is not Bytes/String; capability error if Handle does not carry `Datagram` capability; I/O error on send failure
+- `send-datagram`: Type mismatch if first arg is not Bytes/String or second arg is not Handle; capability error if Handle does not carry `Datagram` capability; I/O error on send failure
 - `recv-datagram`: Type mismatch if arg is not Handle; capability error if Handle does not carry `Datagram` capability; I/O error on receive failure
 
 ## Schema Validation
@@ -681,13 +681,13 @@ Establishes a TLS 1.3 session and returns a `Handle` with the `Tls` capability.
 
 | Builtin | Arity | Signature | Result | Description |
 |---------|-------|-----------|--------|-------------|
-| `tls-layer` | 3 | `S × S × S → Handle` | Handle | Layer TLS: `handle sni opts` → Handle with Tls capability |
+| `tls-layer` | 3 | `S × S × S → Handle` | Handle | Layer TLS: `sni opts handle` → Handle with Tls capability |
 
 **Usage:**
 
 ```tinct
 [tcp: [connect net Tcp "10.0.0.5" 443]]
-[tls: [tls-layer tcp "api.example.com" []]]
+[tls: [tls-layer "api.example.com" [] tcp]]
 # → Handle{ Binary Readable Writable Stream Tls }
 === error
 type errors:
@@ -721,7 +721,7 @@ All three trust sources (`ca-bundle`, system roots, Mozilla roots) union when co
 ```tinct
 [cert: [open fs "certs/client.pem" Readable]]
 [key:  [open fs "certs/client-key.pem" Readable]]
-[h: [tls-layer tcp "api.internal" [client-cert: cert  client-key: key]]]
+[h: [tls-layer "api.internal" [client-cert: cert  client-key: key] tcp]]
 === error
 type errors:
   undefined variable: fs at 1:14-1:16
@@ -734,7 +734,7 @@ type errors:
 
 ```
 
-**Error cases:** Type mismatch if handle is not a Handle or sni is not String; capability error if the Handle does not carry the `Stream` capability or the underlying TCP stream has already been consumed; TLS handshake failure (certificate verification, expired cert, hostname mismatch); SPKI pin mismatch if `pins` is specified and the leaf cert matches none.
+**Error cases:** Type mismatch if sni is not String, opts is not Dict, or handle is not a Handle; capability error if the Handle does not carry the `Stream` capability or the underlying TCP stream has already been consumed; TLS handshake failure (certificate verification, expired cert, hostname mismatch); SPKI pin mismatch if `pins` is specified and the leaf cert matches none.
 
 ### SPKI Pinning
 

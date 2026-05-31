@@ -853,6 +853,10 @@ pub fn visit_value<V: ValueVisitor>(
             "Context".to_string(),
             span,
         ))),
+        value::Value::ReactiveCell(_) => Err(Box::new(error::EvalError::value_not_serializable(
+            "ReactiveCell".to_string(),
+            span,
+        ))),
         value::Value::Builder(_) => Err(Box::new(error::EvalError::value_not_serializable(
             "Builder".to_string(),
             span,

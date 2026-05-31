@@ -2,6 +2,6 @@
 
 [include %libdir "protocols/grpc.llt"]
 ---
-[char-code [str-slice [call %.build-grpc-frame "data" false] 0 1]]
+[char-code [str-slice 0 1 [call %.build-grpc-frame "data" false]]]
 === out
 Int(0)

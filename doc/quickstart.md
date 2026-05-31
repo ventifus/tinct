@@ -64,7 +64,7 @@ For dynamic or computed keys, use `get`:
   dynamic: [get field person]     # → "Alice"
   indexed: [get 0 ["x" "y"]]     # → "x"
   nested:  [get-in person ["address" "city"]]
-  safe:    [get-or person "missing" "default"]  # → "default"
+  safe:    [get-or "missing" "default" person]  # → "default"
   exists:  [has? "name" person]   # → true
 ]
 ```

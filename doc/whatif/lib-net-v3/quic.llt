@@ -35,8 +35,8 @@
   quic-extract-dcid: [fn [let pkt@Bytes]
     [byte0: [get pkt 0]]
     [if [= [bit-and byte0 0x80] 0x80]
-      [slice pkt 6 [get pkt 5]]      # long header: dcid-len at byte 5
-      [slice pkt 1 20]]]             # short header: 20-byte DCID assumed
+      [slice 6 [+ 6 [get pkt 5]] pkt]      # long header: dcid-len at byte 5
+      [slice 1 20 pkt]]]             # short header: 20-byte DCID assumed
 
   quic-new-conn: [fn [let sock@UdpSocket peer@SocketAddress dcid@Bytes in-ch@[Channel UdpDatagram]]
     [error "TODO: quic-new-conn — process Initial, complete TLS via CRYPTO frames, derive QUIC keys (RFC 9001 §5)"]]

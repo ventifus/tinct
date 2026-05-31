@@ -1,8 +1,8 @@
 # builder-snapshot: creates frozen copy without freezing the builder
 [b: [make-builder]
- _: [builder-set b "x" 1]
+ _: [builder-set "x" 1 b]
  snap: [builder-snapshot b]
- _: [builder-set b "y" 2]
+ _: [builder-set "y" 2 b]
  final: [builder-finish b]]{snap: snap  final: final}
 === out
 Dict({"snap": Dict({"x": Int(1)}), "final": Dict({"x": Int(1), "y": Int(2)})})

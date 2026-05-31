@@ -1,6 +1,6 @@
 # builder-get-or: key absent → inserts default and returns it
 [b: [make-builder]
- _: [builder-set b "x" 42]
- result: [builder-get-or b "y" 99]]{result}
+ _: [builder-set "x" 42 b]
+ result: [builder-get-or "y" 99 b]]{result}
 === out
 Int(99)

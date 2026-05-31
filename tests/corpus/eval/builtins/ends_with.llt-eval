@@ -1,4 +1,4 @@
 # ends-with? : check if string ends with suffix
-[ends-with? "hello" "llo"]
+[ends-with? "llo" "hello"]
 === out
 Bool(true)

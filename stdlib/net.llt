@@ -33,10 +33,10 @@
   # Input: sections dict with 0 (headers) and 1 (body).
   parse-header-body: [fn@Dict [let sections@Dict]
     [hdr-lines: [split "\r\n" [get 0 sections]]
-    [set [set [set []
-      "status"  [to-int [get 1 [split " " [get 0 hdr-lines]]]]]
-      "headers" [parse-header-fields-impl [rest hdr-lines] 0 [length [rest hdr-lines]] []]]
-      "body"    [get 1 sections]]]]
+    [set []
+      status:  [to-int [get 1 [split " " [get 0 hdr-lines]]]]
+      headers: [parse-header-fields-impl [rest hdr-lines] 0 [length [rest hdr-lines]] []]
+      body:    [get 1 sections]]]]
 ]
 
 # Public API
@@ -50,7 +50,7 @@
   parse-http-response: [fn@Dict [let response@String]
     [sections: [split "\r\n\r\n" response]
     [if [= [length sections] 1]
-      [set [set [set [] "status" 0] "headers" []] "body" response]
+      [set [] status: 0 headers: [] body: response]
       [parse-header-body sections]]]]
 
   # Make an HTTP GET request using url@Url.
@@ -90,14 +90,14 @@
       [pairs: [split u.query "&"]
       [reduce [fn [let acc pair]
         [kv: [split pair "="]
-        [set acc [get 0 kv] [if [= [length kv] 1] "" [get 1 kv]]]]]
+        [merge acc [make-entry [get 0 kv] [if [= [length kv] 1] "" [get 1 kv]]]]]]
         [] pairs]]]]
 
   # Create an SPKI pin dict for certificate pinning.
   # algorithm: HashAlgorithm variant (e.g. [Sha256]), fingerprint: Bytes
   # Returns: {algorithm: variant, fingerprint: bytes}
   spki-pin: [fn@Dict [let algorithm fingerprint]
-    [set [set [] "algorithm" algorithm] "fingerprint" fingerprint]]
+    [set [] algorithm: algorithm fingerprint: fingerprint]]
 
   # Return "scheme://host:port" (origin).
   # Port is omitted if null.

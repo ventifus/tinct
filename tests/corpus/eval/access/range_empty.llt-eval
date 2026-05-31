@@ -2,6 +2,6 @@
 # Range is half-open [start, end), so slice 1 1 selects nothing
 [data: [0: "a"  1: "b"  2: "c"]]
 
-[result: [slice data 1 1]]
+[result: [slice 1 1 data]]
 === out
 Dict({"result": Dict({})})

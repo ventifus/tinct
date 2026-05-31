@@ -5,10 +5,10 @@
 [include %libdir "protocols/socks5.llt"]
 ---
 [call [fn [p]
-    [set [set [set []
-        "success?" p.success?]
-        "rep"      p.rep]
-        "status"   p.status]]
+    [set []
+        success?: p.success?
+        rep:      p.rep
+        status:   p.status]]
     [call %.parse-socks5-response [str [chr 5] [chr 5] [chr 0] [chr 1]]]]
 === out
 Dict({"success?": Bool(false), "rep": Int(5), "status": String("Connection refused")})

@@ -23,7 +23,7 @@
       2:  [Binary payload]
       8:  [Close  [if [>= [length payload] 2]
                     [+ [* [get payload 0] 256] [get payload 1]] 1000]
-                  [if [> [length payload] 2] [bytes-str [slice payload 2 [- [length payload] 2]]] ""]]
+                  [if [> [length payload] 2] [bytes-str [slice 2 [length payload] payload]] ""]]
       9:  [Ping   payload]
       10: [Pong   payload]
       _:  [error [str "WebSocket: unknown opcode: " opcode]]]]

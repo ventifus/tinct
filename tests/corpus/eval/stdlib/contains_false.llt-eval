@@ -1,4 +1,4 @@
 # contains?: returns false when element is absent
-[contains? [1 2 3 4 5] 99]
+[contains? 99 [1 2 3 4 5]]
 === out
 Bool(false)

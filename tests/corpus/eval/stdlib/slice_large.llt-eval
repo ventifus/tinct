@@ -1,5 +1,5 @@
 # slice: large input (n=1000), take elements at positions 200..800
 [let d [collect [range 0 1000]]]
-[length [slice d 200 800]]
+[length [slice 200 800 d]]
 === out
 Int(600)

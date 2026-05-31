@@ -1,0 +1,7 @@
+# graceful-exit now takes two arguments: code and timeout-ms.
+# Verify the new signature is accessible and that calling it with
+# only one argument produces an arity error (1 positional, need 2).
+# This avoids actually invoking [exit-now] which would kill the test process.
+[graceful-exit 0]
+=== error
+arity mismatch: expected 2 argument(s), got 1

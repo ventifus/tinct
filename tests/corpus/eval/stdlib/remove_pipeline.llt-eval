@@ -1,0 +1,4 @@
+# remove subject-last enables pipeline: dict | [remove key]
+[[x: 1  y: 2] | [remove "x"]]
+=== out
+Dict({y: Int(2)})

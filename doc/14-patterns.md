@@ -222,13 +222,13 @@ See the comparison table below for how Tinct relates to JSONnet, Dhall, Nix, CUE
 |-----------|-----|---------|----------|-----|
 | Field access | `.name` | `$.name` | `name` | `data.name` |
 | Nested access | `.a.b.c` | `$.a.b.c` | `a.b.c` | `data.a.b.c` |
-| Deep path (dynamic) | `getpath(p)` | N/A | N/A | `[get-in data path]` |
-| Computed key | `.["k"]` | `$['k']` | N/A | `[get data key]` |
-| Key index | `.["k"]` | `$[0]`, `$[1]` | `[0]`, `[-1]` | `[get data 0]`, `[get data -1]` (key-based) |
-| Positional index | `.[0]`, `.[-1]` | N/A | N/A | `[nth data 0]`, `[nth data -1]` |
-| Key-range slice | N/A | N/A | N/A | `[slice data 2 5]` |
-| Positional slice | `.[2:5]` | `$[2:5]` | `[2:5]` | `[slice data 2 5]` |
-| First/last | `.[0]`, `.[-1]` | `$[0]` | `[0]`, `[-1]` | `[get data 0]` (key 0), `[last data]` |
+| Deep path (dynamic) | `getpath(p)` | N/A | N/A | `[get-in path data]` |
+| Computed key | `.["k"]` | `$['k']` | N/A | `[get key data]` |
+| Key index | `.["k"]` | `$[0]`, `$[1]` | `[0]`, `[-1]` | `[get 0 data]`, `[get -1 data]` (key-based) |
+| Positional index | `.[0]`, `.[-1]` | N/A | N/A | `[nth 0 data]`, `[nth -1 data]` |
+| Key-range slice | N/A | N/A | N/A | `[slice 2 5 data]` |
+| Positional slice | `.[2:5]` | `$[2:5]` | `[2:5]` | `[slice 2 5 data]` |
+| First/last | `.[0]`, `.[-1]` | `$[0]` | `[0]`, `[-1]` | `[get 0 data]` (key 0), `[last data]` |
 | Flatten | `flatten` | N/A | `[]` | `[flatten list]` |
 | All values | `.[]` | `$.*` | `*` | `[values data]` |
 | Filter (simple) | `select(.age > 30)` | `[?(@.age>30)]` | `` [?age>`30`] `` | `[filter [fn [u] [> u.age 30]] data]` |
@@ -237,9 +237,9 @@ See the comparison table below for how Tinct relates to JSONnet, Dhall, Nix, CUE
 | Reshape | `{n: .name}` | N/A | `{n: name}` | `[map [fn [x] [n: x.name  a: x.age]]]` |
 | Multi-select | `[.name, .age]` | N/A | `[name, age]` | `[data.name  data.age]` |
 | Pipe/chain | `\|` | implicit | `\|` | `[-> ...]` |
-| Optional access | `.foo?` | N/A | N/A | `[get-or data "foo" default]` |
-| Existence check | `has("key")` | N/A | N/A | `[has? data "key"]` |
-| Recursive descent | `..` | `$..name` | N/A | `[find-deep data "name"]` |
+| Optional access | `.foo?` | N/A | N/A | `[get-or "foo" default data]` |
+| Existence check | `has("key")` | N/A | N/A | `[has? "key" data]` |
+| Recursive descent | `..` | `$..name` | N/A | `[find-deep "name" data]` |
 
 ---
 

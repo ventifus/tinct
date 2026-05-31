@@ -1,4 +1,4 @@
-# and-then: result-first order. If Ok, apply f to the value.
-[and-then [Ok 21] [fn [x] [Ok [* x 2]]]]
+# and-then: fn-first order. If Ok, apply f to the value.
+[and-then [fn [x] [Ok [* x 2]]] [Ok 21]]
 === out
 Variant(Ok, Int(42))

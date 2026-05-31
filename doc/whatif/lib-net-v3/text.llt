@@ -39,7 +39,7 @@
 [
   # Returns the charset name as a bare String, or null if not found.
   extract-charset: [fn [let content-type@String]
-    [charset-parts: [filter [fn [let p] [str-contains? [lower p] "charset="]]
+    [charset-parts: [filter [fn [let p] [str-contains? "charset=" [lower p]]]
                      [str-split ";" content-type]]]
     [match charset-parts
       []: null

@@ -1,5 +1,5 @@
 # str-repeat: repeat a string n times
 ---
-[str-repeat "ab" 3]
+[str-repeat 3 "ab"]
 === out
 String("ababab")

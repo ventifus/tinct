@@ -5,7 +5,7 @@
 Path-sensitive type narrowing gives the type checker branch-specific
 knowledge derived from conditional guards. After `[= x "hello"]`, the
 true branch knows `x` is exactly `"hello"`. After `[= [type-of x] "Int"]`,
-the true branch knows `x` is `Int`. After `[has? x "name"]`, the true
+the true branch knows `x` is `Int`. After `[has? "name" x]`, the true
 branch knows `x` has a `name` field.
 
 This produces more precise types in conditional branches, improves LSP
@@ -87,21 +87,21 @@ this pattern extends to recognize `[int? x]` directly, without the
 #### Pattern 3: Key Presence
 
 ```tinct
-[has? x "name"]
+[has? "name" x]
 ```
 
 - **True branch:** `x : Record([name: α], Open)` where `α` is fresh —
   the record is known to have a `name` field
 - **False branch:** `x` unchanged
 
-Recognizes `has?` with a `VarRef` and a string literal key. Narrows
+Recognizes `has?` with a string literal key and a `VarRef`. Narrows
 the record type to include the key with a fresh type variable. If `x`
 already has a record type, the key is added to the existing fields.
 
 #### Pattern 4: Boolean Conjunction
 
 ```tinct
-[and [= x "hello"] [has? y "name"]]
+[and [= x "hello"] [has? "name" y]]
 ```
 
 Conjunction (`and`) applies both narrowings to the true-branch

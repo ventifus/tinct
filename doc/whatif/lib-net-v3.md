@@ -1564,7 +1564,7 @@ candidate-names: [fn [let host@String search@[Seq String] ndots@Int]
      searched:  [map [fn [let d] [str host "." d "."]] search]
      [if [>= dot-count ndots]
        [cons absolute searched]
-       [append searched [list absolute]]]]]]
+       [append [list absolute] searched]]]]]
 
 # Try each candidate name in order; first successful resolution wins.
 dns-try-names: [fn [let cap@NetCap config@DnsConfig names@[Seq String] type@Symbol]

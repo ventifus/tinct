@@ -149,24 +149,24 @@ s5-parse-bound-addr: [fn@Dict [let bytes@String offset@Int atyp@Int]
 # Returns {addr: "a.b.c.d", port: N, addr-end: offset+6}.
 s5-parse-ipv4: [fn@Dict [let bytes@String offset@Int]
     [s5-parse-ipv4-step bytes offset
-        [char-code [str-slice bytes offset             [+ offset 1]]]
-        [char-code [str-slice bytes [+ offset 1] [+ offset 2]]]
-        [char-code [str-slice bytes [+ offset 2] [+ offset 3]]]
-        [char-code [str-slice bytes [+ offset 3] [+ offset 4]]]
-        [char-code [str-slice bytes [+ offset 4] [+ offset 5]]]
-        [char-code [str-slice bytes [+ offset 5] [+ offset 6]]]]]
+        [char-code [str-slice offset             [+ offset 1] bytes]]
+        [char-code [str-slice [+ offset 1] [+ offset 2] bytes]]
+        [char-code [str-slice [+ offset 2] [+ offset 3] bytes]]
+        [char-code [str-slice [+ offset 3] [+ offset 4] bytes]]
+        [char-code [str-slice [+ offset 4] [+ offset 5] bytes]]
+        [char-code [str-slice [+ offset 5] [+ offset 6] bytes]]]]
 
 s5-parse-ipv4-step: [fn@Dict [let bytes@String offset@Int b0@Int b1@Int b2@Int b3@Int port-hi@Int port-lo@Int]
-    [set [set [set []
-        "addr"     [str b0 "." b1 "." b2 "." b3]]
-        "port"     [s5-decode-port port-hi port-lo]]
-        "addr-end" [+ offset 6]]]
+    [set []
+        addr:     [str b0 "." b1 "." b2 "." b3]
+        port:     [s5-decode-port port-hi port-lo]
+        addr-end: [+ offset 6]]]
 
 # Parse domain: 1-byte length prefix + domain bytes + 2-byte port.
 # Returns {addr: <domain-string>, port: N, addr-end: ...}.
 s5-parse-domain: [fn@Dict [let bytes@String offset@Int]
     [s5-parse-domain-step bytes offset
-        [char-code [str-slice bytes offset [+ offset 1]]]]]
+        [char-code [str-slice offset [+ offset 1] bytes]]]]
 
 s5-parse-domain-step: [fn@Dict [let bytes@String offset@Int dom-len@Int]
     [s5-parse-domain-finish bytes offset dom-len
@@ -174,12 +174,12 @@ s5-parse-domain-step: [fn@Dict [let bytes@String offset@Int dom-len@Int]
         [+ offset [+ 1 dom-len]]]]
 
 s5-parse-domain-finish: [fn@Dict [let bytes@String offset@Int dom-len@Int dom-start@Int dom-end@Int]
-    [set [set [set []
-        "addr"     [str-slice bytes dom-start dom-end]]
-        "port"     [s5-decode-port
-                        [char-code [str-slice bytes dom-end [+ dom-end 1]]]
-                        [char-code [str-slice bytes [+ dom-end 1] [+ dom-end 2]]]]]
-        "addr-end" [+ dom-end 2]]]
+    [set []
+        addr:     [str-slice dom-start dom-end bytes]
+        port:     [s5-decode-port
+                      [char-code [str-slice dom-end [+ dom-end 1] bytes]]
+                      [char-code [str-slice [+ dom-end 1] [+ dom-end 2] bytes]]]
+        addr-end: [+ dom-end 2]]]
 
 # Parse IPv6: 16 address bytes + 2 port bytes at offset.
 # Returns the raw 16-byte slice as addr (hex formatting needs encoding.llt).
@@ -188,12 +188,12 @@ s5-parse-ipv6: [fn@Dict [let bytes@String offset@Int]
     [s5-parse-ipv6-step bytes offset [+ offset 16]]]
 
 s5-parse-ipv6-step: [fn@Dict [let bytes@String offset@Int port-offset@Int]
-    [set [set [set []
-        "addr"     [str-slice bytes offset port-offset]]
-        "port"     [s5-decode-port
-                        [char-code [str-slice bytes port-offset [+ port-offset 1]]]
-                        [char-code [str-slice bytes [+ port-offset 1] [+ port-offset 2]]]]]
-        "addr-end" [+ port-offset 2]]]
+    [set []
+        addr:     [str-slice offset port-offset bytes]
+        port:     [s5-decode-port
+                      [char-code [str-slice port-offset [+ port-offset 1] bytes]]
+                      [char-code [str-slice [+ port-offset 1] [+ port-offset 2] bytes]]]
+        addr-end: [+ port-offset 2]]]
 
 # --------------------------------------------------------------------------
 # Response field parser
@@ -210,24 +210,24 @@ s5-parse-response-success: [fn@Dict [let bytes@String ver@Int rep@Int atyp@Int]
         [s5-parse-bound-addr bytes 4 atyp]]]
 
 s5-parse-response-success-step: [fn@Dict [let ver@Int rep@Int atyp@Int bound@Dict]
-    [set [set [set [set [set [set [set []
-        "version"  ver]
-        "rep"      rep]
-        "status"   [s5-rep-message rep]]
-        "atyp"     atyp]
-        "addr"     [get "addr" bound]]
-        "port"     [get "port" bound]]
-        "success?" true]]
+    [set []
+        version:  ver
+        rep:      rep
+        status:   [s5-rep-message rep]
+        atyp:     atyp
+        addr:     [get "addr" bound]
+        port:     [get "port" bound]
+        success?: true]]
 
 s5-parse-response-failure: [fn@Dict [let ver@Int rep@Int atyp@Int]
-    [set [set [set [set [set [set [set []
-        "version"  ver]
-        "rep"      rep]
-        "status"   [s5-rep-message rep]]
-        "atyp"     atyp]
-        "addr"     ""]
-        "port"     0]
-        "success?" false]]
+    [set []
+        version:  ver
+        rep:      rep
+        status:   [s5-rep-message rep]
+        atyp:     atyp
+        addr:     ""
+        port:     0
+        success?: false]]
 
 ]
 
@@ -312,8 +312,8 @@ parse-socks5-response@[doc: "Parse SOCKS5 server response (RFC 1928 §6)"]:
         [if [< [length bytes] 4]
             [error "parse-socks5-response: response too short (need at least 4 bytes)"]
             [s5-parse-response-fields bytes
-                [char-code [str-slice bytes 0 1]]
-                [char-code [str-slice bytes 1 2]]
-                [char-code [str-slice bytes 3 4]]]]]
+                [char-code [str-slice 0 1 bytes]]
+                [char-code [str-slice 1 2 bytes]]
+                [char-code [str-slice 3 4 bytes]]]]]
 
 ]

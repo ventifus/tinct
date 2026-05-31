@@ -1,4 +1,4 @@
 # nth: get element by negative index (-1 is last)
-[nth ["a" "b" "c"] -1]
+[nth -1 ["a" "b" "c"]]
 === out
 String("c")

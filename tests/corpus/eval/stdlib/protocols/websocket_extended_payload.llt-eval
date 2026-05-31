@@ -5,15 +5,15 @@
 [include %libdir "protocols/websocket.llt"]
 ---
 # Create a 65536-byte payload using str-repeat (available in prelude by default)
-[payload: [str-repeat "x" 65536]]
+[payload: [str-repeat 65536 "x"]]
 [frame: [%.build-ws-frame 1 payload [str [chr 1] [chr 2] [chr 3] [chr 4]]]]
 [hdr: [%.header frame]]
 # byte1 = MASK(0x80) | 127(0x7F) = 0xFF = 255 (confirms 64-bit extended length marker)
-[byte1: [char-code [str-slice hdr 1 2]]]
+[byte1: [char-code [str-slice 1 2 hdr]]]
 # 65536 = 0x00010000; byte-idx=5 in ext64 field = header byte 7 = 0x01 = 1
-[byte7: [char-code [str-slice hdr 7 8]]]
+[byte7: [char-code [str-slice 7 8 hdr]]]
 # byte-idx=6 in ext64 field = header byte 8 = 0x00 = 0
-[byte8: [char-code [str-slice hdr 8 9]]]
-[set [set [set [] "byte1" byte1] "byte7" byte7] "byte8" byte8]
+[byte8: [char-code [str-slice 8 9 hdr]]]
+[set [] byte1: byte1 byte7: byte7 byte8: byte8]
 === out
 Dict({"byte1": Int(255), "byte7": Int(1), "byte8": Int(0)})

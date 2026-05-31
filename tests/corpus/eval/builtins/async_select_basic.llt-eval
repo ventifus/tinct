@@ -1,16 +1,17 @@
-# Test select-once: wait for first channel to produce a value
-# Create two channels, send on one, select should pick it up
-# sources must be a Seq (cons-list), not a Dict literal
-
+# Test select-once with lazy send: sent: [send ch1 42] is never forced
+# (only .result is accessed, which accesses result which calls select-once).
+# The send thunk is never materialized, so ch1 has no value.
+# select-once polls all channels up to MAX_SELECT_POLLS times, finds nothing,
+# and raises a resource limit error (E043).
 [
   ch1: [channel 5]
   ch2: [channel 5]
   sent: [send ch1 42]
-  pair1: [seq ch1 [seq [fn [let x] [str "ch1:" x]] []]]
-  pair2: [seq ch2 [seq [fn [let x] [str "ch2:" x]] []]]
+  pair1: [ch: ch1  handler: [fn [let x] [str "ch1:" x]]]
+  pair2: [ch: ch2  handler: [fn [let x] [str "ch2:" x]]]
   sources: [seq pair1 [seq pair2 []]]
   result: [select-once sources]
 ]
 .result
-=== out
-String("ch1:42")
+=== error
+[E043] select-once: channel poll limit exceeded

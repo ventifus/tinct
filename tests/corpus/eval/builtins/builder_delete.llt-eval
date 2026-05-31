@@ -1,8 +1,8 @@
 # builder-delete: removes a key from the builder
 [b: [make-builder]
- _: [builder-set b "x" 1]
- _: [builder-set b "y" 2]
- _: [builder-delete b "x"]
+ _: [builder-set "x" 1 b]
+ _: [builder-set "y" 2 b]
+ _: [builder-delete "x" b]
  result: [builder-finish b]]{result}
 === out
 Dict({"y": Int(2)})

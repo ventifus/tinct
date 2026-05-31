@@ -1,4 +1,4 @@
 # has?: check integer key exists in list
-[has? [10 20 30] 1]
+[has? 1 [10 20 30]]
 === out
 Bool(true)

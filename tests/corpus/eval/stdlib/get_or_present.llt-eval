@@ -1,4 +1,4 @@
 # get-or: returns value when key is present
-[get-or [a: 1] "a" 99]
+[get-or "a" 99 [a: 1]]
 === out
 Int(1)

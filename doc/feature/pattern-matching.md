@@ -225,7 +225,7 @@ Pattern types:
 - `VarRef("n")` (lowercase) → variable binding: always matches, bind `n`
 - `VarRef("Int")` (uppercase) → type pattern: `[int? scrutinee]`
 - `Int(42)` (literal) → literal match: `[= scrutinee 42]`
-- `Dict([ok: VarRef("v")])` → dict pattern: `[and [dict? s] [has? s "ok"]]`, bind `v`
+- `Dict([ok: VarRef("v")])` → dict pattern: `[and [dict? s] [has? "ok" s]]`, bind `v`
 - `Annotated("n", Simple("Int"))` → type-constrained binding
 - `Annotated("n", PropertyDict([is: pred]))` → guard: call `pred` with bound value
 - `Pipe(p1, p2)` → or-pattern: try both sub-patterns

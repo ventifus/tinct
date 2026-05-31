@@ -26,10 +26,10 @@ fn@Any [let code@Int]
 
 ### `graceful-exit`
 
-[unindent "\nBounded graceful shutdown: cancel tasks, drain, then exit.\n\nExample: [graceful-exit 0]\n\nNote: MVP implementation waits indefinitely for drain.\nTODO: Add drain-timeout parameter when timeout builtin is available.\n"]
+[unindent "\nBounded graceful shutdown: cancel tasks, drain with timeout, then exit.\n\nExample: [graceful-exit 0 5000]  # 5-second drain timeout\n\nArgs:\n- code: exit code\n- timeout-ms: maximum milliseconds to wait for drain\n\nIf drain times out, exits immediately without waiting for remaining tasks.\n"]
 
 ```tinct
-fn@Any [let code@Int]
+fn@Any [let code@Int timeout-ms@Int]
 ```
 
 ### `loop-select`

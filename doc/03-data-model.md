@@ -82,7 +82,7 @@ process-all: [fn [hosts@Hosts] [map do-work hosts]]
 
 # Map@[K: V] — "lookup" perspective: string-keyed lookup table
 Scoreboard: [type [Map [String: Int]]]
-lookup: [fn@Int [s@Scoreboard  key@String] [get-or s key 0]]
+lookup: [fn@Int [s@Scoreboard  key@String] [get-or key 0 s]]
 
 # Inline forms
 hosts@[Map T1]                                    # collection of T1 values
@@ -173,7 +173,7 @@ Functions that may return nothing return `[]`. Annotate with `@Null`:
 
 ```tinct
 find: [fn@[Ok String | Null] [haystack@String needle@String]
-  [if [str-contains haystack needle] [Ok haystack] []]]
+  [if [str-contains? needle haystack] [Ok haystack] []]]
 === error
 error: `:` can only appear in dict, call, class, instance, or match forms
  --> block 6:1:5
@@ -189,8 +189,8 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 [get person "occupation"]        # → Error: key "occupation" not found
 
 # Safe alternatives
-[get-or config "timeout" 30]    # → 30 if "timeout" missing
-[has? config "timeout"]          # → true/false
+[get-or "timeout" 30 config]    # → 30 if "timeout" missing
+[has? "timeout" config]          # → true/false
 === error
 type errors:
   undefined variable: person at 1:6-1:12
@@ -238,7 +238,7 @@ Use `[get key data]` for integer and dynamic key access.
 **Subsequence operations** — stdlib functions:
 
 ```tinct
-[slice data 2 5]                # Entries at positions 2, 3, 4 (position-based)
+[slice 2 5 data]                # Entries at positions 2, 3, 4 (position-based)
 [take 3 data]                   # First 3 entries
 [drop 2 data]                   # All entries after the first 2
 === error
@@ -254,10 +254,10 @@ Use `slice`, `take`, and `drop` for subsequences.
 **Position-based access** — stdlib functions:
 
 ```tinct
-[nth data 0]                    # First entry (position 0)
-[nth data -1]                   # Last entry (negative = from end)
+[nth 0 data]                    # First entry (position 0)
+[nth -1 data]                   # Last entry (negative = from end)
 [last data]                     # Last entry (alias)
-[slice data 2 5]                # Entries at positions 2, 3, 4
+[slice 2 5 data]                # Entries at positions 2, 3, 4
 === error
 type errors:
   undefined variable: data at 1:6-1:10
@@ -267,7 +267,7 @@ type errors:
 
 ```
 
-**Why the split:** Position-based access on a dict that has been mutated over time has less-than-useful ordering. Making it a function call (not syntax) signals that it's the unusual operation. For the common case of dense lists, `[get 0 data]` (key 0) and `[nth data 0]` (position 0) return the same thing — you never need `nth` unless you specifically want insertion-order semantics on sparse data.
+**Why the split:** Position-based access on a dict that has been mutated over time has less-than-useful ordering. Making it a function call (not syntax) signals that it's the unusual operation. For the common case of dense lists, `[get 0 data]` (key 0) and `[nth 0 data]` (position 0) return the same thing — you never need `nth` unless you specifically want insertion-order semantics on sparse data.
 
 ## List vs Dict Operations — Renumbering Rule
 
@@ -493,7 +493,7 @@ connect cap UnixDatagram  path   → Handle{ Binary Readable Writable Datagram }
 connect cap NamedPipe     path   → Handle{ Binary Readable Writable }
 
 # TLS Layer (Handle → Handle upgrade)
-tls-layer handle sni opts        → Handle{ …existing… Tls→{cert…} }
+tls-layer sni opts handle        → Handle{ …existing… Tls→{cert…} }
 ```
 
 Capability routing: `Tcp`/`Udp`/`Icmp` require a `NetCap` (allowlist checked before syscall); `UnixStream`/`UnixDatagram`/`NamedPipe` require a `DirCap` (cap_std path-based access). User-defined Connectors handle their own capability checks.
@@ -511,7 +511,7 @@ Layers compose left-to-right with Connectors:
 ```tinct
 [tcp:  [connect %nc Tcp "proxy.corp" 1080]]
 [tun:  [socks5-layer tcp "api.internal" 443]]
-[tls:  [tls-layer tun "api.internal" tls-opts]]
+[tls:  [tls-layer "api.internal" tls-opts tun]]
 === error
 type errors:
   undefined variable: %nc at 1:17-1:20
@@ -840,7 +840,7 @@ type errors:
 
 ```tinct
 data: [a: 1  b: 2  c: 3  d: 4]
-[slice data 1 3]
+[slice 1 3 data]
 === error
 error: `:` can only appear in dict, call, class, instance, or match forms
  --> block 27:1:5
@@ -849,4 +849,4 @@ error: `:` can only appear in dict, call, class, instance, or match forms
     |     ^
 ```
 
-`[slice data 1 3]` returns entries at positions 1 and 2 (half-open interval `[1, 3)` by insertion order), yielding `[0: 2  1: 3]` (renumbered). Use `slice`, `take`, and `drop` for subsequences.
+`[slice 1 3 data]` returns entries at positions 1 and 2 (half-open interval `[1, 3)` by insertion order), yielding `[0: 2  1: 3]` (renumbered). Use `slice`, `take`, and `drop` for subsequences.

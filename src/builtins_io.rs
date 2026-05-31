@@ -4662,8 +4662,8 @@ fn extract_sans(
 }
 
 /// `tls-layer`: Layer TLS on an existing TCP Handle (STARTTLS use case).
-/// Takes (handle, sni, opts). Extracts raw_tcp from Handle, wraps in TLS, returns new Handle.
-/// Signature: tls-layer handle@Handle sni@String opts@Dict → Handle[... Stream Tls]
+/// Takes (sni, opts, handle). Extracts raw_tcp from Handle, wraps in TLS, returns new Handle.
+/// Signature: tls-layer sni@String opts@Dict handle@Handle → Handle[... Stream Tls]
 pub(crate) fn builtin_tls_layer(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -4675,11 +4675,11 @@ pub(crate) fn builtin_tls_layer(
             ctx,
         } = ctx_arg;
 
-        // Expect 3 args: handle, sni, opts
+        // Expect 3 args: sni, opts, handle
         if args.len() != 3 {
             return Err(EvalError::user_error(
                 format!(
-                    "tls-layer: expected 3 arguments (handle sni opts), got {}",
+                    "tls-layer: expected 3 arguments (sni opts handle), got {}",
                     args.len()
                 ),
                 call_span,
@@ -4688,17 +4688,17 @@ pub(crate) fn builtin_tls_layer(
         }
         reject_named("tls-layer", named.as_ref(), call_span.clone())?;
 
-        let handle_val = args[0]
+        let sni_val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let sni_val = args[1]
+        let opts_val = args[1]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let opts_val = args[2]
+        let handle_val = args[2]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let sni = require_string("tls-layer", sni_val, args[1].span.clone())?;
+        let sni = require_string("tls-layer", sni_val, args[0].span.clone())?;
 
         // Extract Handle and its raw_tcp
         let (raw_tcp_slot, caps, creation_span) = match handle_val {
@@ -4727,7 +4727,7 @@ pub(crate) fn builtin_tls_layer(
                     "tls-layer".to_string(),
                     "Handle",
                     other.type_name(),
-                    args[0].span.clone(),
+                    args[2].span.clone(),
                 )
                 .into())
             }
@@ -4737,7 +4737,7 @@ pub(crate) fn builtin_tls_layer(
         if !caps.contains_key("Stream") {
             return Err(EvalError::user_error(
                 "tls-layer: handle must have Stream capability".to_string(),
-                args[0].span.clone(),
+                args[2].span.clone(),
             )
             .into());
         }
@@ -4754,14 +4754,14 @@ pub(crate) fn builtin_tls_layer(
         })?;
 
         // Build TLS config
-        let tls_config = build_tls_config(&opts_val, args[2].span.clone(), &ctx)?;
+        let tls_config = build_tls_config(&opts_val, args[1].span.clone(), &ctx)?;
 
         // Create TLS connection
         let server_name = rustls::pki_types::ServerName::try_from(sni.clone())
             .map_err(|e| {
                 EvalError::user_error(
                     format!("tls-layer: invalid server name '{}': {}", sni, e),
-                    args[1].span.clone(),
+                    args[0].span.clone(),
                 )
             })?
             .to_owned();
@@ -6472,7 +6472,7 @@ fn icmp_ping_impl(
 }
 
 /// `send-datagram`: Send a message over a DatagramHandle.
-/// Signature: `[send-datagram handle data]` → null
+/// Signature: `[send-datagram data handle]` → null
 /// `data` must be a String or Bytes.
 pub(crate) fn builtin_send_datagram(
     ctx_arg: BuiltinArgs,
@@ -6490,10 +6490,10 @@ pub(crate) fn builtin_send_datagram(
         }
         reject_named("send-datagram", named.as_ref(), call_span.clone())?;
 
-        let handle_val = args[0]
+        let data_val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let data_val = args[1]
+        let handle_val = args[1]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -6506,7 +6506,7 @@ pub(crate) fn builtin_send_datagram(
                     "send-datagram".to_string(),
                     "String or Bytes",
                     other.type_name(),
-                    args[1].span.clone(),
+                    args[0].span.clone(),
                 )
                 .into())
             }
@@ -6550,7 +6550,7 @@ pub(crate) fn builtin_send_datagram(
                 "send-datagram".to_string(),
                 "DatagramHandle or QuicDatagramHandle",
                 other.type_name(),
-                args[0].span.clone(),
+                args[1].span.clone(),
             )
             .into()),
         }

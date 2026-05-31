@@ -4268,7 +4268,7 @@ mod tests {
         let ctx = test_ctx();
         let empty = thunk_dict(IndexMap::new(), &ctx);
         let result = mat(builtin_append(BuiltinArgs {
-            args: vec![empty, thunk(Value::Int(42))],
+            args: vec![thunk(Value::Int(42)), empty],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4291,7 +4291,7 @@ mod tests {
         map.insert(Key::Int(1), thunk(string_val("b".into())));
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_append(BuiltinArgs {
-            args: vec![dict, thunk(string_val("c".into()))],
+            args: vec![thunk(string_val("c".into())), dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4314,7 +4314,7 @@ mod tests {
         map.insert(Key::String("x".into()), thunk(Value::Int(1)));
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_append(BuiltinArgs {
-            args: vec![dict, thunk(Value::Int(99))],
+            args: vec![thunk(Value::Int(99)), dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4338,7 +4338,7 @@ mod tests {
         map.insert(Key::Int(5), thunk(Value::Int(50)));
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_append(BuiltinArgs {
-            args: vec![dict, thunk(Value::Int(60))],
+            args: vec![thunk(Value::Int(60)), dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4360,7 +4360,7 @@ mod tests {
         map.insert(Key::Int(0), thunk(string_val("first".into())));
         let dict = thunk_dict(map, &ctx);
         let result = mat(builtin_append(BuiltinArgs {
-            args: vec![dict, thunk(string_val("second".into()))],
+            args: vec![thunk(string_val("second".into())), dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4385,7 +4385,7 @@ mod tests {
         let empty = thunk_dict(IndexMap::new(), &ctx);
         let val_thunk = thunk(Value::Int(7));
         let result = mat(builtin_append(BuiltinArgs {
-            args: vec![empty, Arc::clone(&val_thunk)],
+            args: vec![Arc::clone(&val_thunk), empty],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -4430,7 +4430,7 @@ mod tests {
     }
 
     #[test]
-    fn append_first_arg_non_dict() {
+    fn append_second_arg_non_dict() {
         let err = run(builtin_append(BuiltinArgs {
             args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: no_named(),
@@ -4453,7 +4453,7 @@ mod tests {
         map.insert(Key::Int(i64::MAX), thunk(Value::Int(1)));
         let dict = thunk_dict(map, &ctx);
         let err = run(builtin_append(BuiltinArgs {
-            args: vec![dict, thunk(Value::Int(2))],
+            args: vec![thunk(Value::Int(2)), dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
@@ -9409,15 +9409,15 @@ mod tests {
         assert_eq!(val, Value::Int(4), "expected length 4, got {:?}", val);
     }
 
-    /// Body test: `builtin_append` (force_count=1) must NOT force the appended VALUE.
+    /// Body test: `builtin_append` (force_count=0) must NOT force the appended VALUE.
     ///
-    /// `$append` takes a Dict and a value, inserting the value at the next integer key.
-    /// The VALUE being appended (args[1]) must stay as an unevaluated thunk — only
-    /// the dict structure (args[0]) needs to be materialized to determine the next key.
+    /// After T-776, `$append` takes `(value, dict)` — args[0]=value, args[1]=dict.
+    /// The VALUE being appended (args[0]) must stay as an unevaluated thunk — only
+    /// the dict structure (args[1]) needs to be materialized to determine the next key.
     ///
-    /// If `builtin_append` were to force args[1], the undef thunk would produce an
-    /// "undefined variable" error. Passing this test proves args[1] is never forced
-    /// by the builtin body (body test — not testing the force_count dispatch mechanism).
+    /// If `builtin_append` were to force args[0], the undef thunk would produce an
+    /// "undefined variable" error. Passing this test proves args[0] is never forced
+    /// by the builtin body (body test — not testing the pos_strictness dispatch mechanism).
     #[test]
     fn builtin_append_does_not_force_appended_value() {
         let ctx = test_ctx();
@@ -9427,7 +9427,7 @@ mod tests {
 
         // builtin_append should succeed: it inserts the thunk by Rc::clone, never forcing it.
         let result = run(builtin_append(BuiltinArgs {
-            args: vec![dict, bomb],
+            args: vec![bomb, dict],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),

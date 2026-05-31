@@ -1,4 +1,4 @@
 # has?: key does not exist
-[has? [x: 1 y: 2] "z"]
+[has? "z" [x: 1 y: 2]]
 === out
 Bool(false)

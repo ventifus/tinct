@@ -1,0 +1,4 @@
+# nth subject-last enables pipeline: dict | [nth n]
+[[0: "a"  1: "b"  2: "c"] | [nth 1]]
+=== out
+String("b")

@@ -1,6 +1,6 @@
-# str-slice: empty slice (string, start=2, end=2) => ""
+# str-slice: empty slice (start=2, end=2, string) => ""
 [include %libdir "strings.llt"]
 ---
-[str-slice "hello" 2 2]
+[str-slice 2 2 "hello"]
 === out
 String("")

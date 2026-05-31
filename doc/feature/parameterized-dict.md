@@ -105,8 +105,8 @@ Access returns `V | Null`:
 
 ```tinct
 [get k map]          # Map@[Int: String] → String | Null
-[has? map k]         # Map@[Int: String] → Bool
-[get-or map k "—"]   # Map@[Int: String] → String   (null eliminator)
+[has? k map]         # Map@[Int: String] → Bool
+[get-or k "—" map]   # Map@[Int: String] → String   (null eliminator)
 ```
 
 `Null` in tinct is the empty closed record `[]` — `Type::Record(Row{fields:{}, tail:Empty})`.
@@ -120,8 +120,8 @@ Access returns `V | Null`:
 adds `get?` for dynamic map access. `get-or` is built on `get?`:
 
 ```tinct
-get-or: [fn@V [map@[Map [K: V]]  k@K  default@V]
-  [x: [get? map k]]
+get-or: [fn@V [k@K  default@V  map@[Map [K: V]]]
+  [x: [get? k map]]
   [if [= x []] default x]]
 ```
 
@@ -239,8 +239,8 @@ is `true`.
 ### Standard Library
 
 - `get-or` implemented in terms of `get?`: returns the value or the default
-- Type signature: `Map@[K: V] → K → V → V`
-- `has?` type signature: `Map@[K: V] → K → Bool`
+- Type signature: `K → V → Map@[K: V] → V`
+- `has?` type signature: `K → Map@[K: V] → Bool`
 
 ## References
 

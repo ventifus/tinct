@@ -37,7 +37,7 @@
   # Self time: wall time minus children's wall time
   self-us: [fn [let s]
     [- [- s.end-us s.start-us]
-       [get-or children-wall s.id 0]]]
+       [get-or s.id 0 children-wall]]]
 
   # CPU time: self time minus stall time
   cpu-us: [fn [let s] [- [self-us s] s.stall-us]]
@@ -47,7 +47,7 @@
   create-key: [fn [let s]
     [if [= [] s.create-parent]
       "<toplevel>"
-      [get-or span-id-to-key s.create-parent "<unknown>"]]]
+      [get-or s.create-parent "<unknown>" span-id-to-key]]]
 
   # Aggregate spans by creation-context key
   aggregate: [fn [let key group]

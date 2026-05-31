@@ -75,21 +75,25 @@ grpc-decode-u32-be: [fn@Int [let bytes@String offset@Int]
                 [*
                     [+
                         [*
-                            [char-code [str-slice bytes
+                            [char-code [str-slice
                                 offset
-                                [+ offset 1]]]
+                                [+ offset 1]
+                                bytes]]
                             256]
-                        [char-code [str-slice bytes
+                        [char-code [str-slice
                             [+ offset 1]
-                            [+ offset 2]]]]
+                            [+ offset 2]
+                            bytes]]]
                     256]
-                [char-code [str-slice bytes
+                [char-code [str-slice
                     [+ offset 2]
-                    [+ offset 3]]]]
+                    [+ offset 3]
+                    bytes]]]
             256]
-        [char-code [str-slice bytes
+        [char-code [str-slice
             [+ offset 3]
-            [+ offset 4]]]]]
+            [+ offset 4]
+            bytes]]]
 
 ]
 
@@ -139,14 +143,14 @@ build-grpc-frame@[doc: "Build a gRPC Length-Prefixed Message frame"]:
 parse-grpc-frame-header@[doc: "Parse gRPC Length-Prefixed Message header"]:
     [fn@Dict [let bytes@String]
         [if [< [length bytes] GRPC-HEADER-LEN]
-            [set [] "err" [str
+            [set [] err: [str
                 "parse-grpc-frame-header: need at least 5 bytes, got "
                 [length bytes]]]
-            [set [set [set []
-                "compressed" [=
-                    [char-code [str-slice bytes 0 1]]
-                    1]]
-                "length"     [grpc-decode-u32-be bytes 1]]
-                "header-len" GRPC-HEADER-LEN]]]
+            [set []
+                compressed: [=
+                    [char-code [str-slice 0 1 bytes]]
+                    1]
+                length:     [grpc-decode-u32-be bytes 1]
+                header-len: GRPC-HEADER-LEN]]]
 
 ]

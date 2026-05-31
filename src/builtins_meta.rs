@@ -826,15 +826,15 @@ pub(crate) fn builtin_type_of(
     })
 }
 
-/// `ast-of`: returns metadata about a value's AST or thunk state.
+/// `ast-of`: returns the AST of an expression as a `Value::Expression`.
 ///
 /// This builtin does NOT materialize its argument, making it safe to use
 /// for introspection of unevaluated expressions.
 ///
-/// - Materialized values → metadata dict based on value type
-/// - Unevaluated thunks → AST dict from stored expression
-/// - PendingCall/PendingBuiltin → descriptor dict
-/// - Other thunk states → descriptor dict with state name
+/// - Unevaluated thunks (Surface/AstNodeField) → Value::Expression wrapping the SurfaceNode
+/// - Materialized literals (Int/Float/Bool/String) → Value::Expression wrapping a synthetic node
+/// - Other materialized values → error (cannot reconstruct original AST)
+/// - PendingCall/PendingBuiltin/Guarded/InProgress/Failed → descriptor dict (legacy, will be updated)
 pub(crate) fn builtin_ast_of(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -987,99 +987,45 @@ pub(crate) fn builtin_ast_of(
             )));
         }
 
-        // Check for Materialized
-        let dict_entries = if let Some(val) = thunk.try_get_materialized() {
-            // Value is already materialized — inspect it
-            match val {
-                crate::value::Value::Function {
-                    params, annotation, ..
-                } => {
-                    let mut entries = IndexMap::new();
+        // Check for Materialized — construct synthetic SurfaceNode for simple literals
+        // For complex values, ast-of should be called on unevaluated expressions, but we
+        // provide a fallback for materialized literals to avoid breaking existing code.
+        if let Some(val) = thunk.try_get_materialized() {
+            use crate::ast::{SurfaceExpression, SurfaceNode};
+            let make_node = |expr: SurfaceExpression| {
+                Arc::new(SurfaceNode {
+                    expr,
+                    span: call_span.clone(),
+                })
+            };
 
-                    // Add type field
-                    entries.insert(
-                        crate::value::Key::String("type".into()),
-                        ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                            string_val("function"),
-                            call_span.clone(),
-                        ))),
-                    );
-
-                    // Add params field as a list of param names
-                    let param_names: Vec<ThunkId> = params
-                        .iter()
-                        .map(|p| {
-                            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                                string_val(&p.name),
-                                call_span.clone(),
-                            )))
-                        })
-                        .collect();
-
-                    if !param_names.is_empty() {
-                        let params_seq = param_names.into_iter().rev().fold(
-                            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                                crate::value::Value::Dict(IndexMap::new()),
-                                call_span.clone(),
-                            ))),
-                            |tail, head| {
-                                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                                    crate::value::Value::Seq { head, tail },
-                                    call_span.clone(),
-                                )))
-                            },
-                        );
-                        entries.insert(crate::value::Key::String("params".into()), params_seq);
-                    }
-
-                    // Add doc field if present
-                    if let Some(ann) = annotation {
-                        if let Some(ref doc_str) = ann.doc {
-                            entries.insert(
-                                crate::value::Key::String("doc".into()),
-                                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                                    string_val(doc_str),
-                                    call_span.clone(),
-                                ))),
-                            );
-                        }
-                    }
-
-                    entries
+            let synthetic_node = match val {
+                crate::value::Value::Int(n) => make_node(SurfaceExpression::Int(n)),
+                crate::value::Value::Float(f) => make_node(SurfaceExpression::Float(f)),
+                crate::value::Value::Bool(b) => make_node(SurfaceExpression::Bool(b)),
+                crate::value::Value::String { source, start, end } => {
+                    make_node(SurfaceExpression::Str(source[start..end].to_string()))
                 }
-                other => {
-                    let mut entries = IndexMap::new();
-                    entries.insert(
-                        crate::value::Key::String("type".into()),
-                        ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                            string_val(other.type_name()),
-                            call_span.clone(),
-                        ))),
-                    );
-                    entries
+                // For other materialized values (Function, Builtin, Dict, etc.), we cannot
+                // reconstruct the original AST, so error out.
+                _ => {
+                    return Err(EvalError::type_mismatch(
+                        "Expression",
+                        val.type_name(),
+                        call_span.clone(),
+                    )
+                    .into());
                 }
-            }
-        } else {
-            // Placeholder or unknown state (should not be observable in user code)
-            let mut entries = IndexMap::new();
-            entries.insert(
-                crate::value::Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                    string_val("thunk"),
-                    call_span.clone(),
-                ))),
-            );
-            entries.insert(
-                crate::value::Key::String("state".into()),
-                ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
-                    string_val("placeholder"),
-                    call_span.clone(),
-                ))),
-            );
-            entries
-        };
+            };
 
-        ok_val(crate::value::Value::Dict(dict_entries), call_span)
+            return Ok(Arc::new(crate::value::Thunk::new_materialized(
+                Value::Expression(synthetic_node),
+                call_span,
+            )));
+        }
+
+        // Placeholder or unknown state (should not be observable in user code)
+        Err(EvalError::internal("ast-of: thunk in unknown state".to_string(), call_span).into())
     })
 }
 
@@ -1335,6 +1281,7 @@ fn type_name(val: &Value) -> String {
         Value::Task(_) => "Task",
         Value::Channel(_) => "Channel",
         Value::Context(_) => "Context",
+        Value::ReactiveCell(_) => "ReactiveCell",
         Value::Builder(_) => "Builder",
     }
     .to_string()
@@ -1819,12 +1766,13 @@ pub(crate) fn builtin_eval(
                     child_env
                 }
                 _ => {
-                    // Non-Dict scope: silently ignored (spec: T-766).
-                    // [] (empty dict) is the canonical "no scope" value and already
-                    // matches the Dict arm above. Other non-Dict values (e.g., a bare
-                    // string passed by mistake) are treated as empty scope rather than
-                    // erroring, matching the spec's "silently ignored" intent.
-                    Arc::clone(&env_with_bindings)
+                    return Err(EvalError::type_mismatch_ctx(
+                        "eval".to_string(),
+                        "Dict",
+                        scope_val.type_name(),
+                        call_span,
+                    )
+                    .into())
                 }
             }
         } else {

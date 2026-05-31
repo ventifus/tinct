@@ -1,6 +1,6 @@
-# str-slice: basic substring (string, start=0, end=3) => "hel"
+# str-slice: basic substring (start=0, end=3, string) => "hel"
 [include %libdir "strings.llt"]
 ---
-[str-slice "hello" 0 3]
+[str-slice 0 3 "hello"]
 === out
 String("hel")

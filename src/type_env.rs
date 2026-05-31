@@ -1431,6 +1431,10 @@ impl TypeEnv {
             ("builtin-builder-has?", "builder-has?"),
             ("builtin-builder-get", "builder-get"),
             ("builtin-builder-get-or", "builder-get-or"),
+            // Reactive cells (T-831)
+            ("builtin-reactive-cell", "reactive-cell"),
+            ("builtin-cell-get", "cell-get"),
+            ("builtin-cell-set", "cell-set"),
         ] {
             if let Some(scheme) = self.get(canonical).cloned() {
                 self.insert_scheme(alias.to_string(), scheme);

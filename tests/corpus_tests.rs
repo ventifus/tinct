@@ -285,10 +285,10 @@ fn test_corpus_structure() {
     );
 
     let typecheck_warnings_count =
-        find_test_files(&manifest_dir.join("tests/corpus/eval/typecheck/warnings")).len();
+        find_test_files(&manifest_dir.join("tests/corpus/typecheck/warnings")).len();
     assert!(
         typecheck_warnings_count >= TYPECHECK_WARNINGS_MIN,
-        "tests/corpus/eval/typecheck/warnings/ has {} tests, expected at least {}",
+        "tests/corpus/typecheck/warnings/ has {} tests, expected at least {}",
         typecheck_warnings_count,
         TYPECHECK_WARNINGS_MIN
     );
