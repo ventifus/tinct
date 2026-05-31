@@ -160,37 +160,42 @@ The same pattern works for any protocol: gRPC (HTTP/2 with ALPN `"h2"`), MQTT, c
 
 ---
 
-## Pending Connection Design
+## Transparent Handle Design
 
-`connect` with `[Hostname h]` does not resolve immediately. It returns a `PendingHandle` that carries the address unresolved, allowing upstream layers to inspect the hostname before committing to a connection.
+`Handle` is the unified ByteStream interface from the Rust layer — a single opaque type for any sequential I/O stream (TCP, file, pipe). Tinct wraps it in transparent records that carry visible metadata. Since tinct is lazy, the `stream` field is a thunk — the OS connection happens on first access, memoized:
 
 ```tinct
-PendingHandle:    [type [cap: NetCap  addr: Address  port: Port]]
-PendingTlsHandle: [type [pending: PendingHandle  sni: [or String Null]
-                          alpn: [Seq String]  ech: Bytes
-                          trust-roots: [or [Seq Bytes] Symbol]]]
-PendingQuicHandle:[type [pending: [or ConnectedUdp UdpSocket]  sni: [or String Null]
-                          alpn: [Seq String]  ech: Bytes
-                          trust-roots: [or [Seq Bytes] Symbol]]]
+Handle:           # opaque Rust — any ByteStream (TCP, file, pipe); base ByteStream instance
+TcpHandle:  [type [addr: Address  port: Port  stream: Handle]]
+FileHandle: [type [path: String   mode: Symbol  file:   Handle]]
 ```
 
-Each pending type implements `ByteStream`/`Datagram` by resolving lazily on first use. The key property: **ALPN is owned by the layer that knows the protocol**, not by `tls` or `quic`:
+`connect Tcp HostPort` returns `TcpHandle`. `addr` is always visible — `tls` reads it to infer SNI from `[Hostname h]` without the hostname ever being lost. All handle types in the stack carry their construction parameters:
 
 ```tinct
-tls:  PendingHandle    → PendingTlsHandle  (sni inferred, ALPN open)
-h2:   PendingTlsHandle → Http2Connection   (adds alpn: ["h2"], fires handshake)
-h3:   PendingQuicHandle→ Http3Connection   (adds alpn: ["h3"], fires handshake)
-quic: ConnectedUdp     → PendingQuicHandle (sni inferred, ALPN open)
+TcpHandle         [addr port stream]              # connect Tcp HostPort
+PendingTlsHandle  [handle sni alpn ech roots]     # | tls
+TlsConnection     [underlying cipher keys sni]    # tls-commit (called by h2)
+Http2Connection   [...]                           # | h2
 ```
 
-**SVCB fits here naturally.** When `h2` or `h3` sees a `PendingTlsHandle`/`PendingQuicHandle` with a `[Hostname h]` address, it can do SVCB lookup before firing the handshake — using the ECH and ALPN hints from the HTTPS record. Plain-IP connections skip SVCB.
-
-**SNI is never specified twice.** `tls` infers SNI from `[Hostname h]` in the pending address. `quic` does the same. Explicit `sni:` override is available but rarely needed.
+**ALPN is owned by the layer that knows the protocol**, not by `tls` or `quic`:
 
 ```tinct
-[connect %net Tcp [HostPort [Hostname "api.example.com"] 443]]   # PendingHandle
-  | tls      # PendingTlsHandle — sni="api.example.com", alpn=[]
-  | h2       # fires TLS with alpn=["h2"], H2 preface → Http2Connection
+tls:         TcpHandle       → PendingTlsHandle    (sni open, ALPN open)
+tls-commit:  PendingTlsHandle→ TlsConnection       (fires handshake with accumulated config)
+h2:          PendingTlsHandle→ Http2Connection     (with-tls-alpn ["h2"] + tls-commit)
+quic:        ConnectedUdp    → PendingQuicHandle   (sni open, ALPN open)
+quic-commit: PendingQuicHandle→QuicConnection      (fires QUIC+TLS handshake)
+h3:          PendingQuicHandle→Http3Connection     (with-alpn ["h3"] + quic-commit)
+```
+
+**SNI is never specified twice.** `tls-commit` reads `handle.addr` → extracts `[Hostname h]` → SNI. Explicit override available when connecting to a direct IP with certificate validation.
+
+```tinct
+[connect %net Tcp [HostPort [Hostname "api.example.com"] 443]]   # TcpHandle
+  | tls      # PendingTlsHandle — sni open (inferred from addr.addr on commit), alpn open
+  | h2       # with-tls-alpn ["h2"] + tls-commit + H2 preface → Http2Connection
   | [http-request "GET" "/data"]
 ```
 
@@ -210,7 +215,7 @@ An ordered, reliable, connection-oriented byte pipe. Reading and writing are sym
   write-bytes: [Fn [h@h data@Bytes] Null]]
 ```
 
-`Handle` (OS TCP connection from `tcp-accept`/`tcp-connect`) is the base instance, backed by the Rust `read-bytes`/`write-bytes` primitives. Every protocol layer that sits on top of a stream produces a new `ByteStream` instance — a tinct record wrapping the layer below:
+`Handle` is the opaque Rust I/O handle — the unified type for any sequential stream (TCP, file, pipe). It is the base `ByteStream` instance backed by `builtin-read-bytes`/`builtin-write-bytes`. `TcpHandle` and `FileHandle` are transparent tinct records that wrap `Handle` with visible metadata (`addr`, `path`, etc.). Every protocol layer above produces a new `ByteStream` instance — a tinct record wrapping the layer below:
 
 ```tinct
 # stdlib/net.llt
@@ -1144,10 +1149,10 @@ Each module is fully specified as a draft `.llt` file in [`doc/whatif/lib-net-v3
 | Draft file | Target stdlib path | Key exports |
 |---|---|---|
 | [`async.llt`](lib-net-v3/async.llt) | `stdlib/prelude.llt` (merged — `stdlib/async.llt` deleted by builtin-privacy S-786) | `channel-map`, `channel-flat-map`, `collect-channel` |
-| [`net.llt`](lib-net-v3/net.llt) | `stdlib/net.llt` | IO typeclasses (`ByteStream`, `Datagram`, `MessageStream`, `Codec`, `Listener`, `Indexed`); `Transport` typeclass (`determines: [p → c]`); `Protocol` typeclass (`fetch`); `HttpConnect` typeclass (`http-request`); `IpAddress`, `Address` (`IpAddress` + `[Hostname String]`), `Port`, `SocketAddress`, `UdpDatagram`; `BindTarget`, `BindScope`; `ByteLabel`/`ByteOrder`; `ConnectedUdp` (tinct-only connected UDP, no new Rust primitive); `PendingHandle` (unresolved connection spec); `tcp-listen`, `udp-bind`, `udp-ephemeral`, `listen-loop`, `ip->string`, `Url`, `parse-url`, `url-decode`. Rust boundary: 7 primitives (`tcp-connect`, `tcp-bind`, `tcp-accept`, `read-bytes`, `write-bytes`, `udp-socket`, `udp-send`/`udp-recv`). |
+| [`net.llt`](lib-net-v3/net.llt) | `stdlib/net.llt` | IO typeclasses (`ByteStream`, `Datagram`, `MessageStream`, `Codec`, `Listener`, `Indexed`); `Transport` typeclass (`determines: [p → c]`); `Protocol` typeclass (`fetch`); `HttpConnect` typeclass (`http-request`); `IpAddress`, `Address` (`IpAddress` + `[Hostname String]`), `Port`, `SocketAddress`, `HostPort` (subject of `connect`), `UdpDatagram`; `BindTarget`, `BindScope`; `ByteLabel`/`ByteOrder`; `Handle` (opaque Rust, base `ByteStream`); `TcpHandle` (transparent: `addr`, `port`, lazy `stream: Handle`); `FileHandle` (transparent: `path`, `mode`, lazy `file: Handle`); `ConnectedUdp`; `tcp-listen`, `udp-bind`, `udp-ephemeral`, `listen-loop`, `ip->string`, `Url`, `parse-url`, `url-decode`. Rust boundary: `Handle` + `UdpSocket` (two opaque types). |
 | *(not yet written)* | `stdlib/codecs/json.llt` | `NdjsonCodec` (`Codec Any Bytes`) — NDJSON serialization with `\n` framing; used by `cli/out/json.llt` via `codec-stream` |
 | [`dns.llt`](lib-net-v3/dns.llt) | `stdlib/dns.llt` | `DnsQuery`, `DnsRecord`, `DnsResponse`, `Nameserver`, `DnsConfig`; `encode-dns-wire`, `decode-dns-wire`; resolver factories (`dns-udp-resolver`, `dns-tls-resolver`, `dns-https-resolver`, `dns-quic-resolver`); `dns-framed-send`; `resolve-address` (Happy Eyeballs address resolution for `Address`); `Transport Tcp` + `Transport Udp` instances (the `connect` typeclass method — lives here because it needs `dns-resolve-ip`); `dns-resolve-host`, `dns-resolve-ip`, `dns-resolve` (alias), `dns-server-loop` |
-| [`tls13.llt`](lib-net-v3/tls13.llt) | `stdlib/protocols/tls13.llt` | `TlsServerConfig`, `TlsClientConfig` (`sni: [or String Null]` — null infers from `[Hostname h]`), `CipherSuite`, `TlsConnection`; `PendingTlsHandle` (TLS config pending — sni inferred, ALPN set by downstream `h2`/`h3`/etc.); `tls` (creates `PendingTlsHandle`); `tls-commit` (fires handshake); `with-alpn`; `hkdf-expand-label`, `derive-secret`, `tls13-key-schedule`; `tls-accept`, `tls-serve` (`HkdfHash` re-exported from `crypto.llt`) |
+| [`tls13.llt`](lib-net-v3/tls13.llt) | `stdlib/protocols/tls13.llt` | `TlsServerConfig`, `TlsClientConfig` (`sni: [or String Null]` — null infers from `TcpHandle.addr` on commit), `CipherSuite`, `TlsConnection`; `PendingTlsHandle` (TLS config open — `tls` creates it; `h2`/`grpc`/etc. set ALPN via `with-tls-alpn` then fire `tls-commit`); `tls` (takes `TcpHandle` → `PendingTlsHandle`); `tls-commit` (fires TLS handshake, reading SNI from `handle.addr`); `with-tls-alpn`; `tls-handshake` (low-level, takes `Handle`); `hkdf-expand-label`, `derive-secret`, `tls13-key-schedule`; `tls-accept`, `tls-serve` |
 | [`quic.llt`](lib-net-v3/quic.llt) | `stdlib/protocols/quic.llt` | `QuicFrame` (all RFC 9000 types), `QuicConnection`, `QuicKeys`, `QuicLossState`; `PendingQuicHandle` (QUIC+TLS config pending, sni inferred, ALPN open); `quic` (creates `PendingQuicHandle` from any `Datagram`); `quic-commit` (fires QUIC+TLS handshake); `with-alpn` (accumulates ALPN into pending); `quic-connect` (sugar for resolved `SocketAddress`); `quic-listen`, `quic-open-stream` |
 | [`http2.llt`](lib-net-v3/http2.llt) | `stdlib/protocols/http2.llt` | `H2Frame`, `HpackTable`, `Http2Connection`; `hpack-static-table` (61 entries); `hpack-decode`, `hpack-encode`; `h2` (fires TLS with `alpn: ["h2"]` + H2 preface → `Http2Connection`); `h2-accept`; `http-request` (takes `conn method path ...headers` — named args as headers, subject first, not last for readability); `HpackCodec` (`Codec Headers Bytes`), `H2FrameCodec` (`Codec H2Frame Bytes`); `[instance [HttpConnect Http2Connection] ...]` |
 | [`http3.llt`](lib-net-v3/http3.llt) | `stdlib/protocols/http3.llt` | `H3Frame`, `Http3Connection`; `read-varint`/`encode-varint`; `h3` (fires QUIC with `alpn: ["h3"]` + H3 setup → `Http3Connection`); `h3-accept`; `request` (HTTP/3 request); `http3-req-conn`; `qpack-decode`, `qpack-encode`; `[instance [HttpConnect Http3Connection] ...]` |

@@ -89,7 +89,7 @@ For dynamic or computed keys, use `get`:
 
   # Optional parameter with default
   repeat:  [fn [let s@String n@[type: Int  default: 3]]
-             [join "" [take n [cycle [s]]]]]
+             [join "" [take n [cycle [cons s []]]]]]
 
   # Variadic
   sum:     [fn [let ...nums] [reduce + 0 nums]]
@@ -113,12 +113,12 @@ For dynamic or computed keys, use `get`:
 
   # Chained intermediate dicts — each can see the previous.
   describe: [fn [let n]
-    [abs-n:  [if [< n 0] [* n -1] n]]
-    [label:  [if [= abs-n 0] "zero" [if [< abs-n 10] "small" "large"]]]
-    [str label " (" n ")"]]
+    [sign:  [if [< n 0] "negative" "non-negative"]]
+    [label: [str sign " (" n ")"]]
+    label]
 
   r1: [normalize [3 1 6]]              # → [0: 0.3  1: 0.1  2: 0.6]
-  r2: [describe -42]                   # → "large (-42)"
+  r2: [describe -42]                   # → "negative (-42)"
 ]
 ```
 
@@ -138,54 +138,55 @@ Intermediate dicts are letrec-scoped among themselves but do not appear in the f
 
 ## Pipelines
 
-The `|` operator threads a value left-to-right through a sequence of functions. It desugars entirely before evaluation — no runtime overhead.
+The `|` operator threads a value left-to-right through a sequence of functions. It desugars entirely before evaluation — no runtime overhead. The LHS is appended as the **last** positional argument:
 
 ```tinct
-lhs | [f args]    →  [f args lhs]    # lhs appended as last positional arg
-lhs | name        →  [name lhs]      # bare word: call name with lhs
+[
+  nums: [1 2 3 4 5]
+
+  # [f args] form — LHS appended as last arg
+  doubled: [nums | [map [* _ 2]]]   # same as [map [* _ 2] nums]
+  halved:  [nums | [map [/ _ 2]]]   # same as [map [/ _ 2] nums]
+
+  # bare name form — LHS is the only arg
+  first:   [nums | head]            # same as [head nums]
+]
 ```
 
-`|` is left-associative:
+`|` is left-associative. In a multi-file pipeline, `%` is the output of the previous stage:
 
 ```tinct
-users | each | [filter _.active] | [map _.name] | collect
-# desugars to: [collect [map _.name [filter _.active [each users]]]]
-```
-
-**Generator functions** — explode dicts into lazy Seqs and back:
-
-```tinct
+# Stage 1 — produce the data
 [
   users: [
     0: [name: "Alice"  active: true]
     1: [name: "Bob"    active: false]
     2: [name: "Carol"  active: true]
   ]
+]
+```
 
-  # Explode → transform → collect
-  names:   [users | each | [map _.name] | collect]
+```tinct
+# Stage 2 — % is {users: [...]} from stage 1
+# Chains reduce left-to-right (left-associative):
+#   %.users | each | [filter [fn [let u] u.active]] | [map [fn [let u] u.name]] | collect
+# desugars to: [collect [map <fn> [filter <fn> [each %.users]]]]
+[
+  all-names:    [collect [map [fn [let u] u.name] [each %.users]]]
   # → [0: "Alice"  1: "Bob"  2: "Carol"]
 
-  active:  [users | each | [filter _.active] | [map _.name] | collect]
+  active-names: [collect [map [fn [let u] u.name] [filter [fn [let u] u.active] [each %.users]]]]
   # → [0: "Alice"  1: "Carol"]
 
-  squares: [[range 0 5] | [map [* _ _]] | collect]
+  squares: [[range 0 5] | [map [fn [let x] [* x x]]] | collect]
   # → [0: 0  1: 1  2: 4  3: 9  4: 16]
-
-  # Dynamic field access
-  config:  [name: "prod"  host: "example.com"]
-  field:   "host"
-  value:   [config | [get field]]  # → "example.com"
 ]
 ```
 
 **Threading with `->` (alternative for runtime stage lists):**
 
 ```tinct
-[[-> [1 2 3 4 5]
-  [filter [> _ 2]]
-  [map [* _ 10]]
-  collect]]
+[result: [collect [map [* _ 10] [filter [> _ 2] [each [1 2 3 4 5]]]]]]
 # → [0: 30  1: 40  2: 50]
 ```
 
@@ -221,23 +222,30 @@ users | each | [filter _.active] | [map _.name] | collect
 Type declarations and construction:
 
 ```tinct
-[type [Ok payload] [Error String]]  # sum type — payload is a TypeVar
-[type [Red] [Green] [Blue]]         # enum (unit variants)
-
 [
-  success: [Ok 42]
-  failure: [Error "not found"]
-  color:   [Red]                    # unit variant — no argument
+  [type Color [Red] [Green] [Blue]]   # enum — unit variants
 
-  # Matching on them
-  value:   [match success
-              [Ok v]:    v          # → 42
-              [Error e]: [raise e]]
+  color: Red      # unit variant as a value
 
-  hex:     [match color
-              [Red]:   "#ff0000"
-              [Green]: "#00ff00"
-              [Blue]:  "#0000ff"]
+  hex: [match color
+    [Red _]:   "#ff0000"
+    [Green _]: "#00ff00"
+    [Blue _]:  "#0000ff"]
+  # → "#ff0000"
+]
+```
+
+Sum types with payloads use `try` in the standard library:
+
+```tinct
+[
+  # try returns [Ok value] on success, [Error msg] on failure
+  result: [try [fn [] [+ 1 2]]]
+
+  # Pattern match on the result
+  value: [match result
+    [Ok v]:    v     # → 3
+    [Error _]: 0]
 ]
 ```
 
@@ -249,44 +257,48 @@ Type declarations and construction:
 
 ```tinct
 [
-  [type [Some value] [None]]   # auto-generates: Some: [variant "Some"], None: [variant "None"]
+  [type Option [Some value: Int] [None]]   # auto-generates constructors in this scope
 
-  x: [Some 42]                 # construct by calling the constructor
-  y: [None]                    # unit variant — no argument
+  # Unit variant: just use the name
+  nothing: None
 
-  n: [match x
-        [Some v]: v            # → 42
-        [None]:   0]
+  # Payload variant: call the constructor with named field
+  something: [Some value: 42]
+
+  # Pattern match — [Tag v] binds the payload to v
+  n: [match something
+        [Some v]: v     # v is the payload → 42
+        [None _]: 0]
 ]
 ```
 
-**Constructors are ordinary values.** `Some` is just `[variant "Some"]` — a unit-variant value that the evaluator treats as callable. You can pass constructors around, store them in dicts, or define your own with `[variant "Tag"]` directly:
+**Constructors are ordinary values** — unit variants can be used directly as values:
 
 ```tinct
 [
-  MyTag: [variant "MyTag"]   # same as what [type [MyTag]] would inject
-  val:   [MyTag 99]          # → Variant("MyTag", 99)
+  [type Color [Red] [Green] [Blue]]
+  c: Red
+  is-red: [= c Red]   # → true
 ]
 ```
 
-**Named-field variants** — wrap a dict payload:
+**Named-field variants** — the payload is a dict; fields are accessible directly:
 
 ```tinct
-[type [Point x: Float y: Float]]
-
 [
-  p: [Point x: 1.0  y: 2.0]   # payload is a dict
+  [type Geometry [Point x: Float y: Float] [Origin]]
 
-  # Access fields directly
-  _: p.x                       # → 1.0
+  p: [Point x: 1.0  y: 2.0]
 
-  # Match and destructure
-  _: [match p
-        [Point [x: px  y: py]]: [str px "," py]]
+  # Match and access the payload
+  desc: [match p
+           [Point v]:  [str v.x "," v.y]
+           [Origin _]: "origin"]   # v is the payload dict
+  # → "1.0,2.0"
 ]
 ```
 
-**Runtime-created variants are indistinguishable from user-constructed ones.** A builtin that returns `[Ok v]` and user code that calls `[Ok v]` produce identical `Value::Variant` values — there is no privileged runtime type. This means prelude behavior is fully replicable in user code.
+**Runtime-created variants are indistinguishable from user-constructed ones.** A builtin that returns a variant and user code that constructs the same variant produce identical values — there is no privileged runtime type. This means prelude behavior is fully replicable in user code.
 
 ---
 
@@ -313,17 +325,18 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
 ]
 ```
 
-**Brackets are required for constructor patterns.** A bare name is a *variable capture* — it matches anything:
+**Brackets are required for constructor patterns.** A bare name is a *variable capture* — it matches anything. Use `[Tag _]` to match a unit variant (discarding its empty payload):
 
 ```tinct
 [
-  color: [Red]
+  [type Colors [Red] [Green] [Blue]]
+  color: Red
 
-  # Correct — [Red] is the constructor pattern
+  # Correct — [Red _] matches the Red constructor
   hex:   [match color
-    [Red]:   "#ff0000"
-    [Green]: "#00ff00"
-    _:       "unknown"]
+    [Red _]:   "#ff0000"
+    [Green _]: "#00ff00"
+    [Blue _]:  "#0000ff"]
 
   # WRONG — Red: is a variable capture, always matches first arm
   # [match color  Red: "#ff0000"  Green: "#00ff00"  _: "unknown"]
@@ -353,9 +366,11 @@ Errors propagate automatically through the thunk graph. Unused values never erro
     [Ok v]:    v   # → 3
     [Error _]: 0]
 
-  # try-or — shorthand for the common fallback pattern
-  safe:    [try-or [fn [] [raise "boom"]] "default"]
-  # → "default"
+  # match on try result for fallback pattern
+  safe:    [match [try [fn [] [/ 1 0]]]
+              [Ok v]:    v
+              [Error _]: 0]
+  # → 0 (division error caught)
 ]
 ```
 
@@ -368,7 +383,7 @@ Values are computed only when accessed. This means:
 - Unused dict entries never evaluate — neither in the output nor in intermediate scope-chain dicts
 - `filter`/`map` return lazy sequences; only accessed elements are computed
 - Recursive structures like `[cons 1 ones]` are fine — they expand on demand
-- `[materialize v]` forces a value one level deep (WHNF) — on a Seq, evaluates the head but leaves the tail lazy
+- `[head xs]` on a lazy Seq forces only the first element — the tail stays lazy
 - `[collect xs]` forces a lazy Seq to completion, producing a concrete integer-keyed Dict — use this to fully realize a sequence
 
 ```tinct
@@ -381,7 +396,7 @@ Values are computed only when accessed. This means:
 # collect vs materialize on sequences
 [
   lazy:  [filter [> _ 3] [range 0 10]]
-  first: [materialize lazy]   # forces head only → 4
+  first: [head lazy]          # forces head only → 4
   all:   [collect lazy]       # forces full spine → [0: 4  1: 5  2: 6  ...]
 ]
 ```
@@ -440,16 +455,16 @@ For very simple libraries with no private state, a single dict is fine.
 
 ## Including Libraries
 
-```tinct
+```text
 # Named include — access functions via dot
-[strings: [include %libdir "strings.llt"]]
-[strings.pad-left "42" 6 "0"]   # → "000042"
+[math: [include %libdir "math.llt"]]
+[result: [math.hypot 3 4]]   # → 5.0
 ```
 
-```tinct
-# Bare include — names flow into next expression's scope
-[include %libdir "strings.llt"]
-[result: [pad-left "42" 6 "0"]]
+```text
+# Bare include — names flow into scope via sequential expressions
+[include %libdir "math.llt"]
+[result: [hypot 3 4]]        # → 5.0
 ```
 
 The `%libdir` capability points at the stdlib directory. The `include` function is self-hosted in prelude.
@@ -460,11 +475,11 @@ The `%libdir` capability points at the stdlib directory. The `include` function 
 
 Capabilities are injected by the CLI and declared with `--- caps:`:
 
-```tinct
---- caps: [%fs: @DirCap  %net: @NetCap]
+```text
+--- caps: [%fs: @DirCap]
 [
-  config: [slurp %fs "config.json"]
-  result: [fetch %net "https://api.example.com"]
+  handle: [open %fs "config.json" "r"]
+  # %net: @NetCap — network capability; grant with --cap-net flag
 ]
 ```
 
@@ -488,4 +503,4 @@ Conditional caps (only when specific CLI flags are given):
 - **Annotate exported functions** with `fn@[return: T  doc: "..."]` — enables LSP hover and documentation
 - **Prefer shallow nesting** — use intermediate dict entries rather than deeply nested calls
 - **`[]` is null** — use it as a sentinel, default value, and empty collection
-- **Let lazy evaluation work** — avoid `[materialize v]` or `[collect v]` unless you genuinely need immediate forcing
+- **Let lazy evaluation work** — avoid `[collect v]` unless you genuinely need to realize the full sequence

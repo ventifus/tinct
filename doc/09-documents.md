@@ -740,8 +740,8 @@ The document pipeline and include mechanism are built on eight user-callable Rus
 
 These functions are defined in prelude and available to all tinct code:
 
-- **`eval-program`** — evaluate a `Program` value as a pipeline, threading `%` through its documents; gains `emit-ch` as a third parameter (see §Output Program Contract below)
-- **`eval-programs`** — evaluate a list of programs sequentially with `%` threading; creates the `%emit` channel once and injects it into every program via `eval-program`
+- **`eval-program`** — evaluate a `Program` value as a pipeline, threading `%` through its documents
+- **`eval-programs`** — evaluate a list of programs sequentially, threading `%` through via reduce (forward-spec: will create `%emit` channel once data-streaming is accepted)
 - **`eval-document-pipeline`** — evaluate a file's documents, threading `%` and named sections; injects `%include-dir` into every document's scope
 - **`eval-file`** — evaluate a parsed file AST dict with an explicit initial `%` and `include-dir`
 - **`include`** — load, expand, and evaluate a file from a DirCap; content-addressed memoization with circular include detection
@@ -788,7 +788,7 @@ user program  ──%emit──▶  output program  ──%stdout──▶  actu
 (emit producer)           (emit consumer + forces %)
 ```
 
-`eval-programs` creates `%emit` once and injects it into every program's scope. `%` is threaded sequentially — each program's return value becomes `%` for the next. The CLI injects `%stdout` and other capability handles but does not create or touch `%emit`.
+`eval-programs` threads `%` sequentially via reduce — each program's return value becomes `%` for the next. The CLI injects `%stdout` and other capability handles. (Forward-spec: `%emit` channel creation is deferred until data-streaming is accepted.)
 
 ### `%include-dir`
 

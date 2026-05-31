@@ -48,6 +48,18 @@
   read-bytes:  builtin-read-bytes
   write-bytes: builtin-write-bytes]
 
+# TcpHandle: transparent wrapper around Handle carrying the original address.
+# The stream field is a lazy thunk — the TCP connection establishes on first access.
+# Tinct's memoization ensures the connection is created exactly once.
+# addr is always visible, enabling tls to infer SNI from [Hostname h] before committing.
+[instance [ByteStream TcpHandle]
+  read-bytes:  [fn [let h@TcpHandle n@Int]  [read-bytes  h.stream n]]
+  write-bytes: [fn [let h@TcpHandle b@Bytes] [write-bytes h.stream b]]]
+
+[instance [ByteStream FileHandle]
+  read-bytes:  [fn [let h@FileHandle n@Int]  [read-bytes  h.file n]]
+  write-bytes: [fn [let h@FileHandle b@Bytes] [write-bytes h.file b]]]
+
 [instance [Datagram UdpSocket]
   send-datagram: builtin-udp-send
   recv-datagram: builtin-udp-recv]
@@ -201,7 +213,7 @@
   # Transport instances live in dns.llt (they need dns-resolve-ip for [Hostname h]).
   #
   # HostPort is the subject (last) — subject-last enables partial application:
-  #   [connect %net Tcp]   → Fn@Handle [HostPort]
+  #   [connect %net Tcp]   → Fn@TcpHandle [HostPort]
   #   [connect %net Http]  → Fn@HttpConnection [HostPort]
   #
   # Usage — connect is always the bottom of a protocol stack:
@@ -223,7 +235,15 @@
   # send-datagram ignores the address argument (peer is fixed); recv-datagram passes through.
   ConnectedUdp: [type [sock: UdpSocket  peer: SocketAddress]]
 
-  # connect: see dns.llt for Transport instances (Tcp and Udp).
+  # TcpHandle: transparent wrapper around Handle. addr/port visible to upstream layers.
+  # stream: Handle — the lazy TCP connection thunk (Handle is the ByteStream interface type).
+  # Both TCP and file handles use the same Handle type at the Rust level.
+  TcpHandle: [type [addr: Address  port: Port  stream: Handle]]
+
+  # FileHandle: transparent wrapper around Handle for file I/O. path/mode visible.
+  FileHandle: [type [path: String  mode: Symbol  file: Handle]]
+
+  # connect: see dns.llt for Transport instances (Tcp → TcpHandle, Udp → ConnectedUdp).
 
   ip->string: [fn [let addr@IpAddress]
     [match addr

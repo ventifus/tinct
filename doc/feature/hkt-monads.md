@@ -144,10 +144,10 @@ Instances:
 
 ```tinct
 [MonadResult: [instance [Monad Result]
-  [bind: and-then]]]
+  [bind: [fn [let r f] [and-then f r]]]]]
 
 [MonadSeq: [instance [Monad Seq]
-  [bind: flat-map]]]
+  [bind: [fn [let xs f] [flat-map f xs]]]]]
 ```
 
 ### Mappable

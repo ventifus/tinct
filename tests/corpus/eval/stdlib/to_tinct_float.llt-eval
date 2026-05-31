@@ -1,0 +1,4 @@
+# to-tinct: serialize a float to its tinct source representation
+[to-tinct 3.14]
+=== out
+String("3.14")

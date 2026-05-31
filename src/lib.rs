@@ -37,7 +37,10 @@ pub(crate) mod eval_materialize;
 pub mod formatter;
 pub mod lexer;
 pub mod parser;
+pub(crate) mod surface_fmt;
+// Stream output builtins: builtin-to-tinct for SCN serialization.
 pub mod resolve;
+pub(crate) mod stream;
 pub mod surface_convert;
 #[cfg(test)]
 pub(crate) mod test_util;

@@ -1,0 +1,4 @@
+# to-tinct: serialize a boolean to its tinct source representation
+[to-tinct true]
+=== out
+String("true")

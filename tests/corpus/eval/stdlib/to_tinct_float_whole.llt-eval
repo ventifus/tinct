@@ -1,0 +1,4 @@
+# to-tinct: whole-number float must include decimal point (1.0 not 1)
+[to-tinct 1.0]
+=== out
+String("1.0")

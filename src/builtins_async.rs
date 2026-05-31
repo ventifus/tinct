@@ -34,7 +34,7 @@ use crate::ast::Span;
 use crate::builtins::{ok_val, MAX_COLLECT_SIZE};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{eval_core_expr_pub, materialize};
-use crate::value::{BuiltinArgs, Key, StrKey, Thunk, ThunkId, Value};
+use crate::value::{BuiltinArgs, ClockCapInner, Key, StrKey, Thunk, ThunkId, Value};
 
 /// Helper to check argument count and extract first argument as a thunk.
 /// Returns the thunk without materializing it. Named `take_one_thunk` to
@@ -1146,7 +1146,7 @@ pub(crate) fn builtin_signal_channel(
 
 /// `timer-channel`: Create a channel that ticks every `interval` duration.
 ///
-/// Signature: `Duration → Channel@Timestamp`
+/// Signature: `ClockCap → Duration → Channel@Timestamp`
 ///
 /// Spawns a local task driven by `tokio::time::interval`. Sends `Value::Timestamp` (scheduled
 /// tick time in nanoseconds since Unix epoch) on each tick. The channel has capacity 1; if the
@@ -1164,8 +1164,25 @@ pub(crate) fn builtin_timer_channel(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let interval_thunk =
-            take_one_thunk("timer-channel", &args, named.as_ref(), call_span.clone())?;
+        let (clock_thunk, interval_thunk) =
+            take_two_thunks("timer-channel", &args, named.as_ref(), call_span.clone())?;
+
+        // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
+        let clock_val = clock_thunk
+            .try_get_materialized()
+            .expect("pre-materialized by force_count=1");
+        let clock_inner: ClockCapInner = match &clock_val {
+            Value::ClockCap(inner) => inner.as_ref().clone(),
+            _ => {
+                return Err(EvalError::type_mismatch(
+                    "ClockCap",
+                    clock_val.type_name(),
+                    call_span.clone(),
+                )
+                .into())
+            }
+        };
+
         let interval_val = materialize(&interval_thunk, Some(&call_span), &ctx).await?;
 
         let interval_ms = match interval_val {
@@ -1214,10 +1231,14 @@ pub(crate) fn builtin_timer_channel(
                     }
                     _ = interval.tick() => {
                         // Get current time as nanoseconds since Unix epoch.
-                        let now_nanos = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos() as i64;
+                        // Respects ClockCapInner::Fixed for deterministic testing.
+                        let now_nanos = match &clock_inner {
+                            ClockCapInner::Real => std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_nanos() as i64,
+                            ClockCapInner::Fixed(nanos) => *nanos,
+                        };
                         // Non-blocking: if the receiver hasn't consumed the previous tick, drop this one.
                         let _ = tx_clone.try_send(Value::Timestamp(now_nanos));
                     }
@@ -2007,7 +2028,7 @@ pub(crate) fn builtin_cell_get(
 
 /// `cell-set`: Replace the value in a reactive cell.
 ///
-/// Signature: `ReactiveCell@T → T → Null`
+/// Signature: `T → ReactiveCell@T → Null`
 ///
 /// Sends a new value on the watch channel. All current and future `cell-get`
 /// callers will see this new value. Returns null on success. Concurrent writes
@@ -2025,7 +2046,7 @@ pub(crate) fn builtin_cell_set(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let (cell_thunk, val_thunk) =
+        let (val_thunk, cell_thunk) =
             take_two_thunks("cell-set", &args, named.as_ref(), call_span.clone())?;
         let cell_val = materialize(&cell_thunk, Some(&call_span), &ctx).await?;
 

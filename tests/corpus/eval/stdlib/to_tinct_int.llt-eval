@@ -1,0 +1,4 @@
+# to-tinct: serialize an integer to its tinct source representation
+[to-tinct 42]
+=== out
+String("42")

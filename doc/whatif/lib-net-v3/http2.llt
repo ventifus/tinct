@@ -2,6 +2,7 @@
 # Part of: lib-net-v3
 
 [include %libdir "net.llt"]
+[include %include-dir "tls13.llt"]   # for PendingTlsHandle, tls-commit, with-tls-alpn
 [include %include-dir "http1.llt"]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
@@ -145,8 +146,10 @@
   h2-accept: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
     [error "TODO: h2-accept — read client preface, exchange SETTINGS, return Http2Connection"]]
 
-  h2: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
-    [error "TODO: h2 — send client preface, exchange SETTINGS, return Http2Connection"]]
+  # h2: fires TLS with alpn: ["h2"] via tls-commit, then H2 preface.
+  h2: [fn [let pth@PendingTlsHandle]
+    [conn: [tls-commit [with-tls-alpn pth ["h2"]]]]
+    [error "TODO: h2 — send client preface, exchange SETTINGS → Http2Connection"]]
 
   request: [fn [let req@RawRequest conn@Http2Connection]
     [error "TODO: request — allocate stream ID, send HEADERS+DATA, return Task@RawResponse"]]

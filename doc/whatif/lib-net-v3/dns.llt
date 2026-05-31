@@ -337,24 +337,29 @@
 [instance [Transport Tcp]
   connect: [fn [let cap@NetCap _@Tcp ep@HostPort]
     [let [HostPort addr port]: ep]
-    [addrs: [resolve-address cap addr]]
-    [if [empty? addrs] [error "connect: no addresses resolved"] null]
-    # Race TCP connections to addrs with 250ms stagger. First success wins; rest cancelled.
-    [result-ch:  [channel 1]
-     attempt-ms: 250]
-    [tasks: [collect [map [fn [let e]
-      [i: e.0  ip: e.1]
-      [task
-        [recv [timer-channel %clock [millis [* i attempt-ms]]]]
-        [match [try [tcp-connect cap [addr: ip  port: [@Port port]]]]
-          [Ok h]:  [try [send result-ch h]]
-          [Err _]: null]]]
-      [entries addrs]]]]
-    [match [recv result-ch]
-      [Closed]: [error [str "connect: all TCP connection attempts failed for " [str addr]]]
-      [Ok h]:
-        [par-map [fn [let t] [cancel-task t]] tasks]
-        h]]]
+    # TcpHandle wraps the original addr (for SNI inference etc.) + a lazy stream thunk.
+    # The stream thunk evaluates on first read/write; tinct memoizes the result.
+    [TcpHandle
+      [addr: addr  port: port
+       stream:
+         # Resolve address then race TCP connections (Happy Eyeballs: 250ms stagger).
+         [addrs: [resolve-address cap addr]]
+         [if [empty? addrs] [error "connect: no addresses resolved"] null]
+         [result-ch:  [channel 1]
+          attempt-ms: 250]
+         [tasks: [collect [map [fn [let e]
+           [i: e.0  ip: e.1]
+           [task
+             [recv [timer-channel %clock [millis [* i attempt-ms]]]]
+             [match [try [tcp-connect cap [addr: ip  port: [@Port port]]]]
+               [Ok h]:  [try [send result-ch h]]
+               [Err _]: null]]]
+           [entries addrs]]]]
+         [match [recv result-ch]
+           [Closed]: [error [str "connect: all TCP connection attempts failed for " [str addr]]]
+           [Ok h]:
+             [par-map [fn [let t] [cancel-task t]] tasks]
+             h]]]]]
 
 [instance [Transport Udp]
   connect: [fn [let cap@NetCap _@Udp ep@HostPort]

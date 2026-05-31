@@ -1,0 +1,4 @@
+# to-tinct: round-trip an integer through serialization and re-evaluation
+[eval [expand [load [to-tinct 42]]].documents.0.expressions]
+=== out
+Int(42)

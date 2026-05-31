@@ -39,14 +39,14 @@
 [
 
 # str-at-impl: extract single character at char-index `n` from string `s`.
-# Uses builtin-str-slice (raw Rust primitive with (start, end, string) semantics).
+# Uses str-slice (raw Rust primitive with (start, end, string) semantics).
 # Precondition: n is already a valid non-negative character index.
 str-at-impl: [fn@String [let s@String n@Int]
-    [builtin-str-slice n [+ n 1] s]]
+    [str-slice n [+ n 1] s]]
 
 str-reverse-impl: [fn@String [let s@String i@Int len@Int acc@String]
     [if [< i len]
-        [str-reverse-impl s [+ i 1] len [str [builtin-str-slice i [+ i 1] s] acc]]
+        [str-reverse-impl s [+ i 1] len [str [str-slice i [+ i 1] s] acc]]
         acc]]
 
 ]
@@ -91,7 +91,7 @@ str-substr@[doc: "Extract substring starting at start with length len. Raises er
             [raise [str "str-substr: len " len " must be >= 0"]]
             [if [> end str-len]
                 [raise [str "str-substr: end position " end " exceeds string length " str-len]]
-                [builtin-str-slice start end s]]]]]
+                [str-slice start end s]]]]]
 
 # str-length: number of Unicode codepoints in a string.
 # Re-exported here for callers that include strings.llt (prelude also exports it).
@@ -105,17 +105,17 @@ str-length: builtin-str-length
 # Case Conversion
 # ============================================================================
 
-# Convert a string to uppercase by mapping builtin-str-to-upper-char over each character.
+# Convert a string to uppercase by mapping str-to-upper-char over each character.
 # Type: (String -> String)
 # Example: [upper "hello"] => "HELLO"
 upper@[doc: "Convert a string to uppercase"]: [fn@String [let s@String]
-    [builtin-str-map-chars [fn [let c] [builtin-str-to-upper-char c]] s]]
+    [str-map-chars [fn [let c] [str-to-upper-char c]] s]]
 
-# Convert a string to lowercase by mapping builtin-str-to-lower-char over each character.
+# Convert a string to lowercase by mapping str-to-lower-char over each character.
 # Type: (String -> String)
 # Example: [lower "HELLO"] => "hello"
 lower@[doc: "Convert a string to lowercase"]: [fn@String [let s@String]
-    [builtin-str-map-chars [fn [let c] [builtin-str-to-lower-char c]] s]]
+    [str-map-chars [fn [let c] [str-to-lower-char c]] s]]
 
 # ============================================================================
 # String Padding

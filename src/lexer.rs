@@ -1231,6 +1231,101 @@ impl<'a> Lexer<'a> {
     }
 }
 
+// ────────────────────────────────────────────────────────────────────────────────
+// Token-level formatters — SCN serializers for tinct literals
+// ────────────────────────────────────────────────────────────────────────────────
+//
+// These functions produce canonical tinct literal syntax for Self-Contained Normal Form
+// (SCN) serialization. They are the inverse of the lexer: where tokenize() parses source
+// text to Token values, these functions format values back to tinct source text.
+//
+// Co-location with the lexer ensures the parse↔format pair for each literal type is
+// visible together, reducing drift.
+
+/// Format an integer as a tinct literal.
+pub(crate) fn fmt_int(n: i64) -> String {
+    n.to_string()
+}
+
+/// Format a float as a tinct literal.
+///
+/// Returns an error for NaN and Inf (not representable as tinct literals).
+/// Always includes a decimal point to distinguish from integers.
+pub(crate) fn fmt_float(f: f64) -> Result<String, String> {
+    if f.is_nan() {
+        return Err("NaN cannot be serialized as a tinct literal".to_string());
+    }
+    if f.is_infinite() {
+        return Err("Infinity cannot be serialized as a tinct literal".to_string());
+    }
+
+    let s = f.to_string();
+    // Ensure a decimal point is always present to distinguish from integers.
+    // Rust's f64::to_string() omits the fractional part for whole numbers (1.0 → "1"),
+    // which would lex as Token::Int. Append ".0" when no point or exponent is present.
+    if s.contains('.') || s.contains('e') {
+        Ok(s)
+    } else {
+        Ok(format!("{}.0", s))
+    }
+}
+
+/// Format a boolean as a tinct literal.
+pub(crate) fn fmt_bool(b: bool) -> &'static str {
+    if b {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+/// Format a string as a tinct quoted literal with proper escaping.
+///
+/// Escapes: `\"`, `\\`, `\n`, `\r`, `\t`
+/// Always uses single-line `"..."` quoting (never `"""..."""` triple-quoted strings,
+/// as required by the SCN spec for stream format compatibility).
+pub(crate) fn fmt_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Format a decimal as a tinct literal using the `decimal` constructor.
+pub(crate) fn fmt_decimal(d: &rust_decimal::Decimal) -> String {
+    format!("[decimal \"{}\"]", d)
+}
+
+/// Format a bigint as a tinct literal using the `big-int` constructor.
+pub(crate) fn fmt_bigint(n: &num_bigint::BigInt) -> String {
+    format!("[big-int \"{}\"]", n)
+}
+
+/// Format bytes as a tinct literal using the `bytes-of` stdlib constructor.
+///
+/// Returns `[bytes-of [0: b₀  1: b₁  ...]]` — an integer-keyed dict of byte values.
+pub(crate) fn fmt_bytes(bytes: &[u8]) -> String {
+    let mut out = String::from("[bytes-of [");
+    for (i, &b) in bytes.iter().enumerate() {
+        if i > 0 {
+            out.push_str("  ");
+        }
+        out.push_str(&format!("{i}: {b}"));
+    }
+    out.push_str("]]");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

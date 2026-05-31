@@ -262,16 +262,51 @@
      app-server-key: [hkdf-expand-label s-ap "key"      [] p.key-len p.hash]
      app-server-iv:  [hkdf-expand-label s-ap "iv"       [] p.iv-len  p.hash]]]
 
+  # ── Client TLS pending model ──────────────────────────────────────────────────
+
+  # PendingTlsHandle: TLS config accumulated before handshake fires.
+  # tls creates it from a TcpHandle; downstream layers (h2, grpc, doq) add ALPN via
+  # with-tls-alpn then fire tls-commit.
+  PendingTlsHandle: [type
+    [handle:      TcpHandle
+     sni:         [or String Null]    # null = infer from handle.addr on commit
+     alpn:        [Seq String]        # set by downstream layer
+     ech:         Bytes
+     trust-roots: [or [Seq Bytes] Symbol]]]
+
+  # tls — client pending layer. Takes TcpHandle (from | connect ... Tcp ...), returns
+  # PendingTlsHandle with sni open (inferred on commit) and ALPN open (set by h2/grpc/etc.).
+  tls: [fn [let h@TcpHandle]
+    [PendingTlsHandle
+      [handle: h  sni: null  alpn: []  ech: []  trust-roots: SystemRoots]]]
+
+  # with-tls-alpn: accumulate ALPN into a PendingTlsHandle before commit.
+  with-tls-alpn: [fn [let pth@PendingTlsHandle alpn@[Seq String]]
+    [PendingTlsHandle [handle: pth.handle  sni: pth.sni  alpn: alpn
+                       ech: pth.ech  trust-roots: pth.trust-roots]]]
+
+  # tls-commit: fire the TLS handshake. Forces handle.stream (TCP connection), then
+  # performs TLS 1.3 handshake with inferred/explicit SNI and accumulated ALPN.
+  tls-commit: [fn [let pth@PendingTlsHandle]
+    [sni: [or pth.sni
+      [match pth.handle.addr
+        [let [Hostname h]]: h
+        _: [error "tls-commit: no hostname for SNI — use [Hostname h] in connect or set sni explicitly"]]]]
+    [tls-handshake pth.handle.stream
+      [TlsClientConfig [sni: sni  alpn: pth.alpn  ech: pth.ech  trust-roots: pth.trust-roots]]]]
+
+  # tls-handshake: low-level TLS handshake on an existing Handle (already-connected stream).
+  # Called by tls-commit (client) and by tls-accept (server).
+  tls-handshake: [fn [let stream@Handle cfg@TlsClientConfig]
+    [error "TODO: tls-handshake — send ClientHello, read ServerHello, derive keys via tls13-key-schedule, verify cert chain (verify-cert-chain), send client Finished, install app keys → TlsConnection TcpHandle"]]
+
+  # ── Server TLS ────────────────────────────────────────────────────────────────
+
   tls-accept: [fn@[bind: [h]  return: [TlsConnection h]  constraint: [h: ByteStream]]
                 [let cfg@TlsServerConfig h@h]
-    [error "TODO: tls-accept — read ClientHello; choose-cipher → CipherSuite; choose-group; send ServerHello; tls13-key-schedule dh-shared ch-bytes sh-bytes cipher → keys; send EncryptedExtensions+Certificate+CertificateVerify+Finished; verify client Finished; install app keys with cipher-specific key lengths"]]
-
-  tls: [fn@[bind: [h]  return: [TlsConnection h]  constraint: [h: ByteStream]]
-               [let cfg@TlsClientConfig h@h]
-    [error "TODO: tls — send ClientHello, read ServerHello, derive keys, read and verify server Finished + cert chain (verify-cert-chain), send client Finished, install app keys"]]
+    [error "TODO: tls-accept — read ClientHello; choose-cipher; tls13-key-schedule; send ServerHello + EncryptedExtensions + Certificate + CertificateVerify + Finished; verify client Finished"]]
 
   # Serve layer: promotes a Channel@ByteStream to Channel@TlsConnection.
-  # Lives here (not serve.llt) because it closes over TlsServerConfig.
   tls-serve: [fn@[bind: [h]  constraint: [h: ByteStream]]
                [let cfg@TlsServerConfig in-ch@[Channel h]]
     [channel-map [fn [let s@h] [tls-accept cfg s]] in-ch]]

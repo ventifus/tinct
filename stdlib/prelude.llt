@@ -2173,6 +2173,8 @@ revoke-cap@[doc: "Revoke a RevocableDirCap"]: builtin-revoke-cap
 
 # I/O / parsing
 # JSON serialization: use [include %libdir "codecs/json.llt"] for to-json and from-json.
+# Tinct SCN serialization: to-tinct converts any materialized value to its canonical tinct source text.
+to-tinct@[doc: "Serialize a value to its Self-Contained Normal Form (SCN) tinct source representation"]: builtin-to-tinct
 
 # String trimming
 trim@[doc: "Remove leading and trailing whitespace from a string"]: builtin-trim

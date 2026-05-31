@@ -1,0 +1,5 @@
+# to-tinct: serialize a dict to its tinct source representation
+# Keys that are valid identifiers use bare syntax; entries separated by two spaces
+[to-tinct [x: 1  y: 2]]
+=== out
+String("[x: 1  y: 2]")
