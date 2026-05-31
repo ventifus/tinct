@@ -1029,6 +1029,7 @@ Capability-gated time access and timestamp manipulation.
 | `timestamp-parts` | 2 | `S × S → V` | Dict | Decompose a Timestamp into a dict of all components in the given timezone: `year`, `month`, `day`, `hour`, `minute`, `second`, `nanosecond`, `tz-offset-seconds` |
 | `timestamp->unix` | 1 | `S → V` | Int | Convert Timestamp to Unix epoch seconds (integer, truncating nanoseconds) |
 | `unix->timestamp` | 1 | `S → V` | Timestamp | Convert Unix epoch seconds (Int) to Timestamp |
+| `timestamp-nanos` | 1 | `S → V` | Timestamp | Construct a Timestamp from a nanosecond epoch value (inverse of `timestamp->unix` at nanosecond precision) |
 | `duration-nanos` | 1 | `S → V` | Int | Return duration in nanoseconds (identity — durations are already nanoseconds) |
 | `duration-seconds` | 1 | `S → V` | Int | Convert seconds to nanosecond duration |
 | `duration-minutes` | 1 | `S → V` | Int | Convert minutes to nanosecond duration |

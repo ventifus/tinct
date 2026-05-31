@@ -1,0 +1,4 @@
+# timestamp-nanos: construct a Timestamp from nanoseconds since Unix epoch and convert back via timestamp->unix
+[timestamp->unix [timestamp-nanos 1000000000]]
+=== out
+Int(1)

@@ -161,10 +161,7 @@ Variant("Splice"  {forms: [...]  span: ...})
 ### Macros
 
 ```tinct
-# [defmacro name params body] — legacy macro definition
-Variant("DefMacro"  {name: "mymacro"  params: ...node...  body: ...node...  span: ...})
-
-# [macro name params body] — new-style macro definition
+# [macro name params body] — macro definition
 Variant("MacroDecl"  {name: "mymacro"  params: ...node...  body: ...node...  span: ...})
 
 # [syntax-class Name pattern: pat] — declare a syntax class for macro argument validation
@@ -173,7 +170,7 @@ Variant("SyntaxClass"  {name: "MyClass"  pattern: ...node...  span: ...})
 Variant("SyntaxClass"  {name: "MyClass"  pattern: ...node...  message: "expected X"  span: ...})
 ```
 
-`params` in `DefMacro` and `MacroDecl` is an Expr node (the parameter pattern expression, typically a `LetDecl`).
+`params` in `MacroDecl` is an Expr node (the parameter pattern expression, typically a `LetDecl`).
 
 ### Pattern Matching
 

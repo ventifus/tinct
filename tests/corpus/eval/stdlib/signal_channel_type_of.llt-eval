@@ -1,0 +1,6 @@
+# signal-channel is a Builtin value (bare alias to builtin-signal-channel in prelude.llt).
+# Verify it is accessible from the prelude and that type-of returns "Builtin" without
+# invoking it — invocation requires an async runtime and at least one Signal argument.
+[signal_channel_type: [type-of signal-channel]]
+=== out
+Dict({"signal_channel_type": String("Builtin")})

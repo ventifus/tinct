@@ -124,7 +124,7 @@ Both formatters are implemented as tinct scripts in `stdlib/cli/fmt/`:
 
 Both scripts return `[Ok String]` on success or `[Err msg]` on failure (via `[try [fn [] [format-file %]]]`). Custom formatter scripts can be added to `stdlib/cli/fmt/` and selected with `-o <name>`.
 
-See `doc/whatif/completed/tinct-hosted-formatter.md` for the full design.
+Each formatter receives the file's parsed AST as a tinct dict via `%`, transforms it into formatted source text, and returns the result. Custom formatter scripts placed in `stdlib/cli/fmt/` are automatically discoverable and selectable with `-o <name>`.
 
 ## Inline Expressions and I/O Formatters (`tinct run`)
 
@@ -160,9 +160,10 @@ tinct run -i json -e '%.x' <<< '{"x":42}'          # → 42
 
 **Included input formatters:**
 
-- `json` — `[from-json [slurp %stdin]]` (parse JSON from %stdin)
+- `json` — streaming balanced-bracket reader; handles both NDJSON (one object per line) and multi-line JSON streams; produces `[Seq Value]` for NDJSON or a single `Value` for a complete JSON object.
+- `stream` — streaming SCN reader; reads `%stdin` as a lazy `[Seq Expression]`, one stdlib-closed tinct expression per line. True O(1)-memory streaming: records are parsed one at a time as the consumer demands them.
 
-When `-i` is present, auto-detection is suppressed and the input program reads from `%stdin` as a Handle (via `$slurp` or `$lines`).
+When `-i` is present, auto-detection is suppressed and the input program reads from `%stdin` as a Handle.
 
 ### `-o <format>` / `--output <format>` — Output Formatters
 
@@ -173,21 +174,20 @@ Append an output formatter from `stdlib/cli/out/<format>.llt` as the final pipel
 tinct run -i json -e '%.msg' -o raw <<< '{"msg":"hello"}'   # → hello
 ```
 
-**Convention:** Output formatters live in `stdlib/cli/out/`. Each formatter receives `%` and returns a String as its final value; that string is written to stdout by the CLI.
+**Convention:** Output formatters live in `stdlib/cli/out/`. Each formatter is a sequential-document tinct program that drains `%emit`, forces `%`, and writes serialized values to `%stdout`. See §Output Program Contract in doc/09-documents.md for the full three-part protocol.
 
 **Included output formatters:**
 
-- `raw` — Emit strings unquoted; Seq elements one per line; error for other types
-- `json` — Serialize to compact JSON (Seq requires `| collect` first; error otherwise)
-- `json-pretty` — Serialize to indented JSON (Seq requires `| collect` first; error otherwise)
-- `yaml` — Serialize to YAML (Seq requires `| collect` first; error otherwise)
-- `toml` — Serialize to TOML (Seq requires `| collect` first; error otherwise)
-- `csv` — Convert list-of-dicts to CSV
-- `env` — Convert flat dict to KEY=VALUE format
-- `llt` — Display value in LLT debug format (uses `$llt-repr`)
-- `none` — Return empty string; produces no stdout output regardless of input type
-
-**Seq handling:** Most serialization formatters (`json`, `yaml`, `toml`) do not support Seq values directly — you must use `| collect` to materialize a Seq to a dict before serialization. The `raw` formatter handles Seq by emitting each element on its own line. The `none` formatter always returns `""` regardless of input type; it does not force or collect the value.
+- `stream` — serialize each value as a stdlib-closed normal form (SCN) tinct expression, one per line (`.llt-stream` format). Suitable for `| tinct run -i stream` pipelines.
+- `json` — serialize each value as compact JSON, one per line (NDJSON-compatible). Handles both scalar returns and emitted records.
+- `json-pretty` — serialize each value as indented JSON, separated by blank lines. For human-readable output; not NDJSON.
+- `raw` — write string values as-is; non-strings as their string representation. No quoting.
+- `yaml` — serialize each value as YAML.
+- `toml` — serialize each value as TOML.
+- `csv` — streaming CSV: column headers determined from the first received record; subsequent records written in the same column order.
+- `env` — serialize each flat dict as `KEY=VALUE` lines.
+- `llt` — serialize each value in tinct debug format (`llt-repr`).
+- `none` — the default when no `-o` flag is given. Drains `%emit` discarding all values, forces `%` driving the evaluation cascade, writes nothing to stdout.
 
 ```bash
 # ERROR: cannot serialize Seq to JSON
@@ -220,14 +220,15 @@ tinct run -i json -o raw -e '%.response' < mcp.json
 # Equivalent to jq -r '.response'
 ```
 
-## Default Output Format (`tinct run`)
+## Default Output Behavior (`tinct run`)
 
-Without `-o`, `tinct run` produces no automatic output. The final value is evaluated but not serialized to stdout. To produce output, always specify `-o <formatter>` explicitly.
+Without `-o`, `tinct run` uses `stdlib/cli/out/none.llt` as the output program. `none.llt` drains `%emit` (discarding all emitted values), forces `%` to drive the evaluation cascade (side effects and emit calls fire normally), and writes nothing to stdout. Programs evaluate fully — use `-o none` explicitly if you want the same behavior but prefer to be explicit.
 
 ```bash
-tinct run config.llt              # no stdout output (value evaluated, not printed)
-tinct run -o json config.llt      # compact JSON to stdout
+tinct run config.llt              # forces %, no stdout output
+tinct run -o json config.llt      # compact JSON (one record per line) to stdout
 tinct run -o json-pretty config.llt  # indented JSON to stdout
+tinct run -o none config.llt      # same as default — explicit discard
 ```
 
 **Using the formatters directly:**
@@ -242,18 +243,18 @@ tinct run -o json-pretty config.llt  # indented JSON to stdout
 
 ## Profiling (`--profile`)
 
-`--profile <file.ndjson>` collects span-level timing data during evaluation and streams it to a newline-delimited JSON file (one span per line). Each thunk materialization produces a span record with source location, timing, parent attribution, and stall breakdown. The span file is the lossless archive — all downstream analysis reads from it.
+`--profile <file.llt-stream>` collects span-level timing data during evaluation and streams it to a tinct stream file (one SCN record per line). Each thunk materialization produces a span record with source location, timing, parent attribution, and stall breakdown. The span file is the lossless archive — all downstream analysis reads from it.
 
 ```bash
-tinct run --profile spans.ndjson program.llt
+tinct run --profile spans.llt-stream program.llt
 ```
 
-Analysis scripts in `scripts/profile/` consume the span file via the standard pipeline:
+Analysis scripts in `scripts/profile/` consume the span file via the standard stream pipeline:
 
 ```bash
-tinct run -i ndjson          scripts/profile/materialize.llt < spans.ndjson        # hotspot table
-tinct run -i ndjson          scripts/profile/create.llt      < spans.ndjson        # creation-context table
-tinct run -i ndjson -o json  scripts/profile/trace.llt       < spans.ndjson > trace.json  # Perfetto trace
+tinct run -i stream          scripts/profile/materialize.llt < spans.llt-stream        # hotspot table
+tinct run -i stream          scripts/profile/create.llt      < spans.llt-stream        # creation-context table
+tinct run -i stream -o json  scripts/profile/trace.llt       < spans.llt-stream > trace.json  # Perfetto trace
 ```
 
 ### Span Record Schema

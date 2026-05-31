@@ -1161,12 +1161,6 @@ impl EvalError {
         });
     }
 
-    /// Mutable stack frame push (legacy compatibility — file info is now embedded in spans).
-    /// Delegates to `push_frame` since file path comes from `span.file`.
-    pub fn push_frame_with_file(&mut self, label: String, span: Span, _file: Option<Arc<str>>) {
-        self.push_frame(label, span);
-    }
-
     /// Builder for attaching a secondary span label, e.g. `"evaluated to Bool"`.
     /// The secondary span is displayed on a separate line after the primary error,
     /// pointing at a related source location (e.g. where a value was defined).

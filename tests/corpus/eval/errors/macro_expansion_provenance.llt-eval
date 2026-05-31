@@ -1,8 +1,6 @@
 # Expansion-time error shows "in expansion of" provenance.
-# The macro transformer would try to access a nonexistent argument.
-# With [let ...] pattern matching, this is now an arity error at call site.
-# Keep defmacro to preserve the original test intent (runtime error in transformer).
-[defmacro broken [macro-args]
+# The macro transformer tries to access a nonexistent argument.
+[macro broken [let macro-args]
   [type: "var"  name: [get 5 macro-args]]
 ]
 

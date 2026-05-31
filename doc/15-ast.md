@@ -80,12 +80,12 @@ enum SurfaceExpression {
     // ... other variants (Sequential, Match, TypeAssert, Quote, Unquote, etc.)
 }
 
-/// Declarations (TypeAlias, ClassDecl, InstanceDecl, DefMacro, etc.)
+/// Declarations (TypeAlias, ClassDecl, InstanceDecl, MacroDecl, etc.)
 enum SurfaceDeclaration {
     TypeAlias { params: Vec<String>, body: Arc<SurfaceNode> },
     ClassDecl { /* ... */ },
     InstanceDecl { /* ... */ },
-    DefMacro { /* ... */ },
+    MacroDecl { /* ... */ },
     // ... other variants
 }
 ```
@@ -268,8 +268,7 @@ enum Annotation {
 | `Quote(expr)` | `[quote expr]` | Quote special form — prevents evaluation of expr |
 | `Unquote(expr)` | `[unquote expr]` | Unquote inside quote — evaluates expr and splices result into quoted AST |
 | `UnquoteSplice(expr)` | `[unquote-splice expr]` | Unquote-splice inside quote — evaluates expr (must be list) and splices each element into enclosing list |
-| `DefMacro { name, params, body }` | `[defmacro name [params] body...]` | Macro definition — registers compile-time transformer function |
-| `MacroDecl { name, params, body }` | `[macro name [let ...] body]` | Macro special form — compile-time syntax transformer, produced by `macro` keyword |
+| `MacroDecl { name, params, body }` | `[macro name [let ...] body]` | Macro definition — registers compile-time transformer function |
 | `SyntaxClass { name, pattern, message }` | `[syntax-class name pattern: [...] message: "..."]` | Syntax class declaration — names a set of syntactic patterns with a diagnostic message |
 | `Splice(Vec<Spanned<Expr>>)` | (internal) | Macro-expansion-internal splice — not a parser keyword; produced during macro expansion, not by direct source parsing |
 | `Match { scrutinee, arms }` | `[match val pat1: body1 ...]` | Pattern matching with arms (pattern, optional guard, body) |
@@ -473,7 +472,7 @@ Left-associativity: `a | f | g` parses as `(a | f) | g`, which lowers to `[g [f 
 
 ## AST Dict Schema
 
-`surface_program_to_dict` (`src/surface_convert.rs`) serializes the Surface AST to tinct dicts. `dict_to_surface_node` converts dicts back to `Arc<SurfaceNode>`. These functions are the shared primitive for quasiquoting (`[quote]`), macros (`[defmacro]`), and the tinct-hosted formatter. The canonical schema is defined in `doc/feature/ast-schema.md`.
+`surface_program_to_dict` (`src/surface_convert.rs`) serializes the Surface AST to tinct dicts. `dict_to_surface_node` converts dicts back to `Arc<SurfaceNode>`. These functions are the shared primitive for quasiquoting (`[quote]`), macros (`[macro]`), and the tinct-hosted formatter. The canonical schema is defined in `doc/feature/ast-schema.md`.
 
 ### Conventions
 

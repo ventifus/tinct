@@ -1,6 +1,6 @@
 # What If: Tinct Stream Format — Stdlib-Closed Normal Form
 
-**State:** Proposal
+**State:** Accepted — 2026-05-30
 
 What would it take to give tinct a native streaming format where records carry computational structure — not just ground values — so that two tinct programs connected by a pipe remain as lazy and composable as a single program?
 
@@ -66,7 +66,7 @@ The SCN algorithm is defined by cases:
 | `Decimal(d)` | `d` (decimal literal) |
 | `BigInt(n)` | `n` (integer literal) |
 | `Bytes(b)` | `[bytes [0: b₀  1: b₁  ...]]` using the `bytes` stdlib constructor |
-| `Timestamp(t)` | `[timestamp-nanos t]` — `t` is nanoseconds since UTC epoch; lossless round-trip. Requires new `timestamp-nanos` builtin (same pattern as `duration-nanos`) |
+| `Timestamp(t)` | `[timestamp-nanos t]` — `t` is nanoseconds since UTC epoch; lossless round-trip. `timestamp-nanos` implemented in S-789/T-712 (same pattern as `duration-nanos`) |
 | `Duration(d)` | `[duration-nanos d]` — exact round-trip using existing constructor; `d` is nanoseconds |
 | `Dict([])` | `[]` |
 | `Dict(entries)` | `[k: SCN(v)  ...]` for each entry |
@@ -79,7 +79,7 @@ The SCN algorithm is defined by cases:
 
 **`Expression` serialization note.** `fmt_expression(node: &Arc<SurfaceNode>) -> String` in `src/surface_fmt.rs` is a SurfaceNode → tinct source text unparser — essentially a tinct pretty-printer. It must handle all `SurfaceExpression` variants (Int, Float, Bool, Str, VarRef, Dict, Seq, Call, Fn, DotAccess, Match, Pipe, Quote, etc.) and produce tinct source text that `[load s]` can parse back to an equivalent AST. No such serializer currently exists; implementing it is a dependency of this sprint. The parse↔unparse co-location design in `src/surface_fmt.rs` directly supports this: `fmt_expression` is the unparse direction of the parser, and they should be developed together.
 
-**Non-serializable values.** `Value::to_tinct` returns an error for any value for which it cannot construct a stdlib-closed tinct expression. This is not a blacklist — it is a consequence of the match: some arms have something to emit and some don't. Values with no tinct representation include atomic capabilities (DirCap, NetCap, ClockCap — created by the runtime at the CLI boundary, no tinct constructor exists), values derived from capabilities (Handle, WriteHandle, QuicSession, Http2Session, Http3Session, QuicDatagramHandle, DatagramHandle — their constructors require a capability argument that is itself unexpressible as tinct source), live async runtime objects (Task, Channel, Context, Builder — opaque Rust state), and `Uri` — currently an opaque Rust object with no tinct constructor (`builtin_uri` returns a `Value::Dict` of components, not `Value::Uri`; already non-serializable in the JSON path at `lib.rs:793`). `Uri` should be a tinct-native data structure rather than an opaque Rust value, but this is deferred to lib-net-v3 which will redesign the networking layer. Silently substituting `[]` for these would produce incorrect downstream behavior far from the serialization site; an immediate error is correct.
+**Non-serializable values.** `Value::to_tinct` returns an error for any value for which it cannot construct a stdlib-closed tinct expression. This is not a blacklist — it is a consequence of the match: some arms have something to emit and some don't. Values with no tinct representation include atomic capabilities (DirCap, NetCap, ClockCap, RevocableDirCap — created by the runtime at the CLI boundary, no tinct constructor exists), values derived from capabilities (Handle, WriteHandle, QuicSession, Http2Session, Http3Session, QuicDatagramHandle, DatagramHandle — their constructors require a capability argument that is itself unexpressible as tinct source), live async runtime objects (Task, Channel, Context, Builder — opaque Rust state), opaque Rust objects (Proxy — an intercepting trapping proxy with no tinct constructor; Timezone — an opaque tz database entry), structural AST values (Program, Document — returned by `[expand [load s]]`; no tinct constructor exists that reconstructs them, and round-tripping through source text is the caller's responsibility), and `Uri` — currently an opaque Rust object with no tinct constructor (`builtin_uri` returns a `Value::Dict` of components, not `Value::Uri`; already non-serializable in the JSON path at `lib.rs:793`). `Uri` should be a tinct-native data structure rather than an opaque Rust value, but this is deferred to lib-net-v3 which will redesign the networking layer. Silently substituting `[]` for these would produce incorrect downstream behavior far from the serialization site; an immediate error is correct.
 
 **`Function`** is serializable when the `CoreExpr` body is walkable (always the case for user-defined functions). See §Functions — complete design for the substitution and capture-avoidance algorithm. Functions produced by dynamic `eval` with no resolvable env may require conservative `[]` fallback.
 
@@ -89,7 +89,7 @@ The SCN algorithm is defined by cases:
 
 1. **Identify non-stdlib free variables** — walk the `CoreExpr` body. For each `Var { name, .. }` or `FreeVar(name)` (treated identically — de Bruijn coordinates are irrelevant to the SCN walker): if `name` is a current-scope param name, it is a binding reference (leave as `name`); if `name` is in `stdlib_env`, it is a stdlib reference (leave as `name`); otherwise it is a captured user-env binding that must be substituted.
 2. **Substitute** — for each captured name `x`, replace all `Var { name: x, .. }` and `FreeVar(x)` occurrences in the body with the inline SCN: `SCN(env.lookup(x))`. For nested `CoreExpr::Fn` nodes, extend the param scope before recursing.
-3. **Capture avoidance** — before substituting, check whether any param name `p` appears free in any `SCN(env.lookup(x))`. If so, alpha-rename `p` to a fresh gensym name (`ℊꜱʏᴍ⧼p⧽N` form — prefix U+210A ℊ followed by small-caps SYM, then the original param name and a counter) in both the param list and all `Var { name: p, .. }` and `FreeVar(p)` binding references in the body. This is the Barendregt convention applied mechanically. The `ℊꜱʏᴍ` prefix characters (U+210A, U+A731, U+028F, U+1D0D) are all Unicode Letter-category and valid tinct identifier characters, so the SCN output remains parseable; a collision requires the user to deliberately type these Unicode codepoints, making accidental collision practically impossible.
+3. **Capture avoidance** — before substituting, check whether any param name `p` appears free in any `SCN(env.lookup(x))`. If so, alpha-rename `p` to a fresh gensym name (`ℊꜱʏᴍ⧼p⧽N` form — prefix U+210A ℊ followed by small-caps SYM, then the original param name and a counter) in both the param list and all `Var { name: p, .. }` and `FreeVar(p)` binding references in the body. This is the Barendregt convention applied mechanically. The `ℊꜱʏᴍ` prefix characters (U+210A, U+A731, U+028F, U+1D0D) are all Unicode Letter-category and valid tinct identifier characters, so the SCN output remains parseable; a collision requires the user to deliberately type these Unicode codepoints, making accidental collision practically impossible. The `⧼`/`⧽` delimiters (U+29FC/U+29FD, Unicode category Ps/Pe — not Letter-category) are also valid in tinct identifiers: the lexer accepts all Unicode codepoints not on its explicit denylist, and these characters are not denylisted.
 4. **Serialize** — emit `[fn [let params'] body']` using the substituted, possibly alpha-renamed body.
 
 **CoreExpr traversal — complete variant table.** The free-variable walk and substitution pass must handle every `CoreExpr` variant. The walker carries a *param scope* (set of names bound by enclosing `Fn` params and `CaseArm` pattern bindings) and replaces captured references with their inline SCN.
@@ -109,7 +109,7 @@ The SCN algorithm is defined by cases:
 | `TypeAssert { expr, .. }` | Recurse into `expr`; annotation is a type expression, not a variable reference |
 | `TypeApp { func, arg }` | Recurse into `func` and `arg` |
 | `Match { scrutinee, arms }` | Recurse into `scrutinee`; recurse into each arm (each is a `CaseArm`) |
-| `CaseArm { pattern, body }` | Collect variable names bound by `pattern` → extend param scope → recurse into `body` with extended scope; also recurse into `pattern` for nested closures in guard positions |
+| `CaseArm { pattern, body, guard }` | Collect variable names bound by `pattern` → extend param scope → recurse into `body` with extended scope; if `guard` is `Some(expr)`, recurse into the guard expression with the extended scope (pattern variables are in scope for the guard); also recurse into `pattern` for nested closures in guard positions |
 | `Fn { params, body, .. }` | Extend param scope with all param names → recurse into `body` with extended scope. Capture avoidance (step 3) must be applied before substituting into the body. |
 | `PatternDecl { bindings }` | Recurse into each binding (pattern positions, may contain nested closures) |
 | `LetDecl { bindings }` | Recurse into each binding |
@@ -129,13 +129,15 @@ No changes to `FnAnnotation` or `src/value.rs` are required.
 
 For an unevaluated thunk with expression E and environment env: substitute each non-stdlib free variable in E with `SCN(env.lookup(var))`. This requires forcing the binding — if a free-variable binding diverges (infinite recursion, blocking I/O), `to-tinct` will hang on that binding.
 
-**Capture avoidance in substitution.** When substituting `SCN(env.lookup(x))` into an expression containing a lambda `[fn [let p] body]`, if `p` appears free in `SCN(env.lookup(x))`, the substitution would capture `p`. The fix is alpha-renaming: before substituting, check each lambda param `p` against the free variables of all substitution values; if a conflict exists, rename `p` to a fresh gensym name (`ℊꜱʏᴍ⧼p⧽N` form — e.g. `ℊꜱʏᴍ⧼p⧽0`, `ℊꜱʏᴍ⧼foo⧽1`) in both the binding position and all references in the body. The `ℊꜱʏᴍ` prefix (U+210A SCRIPT SMALL G + U+A731 LATIN LETTER SMALL CAPITAL S + U+028F LATIN LETTER SMALL CAPITAL Y + U+1D0D LATIN LETTER SMALL CAPITAL M) is composed of Unicode Letter-category characters and is therefore a valid tinct identifier, keeping the SCN output parseable. A name collision requires a user to deliberately type these codepoints — accidental collision is practically impossible. This is the standard Barendregt hygiene convention applied mechanically during SCN construction.
+**Capture avoidance in substitution.** When substituting `SCN(env.lookup(x))` into an expression containing a lambda `[fn [let p] body]`, if `p` appears free in `SCN(env.lookup(x))`, the substitution would capture `p`. The fix is alpha-renaming: before substituting, check each lambda param `p` against the free variables of all substitution values; if a conflict exists, rename `p` to a fresh gensym name (`ℊꜱʏᴍ⧼p⧽N` form — e.g. `ℊꜱʏᴍ⧼p⧽0`, `ℊꜱʏᴍ⧼foo⧽1`) in both the binding position and all references in the body. The `ℊꜱʏᴍ` prefix (U+210A SCRIPT SMALL G + U+A731 LATIN LETTER SMALL CAPITAL S + U+028F LATIN LETTER SMALL CAPITAL Y + U+1D0D LATIN LETTER SMALL CAPITAL M) is composed of Unicode Letter-category characters and is therefore a valid tinct identifier, keeping the SCN output parseable. The `⧼`/`⧽` delimiters (U+29FC/U+29FD, Unicode Ps/Pe — not Letter-category) are also valid: tinct's lexer uses a denylist approach rather than a Unicode-category allowlist, and these codepoints are not on the denylist. A name collision requires a user to deliberately type these codepoints — accidental collision is practically impossible. This is the standard Barendregt hygiene convention applied mechanically during SCN construction.
 
-**Gensym convention — design note.** This whatif changes the output format of the `[gensym ...]` builtin (`src/builtins_meta.rs:595`) from `:prefix:N` (e.g. `:foo:0`) to `ℊꜱʏᴍprefixN` (e.g. `ℊꜱʏᴍ⧼foo⧽0`). The old `:p:N` format used `:` as a delimiter, which is a lexer-denylist character (`Token::Colon`) — correct for unforgeability but wrong when the output must be parseable source text, as it is for SCN. The new format uses the prefix `ℊꜱʏᴍ` (U+210A SCRIPT SMALL G + U+A731 LATIN LETTER SMALL CAPITAL S + U+028F LATIN LETTER SMALL CAPITAL Y + U+1D0D LATIN LETTER SMALL CAPITAL M) — all Unicode Letter-category characters and therefore valid tinct identifiers. Collision requires deliberate IME input of these codepoints.
+**Gensym convention — design note.** This whatif changes the output format of the `[gensym ...]` builtin (`src/builtins_meta.rs:595`) from `:prefix:N` (e.g. `:foo:0`) to `ℊꜱʏᴍ⧼prefix⧽N` (e.g. `ℊꜱʏᴍ⧼foo⧽0`). The old `:p:N` format used `:` as a delimiter, which is a lexer-denylist character (`Token::Colon`) — correct for unforgeability but wrong when the output must be parseable source text, as it is for SCN. The new format uses the prefix `ℊꜱʏᴍ` (U+210A SCRIPT SMALL G + U+A731 LATIN LETTER SMALL CAPITAL S + U+028F LATIN LETTER SMALL CAPITAL Y + U+1D0D LATIN LETTER SMALL CAPITAL M) — all Unicode Letter-category characters and therefore valid tinct identifiers. Collision requires deliberate IME input of these codepoints.
 
-This change affects all callers of `[gensym ...]`:
-- `stdlib/prelude.llt` `do-desugar-inferred`: `[gensym "do-infer"]` produces `:do-infer:N` → will produce `ℊꜱʏᴍ⧼do-infer⧽N`. The runtime sentinel check in `src/eval.rs` (`name.starts_with(":do-infer:")`) must be updated to `name.starts_with("ℊꜱʏᴍ⧼do-infer⧽")`.
-- `src/eval_pipeline.rs` uses its own `__nominal_input_N` format (not `[gensym]`) — should be migrated to `ℊꜱʏᴍ⧼nominal-input⧽N` for consistency.
+**This migration is complete (T-711, sprint S-789).** All callers have been updated:
+- `stdlib/prelude.llt` `do-desugar-inferred`: `[gensym "do-infer"]` now produces `ℊꜱʏᴍ⧼do-infer⧽N`. Both sentinel checks were updated atomically:
+  - `src/eval.rs` (`CoreExpr::FreeVar` dispatch): uses `name.starts_with("ℊꜱʏᴍ⧼do-infer⧽")`
+  - `src/typecheck.rs` (`check_do_infer` dispatch): same sentinel — both updated together so `do_infer_resolutions` map keys remain consistent.
+- `src/eval_pipeline.rs` migrated from `__nominal_input_N` to `ℊꜱʏᴍ⧼nominal-input⧽N` for consistency.
 - Any macro that calls `[gensym]` or `[gensym prefix]` automatically picks up the new format with no change needed.
 
 The `ℊꜱʏᴍ` prefix is the canonical convention for all compiler-generated identifiers in tinct going forward: macro hygiene, ANF intermediate names, CPS variables, and SCN capture-avoiding renames all use this prefix.
@@ -351,7 +353,7 @@ These must be handled **concurrently within the output program**: forcing `%` dr
 The three responsibilities:
 
 1. **Drain `%emit`** — receive emitted values as they arrive; serialize each to stdout.
-2. **Force `%`** — materialize the lazy return value to drive the evaluation cascade; serialize any non-nil Seq elements or scalar return value.
+2. **Force `%`** — materialize the lazy return value to drive the evaluation cascade; serialize every Seq element or scalar return value, including null (`[]`).
 3. **Await both** before exiting.
 
 #### `stdlib/cli/out/stream.llt`
@@ -367,12 +369,8 @@ The three responsibilities:
 #    Forcing % drives program evaluation, triggering any emit calls.
 [if [seq? %]
   [reduce [fn [let _ x]
-    [if [not [= [] x]]
-      [write %stdout [to-tinct x]]
-      []]] [] %]
-  [if [not [= [] %]]
-    [write %stdout [to-tinct %]]
-    []]]
+    [write %stdout [to-tinct x]]] [] %]
+  [write %stdout [to-tinct %]]]
 
 # 3. Wait for drain to finish consuming any emits triggered during forcing.
 [await drain]
@@ -482,6 +480,7 @@ The profiling flush thread constructs a `Value::Dict` from each `SpanRecord` and
     [state: [builtin-reduce
       [fn [let state doc]
         [val: [builtin-eval doc.expressions
+                 expects: doc.expects
                  scope:   [builtin-merge
                              [builtin-merge [%emit: emit-ch] state.named]
                              [builtin-reduce builtin-merge []
@@ -489,11 +488,11 @@ The profiling flush thread constructs a `Value::Dict` from each `SpanRecord` and
                  program: prog
                  %: state.percent]
          k:   [str "%" doc.name]]
-        [state |
-          [percent: val]
-          [named: [if [= [] doc.name]
-                     state.named
-                     [builtin-merge state.named [$k: val]]]]]]
+        [builtin-merge state
+          [percent: val
+           named:   [if [= [] doc.name]
+                        state.named
+                        [builtin-merge state.named [$k: val]]]]]]
       [percent: initial-input  named: []]
       prog.documents]]
     state.percent]
@@ -514,6 +513,12 @@ The profiling flush thread constructs a `Value::Dict` from each `SpanRecord` and
 ```
 
 `%emit` is no longer a CLI-injected cap — it is created and owned by `eval-programs`. The CLI only injects true capability handles: `%libdir`, `%cwd`, `%stdin`, `%stdout`.
+
+**`--- expects:` validation.** `doc.expects` is a new field on `Value::Document` (implemented in `src/eval_materialize.rs`). It returns `[]` when the document has no `--- expects:` header, or a `Value::Expression` wrapping a TypeAssert node (`[@expects-annotation %]`) when one is present. The TypeAssert node is constructed from `SurfaceDocument.expects: Option<Spanned<Annotation>>` at field-access time.
+
+`builtin-eval` gains an `expects:` named argument. When `expects:` is non-null, `builtin-eval` evaluates the TypeAssert expression with `%:` bound to the incoming percent value before evaluating `doc.expressions`. The TypeAssert raises a runtime type error if `%` does not satisfy the annotation; otherwise it returns the (possibly Guarded-wrapped) percent value and evaluation proceeds. The resolved type is looked up from `program.types` (the `TypeAnnotationTable` carried in `Value::Program`) using the expression's span — no re-derivation from the annotation syntax is needed.
+
+This is a one-line change in `eval-program` (`expects: doc.expects` added to the `builtin-eval` call) and two Rust changes: the `"expects"` field arm in `eval_materialize.rs` and the `expects:` named-arg handling in `builtin_eval` in `src/builtins_meta.rs`.
 
 **Prelude:** `stdlib/prelude.llt` re-exports `eval-program` and `eval-programs` (added by builtin-privacy T-735). These must be updated to the new signatures shown above, substituting `module` for `builtin-module` per prelude convention.
 
@@ -600,19 +605,15 @@ loop-select: [fn [let context sources handler]
 ```tinct
 # Output formatters are sequential document expressions — NOT a single dict.
 # Dict entries are lazy thunks; only sequential expressions are forced in order.
-# loop-select returns [] when channels exhaust — no try needed for normal termination.
+# loop-select returns [Closed] when channels exhaust — no try needed for normal termination.
 [drain: [task
   [loop-select [context] [[%emit [fn [let v]
-    [write %stdout [SERIALIZER v]]]]] identity]]]]
+    [write %stdout [SERIALIZER v]]]]] identity]]]
 
 [if [seq? %]
   [reduce [fn [let _ x]
-    [if [not [= [] x]]
-      [write %stdout [SERIALIZER x]]
-      []]] [] %]
-  [if [not [= [] %]]
-    [write %stdout [SERIALIZER %]]
-    []]]
+    [write %stdout [SERIALIZER x]]] [] %]
+  [write %stdout [SERIALIZER %]]]
 
 [await drain]
 ```
@@ -636,7 +637,7 @@ loop-select: [fn [let context sources handler]
 3. Write the **header line**: `key1,key2,...\n`
 4. Write the **first data row** immediately.
 5. **Drain remaining `%emit` records** via `loop-select`, writing each as a data row using the captured column order (extra keys ignored, missing keys produce empty cells).
-6. **Force `%`** — if it is a Seq, write each non-nil element as a data row; if it is a scalar dict, write it as a data row.
+6. **Force `%`** — if it is a Seq, write each element (including null) as a data row; if it is a scalar dict, write it as a data row.
 7. **Await** the drain task.
 
 Column order is fixed at step 2 and never changes. Records that don't match the column set (wrong keys) write empty cells for missing columns rather than erroring, so heterogeneous streams produce valid (if sparse) CSV. If no records arrive from either `%emit` or `%`, no output is written (no header either).
@@ -727,7 +728,7 @@ Token-level formatters (`fmt_int`, `fmt_float`, `fmt_string`, etc.) live in `src
 
 **Current:** No `to_tinct` method.
 
-**Proposed:** Add `pub fn to_tinct(&self, ctx: &Arc<EvalContext>) -> Result<String, String>` as an inherent method on `Value`. Dispatches to `src/lexer.rs` formatters for token-level types and `src/surface_fmt.rs` formatters for expression-level types. The catch-all arm `_ => Err(format!("no tinct representation for {}", self.type_name()))` handles all values for which no stdlib-closed tinct expression exists — no explicit list of non-serializable types required.
+**Proposed:** Add `pub fn to_tinct(&self, ctx: Option<&Arc<EvalContext>>) -> Result<String, String>` as an inherent method on `Value`. Dispatches to `src/lexer.rs` formatters for token-level types and `src/surface_fmt.rs` formatters for expression-level types. The catch-all arm `_ => Err(format!("no tinct representation for {}", self.type_name()))` handles all values for which no stdlib-closed tinct expression exists — no explicit list of non-serializable types required.
 
 **Impact:** ~30 lines added to `src/value.rs`.
 
@@ -780,7 +781,14 @@ Pub/sub topic routing, filtering, and subscription management are implemented in
 
 **Prelude exports:** `broadcast-channel`, `oneshot-channel`, `try-send` — all added to prelude's public dict after S-786 lands (requires `--- uses: ["core"]` injection).
 
-**Impact:** ~60 lines in `src/builtins_async.rs`; ~5 lines in `stdlib/prelude.llt`.
+**`select-once` redesign — `[Ok v]` / `[Closed]` return protocol.** `[Closed]` is introduced by this whatif (declared in prelude alongside `[Lagged n]`). The existing `builtin_select_once` must be updated to match the new protocol that `loop-select` is built on:
+
+- **Current:** returns the raw received value on success; raises `EvalError::user_error("select-once: all channels are closed")` when all channels are exhausted.
+- **New:** returns `Value::Variant { tag: "Ok", payload: Some(v) }` on success; returns `Value::Variant { tag: "Closed", payload: None }` when all channels are exhausted (no error). Also gains a `context` first argument for cancellation checking.
+
+This enables `loop-select` to be a pure tinct function that matches on `[Ok v]` / `[Closed]` without any try-catch. The existing `loop-select-impl` in `stdlib/async.llt` (which currently wraps the old error-on-close behavior) must be replaced by the new tinct `loop-select` defined in §Streaming Output above, once it moves into prelude.
+
+**Impact:** ~60 lines in `src/builtins_async.rs`; ~5 lines in `stdlib/prelude.llt`; `stdlib/async.llt` loop-select-impl retired.
 
 
 ### `src/main.rs` — emit channel wiring and deletion of special-case output paths
@@ -829,7 +837,7 @@ Specifically deleted:
 
 **Note on `--eval` and the forcing guarantee.** The `--eval` flag is made redundant by this model — running without `-o` uses `none.llt`, which drains `%emit` and forces `%` (including all Seq elements) without writing anything. `--eval` must be removed from the CLI and all documentation.
 
-**Behavior change acknowledged:** In the current model, a program can `tinct run program.llt` without `-o` and the return value is never forced (lazy, no output). After this change, running without `-o` always forces `%` (via `none.llt`'s `[each [fn [let x] []] %]`). This is intentional: the new model requires `%` to be forced to drive the evaluation cascade for side effects and `emit` calls.
+**Behavior change acknowledged:** In the current model, a program can `tinct run program.llt` without `-o` and the return value is never forced (lazy, no output). After this change, running without `-o` always forces `%` (via `none.llt`'s `[reduce [fn [let _ x] []] [] %]`). This is intentional: the new model requires `%` to be forced to drive the evaluation cascade for side effects and `emit` calls.
 
 ### `src/profiling.rs`
 

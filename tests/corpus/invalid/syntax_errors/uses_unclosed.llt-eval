@@ -1,5 +1,5 @@
-# unclosed uses: list — missing ]
+# unclosed uses: list — newline interrupts the module list before the closing ]
 --- uses: ["core"
 [x: 1]
 === out
-unclosed uses list
+expected module name (quoted string) in uses: list

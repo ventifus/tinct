@@ -1022,9 +1022,9 @@ When a function body contains multiple expressions, the parser wraps them in `Su
 **Semantics:**
 
 - **Environment extension:** Each intermediate expression (if it's a dict) adds its bindings to the environment for subsequent expressions
-- **Lazy intermediate bindings:** Intermediate dict values remain as unevaluated thunks — they are only materialized when accessed
+- **Strict intermediate bindings:** Intermediate dict values are eagerly materialized when inserted into the scope chain — dead bindings fire immediately (SEQ-SCOPE semantics)
 - **Result is final expression:** The value of the last expression in the sequence is the function's return value
-- **CEK machine routing:** `CoreSurfaceExpression::Sequential` is handled directly inside `eval_core_expr` in `eval.rs` via a recursive async call — it iterates the expression list, materializing each intermediate dict to extend the scope chain, then tail-calls into the final expression. This path uses the Rust async call stack rather than the CEK continuation stack (see `cek-match-sequential-rust-stack` in TODO.md)
+- **CEK machine routing:** `CoreSurfaceExpression::Sequential` is handled directly inside `eval_core_expr` in `eval.rs` via a recursive async call — it iterates the expression list, materializing each intermediate dict to extend the scope chain, then tail-calls into the final expression. This path uses the Rust async call stack rather than the CEK continuation stack (tracked in the issue tracker)
 
 This is identical to how document-level expression sequences work (see [Documents](09-documents.md) §Scope Chain Semantics), but scoped within a single function body rather than across documents.
 
@@ -1040,7 +1040,7 @@ Tinct's evaluation model is lazy by default — values remain unevaluated until 
 
 3. **Guarded default fallback:** When a guard fails and a `default:` value is provided, the default is evaluated and materialized immediately. This prevents deferred errors from propagating when the guard explicitly signals a fallback path should be taken.
 
-4. **Sequential expression scope chain (SEQ-SCOPE):** Named bindings from intermediate expressions in a multi-expression document have their keys extracted eagerly (for scope chain construction), but values remain lazy thunks. Only the dict structure (keys) must be known to create the scope chain — values are forced on demand when accessed. See [Documents & Pipelines](09-documents.md) §Scope Chain Semantics for the formal specification.
+4. **Sequential expression scope chain (SEQ-SCOPE):** Named bindings from intermediate expressions in a multi-expression document are materialized strictly — both keys and values are eagerly forced at binding time. Dead bindings fire immediately rather than being deferred. See [Documents & Pipelines](09-documents.md) §Scope Chain Semantics for the formal specification.
 
 ### Overlay Eagerness
 
@@ -1164,7 +1164,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$include` | Evaluates file; returns cached thunk on re-include | Include memoization |
 | **Document Pipeline** | | |
 | `%` (document pipeline) | Bound as `Unevaluated` thunk across `---` boundary | `---` is not a materialization point — laziness is preserved across documents |
-| Document scope chain (`eval_surface_document`) | Named binding keys extracted eagerly; values remain lazy thunks | Scope chain construction requires knowing dict keys, but values are inserted as lazy thunks and forced only on access. Dead bindings remain unevaluated. (`eval_pipeline.rs`) |
+| Document scope chain (`eval_surface_document`) | Both keys and values materialized strictly at binding time | Strict let* semantics: values are eagerly forced when inserted into the child env, so dead-but-erroring bindings fire immediately per SEQ-SCOPE spec. (`eval_pipeline.rs`) |
 | **Internal (eval.rs)** | | |
 | `eval_key` (dict construction) | Materializes all dict keys | Keys must be known for dict insertion |
 | `builtin_keys` | Materializes dict | Keys are never thunks |
@@ -1241,7 +1241,7 @@ tokio::select! {
 | `recv` | `rx.recv().await` (suspends until value available) | Returns error "recv: cancelled" |
 | `await` | `handle.await` (suspends until task finishes) | Returns error "await: cancelled" |
 | `select-once` | `yield_now()` poll loop (busy-waits for first channel) | Checks `ctx.cancel.is_cancelled()` each iteration; returns error "select-once: cancelled" |
-| `par-map` / `par-filter` | `handle.await` (serial collection of `JoinHandle`s) | Not cancellable — awaits all spawned tasks to completion regardless of context state (known limitation; tracked as `runtime-v2-par-map-cancellation` in TODO.md) |
+| `par-map` / `par-filter` | `handle.await` (serial collection of `JoinHandle`s) | Not cancellable — awaits all spawned tasks to completion regardless of context state (known limitation; tracked as B-163 in the issue tracker) |
 
 **Design:** When a context is cancelled while `recv` is waiting, the blocking `.await` inside `tokio::select!` is dropped and the cancellation branch fires. The channel itself is not closed — other non-cancelled tasks can still send and receive from the same channel.
 
@@ -1270,9 +1270,11 @@ Event-source builtins (`signal-channel`, `timer-channel`, `watch-channel`) spawn
 
 ## Output Serialization
 
-Value serialization (e.g., JSON output, display formatting) uses the `visit_value` visitor pattern in `src/lib.rs`. This is distinct from selective materialization (which materializes only what's needed for computation) — output serialization materializes the value tree as needed during traversal, producing output suitable for external consumption.
+Primary output serialization is owned by the output formatter program (see §Output Program Contract in `doc/09-documents.md`). Formatters call `to-tinct`, `to-json`, or their own serializers on each received value via `%emit` and `%`. The CLI does not serialize values directly — it delegates to the output program.
 
-The CLI `--eval` flag performs only shallow (WHNF) materialization. When combined with `-o <formatter>`, the formatter handles recursive traversal and materialization internally (e.g., `to-json` from `codecs/json.llt`); without `-o`, only top-level forcing is performed.
+**`Value::to_tinct`** (`src/value.rs`) is the canonical serializer: it converts any tinct value to its stdlib-closed normal form (SCN) as a String. Token-level types (Int, Float, Bool, String, etc.) are handled by formatters in `src/lexer.rs`; expression-level types (Dict, Seq, Variant, Function) are handled by `src/surface_fmt.rs`. The catch-all arm returns an error for values with no tinct representation (capabilities, live async objects).
+
+**`visit_value` visitor** (`src/lib.rs`) remains available for debug display, LSP hover, and `llt-repr` formatting. It uses a `ValueVisitor` trait to recursively walk materialized value trees, materializing thunks via the CEK machine's `materialize()` as it descends:
 
 **Visitor pattern:** The `ValueVisitor` trait (defined in `src/lib.rs`) provides callback methods for each value variant:
 
@@ -1523,7 +1525,7 @@ This is **structurally determined** by the `Cont` variant on the stack, not infe
 
 **Output serialization:** Value serialization (e.g., JSON output) uses the `visit_value` visitor pattern in `src/lib.rs`. The `ValueVisitor` trait defines callbacks for each value variant (`visit_int`, `visit_dict`, `visit_seq_head`, etc.), and `visit_value` recursively traverses the value tree, materializing thunks as needed and dispatching to the visitor callbacks. Each output format implements the `ValueVisitor` trait. This replaced the old `deep_materialize` approach which used a separate recursive function to pre-materialize the entire value tree before serialization.
 
-**Tail-call optimization:** TCO via `Memoize`-reuse was investigated but reverted due to `EvalStackGuard` invariant violations — reusing the memoize frame caused guard bookkeeping to go out of sync, producing double-cache-writes and incorrect failure propagation. Proper TCO is tracked as the `tco-proper-fix` sprint in TODO.md. Until that sprint lands, recursive calls always push a fresh `Cont::Memoize` frame. Builtin calls likewise always push a continuation — builtins rely on `PendingBuiltin` thunk deferral for lazy behavior, not tail-call elimination.
+**Tail-call optimization:** TCO via `Memoize`-reuse was investigated but reverted due to `EvalStackGuard` invariant violations — reusing the memoize frame caused guard bookkeeping to go out of sync, producing double-cache-writes and incorrect failure propagation. Proper TCO is tracked in the issue tracker. Until that sprint lands, recursive calls always push a fresh `Cont::Memoize` frame. Builtin calls likewise always push a continuation — builtins rely on `PendingBuiltin` thunk deferral for lazy behavior, not tail-call elimination.
 
 **Error stack traces:** Walk `Vec<Cont>` to reconstruct the call stack, using each variant's stored span and label to produce precise "materialized at" context for every frame. This replaces the current `EvalError::stack` vector with a continuation-derived trace.
 
@@ -1583,7 +1585,7 @@ After parsing, the pipeline inserts an expansion phase:
 parse → expand_surface_program → desugar → resolve → typecheck → eval
 ```
 
-`expand_surface_program` walks the AST top-down. A **pre-scan pass** first walks the entire AST to register all `[macro ...]`, `[syntax-class ...]`, and `[defmacro ...]` declarations before the transformation walk begins — giving the expander a complete registry before it processes any form. Then, when a `Call` node's function name matches a registered macro, the expander:
+`expand_surface_program` walks the AST top-down. A **pre-scan pass** first walks the entire AST to register all `[macro ...]` and `[syntax-class ...]` declarations before the transformation walk begins — giving the expander a complete registry before it processes any form. Then, when a `Call` node's function name matches a registered macro, the expander:
 
 1. Quotes all arguments — converts each argument AST node into the corresponding typed `Expr` variant value (e.g., `Variant("Call", {fn: ..., args: ...})`). Arguments are never evaluated.
 2. Binds the quoted forms to the macro's `[let ...]` parameter pattern. If any parameter is annotated (e.g., `name@VarRef`), the expander validates the argument's Expr variant before binding — an annotation mismatch raises `MacroError` at the call site before the macro body runs.

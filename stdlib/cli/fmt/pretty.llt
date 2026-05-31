@@ -101,7 +101,6 @@ render-inline: [fn@[return: String  doc: """Render a node assuming single-line (
     "Quote":          [str "[quote " [render-inline [get "expr" node]] "]"]
     "Unquote":        [str "[unquote " [render-inline [get "expr" node]] "]"]
     "UnquoteSplice":  [str "[unquote-splice " [render-inline [get "expr" node]] "]"]
-    "DefMacro":       [str "[defmacro " [get "name" node] " " [render-inline [get "body" node]] "]"]
     "MacroDecl":      [str "[macro " [get "name" node] " " [render-inline [get "params" node]] " " [render-inline [get "body" node]] "]"]
     "Splice":         [str "[splice " [join-strings " " [map-list render-inline [get "forms" node]]] "]"]
     "SyntaxClass":    [str "[syntax-class " [get "name" node] " " [render-inline [get "pattern" node]] "]"]
@@ -204,7 +203,6 @@ format-node: [fn@[return: String  doc: """Main dispatch: format any AST node wit
     "Quote":          [format-quote node indent]
     "Unquote":        [format-unquote node indent]
     "UnquoteSplice":  [format-unquote-splice node indent]
-    "DefMacro":       [format-defmacro node indent]
     "MacroDecl":      [format-macrodecl node indent]
     "Splice":         [format-splice node indent]
     "SyntaxClass":    [format-syntax-class node]
@@ -374,9 +372,6 @@ format-unquote: [fn@[return: String  doc: """Format unquote: [unquote expr]"""] 
 
 format-unquote-splice: [fn@[return: String  doc: """Format unquote-splice: [unquote-splice expr]"""] [let node indent@Int]
   [str "[unquote-splice " [format-node [get "expr" node] indent] "]"]]
-
-format-defmacro: [fn@[return: String  doc: """Format defmacro: [defmacro name transformer]"""] [let node indent@Int]
-  [str "[defmacro " [get "name" node] " " [format-node [get "body" node] indent] "]"]]
 
 format-macrodecl: [fn@[return: String  doc: """Format macro declaration: [macro name params body]"""] [let node indent@Int]
   [str "[macro " [get "name" node] " " [format-node [get "params" node] indent] " " [format-node [get "body" node] indent] "]"]]

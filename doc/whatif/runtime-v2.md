@@ -1044,9 +1044,9 @@ CancelHandle: [type [CancelHandle
 
 # One source entry for select-once — a channel paired with its handler function.
 # t: element type of the channel; r: return type of the handler.
-SelectSource: [type [t r] [SelectSource
+SelectSource: [type [let t r] [SelectSource
   ch:      [Channel t]
-  handler: [Fn [t] r]]]
+  handler: [Fn@r [t]]]]
 ```
 
 ### New Builtins

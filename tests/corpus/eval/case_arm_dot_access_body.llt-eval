@@ -1,0 +1,6 @@
+# Case arm body-phase dot access: the body expression (not the pattern) uses dot access.
+# The pattern is [let d: Dict] and the body is d.x — a dot access on the bound variable.
+[match [x: 1]
+  [case [let d: Dict] d.x]]
+=== out
+Int(1)

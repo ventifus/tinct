@@ -2037,25 +2037,6 @@ fn surface_decl_to_thunk_id(
             );
         }
 
-        SurfaceDeclaration::DefMacro { name, params, body } => {
-            variant_tag = "DefMacro";
-            dict.insert(
-                Key::String("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(name),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                Key::String("params".into()),
-                surface_node_to_thunk_id(params, opts, ctx)?,
-            );
-            dict.insert(
-                Key::String("body".into()),
-                surface_node_to_thunk_id(body, opts, ctx)?,
-            );
-        }
-
         SurfaceDeclaration::MacroDecl { name, params, body } => {
             variant_tag = "MacroDecl";
             dict.insert(

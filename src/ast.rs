@@ -428,9 +428,6 @@ impl fmt::Display for SurfaceDeclaration {
                 }
                 write!(f, "]")
             }
-            SurfaceDeclaration::DefMacro { name, params, body } => {
-                write!(f, "[defmacro {} {} {}]", name, params, body)
-            }
             SurfaceDeclaration::MacroDecl { name, params, body } => {
                 write!(f, "[macro {} {} {}]", name, params, body)
             }
@@ -715,11 +712,6 @@ pub enum SurfaceDeclaration {
     InstanceDecl {
         class_name: String,
         arms: Vec<(Arc<SurfaceNode>, Vec<Spanned<SurfaceEntry>>)>,
-    },
-    DefMacro {
-        name: String,
-        params: Arc<SurfaceNode>,
-        body: Arc<SurfaceNode>,
     },
     MacroDecl {
         name: String,

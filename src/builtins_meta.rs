@@ -54,6 +54,18 @@ use crate::eval_call::{invoke_function, CallContext};
 use crate::eval_materialize::force_dict_tree;
 use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
 
+/// Create a gensym name in the canonical `ℊꜱʏᴍ⧼prefix⧽N` format.
+///
+/// The `ℊꜱʏᴍ` prefix (U+210A U+A731 U+028F U+1D0D) and `⧼`/`⧽` brackets (U+29FC/U+29FD)
+/// ensure these names are valid tinct identifiers (parseable in SCN) while being practically
+/// unguessable — collision requires deliberate IME input of these codepoints.
+///
+/// Used by both `builtin_gensym` (user-facing) and internal synthetic variable creation
+/// (e.g., `wrap_with_nominal_validation` in `eval_pipeline.rs`) to ensure consistent naming.
+pub(crate) fn make_gensym_name(prefix: &str, id: u64) -> String {
+    format!("ℊꜱʏᴍ⧼{}⧽{}", prefix, id)
+}
+
 /// Helper: create a synthetic CoreExpr::Call for builtin-generated calls.
 fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
     Arc::new(Spanned {
@@ -604,11 +616,12 @@ pub(crate) fn builtin_apply(
 
 /// `gensym`: Generate a unique symbol name for macro hygiene.
 ///
-/// - Zero args: returns `":gensym:N"` where N is a global monotonic counter.
-/// - One arg (prefix string): returns `":prefix:N"` where prefix is the argument.
+/// - Zero args: returns `"ℊꜱʏᴍ⧼gensym⧽N"` where N is a global monotonic counter.
+/// - One arg (prefix string): returns `"ℊꜱʏᴍ⧼prefix⧽N"` where prefix is the argument.
 ///
-/// The `:` prefix ensures these names cannot collide with user-written identifiers
-/// (`:` is not allowed in bare word identifiers).
+/// The `ℊꜱʏᴍ` prefix (U+210A U+A731 U+028F U+1D0D) and `⧼`/`⧽` brackets (U+29FC/U+29FD)
+/// ensure these names are valid tinct identifiers (parseable) while being practically
+/// unguessable — collision requires deliberate IME input of these codepoints.
 pub(crate) fn builtin_gensym(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -655,7 +668,7 @@ pub(crate) fn builtin_gensym(
         };
 
         let id = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let name = format!(":{}:{}", prefix, id);
+        let name = make_gensym_name(&prefix, id);
         ok_val(string_val(&name), call_span)
     })
 }

@@ -1,8 +1,8 @@
 # Test: inferred [do] where no monad can be inferred — first binding's RHS is Int (42),
 # not a monadic type. Rule 2 fails, Rule 1 fails (no annotation) → T_DO_INFER.
-# Eval: %do-infer unresolved → E002 undefined variable.
+# Eval: ℊꜱʏᴍ⧼do-infer⧽N unresolved → E002 undefined variable.
 [do [x: 42] x]
 === error
-[E002] undefined variable: %do-infer
+[E002] undefined variable: ℊꜱʏᴍ⧼do-infer⧽
 === warn
 cannot infer monad

@@ -34,9 +34,13 @@ impl ProfilingSpanGuard {
     fn new(ctx: &Arc<EvalContext>, thunk: &Thunk) -> Self {
         let (profiling, span_id) = if let Some(ref prof) = ctx.profiling {
             // Extract span source information.
-            // Span has no file field; source_file is not available from the span alone.
-            // The include cache (not yet plumbed here) would provide it in a future sprint.
-            let source_file: Option<String> = None;
+            // Span carries file: Option<Arc<SourceFile>> populated by parse_with_file.
+            // Use the embedded path when present; None for synthetic/builtin spans.
+            let source_file: Option<String> = thunk
+                .span
+                .file
+                .as_ref()
+                .map(|sf| sf.path.as_ref().to_string());
             let (source_start, source_end) = if thunk.span != crate::ast::Span::origin() {
                 (
                     Some((thunk.span.start.line, thunk.span.start.column)),
@@ -46,7 +50,7 @@ impl ProfilingSpanGuard {
                 (None, None)
             };
 
-            // Extract source text snippet (TODO: from include cache)
+            // Extract source text snippet (TODO(eval-cleanup): from include cache)
             let source_text = None;
 
             // Extract builtin name from origin if it looks like a builtin
@@ -108,8 +112,6 @@ pub(crate) fn attach_materialization_context(
     mat_span: Option<&Span>,
     origin: Option<&str>,
     thunk_span: Span,
-    // Source file is now embedded in span.file — this parameter is ignored.
-    _source_file: Option<&str>,
 ) -> Box<EvalError> {
     if let Some(span) = mat_span {
         if err.materialization_span.is_none() {
@@ -817,7 +819,6 @@ pub(crate) async fn force_step(
                     mat_span.as_ref(),
                     origin.as_deref(),
                     thunk_span.clone(),
-                    thunk_ctx.config.source_file.as_deref(),
                 );
                 // eval_stack_guard pops on drop (armed)
                 // Restore to PendingBuiltin for non-cacheable errors (e.g. DepthExceeded) so
@@ -980,7 +981,6 @@ pub(crate) async fn force_step(
                         mat_span.as_ref(),
                         origin.as_deref(),
                         thunk_span.clone(),
-                        thunk_ctx.config.source_file.as_deref(),
                     );
                     if decorated.kind.is_cacheable() {
                         thunk.cache_failure_once(&decorated);
@@ -1007,7 +1007,6 @@ pub(crate) async fn force_step(
                         mat_span.as_ref(),
                         origin.as_deref(),
                         thunk_span.clone(),
-                        thunk_ctx.config.source_file.as_deref(),
                     );
                     if decorated.kind.is_cacheable() {
                         thunk.cache_failure_once(&decorated);
@@ -1070,7 +1069,6 @@ pub(crate) async fn force_step(
                     mat_span.as_ref(),
                     origin.as_deref(),
                     thunk_span.clone(),
-                    thunk_ctx.config.source_file.as_deref(),
                 );
                 if decorated.kind.is_cacheable() {
                     thunk.cache_failure_once(&decorated);
@@ -1144,7 +1142,6 @@ pub(crate) async fn force_step(
                         mat_span.as_ref(),
                         origin.as_deref(),
                         thunk_span.clone(),
-                        thunk_ctx.config.source_file.as_deref(),
                     );
                     if decorated.kind.is_cacheable() {
                         thunk.cache_failure_once(&decorated);
@@ -1172,7 +1169,6 @@ pub(crate) async fn force_step(
                         mat_span.as_ref(),
                         origin.as_deref(),
                         thunk_span.clone(),
-                        thunk_ctx.config.source_file.as_deref(),
                     );
                     if decorated.kind.is_cacheable() {
                         thunk.cache_failure_once(&decorated);
@@ -1264,7 +1260,6 @@ pub(crate) async fn force_step(
                         mat_span.as_ref(),
                         origin.as_deref(),
                         thunk_span.clone(),
-                        thunk_ctx.config.source_file.as_deref(),
                     );
                     if decorated.kind.is_cacheable() {
                         thunk.cache_failure_once(&decorated);
@@ -1338,7 +1333,6 @@ pub(crate) async fn force_step(
                     mat_span.as_ref(),
                     origin.as_deref(),
                     thunk_span.clone(),
-                    thunk_ctx.config.source_file.as_deref(),
                 );
                 if decorated.kind.is_cacheable() {
                     thunk.cache_failure_once(&decorated);
@@ -1378,14 +1372,12 @@ pub(crate) async fn apply_cont(
             // pushed by the originating force_step (PendingBuiltin, PendingCall, or
             // GuardedValidate default fallback). The guard auto-pops on all exit paths.
             let _eval_stack_guard = EvalStackGuard::inherited(&ctx.state);
-            let src_file = ctx.config.source_file.clone();
             let decorated_result = result.map_err(|e| {
                 attach_materialization_context(
                     e,
                     mat_span.as_ref(),
                     origin.as_deref(),
                     thunk_span.clone(),
-                    src_file.as_deref(),
                 )
             });
 
@@ -1430,7 +1422,6 @@ pub(crate) async fn apply_cont(
             // pushed by force_step(PendingCall). Auto-pops on all exit paths;
             // disarmed when delegating to Memoize or re-dispatching via PendingBuiltin.
             let eval_stack_guard = EvalStackGuard::inherited(&thunk_ctx.state);
-            let source_file_str = thunk_ctx.config.source_file.clone();
             let origin_for_decorate = origin.clone();
             let thunk_span_for_decorate = thunk_span.clone();
             let mat_span_for_decorate = mat_span.clone();
@@ -1440,7 +1431,6 @@ pub(crate) async fn apply_cont(
                     mat_span_for_decorate.as_ref(),
                     origin_for_decorate.as_deref(),
                     thunk_span_for_decorate.clone(),
-                    source_file_str.as_deref(),
                 )
             };
 
@@ -1830,7 +1820,6 @@ pub(crate) async fn apply_cont(
                 default,
                 mut restore,
             } = *data;
-            let guard_ctx_file = guard_ctx.config.source_file.clone();
             let origin_for_decorate = origin.clone();
             let thunk_span_for_decorate = thunk_span.clone();
             let mat_span_for_decorate = mat_span.clone();
@@ -1840,7 +1829,6 @@ pub(crate) async fn apply_cont(
                     mat_span_for_decorate.as_ref(),
                     origin_for_decorate.as_deref(),
                     thunk_span_for_decorate.clone(),
-                    guard_ctx_file.as_deref(),
                 )
             };
 
@@ -2162,7 +2150,6 @@ pub(crate) async fn apply_cont(
             // pushed by force_step(PendingBuiltin). Auto-pops on all exit paths;
             // disarmed when delegating to another BuiltinForceArg or Memoize.
             let eval_stack_guard = EvalStackGuard::inherited(&thunk_ctx.state);
-            let source_file_str = thunk_ctx.config.source_file.clone();
             let origin_for_decorate = origin.clone();
             let thunk_span_for_decorate = thunk_span.clone();
             let mat_span_for_decorate = mat_span.clone();
@@ -2172,7 +2159,6 @@ pub(crate) async fn apply_cont(
                     mat_span_for_decorate.as_ref(),
                     origin_for_decorate.as_deref(),
                     thunk_span_for_decorate.clone(),
-                    source_file_str.as_deref(),
                 )
             };
 
@@ -3847,7 +3833,6 @@ mod tests {
             Some(&mat_span),
             Some(origin),
             thunk_span.clone(),
-            None,
         );
 
         // Verify materialization_span is set
@@ -4708,7 +4693,6 @@ mod deep_tests {
             Some(&mat_span),
             Some(origin),
             thunk_span.clone(),
-            None,
         );
 
         assert_eq!(
@@ -4724,7 +4708,6 @@ mod deep_tests {
             Some(&second_mat_span),
             Some("second_origin"),
             thunk_span,
-            None,
         );
 
         assert_eq!(

@@ -1,4 +1,5 @@
-# Error: fn@[...] annotation mixes named keys and positional entries
-[fn@[return: Int 42] [let] 0]
-=== error
-mixed keys
+# Error: TypeAssert annotation mixes named fn metadata keys and positional entries
+# [return: Int 42] has a named key "return:" (fn metadata key) and a positional entry 42
+[@[return: Int 42] [x: 1]]
+=== out
+inferred type is Unknown

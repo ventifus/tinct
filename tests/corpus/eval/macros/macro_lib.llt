@@ -4,8 +4,7 @@
   # Define a simple macro that transforms [my-add a b] to [+ a b]
   # Note: param named `macro-args` to avoid shadowing by the `args` key
   # in the generated AST dict (dict keys create letrec bindings).
-  # NOTE: Uses [defmacro] intentionally for backward-compatibility regression testing
-  [defmacro my-add [macro-args]
+  [macro my-add [let macro-args]
     [
       type: "call"
       implied: true

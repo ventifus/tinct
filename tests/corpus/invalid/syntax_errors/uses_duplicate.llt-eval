@@ -1,6 +1,5 @@
-# duplicate uses: pragma in document header
---- uses: ["core"]
---- uses: ["net"]
+# duplicate uses: pragma in document header — two uses: on the same header line
+--- uses: ["core"] uses: ["net"]
 [x: 1]
 === out
 duplicate uses: pragma in header

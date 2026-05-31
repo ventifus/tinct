@@ -820,6 +820,38 @@ pub fn builtin_duration_nanos(
     })
 }
 
+/// Create a Timestamp from nanoseconds since the Unix epoch.
+///
+/// Mirrors `duration-nanos` but produces a `Timestamp` instead of a `Duration`.
+/// Required for SCN round-trip serialization where nanosecond-precision timestamps
+/// must survive serialize/deserialize without conversion through seconds.
+pub fn builtin_timestamp_nanos(
+    args: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let call_span = args.call_span.clone();
+        let [n_thunk] = args.args.as_slice() else {
+            return Err(dt_err(
+                "timestamp-nanos requires 1 argument",
+                call_span.clone(),
+            ));
+        };
+
+        let n_val = n_thunk
+            .try_get_materialized()
+            .expect("pre-materialized by force_count=1");
+        let nanos = match &n_val {
+            Value::Int(n) => *n,
+            _ => return Err(dt_err("timestamp-nanos requires an Int", call_span.clone())),
+        };
+
+        Ok(Arc::new(Thunk::new_materialized(
+            Value::Timestamp(nanos),
+            call_span,
+        )))
+    })
+}
+
 /// Create a duration from seconds.
 pub fn builtin_duration_seconds(
     args: BuiltinArgs,
@@ -1469,6 +1501,12 @@ pub fn datetime_builtins() -> Vec<BuiltinDef> {
             1
         ),
         builtin!(
+            "timestamp-nanos",
+            builtin_timestamp_nanos,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
             "duration-seconds",
             builtin_duration_seconds,
             [Strictness::Seq],
@@ -1552,6 +1590,15 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
     // unix->timestamp: Int → Timestamp
     env.insert(
         "unix->timestamp".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int)],
+            ret: Box::new(Type::Timestamp),
+            variadic: false,
+        },
+    );
+    // timestamp-nanos: Int → Timestamp
+    env.insert(
+        "timestamp-nanos".to_string(),
         Type::Function {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::Timestamp),

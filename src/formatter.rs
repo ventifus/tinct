@@ -542,7 +542,7 @@ impl<'a> Formatter<'a> {
                 self.format_expr(inner, true);
                 self.output.push(']');
             }
-            // DefMacro, MacroDecl, Splice, SyntaxClass, TypeAlias, ClassDecl, InstanceDecl
+            // MacroDecl, Splice, SyntaxClass, TypeAlias, ClassDecl, InstanceDecl
             // are SurfaceDeclaration variants, not SurfaceExpression variants.
             // They are filtered out by document.expressions() and never reach format_expr.
             SurfaceExpression::Match { scrutinee, arms } => {
@@ -2043,29 +2043,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: defmacro becomes SurfaceItem::Decl and is filtered from formatter output; formatter outputs empty file"]
-    fn test_format_defmacro() {
-        let input = "[defmacro my-macro [x] x]";
-        let formatted = format_source(input).unwrap();
-        assert_eq!(formatted, "[defmacro my-macro [x] x]\n");
-    }
-
-    #[test]
     fn test_format_nested_quote() {
         let input = "[quote [quote [unquote x]]]";
         let formatted = format_source(input).unwrap();
         assert_eq!(formatted, "[quote [quote [unquote x]]]\n");
-    }
-
-    #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: defmacro becomes SurfaceItem::Decl and is filtered from formatter output; formatter outputs empty file"]
-    fn test_format_macro_with_complex_transformer() {
-        let input = "[defmacro unless [args] [if [get 0 args] [get 2 args] [get 1 args]]]";
-        let formatted = format_source(input).unwrap();
-        assert_eq!(
-            formatted,
-            "[defmacro unless [args] [if [get 0 args] [get 2 args] [get 1 args]]]\n"
-        );
     }
 
     #[test]

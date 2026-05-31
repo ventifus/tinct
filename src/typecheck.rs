@@ -2270,7 +2270,7 @@ pub(crate) fn infer_surface_expr(
             } = &func.expr
             {
                 if let SurfaceExpression::VarRef { name, .. } = &da_target.expr {
-                    if name.starts_with(":do-infer:") && named_args.is_empty() {
+                    if name.starts_with("ℊꜱʏᴍ⧼do-infer⧽") && named_args.is_empty() {
                         return check_do_infer(
                             da_field,
                             name,
@@ -2748,12 +2748,6 @@ pub(crate) fn infer_surface_expr(
                     } else {
                         unreachable!()
                     }
-                }
-                SurfaceDeclaration::DefMacro { .. } => {
-                    Err(vec![TypeError::new(
-                        "defmacro should be removed by expansion pass before typechecking (internal error)",
-                        node.span.clone(),
-                    )])
                 }
                 SurfaceDeclaration::MacroDecl { .. } => Err(vec![TypeError::new(
                     "MacroDecl should be removed by expansion pass before typechecking (internal error)",
@@ -4406,9 +4400,9 @@ fn check_div(
     Ok(Type::Float)
 }
 
-/// Type check an inferred `[do]` form — the do-infer sentinel (e.g., `:do-infer:0.bind`).
+/// Type check an inferred `[do]` form — the do-infer sentinel (e.g., `ℊꜱʏᴍ⧼do-infer⧽0.bind`).
 ///
-/// The `do` macro emits `[`:do-infer:N`.bind e [fn [x] ...]]` when no explicit monad is provided.
+/// The `do` macro emits `[ℊꜱʏᴍ⧼do-infer⧽N.bind e [fn [x] ...]]` when no explicit monad is provided.
 /// This function:
 ///   1. Resolves the monad variable name (Rule 1: from `state.expected_return`, Rule 2: from
 ///      the first arg's inferred type, AST fallback: from syntactic constructor pattern,
@@ -6340,10 +6334,6 @@ fn stq_walk_decl_unknown(decl: &SurfaceDeclaration, spans: &mut HashSet<(usize, 
                 }
             }
         }
-        SurfaceDeclaration::DefMacro { params, body, .. } => {
-            stq_walk_node_unknown(params, spans);
-            stq_walk_node_unknown(body, spans);
-        }
         SurfaceDeclaration::MacroDecl { params, body, .. } => {
             stq_walk_node_unknown(params, spans);
             stq_walk_node_unknown(body, spans);
@@ -6490,10 +6480,6 @@ fn stq_walk_decl_overbroad(
                 }
             }
         }
-        SurfaceDeclaration::DefMacro { params, body, .. } => {
-            stq_walk_node_overbroad(params, type_map, diagnostics);
-            stq_walk_node_overbroad(body, type_map, diagnostics);
-        }
         SurfaceDeclaration::MacroDecl { params, body, .. } => {
             stq_walk_node_overbroad(params, type_map, diagnostics);
             stq_walk_node_overbroad(body, type_map, diagnostics);
@@ -6629,10 +6615,6 @@ fn stq_collect_decl_spans(decl: &SurfaceDeclaration, map: &mut HashMap<(usize, u
                     stq_collect_node_spans(&entry.node.value, map);
                 }
             }
-        }
-        SurfaceDeclaration::DefMacro { params, body, .. } => {
-            stq_collect_node_spans(params, map);
-            stq_collect_node_spans(body, map);
         }
         SurfaceDeclaration::MacroDecl { params, body, .. } => {
             stq_collect_node_spans(params, map);
@@ -6780,8 +6762,7 @@ fn scan_explicit_unknown_t011(
                     }
                 }
             }
-            SurfaceDeclaration::DefMacro { params, body, .. }
-            | SurfaceDeclaration::MacroDecl { params, body, .. } => {
+            SurfaceDeclaration::MacroDecl { params, body, .. } => {
                 emit_t011_for_node(params, diagnostics);
                 emit_t011_for_node(body, diagnostics);
             }

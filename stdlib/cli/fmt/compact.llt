@@ -86,7 +86,6 @@ format-node: [fn@[return: String  doc: """Main dispatch: format any AST node to 
     "Quote":          [format-quote node]
     "Unquote":        [format-unquote node]
     "UnquoteSplice":  [format-unquote-splice node]
-    "DefMacro":       [format-defmacro node]
     "MacroDecl":      [format-macrodecl node]
     "Splice":         [format-splice node]
     "SyntaxClass":    [format-syntax-class node]
@@ -229,9 +228,6 @@ format-unquote: [fn@[return: String  doc: """Format unquote: [unquote expr]"""] 
 
 format-unquote-splice: [fn@[return: String  doc: """Format unquote-splice: [unquote-splice expr]"""] [let node]
   [str "[unquote-splice " [format-node [get "expr" node]] "]"]]
-
-format-defmacro: [fn@[return: String  doc: """Format defmacro: [defmacro name transformer]"""] [let node]
-  [str "[defmacro " [get "name" node] " " [format-node [get "body" node]] "]"]]
 
 format-macrodecl: [fn@[return: String  doc: """Format macro declaration: [macro name params body]"""] [let node]
   [str "[macro " [get "name" node] " " [format-node [get "params" node]] " " [format-node [get "body" node]] "]"]]

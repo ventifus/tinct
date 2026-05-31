@@ -1,5 +1,5 @@
 # gensym generates unique names for macro hygiene. Accessible from user code via prelude wrapper.
 [a: [gensym]  b: [gensym]]
-[and [starts-with? a ":gensym:"] [not [= a b]]]
+[and [starts-with? a "ℊꜱʏᴍ⧼gensym⧽"] [not [= a b]]]
 === out
 Bool(true)

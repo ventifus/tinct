@@ -65,7 +65,6 @@ pub fn surface_decl_tag(decl: &SurfaceDeclaration) -> &'static str {
         SurfaceDeclaration::TypeAlias { .. } => "TypeAlias",
         SurfaceDeclaration::ClassDecl { .. } => "ClassDecl",
         SurfaceDeclaration::InstanceDecl { .. } => "InstanceDecl",
-        SurfaceDeclaration::DefMacro { .. } => "DefMacro",
         SurfaceDeclaration::MacroDecl { .. } => "MacroDecl",
         SurfaceDeclaration::SyntaxClass { .. } => "SyntaxClass",
         SurfaceDeclaration::Splice(_) => "Splice",

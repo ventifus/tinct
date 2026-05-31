@@ -7,7 +7,7 @@
    desugared: false]
 ]
 
-# The macro creates [fn [:gensym:N] <arg0>].
+# The macro creates [fn [ℊꜱʏᴍ⧼gensym⧽N] <arg0>].
 # Calling this with any argument returns the original arg value (42).
 [call [my-const 42] "ignored"]
 === out

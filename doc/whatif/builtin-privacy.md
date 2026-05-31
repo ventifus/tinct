@@ -183,7 +183,7 @@ pub fn type_env_module(name: &str) -> Option<TypeEnv> {
 
 **`"datetime"` → `src/builtins_datetime.rs`** (extend existing file; add `datetime_type_env()`)
 
-`parse-timestamp` `format-timestamp` `timestamp->unix` `unix->timestamp` `now` `fixed-clock` `timestamp-add` `timestamp-diff` `timestamp<?` `timestamp>?` `timestamp=?` `timestamp-year` `timestamp-month` `timestamp-day` `timestamp-hour` `timestamp-minute` `timestamp-second` `timestamp-parts` `duration-nanos` `duration-seconds` `duration-minutes` `duration-hours` `duration-days` `duration->seconds` `duration->nanos` `load-tz` `timestamp-in-tz` `local->timestamp` `local-tz-name`
+`parse-timestamp` `format-timestamp` `timestamp->unix` `unix->timestamp` `timestamp-nanos` `now` `fixed-clock` `timestamp-add` `timestamp-diff` `timestamp<?` `timestamp>?` `timestamp=?` `timestamp-year` `timestamp-month` `timestamp-day` `timestamp-hour` `timestamp-minute` `timestamp-second` `timestamp-parts` `duration-nanos` `duration-seconds` `duration-minutes` `duration-hours` `duration-days` `duration->seconds` `duration->nanos` `load-tz` `timestamp-in-tz` `local->timestamp` `local-tz-name`
 
 **`"net"` → `src/builtins_net.rs`** (new file; pulls from `builtins_io.rs` + `builtins_uri.rs`)
 
@@ -368,6 +368,7 @@ if let Some(scope_thunk) = args.named("scope") {
     [state: [builtin-reduce
       [fn [let state doc]
         [val: [builtin-eval doc.expressions
+                 expects: doc.expects
                  scope:   [builtin-merge
                              state.named
                              [builtin-reduce builtin-merge []

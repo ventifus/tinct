@@ -161,7 +161,7 @@ builtins that need to inspect value structure.
 ### Why a Special Form (Not a Macro)
 
 `[match]` is implemented as an `Expr::Match` parser special form rather
-than via `[defmacro match]`. This was decided after evaluating both
+than via `[macro match ...]`. This was decided after evaluating both
 approaches against the type system requirements:
 
 1. **Type checker integration.** As a first-class AST node, the type

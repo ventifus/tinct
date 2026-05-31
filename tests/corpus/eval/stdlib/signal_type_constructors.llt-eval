@@ -1,0 +1,11 @@
+# Signal type constructors: POSIX signal variants defined in prelude.llt.
+# Each signal is a zero-payload Variant value (no data attached).
+# Signal: [type [SIGTERM] [SIGINT] [SIGHUP] [SIGQUIT] [SIGUSR1] [SIGUSR2]]
+[term:   SIGTERM
+ int:    SIGINT
+ hup:    SIGHUP
+ quit:   SIGQUIT
+ usr1:   SIGUSR1
+ usr2:   SIGUSR2]
+=== out
+Dict({"term": Variant(SIGTERM, Null), "int": Variant(SIGINT, Null), "hup": Variant(SIGHUP, Null), "quit": Variant(SIGQUIT, Null), "usr1": Variant(SIGUSR1, Null), "usr2": Variant(SIGUSR2, Null)})

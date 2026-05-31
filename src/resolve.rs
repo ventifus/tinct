@@ -281,8 +281,7 @@ impl SurfaceResolver {
                     }
                 }
             }
-            SurfaceDeclaration::DefMacro { params, body, .. }
-            | SurfaceDeclaration::MacroDecl { params, body, .. } => {
+            SurfaceDeclaration::MacroDecl { params, body, .. } => {
                 self.walk_surface_node(params);
                 self.walk_surface_node(body);
             }

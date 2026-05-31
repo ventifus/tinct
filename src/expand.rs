@@ -1,10 +1,10 @@
-//! Macro expansion pass for `[macro ...]` and legacy `[defmacro ...]` forms.
+//! Macro expansion pass for `[macro ...]` forms.
 //!
 //! Runs between parse and desugar: `parse -> expand_surface_program -> desugar -> typecheck -> eval`
 //!
 //! The expansion loop:
 //! 1. Walk the AST top-down
-//! 2. Register `DefMacro` nodes by evaluating their transformer in a fresh context
+//! 2. Register `MacroDecl` nodes by evaluating their transformer in a fresh context
 //! 3. Expand `Call` nodes if the function name matches a registered macro:
 //!    - Pass arguments as `Value::Expression` (native AST nodes)
 //!    - Call the macro transformer with the Expression values
@@ -114,7 +114,7 @@ pub struct MacroEnv {
     in_progress: HashSet<CallSiteId>,
     /// Provenance side map: generated-node span -> expansion origin.
     pub provenance: ProvenanceMap,
-    /// Macros discovered during expansion via `[defmacro ...]` declarations.
+    /// Macros discovered during expansion via `[macro ...]` declarations.
     /// Accumulated during expansion.
     pub discovered_macros: Vec<(String, Arc<Thunk>)>,
 }
@@ -410,7 +410,7 @@ impl Drop for DepthGuard {
 ///
 /// This is the top-level entry point called from the pipeline.
 /// Walks `SurfaceDocument.items` and performs macro expansion operations:
-/// - Register `DefMacro`/`MacroDecl`/`SyntaxClass` declarations
+/// - Register `MacroDecl`/`SyntaxClass` declarations
 /// - Flatten `Splice` declarations into expression items
 /// - Expand `Call` nodes whose function name is a registered macro
 ///
@@ -519,8 +519,7 @@ pub async fn expand_surface_program(
                                 expanded_items.push(SurfaceItem::Expr(form));
                             }
                         }
-                        SurfaceDeclaration::DefMacro { .. }
-                        | SurfaceDeclaration::MacroDecl { .. }
+                        SurfaceDeclaration::MacroDecl { .. }
                         | SurfaceDeclaration::SyntaxClass { .. } => {
                             // Macro declarations are registered during pre-scan; do not emit
                         }
@@ -755,8 +754,7 @@ async fn expand_surface_expr_inner(
                 // Filter out declaration nodes (they've been registered; do not emit)
                 if let SurfaceExpression::Decl(decl) = &expanded_value.expr {
                     match decl.as_ref() {
-                        crate::ast::SurfaceDeclaration::DefMacro { .. }
-                        | crate::ast::SurfaceDeclaration::MacroDecl { .. }
+                        crate::ast::SurfaceDeclaration::MacroDecl { .. }
                         | crate::ast::SurfaceDeclaration::SyntaxClass { .. } => continue,
                         _ => {}
                     }
@@ -769,8 +767,7 @@ async fn expand_surface_expr_inner(
                             if let SurfaceExpression::Decl(inner_decl) = &form.expr {
                                 match inner_decl.as_ref() {
                                     crate::ast::SurfaceDeclaration::MacroDecl { .. }
-                                    | crate::ast::SurfaceDeclaration::SyntaxClass { .. }
-                                    | crate::ast::SurfaceDeclaration::DefMacro { .. } => {
+                                    | crate::ast::SurfaceDeclaration::SyntaxClass { .. } => {
                                         // Register via native surface path
                                         register_surface_macro_decl(
                                             inner_decl.as_ref(),
@@ -786,10 +783,7 @@ async fn expand_surface_expr_inner(
                                             expand_surface_expr(form, env, ctx, stdlib_env).await?;
                                         if let SurfaceExpression::Decl(inner) = &re_expanded.expr {
                                             match inner.as_ref() {
-                                                crate::ast::SurfaceDeclaration::DefMacro {
-                                                    ..
-                                                }
-                                                | crate::ast::SurfaceDeclaration::MacroDecl {
+                                                crate::ast::SurfaceDeclaration::MacroDecl {
                                                     ..
                                                 }
                                                 | crate::ast::SurfaceDeclaration::SyntaxClass {
@@ -1428,7 +1422,7 @@ fn extract_inject_default_surface(params: &Arc<SurfaceNode>) -> Option<String> {
 
 /// Register a macro or syntax-class from a SurfaceDeclaration.
 ///
-/// Handles `DefMacro`, `MacroDecl`, and `SyntaxClass` declarations natively.
+/// Handles `MacroDecl` and `SyntaxClass` declarations natively.
 /// Builds a `Fn` expression from params/body, evaluates it in the stdlib env
 /// to obtain the transformer function, then calls `env.register_macro`.
 ///
@@ -1538,74 +1532,6 @@ async fn register_surface_macro_decl(
             Ok(())
         }
 
-        SurfaceDeclaration::DefMacro { name, params, body } => {
-            // DefMacro: convert LetDecl bindings directly to Vec<Spanned<Param>>.
-            let param_vec: Vec<Spanned<Param>> = match &params.expr {
-                SurfaceExpression::LetDecl { bindings } => bindings
-                    .iter()
-                    .filter_map(|b| match &b.expr {
-                        SurfaceExpression::VarRef { name: n, .. } => Some(Spanned::new(
-                            Param {
-                                name: n.clone(),
-                                annotation: None,
-                                variadic: false,
-                            },
-                            b.span.clone(),
-                        )),
-                        SurfaceExpression::Annotated {
-                            name: n,
-                            annotation,
-                        } => Some(Spanned::new(
-                            Param {
-                                name: n.clone(),
-                                annotation: Some(annotation.clone()),
-                                variadic: false,
-                            },
-                            b.span.clone(),
-                        )),
-                        SurfaceExpression::Rest(Some(rest_name)) => Some(Spanned::new(
-                            Param {
-                                name: rest_name.clone(),
-                                annotation: None,
-                                variadic: true,
-                            },
-                            b.span.clone(),
-                        )),
-                        SurfaceExpression::Rest(None) => None,
-                        _ => Some(Spanned::new(
-                            Param {
-                                name: "???".to_string(),
-                                annotation: None,
-                                variadic: false,
-                            },
-                            b.span.clone(),
-                        )),
-                    })
-                    .collect(),
-                _ => vec![],
-            };
-
-            // Evaluate the macro transformer body as a function thunk.
-            let transformer_value = crate::eval::eval_surface_fn(
-                param_vec,
-                body,
-                decl_span.clone(),
-                Arc::clone(stdlib_env),
-                ctx,
-            )?;
-
-            env.register_macro(
-                name.clone(),
-                Arc::clone(&transformer_value),
-                params.clone(),
-                None,
-                decl_span,
-            )?;
-            env.discovered_macros
-                .push((name.clone(), transformer_value));
-            Ok(())
-        }
-
         SurfaceDeclaration::SyntaxClass {
             name,
             pattern,
@@ -1627,10 +1553,10 @@ async fn register_surface_macro_decl(
     }
 }
 
-/// Pre-scan a SurfaceDocument to collect MacroDecl, DefMacro, and SyntaxClass declarations.
+/// Pre-scan a SurfaceDocument to collect MacroDecl and SyntaxClass declarations.
 ///
 /// Walks `doc.items` directly — no bridge to old `File`/`Document` types needed.
-/// Declaration items (DefMacro, MacroDecl, SyntaxClass) are registered directly via
+/// Declaration items (MacroDecl, SyntaxClass) are registered directly via
 /// `register_surface_macro_decl`. Expression items are recursed into via
 /// `pre_scan_surface_expr`.
 fn pre_scan_surface_document<'a>(
@@ -1827,8 +1753,8 @@ fn pre_scan_surface_expr<'a>(
 /// # Infinite-recursion guard
 ///
 /// A thread-local set tracks which libdir files are currently being pre-scanned.
-/// If a file is re-encountered (e.g., via `[include %libdir "syntax.llt"]` →
-/// `[include %libdir "ast.llt"]` → `[include %libdir "syntax.llt"]` cycle), the
+/// If a file is re-encountered (e.g., via `[include %libdir "a.llt"]` →
+/// `[include %libdir "b.llt"]` → `[include %libdir "a.llt"]` cycle), the
 /// second encounter is silently skipped.
 async fn pre_scan_follow_libdir_include(
     file_name: &str,

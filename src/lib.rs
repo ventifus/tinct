@@ -256,7 +256,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let parsed = parse(input).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve_surface_program -> typecheck -> eval.
     // Use expand_surface_program (not expand_macros) so that SurfaceItem::Decl macro
-    // registrations ([macro ...], [defmacro ...]) are seen before expansion.
+    // registrations ([macro ...]) are seen before expansion.
     // expand_macros operates on File which drops Decl nodes via surface_program_to_file.
     // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
     // See also: src/main.rs run_eval pipeline, src/expand.rs module comment.
@@ -327,9 +327,9 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     );
     // Wire boundary guards and do-infer resolutions from type inference to the eval context.
     // NOTE: When typecheck is skipped (e.g., --no-typecheck or eval-only paths), do-infer
-    // sentinels remain unresolved. The [do] macro expansion inserts %do-infer:N placeholder
+    // sentinels remain unresolved. The [do] macro expansion inserts ℊꜱʏᴍ⧼do-infer⧽N placeholder
     // VarRefs that the typechecker normally rewrites. Without typecheck, these produce
-    // 'undefined variable: %do-infer:N' at eval time. This is expected degraded behavior.
+    // 'undefined variable: ℊꜱʏᴍ⧼do-infer⧽N' at eval time. This is expected degraded behavior.
     ctx.set_boundary_guards(infer_state.boundary_guards);
     ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
     // Inject `%cwd` and `%libdir` DirCaps (mirrors the CLI run_eval behavior).
@@ -469,9 +469,9 @@ pub fn eval_source_with_cap_net(
     );
     // Wire boundary guards and do-infer resolutions from type inference to the eval context.
     // NOTE: When typecheck is skipped (e.g., --no-typecheck or eval-only paths), do-infer
-    // sentinels remain unresolved. The [do] macro expansion inserts %do-infer:N placeholder
+    // sentinels remain unresolved. The [do] macro expansion inserts ℊꜱʏᴍ⧼do-infer⧽N placeholder
     // VarRefs that the typechecker normally rewrites. Without typecheck, these produce
-    // 'undefined variable: %do-infer:N' at eval time. This is expected degraded behavior.
+    // 'undefined variable: ℊꜱʏᴍ⧼do-infer⧽N' at eval time. This is expected degraded behavior.
     ctx.set_boundary_guards(infer_state.boundary_guards);
     ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
 
@@ -2536,18 +2536,17 @@ mod tests {
         // (Capturing stdout in a unit test would require infrastructure not worth adding.)
     }
 
-    // --- syntax.llt macro tests ---
+    // --- fn macro tests (globally registered via expand.rs) ---
 
-    /// syntax.llt fn macro: including syntax.llt does not break normal fn usage.
+    /// fn macro: globally registered via expand.rs — normal fn usage works without any include.
     ///
-    /// The fn macro in syntax.llt is only triggered in programmatic macro-output
-    /// contexts (when another macro produces Call(VarRef("fn"), ...)). Normal
-    /// parser-level [fn [let x y] body] produces Expr::Fn directly and is unaffected.
+    /// The fn macro is only triggered in programmatic macro-output contexts (when another macro
+    /// produces Call(VarRef("fn"), ...)). Normal parser-level [fn [let x y] body] produces
+    /// Expr::Fn directly and is unaffected.
     #[test]
     fn test_syntax_llt_fn_no_break() {
         let result = eval_source(
-            r#"[include %libdir "syntax.llt"]
-[f: [fn [let x y] [+ x y]]]
+            r#"[f: [fn [let x y] [+ x y]]]
 [f 3 4]"#,
         );
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
@@ -2555,15 +2554,15 @@ mod tests {
         assert_eq!(output, "Int(7)", "expected Int(7), got: {output}");
     }
 
-    /// syntax.llt fn macro: triggered when another macro produces Call(fn, ...) with
-    /// non-LetDecl params. The fn macro normalizes Call(x, [y]) → proper Fn params.
+    /// fn macro: triggered when another macro produces Call(fn, ...) with non-LetDecl params.
+    /// The fn macro normalizes Call(x, [y]) → proper Fn params.
+    /// fn/class/type macros are globally registered via expand.rs; no include needed.
     /// TODO(macro-ast-expression-compat): fn macro alias produces Fn with correct params
     /// but variable resolution doesn't connect body VarRefs to macro-produced params.
     #[test]
     fn test_syntax_llt_fn_macro_triggered() {
         let result = eval_source(
-            r#"[include %libdir "syntax.llt"]
-[macro wrap-fn [let p-params p-body]
+            r#"[macro wrap-fn [let p-params p-body]
   [builtin-variant "Fn" [
     params: [map
       [fn [let p] [name: p.name  annotation: []  variadic: false]]
@@ -2579,12 +2578,12 @@ mod tests {
         assert_eq!(output, "Int(7)", "expected Int(7), got: {output}");
     }
 
-    /// syntax.llt fn macro: single-param case — VarRef params form.
+    /// fn macro: single-param case — VarRef params form.
+    /// fn/class/type macros are globally registered via expand.rs; no include needed.
     #[test]
     fn test_syntax_llt_fn_single_param() {
         let result = eval_source(
-            r#"[include %libdir "syntax.llt"]
-[macro wrap-fn [let p-params p-body]
+            r#"[macro wrap-fn [let p-params p-body]
   [builtin-variant "Fn" [
     params: [0: [name: p-params.name  annotation: []  variadic: false]]
     body: p-body
@@ -2598,8 +2597,8 @@ mod tests {
         assert_eq!(output, "Int(25)", "expected Int(25), got: {output}");
     }
 
-    /// syntax.llt fn macro: function defined via macro and called.
-    /// Tests that fn macro produces a callable function when used in a macro wrapper.
+    /// fn macro: function defined via fn + let params and called.
+    /// Tests that fn macro produces a callable function (globally registered, no include needed).
     #[test]
     fn test_syntax_llt_fn_already_let_decl() {
         // Test a function defined normally (fn + let params) and called.

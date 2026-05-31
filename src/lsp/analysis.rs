@@ -715,20 +715,6 @@ fn hover_at_declaration(
             include_graph,
             doc_url,
         ),
-        SurfaceDeclaration::DefMacro { name, body, .. } => {
-            // Check if hover is on the body
-            hover_at_surface_node(
-                body,
-                offset,
-                type_map,
-                scheme_map,
-                doc_map,
-                source,
-                include_graph,
-                doc_url,
-            )
-            .or_else(|| Some(format!("Macro definition: {}", name)))
-        }
         SurfaceDeclaration::MacroDecl {
             name, params, body, ..
         } => {

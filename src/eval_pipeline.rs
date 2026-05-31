@@ -43,12 +43,15 @@ fn wrap_with_nominal_validation(
     use crate::ast::CoreExpr;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    // Generate a unique variable name to avoid collisions with user code
+    // Generate a unique variable name to avoid collisions with user code.
+    // Uses the canonical ℊꜱʏᴍ⧼prefix⧽N convention via make_gensym_name (builtins_meta.rs).
+    // Prefix "nominal-input" is distinct from the user-facing "gensym" prefix so pipeline
+    // validation variables cannot alias user-generated symbols.
     static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
     let gensym_id = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let gensym_name = format!("__nominal_input_{}", gensym_id);
+    let gensym_name = crate::builtins_meta::make_gensym_name("nominal-input", gensym_id);
 
-    // Create a synthetic TypeAssert expression: [@Annotation __nominal_input_N]
+    // Create a synthetic TypeAssert expression: [@Annotation ℊꜱʏᴍ⧼nominal-input⧽N]
     // If resolved_type is None (untyped contract), use Type::Unknown which accepts all values.
     let type_check_expr = Arc::new(crate::ast::Spanned::new(
         CoreExpr::TypeAssert {
@@ -62,7 +65,7 @@ fn wrap_with_nominal_validation(
         validation_span.clone(),
     ));
 
-    // Create an environment with __nominal_input_N bound to the inner thunk
+    // Create an environment with ℊꜱʏᴍ⧼nominal-input⧽N bound to the inner thunk
     let validation_env = Arc::new(RwLock::new(Environment::new()));
     validation_env.write().unwrap().insert(gensym_name, inner);
 
@@ -98,6 +101,11 @@ fn wrap_with_nominal_validation(
 ///   materialized strictly and inserted into a child environment for subsequent
 ///   expressions. Non-dict/overlay results are silently ignored (no error, no scope
 ///   extension). This is the `bare-include-scope` behavior.
+///   **Why strict?** Per `doc/09-documents.md §SEQ-SCOPE`: dead bindings must fire
+///   immediately (strict let* semantics), not lazily. A binding that would error must
+///   error at bind-time, not silently defer until (or unless) the name is accessed.
+///   The B-170 lazy-thunk experiment was reverted because it broke
+///   `sequential_strict_binds_eagerly.llt-eval`.
 /// - **Last expression**: lower → eval (lazy). The resulting thunk is returned
 ///   without forcing — callers decide when (and whether) to materialize it.
 /// - **Empty slice**: returns a materialized empty-dict thunk (same as an empty doc).
@@ -162,11 +170,16 @@ pub(crate) async fn eval_document_exprs(
             ))));
             for (key, val_thunk_id) in entries.iter() {
                 if let Key::String(name) = key {
+                    // Force each entry value eagerly (strict let* semantics for scope chains).
+                    // This matches doc/09-documents.md §SEQ-SCOPE: named entries are shallowly
+                    // materialized at binding time so dead-but-erroring bindings fire immediately.
                     let val_thunk = ctx.get_thunk(*val_thunk_id);
-                    // Strictly materialize each value before binding (shallow let* semantics).
-                    let forced_value = materialize(&val_thunk, Some(&node_span), ctx).await?;
-                    let strict_thunk =
-                        Arc::new(Thunk::new_materialized(forced_value, node_span.clone()));
+                    let forced_value =
+                        crate::eval::materialize(&val_thunk, Some(&node_span), ctx).await?;
+                    let strict_thunk = std::sync::Arc::new(crate::value::Thunk::new_materialized(
+                        forced_value,
+                        node_span.clone(),
+                    ));
                     child_env
                         .write()
                         .unwrap()

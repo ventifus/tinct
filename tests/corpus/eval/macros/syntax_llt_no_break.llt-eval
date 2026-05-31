@@ -1,7 +1,6 @@
-# Including syntax.llt should not break normal fn/class/type usage.
+# fn/class/type macros are globally registered via expand.rs (no include needed).
 # All three keywords are handled by the parser directly; the macros only
 # intercept programmatic Call nodes from other macros.
-[include %libdir "syntax.llt"]
 [f: [fn [let x y] [+ x y]]]
 [f 10 20]
 === out

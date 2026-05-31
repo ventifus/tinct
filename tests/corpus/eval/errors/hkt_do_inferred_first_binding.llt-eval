@@ -1,8 +1,8 @@
 # Test: inferred [do] where first binding uses a Variant constructor ([Ok 1]).
 # Rule 2 cannot resolve monad from Variant type (no App(Result,_) type yet) → T_DO_INFER.
-# Eval falls through: %do-infer has no resolution → E002 undefined variable.
+# Eval falls through: ℊꜱʏᴍ⧼do-infer⧽N has no resolution → E002 undefined variable.
 [do [x: [Ok 1]] x]
 === error
-[E002] undefined variable: %do-infer
+[E002] undefined variable: ℊꜱʏᴍ⧼do-infer⧽
 === warn
 cannot infer monad

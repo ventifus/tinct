@@ -143,7 +143,7 @@ which the type checker already handles.
 ### Alternative Implementation: Macro-Based
 
 If `doc/whatif/macros.md` ships, Phases 1–2 can be implemented via
-`[defmacro tmpl ...]` rather than as a parser feature. The Rust change shrinks
+`[macro tmpl ...]` rather than as a parser feature. The Rust change shrinks
 to two steps: the lexer recognizes the `i"` prefix and emits the raw string
 content as an opaque `IString` token (no scanning of `$` patterns); the parser
 wraps it as `[tmpl "raw content"]`. All `$identifier` and
@@ -225,7 +225,7 @@ as `[str ...]` calls. The formatter roundtrip preserves the desugared form.
   *POPL '93*, pp. 144–154. — Desugaring to `str` preserves Launchbury's
   sharing semantics: each interpolated segment is a thunk, forced at most once.
 - doc/whatif/macros.md — If the macro system ships, Phases 1–2 of this
-  feature can be implemented as `[defmacro tmpl ...]` in tinct stdlib with a
+  feature can be implemented as `[macro tmpl ...]` in tinct stdlib with a
   minimal opaque `IString` lexer token; see §Alternative Implementation:
   Macro-Based above.
 - Pombrio, J. & Krishnamurthi, S. (2014). "Resugaring: lifting evaluation

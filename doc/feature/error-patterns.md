@@ -216,7 +216,7 @@ to the exported public dict. Existing `try-or` is kept (it is the eager version 
 
 ### `stdlib/prelude.llt` (macro transformers)
 
-Implements `[do monad ...]` as a macro alongside `[defmacro tmpl]` (formerly in `stdlib/macros.llt`, merged into prelude). The expand pass handles `[fn]`, `[match]`, `[quote]`; `[do]` fits the same pattern. The macro needs access to the binding structure `[name: expr]` within the steps, which is visible to the AST transformer.
+Implements `[do monad ...]` as a macro alongside `[macro tmpl ...]` (formerly in `stdlib/macros.llt`, merged into prelude). The expand pass handles `[fn]`, `[match]`, `[quote]`; `[do]` fits the same pattern. The macro needs access to the binding structure `[name: expr]` within the steps, which is visible to the AST transformer.
 
 ### `stdlib/net.llt`, `stdlib/io.llt`, `stdlib/toml-lite.llt`
 

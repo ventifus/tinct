@@ -1,7 +1,0 @@
-# syntax.llt loads cleanly and exports nothing (all entries are macro decls,
-# which are consumed by the pre-scan pass and do not appear in the exported dict).
-# The include itself should produce an empty dict or the ast.llt bindings.
-[include %libdir "syntax.llt"]
-true
-=== out
-Bool(true)

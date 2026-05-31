@@ -139,7 +139,7 @@ quasiquoting and macros need:
 |-------|--------------|------------------------|
 | 1 | `ast_to_dict(None, None)` for compact modes | `[quote expr]` calls `ast_to_dict` |
 | 2 | `ast_to_dict(Some, Some)` for full formatter | — |
-| 3 | Full self-hosted; width measurement in tinct | `dict_to_ast` for `[defmacro]` |
+| 3 | Full self-hosted; width measurement in tinct | `dict_to_ast` for `[macro]` |
 
 All three features share the same schema (`doc/whatif/ast-schema.md`). A change
 to the schema propagates to the formatter program, `[quote]`, and macros
@@ -183,7 +183,7 @@ custom program, how to pass configuration, and the schema reference.
 
 - tinct `doc/whatif/ast-schema.md` — canonical AST dict schema used by this formatter, `[quote]`, and macros
 - tinct `doc/whatif/quasiquoting.md` — `[quote expr]` uses `ast_to_dict`; the compact formatter simultaneously delivers the infrastructure for quasiquoting
-- tinct `doc/whatif/macros.md` — `dict_to_ast` (Phase 3 of ast-schema) enables `[defmacro]`
+- tinct `doc/whatif/macros.md` — `dict_to_ast` (Phase 3 of ast-schema) enables `[macro]`
 - tinct `doc/whatif/pattern-matching.md` — `[match node.type ...]` is the core dispatch mechanism in the formatter program
 - Oppen, D. (1980). "Prettyprinting." *ACM TOPLAS*, 2(4), 465–483. — The foundational algorithm for line-breaking decisions in pretty-printing: scan tokens left-to-right, decide whether a group fits on the current line or must break. Tinct's `fits-inline?` binary decision (try single-line rendering, fall back to block layout if too wide) is a direct application of Oppen's model.
 - Wadler, P. (2003). "A prettier printer." *The Fun of Programming*, pp. 223–243. — Combinatorial pretty-printing with `group`/`nest` operators; extends Oppen's line-breaking decision with a composable document algebra. Tinct's binary single-line/block decision uses Wadler's `group` semantics (flatten if it fits, break otherwise) without the full document algebra, sufficient for tinct's relatively flat structure.

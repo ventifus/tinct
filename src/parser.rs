@@ -511,7 +511,7 @@ fn parse_annotation(
                 }
             };
 
-            // Reject declaration forms (type, class, instance, defmacro, macro, syntax-class)
+            // Reject declaration forms (type, class, instance, macro, syntax-class)
             // inside annotation brackets — only dict/call expressions are valid there.
             if let Some(first_doc) = sub_output.program.documents.first() {
                 if let Some(SurfaceItem::Decl(_)) = first_doc.node.items.first() {
@@ -724,13 +724,6 @@ enum StackFrame {
     /// Unquote-splice special form: `[unquote-splice expr]` (only valid in list positions inside quote)
     UnquoteSplice {
         expr: Option<Arc<SurfaceNode>>,
-        span_start: Position,
-    },
-    /// Macro definition: `[defmacro name [let ...] body...]`
-    DefMacro {
-        name: Option<String>,
-        params: Option<Arc<SurfaceNode>>, // [let ...] pattern
-        body: Vec<Arc<SurfaceNode>>,
         span_start: Position,
     },
     /// Macro declaration (macros-v2): `[macro name [let ...] body]`
@@ -1498,32 +1491,6 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         continue;
                     }
                     Some((Token::Identifier(s), keyword_idx))
-                        if s == "defmacro"
-                            && !matches!(
-                                peek_next_horizontal(&token_vec, keyword_idx),
-                                Some((Token::Colon, _))
-                            ) =>
-                    {
-                        // DefMacro form: [defmacro name [let ...] body...]
-                        // (Not a defmacro form if the keyword is followed by colon: [defmacro: x] is a dict.)
-                        stack.push(StackFrame::DefMacro {
-                            name: None,
-                            params: None,
-                            body: Vec::new(),
-                            span_start: span.start,
-                        });
-                        i += 1; // Consume the OpenBracket
-                                // Skip whitespace and consume the "defmacro" token
-                        i += skip_whitespace_tokens(
-                            &token_vec,
-                            i,
-                            &mut leading_comments,
-                            &mut blank_before,
-                        );
-                        i += 1;
-                        continue;
-                    }
-                    Some((Token::Identifier(s), keyword_idx))
                         if s == "macro"
                             && !matches!(
                                 peek_next_horizontal(&token_vec, keyword_idx),
@@ -2203,68 +2170,6 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     &mut current_document_items,
                                     spanned_unquote_splice,
                                 ) {
-                                    close_bracket_recover!(push_err);
-                                }
-                            }
-                        }
-                    }
-
-                    StackFrame::DefMacro {
-                        name,
-                        params,
-                        body,
-                        span_start,
-                    } => {
-                        if name.is_none() {
-                            close_bracket_recover!(ParseError {
-                                message: "defmacro form requires a name".to_string(),
-                                span: Some(span.clone()),
-                            });
-                        } else if params.is_none() {
-                            close_bracket_recover!(ParseError {
-                                message: "defmacro form requires a parameter list".to_string(),
-                                span: Some(span.clone()),
-                            });
-                        } else if body.is_empty() {
-                            close_bracket_recover!(ParseError {
-                                message: "defmacro form requires at least one body expression"
-                                    .to_string(),
-                                span: Some(span.clone()),
-                            });
-                        } else {
-                            // For single-expression bodies, use the expression directly.
-                            // For multi-expression bodies, wrap in Sequential.
-                            let body_expr = if body.len() == 1 {
-                                body.into_iter().next().unwrap()
-                            } else {
-                                Arc::new(SurfaceNode {
-                                    expr: SurfaceExpression::Sequential(body),
-                                    span: dict_span(span_start),
-                                })
-                            };
-
-                            #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
-                            let decl = SurfaceDeclaration::DefMacro {
-                                name: name.unwrap(),
-                                params: params.unwrap(),
-                                body: body_expr,
-                            };
-                            let spanned_decl = Spanned::new(decl, dict_span(span_start));
-                            if stack.is_empty() {
-                                current_document_items.push(SurfaceItem::Decl(spanned_decl));
-                            } else {
-                                // Declaration appears inside an expression (e.g., dict value).
-                                // Preserve the full declaration via SurfaceExpression::Decl so
-                                // the type checker can register class/instance/type declarations
-                                // found inside dicts (Pass 0c). At runtime this evaluates as
-                                // Placeholder (error when forced outside type-checking context).
-                                let node = Arc::new(SurfaceNode {
-                                    expr: SurfaceExpression::Decl(Box::new(spanned_decl.node)),
-                                    span: spanned_decl.span,
-                                });
-                                if let Err(push_err) =
-                                    push_value(&mut stack, &mut current_document_items, node)
-                                {
                                     close_bracket_recover!(push_err);
                                 }
                             }
@@ -4492,7 +4397,6 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             StackFrame::Quote { span_start, .. } => *span_start,
             StackFrame::Unquote { span_start, .. } => *span_start,
             StackFrame::UnquoteSplice { span_start, .. } => *span_start,
-            StackFrame::DefMacro { span_start, .. } => *span_start,
             StackFrame::MacroDecl { span_start, .. } => *span_start,
             StackFrame::SyntaxClass { span_start, .. } => *span_start,
             StackFrame::Match { span_start, .. } => *span_start,
@@ -4753,10 +4657,6 @@ fn pop_last_value_from_frame(
                 })
             }
         }
-        Some(StackFrame::DefMacro { .. }) => Err(ParseError {
-            message: "dot access is not valid inside defmacro form".to_string(),
-            span: Some(span),
-        }),
         Some(StackFrame::MacroDecl { .. }) => Err(ParseError {
             message: "dot access is not valid inside macro form".to_string(),
             span: Some(span),
@@ -4781,10 +4681,30 @@ fn pop_last_value_from_frame(
             message: "dot access is not valid inside let declaration".to_string(),
             span: Some(span),
         }),
-        Some(StackFrame::CaseDecl { .. }) => Err(ParseError {
-            message: "dot access is not valid inside case arm".to_string(),
-            span: Some(span),
-        }),
+        Some(StackFrame::CaseDecl {
+            ref mut pattern,
+            ref mut body,
+            ..
+        }) => {
+            // In body phase (pattern already set): pop the body expr as dot-access target.
+            // In pattern phase: dot access in a case pattern is invalid.
+            if pattern.is_some() {
+                if let Some(b) = body.take() {
+                    Ok(b)
+                } else {
+                    Err(ParseError {
+                        message: "dot access requires a target before '.' in case arm body"
+                            .to_string(),
+                        span: Some(span),
+                    })
+                }
+            } else {
+                Err(ParseError {
+                    message: "dot access is not valid in case arm pattern".to_string(),
+                    span: Some(span),
+                })
+            }
+        }
         Some(StackFrame::Pipe { .. }) => Err(ParseError {
             message: "pipe operator '|' requires a right-hand expression".to_string(),
             span: Some(span),
@@ -5388,38 +5308,6 @@ fn push_expr_to_parent(
                 }
                 *unquote_splice_expr = Some(node);
                 Ok(())
-            }
-            Some(StackFrame::DefMacro {
-                ref mut name,
-                ref mut params,
-                ref mut body,
-                ..
-            }) => {
-                // DefMacro expects: [defmacro name [let ...] body...]
-                // First expression: name (VarRef)
-                // Second expression: params ([let ...])
-                // Remaining expressions: body
-                if name.is_none() {
-                    // First expression should be a VarRef (macro name)
-                    if let SurfaceExpression::VarRef { name: n, .. } = &node.expr {
-                        *name = Some(n.clone());
-                        Ok(())
-                    } else {
-                        Err(ParseError {
-                            message: "defmacro declaration requires a name (bare identifier)"
-                                .to_string(),
-                            span: Some(node.span.clone()),
-                        })
-                    }
-                } else if params.is_none() {
-                    // Second expression: params ([let ...])
-                    *params = Some(node);
-                    Ok(())
-                } else {
-                    // Remaining expressions: body
-                    body.push(node);
-                    Ok(())
-                }
             }
             Some(StackFrame::MacroDecl {
                 ref mut name,
@@ -6366,8 +6254,7 @@ fn stamp_decl(decl: &mut SurfaceDeclaration, file: &Arc<SourceFile>) {
                 }
             }
         }
-        SurfaceDeclaration::DefMacro { params, body, .. }
-        | SurfaceDeclaration::MacroDecl { params, body, .. } => {
+        SurfaceDeclaration::MacroDecl { params, body, .. } => {
             stamp_node(params, file);
             stamp_node(body, file);
         }

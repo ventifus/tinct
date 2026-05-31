@@ -1,0 +1,6 @@
+# After T-708, [defmacro ...] is no longer a keyword — it parses as an implied Call
+# to a variable named "defmacro". Since "defmacro" is not defined in prelude,
+# this produces an E002 undefined variable error at runtime.
+[defmacro my-add [let args] args]
+=== error
+[E002] undefined variable: defmacro
