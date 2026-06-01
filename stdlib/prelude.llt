@@ -1809,7 +1809,7 @@ Note: Applies effectful function f to each element of structure xs, collecting r
   [t.traverse f xs]]
 
 forM: [fn@[return: Unknown  doc: """
-Traverse with flipped arguments (collection before function).
+Traverse with flipped arguments (function moved to last argument (Traversable instance still first)).
 
 Example: [forM TraversableSeq [1 2 3] [fn [x] [Ok [* x 2]]]] => [Ok [2 4 6]]
 
@@ -2970,11 +2970,6 @@ chunks@[doc: "Lazily read fixed-size byte chunks from a Handle. Returns a Seq of
 # Example: [bytes-concat [collect [chunks handle 65536]]]
 bytes-concat@[doc: "Concatenate a Seq or Dict of Bytes values into a single Bytes value"]:
   [fn [let chunks-seq] [apply bytes [collect chunks-seq]]]
-
-# Construct a ClockCap that always returns the given fixed timestamp.
-# Useful for testing time-sensitive code without depending on the system clock.
-# Pass the result wherever a ClockCap (%clock) is expected.
-fixed-clock: fixed-clock
 
 # Get current timestamp in nanoseconds since Unix epoch
 timestamp-nanos: builtin-timestamp-nanos

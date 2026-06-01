@@ -144,18 +144,6 @@ pad-right@[doc: "Right-pad a string to a target width with a padding character"]
         s]]
 
 # ============================================================================
-# String Reversal
-# ============================================================================
-
-# Reverse a string by characters.
-# Type: (String -> String)
-# Example: [str-reverse "hello"] => "olleh"
-# Example: [str-reverse ""] => ""
-# Example: [str-reverse "a"] => "a"
-str-reverse@[doc: "Reverse a string by characters"]: [fn@String [let s@String]
-    [str-reverse-impl s 0 [str-length s] ""]]
-
-# ============================================================================
 # Aliases for codecs/json.llt and other consumers
 # ============================================================================
 

@@ -20,3 +20,4 @@ pad-left: [include %libdir "strings.llt"].pad-left
         [pad-left [str [timestamp-minute t]] 2 "0"]
         ":"
         [pad-left [str [timestamp-second t]] 2 "0"]]]]
+]

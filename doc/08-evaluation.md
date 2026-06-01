@@ -956,7 +956,7 @@ This dispatch materializes the collection argument to determine its type, then a
 
 **Result type asymmetry:** The Dict and Seq paths of a dual-dispatch builtin may produce different result types. For example, `$filter` on a Dict returns a Seq (not a Dict), because filtered keys are unpredictable — the output keys are unknown without evaluating predicates. The signature table (Part 2) captures the Seq-path result. Dict-path results: `map` returns Dict, `filter` returns Seq, `take`/`drop` return Dict, `reduce`/`fold` return the accumulator type, `join` returns String.
 
-**In the iterative evaluator,** dual dispatch is a `Cont::CollectionDispatch` continuation that materializes the collection, inspects its type, and pushes the appropriate next continuation. The function argument must be preserved on the continuation stack without materializing.
+**In the iterative evaluator,** dual dispatch uses `Cont::BuiltinForceArg` with `pos_strictness` to pre-materialize the collection argument (typically at `Spine` strictness), then the builtin inspects the materialized type and applies the appropriate delta rule. The function argument is preserved on the continuation stack without materializing.
 
 ### Part 5: Derived Selectivity
 
@@ -1474,7 +1474,7 @@ enum Cont {
 }
 ```
 
-All `Cont` variant payloads are boxed to keep the `Cont` enum ≤96 bytes (one cache line). The compile-time assertion at `src/eval_materialize.rs:467` enforces this.
+All `Cont` variant payloads are boxed to keep the `Cont` enum ≤96 bytes (one cache line). The compile-time assertion at `src/eval_materialize.rs:501` enforces this.
 
 The main loop is a two-register machine — `action` (what's happening now) and `stack` (what's waiting):
 
@@ -1531,7 +1531,7 @@ This is **structurally determined** by the `Cont` variant on the stack, not infe
 
 **Error stack traces:** Walk `Vec<Cont>` to reconstruct the call stack, using each variant's stored span and label to produce precise "materialized at" context for every frame. This replaces the current `EvalError::stack` vector with a continuation-derived trace.
 
-**Cont variant count:** 11 variants — `Memoize`, `PendingCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `DotAccessForce`, `TypeAssertCheck`, `SequentialStep`, `ForceAndBind`, `MatchDispatch`, `MatchGuardCheck`, `PredicateCheck`. Each variant stores only its specific continuation data (Arc pointers + Span + small fields). Frame size: ≤96 bytes per Cont (enforced by the compile-time assertion at `src/eval_materialize.rs:467`).
+**Cont variant count:** 12 variants — `Memoize`, `PendingCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `DotAccessForce`, `TypeAssertCheck`, `SequentialStep`, `ForceAndBind`, `MatchDispatch`, `CaseArmExactValueCheck`, `MatchGuardCheck`, `PredicateCheck`. Each variant stores only its specific continuation data (Arc pointers + Span + small fields). Frame size: ≤96 bytes per Cont (enforced by the compile-time assertion at `src/eval_materialize.rs:501`).
 
 **Relationship to allocation strategy:** Arena allocation and flat environments integrate naturally with the CEK machine: `Cont` variants hold `ThunkId` handles into the arena, and the `Vec<Cont>` stack's lifetime defines the arena's lifetime scope.
 
