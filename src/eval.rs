@@ -3429,8 +3429,9 @@ pub(crate) fn match_pattern<'a>(
                                 Ok(None)
                             }
                             (None, Some(_)) => {
-                                // Pattern expects no payload but variant has one
-                                Ok(None)
+                                // [Tag]: with no binding matches any variant with that tag,
+                                // regardless of whether it carries a payload — equivalent to [Tag _]:.
+                                Ok(Some(Arc::clone(env)))
                             }
                         }
                     }

@@ -134,7 +134,7 @@ Each arm is a `pattern: body` keyed entry — the pattern is the key, the body i
 | Variable | `x` | Matches anything and binds the value to `x` |
 | Literal | `42`, `"text"`, `true` | Matches exact value |
 | Constructor | `[Ok value]` | Matches nominal variant and binds payload to `value` |
-| Constructor (no payload) | `[None]` | Matches nominal variant with no payload |
+| Constructor (no binding) | `[Tag]:` | Matches any nominal variant with that tag, regardless of payload — equivalent to `[Tag _]:` |
 
 ### Exhaustiveness Checking
 

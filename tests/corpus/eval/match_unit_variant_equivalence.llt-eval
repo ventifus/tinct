@@ -1,34 +1,23 @@
-# Match on unit-like patterns: [Ok] vs [Ok _] should be equivalent
-# This test verifies that both forms match the same way
-
+# [Tag]: and [Tag _]: are equivalent — both match any variant with that tag.
+# D-1 decision: [Tag]: (binding:None) matches all variants regardless of payload,
+# same as [Tag _]: — users writing [Tag]: mean "match this tag, I don't care about payload."
 [
-  result1: [Ok 42]
-  result2: [Error "failed"]
+  [type Color [Red] [Green] [Blue]]
+  [type Wrapper [Boxed value: Int] [Empty]]
 
-  test1: [match result1
-    [Ok]:     "ok-matched"
-    [Error]:  "err-matched"]
+  # [Red]: matches Red (unit variant, no payload) — same as [Red _]:
+  match1: [match Red
+    [Red]:   "red"
+    [Green]: "green"
+    [Blue]:  "blue"]
 
-  test2: [match result1
-    [Ok _]:     "ok-matched"
-    [Error _]:  "err-matched"]
-
-  test3: [match result2
-    [Ok]:     "ok-matched"
-    [Error]:  "err-matched"]
-
-  test4: [match result2
-    [Ok _]:     "ok-matched"
-    [Error _]:  "err-matched"]
-
-  all_tests: [seq test1 test2 test3 test4]
+  # [Boxed]: with a payload variant — [Boxed]: should match even though Boxed carries a payload
+  match2: [match [Boxed value: 42]
+    [Boxed]: "has-box"
+    [Empty]: "empty"]
 ]
-=== error
-[E071] non-exhaustive match: no pattern matched the Variant value (defined at 7:10-9:29)
+=== out
+Dict({"Color": Variant(Color, Null), "Red": Variant(Red, Null), "Green": Variant(Green, Null), "Blue": Variant(Blue, Null), "Wrapper": Variant(Wrapper, Null), "Boxed": Variant(Boxed, Null), "Empty": Variant(Empty, Null), "match1": String("red"), "match2": String("has-box")})
 
 === warn
-non-exhaustive match: missing coverage for [Variant _] at 7:10-9:29
-non-exhaustive match: missing coverage for [Variant _] at 11:10-13:31
-non-exhaustive match: missing coverage for [Variant _] at 15:10-17:29
-non-exhaustive match: missing coverage for [Variant _] at 19:10-21:31
-arity mismatch: expected 2 argument(s), got 4 (4 positional, 0 named) at 23:14-23:43
+non-exhaustive match: missing coverage for [Boxed _] at 14:11-16:22
