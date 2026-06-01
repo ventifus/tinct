@@ -1,5 +1,0 @@
-[match 42
-    "text":   "matched-text"
-    false:    "matched-false"]
-=== error
-[E071] non-exhaustive match: no pattern matched the Int value (defined at 1:1-3:31)

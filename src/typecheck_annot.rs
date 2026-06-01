@@ -1,6 +1,5 @@
 //! Type annotation resolution and type expression parsing.
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -28,7 +27,6 @@ pub(crate) fn expand_type_alias(
 pub(crate) fn resolve_type_assert(
     annotation: &Spanned<Annotation>,
     inner: &Arc<SurfaceNode>,
-    resolved_type: &RefCell<Option<Type>>,
     env: &Rc<TypeEnv>,
     _span: Span,
     state: &mut InferState,
@@ -50,8 +48,6 @@ pub(crate) fn resolve_type_assert(
         &mut row_ann_mapping_opt,
     )
     .map_err(|e| vec![e])?;
-
-    // resolved_type will be stored after substitution application below (write-once invariant).
 
     // Use checking mode for TypeAssert inner expression (doc/06 §Bidirectional Typing).
     let check_result = check_surface_expr(inner, &expected, env, state, type_map);
@@ -136,33 +132,6 @@ pub(crate) fn resolve_type_assert(
     } else {
         state.subst.apply(&expected)
     };
-
-    // Store the substitution-applied type in the AST node for runtime validation (elaboration).
-    // INVARIANT: resolved_type is write-once (parser initializes to None, typecheck sets it once).
-    // The type is stored AFTER substitution to ensure the runtime sees fully-resolved types.
-    //
-    // GUARD: parameterized types like `Handle[Readable]` can trigger a second write when the
-    // type checker encounters the same TypeAssert node via multiple paths (e.g., dict letrec
-    // re-inference). If the second write is consistent (same type), skip it silently — this is
-    // an idempotent double-elaboration, not a true invariant violation. If the types differ,
-    // that IS a real bug and we return an internal error.
-    let prev = resolved_type.replace(Some(expected.clone()));
-    if let Some(prev_type) = prev {
-        // Type does not implement PartialEq — use debug representations for consistency check.
-        let prev_repr = format!("{prev_type:?}");
-        let new_repr = format!("{expected:?}");
-        if prev_repr != new_repr {
-            return Err(vec![TypeError::new(
-                format!(
-                    "internal error: resolved_type written twice with inconsistent types — \
-                     elaboration invariant violated (previous: {prev_repr}, new: {new_repr}). \
-                     This indicates a bug in the type checker."
-                ),
-                annotation.span.clone(),
-            )]);
-        }
-        // Consistent double-write: previous value matches. Idempotent — return Ok.
-    }
 
     Ok(expected)
 }

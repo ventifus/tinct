@@ -97,7 +97,7 @@ type GuardDefault = (
 /// Maximum continuation stack depth. Prevents resource exhaustion from deeply
 /// nested evaluation chains that would otherwise exhaust heap memory.
 ///
-/// This limit is separate from MAX_EVAL_DEPTH (256) and is set higher because:
+/// This limit replaces the old recursive evaluator's MAX_EVAL_DEPTH (256). Set higher because:
 /// - Each continuation is ~96 bytes, so 2048 frames = ~192 KB stack allocation
 /// - Deep materialization chains (e.g., nested function calls, deeply nested
 ///   record validation) can legitimately exceed parse depth

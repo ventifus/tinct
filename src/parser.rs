@@ -8350,7 +8350,10 @@ mod tests {
                 named_args,
                 implied,
             } => {
-                assert!(!implied, "expected non-implied call");
+                assert!(
+                    *implied,
+                    "expected implied call (bracket-style [tmpl ...], not [call tmpl ...])"
+                );
                 assert!(named_args.is_empty());
                 match &func.expr {
                     SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "tmpl"),
@@ -8378,7 +8381,10 @@ mod tests {
                 implied,
                 ..
             } => {
-                assert!(!implied);
+                assert!(
+                    *implied,
+                    "expected implied call (bracket-style [tmpl ...], not [call tmpl ...])"
+                );
                 match &func.expr {
                     SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "tmpl"),
                     other => panic!("expected func=VarRef(tmpl), got {other:?}"),

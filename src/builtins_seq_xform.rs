@@ -255,7 +255,7 @@ pub(crate) fn builtin_filter(
 /// Consecutive predicate failures are handled by an internal loop rather than
 /// chaining PendingBuiltin thunks. A PendingBuiltin-per-failure would consume
 /// one depth unit per rejected entry (N failures → ~2N depth units total),
-/// hitting MAX_EVAL_DEPTH far earlier than expected on sparse dicts. The
+/// hitting depth limits far earlier than expected on sparse dicts. The
 /// loop short-circuits skips at zero extra depth cost, then defers lazily on
 /// the first pass.
 pub(crate) fn builtin_filter_dict_step(
@@ -397,7 +397,7 @@ pub(crate) fn builtin_filter_dict_step(
 /// Consecutive predicate failures are handled by an internal loop rather than
 /// chaining PendingBuiltin thunks. A PendingBuiltin-per-failure would consume
 /// one depth unit per rejected element (N failures → ~2N depth units total),
-/// hitting MAX_EVAL_DEPTH far earlier than expected on sparse sequences. The
+/// hitting depth limits far earlier than expected on sparse sequences. The
 /// loop short-circuits skips at zero extra depth cost, then defers lazily on
 /// the first pass.
 pub(crate) fn builtin_filter_seq_step(

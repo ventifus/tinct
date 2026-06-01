@@ -1,0 +1,5 @@
+# Test E081: Unimplemented — evaluating a placeholder (...) raises an error.
+# The placeholder is a stub marker; forcing it signals an unfinished implementation.
+...
+=== error
+[E081] placeholder `...` was evaluated — replace with an implementation (defined at 2:1-2:4)

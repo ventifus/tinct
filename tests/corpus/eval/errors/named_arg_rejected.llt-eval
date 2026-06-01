@@ -1,4 +1,4 @@
-# floor builtin rejects named arguments (E023)
+# floor builtin rejects named arguments (E020)
 [floor n: 3.7]
 === error
 [E020] arity mismatch: expected 1 argument, got 0 (defined at 1:1-1:15)

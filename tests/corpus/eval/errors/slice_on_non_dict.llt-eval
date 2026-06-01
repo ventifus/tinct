@@ -2,26 +2,26 @@
 
 [slice 0 2 x]
 === error
-[E010] each-kv: expected Dict, got Int (defined at stdlib/prelude.llt:1110:82-1110:84)
-  --> stdlib/prelude.llt:1110:82-1110:84
+[E010] each-kv: expected Dict, got Int (defined at stdlib/prelude.llt:1108:82-1108:84)
+  --> stdlib/prelude.llt:1108:82-1108:84
    |
-  1110 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
+  1108 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
        |                                                                                  ^^
-  in [each-kv ...] at stdlib/prelude.llt:1110:73-1110:85
+  in [each-kv ...] at stdlib/prelude.llt:1108:73-1108:85
    |
-  1110 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
+  1108 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
        |                                                                         ^^^^^^^^^^^^
-  in [builtin-drop ...] at stdlib/prelude.llt:1110:53-1110:86
+  in [builtin-drop ...] at stdlib/prelude.llt:1108:53-1108:86
    |
-  1110 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
+  1108 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
        |                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-take ...] at stdlib/prelude.llt:1110:15-1110:87
+  in [builtin-take ...] at stdlib/prelude.llt:1108:15-1108:87
    |
-  1110 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
+  1108 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
        |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [build-dict ...] at stdlib/prelude.llt:1110:3-1110:88
+  in [build-dict ...] at stdlib/prelude.llt:1108:3-1108:88
    |
-  1110 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
+  1108 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
        |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [slice ...] at 3:1-3:14
 

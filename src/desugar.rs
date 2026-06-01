@@ -18,8 +18,8 @@
 //!
 //! **Desugar nesting depth invariant:** Desugar only transforms `$_` into fn wrappers
 //! (one level per `$_` occurrence). Nesting depth is bounded by the parser's
-//! MAX_PARSE_DEPTH, which is equal to MAX_EVAL_DEPTH (256). Therefore, desugaring
-//! cannot produce ASTs deeper than the evaluation depth limit.
+//! MAX_PARSE_DEPTH (256), replaced by MAX_CONTINUATION_STACK (2048) in the CEK machine.
+//! Therefore, desugaring cannot produce ASTs deeper than the parse depth limit.
 //!
 //! See doc/04-functions.md §`$_` Desugaring for the complete formal specification.
 

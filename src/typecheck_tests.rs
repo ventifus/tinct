@@ -5286,9 +5286,9 @@ fn test_check_expr_lambda_arity_mismatch() {
 #[test]
 fn test_double_typecheck_no_panic() {
     // Regression test for LSP double-typecheck panic risk.
-    // Before the fix, calling typecheck_surface_program twice on the same AST
-    // would trigger the write-once invariant assertion in resolve_type_assert.
-    // After the fix, reset_elaboration clears resolved_type fields before each typecheck.
+    // resolve_type_assert creates no persistent state in the AST — the RefCell used
+    // for write-once tracking is a local variable created fresh in each infer_surface_expr
+    // call, so no reset is needed and double-typecheck cannot trigger any assertion.
     let input = r#"
             [@Number 42]
             [@String "hello"]
@@ -5310,7 +5310,7 @@ fn test_double_typecheck_no_panic() {
         "First typecheck should populate type_map"
     );
 
-    // Second typecheck on the same AST: should not panic due to reset_elaboration
+    // Second typecheck on the same AST: should not panic — no shared mutable state in AST
     let (errors2, type_map2, _doc_map2, _scheme_map2, _diagnostics2) =
         typecheck_surface_program(&program, crate::imports::build_prelude_env());
     assert!(

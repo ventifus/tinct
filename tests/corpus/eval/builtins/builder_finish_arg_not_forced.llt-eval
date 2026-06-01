@@ -1,0 +1,11 @@
+# builder: the argument [builder-finish b] passed to [fn [let _] ...] is never forced.
+# LLT wraps all call arguments as Unevaluated thunks; since _ is never referenced
+# in the body, the outer [builder-finish b] is never materialized.
+# The body calls [builder-finish b] once on an unfinished builder, returning Dict({}).
+[call [fn [let b]
+    [call [fn [let _]
+        [builder-finish b]]
+    [builder-finish b]]]
+ [make-builder]]
+=== out
+Dict({})

@@ -1,13 +1,13 @@
 # tail: error on empty seq
 [tail []]
 === error
-[E034] tail on empty collection (defined at stdlib/prelude.llt:2463:15-2463:32)
-  --> stdlib/prelude.llt:2463:15-2463:32
+[E034] tail on empty collection (defined at stdlib/prelude.llt:2451:15-2451:32)
+  --> stdlib/prelude.llt:2451:15-2451:32
    |
-  2463 | """] [let xs] [builtin-tail xs]]
+  2451 | """] [let xs] [builtin-tail xs]]
        |               ^^^^^^^^^^^^^^^^^
-  in [builtin-tail ...] at stdlib/prelude.llt:2463:15-2463:32
+  in [builtin-tail ...] at stdlib/prelude.llt:2451:15-2451:32
    |
-  2463 | """] [let xs] [builtin-tail xs]]
+  2451 | """] [let xs] [builtin-tail xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [tail ...] at 1:1-1:10

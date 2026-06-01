@@ -4,23 +4,7 @@ This chapter provides a complete reference for all 310 Rust-native builtins. For
 
 ## Notation
 
-**Arity:** Exact count or range (e.g., `2` = exactly two args, `1-2` = one or two args, `1+` = one or more).
-
-**Strictness signature:** Describes which arguments are materialized before the builtin executes:
-
-- `S` = Strict — argument is materialized
-- `L` = Lazy — argument passes through as a thunk (never materialized by this builtin)
-- `Sc` = Selectively strict — materialization is conditional on another argument's value
-- `S*` = Variadic strict — all arguments are materialized
-- `I` = Inspect — peeks at thunk state without materializing; branches on Materialized/Unevaluated/Pending without forcing
-
-**Result type:**
-
-- `→ V` = Value result (Int, Float, String, Bool)
-- `→ D` = Container result (Dict or Seq; may contain thunks from inputs)
-- `→ Θ` = Thunk result (Rc::clone of input or new PendingBuiltin/PendingCall)
-- `→ LT` = Lazy-transforming result (Dict or Seq with new PendingBuiltin thunks)
-- `→ ⊥` = Always raises an error; never returns
+**Tinct type:** Written as `[Fn@ReturnType [ParamType1 ParamType2 ...]]`. Variadic params use `...ParamType`.
 
 **Category:**
 
@@ -33,12 +17,12 @@ This chapter provides a complete reference for all 310 Rust-native builtins. For
 
 Arithmetic operators dispatch via the `Add`/`Sub`/`Mul`/`Div` MPTC classes. The result type is determined by the operand types: `Int + Int → Int`, `Float + Float → Float`, `Int + Float → Float`. User-defined numeric types participate by declaring `Add` instances. See `doc/feature/advanced-typeclasses.md §Precise Mixed-Mode Arithmetic`.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `+` | 2 | `S × S → V` | Add a b c | Add two values; result type determined by Add instance |
-| `-` | 2 | `S × S → V` | Sub a b c | Subtract second from first |
-| `*` | 2 | `S × S → V` | Mul a b c | Multiply two values |
-| `/` | 2 | `S × S → V` | Float | Divide first by second (always returns Float) |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `+` | `[Fn@Number [Number Number]]` | Add two values; result type determined by Add instance |
+| `-` | `[Fn@Number [Number Number]]` | Subtract second from first |
+| `*` | `[Fn@Number [Number Number]]` | Multiply two values |
+| `/` | `[Fn@Float [Number Number]]` | Divide first by second (always returns Float) |
 
 **Error cases:**
 
@@ -49,10 +33,10 @@ Arithmetic operators dispatch via the `Add`/`Sub`/`Mul`/`Div` MPTC classes. The 
 
 Comparison operators dispatch via `Equatable` and `Comparable` typeclass instances. Primitive types (Int, Float, Str, Bool, Number) are handled by built-in Rust dispatch. User-defined types participate by declaring `Equatable`/`Comparable` instances. See `doc/feature/advanced-typeclasses.md §User-Defined Types in Primitive Operators`.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `=` | 2 | `S × S → V` | Bool | Equality — primitive types use built-in dispatch; user-defined types route through registered `Equatable` instance |
-| `<` | 2 | `S × S → V` | Bool | Less-than — primitive types (Int, Float, Str) use built-in dispatch; user-defined types route through registered `Comparable` instance |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `=` | `[Fn@Bool [Any Any]]` | Equality — primitive types use built-in dispatch; user-defined types route through registered `Equatable` instance |
+| `<` | `[Fn@Bool [Any Any]]` | Less-than — primitive types (Int, Float, Str) use built-in dispatch; user-defined types route through registered `Comparable` instance |
 
 **Error cases:**
 
@@ -61,9 +45,9 @@ Comparison operators dispatch via `Equatable` and `Comparable` typeclass instanc
 
 ## Control Flow
 
-| Builtin | Arity | Signature | Category | Description |
-|---------|-------|-----------|----------|-------------|
-| `if` | 3 | `S × Sc × Sc → Θ` | Selective | Materializes condition; returns chosen branch thunk without materializing it |
+| Builtin | Type | Category | Description |
+|---------|------|----------|-------------|
+| `if` | `[Fn@Any [Bool Any Any]]` | Selective | Materializes condition; returns chosen branch thunk without materializing it |
 
 **Selective materialization:** Exactly one of the branch arguments is returned; the other is never materialized. This is the foundation for short-circuit evaluation in the stdlib (`and`, `or`, `when`, `unless`, `cond`).
 
@@ -73,12 +57,12 @@ Comparison operators dispatch via `Equatable` and `Comparable` typeclass instanc
 
 Core operations on dicts. All materialize the dict structure (the IndexMap) to perform their work, but most preserve value thunks.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `keys` | 1 | `S → D` | Dict | Return dict with same keys, values are the keys themselves (newly constructed Int/String/Float) |
-| `length` | 1 | `S → V` | Int | Count entries (works on Dict or Seq — materializes structure, not values) |
-| `merge` | 2 | `S × S → D` | Dict | Right-biased merge; materializes both dicts for key set, values are Rc::clone thunks |
-| `append` | 2 | `L × S → D` | Dict | Add entry to dict; materializes dict for key computation, value passes through as thunk |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `keys` | `[Fn@Dict [Dict]]` | Return dict with same keys, values are the keys themselves (newly constructed Int/String/Float) |
+| `length` | `[Fn@Int [Dict]]` | Count entries (works on Dict or Seq — materializes structure, not values) |
+| `merge` | `[Fn@Dict [Dict Dict]]` | Right-biased merge; materializes both dicts for key set, values are Rc::clone thunks |
+| `append` | `[Fn@Dict [Any Dict]]` | Add entry to dict; materializes dict for key computation, value passes through as thunk |
 
 **Error cases:**
 
@@ -91,12 +75,12 @@ Core operations on dicts. All materialize the dict structure (the IndexMap) to p
 
 Convert a Dict to a lazy Seq of its contents. All three builtins use an internal offset parameter to avoid O(n²) IndexMap rebuilds — each recursive step increments the offset rather than rebuilding the remaining dict.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `builtin-get` | 2 | `S × S → Θ` | Any | Look up key (Int or String) in dict; returns value thunk or errors if key absent |
-| `each` | 1 | `S → LT` | Seq | Convert dict to lazy Seq of its values in insertion order; keys are discarded |
-| `each-key` | 1 | `S → LT` | Seq | Convert dict to lazy Seq of its keys in insertion order; values are discarded |
-| `each-kv` | 1 | `S → LT` | Seq | Convert dict to lazy Seq of `[key: K  value: V]` dicts in insertion order |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `builtin-get` | `[Fn@Any [Dict String]]` | Look up key (Int or String) in dict; returns value thunk or errors if key absent |
+| `each` | `[Fn@[Seq Any] [Dict]]` | Convert dict to lazy Seq of its values in insertion order; keys are discarded |
+| `each-key` | `[Fn@[Seq Any] [Dict]]` | Convert dict to lazy Seq of its keys in insertion order; values are discarded |
+| `each-kv` | `[Fn@[Seq Dict] [Dict]]` | Convert dict to lazy Seq of `[key: K  value: V]` dicts in insertion order |
 
 **`builtin-get` note:** This is a primitive for runtime key lookup by computed key value. Use `data.key` for static string-key dot access; `builtin-get` is for cases where the key itself is a runtime value (e.g., the result of `each-key`).
 
@@ -109,14 +93,14 @@ Convert a Dict to a lazy Seq of its contents. All three builtins use an internal
 
 All string operations materialize their arguments and return computed String values.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `str` | 1+ | `S* → V` | String | Concatenate all args after stringifying them (variadic) |
-| `split` | 2 | `S × S → D` | Dict | Split string by delimiter; returns dict with 0-indexed entries |
-| `replace` | 3 | `S × S × S → V` | String | Replace all occurrences of pattern (arg 2) with replacement (arg 3) in string (arg 1) |
-| `upper` | 1 | `S → V` | String | Convert string to uppercase |
-| `lower` | 1 | `S → V` | String | Convert string to lowercase |
-| `trim` | 1 | `S → V` | String | Remove leading and trailing whitespace |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `str` | `[Fn@String [...Any]]` | Concatenate all args after stringifying them (variadic) |
+| `split` | `[Fn@Dict [String String]]` | Split string by delimiter; returns dict with 0-indexed entries |
+| `replace` | `[Fn@String [String String String]]` | Replace all occurrences of pattern (arg 2) with replacement (arg 3) in string (arg 1) |
+| `upper` | `[Fn@String [String]]` | Convert string to uppercase |
+| `lower` | `[Fn@String [String]]` | Convert string to lowercase |
+| `trim` | `[Fn@String [String]]` | Remove leading and trailing whitespace |
 
 **Error cases:**
 
@@ -129,12 +113,12 @@ All string operations materialize their arguments and return computed String val
 
 Numeric functions materialize their arguments and return computed values.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `floor` | 1 | `S → V` | Int | Round down to nearest integer |
-| `round` | 1 | `S → V` | Int | Round to nearest integer (half-up) |
-| `to-int` | 1 | `S → V` | Int | Parse string to Int |
-| `to-float` | 1 | `S → V` | Float | Parse string to Float |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `floor` | `[Fn@Int [Number]]` | Round down to nearest integer |
+| `round` | `[Fn@Int [Number]]` | Round to nearest integer (half-up) |
+| `to-int` | `[Fn@Int [String]]` | Parse string to Int |
+| `to-float` | `[Fn@Float [String]]` | Parse string to Float |
 
 **Error cases:**
 
@@ -146,13 +130,13 @@ Numeric functions materialize their arguments and return computed values.
 
 Control over evaluation order and error handling.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `deep-materialize` | 1 | `S → V` | Any | Deep materialization — recursively materializes all thunks in the value tree |
-| `materialize` | 1 | `S → V` | Any | Force WHNF (weak head normal form) evaluation: materializes the thunk but does not recursively materialize nested thunks |
-| `error` | 1 | `S → ⊥` | Never returns | Materializes arg as error message, raises catchable error |
-| `try` | 1 | `S → D` | Variant | Materializes function arg, invokes it with no args, catches errors; returns `[Ok result]` or `[Err message]` (ADT variants, destructured with `match`) |
-| `apply` | 2 | `S × S → Θ` | Any | Materialize function and dict, call function with dict as named args |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `deep-materialize` | `[Fn@Any [Any]]` | Deep materialization — recursively materializes all thunks in the value tree |
+| `materialize` | `[Fn@Any [Any]]` | Force WHNF (weak head normal form) evaluation: materializes the thunk but does not recursively materialize nested thunks |
+| `error` | `[Fn@Never [String]]` | Materializes arg as error message, raises catchable error |
+| `try` | `[Fn@Variant [Fn]]` | Materializes function arg, invokes it with no args, catches errors; returns `[Ok result]` or `[Err message]` (ADT variants, destructured with `match`) |
+| `apply` | `[Fn@Any [Fn Dict]]` | Materialize function and dict, call function with dict as named args |
 
 **Error cases:**
 
@@ -164,21 +148,21 @@ Control over evaluation order and error handling.
 
 ## Type Introspection
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `type-of` | 1 | `S → V` | String | Return type name: "Int", "Float", "String", "Bool", "Dict", "Seq", "Function", "Proxy" |
-| `int?` | 1 | `S → V` | Bool | Return true if arg is an Int |
-| `float?` | 1 | `S → V` | Bool | Return true if arg is a Float |
-| `num?` | 1 | `S → V` | Bool | Return true if arg is an Int or Float |
-| `str?` | 1 | `S → V` | Bool | Return true if arg is a String |
-| `bool?` | 1 | `S → V` | Bool | Return true if arg is a Bool |
-| `null?` | 1 | `S → V` | Bool | Return true if arg is Null (empty dict `[]` — tinct's null representation) |
-| `dict?` | 1 | `S → V` | Bool | Return true if arg is a Dict (includes lists, which are dicts with integer keys) |
-| `fn?` | 1 | `S → V` | Bool | Return true if arg is callable (Function or Builtin) |
-| `seq?` | 1 | `S → V` | Bool | Return true if arg is a Seq |
-| `record?` | 1 | `S → V` | Bool | Return true if arg is a Dict/Overlay (runtime has no key-type tracking; type-level distinction only) |
-| `map?` | 1 | `S → V` | Bool | Return true if arg is a Dict/Overlay (runtime has no key-type tracking; type-level distinction only) |
-| `bytes?` | 1 | `S → V` | Bool | Return true if arg is a Bytes value |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `type-of` | `[Fn@String [Any]]` | Return type name: "Int", "Float", "String", "Bool", "Dict", "Seq", "Function", "Proxy" |
+| `int?` | `[Fn@Bool [Any]]` | Return true if arg is an Int |
+| `float?` | `[Fn@Bool [Any]]` | Return true if arg is a Float |
+| `num?` | `[Fn@Bool [Any]]` | Return true if arg is an Int or Float |
+| `str?` | `[Fn@Bool [Any]]` | Return true if arg is a String |
+| `bool?` | `[Fn@Bool [Any]]` | Return true if arg is a Bool |
+| `null?` | `[Fn@Bool [Any]]` | Return true if arg is Null (empty dict `[]` — tinct's null representation) |
+| `dict?` | `[Fn@Bool [Any]]` | Return true if arg is a Dict (includes lists, which are dicts with integer keys) |
+| `fn?` | `[Fn@Bool [Any]]` | Return true if arg is callable (Function or Builtin) |
+| `seq?` | `[Fn@Bool [Any]]` | Return true if arg is a Seq |
+| `record?` | `[Fn@Bool [Any]]` | Return true if arg is a Dict/Overlay (runtime has no key-type tracking; type-level distinction only) |
+| `map?` | `[Fn@Bool [Any]]` | Return true if arg is a Dict/Overlay (runtime has no key-type tracking; type-level distinction only) |
+| `bytes?` | `[Fn@Bool [Any]]` | Return true if arg is a Bytes value |
 
 Each predicate materializes its argument and checks the `Value` variant. `num?` checks both `Int` and `Float`, mirroring the `Number` supertype. `fn?` checks both `Function` and `Builtin`, since both are callable. `record?` and `map?` both return true for any `Dict` or `Overlay` value — the key-type distinction (string keys vs mixed keys) exists only at the type level. The runtime does not track key types, so both predicates behave identically and accept all dicts. No `list?` **builtin** exists because lists are dicts (Principle 1: Dicts Are Fundamental) — "list-ness" is a convention, not a type distinction — `list?` is available as a standard library function (see [Standard Library](11-stdlib.md) §Type Predicates).
 
@@ -186,13 +170,13 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 
 ## Meta & Code Generation
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `gensym` | 0-1 | `() or S → V` | String | Generate a unique symbol string; optional prefix arg (e.g., `[gensym "tmp"]` → `":tmp:0"`, `[gensym]` → `":gensym:0"`) |
-| `macro-injects` | 1 | `S → V` | String or Null | Given a macro name, return its `inject:` default binding name if declared, or `null` if not. Reflection primitive for anaphoric macros (e.g., `[macro-injects "aif"]` → `"it"`). |
-| `llt-repr` | 1 | `S → V` | String | Convert value to LLT source code representation (inverse of parsing; useful for code generation) |
-| `builtin-ast-of` | 1 | `T → V` | Dict (Unknown) | Return the AST dict without forcing the argument. Thunk-aware: inspects thunk state without materializing. Materialized → AST of the value (`Value::Function` → `[type: "fn" ...]`, `Value::Builtin` → `[type: "builtin" ...]`, other → `[type: type-of(val)]`); Unevaluated → AST of the expression via `ast_to_dict_expr` (doc annotations visible); Pending → `[type: "pending"]` descriptor. Public alias: `ast-of` (re-exported from prelude). See `doc/feature/runtime-reflection.md`. |
-| `str` | variadic | `S... → V` | String | Stringify and concatenate all arguments. Routes through registered `Showable` instance for user-defined types; built-in Rust dispatch for primitives. |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `gensym` | `[Fn@String [...String]]` | Generate a unique symbol string; optional prefix arg (e.g., `[gensym "tmp"]` → `":tmp:0"`, `[gensym]` → `":gensym:0"`) |
+| `macro-injects` | `[Fn@String [String]]` | Given a macro name, return its `inject:` default binding name if declared, or `null` if not. Reflection primitive for anaphoric macros (e.g., `[macro-injects "aif"]` → `"it"`). |
+| `llt-repr` | `[Fn@String [Any]]` | Convert value to LLT source code representation (inverse of parsing; useful for code generation) |
+| `builtin-ast-of` | `[Fn@Dict [Any]]` | Return the AST dict without forcing the argument. Thunk-aware: inspects thunk state without materializing. Materialized → AST of the value (`Value::Function` → `[type: "fn" ...]`, `Value::Builtin` → `[type: "builtin" ...]`, other → `[type: type-of(val)]`); Unevaluated → AST of the expression via `ast_to_dict_expr` (doc annotations visible); Pending → `[type: "pending"]` descriptor. Public alias: `ast-of` (re-exported from prelude). See `doc/feature/runtime-reflection.md`. |
+| `str` | `[Fn@String [...Any]]` | Stringify and concatenate all arguments. Routes through registered `Showable` instance for user-defined types; built-in Rust dispatch for primitives. |
 
 **Error cases:**
 
@@ -203,10 +187,10 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 
 ## Variant Construction
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `variant` | 2 | `S × S → V` | Variant | Construct a variant value: `[variant "Ok" value]` → `Value::Variant { tag: "Ok", payload: Some(value) }` |
-| `tag-of` | 1 | `S → V` | String | Extract tag from variant: `[tag-of [Ok 42]]` → `"Ok"` |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `variant` | `[Fn@Variant [String Any]]` | Construct a variant value: `[variant "Ok" value]` → `Value::Variant { tag: "Ok", payload: Some(value) }` |
+| `tag-of` | `[Fn@String [Variant]]` | Extract tag from variant: `[tag-of [Ok 42]]` → `"Ok"` |
 
 **Error cases:**
 
@@ -215,11 +199,11 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 
 ## Numeric Type Conversion
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `float` | 1 | `S → V` | Float | Convert Int to Float; pass-through for Float; type error otherwise |
-| `decimal` | 1 | `S → V` | Decimal | Convert String or Int to Decimal (extended numeric type for exact decimal arithmetic) |
-| `big-int` | 1 | `S → V` | BigInt | Convert String or Int to BigInt (arbitrary-precision integer) |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `float` | `[Fn@Float [Number]]` | Convert Int to Float; pass-through for Float; type error otherwise |
+| `decimal` | `[Fn@Decimal [Any]]` | Convert String or Int to Decimal (extended numeric type for exact decimal arithmetic) |
+| `big-int` | `[Fn@BigInt [Any]]` | Convert String or Int to BigInt (arbitrary-precision integer) |
 
 **Error cases:**
 
@@ -229,9 +213,9 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 
 ## Dict Access
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `get?` | 2 | `S × S → V` | Bool or Value | Optional key lookup: returns `[Ok value]` if key exists, `[Err "key not found"]` otherwise (Result variant) |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `get?` | `[Fn@Variant [Dict Any]]` | Optional key lookup: returns `[Ok value]` if key exists, `[Err "key not found"]` otherwise (Result variant) |
 
 **Error cases:**
 
@@ -239,10 +223,10 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 
 ## Datagram I/O
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `send-datagram` | 2 | `S × S → V` | Int | Send bytes to a datagram Handle; returns number of bytes sent |
-| `recv-datagram` | 1-2 | `S (× S)? → V` | String | Receive bytes from datagram Handle; optional max-size arg (default 65536) |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `send-datagram` | `[Fn@Int [Any Any]]` | Send bytes to a datagram Handle; returns number of bytes sent |
+| `recv-datagram` | `[Fn@String [Any]]` | Receive bytes from datagram Handle; optional max-size arg (default 65536) |
 
 **Error cases:**
 
@@ -253,9 +237,9 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 
 Runtime structural validation with constraint checking. See [Structural Contracts](../whatif/structural-contracts.md) for the full design.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `validate` | 2 | `S × S → V` | Any | Validate data against schema; returns data unchanged on success, throws SchemaViolation on failure |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `validate` | `[Fn@Any [Dict Any]]` | Validate data against schema; returns data unchanged on success, throws SchemaViolation on failure |
 
 **Schema keys:**
 
@@ -318,24 +302,24 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 File loading, JSON parsing, and text output.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `from-json` | 1 | `S → D` | Dict | Parse JSON string to dict; numbers become Int or Float, arrays become dicts with 0-indexed keys |
-| `emit` | 1 | `S → Null` | Null | Write string to stdout; purely additive (does not affect CLI output format); returns empty dict (Null) |
-| `write` | 3 | `DirCap × S × S → Null` | Null | Write content to file; takes DirCap, path (String), content (String); returns empty dict (Null) |
-| `write-atomic` | 3 | `DirCap × S × S → Null` | Null | Atomically write content to file via temp+rename; takes DirCap, path, content; returns empty dict (Null) |
-| `revoke-cap` | 1 | `RevocableDirCap → Null` | Null | Revoke a RevocableDirCap; subsequent uses will error; returns empty dict (Null) |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `from-json` | `[Fn@Dict [String]]` | Parse JSON string to dict; numbers become Int or Float, arrays become dicts with 0-indexed keys |
+| `emit` | `[Fn@Null [Any]]` | Send a value to the `%emit` output channel; the output formatter receives and serializes it; accepts any value, not restricted to String |
+| `write` | `[Fn@Null [DirCap String String]]` | Write content to file; takes DirCap, path (String), content (String); returns empty dict (Null) |
+| `write-atomic` | `[Fn@Null [DirCap String String]]` | Atomically write content to file via temp+rename; takes DirCap, path, content; returns empty dict (Null) |
+| `revoke-cap` | `[Fn@Null [RevocableDirCap]]` | Revoke a RevocableDirCap; subsequent uses will error; returns empty dict (Null) |
 
 **`include`** is a pure-tinct function defined in `stdlib/prelude.llt`, not a Rust builtin. It is built from the thin Rust primitives in the **Include Pipeline Primitives** section below. See [Documents & Pipelines](09-documents.md) §Include for full semantics and call patterns.
 
 **`emit` behavior:**
 
-`emit` writes UTF-8 text directly to stdout. It is purely additive — calling `emit` does not affect whether CLI output is produced or what format it uses. CLI output is controlled entirely by the `-o <formatter>` flag. Multiple `emit` calls append sequentially. This enables logging and debugging side-channel output alongside the main result (see [Documents & Pipelines](09-documents.md) §Multi-File Pipeline).
+`emit v` sends `v` to the `%emit` output channel. `%emit` is a `Channel@Any` created by `eval-programs` and injected into every program's scope. The output formatter (last program in the pipeline) drains `%emit` concurrently and serializes each received value to `%stdout`. `emit` is a strictness point — `v` is fully materialized before entering the channel (`builtin-send` materializes its argument). Multiple `emit` calls append to the channel in order; the formatter serializes them as they arrive. See §Output Program Contract in [Documents & Pipelines](09-documents.md).
 
 **Error cases:**
 
 - `from-json`: Type mismatch if arg is not String; parse error if JSON is invalid
-- `emit`: Type mismatch if arg is not String; I/O error if stdout write fails
+- `emit`: Channel send error if `%emit` is closed or cancelled
 - `write`: Type mismatch if first arg is not DirCap, or path/content are not String; I/O error on file creation or write failure; revoked capability error if using a revoked `RevocableDirCap`; capability permission error if `DirCap` does not hold the `Writable` flag
 - `write-atomic`: Type mismatch if first arg is not DirCap, or path/content are not String; I/O error on temp file creation, write, sync, or rename failure; revoked capability error if using a revoked `RevocableDirCap`; capability permission error if `DirCap` does not hold the `Writable` flag
 - `revoke-cap`: Type mismatch if arg is not RevocableDirCap
@@ -381,20 +365,20 @@ For DirCap creation (via `--cap-fs NAME=PATH[:MODE]`) and in-script attenuation 
 
 Capability-based filesystem operations. All require a `DirCap` with appropriate permission flags.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `stat` | 2 | `DirCap × S → D` | Dict | Get file metadata (follows symlinks); returns dict with `name`, `type`, `size`, `mtime`, `mode`, `is-dir`, `is-file`, `is-symlink` |
-| `exists` | 2 | `DirCap × S → V` | Bool | Check if path exists; cheaper than `try`+`stat` for existence checks |
-| `stat-symlink` | 2 | `DirCap × S → D` | Dict | Get file metadata without following symlinks (lstat equivalent); same dict schema as `stat` |
-| `list-dir` | 2 | `DirCap × S → D` | Seq | List directory contents; returns lazy Seq of filename Strings |
-| `make-dir` | 2 | `DirCap × S → Null` | Null | Create directory and parent directories if needed; returns empty dict |
-| `copy-file` | 4 | `DirCap × S × DirCap × S → Null` | Null | Copy file from src DirCap/path to dst DirCap/path using kernel-level copy |
-| `symlink` | 3 | `DirCap × S × S → Null` | Null | Create symbolic link; args: DirCap, target String, link path String |
-| `set-permissions` | 3 | `DirCap × S × S → Null` | Null | Set Unix file permissions; mode is Int (e.g., 0o755); Unix-only |
-| `builtin-remove` | 2 | `DirCap × S → Null` | Null | Remove file or empty directory; tries file first, then directory |
-| `rename` | 3 | `DirCap × S × S → Null` | Null | Rename/move file within DirCap; args: DirCap, old path, new path |
-| `link` | 3 | `DirCap × S × S → Null` | Null | Create hard link; args: DirCap, target path, link path |
-| `read-link` | 2 | `DirCap × S → V` | String | Read symlink target path |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `stat` | `[Fn@Dict [DirCap String]]` | Get file metadata (follows symlinks); returns dict with `name`, `type`, `size`, `mtime`, `mode`, `is-dir`, `is-file`, `is-symlink` |
+| `exists` | `[Fn@Bool [DirCap String]]` | Check if path exists; cheaper than `try`+`stat` for existence checks |
+| `stat-symlink` | `[Fn@Dict [DirCap String]]` | Get file metadata without following symlinks (lstat equivalent); same dict schema as `stat` |
+| `list-dir` | `[Fn@[Seq String] [DirCap String]]` | List directory contents; returns lazy Seq of filename Strings |
+| `make-dir` | `[Fn@Null [DirCap String]]` | Create directory and parent directories if needed; returns empty dict |
+| `copy-file` | `[Fn@Null [DirCap String DirCap String]]` | Copy file from src DirCap/path to dst DirCap/path using kernel-level copy |
+| `symlink` | `[Fn@Null [DirCap String String]]` | Create symbolic link; args: DirCap, target String, link path String |
+| `set-permissions` | `[Fn@Null [DirCap String Int]]` | Set Unix file permissions; mode is Int (e.g., 0o755); Unix-only |
+| `builtin-remove` | `[Fn@Null [DirCap String]]` | Remove file or empty directory; tries file first, then directory |
+| `rename` | `[Fn@Null [DirCap String String]]` | Rename/move file within DirCap; args: DirCap, old path, new path |
+| `link` | `[Fn@Null [DirCap String String]]` | Create hard link; args: DirCap, target path, link path |
+| `read-link` | `[Fn@String [DirCap String]]` | Read symlink target path |
 
 **Permission requirements:**
 
@@ -439,12 +423,12 @@ Capability-based filesystem operations. All require a `DirCap` with appropriate 
 
 Linux-only extended attribute operations. All require a `DirCap` with the `ExtendedAttributes` permission flag. On non-Linux systems, all four builtins raise a platform error.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `get-xattr` | 3 | `DirCap × S × S → V` | Bytes or Null | Get the value of an extended attribute on a file; returns `Bytes` if the attribute exists, `[]` (null) if not found |
-| `set-xattr` | 4 | `DirCap × S × S × Bytes → Null` | Null | Set an extended attribute on a file; value must be Bytes; requires `ExtendedAttributes` and `Writable` permissions; returns empty dict on success |
-| `remove-xattr` | 3 | `DirCap × S × S → Null` | Null | Remove an extended attribute from a file; no-op if the attribute does not exist; returns empty dict on success |
-| `list-xattrs` | 2 | `DirCap × S → D` | Seq | List all extended attribute names on a file; returns a Seq of String attribute names |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `get-xattr` | `[Fn@Any [DirCap String String]]` | Get the value of an extended attribute on a file; returns `Bytes` if the attribute exists, `[]` (null) if not found |
+| `set-xattr` | `[Fn@Null [DirCap String String Any]]` | Set an extended attribute on a file; value must be Bytes; requires `ExtendedAttributes` and `Writable` permissions; returns empty dict on success |
+| `remove-xattr` | `[Fn@Null [DirCap String String]]` | Remove an extended attribute from a file; no-op if the attribute does not exist; returns empty dict on success |
+| `list-xattrs` | `[Fn@[Seq String] [DirCap String]]` | List all extended attribute names on a file; returns a Seq of String attribute names |
 
 **Platform note:** All four builtins are Linux-only. Calling them on non-Linux platforms (macOS, Windows) raises a user error: `<builtin>: extended attributes are only supported on Linux`.
 
@@ -462,16 +446,16 @@ Linux-only extended attribute operations. All require a `DirCap` with the `Exten
 
 Thin Rust primitives that implement the self-hosted `include` pipeline. These are internal to `stdlib/prelude.llt` — user code calls `include`, `eval-file`, and `eval-document-pipeline` from prelude rather than using these primitives directly.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `load` | 1+ | `S (name: S) → D` | Dict | Parse source text to a file AST dict; `name:` named arg provides a provenance hint for error spans (e.g., the file path) |
-| `expand` | 1 | `S → D` | Dict | Run macro expansion on a file AST dict produced by `load`; returns the expanded AST dict |
-| `eval` | 1+ | `S (%: L) (env: S) → Θ` | Any | Evaluate a list of AST expression nodes in the runtime env; `%:` binds the pipeline input as `%`; `env:` merges extra bindings into scope |
-| `eval-types` | 1 | `S → Θ` | Any | Evaluate AST expression nodes in the type-stage env (type-level builtins only — no I/O, no capability access) |
-| `blake3` | 1 | `S → V` | String | Compute BLAKE3 hash of a string; returns 64-char lowercase hex |
-| `cap-identity` | 1 | `S → V` | String | Return a stable identity string for a `DirCap` derived from `fstat` on the directory fd; format: `"dev:ino"` — stable across renames and mounts |
-| `include-cache-get` | 1 | `S → D` | Variant | Look up an entry in the content-addressed include cache by hash; returns `[Missing]`, `[Pending]`, or `[Cached value]` |
-| `include-cache-put` | 2 | `S × D → Null` | Null | Write an entry to the include cache; entry must be `[Missing]`, `[Pending]`, or `[Cached value]` |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `load` | `[Fn@Dict [String]]` | Parse source text to a file AST dict; `name:` named arg provides a provenance hint for error spans (e.g., the file path) |
+| `expand` | `[Fn@Dict [Dict]]` | Run macro expansion on a file AST dict produced by `load`; returns the expanded AST dict |
+| `eval` | `[Fn@Any [Any]]` | Evaluate a list of AST expression nodes in the runtime env; `%:` binds the pipeline input as `%`; `env:` merges extra bindings into scope |
+| `eval-types` | `[Fn@Any [Any]]` | Evaluate AST expression nodes in the type-stage env (type-level builtins only — no I/O, no capability access) |
+| `blake3` | `[Fn@String [String]]` | Compute BLAKE3 hash of a string; returns 64-char lowercase hex |
+| `cap-identity` | `[Fn@String [DirCap]]` | Return a stable identity string for a `DirCap` derived from `fstat` on the directory fd; format: `"dev:ino"` — stable across renames and mounts |
+| `include-cache-get` | `[Fn@Variant [String]]` | Look up an entry in the content-addressed include cache by hash; returns `[Missing]`, `[Pending]`, or `[Cached value]` |
+| `include-cache-put` | `[Fn@Null [String Variant]]` | Write an entry to the include cache; entry must be `[Missing]`, `[Pending]`, or `[Cached value]` |
 
 **`IncludeCacheEntry` variants:**
 
@@ -498,14 +482,14 @@ Sequence constructors create lazy Seq values; destructors materialize the Seq sp
 
 ### Constructors
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `seq` | 2 | `L × L → D` | Seq | Construct Seq from head and tail thunks (both pass through; coinductive guard) |
-| `range` | 1-2 | `S (× S)? → LT` | Seq | Integer range: 1-arg form creates infinite Seq starting from arg (`[call $range 5]` → infinite Seq: `5, 6, 7, ...`); 2-arg form creates finite range (`[call $range 2 5]` → `2, 3, 4`, end exclusive) |
-| `repeat` | 1 | `L → LT` | Seq | Infinite repetition of a value (arg passes through as thunk) |
-| `cycle` | 1 | `S → LT` | Seq | Infinite repetition of a dict's values (materializes dict, constructs PendingBuiltin step) |
-| `iterate` | 2 | `L × L → LT` | Seq | Infinite sequence: `x, f(x), f(f(x)), ...` (both args pass through; co-recursive PendingCall + PendingBuiltin) |
-| `unfold` | 2 | `L × L → Θ` | Seq | General unfold: `f(state) → dict`; step dict must have value as **first** entry and next state as **second** entry (insertion order matters; key names are ignored); returns PendingBuiltin thunk |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `seq` | `[Fn@[Seq Any] [Any Any]]` | Construct Seq from head and tail thunks (both pass through; coinductive guard) |
+| `range` | `[Fn@[Seq Int] [Int]]` | Integer range: 1-arg form creates infinite Seq starting from arg (`[call $range 5]` → infinite Seq: `5, 6, 7, ...`); 2-arg form creates finite range (`[call $range 2 5]` → `2, 3, 4`, end exclusive) |
+| `repeat` | `[Fn@[Seq Any] [Any]]` | Infinite repetition of a value (arg passes through as thunk) |
+| `cycle` | `[Fn@[Seq Any] [Dict]]` | Infinite repetition of a dict's values (materializes dict, constructs PendingBuiltin step) |
+| `iterate` | `[Fn@[Seq Any] [Any Fn]]` | Infinite sequence: `x, f(x), f(f(x)), ...` (both args pass through; co-recursive PendingCall + PendingBuiltin) |
+| `unfold` | `[Fn@[Seq Any] [Any Fn]]` | General unfold: `f(state) → dict`; step dict must have value as **first** entry and next state as **second** entry (insertion order matters; key names are ignored); returns PendingBuiltin thunk |
 
 **Error cases:**
 
@@ -518,11 +502,11 @@ Sequence constructors create lazy Seq values; destructors materialize the Seq sp
 
 ### Destructors
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `head` | 1 | `S → Θ` | Any | Materialize arg to verify Seq, return head thunk (not materialized) |
-| `tail` | 1 | `S → Θ` | Seq or Dict | Materialize arg to verify Seq, return tail thunk (not materialized) |
-| `collect` | 1 | `S → D` | Dict | Materialize entire Seq spine (all tails until terminal `[]`); head thunks pass through into Dict |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `head` | `[Fn@Any [[Seq Any]]]` | Materialize arg to verify Seq, return head thunk (not materialized) |
+| `tail` | `[Fn@[Seq Any] [[Seq Any]]]` | Materialize arg to verify Seq, return tail thunk (not materialized) |
+| `collect` | `[Fn@Dict [[Seq Any]]]` | Materialize entire Seq spine (all tails until terminal `[]`); head thunks pass through into Dict |
 
 **Error cases:**
 
@@ -533,15 +517,15 @@ Sequence constructors create lazy Seq values; destructors materialize the Seq sp
 
 All have **dual dispatch** on Dict/Seq. Dict paths preserve keys; Seq paths return lazy Seqs.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `map` | 2 | `L × S → LT` | Dict or Seq | Apply function to each value; Dict → Dict with PendingCall thunks, Seq → lazy Seq |
-| `filter` | 2 | `L × S → LT` | Seq | Apply predicate to each value; Dict → Seq of passing entries, Seq → lazy filtered Seq |
-| `take` | 2 | `S × S → LT` | Dict or Seq | Take first n entries; Dict → Dict, Seq → lazy Seq with PendingBuiltin tail |
-| `drop` | 2 | `S × S → LT` | Dict or Seq | Drop first n entries; Dict → Dict, Seq → lazy Seq via PendingBuiltin step |
-| `reduce` | 3 | `L × L × S → LT` | Any | Left fold: `f(f(init, x₀), x₁), ...`; Dict → lazy PendingCall chain, Seq → materializes tail at each step |
-| `join` | 2 | `S × S → V` | String | Stringify all values, join with separator; materializes all elements |
-| `concat` | 2 | `S × L → LT` | Dict or Seq | Concatenate two collections; Seq → lazy chain (O(1)), Dict → eager merge with reindexing |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `map` | `[Fn@Any [Fn Any]]` | Apply function to each value; Dict → Dict with PendingCall thunks, Seq → lazy Seq |
+| `filter` | `[Fn@[Seq Any] [Fn Any]]` | Apply predicate to each value; Dict → Seq of passing entries, Seq → lazy filtered Seq |
+| `take` | `[Fn@Any [Int Any]]` | Take first n entries; Dict → Dict, Seq → lazy Seq with PendingBuiltin tail |
+| `drop` | `[Fn@Any [Int Any]]` | Drop first n entries; Dict → Dict, Seq → lazy Seq via PendingBuiltin step |
+| `reduce` | `[Fn@Any [Fn Any Any]]` | Left fold: `f(f(init, x₀), x₁), ...`; Dict → lazy PendingCall chain, Seq → materializes tail at each step |
+| `join` | `[Fn@String [Any String]]` | Stringify all values, join with separator; materializes all elements |
+| `concat` | `[Fn@Any [Any Any]]` | Concatenate two collections; Seq → lazy chain (O(1)), Dict → eager merge with reindexing |
 
 **Error cases:**
 
@@ -554,9 +538,9 @@ All have **dual dispatch** on Dict/Seq. Dict paths preserve keys; Seq paths retu
 
 ## Proxy
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `proxy` | 1 | `Fn → Proxy` | Value::Proxy | Takes a handler function; returns `Value::Proxy`. Any field access `.field` calls `handler(field-name)`. Enables virtual namespaces, mock objects, and computed fields. |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `proxy` | `[Fn@Any [Fn]]` | Takes a handler function; returns `Value::Proxy`. Any field access `.field` calls `handler(field-name)`. Enables virtual namespaces, mock objects, and computed fields. |
 
 **Error cases:** Type mismatch if arg is not a function.
 
@@ -627,9 +611,9 @@ From tinct code:
 
 Opens a transport-layer connection via a Connector and returns a `Handle`.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `connect` | 3–4 | `S × S × S (× S)? → Handle` | Handle | Transport-generic dispatch: `connector transport host [port]` |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `connect` | `[Fn@Any [Any Any String Int]]` | Transport-generic dispatch: `connector transport host [port]` |
 
 **Transport variants:** `Tcp | Udp | UnixStream | UnixDatagram | NamedPipe | Icmp`
 
@@ -679,9 +663,9 @@ The first argument is any Connector — a capability value that authorizes conne
 
 Establishes a TLS 1.3 session and returns a `Handle` with the `Tls` capability.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `tls-layer` | 3 | `S × S × S → Handle` | Handle | Layer TLS: `sni opts handle` → Handle with Tls capability |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `tls-layer` | `[Fn@Any [String Dict Any]]` | Layer TLS: `sni opts handle` → Handle with Tls capability |
 
 **Usage:**
 
@@ -760,9 +744,9 @@ Maintain both current and next-rotation pins to allow key rotation without a ser
 
 Reads the peer certificate from a TLS Handle.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `tls-peer-cert` | 1 | `S → D` | Dict | Return peer certificate fields; requires Handle with `Tls` capability |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `tls-peer-cert` | `[Fn@Dict [Any]]` | Return peer certificate fields; requires Handle with `Tls` capability |
 
 The argument must be a `Handle` carrying the `Tls` capability (i.e., produced by `tls-connect`). The `Tls` capability in the Handle's cap row stores this information at handshake time; `tls-peer-cert` extracts it without making any additional network calls.
 
@@ -799,10 +783,10 @@ type errors:
 
 Read capability data from the Handle's capability row.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `cap-data` | 2 | `S × S → V` | Any | Return the `Value` stored for capability `name` in Handle `h` |
-| `has-cap?` | 2 | `S × S → V` | Bool | Return true if Handle `h` carries capability `name` |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `cap-data` | `[Fn@Any [Any String]]` | Return the `Value` stored for capability `name` in Handle `h` |
+| `has-cap?` | `[Fn@Bool [Any String]]` | Return true if Handle `h` carries capability `name` |
 
 ```tinct
 [has-cap? h "Tls"]        # → true if h was created by tls-connect
@@ -824,10 +808,10 @@ type errors:
 
 Single-shot HTTP requests. `http-get` is implemented in pure-tinct (`stdlib/net.llt`) over a `Handle@[Binary Readable Writable]`; it handles both `http://` and `https://` by dispatching on `url.scheme`. `https-get` does not exist as a separate function.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `http-get` | 2–4 | `S × S (× S)? (× S)? → D` | Dict | HTTP GET request; dispatches on url.scheme for http/https |
-| `fetch` | 2 | `S × S → D` | Dict | Convenience wrapper: `http-get connector url [] null` |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `http-get` | `[Fn@Dict [Any Any Dict Any]]` | HTTP GET request; dispatches on url.scheme for http/https |
+| `fetch` | `[Fn@Dict [Any Any]]` | Convenience wrapper: `http-get connector url [] null` |
 
 **Signatures:**
 
@@ -864,11 +848,11 @@ type errors:
 
 Parse URI strings into structured values with dot-accessible fields.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `uri` | 1 | `S → Uri` | Uri | Parse any RFC 3986 URI string → `Value::Uri` |
-| `url` | 1 | `S → Url` | Url | Parse hierarchical URL → `Value::Url`; errors if no authority |
-| `urn` | 1 | `S → Urn` | Urn | Parse URN → `Value::Urn`; errors if not `urn:` scheme |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `uri` | `[Fn@Any [String]]` | Parse any RFC 3986 URI string → `Value::Uri` |
+| `url` | `[Fn@Any [String]]` | Parse hierarchical URL → `Value::Url`; errors if no authority |
+| `urn` | `[Fn@Any [String]]` | Parse URN → `Value::Urn`; errors if not `urn:` scheme |
 
 For field descriptions, see [Data Model](03-data-model.md) §URI Values.
 
@@ -882,9 +866,9 @@ For field descriptions, see [Data Model](03-data-model.md) §URI Values.
 
 Send an ICMP echo request (ping) to a host and return the round-trip time.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `icmp-ping` | 3 | `S × S × S → D` | Dict | `cap host timeout-ms` — sends ICMP echo request, returns `{ok: {latency-ms: Int}}` or `{err: String}` |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `icmp-ping` | `[Fn@Dict [Any String Int]]` | `cap host timeout-ms` — sends ICMP echo request, returns `{ok: {latency-ms: Int}}` or `{err: String}` |
 
 **Signature:**
 
@@ -998,7 +982,8 @@ The `builtin-*` names are the canonical registration names for all Rust builtins
 | `builtin-big-int` | `big-int` | Stable name for raw big integer conversion |
 | `builtin-proxy` | `proxy` | Stable name for raw proxy construction |
 | `builtin-trim` | `trim` | Stable name for raw string whitespace trimming |
-| `builtin-emit` | `emit` | Stable name for raw stdout emit |
+| `builtin-emit` | `emit` | Stable name for raw channel-emit primitive |
+| `builtin-to-tinct` | `to-tinct` | Stable name for raw SCN serializer — converts any value to stdlib-closed normal form (String) |
 | `builtin-env` | `env` | Stable name for raw environment variable lookup |
 | `builtin-program` | `program` | Stable name for raw multi-document program construction |
 
@@ -1010,36 +995,36 @@ These exist so that prelude wrappers (e.g., `>` implemented via `<` and `not`) c
 
 Capability-gated time access and timestamp manipulation.
 
-| Builtin | Arity | Signature | Result | Description |
-|---------|-------|-----------|--------|-------------|
-| `now` | 1 | `S → V` | Timestamp | Read the current time from a `ClockCap`; returns a `Timestamp` (nanoseconds since Unix epoch as an opaque value) |
-| `fixed-clock` | 1 | `S → V` | ClockCap | Construct a `ClockCap` that always returns the given `Timestamp`; useful for testing time-sensitive code without depending on the system clock |
-| `parse-timestamp` | 1 | `S → V` | Timestamp | Parse an RFC 3339 string (e.g., `"2024-01-01T00:00:00Z"`) to a Timestamp |
-| `format-timestamp` | 2 | `S × S → V` | String | Format a Timestamp as an RFC 3339 string; second arg is a timezone name (e.g., `"UTC"`, `"America/New_York"`) |
-| `timestamp-add` | 2 | `S × S → V` | Timestamp | Add a duration (nanoseconds as Int) to a Timestamp |
-| `timestamp-diff` | 2 | `S × S → V` | Int | Difference between two Timestamps in nanoseconds: `b - a` |
-| `timestamp<?` | 2 | `S × S → V` | Bool | True if first Timestamp is before second |
-| `timestamp>?` | 2 | `S × S → V` | Bool | True if first Timestamp is after second |
-| `timestamp=?` | 2 | `S × S → V` | Bool | True if two Timestamps are equal |
-| `timestamp-year` | 1 | `S → V` | Int | Extract year component (UTC) |
-| `timestamp-month` | 1 | `S → V` | Int | Extract month component (1-12, UTC) |
-| `timestamp-day` | 1 | `S → V` | Int | Extract day-of-month component (1-31, UTC) |
-| `timestamp-hour` | 1 | `S → V` | Int | Extract hour component (0-23, UTC) |
-| `timestamp-minute` | 1 | `S → V` | Int | Extract minute component (0-59, UTC) |
-| `timestamp-second` | 1 | `S → V` | Int | Extract second component (0-60, UTC; 60 for leap seconds) |
-| `timestamp-parts` | 2 | `S × S → V` | Dict | Decompose a Timestamp into a dict of all components in the given timezone: `year`, `month`, `day`, `hour`, `minute`, `second`, `nanosecond`, `tz-offset-seconds` |
-| `timestamp->unix` | 1 | `S → V` | Int | Convert Timestamp to Unix epoch seconds (integer, truncating nanoseconds) |
-| `unix->timestamp` | 1 | `S → V` | Timestamp | Convert Unix epoch seconds (Int) to Timestamp |
-| `timestamp-nanos` | 1 | `S → V` | Timestamp | Construct a Timestamp from a nanosecond epoch value (inverse of `timestamp->unix` at nanosecond precision) |
-| `duration-nanos` | 1 | `S → V` | Int | Return duration in nanoseconds (identity — durations are already nanoseconds) |
-| `duration-seconds` | 1 | `S → V` | Int | Convert seconds to nanosecond duration |
-| `duration-minutes` | 1 | `S → V` | Int | Convert minutes to nanosecond duration |
-| `duration-hours` | 1 | `S → V` | Int | Convert hours to nanosecond duration |
-| `duration-days` | 1 | `S → V` | Int | Convert days to nanosecond duration |
-| `load-tz` | 1 | `S → V` | Any | Load timezone data by IANA name (e.g., `"America/New_York"`); for use with `format-timestamp` and `timestamp-parts` |
-| `timestamp-in-tz` | 2 | `S × S → V` | Dict | Decompose a Timestamp in the given timezone; alias for `timestamp-parts` with explicit tz |
-| `local->timestamp` | 1 | `S → V` | Timestamp | Convert a local-time dict (with `tz` field) to a UTC Timestamp |
-| `local-tz-name` | 0 | `() → V` | String | Return the system's local timezone name |
+| Builtin | Type | Description |
+|---------|------|-------------|
+| `now` | `[Fn@Any [Any]]` | Read the current time from a `ClockCap`; returns a `Timestamp` (nanoseconds since Unix epoch as an opaque value) |
+| `fixed-clock` | `[Fn@Any [Any]]` | Construct a `ClockCap` that always returns the given `Timestamp`; useful for testing time-sensitive code without depending on the system clock |
+| `parse-timestamp` | `[Fn@Any [String]]` | Parse an RFC 3339 string (e.g., `"2024-01-01T00:00:00Z"`) to a Timestamp |
+| `format-timestamp` | `[Fn@String [Any String]]` | Format a Timestamp as an RFC 3339 string; second arg is a timezone name (e.g., `"UTC"`, `"America/New_York"`) |
+| `timestamp-add` | `[Fn@Any [Any Int]]` | Add a duration (nanoseconds as Int) to a Timestamp |
+| `timestamp-diff` | `[Fn@Int [Any Any]]` | Difference between two Timestamps in nanoseconds: `b - a` |
+| `timestamp<?` | `[Fn@Bool [Any Any]]` | True if first Timestamp is before second |
+| `timestamp>?` | `[Fn@Bool [Any Any]]` | True if first Timestamp is after second |
+| `timestamp=?` | `[Fn@Bool [Any Any]]` | True if two Timestamps are equal |
+| `timestamp-year` | `[Fn@Int [Any]]` | Extract year component (UTC) |
+| `timestamp-month` | `[Fn@Int [Any]]` | Extract month component (1-12, UTC) |
+| `timestamp-day` | `[Fn@Int [Any]]` | Extract day-of-month component (1-31, UTC) |
+| `timestamp-hour` | `[Fn@Int [Any]]` | Extract hour component (0-23, UTC) |
+| `timestamp-minute` | `[Fn@Int [Any]]` | Extract minute component (0-59, UTC) |
+| `timestamp-second` | `[Fn@Int [Any]]` | Extract second component (0-60, UTC; 60 for leap seconds) |
+| `timestamp-parts` | `[Fn@Dict [Any String]]` | Decompose a Timestamp into a dict of all components in the given timezone: `year`, `month`, `day`, `hour`, `minute`, `second`, `nanosecond`, `tz-offset-seconds` |
+| `timestamp->unix` | `[Fn@Int [Any]]` | Convert Timestamp to Unix epoch seconds (integer, truncating nanoseconds) |
+| `unix->timestamp` | `[Fn@Any [Int]]` | Convert Unix epoch seconds (Int) to Timestamp |
+| `timestamp-nanos` | `[Fn@Any [Int]]` | Construct a Timestamp from a nanosecond epoch value (inverse of `timestamp->unix` at nanosecond precision) |
+| `duration-nanos` | `[Fn@Int [Int]]` | Return duration in nanoseconds (identity — durations are already nanoseconds) |
+| `duration-seconds` | `[Fn@Int [Int]]` | Convert seconds to nanosecond duration |
+| `duration-minutes` | `[Fn@Int [Int]]` | Convert minutes to nanosecond duration |
+| `duration-hours` | `[Fn@Int [Int]]` | Convert hours to nanosecond duration |
+| `duration-days` | `[Fn@Int [Int]]` | Convert days to nanosecond duration |
+| `load-tz` | `[Fn@Any [String]]` | Load timezone data by IANA name (e.g., `"America/New_York"`); for use with `format-timestamp` and `timestamp-parts` |
+| `timestamp-in-tz` | `[Fn@Dict [Any String]]` | Decompose a Timestamp in the given timezone; alias for `timestamp-parts` with explicit tz |
+| `local->timestamp` | `[Fn@Any [Dict]]` | Convert a local-time dict (with `tz` field) to a UTC Timestamp |
+| `local-tz-name` | `[Fn@String []]` | Return the system's local timezone name |
 
 **`ClockCap`** is an opaque capability granting access to time. The `%clock` variable is injected by the CLI as a real-time `ClockCap`. Pass a `ClockCap` to `now` to read the current time. Use `fixed-clock` to construct a deterministic clock for testing:
 

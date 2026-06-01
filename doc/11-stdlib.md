@@ -227,7 +227,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 | Group | Stable alias | Primary name | Rationale |
 |-------|-------------|--------------|-----------|
 | Arithmetic | `builtin-add`, `builtin-sub`, `builtin-mul`, `builtin-div` | `+`, `-`, `*`, `/` | Host numeric types (i64, f64). |
-| Comparison | `builtin-lt`, `builtin-eq`, `builtin-gt`, `builtin-lte`, `builtin-gte` | `<`, `=`, `>`, `<=`, `>=` | Cross-type Int/Float coercion at host level. `>`, `<=`, `>=` have stable aliases as of stdlib-health-cleanup sprint. |
+| Comparison | `builtin-lt`, `builtin-eq`, `builtin-gt`, `builtin-lte`, `builtin-gte` | `<`, `=`, `>`, `<=`, `>=` | Cross-type Int/Float coercion at host level. All five comparison operators have stable `builtin-*` aliases. |
 | Control | `builtin-if` | `if` | Selective materialization — only the chosen branch is materialized. |
 | Field intercept | — | `proxy` | Takes a handler `fn [field-name] value`; returns `Value::Proxy`. Any field access `.field` calls `handler(field-name)`. Enables proxy rows, mock objects, virtual namespaces. |
 | Dict primitives | `builtin-get`, `builtin-length`, `builtin-append` | `get`, `keys`, `length`, `merge`, `append` | Operate on IndexMap directly. `get`, `length`, and `append` have stable aliases for shadowability. |

@@ -477,7 +477,7 @@ pub struct EvalState {
     /// Example: `[("a", span1), ("b", span2), ("x", span3)]` means evaluating
     /// `x` requires `a`, which requires `b`, which requires `x` (cycle).
     ///
-    /// Upper bound: MAX_EVAL_DEPTH (256) entries × ~80 bytes/entry ≈ 20 KB.
+    /// Upper bound: continuation stack frames (2048) × ~80 bytes/entry ≈ 160 KB.
     pub eval_stack: Vec<(Arc<str>, Span)>,
     /// Runtime class registry: class_name -> (params, superclasses, method_defaults)
     /// Stores default method implementations for filling in instance dictionaries.
@@ -7806,14 +7806,14 @@ mod tests {
 
     #[test]
     fn test_materialize_cached_thunk_at_high_depth() {
-        // Pre-materialized thunks should succeed even at depth > MAX_EVAL_DEPTH.
+        // Pre-materialized thunks should succeed even at depth > MAX_CONTINUATION_STACK.
         // Previously, the depth check fired BEFORE the Materialized early-return,
         // causing spurious DepthExceeded errors when accessing cached values at high depth.
         let span = test_span(1, 1, 1, 5);
         let thunk = Thunk::new_materialized(Value::Int(42), span);
         let ctx = test_ctx();
 
-        // Materialize at depth=300 (> MAX_EVAL_DEPTH=256) should succeed
+        // Materialize at high depth (CEK continuation stack) should succeed
         let result = materialize(&thunk, None, &ctx);
         assert!(
             result.is_ok(),

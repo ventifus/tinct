@@ -380,11 +380,9 @@ pub(crate) fn builtin_div_float(
         match (&left, &right) {
             (Value::Int(a), Value::Int(b)) => {
                 if *b == 0 {
-                    return Err(EvalError::user_error(
-                        "division by zero".to_string(),
-                        call_span.clone(),
-                    )
-                    .into());
+                    return Err(
+                        EvalError::division_by_zero("/".to_string(), call_span.clone()).into(),
+                    );
                 }
                 check_float_result(*a as f64 / *b as f64, "/", call_span)
             }

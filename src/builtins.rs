@@ -1720,7 +1720,7 @@ mod tests {
 
     /// Stack size for tests that exercise deep recursive evaluation chains.
     /// The default Rust test thread stack (8 MB) is too small for tests that push
-    /// MAX_EVAL_DEPTH (256) levels of PendingBuiltin thunks; 16 MB provides headroom.
+    /// MAX_CONTINUATION_STACK (2048) levels of PendingBuiltin thunks; 16 MB provides headroom.
     const TEST_STACK_SIZE: usize = 128 * 1024 * 1024; // 128 MB — debug-mode materialize() needs ~100MB at 256 levels
 
     /// Helper: wrap a Value in a materialized Thunk inside an Rc.
@@ -6147,8 +6147,19 @@ mod tests {
         }))
         .unwrap_err();
         assert!(
+            matches!(e.kind, crate::error::ErrorKind::DivisionByZero { .. }),
+            "expected DivisionByZero, got: {}",
+            e.kind
+        );
+        assert_eq!(
+            e.kind.code(),
+            "E031",
+            "expected E031, got: {}",
+            e.kind.code()
+        );
+        assert!(
             e.kind.to_string().contains("division by zero"),
-            "got: {}",
+            "expected message containing 'division by zero', got: {}",
             e.kind
         );
     }
@@ -7228,9 +7239,9 @@ mod tests {
     #[test]
     fn collect_large_sequence() {
         // Test collect with a moderately-sized sequence (200 elements) to verify it works
-        // correctly without hitting MAX_EVAL_DEPTH (256) or MAX_COLLECT_SIZE (1M).
+        // correctly without hitting MAX_CONTINUATION_STACK (2048) or MAX_COLLECT_SIZE (1M).
         // Testing at the actual MAX_COLLECT_SIZE (1M) would be too slow/memory-intensive,
-        // and with depth increment fixes, sequences hit MAX_EVAL_DEPTH around 256 elements.
+        // and with depth increment fixes, sequences hit depth limits around 256 elements.
         let ctx = test_ctx();
         let range_result = run(builtin_range(BuiltinArgs {
             args: vec![thunk(Value::Int(0))],
@@ -7278,7 +7289,7 @@ mod tests {
         // Test that the MAX_COLLECT_SIZE check is present and triggers correctly.
         // We can't practically test with 1M+ elements in a unit test (too slow/memory-intensive),
         // but we can test that attempting to collect from an unbounded sequence without $take
-        // will eventually hit either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE.
+        // will eventually hit either MAX_CONTINUATION_STACK or MAX_COLLECT_SIZE.
         //
         // This test verifies the error message is correct for the MAX_COLLECT_SIZE path.
         // Note: corpus tests for this would be impractical (require >1M element sequences),
@@ -7300,7 +7311,7 @@ mod tests {
                 .unwrap();
 
                 // Attempt to collect infinite range without take
-                // This will hit MAX_EVAL_DEPTH (256) before MAX_COLLECT_SIZE (1M)
+                // This will hit MAX_CONTINUATION_STACK (2048) before MAX_COLLECT_SIZE (1M)
                 // due to depth accumulation in the PendingBuiltin chain.
                 let collect_result = crate::async_rt::block_on(builtin_collect(BuiltinArgs {
                     args: vec![range_result],
@@ -7309,7 +7320,7 @@ mod tests {
                     ctx: Arc::clone(&ctx),
                 }));
 
-                // Should fail (either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE)
+                // Should fail (either MAX_CONTINUATION_STACK or MAX_COLLECT_SIZE)
                 assert!(
                     collect_result.is_err(),
                     "collect should fail on infinite sequence"
@@ -8139,7 +8150,7 @@ mod tests {
     fn join_seq_size_limit() {
         // Test that join enforces MAX_COLLECT_SIZE on sequence iteration.
         // Similar to collect_max_size_limit_enforced, we verify that attempting to join
-        // an unbounded sequence will hit either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE.
+        // an unbounded sequence will hit either MAX_CONTINUATION_STACK or MAX_COLLECT_SIZE.
         //
         // Run in a thread with larger stack to avoid Rust stack overflow when testing
         // depth-exceeded behavior (same pattern as corpus test runners).
@@ -8157,7 +8168,7 @@ mod tests {
                 .unwrap();
 
                 // Attempt to join infinite range without take
-                // This will hit MAX_EVAL_DEPTH (256) before MAX_COLLECT_SIZE (1M)
+                // This will hit MAX_CONTINUATION_STACK (2048) before MAX_COLLECT_SIZE (1M)
                 // due to depth accumulation in the sequence traversal.
                 let join_result = crate::async_rt::block_on(builtin_join(BuiltinArgs {
                     args: vec![thunk(string_val(",")), range_result],
@@ -8166,7 +8177,7 @@ mod tests {
                     ctx: Arc::clone(&ctx),
                 }));
 
-                // Should fail (either MAX_EVAL_DEPTH or MAX_COLLECT_SIZE)
+                // Should fail (either MAX_CONTINUATION_STACK or MAX_COLLECT_SIZE)
                 assert!(
                     join_result.is_err(),
                     "join should fail on infinite sequence"
@@ -8239,12 +8250,12 @@ mod tests {
         // Task 1: Verify that consecutive predicate failures in builtin_filter_seq_step
         // do NOT accumulate depth. Before the fix, each skipped element created a
         // PendingBuiltin at depth+1, so N failures consumed ~2N depth units and would
-        // hit MAX_EVAL_DEPTH (256) after ~128 consecutive failing elements. After the
+        // hit depth limits after ~128 consecutive failing elements. After the
         // fix, the skip branch uses an internal loop, so N failures cost zero extra depth.
         //
         // Test: filter range(0, 300) with a predicate that only passes x == 299.
         // This triggers 299 consecutive failures. With the old PendingBuiltin-per-failure
-        // approach, this would hit MAX_EVAL_DEPTH (~128 failures × 2 depth units each).
+        // approach, this would hit depth limits (~128 failures × 2 depth units each).
         // With the fix (internal loop for failures), all 299 failures are handled at
         // constant depth, and the result is Seq(Int(299), ...).
         //
@@ -8326,7 +8337,7 @@ mod tests {
         // an internal loop, so N failures cost zero extra depth.
         //
         // Test: Create a dict with ~300 entries where NONE pass the predicate (all fail).
-        // Call builtin_filter with depth near MAX_EVAL_DEPTH (e.g., depth=200).
+        // Call builtin_filter with depth near MAX_CONTINUATION_STACK (e.g., depth=200).
         // Collect the result via builtin_collect to force materialization.
         // Assert the result is an empty dict (no depth exceeded error).
         fn pred_always_false(
@@ -8353,7 +8364,7 @@ mod tests {
                     force_count: 0,
                 }));
 
-                // Call filter at depth=200 (near MAX_EVAL_DEPTH=256)
+                // Call filter at depth=200 (near MAX_CONTINUATION_STACK=2048)
                 // If filter_dict_step accumulates depth incorrectly, this would hit
                 // DepthExceeded after ~27 entries (200 + 27*2 ≥ 256).
                 // With the fix, all 300 failures are handled at constant depth.
@@ -8468,7 +8479,7 @@ mod tests {
     #[test]
     fn take_large_count_from_infinite_seq_succeeds() {
         // Verify that $take + $collect works correctly for counts well above the old
-        // MAX_EVAL_DEPTH (256). The CEK machine handles the Seq chain iteratively,
+        // MAX_CONTINUATION_STACK (2048). The CEK machine handles the Seq chain iteratively,
         // so no depth limit is hit. This test proves the iterative materialize_rc loop
         // correctly traverses long lazy sequences without Rust stack overflow.
         //
@@ -8487,7 +8498,7 @@ mod tests {
                 }))
                 .unwrap();
 
-                // Take 300 elements (well above the old MAX_EVAL_DEPTH=256).
+                // Take 300 elements (well above the old MAX_CONTINUATION_STACK=2048).
                 // The CEK machine handles this iteratively — no depth limit is hit.
                 let take_result = crate::async_rt::block_on(builtin_take(BuiltinArgs {
                     args: vec![thunk(Value::Int(300)), range_result],
@@ -8874,7 +8885,7 @@ mod tests {
 
     #[test]
     fn test_builtin_until_many_iterations() {
-        // Test that we can exceed MAX_EVAL_DEPTH (256) iterations
+        // Test that we can exceed MAX_CONTINUATION_STACK (2048) iterations
         // Count from 0 to 300
         std::thread::Builder::new()
             .stack_size(TEST_STACK_SIZE)

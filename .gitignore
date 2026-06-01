@@ -28,6 +28,7 @@ Cargo.lock
 test_*.llt
 test_float_bug.rs
 samples/*json
+samples/*stream
 
 # Fuzzing (cargo-fuzz artifacts — corpus and crashes can be large)
 /fuzz/target/

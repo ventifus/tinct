@@ -451,9 +451,7 @@ loop-select-impl: [fn [let ctx sources@Seq handler@Fn]
         null
         [match [builtin-select-once ctx sources]
             [case [let v: Ok]
-                [do
-                    [handler v]
-                    [loop-select-impl ctx sources handler]]]
+                [begin [handler v] [loop-select-impl ctx sources handler]]]
             [case [let _: Closed]
                 [variant "Closed"]]]]]
 
@@ -2254,7 +2252,7 @@ read-chunk@[doc: "Read up to n bytes from a Handle as a Bytes value. Returns [] 
 load@[doc: "Parse tinct source text into a Program value. Named arg name: sets the display path for error spans."]: builtin-load
 expand@[doc: "Macro-expand and desugar a Program value. Returns an expanded Program."]: builtin-expand
 program@[doc: "Construct a Program value from a sequence of Document values. Used for program transformation."]: builtin-program
-eval@[doc: "Evaluate a sequence of expressions. Optional named args: env: (environment), %: (pipeline input), program: (parent program context)."]: builtin-eval
+eval@[doc: "Evaluate a sequence of expressions. Optional named args: env:, scope:, %:, program:, expects:"]: builtin-eval
 eval-types@[doc: "Evaluate expressions in the type-stage environment"]: builtin-eval-types
 blake3@[doc: "Compute the BLAKE3 cryptographic hash of a string, returning a hex-encoded digest."]: builtin-blake3
 cap-identity@[doc: "Return a stable string identity for a DirCap (used for content-addressed caching keys)."]: builtin-cap-identity
@@ -2262,17 +2260,10 @@ cap-identity@[doc: "Return a stable string identity for a DirCap (used for conte
 # module: resolve a module name to its export dict (used to build eval scope from doc.uses).
 module@[doc: "Resolve a builtin module name to its export dict."]: builtin-module
 
-# eval-program: evaluate all runtime-stage documents in a Program, threading %.
-# Returns the final document's result.
-#
-# prog:          Program value (output of [expand [load source name: path]])
-# initial-input: initial pipeline input % for the first document
-#
-# State threads {percent, named} through all documents:
-#   percent — current % pipeline value
-#   named   — accumulated %name bindings from --- %name document headers
-#             (doc.name = [Named "foo"] → binds %foo; doc.name = [Unnamed] → unchanged)
-# Each document's scope merges accumulated named bindings with module-injected bindings.
+# eval-program: Evaluate all runtime-stage documents in a Program, threading %.
+# Full implementation mirroring stdlib/loader.llt:49-72.
+# Cannot be a simple re-export alias — in a letrec dict, `eval-program: eval-program`
+# is self-referential (circular thunk [E070]). Full implementation required.
 eval-program@[doc: """
 Evaluate all runtime-stage documents in a Program, threading %.
 
@@ -2284,36 +2275,33 @@ Returns the final document's result. Named document sections (--- %name) accumul
 as %name bindings available to subsequent documents via scope injection.
 """]: [fn [let prog initial-input emit-ch]
   [emit-fn: [fn@Null [let v@Any] [send emit-ch v]]]
-  [state: [builtin-reduce
+  [state: [reduce
     [fn [let state doc]
-      [val: [builtin-eval doc.expressions
-               scope:   [builtin-merge
+      [val: [eval doc.expressions
+               scope:   [merge
                            [emit: emit-fn  %emit-channel: emit-ch]
-                           [builtin-merge
+                           [merge
                              state.named
-                             [builtin-reduce builtin-merge []
-                               [builtin-map module doc.uses]]]]
+                             [reduce merge []
+                               [map module doc.uses]]]]
                program: prog
                expects: doc.expects
                %: state.percent]]
-      [builtin-merge state
+      [merge state
         [percent: val
          named: [match doc.name
                   [case [let n: Named]
-                    [builtin-merge state.named [make-entry [str "%" n] val]]]
+                    [merge state.named [make-entry [str "%" n] val]]]
                   [case [let _: Unnamed]
                     state.named]]]]]
     [percent: initial-input  named: []]
     prog.documents]]
   state.percent]
 
-# eval-programs: evaluate a sequence of Programs in pipeline order, threading %.
-# Each Program's final value becomes the % for the next Program.
-#
-# programs:      Seq of Program values
-# initial-input: initial % value for the first Program
-#
-# Creates a single %emit channel shared by all programs in the pipeline.
+# eval-programs: Evaluate a sequence of Programs in pipeline order, threading %.
+# Full implementation mirroring stdlib/loader.llt:80-86.
+# Cannot be a simple re-export alias — in a letrec dict, `eval-programs: eval-programs`
+# is self-referential (circular thunk [E070]). Full implementation required.
 eval-programs@[doc: """
 Evaluate a sequence of Programs in pipeline order, threading %.
 
@@ -2323,7 +2311,7 @@ initial-input: initial % value for the first Program
 Returns the final Program's result.
 """]: [fn [let programs initial-input]
   [emit-ch: [channel 64]]
-  [builtin-reduce
+  [reduce
     [fn [let percent prog]
       [eval-program prog percent emit-ch]]
     initial-input
@@ -3103,10 +3091,7 @@ Example: [exit 0]
 
 Note: Waits indefinitely for tasks to drain. For bounded wait, use graceful-exit.
 """]: [fn [let code@Int]
-    [do
-        [cancel-root]
-        [drain]
-        [exit-now code]]]
+    [begin [cancel-root] [drain] [exit-now code]]]
 
 # graceful-exit: bounded graceful shutdown with an explicit drain timeout.
 #
@@ -3534,5 +3519,9 @@ do-desugar-inferred: [fn [let steps]
 # begin macro transformer: sequential expression grouping
 [macro begin [let ...items]
   [builtin-variant "Sequential" [exprs: [collect items]]]]
+
+# >> is an alias for begin — Haskell's monadic sequence operator semantics:
+# "evaluate left for side effect, discard, return right"
+>>: begin
 
 ]

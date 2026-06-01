@@ -13,7 +13,6 @@
 //! - JSON output via `visit_value` with `JsonVisitor`
 //! - [`visit_value`] / [`JsonVisitor`] -- traverse a materialized `Value` tree for JSON output
 //! - [`value_to_display_string`] -- render a materialized `Value` as a human-readable string
-//! - [`MAX_EVAL_DEPTH`] -- recursion limit for evaluation (256)
 //! - [`MAX_FILE_SIZE`] -- file size limit for `include` and stdin (10 MB)
 
 #![deny(clippy::disallowed_types, clippy::disallowed_methods)]

@@ -1,6 +1,6 @@
 # versions.llt — check Rust toolchain and dependency versions
 # Run from project root:
-#   tinct run --no-cwd --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 samples/versions.llt
+#   tinct run --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 samples/versions.llt
 # or via justfile:
 #   just versions
 
@@ -14,28 +14,28 @@
 [
 
 cargo-toml-text: [@String [join "\n" [collect [lines [open %cwd "Cargo.toml" Readable]]]]]
-cargo-lock-text: [@String [join "\n" [collect [lines [open %cwd "Cargo.lock" Readable]]]]]
+cargo-lock-text: [@String [join "\n" [collect [lines [open %cwd "Cargo.lock"  Readable]]]]]
 
 fetch: net.fetch
 
 # Fetch Rust stable channel TOML, extract version — returns "?" on any failure.
 latest-rust: [result-or "?"
   [and-then
-    [fetch %nc "https://static.rust-lang.org/dist/channel-rust-stable.toml"]
     [fn [let resp@Dict]
       [ver: [reduce
         [fn@Dict [let state@Dict line@String]
           [t: [trim line]]
           [if [= state.version ""]
             [if [str-contains? t "[pkg.rust]"]
-              [set state  in-pkg-rust: true]
+              [merge state [in-pkg-rust: true]]
               [if [and state.in-pkg-rust [starts-with? t "version = \""]]
-                [set state  version: [str-slice 11 [trunc [- [length t] 1]] t]]
+                [merge state [version: [str-slice 11 [trunc [- [length t] 1]] t]]]
                 state]]
             state]]
         [in-pkg-rust: false  version: ""]
         [split "\n" resp.body]].version]
-      [if [= [length ver] 0] [Error "version not found"] [Ok ver]]]]]
+      [if [= [length ver] 0] [Error "version not found"] [Ok ver]]]
+    [fetch %nc "https://static.rust-lang.org/dist/channel-rust-stable.toml"]]]
 
 latest-rust-short: [if [= [length latest-rust] 0] "?" [first [split " " latest-rust]]]
 
@@ -45,13 +45,13 @@ dep-name-from: [fn@String [let t@String]
 
 dep-name-append: [fn@Dict [let state@Dict t@String]
   [name: [dep-name-from t]]
-  [if [= [length name] 0] state [set state  names: [append name state.names]]]]
+  [if [= [length name] 0] state [merge state [names: [append name state.names]]]]]
 
 dep-names: [sorted [reduce
   [fn@Dict [let state@Dict line@String]
     [t: [trim line]]
     [if [starts-with? t "["]
-      [set state  in-deps: [str-contains? t "dependencies"]]
+      [merge state [in-deps: [str-contains? t "dependencies"]]]
       [if [and state.in-deps [and [< 0 [length t]] [not [starts-with? t "#"]]]]
         [dep-name-append state t]
         state]]]
@@ -61,7 +61,7 @@ dep-names: [sorted [reduce
 # Find a package's locked version in Cargo.lock.
 ver-after: [fn@String [let after@String]
   [ver-line: [trim [get 1 [split "\n" after]]]]
-  [str-slice ver-line 11 [trunc [- [length ver-line] 1]]]]
+  [str-slice 11 [trunc [- [length ver-line] 1]] ver-line]]
 
 find-locked: [fn@String [let name@String]
   [pattern: [str "\nname = \"" name "\""]]
@@ -73,13 +73,13 @@ find-locked: [fn@String [let name@String]
 crate-latest: [fn@String [let name@String]
   [result-or "?"
     [and-then
-      [fetch %nc [str "https://crates.io/api/v1/crates/" name]]
       [fn [let resp]
         [if [= [length resp.body] 0]
           [Error "empty response"]
           [Ok [get "max_stable_version"
                  [get "crate"
-                   [from-json resp.body]]]]]]]]]
+                   [from-json resp.body]]]]]]
+      [fetch %nc [str "https://crates.io/api/v1/crates/" name]]]]]
 
 rust-version: [env "RUST_VERSION"]
 mark: [fn@String [let a@String b@String] [if [= a b] "✓" "←"]]

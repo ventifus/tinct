@@ -124,6 +124,19 @@ For dynamic or computed keys, use `get`:
 
 Intermediate dicts are letrec-scoped among themselves but do not appear in the function's return value — they are discarded after the final expression evaluates.
 
+**Laziness note:** intermediate dict entries are thunks — they are only forced when accessed by subsequent expressions. Writing `[a: [expensive-call]]` as an intermediate body does not compute `expensive-call` unless `a` is used.
+
+**`begin` / `>>` — forced sequencing for side effects** — when you need to evaluate an expression for its side effect and discard the result:
+
+```tinct
+[>> [send channel value]   # forced even though result is discarded
+    next-value]            # returned
+
+[begin [cleanup] [log "done"] result]   # multiple steps; last is returned
+```
+
+`begin` (and its alias `>>`) evaluates each expression eagerly in order and returns the last. Unlike intermediate dict bodies (which are lazy), `begin` is an explicit escape from laziness — use it only when side effects must occur regardless of whether the result is consumed. `>>` mirrors Haskell's monadic sequence operator: "evaluate for effect, discard, continue." `begin` is named after the Scheme `begin` special form.
+
 **`_` shorthand** — desugars to a single-argument lambda:
 
 ```tinct
@@ -443,7 +456,7 @@ These functions are always available — no `include` needed.
 
 **Math:** `+`, `-`, `*`, `/`, `mod`, `floor`, `round`, `min`, `max`, `abs`
 
-**Control:** `try`, `raise`, `try-or`, `and-then`, `identity`, `compose`, `->` (pipe)
+**Control:** `try`, `raise`, `try-or`, `and-then`, `identity`, `compose`, `->` (pipe), `begin` / `>>` (forced sequential)
 
 **I/O:** `emit`, `lines`, `open`, `write`, `flush`, `close`, `stat`, `exists`, `make-dir`, `rename`, `env`, `list-dir`, `narrow`, `string-handle`, `read-chunk`
 

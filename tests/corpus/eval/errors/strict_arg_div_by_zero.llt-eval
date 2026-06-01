@@ -1,7 +1,7 @@
 # Strictness dispatch: $+ forces arguments at dispatch time
-# Division by zero in arg[0] is caught before builtin executes
+# Division by zero in arg[0] is caught before builtin executes — E031 (DivisionByZero)
 [+ [/ 1 0] 2]
 === error
-[E080] division by zero (defined at 2:4-2:11)
+[E031] /: division by zero (defined at 2:4-2:11)
   in [/ ...] at 2:4-2:11
   in [+ ...] at 2:1-2:14

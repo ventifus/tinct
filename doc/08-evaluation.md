@@ -1266,6 +1266,18 @@ Event-source builtins (`signal-channel`, `timer-channel`, `watch-channel`) spawn
 
 **Graceful shutdown sequence:** Each background loop uses `tokio::select!` to check `ctx.cancel.cancelled()` on every iteration, with the cancellation branch listed first (highest priority). When `[cancel-root]` fires, all background loops see the cancelled signal and `break` cleanly on their next iteration. `[drain]` then awaits the `JoinHandle`s, which complete promptly because the loops have already exited. This is the recommended shutdown sequence: `[cancel-root]` signals loops to exit cleanly, `[drain]` awaits their completion, `[exit-now code]` terminates the process. `[drain]` always calls `handle.abort()` on every registered handle before awaiting it. For background loops that already exited cleanly (via the cancellation branch after `[cancel-root]`), `abort()` is a no-op on the completed task. For one-shot sleep tasks (`with-timeout`, `with-deadline`) that are still running, `abort()` terminates them immediately rather than waiting for the full sleep duration. The `abort()` may leave resources (open channels, file handles) in an inconsistent state for tasks that did not exit cleanly — which is why calling `[cancel-root]` first is recommended.
 
+### Additional Channel Primitives
+
+Three channel constructors for advanced streaming and messaging patterns, backed by Tokio:
+
+| Builtin | Returns | Description |
+|---------|---------|-------------|
+| `broadcast-channel N` | `BroadcastChannel` | Bounded broadcast channel (capacity `N`). Multiple subscribers each receive every sent value. Backed by `tokio::sync::broadcast`. When a slow subscriber misses values due to a full ring buffer, it receives `[Lagged n]` (indicating `n` missed messages) instead of the dropped values. When all senders drop, subscribers receive `[Closed]`. |
+| `oneshot-channel` | `[Seq Channel Channel]` — `[receiver sender]` | One-shot channel: exactly one value is sent on `sender-channel`; the single `recv` on `receiver-channel` returns it. Subsequent sends or receives return `[Closed]`. Backed by `tokio::sync::oneshot`. Used for request/response patterns. |
+| `try-send channel value` | `[Ok] \| [Full]` | Non-blocking send. Returns `[Ok]` if the value was placed on the channel immediately; returns `[Full]` if the channel buffer is full (value is dropped). Never suspends. Used for lossy telemetry channels where producers must not stall. |
+
+`[Closed]` and `[Lagged count]` are nominal variant types declared in prelude. `loop-select` and `select-once` use `[Ok v]` / `[Closed]` as their return protocol — see §Output Program Contract in [Documents & Pipelines](09-documents.md) for the full drain/force/await pattern built on these primitives.
+
 ---
 
 ## Output Serialization

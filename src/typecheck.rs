@@ -1545,21 +1545,11 @@ pub(crate) fn infer_surface_expr(
             annotation,
             expr: inner,
         } => {
-            // resolved_type is a local RefCell — Surface AST stores type information in
-            // TypeAnnotationTable (keyed by NodeId), not in the AST node itself.
-            // The RefCell is passed to resolve_type_assert for the write-once consistency check
-            // (catches double-typecheck invariant violations) but its written value is not
-            // propagated back to the AST; the returned Ok(type) is the authoritative result.
-            let resolved_type = std::cell::RefCell::new(None::<Type>);
-            let result = resolve_type_assert(
-                annotation,
-                inner,
-                &resolved_type,
-                env,
-                node.span.clone(),
-                state,
-                type_map,
-            );
+            // resolve_type_assert returns Ok(type) as the authoritative result.
+            // Surface AST stores type information in TypeAnnotationTable (keyed by NodeId),
+            // not in the AST node itself.
+            let result =
+                resolve_type_assert(annotation, inner, env, node.span.clone(), state, type_map);
             // Populate TypeAnnotationTable so lower.rs can produce CoreExpr::TypeAssert
             // with the statically-resolved type (or Type::Unknown for errors/macros).
             if let Ok(ref ty) = result {

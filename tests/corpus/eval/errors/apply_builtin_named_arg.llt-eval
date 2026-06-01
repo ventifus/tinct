@@ -1,12 +1,13 @@
 # $apply passes string-keyed dict entries as named args to the called function.
-# When the function does not declare a parameter named "named", apply
-# produces E022 (UnknownNamedArg).
+# When the callee rejects all named arguments (E023 NamedArgRejected),
+# apply raises that error rather than E022 (UnknownNamedArg, for functions
+# that accept some named args but not this one).
 # Note: $+ is a Tinct wrapper function; builtin-add is not in user scope.
 [apply + [named: 1]]
 === error
-[E023] + does not accept named arguments (defined at 4:1-4:21)
-  in apply at 4:1-4:21
-  in [apply ...] at 4:1-4:21
+[E023] + does not accept named arguments (defined at 5:1-5:21)
+  in apply at 5:1-5:21
+  in [apply ...] at 5:1-5:21
 
 === warn
-cannot unify Fn@⊤ [⊤] with Fn@Number [a: Number b: Number] at 4:8-4:9
+cannot unify Fn@⊤ [⊤] with Fn@Number [a: Number b: Number] at 5:8-5:9

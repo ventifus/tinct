@@ -1,13 +1,10 @@
-# no_fs
-# TEST: $include builtin was removed (include-decomp-prelude sprint)
-# This test verifies that calling [include] raises E002 (undefined variable)
-# because $include is no longer defined. The test name is historical but the
-# behavior is correct: the removed builtin produces an undefined variable error.
-[include "some_file.llt"]
+# Test E055: IncludeHashMismatch — load with a wrong integrity hash fails.
+# Triggers [load] with a hash: named arg that does not match the actual blake3 digest
+# of the source string. The display path defaults to "<load>" when no name: is given.
+[load "x: 42" hash: "wrong-hash-value"]
 === error
-[E024] missing argument for required parameter 'path' (defined at 5:1-5:26)
-  in [include ...] at 5:1-5:26
-  in [include ...] at 5:1-5:26
+[E055] include: integrity check failed for "<load>": expected wrong-hash-value, got 3ae8cca449d76f24e8ff0ea790420ab7110416de8bf1ff9e615017e7ea7cb8e2 (defined at 3:1-3:40)
+  in [load ...] at 3:1-3:40
 
 === warn
-cannot unify DirCap with "some_file.llt" at 5:10-5:25
+unknown named argument: function has no parameter named 'hash' at 3:21-3:39

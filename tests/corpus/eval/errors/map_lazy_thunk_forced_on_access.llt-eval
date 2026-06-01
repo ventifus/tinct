@@ -5,18 +5,18 @@
 ---
 %.a
 === error
-[E080] lazy-error (defined at stdlib/prelude.llt:2062:28-2062:47)
-  --> stdlib/prelude.llt:2062:28-2062:47
+[E080] lazy-error (defined at stdlib/prelude.llt:2060:28-2060:47)
+  --> stdlib/prelude.llt:2060:28-2060:47
    |
-  2062 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2060 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2062:28-2062:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2060:28-2060:47
    |
-  2062 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2060 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in materialized at 5:1-5:4
-  in map at stdlib/prelude.llt:2070:64-2070:82
+  in map at stdlib/prelude.llt:2068:64-2068:82
    |
-  2070 | map@[doc: "Apply function to each element"]: [fn [let f@Fn xs] [builtin-map f xs]]
+  2068 | map@[doc: "Apply function to each element"]: [fn [let f@Fn xs] [builtin-map f xs]]
        |                                                                ^^^^^^^^^^^^^^^^^^
   in map at 3:44-3:45

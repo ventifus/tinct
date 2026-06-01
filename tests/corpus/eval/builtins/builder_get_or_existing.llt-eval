@@ -1,9 +1,6 @@
-# builder-get-or: key present → returns existing, ignores default
-[b: [make-builder]
- _: [builder-set "x" 42 b]
- result: [builder-get-or "x" 99 b]]{result}
-=== error
-[E002] undefined variable: {result} (defined at 3:36-3:44)
-
-=== warn
-undefined variable: {result} at 3:36-3:44
+# builder-get-or: key present -> returns existing value, ignores default
+[call [fn [let b]
+    [builder-get-or "x" 99 b]]
+ [builder-set "x" 42 [make-builder]]]
+=== out
+Int(42)

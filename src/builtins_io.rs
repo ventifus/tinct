@@ -6372,6 +6372,13 @@ fn icmp_ping_impl(
     let start = std::time::Instant::now();
 
     // Send ICMP Echo Request
+    if packet.len() > u32::MAX as usize {
+        return Err(EvalError::user_error(
+            "icmp-ping: packet too large for platform".to_string(),
+            span.clone(),
+        )
+        .into());
+    }
     let sent = unsafe {
         libc::sendto(
             sock_fd,

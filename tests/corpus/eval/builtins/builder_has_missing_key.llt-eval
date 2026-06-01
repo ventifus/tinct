@@ -1,0 +1,10 @@
+# builder-has? for a key that was never set returns Bool(false).
+# The builder is created fresh and finished without ever setting "key",
+# so builder-has? correctly returns false (not an error).
+[call [fn [let b]
+  [call [fn [let _]
+    [builder-has? "key" b]]
+   [builder-finish b]]]
+ [make-builder]]
+=== out
+Bool(false)

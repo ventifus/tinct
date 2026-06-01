@@ -163,19 +163,23 @@ pub fn fmt_fn(
     }
 
     // Step 3: Capture-avoiding alpha-rename.
-    // For each top-level param p, check if p appears free in any substitution value.
-    // If so, rename p to a fresh gensym name throughout params and body.
+    // For each top-level param p, check if p appears as a free-standing identifier
+    // in any substitution value. If so, rename p to a fresh gensym name throughout
+    // params and body.
+    //
+    // We extract identifiers structurally (tokenizing, skipping string literals)
+    // rather than using substring containment, which would produce false positives
+    // (e.g., param "x" matching inside substitution value "x-coordinate").
     let substitution_text: String = substitutions
         .values()
         .cloned()
         .collect::<Vec<_>>()
         .join(" ");
+    let sub_identifiers = extract_identifiers(&substitution_text);
     let mut rename_map: HashMap<String, String> = HashMap::new();
     let mut gensym_counter: u32 = 0;
     for param in params {
-        if substitution_text.contains(&param.name) {
-            // Conservative check: if the param name appears anywhere in the substitution
-            // text, generate a fresh name to avoid capture.
+        if sub_identifiers.contains(param.name.as_str()) {
             let fresh = format!("ℊꜱʏᴍ⧼{}⧽{}", param.name, gensym_counter);
             gensym_counter += 1;
             rename_map.insert(param.name.clone(), fresh);
@@ -202,6 +206,73 @@ pub fn fmt_fn(
         .collect();
 
     Ok(format!("[fn [let {}] {}]", params_str.join(" "), body_str))
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
+// Identifier extraction for capture-avoidance
+// ────────────────────────────────────────────────────────────────────────────────
+
+/// Characters that delimit identifiers in serialized tinct text.
+/// Mirrors the denylist in `Lexer::is_var_ident_char` (src/lexer.rs).
+fn is_ident_delimiter(c: char) -> bool {
+    matches!(
+        c,
+        ' ' | '\t' | '\r' | '\n' | '[' | ']' | ':' | ';' | '#' | '"' | '@' | '.' | '|'
+    )
+}
+
+/// Extract the set of identifier tokens from serialized tinct text.
+///
+/// This performs structural tokenization rather than substring matching,
+/// correctly skipping content inside string literals. An identifier is any
+/// maximal sequence of non-delimiter characters that appears outside of
+/// a quoted string.
+///
+/// Used by capture-avoidance to determine whether a parameter name appears
+/// as a free-standing identifier in a substitution value, not merely as a
+/// substring of some longer token or inside a string literal.
+fn extract_identifiers(text: &str) -> HashSet<&str> {
+    let mut identifiers = HashSet::new();
+    let mut chars = text.char_indices().peekable();
+
+    while let Some(&(i, c)) = chars.peek() {
+        if c == '"' {
+            // Skip over string literal content (not identifiers).
+            chars.next(); // consume opening quote
+            loop {
+                match chars.next() {
+                    Some((_, '\\')) => {
+                        // Skip escaped character (e.g., \", \\, \n)
+                        chars.next();
+                    }
+                    Some((_, '"')) => break, // closing quote
+                    None => break,           // unterminated string — stop
+                    _ => {}                  // ordinary string character
+                }
+            }
+        } else if is_ident_delimiter(c) {
+            // Skip delimiter
+            chars.next();
+        } else {
+            // Start of an identifier token — accumulate non-delimiter chars
+            let start = i;
+            let mut end = i;
+            while let Some(&(j, c2)) = chars.peek() {
+                if is_ident_delimiter(c2) {
+                    break;
+                }
+                end = j;
+                chars.next();
+            }
+            // end is the byte index of the last char; we need the byte after it
+            let ident = &text[start..end + text[end..].chars().next().map_or(0, |c| c.len_utf8())];
+            if !ident.is_empty() {
+                identifiers.insert(ident);
+            }
+        }
+    }
+
+    identifiers
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -742,15 +813,20 @@ fn core_expr_to_tinct(
             }
 
             // Check capture avoidance for inner params against the outer substitutions.
+            // Uses structural identifier extraction (not substring containment) to avoid
+            // false positives from identifier substrings.
             let sub_text: String = substitutions
                 .values()
                 .cloned()
                 .collect::<Vec<_>>()
                 .join(" ");
+            let sub_idents = extract_identifiers(&sub_text);
             let mut inner_rename = rename_map.clone();
             let mut counter: u32 = 0;
             for p in params {
-                if sub_text.contains(&p.node.name) && !inner_rename.contains_key(&p.node.name) {
+                if sub_idents.contains(p.node.name.as_str())
+                    && !inner_rename.contains_key(&p.node.name)
+                {
                     let fresh = format!("ℊꜱʏᴍ⧼{}⧽{}", p.node.name, counter);
                     counter += 1;
                     inner_rename.insert(p.node.name.clone(), fresh);
@@ -1712,5 +1788,77 @@ mod tests {
         assert_eq!(fmt_bytes(&[]), "[bytes-of []]");
         assert_eq!(fmt_bytes(&[42]), "[bytes-of [0: 42]]");
         assert_eq!(fmt_bytes(&[1, 2, 3]), "[bytes-of [0: 1  1: 2  2: 3]]");
+    }
+
+    #[test]
+    fn test_extract_identifiers_basic() {
+        let ids = extract_identifiers("x y z");
+        assert!(ids.contains("x"));
+        assert!(ids.contains("y"));
+        assert!(ids.contains("z"));
+        assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn test_extract_identifiers_no_substring_match() {
+        // "x-coordinate" is a single identifier token (hyphen is not a delimiter),
+        // so "x" should NOT appear in the extracted set.
+        let ids = extract_identifiers("x-coordinate");
+        assert!(ids.contains("x-coordinate"));
+        assert!(!ids.contains("x"));
+        assert_eq!(ids.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_identifiers_delimiters() {
+        let ids = extract_identifiers("[+ x 1]");
+        assert!(ids.contains("+"));
+        assert!(ids.contains("x"));
+        assert!(ids.contains("1"));
+        assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn test_extract_identifiers_skips_string_literals() {
+        // "x" inside a string literal should not be extracted.
+        let ids = extract_identifiers(r#"[concat "x" y]"#);
+        assert!(ids.contains("concat"));
+        assert!(ids.contains("y"));
+        assert!(!ids.contains("x")); // inside string literal
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn test_extract_identifiers_escaped_quotes_in_strings() {
+        // String with escaped quote: "say \"hello\"" — the identifier after
+        // the string should still be extracted.
+        let ids = extract_identifiers(r#""say \"hello\"" z"#);
+        assert!(ids.contains("z"));
+        assert!(!ids.contains("say"));
+        assert!(!ids.contains("hello"));
+    }
+
+    #[test]
+    fn test_extract_identifiers_dot_separated() {
+        // Dot is a delimiter, so "foo.bar" yields two identifiers.
+        let ids = extract_identifiers("foo.bar");
+        assert!(ids.contains("foo"));
+        assert!(ids.contains("bar"));
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn test_extract_identifiers_empty() {
+        let ids = extract_identifiers("");
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn test_extract_identifiers_colon_separated() {
+        // "key: value" — colon is a delimiter
+        let ids = extract_identifiers("key: value");
+        assert!(ids.contains("key"));
+        assert!(ids.contains("value"));
+        assert_eq!(ids.len(), 2);
     }
 }

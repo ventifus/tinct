@@ -642,6 +642,16 @@ unknown native module: typo
 
 **Isolation guarantee.** Module bindings injected via `uses:` are isolated between documents in the same file. They are also isolated between files in a multi-file pipeline — each document carries only what its own `uses:` header declares. The type checker enforces this with the T002 warning (raw builtin used without `uses:` declaration).
 
+**Available modules.** Three native modules are registered in the builtin registry:
+
+| Module name | Contents |
+|-------------|----------|
+| `"core"` | Arithmetic (`+`, `-`, `*`, `/`), comparison (`=`, `<`), control (`if`), dict ops (`get`, `keys`, `length`, `merge`, `append`), seq ops (`seq`, `head`, `tail`, `collect`), strings, bytes, type/meta ops (`type-of`, `error`, `try`, `validate`, `materialize`), I/O, async channel primitives |
+| `"datetime"` | Date/time construction (`timestamp-nanos`, `duration-nanos`, `now`), formatting, timezone, parsing |
+| `"net"` | HTTP, TLS, QUIC, DNS, WebSocket, gRPC, SOCKS5 networking primitives |
+
+In practice, stdlib files use `--- uses:` to access the builtins they wrap. User programs rarely need `--- uses:` directly — the prelude already re-exports all commonly needed builtins under stable public names (`if`, `=`, `get`, etc.), and domain builtins are re-exported by their respective stdlib modules (`datetime.llt`, `net.llt`).
+
 **`doc_separator`:** Three hyphens `---` not followed by an `ident_char`. This prevents `----` or `---foo` from matching as a separator.
 
 An empty file (or one containing only whitespace/comments) is valid and produces a file with one document containing zero expressions. An empty document produces an empty Dict `[]`.

@@ -618,7 +618,7 @@ The `%` prefix on injected cap names makes them visually distinct from user-defi
 
 **`--no-cwd`** — Suppresses `%cwd`. Programs that attempt `[open %cwd ...]` or `[include %cwd ...]` receive an undefined variable error. Use for programs that should not access the filesystem even via the working directory.
 
-**`%stdin` injection** — `%stdin` is only injected into the root environment when `-i`/`--input` is present on the command line (indicating a formatter pipeline that reads from stdin). When `-i` is absent, stdin is consumed by the JSON auto-detection path instead. There is no `--no-stdin` flag; stdin access is controlled by the presence or absence of `-i`.
+**`%stdin` injection** — `%stdin` is only injected into the root environment when `-i`/`--input` is present on the command line (indicating a formatter pipeline that reads from stdin). When `-i` is absent, stdin is not consumed — the pipeline's initial `%` is an empty dict `[]`. There is no `--no-stdin` flag; stdin access is controlled by the presence or absence of `-i`.
 
 **`--no-libdir`** — Suppresses `%libdir`. Programs that attempt `[include %libdir "io.llt"]` receive an undefined variable error. The embedded stdlib (prelude) is always available via builtins; `--no-libdir` only affects `[include %libdir ...]` calls. Rarely needed — libdir is safe language infrastructure.
 

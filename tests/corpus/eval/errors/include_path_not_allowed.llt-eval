@@ -1,13 +1,11 @@
-# no_fs
-# TEST: $include builtin was removed (include-decomp-prelude sprint)
-# This test verifies that calling [include] raises E002 (undefined variable)
-# because $include is no longer defined. The test name is historical but the
-# behavior is correct: the removed builtin produces an undefined variable error.
-[include "restricted/secret.llt"]
+# Test E055: IncludeHashMismatch — load with name: hint and wrong integrity hash.
+# When name: is supplied, the display path in the error message uses the given name
+# instead of the default "<load>". Verifies E055 includes the named path.
+[load "host: \"localhost\"" name: "config.llt" hash: "0000000000000000000000000000000000000000000000000000000000000000"]
 === error
-[E024] missing argument for required parameter 'path' (defined at 5:1-5:34)
-  in [include ...] at 5:1-5:34
-  in [include ...] at 5:1-5:34
+[E055] include: integrity check failed for "config.llt": expected 0000000000000000000000000000000000000000000000000000000000000000, got d2a944c7458c8c98ceb79d02d159673711ed97790031b36b06343c70ac914a29 (defined at 3:1-3:121)
+  in [load ...] at 3:1-3:121
 
 === warn
-cannot unify DirCap with "restricted/secret.llt" at 5:10-5:33
+unknown named argument: function has no parameter named 'name' at 3:35-3:47
+unknown named argument: function has no parameter named 'hash' at 3:54-3:120

@@ -1,14 +1,10 @@
 # builder-snapshot: creates frozen copy without freezing the builder
-[
- b: [make-builder]
- _: [builder-set "x" 1 b]
- snap: [builder-snapshot b]
- _: [builder-set "y" 2 b]
- final: [builder-finish b]
- result: [snap: $snap  final: $final]
-].result
-=== error
-[E070] circular dependency detected while evaluating thunk (defined at 7:17-7:22)
-
-=== warn
-syntax error at 5:2 (cannot typecheck error node) at 5:2-5:3
+# After the snapshot, mutations to the builder do not affect the snapshot.
+[call [fn [let b]
+    [call [fn [let snapshot]
+        [snap: snapshot
+         final: [builder-finish [builder-set "y" 2 b]]]]
+     [builder-snapshot b]]]
+ [builder-set "x" 1 [make-builder]]]
+=== out
+Dict({"snap": Dict({"x": Int(1)}), "final": Dict({"x": Int(1), "y": Int(2)})})
