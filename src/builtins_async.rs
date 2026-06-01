@@ -1021,8 +1021,11 @@ pub(crate) fn builtin_select_once(
         }
 
         // Track which channels are closed (TryRecvError::Disconnected).
-        // When all channels are closed, return an error.
-        let mut closed = vec![false; sources.len()];
+        // When all channels are closed, return [Closed].
+        let sources_len = sources.len();
+        let mut closed = vec![false; sources_len];
+        // O(1) all-closed check: increment on each close, compare to sources_len.
+        let mut closed_count: usize = 0;
 
         // Poll all channels in a loop until one produces a value.
         // Impose a maximum iteration limit to prevent infinite busy-poll loops
@@ -1062,8 +1065,11 @@ pub(crate) fn builtin_select_once(
                             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Err(()),
                             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                                 // Channel is closed
-                                closed[i] = true;
-                                if closed.iter().all(|&c| c) {
+                                if !closed[i] {
+                                    closed[i] = true;
+                                    closed_count += 1;
+                                }
+                                if closed_count == sources_len {
                                     // All channels closed — return [Closed]
                                     return ok_val(
                                         Value::Variant {
@@ -1089,8 +1095,11 @@ pub(crate) fn builtin_select_once(
                             }
                             Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
                                 // Channel is closed
-                                closed[i] = true;
-                                if closed.iter().all(|&c| c) {
+                                if !closed[i] {
+                                    closed[i] = true;
+                                    closed_count += 1;
+                                }
+                                if closed_count == sources_len {
                                     // All channels closed — return [Closed]
                                     return ok_val(
                                         Value::Variant {
@@ -1114,8 +1123,11 @@ pub(crate) fn builtin_select_once(
                         // Check if the receiver has already been consumed
                         if rx_opt.is_none() {
                             // Receiver already used — mark as closed
-                            closed[i] = true;
-                            if closed.iter().all(|&c| c) {
+                            if !closed[i] {
+                                closed[i] = true;
+                                closed_count += 1;
+                            }
+                            if closed_count == sources_len {
                                 // All channels closed — return [Closed]
                                 return ok_val(
                                     Value::Variant {
@@ -1136,17 +1148,28 @@ pub(crate) fn builtin_select_once(
                                 // Got a value! Receiver is now consumed (already taken).
                                 Ok(value)
                             }
-                            Err(_) => {
-                                // No value available yet OR sender dropped.
-                                // Put the receiver back for now, unless it's closed.
-                                // Note: oneshot try_recv returns Err for both Empty and Closed.
-                                // We need to check if it's actually closed.
-                                // Unfortunately, tokio::sync::oneshot::Receiver doesn't have
-                                // a separate Empty vs Closed error for try_recv.
-                                // We'll put it back and mark as empty for now.
-                                // If the sender is dropped, future iterations will fail the same way.
+                            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                                // No value available yet — put the receiver back and retry.
                                 *rx_opt = Some(rx);
                                 Err(())
+                            }
+                            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                                // Sender dropped without sending — channel is closed.
+                                if !closed[i] {
+                                    closed[i] = true;
+                                    closed_count += 1;
+                                }
+                                if closed_count == sources_len {
+                                    // All channels closed — return [Closed]
+                                    return ok_val(
+                                        Value::Variant {
+                                            tag: "Closed".to_string(),
+                                            payload: None,
+                                        },
+                                        call_span,
+                                    );
+                                }
+                                continue;
                             }
                         }
                     }
@@ -1159,7 +1182,7 @@ pub(crate) fn builtin_select_once(
                     let handler_val = materialize(&handler_thunk, Some(&call_span), &ctx).await?;
 
                     // Call the handler with the received value.
-                    let handler_result = match handler_val {
+                    let result_thunk = match handler_val {
                         Value::Function {
                             params,
                             body,
@@ -1186,22 +1209,20 @@ pub(crate) fn builtin_select_once(
                                 Arc::new(Thunk::new_materialized(value, call_span.clone())),
                             );
 
-                            // Evaluate and return the body.
-                            let result_thunk = eval_core_expr_pub(&body, &call_env, &ctx).await?;
-                            materialize(&result_thunk, None, &ctx).await?
+                            // Evaluate the body — return the thunk directly (lazy, no force).
+                            eval_core_expr_pub(&body, &call_env, &ctx).await?
                         }
                         Value::Builtin(def) => {
-                            // Call builtin with the value.
+                            // Call builtin with the value — return result thunk directly.
                             let arg_thunk =
                                 Arc::new(Thunk::new_materialized(value, call_span.clone()));
-                            let result = (def.func)(BuiltinArgs {
+                            (def.func)(BuiltinArgs {
                                 args: vec![arg_thunk],
                                 named: None,
                                 call_span: call_span.clone(),
                                 ctx: Arc::clone(&ctx),
                             })
-                            .await?;
-                            materialize(&result, None, &ctx).await?
+                            .await?
                         }
                         _ => {
                             return Err(EvalError::type_mismatch(
@@ -1213,11 +1234,8 @@ pub(crate) fn builtin_select_once(
                         }
                     };
 
-                    // Wrap the handler result in [Ok v]
-                    let result_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        handler_result,
-                        call_span.clone(),
-                    )));
+                    // Wrap the handler result in [Ok v] — result_thunk stays lazy.
+                    let result_thunk_id = ctx.alloc_thunk(result_thunk);
                     return ok_val(
                         Value::Variant {
                             tag: "Ok".to_string(),

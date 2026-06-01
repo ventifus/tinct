@@ -1932,12 +1932,47 @@ fn eval_core_expr<'a>(
             )
             .into()),
 
-            // LetDecl: error (not an expression)
-            CoreExpr::LetDecl { .. } => Err(EvalError::internal(
-                "let declarations are not expressions".to_string(),
-                span.clone(),
-            )
-            .into()),
+            // LetDecl in sequential fn-body context: evaluate as a Dict of (name → lazy-thunk) pairs.
+            //
+            // Syntax: [let name value] → bindings = [FreeVar("name"), value_expr]
+            // Pairs are (bindings[2i], bindings[2i+1]).
+            // Returns a Dict so the SequentialStep can extract keys via its Dict-based binding logic.
+            CoreExpr::LetDecl { bindings } => {
+                let mut dict: IndexMap<Key, ThunkId> = IndexMap::new();
+                let mut i = 0;
+                while i + 1 < bindings.len() {
+                    let name_expr = &bindings[i];
+                    let val_expr = &bindings[i + 1];
+                    let name = match &name_expr.node {
+                        CoreExpr::FreeVar(n) => n.clone(),
+                        CoreExpr::Var { name: n, .. } => n.clone(),
+                        CoreExpr::Annotated { name: n, .. } => n.clone(),
+                        _ => {
+                            return Err(EvalError::internal(
+                                format!(
+                                    "let binding name must be an identifier, got: {:?}",
+                                    name_expr.node
+                                ),
+                                name_expr.span.clone(),
+                            )
+                            .into());
+                        }
+                    };
+                    let val_thunk = Arc::new(Thunk::new_unevaluated_core(
+                        Arc::new(val_expr.clone()),
+                        Arc::clone(env),
+                        Arc::clone(ctx),
+                        val_expr.span.clone(),
+                    ));
+                    let thunk_id = ctx.alloc_thunk(val_thunk);
+                    dict.insert(Key::String(Rc::from(name.as_str())), thunk_id);
+                    i += 2;
+                }
+                Ok(Arc::new(Thunk::new_materialized(
+                    Value::Dict(dict),
+                    span.clone(),
+                )))
+            }
 
             // CaseArm: error (not an expression)
             CoreExpr::CaseArm { .. } => Err(EvalError::internal(
@@ -3386,7 +3421,7 @@ pub(crate) fn match_pattern<'a>(
                                 .await
                             }
                             (None, None) => {
-                                // Dead arm: nullary constructors parse as Pattern::TypeTag, not Constructor { binding: None }
+                                // Unit variant matches unit variant: [Tag] pattern (Constructor { binding: None }) matches Variant { payload: None }
                                 Ok(Some(Arc::clone(env)))
                             }
                             (Some(_), None) => {

@@ -1,8 +1,8 @@
 # remove: large input (n=1000) to verify O(n) performance via build-dict
 [let d [collect [range 0 1000]]]
 [length [remove 500 d]]
-=== error
-[E099] let declarations are not expressions (defined at 1:1-1:33)
+=== out
+Int(1)
 
 === warn
 multi-element [let ...] pattern not yet supported — use single binding at 1:1-1:33

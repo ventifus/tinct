@@ -4,7 +4,28 @@
 [let pairs [each-kv d]]
 [length [from-entries [collect pairs]]]
 === error
-[E099] let declarations are not expressions (defined at 2:1-2:33)
+[E010] collect: expected Seq, got Dict (defined at stdlib/prelude.llt:2459:32-2459:34) (called at stdlib/prelude.llt:2459:15-2459:35)
+  --> stdlib/prelude.llt:2459:32-2459:34
+   |
+  2459 | """] [let xs] [builtin-collect xs]]
+       |                                ^^
+  in [builtin-collect ...] at stdlib/prelude.llt:2459:15-2459:35
+   |
+  2459 | """] [let xs] [builtin-collect xs]]
+       |               ^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:962:18-962:36
+   |
+  962 | """] [let pairs] [build-dict pairs]]
+      |                  ^^^^^^^^^^^^^^^^^^
+  in [build-dict ...] at stdlib/prelude.llt:962:18-962:36
+   |
+  962 | """] [let pairs] [build-dict pairs]]
+      |                  ^^^^^^^^^^^^^^^^^^
+  in [builtin-length ...] at stdlib/prelude.llt:2074:20-2074:39
+   |
+  2074 | """]: [fn [let xs] [builtin-length xs]]
+       |                    ^^^^^^^^^^^^^^^^^^^
+  in [length ...] at 4:1-4:40
 
 === warn
 multi-element [let ...] pattern not yet supported — use single binding at 2:1-2:33

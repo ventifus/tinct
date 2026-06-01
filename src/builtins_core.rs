@@ -3089,29 +3089,29 @@ pub fn core_type_env(env: &mut TypeEnv) {
             variadic: false,
         },
     );
-    // builtin-with-timeout: Unknown → Unknown → Unknown → Unknown
+    // builtin-with-timeout: ClockCap → Unknown → Duration → Unknown
     // Creates a context with a timeout; (ClockCap, parent-context, duration) → Context
     env.insert(
         "builtin-with-timeout".to_string(),
         Type::Function {
             params: vec![
+                (None, Type::ClockCap),
                 (None, Type::Unknown),
-                (None, Type::Unknown),
-                (None, Type::Unknown),
+                (None, Type::Duration),
             ],
             ret: Box::new(Type::Unknown), // Context — opaque
             variadic: false,
         },
     );
-    // builtin-with-deadline: Unknown → Unknown → Unknown → Unknown
+    // builtin-with-deadline: ClockCap → Unknown → Timestamp → Unknown
     // Creates a context with a deadline; (ClockCap, parent-context, deadline) → Context
     env.insert(
         "builtin-with-deadline".to_string(),
         Type::Function {
             params: vec![
+                (None, Type::ClockCap),
                 (None, Type::Unknown),
-                (None, Type::Unknown),
-                (None, Type::Unknown),
+                (None, Type::Timestamp),
             ],
             ret: Box::new(Type::Unknown), // Context — opaque
             variadic: false,

@@ -17,7 +17,7 @@
 # 2. Force % to drive the evaluation cascade (for side effects).
 [if [seq? %]
   [reduce [fn [let _ x] []] [] %]
-  []]
+  [materialize %]]
 
 # 3. Wait for drain to finish consuming any emits triggered during forcing.
 [await drain]

@@ -5,7 +5,7 @@
 ---
 String("two")
 === error
-[E099] let declarations are not expressions (defined at 1:1-1:16)
+[E099] syntax error at 3:11 (cannot evaluate error node) (defined at 3:11-3:12)
 
 === warn
 multi-element [let ...] pattern not yet supported — use single binding at 1:1-1:16

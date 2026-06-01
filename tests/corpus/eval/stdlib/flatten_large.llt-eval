@@ -3,7 +3,70 @@
 [let sublists [collect [map [fn [i] [collect [range [* i 10] [* [+ i 1] 10]]]] [range 0 100]]]]
 [length [flatten sublists]]
 === error
-[E099] let declarations are not expressions (defined at 2:1-2:96)
+[E001] key not found: 0 (available keys: keys) (defined at stdlib/prelude.llt:352:39-352:57) (called at stdlib/prelude.llt:355:12-355:30)
+  --> stdlib/prelude.llt:352:39-352:57
+   |
+  352 |         [flatten-seq-step xs ks i len [builtin-get i ks]]]]
+      |                                       ^^^^^^^^^^^^^^^^^^
+  in [builtin-get ...] at stdlib/prelude.llt:352:39-352:57
+   |
+  352 |         [flatten-seq-step xs ks i len [builtin-get i ks]]]]
+      |                                       ^^^^^^^^^^^^^^^^^^
+  in [builtin-get ...] at stdlib/prelude.llt:355:12-355:30
+   |
+  355 |     [match [builtin-get k xs]
+      |            ^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:355:5-359:95
+   |
+  355 |     [match [builtin-get k xs]
+  356 |         # Dict element: prepend all its values as a Seq, then continue with rest
+  357 |         Dict: [flatten-seq-append-dict [builtin-get k xs] [flatten-seq-impl xs ks [builtin-add i 1] len]]
+  358 |         # Non-dict element: cons it onto the rest
+  359 |         _:    [builtin-seq [builtin-get k xs] [flatten-seq-impl xs ks [builtin-add i 1] len]]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:350:5-352:59
+   |
+  350 |     [builtin-if [builtin-gte i len]
+  351 |         []
+  352 |         [flatten-seq-step xs ks i len [builtin-get i ks]]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:350:5-352:59
+   |
+  350 |     [builtin-if [builtin-gte i len]
+  351 |         []
+  352 |         [flatten-seq-step xs ks i len [builtin-get i ks]]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:1123:5-1123:61
+   |
+  1123 |     [builtin-collect [flatten-seq-impl xs ks 0 [length ks]]]]
+       |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-collect ...] at stdlib/prelude.llt:1123:5-1123:61
+   |
+  1123 |     [builtin-collect [flatten-seq-impl xs ks 0 [length ks]]]]
+       |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:1121:75-1123:62
+   |
+  1121 | flatten-impl-dict@[doc: "Flatten dict implementation (internal helper)"]: [fn@Dict [let xs@Dict]
+  1122 |     [let ks [keys xs]]
+  1123 |     [builtin-collect [flatten-seq-impl xs ks 0 [length ks]]]]
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:1117:5-1119:32
+   |
+  1117 |     [builtin-if [seq? xs]
+  1118 |         [error "flatten: expected Dict, got Seq -- collect the Seq first"]
+  1119 |         [flatten-impl-dict xs]]]
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:1117:5-1119:32
+   |
+  1117 |     [builtin-if [seq? xs]
+  1118 |         [error "flatten: expected Dict, got Seq -- collect the Seq first"]
+  1119 |         [flatten-impl-dict xs]]]
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-length ...] at stdlib/prelude.llt:2074:20-2074:39
+   |
+  2074 | """]: [fn [let xs] [builtin-length xs]]
+       |                    ^^^^^^^^^^^^^^^^^^^
+  in [length ...] at 3:1-3:28
 
 === warn
 multi-element [let ...] pattern not yet supported — use single binding at 2:1-2:96

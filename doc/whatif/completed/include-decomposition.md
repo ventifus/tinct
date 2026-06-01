@@ -303,12 +303,12 @@ Expose `eval` and `eval-types` as registered builtins.
 
 #### `eval` — Runtime-stage evaluation
 
-Positional args: `exprs` (positional Dict of expression AST dicts — the `expressions` field from a document dict). Named args: `%:` (pipeline input bound as `$`), `env:` (extra bindings dict, defaults to `[]`).
+Positional args: `exprs` (positional Dict of expression AST dicts — the `expressions` field from a document dict). Named args: `%:` (pipeline input bound as `%`), `env:` (extra bindings dict, defaults to `[]`).
 
 Implementation:
 
 1. Deserialize `exprs`: iterate in key order, call `dict_to_ast` on each entry → `Vec<Spanned<Expr>>`
-2. Build env chain: `ctx.config.stdlib_env` as root → child env with `env:` entries injected → child env with `"$"` bound to the `%:` thunk
+2. Build env chain: `ctx.config.stdlib_env` as root → child env with `env:` entries injected → child env with `"%"` bound to the `%:` thunk
 3. Call `eval_expressions`; return its result lazily
 4. Empty `exprs` returns an empty Dict thunk
 

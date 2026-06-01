@@ -3,7 +3,17 @@
 [let result [partition [fn [x] [= [mod x 2] 0]] test-dict]]
 [+ [length result.pass] [length result.fail]]
 === error
-[E099] let declarations are not expressions (defined at 1:1-1:41)
+[E001] key not found: pass (available keys: partition) (defined at 2:1-2:60) (accessed at 3:12-3:23)
+  in accessing .pass at 3:12-3:23
+  in materialized at stdlib/prelude.llt:2074:20-2074:39
+   |
+  2074 | """]: [fn [let xs] [builtin-length xs]]
+       |                    ^^^^^^^^^^^^^^^^^^^
+  in [builtin-length ...] at stdlib/prelude.llt:2074:20-2074:39
+   |
+  2074 | """]: [fn [let xs] [builtin-length xs]]
+       |                    ^^^^^^^^^^^^^^^^^^^
+  in [+ ...] at 3:1-3:46
 
 === warn
 multi-element [let ...] pattern not yet supported — use single binding at 1:1-1:41

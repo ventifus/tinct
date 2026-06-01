@@ -2,8 +2,8 @@
 # Build a 1000-element dict, then extract values
 [let test-dict [collect [range 0 1000]]]
 [length [values test-dict]]
-=== error
-[E099] let declarations are not expressions (defined at 2:1-2:41)
+=== out
+Int(1)
 
 === warn
 multi-element [let ...] pattern not yet supported — use single binding at 2:1-2:41

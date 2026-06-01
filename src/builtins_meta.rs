@@ -47,7 +47,7 @@ use indexmap::IndexMap;
 
 use crate::arena::ThunkId;
 use crate::ast::{CoreExpr, Span, Spanned, SurfaceExpression};
-use crate::builtins::{builtin, ok_val, reject_named, require_string};
+use crate::builtins::{builtin, ok_val, reject_named, require_string, MAX_COLLECT_SIZE};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, materialize_sync, wrap_with_nominal_validation};
 use crate::eval_call::{invoke_function, CallContext};
@@ -1645,6 +1645,16 @@ pub(crate) fn builtin_program(
                                 node: (*surface_doc).clone(),
                                 span: crate::ast::Span::origin(),
                             });
+                            if documents.len() >= MAX_COLLECT_SIZE {
+                                return Err(EvalError::resource_limit_exceeded(
+                                    format!(
+                                        "builtin-program: exceeded maximum document count ({})",
+                                        MAX_COLLECT_SIZE
+                                    ),
+                                    call_span,
+                                )
+                                .into());
+                            }
                         }
                         _ => {
                             return Err(EvalError::type_mismatch_ctx(
@@ -1674,6 +1684,16 @@ pub(crate) fn builtin_program(
                                         node: (*surface_doc).clone(),
                                         span: crate::ast::Span::origin(),
                                     });
+                                    if documents.len() >= MAX_COLLECT_SIZE {
+                                        return Err(EvalError::resource_limit_exceeded(
+                                            format!(
+                                                "builtin-program: exceeded maximum document count ({})",
+                                                MAX_COLLECT_SIZE
+                                            ),
+                                            call_span,
+                                        )
+                                        .into());
+                                    }
                                 }
                                 _ => {
                                     return Err(EvalError::type_mismatch_ctx(
@@ -2174,7 +2194,7 @@ pub(crate) fn builtin_eval_types(
             base_env
         };
 
-        // Add %: (pipeline input) as $ binding if provided
+        // Add %: (pipeline input) as % binding if provided
         let final_env = if let Some(input_thunk) = pipeline_input {
             let child_env = Arc::new(std::sync::RwLock::new(
                 crate::value::Environment::with_parent(Arc::clone(&env_with_bindings)),
@@ -2182,7 +2202,7 @@ pub(crate) fn builtin_eval_types(
             child_env
                 .write()
                 .unwrap()
-                .insert("$".to_string(), input_thunk);
+                .insert("%".to_string(), input_thunk);
             child_env
         } else {
             env_with_bindings

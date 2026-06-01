@@ -4724,6 +4724,7 @@ fn pop_last_value_from_frame(
 /// - Bare lowercase identifier → Variable binding
 /// - Bare uppercase identifier → TypeTag (Int, Str, Dict, etc.)
 /// - Int/Float/Bool/Str literal → Literal pattern
+/// - `[Constructor]` (zero-arg bracket) → Constructor { binding: None } — matches unit variants by tag
 ///
 /// Extract all variable names bound by a pattern
 fn pattern_variables(pattern: &Pattern) -> std::collections::HashSet<String> {
@@ -4988,7 +4989,7 @@ fn surface_node_to_pattern_with_guard(
                     }
                     (_, 0) if name.chars().next().is_some_and(|c| c.is_uppercase()) => {
                         // [Constructor] — unit variant pattern (zero-arg constructor)
-                        // Equivalent to [Constructor _]: discard payload
+                        // Matches unit variants (no payload) by tag name only
                         (
                             Pattern::Constructor {
                                 tag: name.clone(),

@@ -1141,7 +1141,7 @@ pub(crate) fn check_call(
             // Unbound type variable (e.g. letrec forward reference to a function not yet
             // inferred). state.subst.apply already resolved bound TypeVars (line 1140-1144),
             // so reaching here means alpha is genuinely unbound. Conservative fallback:
-            // infer args for side effects and return Any.
+            // infer args for side effects and return Unknown.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
                 let _ = infer_surface_expr(arg, env, state, type_map);
@@ -1224,7 +1224,10 @@ pub(crate) fn check_call(
         }
         // Non-unit variant constructor: already has payload, cannot be called.
         // Example: [Ok 42] where Ok already constructed → type error.
-        Type::NominalVariant { .. } => Err(vec![TypeError::not_a_function(&func_ty, span)]),
+        // Use func.span (points to the callee) rather than the whole-call span for a more informative error.
+        Type::NominalVariant { .. } => {
+            Err(vec![TypeError::not_a_function(&func_ty, func.span.clone())])
+        }
         _ => Err(vec![TypeError::not_a_function(&func_ty, span)]),
     }
 }

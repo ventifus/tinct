@@ -3,7 +3,16 @@
 [let mapped [map-entries [fn [e] [* e.value 2]] d]]
 [get 999 mapped]
 === error
-[E099] let declarations are not expressions (defined at 1:1-1:33)
+[E001] key not found: 999 (available keys: map-entries) (defined at stdlib/prelude.llt:843:25-843:47)
+  --> stdlib/prelude.llt:843:25-843:47
+   |
+  843 | """] [let key@k dict@d] [builtin-get key dict]]
+      |                         ^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-get ...] at stdlib/prelude.llt:843:25-843:47
+   |
+  843 | """] [let key@k dict@d] [builtin-get key dict]]
+      |                         ^^^^^^^^^^^^^^^^^^^^^^
+  in [get ...] at 3:1-3:17
 
 === warn
 multi-element [let ...] pattern not yet supported — use single binding at 1:1-1:33

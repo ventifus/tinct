@@ -3,8 +3,8 @@
 [let d1 [collect [range 0 500]]]
 [let d2 [build-dict [builtin-map [fn [v] [key: v  value: v]] [each [collect [range 500 1000]]]]]]
 [length [deep-merge d1 d2]]
-=== error
-[E099] let declarations are not expressions (defined at 2:1-2:33)
+=== out
+Int(2)
 
 === warn
 multi-element [let ...] pattern not yet supported — use single binding at 2:1-2:33

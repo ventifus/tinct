@@ -179,7 +179,7 @@ pub enum Pattern {
     },
     /// Constructor pattern — matches nominal variants by tag, binds payload
     /// `[Some v]` matches `Variant { tag: "Some", payload }` and binds `v` to the payload
-    /// `None` (handled as TypeTag currently) matches `Variant { tag: "None", payload: None }`
+    /// `[None]` (bracket form) matches `Variant { tag: "None", payload: None }` via Constructor { binding: None }
     Constructor {
         tag: String,
         binding: Option<Box<Spanned<Pattern>>>,

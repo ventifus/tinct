@@ -466,7 +466,7 @@ Thin Rust primitives that implement the self-hosted `include` pipeline. These ar
 |---------|-------|-----------|--------|-------------|
 | `load` | 1+ | `S (name: S) → D` | Dict | Parse source text to a file AST dict; `name:` named arg provides a provenance hint for error spans (e.g., the file path) |
 | `expand` | 1 | `S → D` | Dict | Run macro expansion on a file AST dict produced by `load`; returns the expanded AST dict |
-| `eval` | 1+ | `S (%: L) (env: S) → Θ` | Any | Evaluate a list of AST expression nodes in the runtime env; `%:` binds the pipeline input as `$`; `env:` merges extra bindings into scope |
+| `eval` | 1+ | `S (%: L) (env: S) → Θ` | Any | Evaluate a list of AST expression nodes in the runtime env; `%:` binds the pipeline input as `%`; `env:` merges extra bindings into scope |
 | `eval-types` | 1 | `S → Θ` | Any | Evaluate AST expression nodes in the type-stage env (type-level builtins only — no I/O, no capability access) |
 | `blake3` | 1 | `S → V` | String | Compute BLAKE3 hash of a string; returns 64-char lowercase hex |
 | `cap-identity` | 1 | `S → V` | String | Return a stable identity string for a `DirCap` derived from `fstat` on the directory fd; format: `"dev:ino"` — stable across renames and mounts |
@@ -1000,6 +1000,7 @@ The `builtin-*` names are the canonical registration names for all Rust builtins
 | `builtin-trim` | `trim` | Stable name for raw string whitespace trimming |
 | `builtin-emit` | `emit` | Stable name for raw stdout emit |
 | `builtin-env` | `env` | Stable name for raw environment variable lookup |
+| `builtin-program` | `program` | Stable name for raw multi-document program construction |
 
 These exist so that prelude wrappers (e.g., `>` implemented via `<` and `not`) call through to the underlying Rust primitive even when the public name is shadowed by user code. When a user writes `<: [fn [a b] ...]`, prelude's `>` still calls `builtin-lt` (unchanged).
 

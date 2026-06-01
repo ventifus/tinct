@@ -2980,6 +2980,29 @@ pub(crate) async fn apply_cont(
                                 Some(keys.into_iter().collect())
                             }
                         }
+                        // LetDecl in sequential fn-body position: [let name value] pairs.
+                        // Evaluated as a Dict (see eval.rs CoreExpr::LetDecl arm); extract names
+                        // so the Dict-based binding logic creates the correct child_env scope.
+                        CoreExpr::LetDecl { bindings } => {
+                            let mut keys = HashSet::new();
+                            let mut i = 0;
+                            while i + 1 < bindings.len() {
+                                match &bindings[i].node {
+                                    CoreExpr::FreeVar(name)
+                                    | CoreExpr::Var { name, .. }
+                                    | CoreExpr::Annotated { name, .. } => {
+                                        keys.insert(name.clone());
+                                    }
+                                    _ => {}
+                                }
+                                i += 2;
+                            }
+                            if keys.is_empty() {
+                                None
+                            } else {
+                                Some(keys)
+                            }
+                        }
                         _ => None,
                     };
 
