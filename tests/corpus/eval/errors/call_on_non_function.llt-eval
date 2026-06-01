@@ -1,6 +1,6 @@
 [call 42]
 === error
-[E010] type mismatch: expected Function
+[E010] type mismatch: expected Function or Builtin, got Int (defined at 1:1-1:10)
 
 === warn
 expected function type, got 42 at 1:1-1:10

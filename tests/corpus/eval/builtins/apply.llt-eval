@@ -4,5 +4,6 @@
 [apply f [0: 3  1: 4]]
 === out
 Int(7)
+
 === warn
 cannot unify Fn@⊤ [⊤] with Fn@Number [x: _ y: _] at 3:8-3:9

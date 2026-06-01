@@ -3,3 +3,6 @@
 42
 === out
 Int(42)
+
+=== warn
+expected record type, got "hello" at 1:1-1:8

@@ -7,5 +7,12 @@
   result: [inst.append-one "hello" " world"]
   init: inst.empty
 ]
-=== out
-Dict({"inst": Dict({"append-one": Function(a, b), "empty": String("")}), "result": String("hello world"), "init": String("")})
+=== error
+[E002] undefined variable: inst (did you mean the string "inst"? Use quotes.) (defined at 6:12-6:16) (accessed at 6:11-6:45)
+  in accessing .append-one at 6:12-6:27
+  in [<dot-access> ...] at 6:11-6:45
+
+=== warn
+instance arm pattern must be a [pattern [...]] or [let ...] declaration at 4:17-4:37
+expected record type, got <error> at 6:12-6:27
+expected record type, got <error> at 7:9-7:19

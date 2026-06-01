@@ -4,5 +4,7 @@
 [outer: [fn [let x] [fn@Number [let y@Int] y]]]
 === out
 Dict({"outer": Function(x)})
+
 === warn
-annotation @Number is over-broad
+inferred type is Unknown — consider adding a type annotation
+annotation @Number is over-broad — inferred type is Int; consider using @Int

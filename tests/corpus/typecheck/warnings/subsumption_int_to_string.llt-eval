@@ -3,5 +3,6 @@
  result: [call $f 42]]
 === out
 Dict({"f": Function(x), "result": Int(42)})
+
 === warn
 cannot unify String with 42 at 2:19-2:21

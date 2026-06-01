@@ -1,0 +1,18 @@
+# Parameterized type alias used as constructor
+# The [type [let a b] Body] form creates a type alias with params
+# In value position, the constructor (e.g., Pair) is a nominal variant constructor
+
+[
+  Result: [type [let t e] [Ok value: t] | [Err error: e]]
+  success: [Ok value: 42]
+  failure: [Err error: "not found"]
+]
+success.value
+=== error
+[E099] syntax error at 5:41 (cannot evaluate error node) (defined at 5:41-5:42) (materialized at 4:1-8:2)
+
+=== warn
+syntax error at 5:41 (cannot typecheck error node) at 5:41-5:42
+unit variant constructor takes exactly 1 argument, got 0 at 6:12-6:26
+undefined variable: Err at 7:13-7:16
+expected record type, got <error> at 9:1-9:14

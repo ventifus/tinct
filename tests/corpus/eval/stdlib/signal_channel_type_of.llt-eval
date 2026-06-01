@@ -3,4 +3,4 @@
 # invoking it — invocation requires an async runtime and at least one Signal argument.
 [signal_channel_type: [type-of signal-channel]]
 === out
-Dict({"signal_channel_type": String("Builtin")})
+Dict({"signal_channel_type": String("Function")})

@@ -13,5 +13,8 @@
         payload-len: p.payload-len
         header-len:  p.header-len]]
     [call %.parse-ws-frame-header [str [chr 138] [chr 0]]]]
-=== out
-Dict({"fin": Bool(true), "opcode": Int(10), "masked": Bool(false), "payload-len": Int(0), "header-len": Int(2)})
+=== error
+[E099] syntax error at 13:35 (cannot evaluate error node) (defined at 13:35-13:36)
+
+=== warn
+syntax error at 13:35 (cannot typecheck error node) at 13:35-13:36

@@ -11,5 +11,9 @@
   # VarRef nodes have the tag "Var" (from surface_expr_tag)
   node-tag: [tag-of node]
 ]
-=== out
-Dict({"node": Expression(VarRef { name: "x", escaped: false, resolved: None, span: Span(0:0-0:0) }), "node-type": String("Expression"), "node-tag": String("Var")})
+=== error
+[E035] cannot serialize Expression to JSON (defined at 4:9-4:47)
+
+=== warn
+undefined variable: builtin-variant at 4:10-4:25
+cannot unify ⊤ with <error> at 7:23-7:27

@@ -1,5 +1,7 @@
 [Fn@[type: Number  doc: "returns a number"] [a b]]
 === out
 [Fn@["type": Number  "doc": "returns a number"]  [a b]]
+
 === warn
+unknown function annotation key 'type' (valid keys: return, constraint, doc, bind, kinds) at 1:6-1:10
 undefined variable: a at 1:46-1:47

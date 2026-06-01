@@ -4,4 +4,4 @@
 ---
 [try [fn [] [call %.build-socks5-connect "" 80]]]
 === out
-Variant(Err, String("build-socks5-connect: hostname must not be empty"))
+Variant(Error, String("build-socks5-connect: hostname must not be empty"))

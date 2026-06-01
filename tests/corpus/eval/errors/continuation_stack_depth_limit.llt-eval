@@ -4,4 +4,7 @@
 [f: [fn [self n] [if [= n 0] 0 [+ 1 [call self self [- n 1]]]]]
  result: [call f f 2100]]
 === error
-[E040] depth exceeded
+[E099] syntax error at 3:63 (cannot evaluate error node) (defined at 3:63-3:64)
+
+=== warn
+syntax error at 3:63 (cannot typecheck error node) at 3:63-3:64

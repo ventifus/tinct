@@ -3,5 +3,6 @@
 [f: [fn [let x@String] [+ x 1]]]
 === out
 Dict({"f": Function(x)})
+
 === warn
-arithmetic operand has non-numeric type
+arithmetic operator applied to non-numeric type `String` at 2:24-2:31

@@ -4947,7 +4947,14 @@ fn profile_writes_llt_stream_readable_by_stream_input() {
             "llt",
             consumer.to_str().unwrap(),
         ])
-        .stdin(std::fs::File::open(&stream_path).expect("could not open profile stream file"))
+        .stdin({
+            // CORPUS-OK: test infrastructure reads files via std::fs — no cap_std here
+            #[allow(clippy::disallowed_types)]
+            fn open_file(p: &std::path::Path) -> std::fs::File {
+                std::fs::File::open(p).expect("could not open profile stream file")
+            }
+            open_file(&stream_path)
+        })
         .output()
         .expect("failed to run tinct for profile stream consumption");
     assert!(

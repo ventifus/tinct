@@ -1199,6 +1199,7 @@ std::thread_local! {
     /// Full result cache: caches the (env, arena) pair returned by create_stdlib_env_with_arena.
     /// On a cache hit, the existing Arc<RwLock<Environment>> and Arc<Mutex<ThunkArena>> are
     /// returned directly, avoiding a full stdlib rebuild. Cleared by clear_stdlib_cache().
+    #[allow(clippy::type_complexity)]
     static STDLIB_RESULT_CACHE: std::cell::RefCell<Option<(Arc<RwLock<Environment>>, Arc<Mutex<crate::arena::ThunkArena>>)>> =
         const { std::cell::RefCell::new(None) };
 }

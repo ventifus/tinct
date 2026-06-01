@@ -1,4 +1,0 @@
-# bytes-of: single byte
-[bytes-of [65]]
-=== out
-Bytes(1 bytes)

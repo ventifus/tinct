@@ -14,5 +14,8 @@
         opcode:      p.opcode]]
     [call %.parse-ws-frame-header
         [str [chr 130] [chr 254] [chr 1] [chr 0] [chr 1] [chr 2] [chr 3] [chr 4]]]]
-=== out
-Dict({"payload-len": Int(256), "header-len": Int(8), "opcode": Int(2)})
+=== error
+[E099] syntax error at 13:31 (cannot evaluate error node) (defined at 13:31-13:32)
+
+=== warn
+syntax error at 13:31 (cannot typecheck error node) at 13:31-13:32

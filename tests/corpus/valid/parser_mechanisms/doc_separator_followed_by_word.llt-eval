@@ -3,5 +3,6 @@
 [x: ---foo]
 === out
 ["x": ---foo]
+
 === warn
 undefined variable: ---foo at 2:5-2:11

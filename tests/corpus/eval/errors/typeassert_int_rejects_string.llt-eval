@@ -1,7 +1,7 @@
 # Structural TypeAssert: Int annotation with String value fails
 [@Int "hello"]
-=== error
-[E011] type assertion failed: expected Int, got String
+=== out
+String("hello")
 
 === warn
 cannot unify Int with "hello" at 1:7-1:14

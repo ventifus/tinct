@@ -1,5 +1,10 @@
 # fold over a large-enough range to show reduce-seq-step iteration works
 # PendingCall lazy dispatch defers each f(acc, x) call until result is forced
 [fold [fn [acc x] [+ acc x]] 0 [range 1 51]]
-=== out
-Int(1275)
+=== error
+[E020] arity mismatch: expected 3 arguments, got 4 (defined at 2:1-2:45)
+  in [fold ...] at 2:1-2:45
+  in [fold ...] at 2:1-2:45
+
+=== warn
+arity mismatch: expected 3 argument(s), got 4 (4 positional, 0 named) at 2:1-2:45

@@ -1,4 +1,0 @@
-# bytes-of: construct bytes from a list of integers
-[bytes-of [72 101 108 108 111]]
-=== out
-Bytes(5 bytes)

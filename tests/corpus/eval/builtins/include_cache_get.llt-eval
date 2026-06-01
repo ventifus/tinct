@@ -1,4 +1,7 @@
 # include-cache-get : returns [Missing] for a key not in the cache
 [include-cache-get "missing-key"]
-=== out
-Variant(Missing, Null)
+=== error
+[E002] undefined variable: include-cache-get (did you mean the string "include-cache-get"? Use quotes.) (defined at 1:2-1:19)
+
+=== warn
+undefined variable: include-cache-get at 1:2-1:19

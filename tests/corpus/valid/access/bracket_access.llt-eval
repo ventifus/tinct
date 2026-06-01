@@ -1,5 +1,6 @@
 [item: [get 0 data]]
 === out
 ["item": [get 0 data]]
+
 === warn
 undefined variable: data at 1:15-1:19

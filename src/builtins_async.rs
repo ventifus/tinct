@@ -1882,7 +1882,7 @@ pub(crate) fn builtin_watch_channel(
                         // Check current metadata
                         match dir.metadata(&path) {
                             Ok(meta) => {
-                                if let Some(current_modified) = meta.modified().ok() {
+                                if let Ok(current_modified) = meta.modified() {
                                     // Compare with last known modification time
                                     // Only send if we have a previous baseline AND it's different
                                     if let Some(last) = last_modified {

@@ -2,7 +2,7 @@
 # Error is reported for the first uncovered required parameter (a).
 [call [fn [let a b c] a]]
 === error
-[E024] missing argument for required parameter 'a'
+[E024] missing argument for required parameter 'a' (defined at 2:1-2:26)
 
 === warn
-arity mismatch: expected 3 argument(s), got 0 (0 positional, 0 named) at 2:1-2:22
+arity mismatch: expected 3 argument(s), got 0 (0 positional, 0 named) at 2:1-2:26

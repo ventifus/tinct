@@ -1,5 +1,6 @@
 [val: [get 0 config.users].name]
 === out
 ["val": [get 0 config.users].name]
+
 === warn
 undefined variable: config at 1:14-1:20

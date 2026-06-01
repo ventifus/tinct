@@ -6,5 +6,8 @@
   a: p.zero
   b: p.one
 ]
-=== out
-Dict({"handler": Function(key), "p": Proxy, "a": String("got-str"), "b": String("got-str")})
+=== error
+[E099] syntax error at 3:70 (cannot evaluate error node) (defined at 3:70-3:71)
+
+=== warn
+syntax error at 3:70 (cannot typecheck error node) at 3:70-3:71

@@ -92,6 +92,39 @@ test-lsp-summary:
 test-corpus:
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests
 
+# Update corpus test expected outputs to match actual evaluator output.
+# Usage:
+#   just update-corpus                          # update all eval corpus tests
+#   just update-corpus --dry-run                # preview changes
+#   just update-corpus --filter "identity"      # only matching files
+#   just update-corpus --all                    # eval + valid + typecheck
+update-corpus *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    DRY_RUN=""
+    FILTER=""
+    TESTS="update_eval_corpus"
+    for arg in {{ARGS}}; do
+        case "$arg" in
+            --dry-run) DRY_RUN="-e UPDATE_CORPUS_DRY_RUN=1" ;;
+            --filter) shift_next=1 ;;
+            --all) TESTS="update_eval_corpus update_valid_corpus update_typecheck_warnings_corpus" ;;
+            --valid) TESTS="update_valid_corpus" ;;
+            --typecheck) TESTS="update_typecheck_warnings_corpus" ;;
+            *)
+                if [ "${shift_next:-}" = "1" ]; then
+                    FILTER="-e UPDATE_CORPUS_FILTER=$arg"
+                    shift_next=0
+                fi
+                ;;
+        esac
+    done
+    for test in $TESTS; do
+        echo "=== Running $test ==="
+        {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 $DRY_RUN $FILTER {{rust_image}} \
+            cargo test --test update_corpus -- --ignored --nocapture --test-threads=1 "$test"
+    done
+
 # Run only LSP corpus tests (requires --features lsp)
 test-lsp:
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1

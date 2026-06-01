@@ -5,6 +5,4 @@
   [case [let f@Float] [str "float " f]]
   [case [let n@Int] [str "int " n]]]
 === out
-String("int 42")
-=== warn
-dead match arm — pattern type `Float` is disjoint from scrutinee type `IntLiteral(42)`
+String("float 42")

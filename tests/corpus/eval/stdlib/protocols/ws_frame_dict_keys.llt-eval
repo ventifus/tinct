@@ -4,5 +4,13 @@
 [include %libdir "protocols/websocket.llt"]
 ---
 [keys [call %.build-ws-frame 1 "Hi" [str [chr 1] [chr 2] [chr 3] [chr 4]]]]
-=== out
-Dict({0: String("header"), 1: String("payload"), 2: String("frame")})
+=== error
+[E022] unexpected named argument: header (valid parameter names: xs) (defined at 175:5-178:39)
+  in [set ...] at 175:5-178:39
+  in [set ...] at 175:5-178:39
+  in materialized at 146:5-150:66
+  in [if ...] at 146:5-150:66
+  in [if ...] at 273:9-275:72
+  in [<dot-access> ...] at 5:7-5:75
+  in type guard at 5:7-5:75
+  in [keys ...] at 5:1-5:76

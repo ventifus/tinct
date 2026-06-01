@@ -804,6 +804,7 @@ fn collect_include_paths_from_node(
 /// Depth is capped at `MAX_INCLUDE_DEPTH` to prevent runaway recursion.
 // AMBIENT-OK: type-checker include resolution fallback — reads libdir files without cap; type-only, no runtime I/O
 #[allow(clippy::disallowed_methods)]
+#[allow(clippy::too_many_arguments)]
 fn resolve_includes(
     include_paths: &[(Span, Option<String>, String)],
     base_dir: Option<&Path>,

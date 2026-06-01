@@ -1,5 +1,10 @@
 # Test: maybe-map on Some value
 [maybe-map [fn [x] [+ x 1]] [Some 42]]
 
-=== out
-Variant(Some, Int(43))
+=== error
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-1:39)
+  in [maybe-map ...] at 1:1-1:39
+  in [maybe-map ...] at 1:1-1:39
+
+=== warn
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 1:1-1:39

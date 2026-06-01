@@ -9,4 +9,8 @@
 
 [broadcast-channel]
 === error
-[E080] broadcast-channel expects 1 argument, got 0
+[E080] broadcast-channel expects 1 argument, got 0 (defined at 9:1-9:20)
+  in [broadcast-channel ...] at 9:1-9:20
+
+=== warn
+arity mismatch: expected 1 argument(s), got 0 (0 positional, 0 named) at 9:1-9:20

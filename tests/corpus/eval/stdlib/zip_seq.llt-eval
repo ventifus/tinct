@@ -1,4 +1,51 @@
 # zip on two Seqs produces lazy pairs
 [collect [take 3 [zip [iterate [fn [x] [+ x 1]] 1] [iterate [fn [x] [+ x 10]] 10]]]]
-=== out
-Dict({0: Dict({0: Int(1), 1: Int(10)}), 1: Dict({0: Int(2), 1: Int(20)}), 2: Dict({0: Int(3), 1: Int(30)})})
+=== error
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:23-1:51) (called at stdlib/prelude.llt:1426:60-1426:61)
+  in [iterate ...] at 1:23-1:51
+  in [iterate ...] at 1:23-1:51
+  in materialized at stdlib/prelude.llt:1426:53-1426:87
+   |
+  1426 | seq?@[doc: "Check if value is a Seq"]:  [fn [let x] [match x Seq:      true  _: false]]
+       |                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:614:16-614:38
+   |
+  614 | """] [let p b] [builtin-if p b false]]
+      |                ^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:614:16-614:38
+   |
+  614 | """] [let p b] [builtin-if p b false]]
+      |                ^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:1104:5-1108:61
+   |
+  1104 |     [builtin-if [and [seq? xs] [seq? ys]]
+  1105 |         [zip-seq-impl xs ys]
+  1106 |         [zip-dict-impl
+  1107 |             [builtin-if [seq? xs] [builtin-collect xs] xs]
+  1108 |             [builtin-if [seq? ys] [builtin-collect ys] ys]]]]
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:1104:5-1108:61
+   |
+  1104 |     [builtin-if [and [seq? xs] [seq? ys]]
+  1105 |         [zip-seq-impl xs ys]
+  1106 |         [zip-dict-impl
+  1107 |             [builtin-if [seq? xs] [builtin-collect xs] xs]
+  1108 |             [builtin-if [seq? ys] [builtin-collect ys] ys]]]]
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:2061:57-2061:76
+   |
+  2061 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+       |                                                         ^^^^^^^^^^^^^^^^^^^
+  in [builtin-take ...] at stdlib/prelude.llt:2061:57-2061:76
+   |
+  2061 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+       |                                                         ^^^^^^^^^^^^^^^^^^^
+  in [builtin-collect ...] at stdlib/prelude.llt:2459:15-2459:35
+   |
+  2459 | """] [let xs] [builtin-collect xs]]
+       |               ^^^^^^^^^^^^^^^^^^^^
+  in [collect ...] at 1:1-1:85
+
+=== warn
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 1:23-1:51
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 1:52-1:82

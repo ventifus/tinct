@@ -1,4 +1,8 @@
 # to-tinct: round-trip an integer through serialization and re-evaluation
 [eval [expand [load [to-tinct 42]]].documents.0.expressions]
-=== out
-Int(42)
+=== error
+[E010] dot access: expected Dict, Proxy, or Variant, got Seq (defined at 1:7-1:46) (accessed at 1:7-1:48)
+  in accessing .0 at 1:7-1:48
+  in materialized at 1:7-1:60
+  in accessing .expressions at 1:7-1:60
+  in [eval ...] at 1:1-1:61

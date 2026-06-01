@@ -2,7 +2,7 @@
 [http2-session "placeholder"]
 
 === error
-[E080] http2-session: expected 3 arguments (cap base_url opts), got 1
+[E002] undefined variable: http2-session (did you mean the string "http2-session"? Use quotes.) (defined at 1:2-1:15)
 
 === warn
-arity mismatch: expected 3 argument(s), got 1
+undefined variable: http2-session at 1:2-1:15

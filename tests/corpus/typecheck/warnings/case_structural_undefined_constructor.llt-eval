@@ -7,5 +7,8 @@
   [case [let _]        "fallthrough"]]
 === out
 String("fallthrough")
+
 === warn
-undefined constructor `Bogus`
+unreachable match arm: this pattern is already covered by prior arms at 6:3-6:38
+undefined constructor `Bogus` in structural test; no variable with this name is in scope — the arm will never match
+inferred type is Unknown — consider adding a type annotation

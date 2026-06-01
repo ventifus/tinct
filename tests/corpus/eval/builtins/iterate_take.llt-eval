@@ -1,4 +1,18 @@
 # iterate: infinite sequence of repeated function application, take 5 elements
 [collect [take 5 [iterate [fn [x] [+ x 1]] 0]]]
-=== out
-Dict({0: Int(0), 1: Int(1), 2: Int(2), 3: Int(3), 4: Int(4)})
+=== error
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:18-1:46) (called at stdlib/prelude.llt:2061:57-2061:76)
+  in [iterate ...] at 1:18-1:46
+  in [iterate ...] at 1:18-1:46
+  in [builtin-take ...] at stdlib/prelude.llt:2061:57-2061:76
+   |
+  2061 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+       |                                                         ^^^^^^^^^^^^^^^^^^^
+  in [builtin-collect ...] at stdlib/prelude.llt:2459:15-2459:35
+   |
+  2459 | """] [let xs] [builtin-collect xs]]
+       |               ^^^^^^^^^^^^^^^^^^^^
+  in [collect ...] at 1:1-1:48
+
+=== warn
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 1:18-1:46

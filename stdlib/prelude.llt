@@ -2271,11 +2271,12 @@ emit-ch:       Channel for %emit — emitted values are sent here
 Returns the final document's result. Named document sections (--- %name) accumulate
 as %name bindings available to subsequent documents via scope injection.
 """]: [fn [let prog initial-input emit-ch]
+  [emit-fn: [fn@Null [let v@Any] [send emit-ch v]]]
   [state: [builtin-reduce
     [fn [let state doc]
       [val: [builtin-eval doc.expressions
                scope:   [builtin-merge
-                           [%emit: emit-ch]
+                           [emit: emit-fn  %emit-channel: emit-ch]
                            [builtin-merge
                              state.named
                              [builtin-reduce builtin-merge []

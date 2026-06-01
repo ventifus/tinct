@@ -3,3 +3,6 @@
 [class [Appendable a]]
 === out
 Dict({})
+
+=== warn
+class declaration must have a name declared with [class [ClassName ...] ...] at 2:1-2:23

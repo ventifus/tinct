@@ -4,5 +4,8 @@
   count: 5
   message: i"Hello $name, you have $count items"
 ]
-=== out
-Dict({"name": String("Bob"), "count": Int(5), "message": String("Hello Bob, you have 5 items")})
+=== error
+[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 4:12-4:49)
+
+=== warn
+[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 4:12-4:49)

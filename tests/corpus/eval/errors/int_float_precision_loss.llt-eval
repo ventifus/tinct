@@ -1,3 +1,4 @@
 [+ 9007199254740993 1.0]
 === error
-[E080] implicit Int→Float promotion loses precision
+[E080] implicit Int→Float promotion loses precision for 9007199254740993; use [float 9007199254740993] for intentional cast (defined at 1:4-1:20)
+  in [+ ...] at 1:1-1:25

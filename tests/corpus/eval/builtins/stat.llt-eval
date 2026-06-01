@@ -1,5 +1,3 @@
 [builtin-get "type" [call $stat %cwd "Cargo.toml"]]
 === out
-"file"
-=== warn
-raw builtin `stat` is not available in user code
+String("file")

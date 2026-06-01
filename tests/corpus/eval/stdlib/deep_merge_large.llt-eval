@@ -3,5 +3,11 @@
 [let d1 [collect [range 0 500]]]
 [let d2 [build-dict [builtin-map [fn [v] [key: v  value: v]] [each [collect [range 500 1000]]]]]]
 [length [deep-merge d1 d2]]
-=== out
-Int(1000)
+=== error
+[E099] let declarations are not expressions (defined at 2:1-2:33)
+
+=== warn
+multi-element [let ...] pattern not yet supported — use single binding at 2:1-2:33
+multi-element [let ...] pattern not yet supported — use single binding at 3:1-3:98
+undefined variable: d1 at 4:21-4:23
+undefined variable: d2 at 4:24-4:26

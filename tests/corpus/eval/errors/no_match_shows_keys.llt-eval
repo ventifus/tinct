@@ -1,4 +1,5 @@
 [data: [foo: 1 bar: 2 baz: 3]]
 data.xyz
 === error
-[E001] key not found: xyz (available keys: foo, bar, baz)
+[E001] key not found: xyz (available keys: foo, bar, baz) (defined at 1:1-1:31) (accessed at 2:1-2:9)
+  in accessing .xyz at 2:1-2:9

@@ -1,4 +1,9 @@
 # update: apply a function to a key's value in a dict
 [update "x" [fn [v] [+ v 10]] [x: 1]]
-=== out
-Dict({"x": Int(11)})
+=== error
+[E020] arity mismatch: expected 3 arguments, got 4 (defined at 1:1-1:38)
+  in [update ...] at 1:1-1:38
+  in [update ...] at 1:1-1:38
+
+=== warn
+arity mismatch: expected 3 argument(s), got 4 (4 positional, 0 named) at 1:1-1:38

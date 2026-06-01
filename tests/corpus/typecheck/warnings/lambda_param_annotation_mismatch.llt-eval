@@ -2,5 +2,6 @@
 [@[Fn@Int [String]] [fn [let x@Int] x]]
 === out
 Function(x)
+
 === warn
-parameter annotation Int is more restrictive than required type String
+parameter annotation Int is more restrictive than required type String at 1:32-1:35

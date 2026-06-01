@@ -3,5 +3,6 @@
 [f 42]
 === out
 [f 42]
+
 === warn
 undefined variable: f at 2:2-2:3

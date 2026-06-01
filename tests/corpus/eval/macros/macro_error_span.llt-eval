@@ -13,4 +13,39 @@
 # The error should point to the "hello" argument location
 [expect-int "hello"]
 === error
-[E012] macro expansion error: expected an integer literal
+[E080] macro 'expect-int' expansion result failed to evaluate: builtin-get (key "span"): expected Dict, got Expression (defined at 13:1-13:21)
+  in [builtin-get ...] at stdlib/prelude.llt:843:25-843:47
+   |
+  843 | """] [let key@k dict@d] [builtin-get key dict]]
+      |                         ^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:2738:3-2738:37
+   |
+  2738 |   [builtin-macro-error span message]]
+       |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-macro-error ...] at stdlib/prelude.llt:2738:3-2738:37
+   |
+  2738 |   [builtin-macro-error span message]]
+       |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at 13:1-13:21
+  in [if ...] at 7:3-9:63
+  in macro:expect-int at 13:1-13:21
+  in in expansion of `expect-int` at 13:1-13:21
+
+=== warn
+[E080] macro 'expect-int' expansion result failed to evaluate: builtin-get (key "span"): expected Dict, got Expression (defined at 13:1-13:21)
+  in [builtin-get ...] at stdlib/prelude.llt:843:25-843:47
+   |
+  843 | """] [let key@k dict@d] [builtin-get key dict]]
+      |                         ^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:2738:3-2738:37
+   |
+  2738 |   [builtin-macro-error span message]]
+       |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-macro-error ...] at stdlib/prelude.llt:2738:3-2738:37
+   |
+  2738 |   [builtin-macro-error span message]]
+       |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at 13:1-13:21
+  in [if ...] at 7:3-9:63
+  in macro:expect-int at 13:1-13:21
+  in in expansion of `expect-int` at 13:1-13:21

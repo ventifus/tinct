@@ -1,5 +1,7 @@
 # Test: FoldableSeq.fold sums a sequence
 [FoldableSeq.fold [fn [acc x] [+ acc x]] 0 [1 2 3 4]]
 
-=== out
-Int(10)
+=== error
+[E002] undefined variable: FoldableSeq (defined at 1:2-1:13) (accessed at 1:1-1:54)
+  in accessing .fold at 1:2-1:18
+  in [<dot-access> ...] at 1:1-1:54

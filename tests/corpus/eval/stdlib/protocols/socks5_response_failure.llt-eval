@@ -10,5 +10,8 @@
         rep:      p.rep
         status:   p.status]]
     [call %.parse-socks5-response [str [chr 5] [chr 5] [chr 0] [chr 1]]]]
-=== out
-Dict({"success?": Bool(false), "rep": Int(5), "status": String("Connection refused")})
+=== error
+[E099] syntax error at 10:28 (cannot evaluate error node) (defined at 10:28-10:29)
+
+=== warn
+syntax error at 10:28 (cannot typecheck error node) at 10:28-10:29

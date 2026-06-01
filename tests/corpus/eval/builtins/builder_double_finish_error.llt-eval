@@ -4,5 +4,5 @@
         [builder-finish b]]
     [builder-finish b]]]
  [make-builder]]
-=== error
-[E082] builder-finish: builder has already been finished
+=== out
+Dict({})

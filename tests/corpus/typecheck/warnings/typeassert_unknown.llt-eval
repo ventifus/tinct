@@ -2,5 +2,6 @@
 [x: [@Unknown 42]]
 === out
 Dict({"x": Int(42)})
+
 === warn
-explicit @Unknown annotation
+explicit @Unknown annotation — type is not statically known

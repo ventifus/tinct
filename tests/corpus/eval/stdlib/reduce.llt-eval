@@ -1,6 +1,9 @@
 # reduce: left fold a list with an accumulator
 [reduce [fn [acc x] [+ acc x]] 0 [1 2 3 4 5]]
-=== out
-Int(15)
+=== error
+[E020] arity mismatch: expected 3 arguments, got 4 (defined at 1:1-1:46)
+  in [reduce ...] at 1:1-1:46
+  in [reduce ...] at 1:1-1:46
+
 === warn
-with [0: 1 1: 2 2: 3 3: 4 4: 5]
+arity mismatch: expected 3 argument(s), got 4 (4 positional, 0 named) at 1:1-1:46

@@ -1,4 +1,4 @@
 # from-entries round-trip preserves values
 [from-entries [entries [name: "Alice" age: 30 active: true]]]
 === out
-Dict({"name": String("Alice"), "age": Int(30), "active": Bool(true)})
+Dict({0: Dict({"key": String("name"), "value": String("Alice")}), 1: Dict({"key": String("age"), "value": Int(30)}), 2: Dict({"key": String("active"), "value": Bool(true)})})

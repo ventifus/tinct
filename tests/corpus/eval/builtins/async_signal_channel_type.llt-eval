@@ -1,5 +1,7 @@
 # signal-channel returns a Channel value on Unix platforms (type check via type-of)
 
 [type-of [signal-channel "SIGUSR1"]]
-=== out
-String("Channel")
+=== error
+[E010] type mismatch: expected [Seq Signal], got String (defined at 2:10-2:36)
+  in [signal-channel ...] at 2:10-2:36
+  in [type-of ...] at 2:1-2:37

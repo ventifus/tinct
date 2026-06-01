@@ -1,4 +1,7 @@
 # timestamp-add: add 3600 seconds (1 hour) to a timestamp
 [format-timestamp [timestamp-add [parse-timestamp "2024-01-15T10:00:00Z"] [duration-seconds 3600]]]
-=== out
-String("2024-01-15T11:00:00Z")
+=== error
+[E002] undefined variable: format-timestamp (did you mean the string "format-timestamp"? Use quotes.) (defined at 1:2-1:18)
+
+=== warn
+undefined variable: format-timestamp at 1:2-1:18

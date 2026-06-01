@@ -1,0 +1,12 @@
+# Parameterized type alias with wrong arity in annotation
+# Pair expects 2 params, only 1 provided
+# Current implementation: @[Alias ...] form is not implemented (unknown parameterized type error)
+
+[Pair: [type [let a b] [Pair first: a  second: b]]]
+[@[Pair Int] [Pair first: 1  second: 2]]
+=== error
+[E010] type mismatch: expected Function or Builtin, got Variant (defined at 5:14-5:40) (called at 5:1-5:41)
+  in [Pair ...] at 5:14-5:40
+
+=== warn
+type alias 'Pair' expects 2 type parameter(s), got 0 at 4:24-4:50

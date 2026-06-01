@@ -2,4 +2,8 @@
 # @Any inner wrapper lets the type checker pass; guard fires lazily on field access
 [@[name: String] [@Any [name: 42]]].name
 === error
-[E011] type assertion failed: expected field `name`: String, got Int
+[E011] type assertion failed: expected field `name`: String, got Int (defined at 2:31-2:33) (materialized at 2:1-2:36)
+  note: value produced here at 2:31-2:33
+  in materialized at 2:1-2:41
+  in type guard at 2:1-2:36
+  blame: value from 2:18-2:35 crossed boundary at 2:1-2:36 (typed side (annotation) responsible)

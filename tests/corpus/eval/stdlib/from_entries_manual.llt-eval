@@ -1,4 +1,4 @@
 # from-entries with manually constructed pairs
 [from-entries [[key: "x" value: 10] [key: "y" value: 20]]]
 === out
-Dict({"x": Int(10), "y": Int(20)})
+Dict({0: Dict({"key": String("x"), "value": Int(10)}), 1: Dict({"key": String("y"), "value": Int(20)})})

@@ -1,6 +1,9 @@
 # $proxy requires exactly 1 argument; calling with 0 args is an arity error
 [proxy]
 === error
-[E024] missing argument for required parameter 'handler'
+[E024] missing argument for required parameter 'handler' (defined at 1:1-1:8)
+  in [proxy ...] at 1:1-1:8
+  in [proxy ...] at 1:1-1:8
+
 === warn
 arity mismatch: expected 1 argument(s), got 0 (0 positional, 0 named) at 1:1-1:8

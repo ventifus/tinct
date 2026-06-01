@@ -1,4 +1,8 @@
 # floor builtin rejects named arguments (E023)
 [floor n: 3.7]
 === error
-[E023] floor does not accept named arguments
+[E020] arity mismatch: expected 1 argument, got 0 (defined at 1:1-1:15)
+  in [floor ...] at 1:1-1:15
+
+=== warn
+unknown named argument: function has no parameter named 'n' at 1:11-1:14

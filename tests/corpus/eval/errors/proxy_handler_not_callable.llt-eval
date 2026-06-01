@@ -1,6 +1,5 @@
 # Proxy handler must be a Function or Builtin; Int is rejected
 [p: [proxy 42]  result: p.test]
 === error
-[E010] type mismatch: expected Function or Builtin, got Int
-=== warn
-cannot unify Fn@⊤ [String] with 42 at 1:12-1:14
+[E010] type mismatch: expected Function or Builtin, got Int (defined at 1:25-1:31)
+  in accessing .test at 1:25-1:31

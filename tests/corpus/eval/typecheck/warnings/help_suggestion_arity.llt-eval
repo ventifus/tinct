@@ -3,5 +3,6 @@
 [@[Fn@Int [Int Int]] [fn [let x] x]]
 === out
 Function(x)
+
 === warn
-arity mismatch: expected 2 arguments, got 1
+arity mismatch: expected 2 arguments, got 1 at 2:22-2:36

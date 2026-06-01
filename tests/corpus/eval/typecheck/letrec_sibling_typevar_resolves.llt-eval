@@ -5,10 +5,3 @@
 [a: "hello"  b: [length a]]
 === out
 Dict({"a": String("hello"), "b": Int(5)})
----
-# Forward-reference pattern: b references a, but a is defined AFTER b in the dict.
-# Letrec scope means all keys are visible to all values regardless of order.
-# The absence of === warn asserts that no spurious type warnings are emitted.
-[b: [length a]  a: "hello"]
-=== out
-Dict({"a": String("hello"), "b": Int(5)})

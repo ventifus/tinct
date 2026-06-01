@@ -1,7 +1,6 @@
 [@String 42]
-=== error
-error: type assertion failed: expected String, got Int
- --> block 1:1:1
-  |
-  1 | [@String 42]
-    | ^^^^^^^^^^^^
+=== out
+Int(42)
+
+=== warn
+cannot unify String with 42 at 1:10-1:12

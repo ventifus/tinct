@@ -2,5 +2,8 @@
 # A function without a return type annotation that calls itself
 # should be rejected during type checking.
 [f: [fn [let x] [$f $x]]]
+=== out
+Dict({"f": Function(x)})
+
 === warn
-infinite type
+infinite type: _t0 occurs in Fn@[0: _t0 1: _] [x: _] at 3:5-3:25

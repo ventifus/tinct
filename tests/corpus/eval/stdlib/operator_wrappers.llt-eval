@@ -25,5 +25,16 @@
   take-result: [collect [take 2 [seq 10 [seq 20 [seq 30 []]]]]]
   drop-result: [collect [drop 1 [seq 10 [seq 20 [seq 30 []]]]]]
 ]
-=== out
-Dict({"lt-result": Bool(true), "lt-false": Bool(false), "eq-result": Bool(true), "eq-false": Bool(false), "add-result": Int(5), "sub-result": Int(7), "mul-result": Int(12), "div-result": Float(5), "if-true": String("yes"), "if-false": String("no"), "filter-result": Dict({0: Int(1), 1: Int(2)}), "map-result": Dict({0: Int(2), 1: Int(4), 2: Int(6)}), "reduce-result": Int(6), "take-result": Dict({0: Int(10), 1: Int(20)}), "drop-result": Dict({0: Int(20), 1: Int(30)})})
+=== error
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 21:27-21:87) (called at stdlib/prelude.llt:2459:15-2459:35)
+  in [filter ...] at 21:27-21:87
+  in [filter ...] at 21:27-21:87
+  in [builtin-collect ...] at stdlib/prelude.llt:2459:15-2459:35
+   |
+  2459 | """] [let xs] [builtin-collect xs]]
+       |               ^^^^^^^^^^^^^^^^^^^^
+
+=== warn
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 21:27-21:87
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 22:24-22:73
+arity mismatch: expected 3 argument(s), got 4 (4 positional, 0 named) at 23:18-23:78

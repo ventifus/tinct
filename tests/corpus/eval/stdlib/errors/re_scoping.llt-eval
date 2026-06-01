@@ -5,9 +5,7 @@
 [try [fn [] [re-match "test" "test"]]]
 
 === out
-
-Variant(Err, String("undefined variable: re-match (did you mean the string \"re-match\"? Use quotes.)"))
+Variant(Error, String("undefined variable: re-match (did you mean the string \"re-match\"? Use quotes.)"))
 
 === warn
-
-undefined variable: re-match
+undefined variable: re-match at 4:14-4:22

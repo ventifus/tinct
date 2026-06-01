@@ -1,5 +1,10 @@
 # compose: multi-step chain (compose f g)(x) = f(g(x))
 # double then add 10
 [call [compose [fn [x] [+ x 10]] [fn [x] [* x 2]]] 5]
-=== out
-Int(20)
+=== error
+[E020] arity mismatch: expected 2 arguments, got 4 (defined at 2:7-2:51) (called at 2:1-2:54)
+  in [compose ...] at 2:7-2:51
+  in [compose ...] at 2:7-2:51
+
+=== warn
+arity mismatch: expected 2 argument(s), got 4 (4 positional, 0 named) at 2:7-2:51

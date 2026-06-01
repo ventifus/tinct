@@ -1,4 +1,7 @@
 # payload-of extracts the payload dict from a Variant with a dict payload
 [.a [payload-of [variant "Ok" [a: 42]]]]
-=== out
-Int(42)
+=== error
+[E099] syntax error at 1:2 (cannot evaluate error node) (defined at 1:2-1:3)
+
+=== warn
+syntax error at 1:2 (cannot typecheck error node) at 1:2-1:3

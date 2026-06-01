@@ -3,5 +3,8 @@
 # and VarRef Variant nodes — all reconstructed via dict_to_surface_node_inner.
 # This test was blocked until the macro-runtime-v2-regression fix.
 [x: 42  msg: i"Value is $x"]
-=== out
-Dict({"x": Int(42), "msg": String("Value is 42")})
+=== error
+[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 4:14-4:28)
+
+=== warn
+[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 4:14-4:28)

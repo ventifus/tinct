@@ -2,5 +2,8 @@
 [b: [make-builder]
  _: [builder-set "x" 42 b]
  result: [builder-get-or "x" 99 b]]{result}
-=== out
-Int(42)
+=== error
+[E002] undefined variable: {result} (defined at 3:36-3:44)
+
+=== warn
+undefined variable: {result} at 3:36-3:44

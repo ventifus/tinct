@@ -4,3 +4,6 @@
     _:      "unknown"]
 === out
 String("yes")
+
+=== warn
+inaccessible match arm: reachable only via diverging (bottom) values at 4:5-4:6

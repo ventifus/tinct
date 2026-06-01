@@ -8,5 +8,8 @@
    ]]]
 
 [[two-ints]]
-=== out
-Dict({0: Int(10), 1: Int(20)})
+=== error
+[E080] macro 'two-ints' returned invalid AST: dict_to_surface_node: unknown node type: splice (defined at 9:2-9:12)
+
+=== warn
+[E080] macro 'two-ints' returned invalid AST: dict_to_surface_node: unknown node type: splice (defined at 9:2-9:12)

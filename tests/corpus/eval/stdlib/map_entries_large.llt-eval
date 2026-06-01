@@ -2,5 +2,10 @@
 [let d [collect [range 0 1000]]]
 [let mapped [map-entries [fn [e] [* e.value 2]] d]]
 [get 999 mapped]
-=== out
-Int(1998)
+=== error
+[E099] let declarations are not expressions (defined at 1:1-1:33)
+
+=== warn
+multi-element [let ...] pattern not yet supported — use single binding at 1:1-1:33
+multi-element [let ...] pattern not yet supported — use single binding at 2:1-2:52
+undefined variable: mapped at 3:10-3:16

@@ -2,3 +2,6 @@
 [builtin-finite? 42.0]
 === out
 Bool(true)
+
+=== warn
+undefined variable: builtin-finite? at 1:2-1:17

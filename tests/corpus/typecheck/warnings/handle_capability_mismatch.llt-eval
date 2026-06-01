@@ -7,5 +7,6 @@
 [f: [fn [let h@[Handle Readable]] [@[Handle Writable] h]]]
 === out
 Dict({"f": Function(h)})
+
 === warn
-cannot unify Handle[
+cannot unify Handle[[__cap_flag_writable: []]] with Handle[[__cap_flag_readable: []]] at 6:55-6:56

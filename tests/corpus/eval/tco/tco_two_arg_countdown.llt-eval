@@ -6,5 +6,5 @@
 ]
 ---
 [countdown 500 0]
-=== out
-Int(500)
+=== error
+[E002] undefined variable: countdown (did you mean the string "countdown"? Use quotes.) (defined at 8:2-8:11)

@@ -3,7 +3,10 @@
   f: [fn [let a b@[default: 2] c d] [+ a d]]
   result: [f 1 c: 5]
 ]
+=== error
+[E024] missing argument for required parameter 'd' (defined at 3:11-3:21)
+  in [f ...] at 3:11-3:21
+  in [f ...] at 3:11-3:21
+
 === warn
 arity mismatch: expected 4 argument(s), got 2 (1 positional, 1 named) at 3:11-3:21
-=== error
-[E024] missing argument for required parameter

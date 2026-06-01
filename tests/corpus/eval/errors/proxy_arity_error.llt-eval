@@ -1,6 +1,9 @@
 # $proxy requires exactly 1 argument; calling with 2 args is an arity error
 [proxy [fn [let field] hello] [fn [let field] world]]
 === error
-[E020] arity mismatch
+[E020] arity mismatch: expected 1 argument, got 2 (defined at 1:1-1:54)
+  in [proxy ...] at 1:1-1:54
+  in [proxy ...] at 1:1-1:54
+
 === warn
-arity mismatch: expected 1 argument(s), got 2 (2 positional, 0 named)
+arity mismatch: expected 1 argument(s), got 2 (2 positional, 0 named) at 1:1-1:54

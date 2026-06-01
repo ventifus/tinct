@@ -5,5 +5,8 @@
   p: [proxy handler]
   result: p.myfield
 ]
-=== out
-Dict({"handler": Function(key), "p": Proxy, "result": String("String")})
+=== error
+[E099] syntax error at 3:35 (cannot evaluate error node) (defined at 3:35-3:36)
+
+=== warn
+syntax error at 3:35 (cannot typecheck error node) at 3:35-3:36

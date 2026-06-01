@@ -6,5 +6,8 @@
 [call [fn [frame]
     [call %.parse-grpc-frame-header [str-slice 0 5 frame]]]
     [call %.build-grpc-frame "hello" false]]
-=== out
-Dict({"compressed": Bool(false), "length": Int(5), "header-len": Int(5)})
+=== error
+[E099] syntax error at 6:59 (cannot evaluate error node) (defined at 6:59-6:60)
+
+=== warn
+syntax error at 6:59 (cannot typecheck error node) at 6:59-6:60

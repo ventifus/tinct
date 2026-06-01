@@ -1,4 +1,5 @@
 # /: float division by zero produces an error (E031)
 [/ 1 0]
 === error
-[E031] /: division by zero
+[E080] division by zero (defined at 1:1-1:8)
+  in [/ ...] at 1:1-1:8

@@ -21,4 +21,4 @@
   result: 42
 ]
 === out
-Dict({"Result2": Dict({}), "unwrap-ok": Function(r), "result": Int(42)})
+Dict({"MyOk": Variant(MyOk, Null), "MyErr": Variant(MyErr, Null), "unwrap-ok": Function(r), "result": Int(42)})

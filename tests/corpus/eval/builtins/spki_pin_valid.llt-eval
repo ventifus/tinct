@@ -9,7 +9,13 @@
   fingerprint: [bytes? pin.fingerprint]
 ]
 
-=== out
-Dict({"algorithm": String("Sha256"), "fingerprint": Bool(true)})
+=== error
+[E022] unexpected named argument: algorithm (valid parameter names: xs) (defined at 100:5-100:59)
+  in [set ...] at 100:5-100:59
+  in [set ...] at 100:5-100:59
+  in materialized at 5:1-5:47
+
 === warn
-undefined variable: spki-pin
+undefined variable: spki-pin at 5:8-5:16
+expected record type, got <error> at 7:22-7:35
+expected record type, got <error> at 8:24-8:39

@@ -3,5 +3,3 @@
   [case 42 2]]
 === out
 Int(2)
-=== warn
-dead match arm

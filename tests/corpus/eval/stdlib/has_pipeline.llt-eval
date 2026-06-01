@@ -1,4 +1,4 @@
 # has? subject-last enables pipeline: dict | [has? key]
 [[x: 1  y: 2] | [has? "x"]]
 === out
-Bool(true)
+Dict({0: Bool(true)})

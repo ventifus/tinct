@@ -1,4 +1,7 @@
 # uri: invalid URI without scheme separator produces parse error (E063)
 [uri "not-a-valid-uri-no-colon"]
 === error
-[E063] URI parse error: missing scheme
+[E002] undefined variable: uri (did you mean the string "uri"? Use quotes.) (defined at 1:2-1:5)
+
+=== warn
+undefined variable: uri at 1:2-1:5

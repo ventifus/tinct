@@ -7,3 +7,7 @@
   [case [let _]        "no-match"]]
 === out
 String("matched-ok")
+
+=== warn
+unreachable match arm: this pattern is already covered by prior arms at 5:3-5:38
+unreachable match arm: this pattern is already covered by prior arms at 6:3-6:35

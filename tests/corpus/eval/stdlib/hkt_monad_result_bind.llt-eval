@@ -4,7 +4,7 @@
 # The type checker does not know about MonadResult (no prelude type env seeding),
 # so it warns "undefined variable: MonadResult", but the evaluator succeeds.
 [MonadResult.bind [Ok 1] [fn [x] [Ok [+ x 1]]]]
-=== out
-Variant(Ok, Int(2))
-=== warn
-undefined variable: MonadResult
+=== error
+[E002] undefined variable: MonadResult (defined at 5:2-5:13) (accessed at 5:1-5:48)
+  in accessing .bind at 5:2-5:18
+  in [<dot-access> ...] at 5:1-5:48

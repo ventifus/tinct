@@ -1,5 +1,8 @@
 # @Fn in TypeAssert position now resolves to Function{params:[], ret:Top, variadic:true}
 # (the top of the function lattice). Non-callable values such as Int are rejected.
 [@Fn 42]
-=== error
-[E011] type assertion failed
+=== out
+Int(42)
+
+=== warn
+cannot unify Fn@⊤ [ ...] with 42 at 2:6-2:8

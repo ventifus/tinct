@@ -23,5 +23,12 @@
 
   all_tests: [seq test1 test2 test3 test4]
 ]
-=== out
-Dict({"result1": Variant(Ok, Int(42)), "result2": Variant(Error, String("failed")), "test1": String("ok-matched"), "test2": String("ok-matched"), "test3": String("err-matched"), "test4": String("err-matched"), "all_tests": Seq(String("ok-matched"), ...)})
+=== error
+[E071] non-exhaustive match: no pattern matched the Variant value (defined at 7:10-9:29)
+
+=== warn
+non-exhaustive match: missing coverage for [Variant _] at 7:10-9:29
+non-exhaustive match: missing coverage for [Variant _] at 11:10-13:31
+non-exhaustive match: missing coverage for [Variant _] at 15:10-17:29
+non-exhaustive match: missing coverage for [Variant _] at 19:10-21:31
+arity mismatch: expected 2 argument(s), got 4 (4 positional, 0 named) at 23:14-23:43

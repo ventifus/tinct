@@ -16,5 +16,6 @@
 ]
 === out
 Dict({"g": Function(), "result": Int(42)})
+
 === warn
-ambiguous type variable
+ambiguous type variable 'a' in constraint Comparable: appears in constraint but not in the type — constraint will be silently dropped

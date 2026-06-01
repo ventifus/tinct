@@ -15,5 +15,13 @@
 # byte-idx=6 in ext64 field = header byte 8 = 0x00 = 0
 [byte8: [char-code [str-slice 8 9 hdr]]]
 [set [] byte1: byte1 byte7: byte7 byte8: byte8]
-=== out
-Dict({"byte1": Int(255), "byte7": Int(1), "byte8": Int(0)})
+=== error
+[E022] unexpected named argument: header (valid parameter names: xs) (defined at 175:5-178:39)
+  in [set ...] at 175:5-178:39
+  in [set ...] at 175:5-178:39
+  in materialized at 146:5-150:66
+  in [if ...] at 148:9-150:65
+  in [if ...] at 146:5-150:66
+  in materialized at 273:9-275:72
+  in [if ...] at 273:9-275:72
+  in materialized at 8:1-8:76

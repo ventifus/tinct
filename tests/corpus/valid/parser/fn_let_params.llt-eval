@@ -3,5 +3,4 @@
 [fn [let x@Int y] [+ $x $y]]
 
 === out
-
 [fn [let x@Int y] [+ x y]]

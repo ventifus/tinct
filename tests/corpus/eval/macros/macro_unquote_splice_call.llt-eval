@@ -5,5 +5,9 @@
   [quote [+ [unquote-splicing args]]]]
 
 [sum-spliced 10 20]
-=== out
-Int(30)
+=== error
+[E002] undefined variable: unquote-splicing (did you mean the string "unquote-splicing"? Use quotes.) (defined at 4:14-4:30)
+  in [+ ...] at 4:10-4:37
+
+=== warn
+arity mismatch: expected 2 argument(s), got 1 (1 positional, 0 named) at 4:10-4:37

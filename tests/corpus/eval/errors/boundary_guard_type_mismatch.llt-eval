@@ -4,4 +4,7 @@
 # evaluates to String "hello", which fails the Int guard.
 [call [fn [let x@Int] x] [from-json "\"hello\""]]
 === error
-[E011] type assertion failed: expected Int, got String
+[E002] undefined variable: from-json (defined at 4:27-4:36)
+
+=== warn
+undefined variable: from-json at 4:27-4:36

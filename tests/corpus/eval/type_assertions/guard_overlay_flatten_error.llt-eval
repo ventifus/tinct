@@ -5,4 +5,7 @@
 # thunk transitions to Failed via cache_failure rather than remaining InProgress).
 [@[x: Int] [merge [x: 1] [from-json "\"not-a-dict\""]]]
 === error
-[E010] type guard: expected Dict, got String
+[E002] undefined variable: from-json (defined at 5:27-5:36) (materialized at 5:1-5:56)
+
+=== warn
+undefined variable: from-json at 5:27-5:36

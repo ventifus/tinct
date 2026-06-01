@@ -1,4 +1,5 @@
 # floor: float out of i64 range produces FloatOutOfRange error (E036)
 [floor 10000000000000000000.0]
 === error
-[E036]
+[E036] floor: 10000000000000000000 is out of range for Int (defined at 1:1-1:31)
+  in [floor ...] at 1:1-1:31

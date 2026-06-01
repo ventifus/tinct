@@ -1,4 +1,7 @@
 # duration-seconds: 60 seconds converted back via duration->seconds
 [duration->seconds [duration-seconds 60]]
-=== out
-Int(60)
+=== error
+[E002] undefined variable: duration->seconds (defined at 1:2-1:19)
+
+=== warn
+undefined variable: duration->seconds at 1:2-1:19

@@ -3,5 +3,17 @@
 # Insertion order: "a" bucket first, then "b" bucket.
 # Each bucket: elements cons-prepended then reversed, restoring insertion order.
 [group-by [fn [x] x] ["a" "b" "a"]]
-=== out
-Dict({"a": Dict({0: String("a"), 1: String("a")}), "b": Dict({0: String("b")})})
+=== error
+[E099] let declarations are not expressions (defined at stdlib/prelude.llt:1222:5-1229:22)
+  --> stdlib/prelude.llt:1222:5-1229:22
+   |
+  1222 |     [let raw
+  1223 |         [builder-finish
+  1224 |             [builtin-reduce
+  1225 |                 [fn [let b x]
+  1226 |                     [let k [f x]]
+  1227 |                     [builder-set k [cons x [builder-get-or k [] b]] b]]
+  1228 |                 [make-builder]
+  1229 |                 xs]]]
+       | ^^^^^^^^^^^^^^^^^^^^^
+  in [group-by ...] at 4:1-4:36

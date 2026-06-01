@@ -1,5 +1,6 @@
 [@[type: "Number"  default: 0] x]
 === out
 [@["type": "Number"  "default": 0] x]
+
 === warn
 default value type mismatch: default has type 0, but assertion expects "Number" at 1:29-1:30

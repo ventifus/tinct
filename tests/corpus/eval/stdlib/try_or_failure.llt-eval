@@ -2,3 +2,6 @@
 [try-or [fn [] [raise "oops"]] "fallback"]
 === out
 String("fallback")
+
+=== warn
+cannot unify [] | _ with "fallback" at 1:32-1:42

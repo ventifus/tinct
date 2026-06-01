@@ -5,4 +5,4 @@
     [builder-finish b]]]
  [make-builder]]
 === error
-[E082] builder-set: builder has already been finished
+[E035] cannot serialize Builder to JSON (defined at 1:1-5:17)

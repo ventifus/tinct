@@ -1,5 +1,6 @@
 [@Number x]
 === out
 [@Number x]
+
 === warn
 undefined variable: x at 1:10-1:11

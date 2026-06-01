@@ -8,5 +8,3 @@
 ]
 === out
 Dict({"fn_user_function": Bool(true), "fn_builtin": Bool(true), "fn_false_int": Bool(false), "fn_false_string": Bool(false), "fn_false_dict": Bool(false), "fn_false_proxy": Bool(false)})
-=== warn
-cannot unify Fn@⊤ [String] with [get: Fn@_t

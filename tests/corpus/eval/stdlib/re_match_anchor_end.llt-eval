@@ -6,5 +6,4 @@
 [call %.re-match "world" "hello world"]
 
 === out
-
 Bool(true)

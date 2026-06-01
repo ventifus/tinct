@@ -3,4 +3,5 @@
 
 [send 42 "value"]
 === error
-[E004] type mismatch: expected Channel, BroadcastChannel, or OneshotSender, got Int
+[E010] type mismatch: expected Channel, BroadcastChannel, or OneshotSender, got Int (defined at 3:1-3:18)
+  in [send ...] at 3:1-3:18

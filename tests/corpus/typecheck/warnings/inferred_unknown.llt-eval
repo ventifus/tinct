@@ -3,5 +3,7 @@
 [f: [fn [let r@[x: Int]] r.y]]
 === out
 Dict({"f": Function(r)})
+
 === warn
-inferred type is Unknown
+inferred type is Unknown — consider adding a type annotation
+inferred type is Unknown — consider adding a type annotation

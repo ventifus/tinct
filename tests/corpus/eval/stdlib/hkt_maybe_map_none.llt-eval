@@ -1,5 +1,10 @@
 # Test: maybe-map on None value (passes through)
 [maybe-map [fn [x] [+ x 1]] None]
 
-=== out
-Variant(None, Null)
+=== error
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-1:34)
+  in [maybe-map ...] at 1:1-1:34
+  in [maybe-map ...] at 1:1-1:34
+
+=== warn
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 1:1-1:34

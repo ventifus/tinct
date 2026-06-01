@@ -3,5 +3,6 @@
 [f: [fn@Number [let x@Int] x]]
 === out
 Dict({"f": Function(x)})
+
 === warn
-annotation @Number is over-broad
+annotation @Number is over-broad — inferred type is Int; consider using @Int

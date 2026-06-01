@@ -7,4 +7,5 @@
 [y: x]
 y
 === error
-error: undefined variable `x`
+[E013] no instance for Addable (Int, String) (defined at 5:5-5:19) (called at 5:1-5:20)
+  in [+ ...] at 5:5-5:19

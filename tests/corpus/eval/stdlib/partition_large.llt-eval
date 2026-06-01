@@ -2,5 +2,9 @@
 [let test-dict [collect [range 0 1000]]]
 [let result [partition [fn [x] [= [mod x 2] 0]] test-dict]]
 [+ [length result.pass] [length result.fail]]
-=== out
-Int(1000)
+=== error
+[E099] let declarations are not expressions (defined at 1:1-1:41)
+
+=== warn
+multi-element [let ...] pattern not yet supported — use single binding at 1:1-1:41
+multi-element [let ...] pattern not yet supported — use single binding at 2:1-2:60

@@ -3,7 +3,12 @@
 [recv-datagram "not-a-socket"]
 
 === error
-[E010] recv-datagram: expected DatagramHandle or QuicDatagramHandle, got String
+[E002] undefined variable: builtin-recv-datagram (defined at stdlib/prelude.llt:2235:51-2235:72) (called at 2:1-2:31)
+  --> stdlib/prelude.llt:2235:51-2235:72
+   |
+  2235 | recv-datagram@[doc: "Receive a datagram packet"]: builtin-recv-datagram
+       |                                                   ^^^^^^^^^^^^^^^^^^^^^
+  in [recv-datagram ...] at 2:1-2:31
 
 === warn
-cannot unify DatagramHandle with "not-a-socket" at 2:16-2:30
+cannot unify QuicDatagramHandle | DatagramHandle with "not-a-socket" at 2:16-2:30

@@ -1,5 +1,6 @@
 [Fn@Number [Number Number]]
 === out
 [Fn@Number  [Number Number]]
+
 === warn
 undefined variable: Number at 1:13-1:19

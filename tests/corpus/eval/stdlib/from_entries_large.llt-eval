@@ -3,5 +3,10 @@
 [let d [collect [range 0 1000]]]
 [let pairs [each-kv d]]
 [length [from-entries [collect pairs]]]
-=== out
-Int(1000)
+=== error
+[E099] let declarations are not expressions (defined at 2:1-2:33)
+
+=== warn
+multi-element [let ...] pattern not yet supported — use single binding at 2:1-2:33
+multi-element [let ...] pattern not yet supported — use single binding at 3:1-3:24
+undefined variable: pairs at 4:32-4:37

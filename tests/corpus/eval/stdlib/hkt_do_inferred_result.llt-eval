@@ -6,4 +6,4 @@
 [[fn@[ok: Int  err: Str] []
   [do [x: [Ok 42]] [Ok x]]]]
 === out
-Variant(Ok, Int(42))
+Dict({0: Function()})

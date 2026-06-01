@@ -9,14 +9,25 @@
 # The instance wraps dict values with an `n:` field. [+ s1 s2] dispatches to
 # the Dict/Dict Addable arm, which adds the inner n: fields and returns a new dict.
 
-make-scale: [fn [let n] [n: n]]
+[
+  make-scale: [fn [let n] [n: n]]
 
-[instance Addable
-  [let a@Dict b@Dict c]: [+: [fn [let x y] [make-scale [+ [get x n] [get y n]]]]]]
+  _: [instance Addable
+    [let a@Dict b@Dict c]: [+: [fn [let x y] [make-scale [+ [get x n] [get y n]]]]]]
 
-s1: [make-scale 3]
-s2: [make-scale 4]
-
+  s1: [make-scale 3]
+  s2: [make-scale 4]
+]
 [get [+ s1 s2] n]
-=== out
-Int(7)
+=== error
+[E013] no instance for Addable (Dict, Dict) (defined at 20:6-20:15)
+  in [+ ...] at 20:6-20:15
+  in [builtin-get ...] at stdlib/prelude.llt:843:25-843:47
+   |
+  843 | """] [let key@k dict@d] [builtin-get key dict]]
+      |                         ^^^^^^^^^^^^^^^^^^^^^^
+  in [get ...] at 20:1-20:18
+
+=== warn
+coverage violation for class 'Addable': determined parameter 'c' (variable '_t0') does not appear in any determining position at 15:5-15:26
+arithmetic operator applied to non-numeric type `[n: _t11]` at 20:6-20:15

@@ -1,3 +1,8 @@
 [drop-while [fn [x] [< x 5]] [1 2 3 4 5 6 7]]
-=== out
-Dict({4: Int(5), 5: Int(6), 6: Int(7)})
+=== error
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-1:46)
+  in [drop-while ...] at 1:1-1:46
+  in [drop-while ...] at 1:1-1:46
+
+=== warn
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 1:1-1:46

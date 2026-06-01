@@ -6,5 +6,5 @@
 ]
 ---
 [retry-countdown 500]
-=== out
-Str("success")
+=== error
+[E002] undefined variable: retry-countdown (did you mean the string "retry-countdown"? Use quotes.) (defined at 8:2-8:17)

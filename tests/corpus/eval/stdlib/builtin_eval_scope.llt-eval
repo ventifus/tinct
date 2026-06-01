@@ -1,5 +1,9 @@
 # builtin-eval scope: injects bindings into the document's local scope
 --- uses: ["core"]
 [result: [builtin-eval [x] scope: [x: 42]]]
-=== out
-Dict({"result": Int(42)})
+=== error
+[E002] undefined variable: x (did you mean the string "x"? Use quotes.) (defined at 2:25-2:26)
+  in [builtin-eval ...] at 2:10-2:43
+
+=== warn
+unknown named argument: function has no parameter named 'scope' at 2:35-2:42

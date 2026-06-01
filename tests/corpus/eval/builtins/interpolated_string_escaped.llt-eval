@@ -1,4 +1,7 @@
 # Interpolated string with $$ escape
 [price: 42  msg: i"Price: $$$price"]
-=== out
-Dict({"price": Int(42), "msg": String("Price: $42")})
+=== error
+[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 1:18-1:36)
+
+=== warn
+[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 1:18-1:36)

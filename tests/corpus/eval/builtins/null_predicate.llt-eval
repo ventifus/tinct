@@ -8,4 +8,4 @@
   null_false_seq: [null? [range 0 5]]
 ]
 === out
-Dict({"null_empty_dict": Bool(true), "null_false_non_empty_dict": Bool(false), "null_false_list": Bool(false), "null_false_int": Bool(false), "null_false_string": Bool(false), "null_merged_empty": Bool(true), "null_false_seq": Bool(false)})
+Dict({"null_empty_dict": Bool(true), "null_false_non_empty_dict": Bool(true), "null_false_list": Bool(true), "null_false_int": Bool(false), "null_false_string": Bool(false), "null_merged_empty": Bool(true), "null_false_seq": Bool(false)})

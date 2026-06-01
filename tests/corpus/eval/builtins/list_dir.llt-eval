@@ -1,3 +1,3 @@
 [> [length [collect [call $list-dir %cwd "src"]]] 0]
 === out
-true
+Bool(true)

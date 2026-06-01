@@ -5,3 +5,6 @@
   [case [let _]     0]]
 === out
 Int(3)
+
+=== warn
+unreachable match arm: this pattern is already covered by prior arms at 4:3-4:23

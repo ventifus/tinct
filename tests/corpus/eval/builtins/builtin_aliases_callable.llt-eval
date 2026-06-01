@@ -2,5 +2,8 @@
 [
   a: [builtin-lt 1 2]
 ]
-=== error
-[E002] undefined variable: builtin-lt
+=== out
+Dict({"a": Bool(true)})
+
+=== warn
+undefined variable: builtin-lt at 2:7-2:17

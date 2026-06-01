@@ -2,4 +2,5 @@
 # Program values (returned by [load ...]) have no tinct representation
 [to-tinct [load "42"]]
 === error
-[E080] to-tinct: no tinct representation for Program
+[E080] to-tinct: no tinct representation for Program (defined at 2:1-2:23)
+  in [to-tinct ...] at 2:1-2:23

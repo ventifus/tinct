@@ -6,5 +6,6 @@
 [builtin-pow 2.0 10.0]
 === out
 Float(1024)
+
 === warn
-raw builtin `builtin-pow` is not available in user code
+undefined variable: builtin-pow at 5:2-5:13

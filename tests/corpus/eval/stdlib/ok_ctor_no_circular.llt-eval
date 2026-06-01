@@ -6,3 +6,7 @@
  error-result: [match error-val [Ok v]: v [Error _]: -1]]
 === out
 Dict({"ok-val": Variant(Ok, Int(42)), "error-val": Variant(Error, String("oops")), "ok-result": Int(42), "error-result": Int(-1)})
+
+=== warn
+non-exhaustive match: missing coverage for [Variant _] at 4:13-4:50
+non-exhaustive match: missing coverage for [Variant _] at 5:16-5:57

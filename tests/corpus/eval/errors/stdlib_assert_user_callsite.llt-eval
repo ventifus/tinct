@@ -1,6 +1,16 @@
 [assert false "user assertion failed"]
 === error
-[E080] user assertion failed (defined at 1806:50-1806:61)
-  in [raise ...] at 1806:50-1806:61
-  in [builtin-if ...] at 1806:28-1806:62
+[E080] user assertion failed (defined at stdlib/prelude.llt:2051:28-2051:47)
+  --> stdlib/prelude.llt:2051:28-2051:47
+   |
+  2051 | """]: [fn [let msg@String] [builtin-raise msg]]
+       |                            ^^^^^^^^^^^^^^^^^^^
+  in [builtin-raise ...] at stdlib/prelude.llt:2051:28-2051:47
+   |
+  2051 | """]: [fn [let msg@String] [builtin-raise msg]]
+       |                            ^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:2008:28-2008:62
+   |
+  2008 | """] [let cond msg@String] [builtin-if cond true [error msg]]]
+       |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [assert ...] at 1:1-1:39

@@ -3,5 +3,6 @@
 [f: [fn@Unknown [let x] x]]
 === out
 Dict({"f": Function(x)})
+
 === warn
-explicit @Unknown annotation
+explicit @Unknown annotation — type is not statically known

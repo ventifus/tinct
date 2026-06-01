@@ -7,5 +7,3 @@
 [do result]
 === out
 Variant(Ok, Dict({}))
-=== warn
-undefined variable: result

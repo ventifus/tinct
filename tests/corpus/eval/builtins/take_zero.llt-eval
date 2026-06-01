@@ -2,4 +2,3 @@
 [collect [take 0 [range 0]]]
 === out
 Dict({})
-

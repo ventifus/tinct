@@ -2,4 +2,3 @@
 [collect [take 4 [range 5]]]
 === out
 Dict({0: Int(5), 1: Int(6), 2: Int(7), 3: Int(8)})
-

@@ -7,5 +7,35 @@
     [filter
      [fn [let x] [< x 100]]
      [seq 42 [seq [raise "predicate should not fire"] []]]]]]
-=== out
-Dict({0: Int(42)})
+=== error
+[E080] predicate should not fire (defined at stdlib/prelude.llt:2051:28-2051:47)
+  --> stdlib/prelude.llt:2051:28-2051:47
+   |
+  2051 | """]: [fn [let msg@String] [builtin-raise msg]]
+       |                            ^^^^^^^^^^^^^^^^^^^
+  in [builtin-raise ...] at stdlib/prelude.llt:2051:28-2051:47
+   |
+  2051 | """]: [fn [let msg@String] [builtin-raise msg]]
+       |                            ^^^^^^^^^^^^^^^^^^^
+  in [< ...] at 7:18-7:27
+  in filter-seq pred at stdlib/prelude.llt:2058:72-2058:96
+   |
+  2058 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+       |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
+  in filter-seq pred at stdlib/prelude.llt:2435:29-2435:30
+   |
+  2435 | """] [let h t] [builtin-seq h t]]
+       |                             ^
+  in call $filter at stdlib/prelude.llt:2058:72-2058:96
+   |
+  2058 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+       |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
+  in call $take at stdlib/prelude.llt:2061:57-2061:76
+   |
+  2061 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+       |                                                         ^^^^^^^^^^^^^^^^^^^
+  in [builtin-collect ...] at stdlib/prelude.llt:2459:15-2459:35
+   |
+  2459 | """] [let xs] [builtin-collect xs]]
+       |               ^^^^^^^^^^^^^^^^^^^^
+  in [collect ...] at 5:1-8:62

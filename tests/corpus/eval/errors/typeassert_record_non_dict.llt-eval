@@ -2,4 +2,5 @@
 # @Any inner wrapper lets the type checker pass; outer Record check fires at runtime
 [@[name: String] [@Any 42]]
 === error
-[E011] type assertion failed: expected [name: String], got Int
+[E011] type assertion failed: expected [name: String], got Int (defined at 2:18-2:27) (materialized at 2:1-2:28)
+  note: value produced here at 2:18-2:27

@@ -5,5 +5,4 @@
 [call %.re-find "123" "abc123def"]
 
 === out
-
 Dict({"match": String("123"), "start": Int(3), "end": Int(6)})

@@ -4,7 +4,7 @@
 # → None (short-circuits because bind on None returns None)
 [do MonadMaybe [x: None] [Some [+ x 1]]]
 
-=== out
-Variant(None, Null)
-=== warn
-undefined variable: MonadMaybe
+=== error
+[E002] undefined variable: MonadMaybe (defined at 4:5-4:15) (called at 4:1-4:41)
+  in [<dot-access> ...] at 4:1-4:41
+  in expansion of `do` at 4:1

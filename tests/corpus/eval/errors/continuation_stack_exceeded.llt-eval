@@ -26,3 +26,10 @@
 
 ---OUTPUT---
 Int(42)
+=== error
+[E002] undefined variable: ---OUTPUT--- (defined at 26:1-26:13)
+
+=== warn
+expected record type, got 42 at 24:1-24:3
+undefined variable: ---OUTPUT--- at 26:1-26:13
+undefined variable: Int(42) at 27:1-27:8

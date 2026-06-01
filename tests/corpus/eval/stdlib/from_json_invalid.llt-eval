@@ -2,4 +2,55 @@
 [json: [include %libdir "codecs/json.llt"]]
 [json.from-json "{bad json"]
 === error
-[E080] JSON: expected string key in object
+[E080] JSON: expected string key in object (defined at stdlib/prelude.llt:2051:28-2051:47)
+  --> stdlib/prelude.llt:2051:28-2051:47
+   |
+  2051 | """]: [fn [let msg@String] [builtin-raise msg]]
+       |                            ^^^^^^^^^^^^^^^^^^^
+  in [builtin-raise ...] at stdlib/prelude.llt:2051:28-2051:47
+   |
+  2051 | """]: [fn [let msg@String] [builtin-raise msg]]
+       |                            ^^^^^^^^^^^^^^^^^^^
+  in [if ...] at 415:13-417:17
+  in [str-length ...] at 282:16-282:30
+  in materialized at 282:3-282:33
+  in [str-slice ...] at 282:3-282:33
+  in [str-length ...] at 371:10-371:24
+  in [= ...] at 371:7-371:27
+  in materialized at 371:3-389:81
+  in [if ...] at 371:3-389:81
+  in materialized at 414:3-417:19
+  in materialized at 412:26-428:60
+  in materialized at 433:3-435:49
+  in [if ...] at 433:3-435:49
+  in materialized at 430:20-435:50
+  in materialized at stdlib/prelude.llt:211:5-213:45
+   |
+  211 |     [builtin-if condition
+  212 |         result
+  213 |         [cond-impl pairs [builtin-add i 1]]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:211:5-213:45
+   |
+  211 |     [builtin-if condition
+  212 |         result
+  213 |         [cond-impl pairs [builtin-add i 1]]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:206:5-208:78
+   |
+  206 |     [builtin-if [builtin-gte i [builtin-length pairs]]
+  207 |         []
+  208 |         [cond-check pairs i [builtin-get i pairs].0 [builtin-get i pairs].1]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:206:5-208:78
+   |
+  206 |     [builtin-if [builtin-gte i [builtin-length pairs]]
+  207 |         []
+  208 |         [cond-check pairs i [builtin-get i pairs].0 [builtin-get i pairs].1]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at 439:3-449:81
+  in [if ...] at 439:3-449:81
+  in materialized at 437:19-449:82
+  in materialized at 552:5-556:65
+  in [if ...] at 553:7-556:64
+  in [<dot-access> ...] at 2:1-2:29

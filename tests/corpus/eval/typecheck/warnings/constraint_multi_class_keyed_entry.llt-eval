@@ -2,5 +2,6 @@
 [fn@[constraint: [a: [x: Comparable]] return: a] [let val@a] $val]
 === out
 Function(val)
+
 === warn
-constraint class list must contain only positional entries
+constraint class list cannot be empty at 1:18-1:33

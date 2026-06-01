@@ -8,8 +8,9 @@
 %.foo
 
 === error
-[E011] type assertion failed: expected Dict, got Int
+[E010] dot access: expected Dict, Proxy, or Variant, got Int (defined at 1:1-1:1) (accessed at 7:1-7:6)
+  in accessing .foo at 7:1-7:6
 
 === warn
-expected record type, got 42 at 7:1-7:6
 Pipeline input type 42 does not satisfy expects contract [] at 4:7-4:11
+expected record type, got 42 at 7:1-7:6

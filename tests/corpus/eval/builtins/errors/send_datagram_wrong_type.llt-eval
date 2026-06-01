@@ -3,7 +3,13 @@
 [send-datagram 42 "hello"]
 
 === error
-[E010] send-datagram: expected DatagramHandle or QuicDatagramHandle, got Int
+[E002] undefined variable: builtin-send-datagram (defined at stdlib/prelude.llt:2234:68-2234:89) (called at 2:1-2:27)
+  --> stdlib/prelude.llt:2234:68-2234:89
+   |
+  2234 | send-datagram@[doc: "Send a datagram packet (UDP/Unix datagram)"]: builtin-send-datagram
+       |                                                                    ^^^^^^^^^^^^^^^^^^^^^
+  in [send-datagram ...] at 2:1-2:27
 
 === warn
-cannot unify DatagramHandle with 42 at 2:16-2:18
+cannot unify String | Bytes with 42 at 2:16-2:18
+cannot unify QuicDatagramHandle | DatagramHandle with "hello" at 2:19-2:26

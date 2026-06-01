@@ -1,4 +1,9 @@
 # walk: transform applied to flat value
 [walk [fn [x] [if [= [type-of x] "Dict"] x [* x 2]]] 5]
-=== out
-Int(10)
+=== error
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-1:56)
+  in [walk ...] at 1:1-1:56
+  in [walk ...] at 1:1-1:56
+
+=== warn
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 1:1-1:56

@@ -2,4 +2,4 @@
 
 [channel 32]
 === error
-[E035] cannot serialize Channel
+[E035] cannot serialize Channel to JSON (defined at 2:1-2:13)

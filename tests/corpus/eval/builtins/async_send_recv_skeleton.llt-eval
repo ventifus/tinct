@@ -6,4 +6,4 @@
   msg: [recv ch]
 ]
 === error
-[E035] cannot serialize Channel
+[E035] cannot serialize Channel to JSON (defined at 3:7-3:19)

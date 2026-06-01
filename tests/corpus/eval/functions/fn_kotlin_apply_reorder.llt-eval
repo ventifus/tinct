@@ -6,5 +6,6 @@
 ]
 === out
 Dict({"f": Function(a, b, c), "args": Dict({2: String("c"), 0: String("a"), 1: String("b")}), "result": String("abc")})
+
 === warn
-cannot unify Fn@⊤ [⊤] with Fn@String
+cannot unify Fn@⊤ [⊤] with Fn@String [a: _ b: _ c: _] at 4:18-4:19

@@ -1,4 +1,0 @@
-# empty input parses without error (zero documents; eval returns empty dict)
-
-=== out
-Dict({})

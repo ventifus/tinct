@@ -2,7 +2,8 @@
   f: [fn [let a@[default: 1] b] [+ a b]]
   result: [f b: 10]
 ]
-=== warn
-arity mismatch: expected 2 argument(s), got 1 (0 positional, 1 named) at 3:11-3:20
 === out
 Dict({"f": Function(a, b), "result": Int(11)})
+
+=== warn
+arity mismatch: expected 2 argument(s), got 1 (0 positional, 1 named) at 3:11-3:20

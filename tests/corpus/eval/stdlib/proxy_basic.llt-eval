@@ -2,3 +2,6 @@
 [type-of [proxy [fn [field] 42]]]
 === out
 String("Proxy")
+
+=== warn
+syntax error at 1:29 (cannot typecheck error node) at 1:29-1:31

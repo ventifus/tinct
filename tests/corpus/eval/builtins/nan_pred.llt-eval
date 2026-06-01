@@ -2,3 +2,6 @@
 [builtin-nan? [builtin-sqrt -1]]
 === out
 Bool(true)
+
+=== warn
+undefined variable: builtin-nan? at 1:2-1:14

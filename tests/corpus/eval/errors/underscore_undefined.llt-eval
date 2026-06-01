@@ -2,7 +2,7 @@
 # Should produce undefined variable error
 _
 === error
-[E002] undefined variable: _
+[E002] undefined variable: _ (defined at 2:1-2:2)
 
 === warn
 undefined variable: _ at 2:1-2:2

@@ -4,4 +4,4 @@
 # require the declared fields; only extra fields are allowed).
 [@[name: String  ...] [@Any [score: 42]]]
 === error
-[E011] type assertion failed: expected record with field "name", got record missing field "name"
+[E011] type assertion failed: expected record with field "name", got record missing field "name" (defined at 4:23-4:41)

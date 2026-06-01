@@ -4,4 +4,4 @@
 ---
 [try [fn [] [call %.build-ws-frame 1 "Hello" "ABC"]]]
 === out
-Variant(Err, String("build-ws-frame: mask-key must be exactly 4 bytes"))
+Variant(Error, String("build-ws-frame: mask-key must be exactly 4 bytes"))

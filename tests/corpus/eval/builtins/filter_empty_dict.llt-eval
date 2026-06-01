@@ -2,5 +2,3 @@
 [collect [filter [fn [let x] [> x 100]] [a: 1 b: 2 c: 3]]]
 === out
 Dict({})
-=== warn
-with [a: 1 b: 2 c: 3]

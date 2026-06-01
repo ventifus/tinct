@@ -1,7 +1,7 @@
 # Test: MonadMaybe.bind on None value (short-circuits)
 [MonadMaybe.bind None [fn [x] [Some [+ x 1]]]]
 
-=== out
-Variant(None, Null)
-=== warn
-undefined variable: MonadMaybe
+=== error
+[E002] undefined variable: MonadMaybe (defined at 1:2-1:12) (accessed at 1:1-1:47)
+  in accessing .bind at 1:2-1:17
+  in [<dot-access> ...] at 1:1-1:47

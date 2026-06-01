@@ -2,5 +2,6 @@
 [fn@[constraint: Comparable return: Int] [] 42]
 === out
 Function()
+
 === warn
-constraint: value must be a dict
+constraint: value must be a dict [a: Comparable] at 1:18-1:28

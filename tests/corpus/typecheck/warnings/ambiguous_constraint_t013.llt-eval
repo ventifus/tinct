@@ -7,5 +7,6 @@
 [my_fn: [fn@[constraint: [a: Comparable] return: Int] [let x@Int] x]]
 === out
 Dict({"my_fn": Function(x)})
+
 === warn
-ambiguous type variable
+ambiguous type variable 'a' in constraint Comparable: appears in constraint but not in the type — constraint will be silently dropped

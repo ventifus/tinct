@@ -3,7 +3,12 @@
 [connect %cwd Tcp]
 
 === error
-[E080] connect: Tcp transport requires host and port (4 args total), got 2
+[E002] undefined variable: builtin-connect (defined at stdlib/prelude.llt:2231:60-2231:75) (called at 2:1-2:19)
+  --> stdlib/prelude.llt:2231:60-2231:75
+   |
+  2231 | connect@[doc: "Open a TCP/UDP connection under a NetCap"]: builtin-connect
+       |                                                            ^^^^^^^^^^^^^^^
+  in [connect ...] at 2:1-2:19
 
 === warn
 arity mismatch: expected 4 argument(s), got 2 (2 positional, 0 named) at 2:1-2:19

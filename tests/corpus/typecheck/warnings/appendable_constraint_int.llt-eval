@@ -5,5 +5,6 @@
 [f: [fn [let x@Int] [builtin-concat x x]]]
 === out
 Dict({"f": Function(x)})
+
 === warn
-inferred type is Unknown
+inferred type is Unknown — consider adding a type annotation

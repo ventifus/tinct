@@ -8,5 +8,8 @@
   int_key_large: p.int_key_large
   string_key: p.foo
 ]
-=== out
-Dict({"handler": Function(key), "p": Proxy, "int_key": String("String"), "int_key_large": String("String"), "string_key": String("String")})
+=== error
+[E099] syntax error at 4:35 (cannot evaluate error node) (defined at 4:35-4:36)
+
+=== warn
+syntax error at 4:35 (cannot typecheck error node) at 4:35-4:36

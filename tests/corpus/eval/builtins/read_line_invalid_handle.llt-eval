@@ -1,4 +1,8 @@
 # builtin-read-line: error when argument is not a Handle
 [builtin-read-line 42]
 === error
-[E010] builtin-read-line: expected Handle, got Int
+[E010] builtin-read-line: expected Handle, got Int (defined at 1:20-1:22)
+  in [builtin-read-line ...] at 1:1-1:23
+
+=== warn
+undefined variable: builtin-read-line at 1:2-1:19

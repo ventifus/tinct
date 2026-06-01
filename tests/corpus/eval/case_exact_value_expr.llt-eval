@@ -4,3 +4,12 @@
   _: "other"]
 ---
 String("two")
+=== error
+[E099] let declarations are not expressions (defined at 1:1-1:16)
+
+=== warn
+multi-element [let ...] pattern not yet supported — use single binding at 1:1-1:16
+syntax error at 3:11 (cannot typecheck error node) at 3:11-3:12
+undefined variable: String( at 6:1-6:8
+expected record type, got "two" at 6:8-6:13
+undefined variable: ) at 6:13-6:14

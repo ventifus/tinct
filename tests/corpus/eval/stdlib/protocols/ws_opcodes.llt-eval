@@ -9,5 +9,7 @@
     Close:        %.Close
     Ping:         %.Ping
     Pong:         %.Pong]
-=== out
-Dict({"Continuation": Int(0), "Text": Int(1), "Binary": Int(2), "Close": Int(8), "Ping": Int(9), "Pong": Int(10)})
+=== error
+[E022] unexpected named argument: Continuation (valid parameter names: xs) (defined at 4:1-10:26)
+  in [set ...] at 4:1-10:26
+  in [set ...] at 4:1-10:26

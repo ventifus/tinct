@@ -2,5 +2,8 @@
 # open returns a handle with Readable and Text caps (both set to Bool(true) — presence flags)
 [cap-data [open %cwd "Cargo.toml" Readable] "Readable"]
 
-=== out
-Bool(true)
+=== error
+[E002] undefined variable: cap-data (did you mean the string "cap-data"? Use quotes.) (defined at 2:2-2:10)
+
+=== warn
+undefined variable: cap-data at 2:2-2:10

@@ -1,4 +1,8 @@
 # until with list accumulation
 [until [fn [xs] [>= [length xs] 5]] [fn [xs] [append 1 xs]] []]
-=== out
-Dict({0: Int(1), 1: Int(1), 2: Int(1), 3: Int(1), 4: Int(1)})
+=== error
+[E020] arity mismatch: expected 3 arguments, got 5 (defined at 1:1-1:64)
+  in [until ...] at 1:1-1:64
+
+=== warn
+undefined variable: until at 1:2-1:7

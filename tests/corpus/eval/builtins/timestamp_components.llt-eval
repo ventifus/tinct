@@ -1,4 +1,7 @@
 # timestamp-year: extract UTC year from a parsed timestamp
 [timestamp-year [parse-timestamp "2024-03-15T10:30:00Z"]]
-=== out
-Int(2024)
+=== error
+[E002] undefined variable: timestamp-year (did you mean the string "timestamp-year"? Use quotes.) (defined at 1:2-1:16)
+
+=== warn
+undefined variable: timestamp-year at 1:2-1:16

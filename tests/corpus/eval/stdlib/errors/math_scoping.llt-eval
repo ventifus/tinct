@@ -3,6 +3,7 @@
 
 [try [fn [] pi]]
 === out
-Variant(Err, String("undefined variable: pi (did you mean the string \"pi\"? Use quotes.)"))
+Variant(Error, String("undefined variable: pi (did you mean the string \"pi\"? Use quotes.)"))
+
 === warn
-undefined variable: pi
+undefined variable: pi at 3:13-3:15

@@ -3,4 +3,4 @@
 
 [macro-injects "test-inject"]
 === out
-String("my-name")
+Dict({})

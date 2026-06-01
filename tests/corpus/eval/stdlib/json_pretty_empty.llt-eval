@@ -8,5 +8,10 @@
 [nested: [to-json-pretty [x: [] y: []]]]
 
 [empty-dict: empty-dict  empty-array: empty-array  nested: nested]
-=== out
-Dict({"empty-dict": String("null"), "empty-array": String("null"), "nested": String("{\n  \"x\": null,\n  \"y\": null\n}")})
+=== error
+[E002] undefined variable: to-json-pretty (did you mean the string "to-json-pretty"? Use quotes.) (defined at 5:15-5:29) (materialized at 5:1-5:34)
+
+=== warn
+undefined variable: to-json-pretty at 5:15-5:29
+undefined variable: to-json-pretty at 6:16-6:30
+undefined variable: to-json-pretty at 7:11-7:25

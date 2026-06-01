@@ -5,7 +5,5 @@
   result: outer.inner
 ]
 === error
-[E010] +/-/*//: expected Int or Float, got Int and String
-
-=== warn
-no instance for Addable Int String at 3:12-3:32
+[E013] no instance for Addable (Int, String) (defined at 3:12-3:32)
+  in [+ ...] at 3:12-3:32

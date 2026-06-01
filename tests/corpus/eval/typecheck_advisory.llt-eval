@@ -4,7 +4,8 @@
 # should still succeed and return the string value.
 [f: [fn [let x@Int] x]
  result: [f "hello"]]
-=== warn
-cannot unify Int with "hello" at 5:13-5:20
 === out
 Dict({"f": Function(x), "result": String("hello")})
+
+=== warn
+cannot unify Int with "hello" at 5:13-5:20

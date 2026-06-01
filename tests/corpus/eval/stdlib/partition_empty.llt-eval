@@ -1,4 +1,6 @@
 # partition: empty collection
 [partition [fn [x] [> x 0]] []]
-=== out
-Dict({"pass": Dict({}), "fail": Dict({})})
+=== error
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-1:32)
+  in [partition ...] at 1:1-1:32
+  in [partition ...] at 1:1-1:32

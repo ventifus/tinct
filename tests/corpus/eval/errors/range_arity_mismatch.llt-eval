@@ -1,6 +1,9 @@
 # E024: MissingArg - range wrapper requires at least 1 argument (start)
 [range]
 === error
-[E024] missing argument for required parameter 'start'
+[E024] missing argument for required parameter 'start' (defined at 1:1-1:8)
+  in [range ...] at 1:1-1:8
+  in [range ...] at 1:1-1:8
 
-
+=== warn
+arity mismatch: expected at least 1 argument(s), got 0 (0 positional, 0 named) at 1:1-1:8

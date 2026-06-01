@@ -6,4 +6,25 @@
 
 [broken 1]
 === error
-[E001] key not found
+[E010] builtin-get (key 5): expected Dict, got Expression (defined at stdlib/prelude.llt:843:42-843:46) (called at stdlib/prelude.llt:843:25-843:47)
+  --> stdlib/prelude.llt:843:42-843:46
+   |
+  843 | """] [let key@k dict@d] [builtin-get key dict]]
+      |                                          ^^^^
+  in [builtin-get ...] at stdlib/prelude.llt:843:25-843:47
+   |
+  843 | """] [let key@k dict@d] [builtin-get key dict]]
+      |                         ^^^^^^^^^^^^^^^^^^^^^^
+  in in expansion of `broken` at 6:1-6:11
+
+=== warn
+[E010] builtin-get (key 5): expected Dict, got Expression (defined at stdlib/prelude.llt:843:42-843:46) (called at stdlib/prelude.llt:843:25-843:47)
+  --> stdlib/prelude.llt:843:42-843:46
+   |
+  843 | """] [let key@k dict@d] [builtin-get key dict]]
+      |                                          ^^^^
+  in [builtin-get ...] at stdlib/prelude.llt:843:25-843:47
+   |
+  843 | """] [let key@k dict@d] [builtin-get key dict]]
+      |                         ^^^^^^^^^^^^^^^^^^^^^^
+  in in expansion of `broken` at 6:1-6:11

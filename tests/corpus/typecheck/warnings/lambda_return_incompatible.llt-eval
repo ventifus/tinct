@@ -2,5 +2,6 @@
 [@[Fn@String [Int]] [fn [let x] 42]]
 === out
 Function(x)
+
 === warn
-cannot unify String with 42
+cannot unify String with 42 at 1:33-1:35

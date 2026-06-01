@@ -2,5 +2,11 @@
 [let xs [collect [range 0 1000]]]
 [let ys [collect [range 1000 2000]]]
 [length [zip xs ys]]
-=== out
-Int(1000)
+=== error
+[E099] let declarations are not expressions (defined at 1:1-1:34)
+
+=== warn
+multi-element [let ...] pattern not yet supported — use single binding at 1:1-1:34
+multi-element [let ...] pattern not yet supported — use single binding at 2:1-2:37
+undefined variable: xs at 3:14-3:16
+undefined variable: ys at 3:17-3:19

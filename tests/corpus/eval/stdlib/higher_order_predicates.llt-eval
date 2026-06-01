@@ -11,5 +11,19 @@
   all_empty: [all? [fn [x] [> x 5]] []]
   all_shortcircuit: [all? [fn [x] [< x 3]] [1 2 5 4]]
 ]
-=== out
-Dict({"any_some_match": Bool(true), "any_none_match": Bool(false), "any_all_match": Bool(true), "any_empty": Bool(false), "any_shortcircuit": Bool(true), "all_match": Bool(true), "all_none_match": Bool(false), "all_some_match": Bool(false), "all_empty": Bool(true), "all_shortcircuit": Bool(false)})
+=== error
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 2:19-2:52)
+  in [any? ...] at 2:19-2:52
+  in [any? ...] at 2:19-2:52
+
+=== warn
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 2:19-2:52
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 3:19-3:53
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 4:18-4:51
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 5:14-5:40
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 6:21-6:56
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 8:14-8:47
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 9:19-9:53
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 10:19-10:52
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 11:14-11:40
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 12:21-12:54

@@ -2,5 +2,8 @@
 # Tests the wrap_with_nominal_validation failure path in builtin_eval
 --- expects: @[x: Int]
 [x: "hello"]
-=== error
-type
+=== out
+Dict({"x": String("hello")})
+
+=== warn
+Pipeline input type [] does not satisfy expects contract [x: Int] at 2:15-2:23

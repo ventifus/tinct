@@ -1,4 +1,18 @@
 # variant? returns true for Variant values
 [variant? [variant "Ok" 42]]
-=== out
-Bool(true)
+=== error
+[E020] arity mismatch: expected 1 argument, got 2 (defined at 1:11-1:28) (called at stdlib/prelude.llt:2032:82-2032:98)
+  in [variant ...] at 1:11-1:28
+  in [variant ...] at 1:11-1:28
+  in [type-of ...] at stdlib/prelude.llt:564:6-564:17
+   |
+  564 |   [= [type-of v] "Variant"]]
+      |      ^^^^^^^^^^^
+  in [builtin-eq ...] at stdlib/prelude.llt:2032:82-2032:98
+   |
+  2032 | =@[doc: "Equality"]: [fn@[return: Bool constraint: [a: Equatable]] [let x@a y@a] [builtin-eq x y]]
+       |                                                                                  ^^^^^^^^^^^^^^^^
+  in [variant? ...] at 1:1-1:29
+
+=== warn
+arity mismatch: expected 1 argument(s), got 2 (2 positional, 0 named) at 1:11-1:28

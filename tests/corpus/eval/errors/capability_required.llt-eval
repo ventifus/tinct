@@ -6,3 +6,5 @@
 
 === error
 [E044] %net@NetCap is required but not provided
+  inject it with:  tinct run --cap-net net=HOST:PORT ...
+  or unrestricted: tinct run --cap-net net=any ... (defined at 3:5-3:26)

@@ -1,4 +1,4 @@
 # get-or subject-last enables pipeline: dict | [get-or key default]
 [[x: 42] | [get-or "missing" 99]]
 === out
-Int(99)
+Dict({0: Int(99)})

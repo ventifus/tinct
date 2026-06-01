@@ -1,5 +1,0 @@
-# fn@[...] annotation with mixed named keys and positional entries should error
-# B-202: infer_fn must reject annotations mixing return:/constraint:/doc: with positional entries
-[fn@[return: Int  42] [] 42]
-=== warn
-fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries

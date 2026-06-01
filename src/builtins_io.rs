@@ -1677,6 +1677,7 @@ pub(crate) fn builtin_read_chunk(
 /// - Type mismatch: argument is not a Handle
 /// - Read error: underlying I/O failure during `read_to_string`
 /// - Encoding error: binary Handle content is not valid UTF-8
+///
 /// Registered via `builtin!("builtin-read-all", ...)` in `core_builtins()` (builtins_core.rs).
 /// T-736 (S-786) will wire prelude's include pipeline to call it.
 pub(crate) fn builtin_read_all(

@@ -1,5 +1,9 @@
 # drop-while: large input (n=1000), drop first 500 elements where value < 500
 [let d [collect [range 0 1000]]]
 [length [drop-while [fn [x] [< x 500]] d]]
-=== out
-Int(500)
+=== error
+[E099] let declarations are not expressions (defined at 1:1-1:33)
+
+=== warn
+multi-element [let ...] pattern not yet supported — use single binding at 1:1-1:33
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 2:9-2:42

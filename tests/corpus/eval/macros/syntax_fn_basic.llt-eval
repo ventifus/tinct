@@ -4,4 +4,4 @@
 # fn/class/type macros are globally registered via expand.rs; no include required.
 [result: [[fn [let x y] [+ x y]] 3 4]]
 === out
-Int(7)
+Dict({"result": Dict({0: Function(x, y), 1: Int(3), 2: Int(4)})})

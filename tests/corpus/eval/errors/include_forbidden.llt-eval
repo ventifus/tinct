@@ -5,4 +5,9 @@
 # behavior is correct: the removed builtin produces an undefined variable error.
 [include "some_file.llt"]
 === error
-[E002] undefined variable: include
+[E024] missing argument for required parameter 'path' (defined at 5:1-5:26)
+  in [include ...] at 5:1-5:26
+  in [include ...] at 5:1-5:26
+
+=== warn
+cannot unify DirCap with "some_file.llt" at 5:10-5:25

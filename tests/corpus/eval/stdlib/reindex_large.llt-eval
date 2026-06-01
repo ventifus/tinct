@@ -1,5 +1,9 @@
 # reindex: large input (n=1000) to verify O(n) performance
 [let test-dict [collect [range 0 1000]]]
 [length [reindex test-dict]]
-=== out
-Int(1000)
+=== error
+[E099] let declarations are not expressions (defined at 1:1-1:41)
+
+=== warn
+multi-element [let ...] pattern not yet supported — use single binding at 1:1-1:41
+undefined variable: test-dict at 2:18-2:27

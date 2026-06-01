@@ -5,4 +5,5 @@
 
 data.missing
 === error
-[E001] key not found: missing (available keys: a, b)
+[E001] key not found: missing (available keys: a, b) (defined at 3:1-3:21) (accessed at 5:1-5:13)
+  in accessing .missing at 5:1-5:13

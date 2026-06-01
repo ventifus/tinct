@@ -7,5 +7,7 @@
 [f: [fn [let x] [call $+ x "hello"]]]
 === out
 Dict({"f": Function(x)})
+
 === warn
-inferred type is Unknown
+inferred type is Unknown — consider adding a type annotation
+inferred type is Unknown — consider adding a type annotation

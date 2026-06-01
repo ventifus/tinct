@@ -1,3 +1,4 @@
 [* 9223372036854775807 2]
 === error
-[E032]
+[E032] *: integer overflow (defined at 1:1-1:26)
+  in [* ...] at 1:1-1:26

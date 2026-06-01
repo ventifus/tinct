@@ -6,6 +6,7 @@
 # Eval succeeds because builtin-if is still present in the runtime environment.
 [builtin-if true "yes" "no"]
 === out
-"yes"
+String("yes")
+
 === warn
-undefined variable: builtin-if
+undefined variable: builtin-if at 6:2-6:12

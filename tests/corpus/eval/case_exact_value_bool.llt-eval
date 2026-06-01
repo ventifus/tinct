@@ -4,3 +4,11 @@
   _: "other"]
 ---
 String("yes")
+=== error
+[E099] syntax error at 2:14 (cannot evaluate error node) (defined at 2:14-2:15)
+
+=== warn
+syntax error at 2:14 (cannot typecheck error node) at 2:14-2:15
+undefined variable: String( at 6:1-6:8
+expected record type, got "yes" at 6:8-6:13
+undefined variable: ) at 6:13-6:14

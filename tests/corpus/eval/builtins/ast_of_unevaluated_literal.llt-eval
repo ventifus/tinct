@@ -1,5 +1,10 @@
 # ast-of on literal expression returns Expression value
 # ast-of is a standard builtin (no include needed)
 [type-of [ast-of 42]]
-=== out
-String("Expression")
+=== error
+[E099] ast-of: thunk in unknown state (defined at 2:10-2:21)
+  in [ast-of ...] at 2:10-2:21
+  in [type-of ...] at 2:1-2:22
+
+=== warn
+undefined variable: ast-of at 2:11-2:17

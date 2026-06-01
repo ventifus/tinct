@@ -5,4 +5,7 @@
 # concurrent tasks and is not testable in the synchronous corpus harness.
 [with-context [non-cancellable] [fn [let] 42]]
 === out
-Int(42)
+Function()
+
+=== warn
+arity mismatch: expected 1 argument(s), got 0 (0 positional, 0 named) at 5:15-5:32

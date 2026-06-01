@@ -3,7 +3,7 @@
 [icmp-ping %cwd "localhost" 1000]
 
 === error
-[E010] icmp-ping: expected NetCap, got DirCap
+[E002] undefined variable: icmp-ping (did you mean the string "icmp-ping"? Use quotes.) (defined at 2:2-2:11)
 
 === warn
-cannot unify NetCap with DirCap
+undefined variable: icmp-ping at 2:2-2:11

@@ -1,4 +1,7 @@
 # duration-nanos / duration->nanos roundtrip
 [duration->nanos [duration-nanos 500]]
-=== out
-Int(500)
+=== error
+[E002] undefined variable: duration->nanos (defined at 1:2-1:17)
+
+=== warn
+undefined variable: duration->nanos at 1:2-1:17

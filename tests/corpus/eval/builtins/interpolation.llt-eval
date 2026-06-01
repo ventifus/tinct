@@ -33,5 +33,8 @@
     Welcome to the system.
     """
 ]
-=== out
-Dict({"name": String("world"), "basic": String("Hello world"), "a": String("foo"), "b": String("bar"), "multi_var": String("foo and bar"), "x": Int(42), "expr": String("result is 43"), "price": Int(42), "escaped": String("Price: $42"), "query": String("SELECT *\nFROM users\nWHERE active = true"), "user": String("Bob"), "message": String("Dear Bob,\nWelcome to the system.")})
+=== error
+[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 6:10-6:24)
+
+=== warn
+[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 6:10-6:24)

@@ -1,4 +1,9 @@
 # uniq: no duplicates returns same elements
 [uniq [1 2 3]]
-=== out
-Dict({0: Int(1), 1: Int(2), 2: Int(3)})
+=== error
+[E099] let declarations are not expressions (defined at stdlib/prelude.llt:1379:5-1379:23)
+  --> stdlib/prelude.llt:1379:5-1379:23
+   |
+  1379 |     [let ks [keys xs]]
+       |     ^^^^^^^^^^^^^^^^^^
+  in [uniq ...] at 1:1-1:15

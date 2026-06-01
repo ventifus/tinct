@@ -1,5 +1,6 @@
 [name: user.name]
 === out
 ["name": user.name]
+
 === warn
 undefined variable: user at 1:8-1:12

@@ -5,5 +5,6 @@
 [_ x]
 === out
 [_ x]
+
 === warn
 undefined variable: _ at 4:2-4:3

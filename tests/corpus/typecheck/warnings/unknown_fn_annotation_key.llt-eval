@@ -2,5 +2,6 @@
 [fn@[return: Int  foo: "bar"] [] 42]
 === out
 Function()
+
 === warn
-unknown function annotation key 'foo'
+unknown function annotation key 'foo' (valid keys: return, constraint, doc, bind, kinds) at 1:19-1:22

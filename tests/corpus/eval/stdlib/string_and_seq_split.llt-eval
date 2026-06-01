@@ -10,5 +10,21 @@
   flatten_mixed: [flatten [1 [2 3] 4]]
   flatten_deep: [flatten [[[1 2] [3 4]] [5 6]]]
 ]
-=== out
-Dict({"words_basic": Seq(String("hello"), ...), "words_empty": Dict({}), "words_only_spaces": Dict({}), "words_leading_trailing": Seq(String("hello"), ...), "words_multiple_spaces": Seq(String("hello"), ...), "flatten_nested": Dict({0: Int(1), 1: Int(2), 2: Int(3), 3: Int(4)}), "flatten_empty": Dict({}), "flatten_mixed": Dict({0: Int(1), 1: Int(2), 2: Int(3), 3: Int(4)}), "flatten_deep": Dict({0: Dict({0: Int(1), 1: Int(2)}), 1: Dict({0: Int(3), 1: Int(4)}), 2: Int(5), 3: Int(6)})})
+=== error
+[E099] let declarations are not expressions (defined at stdlib/prelude.llt:1122:5-1122:23) (called at stdlib/prelude.llt:1121:75-1123:62)
+  --> stdlib/prelude.llt:1122:5-1122:23
+   |
+  1122 |     [let ks [keys xs]]
+       |     ^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:1117:5-1119:32
+   |
+  1117 |     [builtin-if [seq? xs]
+  1118 |         [error "flatten: expected Dict, got Seq -- collect the Seq first"]
+  1119 |         [flatten-impl-dict xs]]]
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:1117:5-1119:32
+   |
+  1117 |     [builtin-if [seq? xs]
+  1118 |         [error "flatten: expected Dict, got Seq -- collect the Seq first"]
+  1119 |         [flatten-impl-dict xs]]]
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

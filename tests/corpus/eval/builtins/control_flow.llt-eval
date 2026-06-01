@@ -18,7 +18,10 @@
   f: [fn [let x y] [+ x y]]
   apply_result: [apply f [0: 3  1: 4]]
 ]
-=== out
-Dict({"if_true": Int(1), "if_false": Int(2), "try_success": Variant(Ok, Int(42)), "try_error": Variant(Error, String("caught")), "eval_deep": Dict({"x": Int(3)}), "force_whnf": Int(3), "f": Function(x, y), "apply_result": Int(7)})
+=== error
+[E002] undefined variable: deep-materialize (did you mean the string "deep-materialize"? Use quotes.) (defined at 13:15-13:31)
+
 === warn
-cannot unify Fn@⊤ [⊤] with Fn@
+undefined variable: deep-materialize at 13:15-13:31
+undefined variable: materialize at 14:16-14:27
+cannot unify Fn@⊤ [⊤] with Fn@Number [x: _ y: _] at 18:24-18:25

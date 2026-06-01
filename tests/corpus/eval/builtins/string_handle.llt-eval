@@ -4,3 +4,6 @@
 first-line
 === out
 String("hello")
+
+=== warn
+undefined variable: builtin-read-line at 2:15-2:32

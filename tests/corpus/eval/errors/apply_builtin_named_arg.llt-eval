@@ -4,4 +4,9 @@
 # Note: $+ is a Tinct wrapper function; builtin-add is not in user scope.
 [apply + [named: 1]]
 === error
-[E022]
+[E023] + does not accept named arguments (defined at 4:1-4:21)
+  in apply at 4:1-4:21
+  in [apply ...] at 4:1-4:21
+
+=== warn
+cannot unify Fn@⊤ [⊤] with Fn@Number [a: Number b: Number] at 4:8-4:9

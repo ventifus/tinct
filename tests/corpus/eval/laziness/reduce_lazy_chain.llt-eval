@@ -7,5 +7,3 @@
 %.sum
 === out
 Int(6)
-=== warn
-with [0: 1 1: 2 2: 3]

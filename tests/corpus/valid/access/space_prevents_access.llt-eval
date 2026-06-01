@@ -4,5 +4,6 @@
 [user "field"]
 === out
 [user "field"]
+
 === warn
 undefined variable: user at 3:2-3:6

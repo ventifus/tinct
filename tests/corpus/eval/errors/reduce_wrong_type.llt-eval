@@ -1,6 +1,25 @@
 # reduce: error when f is not a function
 [reduce "not-a-function" 0 [1 2 3]]
 === error
-[E010] type mismatch: expected Function or Builtin, got String
+[E010] type mismatch: expected Function or Builtin, got String (defined at stdlib/prelude.llt:2060:80-2060:106)
+  --> stdlib/prelude.llt:2060:80-2060:106
+   |
+  2060 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
+       |                                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in reduce at 1:29-1:30
+  in in reduce at stdlib/prelude.llt:2060:80-2060:106
+   |
+  2060 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
+       |                                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in reduce at stdlib/prelude.llt:2060:80-2060:106
+   |
+  2060 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
+       |                                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-reduce ...] at stdlib/prelude.llt:2060:80-2060:106
+   |
+  2060 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
+       |                                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [reduce ...] at 1:1-1:36
+
 === warn
-with "not-a-function"
+cannot unify Fn@⊤ [ ...] with "not-a-function" at 1:9-1:25

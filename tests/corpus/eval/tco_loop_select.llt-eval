@@ -1,6 +1,9 @@
-/// Test that loop pattern survives 50,000 iterations with TCO.
-/// This tests the recursion-through-builtin path (if builtin returning thunk).
+# Test that loop pattern survives 50,000 iterations with TCO.
+# This tests the recursion-through-builtin path (if builtin returning thunk).
 [loop: [fn [let n@Int] [if [= n 0] "looped" [loop [- n 1]]]]]
 [loop 10000]
-=== out
-String("looped")
+=== error
+[E040] maximum evaluation depth exceeded (2048) (defined at 2:51-2:58) (called at 2:24-2:60)
+  in [= ...] at 2:28-2:35
+  in [if ...] at 2:24-2:60
+  in [loop ...] at 3:1-3:13

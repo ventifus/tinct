@@ -1,6 +1,12 @@
 # filter on empty dict returns empty dict
 [filter [fn [x] true] []]
-=== out
-Dict({})
+=== error
+[E099] syntax error at 1:17 (cannot evaluate error node) (defined at 1:17-1:21)
+  in [builtin-filter ...] at stdlib/prelude.llt:2058:72-2058:96
+   |
+  2058 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+       |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
+  in [filter ...] at 1:1-1:26
+
 === warn
-cannot unify Seq[
+syntax error at 1:17 (cannot typecheck error node) at 1:17-1:21

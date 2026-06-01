@@ -1,4 +1,6 @@
 # set: add/update key in dict
 [set [x: 1] y: 2]
-=== out
-Dict({"x": Int(1), "y": Int(2)})
+=== error
+[E022] unexpected named argument: y (valid parameter names: xs) (defined at 1:1-1:18)
+  in [set ...] at 1:1-1:18
+  in [set ...] at 1:1-1:18

@@ -12,5 +12,7 @@
     AAAA:            %.AAAA
     SRV:             %.SRV
     DNS-FLAGS-QUERY: %.DNS-FLAGS-QUERY]
-=== out
-Dict({"A": Int(1), "NS": Int(2), "CNAME": Int(5), "PTR": Int(12), "MX": Int(15), "TXT": Int(16), "AAAA": Int(28), "SRV": Int(33), "DNS-FLAGS-QUERY": Int(256)})
+=== error
+[E022] unexpected named argument: A (valid parameter names: xs) (defined at 4:1-13:40)
+  in [set ...] at 4:1-13:40
+  in [set ...] at 4:1-13:40

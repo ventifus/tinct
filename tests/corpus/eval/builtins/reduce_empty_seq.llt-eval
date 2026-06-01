@@ -2,5 +2,3 @@
 [reduce [fn [let acc x] [+ acc x]] 42 []]
 === out
 Int(42)
-=== warn
-cannot unify Seq[

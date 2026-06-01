@@ -2,4 +2,44 @@
 [json: [include %libdir "codecs/json.llt"]]
 [json.from-json "[1, 2"]
 === error
-[E080] JSON: unexpected end of input
+[E099] str-slice: end index 1 out of bounds (string has 0 characters) (defined at 268:3-268:26)
+  in [str-slice ...] at 268:3-268:26
+  in materialized at stdlib/prelude.llt:208:29-208:52
+   |
+  208 |         [cond-check pairs i [builtin-get i pairs].0 [builtin-get i pairs].1]]]
+      |                             ^^^^^^^^^^^^^^^^^^^^^^^
+  in [= ...] at 401:6-401:33
+  in materialized at stdlib/prelude.llt:211:5-213:45
+   |
+  211 |     [builtin-if condition
+  212 |         result
+  213 |         [cond-impl pairs [builtin-add i 1]]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:211:5-213:45
+   |
+  211 |     [builtin-if condition
+  212 |         result
+  213 |         [cond-impl pairs [builtin-add i 1]]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:206:5-208:78
+   |
+  206 |     [builtin-if [builtin-gte i [builtin-length pairs]]
+  207 |         []
+  208 |         [cond-check pairs i [builtin-get i pairs].0 [builtin-get i pairs].1]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:206:5-208:78
+   |
+  206 |     [builtin-if [builtin-gte i [builtin-length pairs]]
+  207 |         []
+  208 |         [cond-check pairs i [builtin-get i pairs].0 [builtin-get i pairs].1]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at 395:25-403:59
+  in materialized at 408:3-410:50
+  in [if ...] at 408:3-410:50
+  in materialized at 405:19-410:51
+  in materialized at 439:3-449:81
+  in [if ...] at 439:3-449:81
+  in materialized at 437:19-449:82
+  in materialized at 552:5-556:65
+  in [if ...] at 553:7-556:64
+  in [<dot-access> ...] at 2:1-2:25

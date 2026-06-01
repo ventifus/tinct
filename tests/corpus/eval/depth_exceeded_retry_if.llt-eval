@@ -12,5 +12,9 @@
   ]
   result: [call fact 5]
 ]
-=== out
-Dict({"fact": Function(n), "result": Int(120)})
+=== error
+[E099] syntax error at 11:3 (cannot evaluate error node) (defined at 11:3-11:4)
+
+=== warn
+syntax error at 11:3 (cannot typecheck error node) at 11:3-11:4
+cannot unify Int with [] at 6:9-11:4

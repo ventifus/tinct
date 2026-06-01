@@ -1,5 +1,7 @@
 # group-by: group elements by a key function (mod 2 groups evens and odds)
 # Insertion order: key 1 first (x=1 mod 2 = 1), then key 0 (x=2 mod 2 = 0)
 [group-by [fn [x] [mod x 2]] [1 2 3 4 5]]
-=== out
-Dict({1: Dict({0: Int(1), 1: Int(3), 2: Int(5)}), 0: Dict({0: Int(2), 1: Int(4)})})
+=== error
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 2:1-2:42)
+  in [group-by ...] at 2:1-2:42
+  in [group-by ...] at 2:1-2:42

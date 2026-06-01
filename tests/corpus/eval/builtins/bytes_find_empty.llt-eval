@@ -2,3 +2,6 @@
 [bytes-find [bytes-of [1 2 3]] [bytes-of []]]
 === out
 Int(0)
+
+=== warn
+undefined variable: bytes-find at 1:2-1:12

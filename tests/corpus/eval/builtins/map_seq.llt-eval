@@ -1,4 +1,14 @@
 # map on seq: returns lazy seq
 [head [map [fn [x] [+ x 10]] [seq 1 [seq 2 []]]]]
-=== out
-Int(11)
+=== error
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:7-1:49)
+  in [map ...] at 1:7-1:49
+  in [map ...] at 1:7-1:49
+  in [builtin-head ...] at stdlib/prelude.llt:2443:15-2443:32
+   |
+  2443 | """] [let xs] [builtin-head xs]]
+       |               ^^^^^^^^^^^^^^^^^
+  in [head ...] at 1:1-1:50
+
+=== warn
+arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 1:7-1:49

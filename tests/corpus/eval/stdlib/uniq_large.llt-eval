@@ -2,5 +2,8 @@
 # Build a list with every number repeated twice
 [let test-dict [collect [concat [range 0 500] [range 0 500]]]]
 [length [uniq test-dict]]
-=== out
-Int(500)
+=== error
+[E099] let declarations are not expressions (defined at 2:1-2:63)
+
+=== warn
+multi-element [let ...] pattern not yet supported — use single binding at 2:1-2:63

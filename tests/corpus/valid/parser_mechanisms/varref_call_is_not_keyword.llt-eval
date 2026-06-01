@@ -3,6 +3,7 @@
 [$call f x]
 === out
 [call  f  x]
+
 === warn
 undefined variable: call at 2:2-2:7
 undefined variable: f at 2:8-2:9

@@ -6,5 +6,6 @@
 [f: [fn@String [let x@Int] x]]
 === out
 Dict({"f": Function(x)})
+
 === warn
-cannot unify String with Int
+cannot unify String with Int at 5:28-5:29

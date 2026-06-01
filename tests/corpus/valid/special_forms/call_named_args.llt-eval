@@ -1,5 +1,6 @@
 [fetch "https://example.com" timeout: 60 retries: 3]
 === out
 [fetch "https://example.com" timeout: 60 retries: 3]
+
 === warn
 undefined variable: fetch at 1:2-1:7

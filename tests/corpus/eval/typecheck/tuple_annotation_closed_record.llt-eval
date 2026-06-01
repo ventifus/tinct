@@ -5,4 +5,4 @@
 # level, matching the Tuple annotation {0: Int, 1: String}.
 [@[[Tuple Int String]] [42 "hello"]]
 === out
-Dict({"0": Int(42), "1": String("hello")})
+Dict({0: Int(42), 1: String("hello")})

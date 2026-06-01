@@ -2,3 +2,6 @@
 [bytes-equal? [bytes-of [1 2 3]] [bytes-of [1 2 4]]]
 === out
 Bool(false)
+
+=== warn
+undefined variable: bytes-equal? at 1:2-1:14

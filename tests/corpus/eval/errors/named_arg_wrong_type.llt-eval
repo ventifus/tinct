@@ -1,7 +1,9 @@
 # Named arg type checking: wrong type — runtime error (type-check warning not yet implemented)
 [f: [fn [let x@Int y@Int] [call $+ $x $y]]
  result: [call $f 42 y: "not an int"]]
+=== error
+[E013] no instance for Addable (Int, String) (defined at 1:27-1:42)
+  in [+ ...] at 1:27-1:42
+
 === warn
 named argument 'y' type mismatch: cannot unify "not an int" with Int at 2:25-2:37
-=== error
-[E010] +/-/*//: expected Int or Float, got Int and String

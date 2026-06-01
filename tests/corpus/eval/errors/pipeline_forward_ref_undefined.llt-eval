@@ -2,7 +2,8 @@
 # The document references %later which is never defined in this file
 %later.x
 === error
-[E002] undefined variable: %later
+[E002] undefined variable: %later (defined at 2:1-2:7)
+  in accessing .x at 2:1-2:9
 
 === warn
 undefined variable: %later at 2:1-2:7

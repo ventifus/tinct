@@ -3,5 +3,4 @@
 [class [let Equatable a] eq: [fn [let x@a y@a] Bool]]
 
 === out
-
 [class [Equatable a] "eq": [fn [let x@a y@a] Bool]]

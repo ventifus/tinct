@@ -4,5 +4,6 @@
 [result: "should not execute"]
 
 === error
-[E099] %missing@NetCap is required but not provided
+[E044] %missing@NetCap is required but not provided
   inject it with:  tinct run --cap-net missing=HOST:PORT ...
+  or unrestricted: tinct run --cap-net missing=any ... (defined at 2:5-2:30)

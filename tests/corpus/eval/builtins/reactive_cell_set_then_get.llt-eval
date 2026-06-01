@@ -1,7 +1,14 @@
 # cell-set updates the value; cell-get reads the new value
 
-cell: [builtin-reactive-cell 1]
-_:    [builtin-cell-set 99 cell]
+[
+  cell: [builtin-reactive-cell 1]
+  _:    [builtin-cell-set 99 cell]
+]
 [builtin-cell-get cell]
 === out
 Int(99)
+
+=== warn
+undefined variable: builtin-reactive-cell at 3:10-3:31
+undefined variable: builtin-cell-set at 4:10-4:26
+undefined variable: builtin-cell-get at 6:2-6:18

@@ -1,4 +1,9 @@
 # pipeline: thread a value through a series of functions (5*2+1=11)
 [-> 5 [fn [x] [* x 2]] [fn [x] [+ x 1]]]
-=== out
-Int(11)
+=== error
+[E020] arity mismatch: expected 2 arguments, got 5 (defined at 1:1-1:41)
+  in [-> ...] at 1:1-1:41
+  in [-> ...] at 1:1-1:41
+
+=== warn
+arity mismatch: expected 2 argument(s), got 5 (5 positional, 0 named) at 1:1-1:41

@@ -8,5 +8,3 @@
   [Ok [+ x y]]]
 === out
 Variant(Ok, Int(3))
-=== warn
-undefined variable: result

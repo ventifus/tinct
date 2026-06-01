@@ -10,4 +10,6 @@
 
 [div-zero 42]
 === error
-[E031] /: division by zero
+[E080] division by zero (defined at 10:1-10:14)
+  in [/ ...] at 10:1-10:14
+  in expansion of `div-zero` at 10:1

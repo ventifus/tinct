@@ -1,5 +1,22 @@
 # any?: Seq input produces clear error message
 [any? [fn [let x] true] [range 0 3]]
 === error
-[E011] type assertion failed: expected [], got Seq
+[E080] any?: expected Dict, got Seq -- collect the Seq first (defined at stdlib/prelude.llt:2051:28-2051:47)
+  --> stdlib/prelude.llt:2051:28-2051:47
+   |
+  2051 | """]: [fn [let msg@String] [builtin-raise msg]]
+       |                            ^^^^^^^^^^^^^^^^^^^
+  in [builtin-raise ...] at stdlib/prelude.llt:2051:28-2051:47
+   |
+  2051 | """]: [fn [let msg@String] [builtin-raise msg]]
+       |                            ^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:636:5-638:53
+   |
+  636 |     [builtin-if [seq? xs]
+  637 |         [error "any?: expected Dict, got Seq -- collect the Seq first"]
+  638 |         [any?-impl pred xs [keys xs] 0 [length xs]]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [any? ...] at 1:1-1:37
 
+=== warn
+cannot unify [] with Seq[_] at 1:25-1:36

@@ -5,5 +5,3 @@
   [Ok [+ x y]]]
 === out
 Variant(Error, String("fail"))
-=== warn
-undefined variable: result

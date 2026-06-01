@@ -4,5 +4,6 @@
 [result: "should not execute"]
 
 === error
-[E099] %myfile@Handle is required but not provided
+[E044] %myfile@Handle is required but not provided
   inject it with:  tinct run --cap-file myfile=PATH:r ...
+  or unrestricted: tinct run --cap-file myfile=any ... (defined at 2:5-2:29)

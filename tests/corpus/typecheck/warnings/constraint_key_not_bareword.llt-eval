@@ -2,5 +2,6 @@
 [fn@[constraint: [42: Comparable] return: Int] [] 42]
 === out
 Function()
+
 === warn
-constraint key must be a bare word
+constraint key must be a bare word (TypeVar name) at 1:15-1:29

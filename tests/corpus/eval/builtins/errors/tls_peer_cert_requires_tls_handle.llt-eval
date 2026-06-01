@@ -6,7 +6,12 @@
 [tls-peer-cert h]
 
 === error
-[E010] tls-peer-cert: expected Handle, got Dict
+[E002] undefined variable: builtin-tls-peer-cert (defined at stdlib/prelude.llt:2233:63-2233:84) (called at 5:1-5:18)
+  --> stdlib/prelude.llt:2233:63-2233:84
+   |
+  2233 | tls-peer-cert@[doc: "Extract TLS peer certificate metadata"]: builtin-tls-peer-cert
+       |                                                               ^^^^^^^^^^^^^^^^^^^^^
+  in [tls-peer-cert ...] at 5:1-5:18
 
 === warn
-cannot unify Handle with []
+cannot unify Handle[[__cap_flag_readable: []]] with [] at 5:16-5:17

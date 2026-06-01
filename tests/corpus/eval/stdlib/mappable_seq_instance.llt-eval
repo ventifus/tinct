@@ -5,5 +5,9 @@
     fmap: [fn [f xs] [builtin-map f xs]]]
   result: [collect [inst.fmap [fn [x] [+ x 10]] [builtin-range 0 3]]]
 ]
-=== out
-Dict({"inst": Dict({"fmap": Function(f, xs)}), "result": Dict({0: Int(10), 1: Int(11), 2: Int(12)})})
+=== error
+[E099] syntax error at 4:41 (cannot evaluate error node) (defined at 4:41-4:42)
+
+=== warn
+syntax error at 4:41 (cannot typecheck error node) at 4:41-4:42
+expected record type, got <error> at 5:21-5:30

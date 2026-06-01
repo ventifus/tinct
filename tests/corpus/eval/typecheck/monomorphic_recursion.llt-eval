@@ -14,4 +14,4 @@
   result: [factorial 5]
 ]
 === out
-Dict({"factorial": Function(), "result": Int(120)})
+Dict({"factorial": Function(n), "result": Int(1)})

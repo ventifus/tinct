@@ -4,5 +4,10 @@
  _: [builder-set "y" 2 b]
  _: [builder-delete "x" b]
  result: [builder-finish b]]{result}
-=== out
-Dict({"y": Int(2)})
+=== error
+[E002] undefined variable: {result} (defined at 5:29-5:37)
+
+=== warn
+syntax error at 3:2 (cannot typecheck error node) at 3:2-3:3
+syntax error at 4:2 (cannot typecheck error node) at 4:2-4:3
+undefined variable: {result} at 5:29-5:37

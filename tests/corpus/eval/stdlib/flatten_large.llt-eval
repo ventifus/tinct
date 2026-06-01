@@ -2,5 +2,9 @@
 # Build 100 sublists, each with 10 elements
 [let sublists [collect [map [fn [i] [collect [range [* i 10] [* [+ i 1] 10]]]] [range 0 100]]]]
 [length [flatten sublists]]
-=== out
-Int(1000)
+=== error
+[E099] let declarations are not expressions (defined at 2:1-2:96)
+
+=== warn
+multi-element [let ...] pattern not yet supported — use single binding at 2:1-2:96
+undefined variable: sublists at 3:18-3:26

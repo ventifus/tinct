@@ -4,5 +4,6 @@
 ]
 === out
 ["transform": [fn [let x] [uppercase x]]  "filter": [fn [let item] item.active?]]
+
 === warn
 undefined variable: uppercase at 2:29-2:38

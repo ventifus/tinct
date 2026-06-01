@@ -3,7 +3,10 @@
 # Evaluator catches it as a missing-argument error at runtime
 [f: [fn [let x@Int y@Int] [+ x y]]
  result: [f 42 x: 99]]
+=== error
+[E024] missing argument for required parameter 'y' (defined at 4:10-4:22)
+  in [f ...] at 4:10-4:22
+  in [f ...] at 4:10-4:22
+
 === warn
 named argument 'x' conflicts with positional argument at position 0 at 4:19-4:21
-=== error
-[E024] missing argument

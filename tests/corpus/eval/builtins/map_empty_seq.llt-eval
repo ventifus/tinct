@@ -2,4 +2,3 @@
 [collect [map [fn [let x] [str x]] [take 2 [range 10]]]]
 === out
 Dict({0: String("10"), 1: String("11")})
-

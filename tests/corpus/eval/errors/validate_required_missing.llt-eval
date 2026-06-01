@@ -11,7 +11,10 @@
   result: [validate $schema [hostname: "localhost"]]
 ].result
 === error
-[E090] schema validation failed
+[E090] schema validation failed with 1 error(s):
+  port: required field is missing
+ (defined at 10:11-10:53) (called at 1:1-11:9)
+  in [validate ...] at 10:11-10:53
 
 === warn
 undefined variable: validate at 10:12-10:20

@@ -1,6 +1,8 @@
 # each-key: type error when called on String (expects Dict)
 [each-key "hello"]
 === error
-[E010] each-key: expected Dict, got String
+[E010] each-key: expected Dict, got String (defined at 1:11-1:18)
+  in [each-key ...] at 1:1-1:19
+
 === warn
-cannot unify [] with "hello"
+cannot unify [] with "hello" at 1:11-1:18

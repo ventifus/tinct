@@ -1852,7 +1852,7 @@ pub(crate) fn builtin_eval(
         //   for pipeline input contracts, keyed by the annotation's span.
         let (res_table, types_table, program_expects_resolved) =
             if let Some(ref program_thunk) = program_opt {
-                let program_val = materialize(program_thunk, Some(&call_span), &ctx).await?;
+                let program_val = materialize(program_thunk, Some(&call_span), &ctx).await?; // H2: conditional force — only when program: named arg is present
                 match program_val {
                     Value::Program {
                         resolutions,
@@ -2030,7 +2030,7 @@ pub(crate) fn builtin_eval(
             env_with_bindings
         };
 
-        // Add %: (pipeline input) as $ binding if provided (using validated input)
+        // Add %: (pipeline input) as % binding if provided (using validated input)
         let final_env = if let Some(input_thunk) = validated_pipeline_input {
             let child_env = Arc::new(std::sync::RwLock::new(
                 crate::value::Environment::with_parent(Arc::clone(&env_with_scope)),
@@ -2038,7 +2038,7 @@ pub(crate) fn builtin_eval(
             child_env
                 .write()
                 .unwrap()
-                .insert("$".to_string(), input_thunk);
+                .insert("%".to_string(), input_thunk);
             child_env
         } else {
             env_with_scope

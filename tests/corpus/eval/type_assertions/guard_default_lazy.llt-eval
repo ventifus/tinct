@@ -3,7 +3,5 @@
  bump: [fn [] [merge counter [value: [+ counter.value 1]]].value]
  result: [@[type: Number  default: bump[]] "fail"]]
 .result
-=== warn
-default value type mismatch: default has type Fn@_ [], but assertion expects [] at 3:36-3:40
 === out
 String("fail")

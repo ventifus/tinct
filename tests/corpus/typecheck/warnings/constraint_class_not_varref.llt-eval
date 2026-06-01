@@ -2,5 +2,6 @@
 [fn@[constraint: [a: [42]] return: a] [let val@a] $val]
 === out
 Function(val)
+
 === warn
-constraint class list must start with 'each' keyword
+constraint class list must start with 'each' keyword: use [each ClassName ...] at 1:19-1:21
