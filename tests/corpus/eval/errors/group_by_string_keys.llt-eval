@@ -1,24 +1,4 @@
 # group-by: group string elements by identity
 [group-by [fn [let x] x] ["a" "b" "a"]]
-=== error
-[E082] builder-get-or: builder has already been finished (defined at stdlib/prelude.llt:308:44-308:75) (called at stdlib/prelude.llt:1246:39-1246:46)
-  --> stdlib/prelude.llt:308:44-308:75
-   |
-  308 |     [builtin-builder-set k [builtin-cons x [builtin-builder-get-or k [] b]] b]]
-      |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-builder-get-or ...] at stdlib/prelude.llt:308:44-308:75
-   |
-  308 |     [builtin-builder-set k [builtin-cons x [builtin-builder-get-or k [] b]] b]]
-      |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-cons ...] at stdlib/prelude.llt:308:28-308:76
-   |
-  308 |     [builtin-builder-set k [builtin-cons x [builtin-builder-get-or k [] b]] b]]
-      |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2592:15-2592:35
-   |
-  2592 | """] [let xs] [builtin-reverse xs]]
-       |               ^^^^^^^^^^^^^^^^^^^^
-  in [builtin-reverse ...] at stdlib/prelude.llt:2592:15-2592:35
-   |
-  2592 | """] [let xs] [builtin-reverse xs]]
-       |               ^^^^^^^^^^^^^^^^^^^^
+=== out
+Dict({"a": Dict({0: String("a"), 1: String("a")}), "b": Dict({0: String("b")})})

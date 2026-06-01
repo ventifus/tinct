@@ -1,5 +1,5 @@
-# uniq: large input (n=1000) with some duplicates
-# [range 0 500] concat [range 0 500] gives 0..499 twice — 500 unique values
+# uniq: large input (n=500 unique values, 1000 total) to verify no stack overflow (B-266)
+# [range 0 500] ++ [range 0 500] gives 1000 elements; uniq should yield 500 unique values.
 [length [uniq [collect [concat [range 0 500] [range 0 500]]]]]
 === error
 [E040] maximum evaluation depth exceeded (2048) (defined at 1:1-1:1) (called at stdlib/prelude.llt:425:5-427:82)

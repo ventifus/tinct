@@ -1,24 +1,24 @@
 # drop on Seq is lazy — dropping from infinite sequence returns immediately
 [collect [take 3 [drop 5 [iterate [fn [x] [+ x 1]] 0]]]]
 === error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:26-1:54) (called at stdlib/prelude.llt:2090:57-2090:76)
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:26-1:54) (called at stdlib/prelude.llt:2097:57-2097:76)
   in [iterate ...] at 1:26-1:54
   in [iterate ...] at 1:26-1:54
-  in [builtin-drop ...] at stdlib/prelude.llt:2090:57-2090:76
+  in [builtin-drop ...] at stdlib/prelude.llt:2097:57-2097:76
    |
-  2090 | drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
+  2097 | drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2089:57-2089:76
+  in materialized at stdlib/prelude.llt:2096:57-2096:76
    |
-  2089 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+  2096 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-take ...] at stdlib/prelude.llt:2089:57-2089:76
+  in [builtin-take ...] at stdlib/prelude.llt:2096:57-2096:76
    |
-  2089 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+  2096 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2488:15-2488:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2495:15-2495:35
    |
-  2488 | """] [let xs] [builtin-collect xs]]
+  2495 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in [collect ...] at 1:1-1:57
 

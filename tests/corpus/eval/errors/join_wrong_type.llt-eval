@@ -1,14 +1,14 @@
 # join: error when separator is not a string
 [join 42 [1 2 3]]
 === error
-[E010] join: expected String, got Int (defined at stdlib/prelude.llt:2540:40-2540:43)
-  --> stdlib/prelude.llt:2540:40-2540:43
+[E010] join: expected String, got Int (defined at stdlib/prelude.llt:2547:40-2547:43)
+  --> stdlib/prelude.llt:2547:40-2547:43
    |
-  2540 | """] [let sep@String xs] [builtin-join sep xs]]
+  2547 | """] [let sep@String xs] [builtin-join sep xs]]
        |                                        ^^^
-  in [builtin-join ...] at stdlib/prelude.llt:2540:26-2540:47
+  in [builtin-join ...] at stdlib/prelude.llt:2547:26-2547:47
    |
-  2540 | """] [let sep@String xs] [builtin-join sep xs]]
+  2547 | """] [let sep@String xs] [builtin-join sep xs]]
        |                          ^^^^^^^^^^^^^^^^^^^^^
   in [join ...] at 1:1-1:18
 

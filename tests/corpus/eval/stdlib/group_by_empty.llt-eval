@@ -1,0 +1,4 @@
+# group-by: empty input returns empty dict
+[group-by [fn [let x] x] []]
+=== out
+Dict({})

@@ -301,16 +301,23 @@ partition-finish: [fn [let result]
     [pass: [builtin-collect [reverse-seq [builtin-get "pass" result]]]
      fail: [builtin-collect [reverse-seq [builtin-get "fail" result]]]]]
 
-# group-by-insert: set builder bucket for key k, prepending x to existing list.
-# Separated to pass k=[f x] as an explicit argument, avoiding [let k [f x]] inside fn body.
-# Uses builtin-* aliases (not the public wrappers) since this lives in the private dict.
-group-by-insert: [fn [let k x b]
-    [builtin-builder-set k [builtin-cons x [builtin-builder-get-or k [] b]] b]]
+# group-by-get-bucket: retrieve existing bucket for key k from acc dict, or [] if missing.
+# Uses builtin-try to test key existence without the public get-or wrapper.
+group-by-get-bucket: [fn [let k acc]
+    [match [builtin-try [fn [let] [builtin-get k acc]]]
+        [Ok v]:    v
+        [Error _]: []]]
+
+# group-by-insert: update key k in plain dict acc with x prepended to existing bucket.
+# Uses builtin-merge (right-biased overlay) to store the updated bucket.
+# Separated from group-by-step to avoid [let k [f x]] LetDecl-nesting bug (B-264).
+group-by-insert: [fn [let k x acc]
+    [builtin-merge acc [make-entry k [builtin-cons x [group-by-get-bucket k acc]]]]]
 
 # group-by-step: compute key via f, then delegate to group-by-insert.
 # The explicit k parameter avoids the [let k [f x]] LetDecl-nesting bug (B-264).
-group-by-step: [fn [let f b x]
-    [group-by-insert [f x] x b]]
+group-by-step: [fn [let f acc x]
+    [group-by-insert [f x] x acc]]
 
 # uniq-impl: collect unique elements given pre-computed key list.
 # Extracted so that [keys xs] is passed as a plain argument (not a [let ...] binding),
@@ -402,13 +409,14 @@ flatten-seq-concat-values: [fn [let d@Dict ks i@Int len@Int rest]
             [flatten-seq-concat-values d ks [builtin-add i 1] len rest]]]]
 
 # contains-seq?: Check if a Seq contains val (O(n) linear scan).
-# Used by uniq-seq-step to check the seen set.
+# Uses builtin-reduce to avoid stack overflow on large inputs (B-266).
+# Short-circuits by returning found=true unchanged once first match is found.
 contains-seq?: [fn@Bool [let seq val]
-    [match seq
-        Seq: [builtin-if [builtin-eq [builtin-head seq] val]
-            true
-            [contains-seq? [builtin-tail seq] val]]
-        _:   false]]  # Empty Seq (terminal []) — not found
+    [builtin-reduce
+        [fn [let found x]
+            [builtin-if found found [builtin-eq x val]]]
+        false
+        seq]]
 
 # uniq-seq-impl/uniq-seq-step: Build a reversed Seq of unique elements.
 # O(n) per element * O(n) contains-seq? check = still O(n²), but O(1) cons per step.
@@ -1237,24 +1245,23 @@ find-first-or@[doc: "Find first matching element or return default"]: [fn@a [let
 # Group elements of xs into a dict of lists, keyed by the result of applying f.
 # Elements with the same key are collected together (insertion order preserved).
 # Inherently materializing: must inspect all elements.
-# Uses transient builder for O(n) construction (was O(n²) with append accumulation).
+# Uses plain dict accumulation (O(n²) via merge-per-element, but no mutable builder state — B-265 fix).
 
-# group-by-finish: reverse each bucket Seq (insertion order) and return as a dict of lists.
+# group-by-finish: reverse each bucket Dict (insertion order via cons = prepend) and return as dict of lists.
 # Separated from group-by to avoid [let raw ...] LetDecl-nesting bug (B-264).
-# group-by-step (private dict) and group-by-insert (private dict) handle per-element work.
+# group-by-step/group-by-insert/group-by-get-bucket (private dict) handle per-element work.
+# Accumulator starts as [] (empty dict); each step merges one updated bucket entry.
 group-by-finish: [fn [let f xs]
     [map-entries [fn [let e] [reverse e.value]]
-        [builder-finish
-            [builtin-reduce [fn [let b x] [group-by-step f b x]] [make-builder] xs]]]]
+        [builtin-reduce [fn [let acc x] [group-by-step f acc x]] [] xs]]]
 
 group-by: [fn@[return: Dict  doc: """
 Group elements of xs into a dict of lists, keyed by the result of applying f.
 
 Example: [group-by [fn [x] [mod x 2]] [1 2 3 4 5]] => [0: [2 4]  1: [1 3 5]]
 
-Note: Elements with the same key are collected together (insertion order preserved). O(n) with transient builder.
+Note: Elements with the same key are collected together (insertion order preserved). O(n²) via repeated merge.
 Buckets are accumulated with cons (prepend) then reversed at finish to restore insertion order.
-Uses builder-get-or for atomic get-or-insert (single mutex acquisition per element).
 """] [let f@Fn xs]
     [group-by-finish f xs]]
 

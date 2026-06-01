@@ -5,34 +5,34 @@
      [fn [let x] [< x 10]]
      [seq 5 [seq [raise "should not evaluate"] []]]]]]
 === error
-[E080] should not evaluate (defined at stdlib/prelude.llt:2079:28-2079:47)
-  --> stdlib/prelude.llt:2079:28-2079:47
+[E080] should not evaluate (defined at stdlib/prelude.llt:2086:28-2086:47)
+  --> stdlib/prelude.llt:2086:28-2086:47
    |
-  2079 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2086 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2079:28-2079:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2086:28-2086:47
    |
-  2079 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2086 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in [< ...] at 4:18-4:26
-  in filter-seq pred at stdlib/prelude.llt:2086:72-2086:96
+  in filter-seq pred at stdlib/prelude.llt:2093:72-2093:96
    |
-  2086 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+  2093 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
        |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
-  in filter-seq pred at stdlib/prelude.llt:2464:29-2464:30
+  in filter-seq pred at stdlib/prelude.llt:2471:29-2471:30
    |
-  2464 | """] [let h t] [builtin-seq h t]]
+  2471 | """] [let h t] [builtin-seq h t]]
        |                             ^
-  in call $filter at stdlib/prelude.llt:2086:72-2086:96
+  in call $filter at stdlib/prelude.llt:2093:72-2093:96
    |
-  2086 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+  2093 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
        |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
-  in call $take at stdlib/prelude.llt:2089:57-2089:76
+  in call $take at stdlib/prelude.llt:2096:57-2096:76
    |
-  2089 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+  2096 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2488:15-2488:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2495:15-2495:35
    |
-  2488 | """] [let xs] [builtin-collect xs]]
+  2495 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in [collect ...] at 2:1-5:55
