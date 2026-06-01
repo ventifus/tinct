@@ -1,9 +1,26 @@
 # pipeline: thread a value through a series of functions (5*2+1=11)
 [-> 5 [fn [x] [* x 2]] [fn [x] [+ x 1]]]
 === error
-[E020] arity mismatch: expected 2 arguments, got 5 (defined at 1:1-1:41)
-  in [-> ...] at 1:1-1:41
+[E099] syntax error at 1:22 (cannot evaluate error node) (defined at 1:22-1:23) (called at stdlib/prelude.llt:1429:56-1429:63)
+  in [f ...] at stdlib/prelude.llt:1429:56-1429:63
+   |
+  1429 | """] [let x ...stages] [builtin-reduce [fn [let acc f] [f acc]] x stages]]
+       |                                                        ^^^^^^^
+  in reduce at stdlib/prelude.llt:1429:24-1429:74
+   |
+  1429 | """] [let x ...stages] [builtin-reduce [fn [let acc f] [f acc]] x stages]]
+       |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in reduce at 1:22-1:23
+  in in reduce at stdlib/prelude.llt:1429:24-1429:74
+   |
+  1429 | """] [let x ...stages] [builtin-reduce [fn [let acc f] [f acc]] x stages]]
+       |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-reduce ...] at stdlib/prelude.llt:1429:24-1429:74
+   |
+  1429 | """] [let x ...stages] [builtin-reduce [fn [let acc f] [f acc]] x stages]]
+       |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [-> ...] at 1:1-1:41
 
 === warn
-arity mismatch: expected 2 argument(s), got 5 (5 positional, 0 named) at 1:1-1:41
+syntax error at 1:22 (cannot typecheck error node) at 1:22-1:23
+syntax error at 1:39 (cannot typecheck error node) at 1:39-1:40

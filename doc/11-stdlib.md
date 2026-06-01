@@ -494,7 +494,7 @@ Functions primarily used internally by other stdlib functions, but also availabl
 | `when` | `fn@[a Null] [pred body@a]` | Returns `body` if `pred` is true, else `[]` |
 | `unless` | `fn@[a Null] [pred body@a]` | Returns `body` if `pred` is false, else `[]` |
 | `cond` | `fn@[a Null] [pairs@Dict]` | Multi-branch conditional: takes a list of `[condition result]` pairs |
-| `until` | Rust native builtin — no LLT wrapper | Iterate function until predicate holds. Applies `f` repeatedly to `x` until `pred(x)` is true. Implemented in Rust using an explicit loop to avoid recursion depth limits (unlimited iterations) |
+| `until` | Rust native builtin — no LLT wrapper | Iterate function until predicate holds. Applies `f` repeatedly to `x` until `pred(x)` is true. Implemented in Rust for performance (avoids per-iteration thunk allocation overhead; unlimited iterations) |
 
 **Field Interception:**
 

@@ -1,16 +1,16 @@
 # join on Seq of strings with custom separator (Seq path)
 [join " | " [take 3 [map [fn [x] [str x]] [range 1]]]]
 === error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:21-1:53) (called at stdlib/prelude.llt:2088:57-2088:76)
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:21-1:53) (called at stdlib/prelude.llt:2083:57-2083:76)
   in [map ...] at 1:21-1:53
   in [map ...] at 1:21-1:53
-  in [builtin-take ...] at stdlib/prelude.llt:2088:57-2088:76
+  in [builtin-take ...] at stdlib/prelude.llt:2083:57-2083:76
    |
-  2088 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+  2083 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-join ...] at stdlib/prelude.llt:2539:26-2539:47
+  in [builtin-join ...] at stdlib/prelude.llt:2534:26-2534:47
    |
-  2539 | """] [let sep@String xs] [builtin-join sep xs]]
+  2534 | """] [let sep@String xs] [builtin-join sep xs]]
        |                          ^^^^^^^^^^^^^^^^^^^^^
   in [join ...] at 1:1-1:55
 

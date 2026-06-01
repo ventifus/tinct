@@ -4,35 +4,33 @@
 === error
 [E099] str-slice: end index 1 out of bounds (string has 0 characters) (defined at 268:3-268:26)
   in [str-slice ...] at 268:3-268:26
-  in materialized at stdlib/prelude.llt:208:29-208:52
+  in materialized at stdlib/prelude.llt:208:21-208:44
    |
-  208 |         [cond-check pairs i [builtin-get i pairs].0 [builtin-get i pairs].1]]]
-      |                             ^^^^^^^^^^^^^^^^^^^^^^^
+  208 |         [builtin-if [builtin-get i pairs].0
+      |                     ^^^^^^^^^^^^^^^^^^^^^^^
   in [= ...] at 401:6-401:33
-  in materialized at stdlib/prelude.llt:211:5-213:45
-   |
-  211 |     [builtin-if condition
-  212 |         result
-  213 |         [cond-impl pairs [builtin-add i 1]]]]
-      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:211:5-213:45
-   |
-  211 |     [builtin-if condition
-  212 |         result
-  213 |         [cond-impl pairs [builtin-add i 1]]]]
-      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:206:5-208:78
+  in materialized at stdlib/prelude.llt:206:5-210:50
    |
   206 |     [builtin-if [builtin-gte i [builtin-length pairs]]
   207 |         []
-  208 |         [cond-check pairs i [builtin-get i pairs].0 [builtin-get i pairs].1]]]
-      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:206:5-208:78
+  208 |         [builtin-if [builtin-get i pairs].0
+  209 |             [builtin-get i pairs].1
+  210 |             [cond-impl pairs [builtin-add i 1]]]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:208:9-210:49
+   |
+  208 |         [builtin-if [builtin-get i pairs].0
+  209 |             [builtin-get i pairs].1
+  210 |             [cond-impl pairs [builtin-add i 1]]]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:206:5-210:50
    |
   206 |     [builtin-if [builtin-gte i [builtin-length pairs]]
   207 |         []
-  208 |         [cond-check pairs i [builtin-get i pairs].0 [builtin-get i pairs].1]]]
-      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  208 |         [builtin-if [builtin-get i pairs].0
+  209 |             [builtin-get i pairs].1
+  210 |             [cond-impl pairs [builtin-add i 1]]]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in materialized at 395:25-403:59
   in materialized at 408:3-410:50
   in [if ...] at 408:3-410:50

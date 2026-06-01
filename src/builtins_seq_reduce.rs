@@ -493,10 +493,7 @@ pub(crate) fn builtin_concat(
                 // only manifest deep in the PendingBuiltin chain at high stack depth.
                 let ys_val = materialize(&ys_thunk, None, &ctx).await?;
                 match ys_val {
-                    Value::Dict(_)
-                    | Value::Seq { .. }
-                    | Value::Overlay(..)
-                    | Value::Bytes { .. } => {}
+                    Value::Dict(_) | Value::Seq { .. } | Value::Overlay(..) => {}
                     other => {
                         return Err(EvalError::type_mismatch_ctx(
                             "concat".to_string(),
@@ -534,10 +531,7 @@ pub(crate) fn builtin_concat(
                     // Without this check, concat([], 42) would silently succeed.
                     let ys = materialize(&ys_thunk, None, &ctx).await?;
                     match ys {
-                        Value::Dict(_)
-                        | Value::Seq { .. }
-                        | Value::Overlay(..)
-                        | Value::Bytes { .. } => {}
+                        Value::Dict(_) | Value::Seq { .. } | Value::Overlay(..) => {}
                         other => {
                             return Err(EvalError::type_mismatch_ctx(
                                 "concat".to_string(),
@@ -558,11 +552,6 @@ pub(crate) fn builtin_concat(
                     Value::Overlay(l, r) => {
                         Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, call_span.clone())?)
                     }
-                    Value::Bytes {
-                        ref source,
-                        start,
-                        end,
-                    } => bytes_to_seq(&source[start..end], call_span.clone(), &ctx),
                     other => other,
                 };
                 match ys {
@@ -625,6 +614,7 @@ pub(crate) fn builtin_concat_seq_step(
         } = ctx_arg;
         let xs_tail_thunk = Arc::clone(&args[0]);
         let ys_thunk = Arc::clone(&args[1]);
+        let xs_tail_span = xs_tail_thunk.span.clone();
         let xs_tail = materialize(&xs_tail_thunk, None, &ctx).await?;
 
         match xs_tail {
@@ -658,8 +648,9 @@ pub(crate) fn builtin_concat_seq_step(
                 "concat".to_string(),
                 "Dict or Seq",
                 other.type_name(),
-                call_span,
+                xs_tail_span,
             )
+            .with_materialization_span(call_span)
             .into()),
         }
     })

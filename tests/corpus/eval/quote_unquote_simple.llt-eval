@@ -1,13 +1,13 @@
 # Simple unquote at top level — [quote [unquote expr]] substitutes evaluated expr
 [get "type" [quote [unquote [quote 42]]]]
 === error
-[E010] builtin-get (key "type"): expected Dict, got Expression (defined at stdlib/prelude.llt:874:42-874:46)
-  --> stdlib/prelude.llt:874:42-874:46
+[E010] builtin-get (key "type"): expected Dict, got Expression (defined at stdlib/prelude.llt:869:42-869:46)
+  --> stdlib/prelude.llt:869:42-869:46
    |
-  874 | """] [let key@k dict@d] [builtin-get key dict]]
+  869 | """] [let key@k dict@d] [builtin-get key dict]]
       |                                          ^^^^
-  in [builtin-get ...] at stdlib/prelude.llt:874:25-874:47
+  in [builtin-get ...] at stdlib/prelude.llt:869:25-869:47
    |
-  874 | """] [let key@k dict@d] [builtin-get key dict]]
+  869 | """] [let key@k dict@d] [builtin-get key dict]]
       |                         ^^^^^^^^^^^^^^^^^^^^^^
   in [get ...] at 1:1-1:42

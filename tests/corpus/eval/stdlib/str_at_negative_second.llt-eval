@@ -3,54 +3,54 @@
 ---
 [call %.str-at -2 "hello"]
 === error
-[E080] duplicate key: str-reverse (defined at stdlib/prelude.llt:2078:28-2078:47)
-  --> stdlib/prelude.llt:2078:28-2078:47
+[E080] duplicate key: str-reverse (defined at stdlib/prelude.llt:2073:28-2073:47)
+  --> stdlib/prelude.llt:2073:28-2073:47
    |
-  2078 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2073 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2078:28-2078:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2073:28-2073:47
    |
-  2078 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2073 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2889:24-2893:13
+  in materialized at stdlib/prelude.llt:2884:24-2888:13
    |
-  2889 | include-cache-failure: [fn@[return: Never  doc: """
-  2890 | Reset include cache entry on error and re-raise. Internal helper for include.
-  2891 | """] [let hash e]
-  2892 |   [builtin-include-cache-put hash Missing]
-  2893 |   [raise e]]
+  2884 | include-cache-failure: [fn@[return: Never  doc: """
+  2885 | Reset include cache entry on error and re-raise. Internal helper for include.
+  2886 | """] [let hash e]
+  2887 |   [builtin-include-cache-put hash Missing]
+  2888 |   [raise e]]
        | ^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2911:3-2913:49
+  in materialized at stdlib/prelude.llt:2906:3-2908:49
    |
-  2911 |   [match [try [fn [let] [eval-file [expand program] [] cap]]]
-  2912 |     [Ok result]: [include-cache-success hash result]
-  2913 |     [Error e]:   [include-cache-failure hash e]]]
+  2906 |   [match [try [fn [let] [eval-file [expand program] [] cap]]]
+  2907 |     [Ok result]: [include-cache-success hash result]
+  2908 |     [Error e]:   [include-cache-failure hash e]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2898:29-2913:50
+  in materialized at stdlib/prelude.llt:2893:29-2908:50
    |
-  2898 | include-evaluate-and-cache: [fn@[return: Any  doc: """
-  2899 | Evaluate a file and update the content-addressed include cache.
-  2900 | 
-  2901 | source:         source text string
-  2902 | path:           file path string (for error spans)
-  2903 | hash:           content cache key (blake3(cap-identity + "|" + source))
-  2904 | cap:            DirCap — passed as %include-dir; included files start with % = []
-  2905 | integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
-  2906 | """] [let source path hash cap integrity-hash@[default: []]]
-  2907 |   [builtin-include-cache-put hash Pending]
-  2908 |   [program: [if [null? integrity-hash]
-  2909 |     [load source name: path]
-  2910 |     [load source name: path hash: integrity-hash]]]
-  2911 |   [match [try [fn [let] [eval-file [expand program] [] cap]]]
-  2912 |     [Ok result]: [include-cache-success hash result]
-  2913 |     [Error e]:   [include-cache-failure hash e]]]
+  2893 | include-evaluate-and-cache: [fn@[return: Any  doc: """
+  2894 | Evaluate a file and update the content-addressed include cache.
+  2895 | 
+  2896 | source:         source text string
+  2897 | path:           file path string (for error spans)
+  2898 | hash:           content cache key (blake3(cap-identity + "|" + source))
+  2899 | cap:            DirCap — passed as %include-dir; included files start with % = []
+  2900 | integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
+  2901 | """] [let source path hash cap integrity-hash@[default: []]]
+  2902 |   [builtin-include-cache-put hash Pending]
+  2903 |   [program: [if [null? integrity-hash]
+  2904 |     [load source name: path]
+  2905 |     [load source name: path hash: integrity-hash]]]
+  2906 |   [match [try [fn [let] [eval-file [expand program] [] cap]]]
+  2907 |     [Ok result]: [include-cache-success hash result]
+  2908 |     [Error e]:   [include-cache-failure hash e]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2938:3-2941:103
+  in materialized at stdlib/prelude.llt:2933:3-2936:103
    |
-  2938 |   [match [builtin-include-cache-get hash]
-  2939 |     [Cached result]: result
-  2940 |     Pending:         [error [str "circular include: " path]]
-  2941 |     Missing:         [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
+  2933 |   [match [builtin-include-cache-get hash]
+  2934 |     [Cached result]: result
+  2935 |     Pending:         [error [str "circular include: " path]]
+  2936 |     Missing:         [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in materialized at 3:7-3:15
   in [include ...] at 1:1-1:32

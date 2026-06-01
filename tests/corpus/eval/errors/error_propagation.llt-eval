@@ -3,13 +3,13 @@
 ---
 %.x
 === error
-[E080] custom message (defined at stdlib/prelude.llt:2078:28-2078:47)
-  --> stdlib/prelude.llt:2078:28-2078:47
+[E080] custom message (defined at stdlib/prelude.llt:2073:28-2073:47)
+  --> stdlib/prelude.llt:2073:28-2073:47
    |
-  2078 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2073 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2078:28-2078:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2073:28-2073:47
    |
-  2078 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2073 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in materialized at 3:1-3:4

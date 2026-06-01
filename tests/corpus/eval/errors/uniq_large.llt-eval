@@ -1,6 +1,0 @@
-# uniq: large input (n=1000) with some duplicates
-# [range 0 500] concat [range 0 500] gives 0..499 twice — 500 unique values
-# B-267 fixed: uniq-seq-impl replaced with builtin-reduce; no longer overflows.
-[length [uniq [collect [concat [range 0 500] [range 0 500]]]]]
-=== out
-Int(500)

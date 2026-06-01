@@ -4,35 +4,35 @@
 # paths are updated to pass available_keys to key_not_found().
 [get-in ["a" "c"] [a: [b: 42]]]
 === error
-[E080] key not found: c (defined at stdlib/prelude.llt:2078:28-2078:47)
-  --> stdlib/prelude.llt:2078:28-2078:47
+[E080] key not found: c (defined at stdlib/prelude.llt:2073:28-2073:47)
+  --> stdlib/prelude.llt:2073:28-2073:47
    |
-  2078 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2073 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2078:28-2078:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2073:28-2073:47
    |
-  2078 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2073 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:906:5-910:53
+  in materialized at stdlib/prelude.llt:901:5-905:53
    |
-  906 |     [builtin-if [builtin-eq [length path] 0]
-  907 |         xs
-  908 |         [builtin-if [has? path.0 xs]
-  909 |             [get-in [builtin-rest path] [get path.0 xs]]
-  910 |             [error [str "key not found: " path.0]]]]]
+  901 |     [builtin-if [builtin-eq [length path] 0]
+  902 |         xs
+  903 |         [builtin-if [has? path.0 xs]
+  904 |             [get-in [builtin-rest path] [get path.0 xs]]
+  905 |             [error [str "key not found: " path.0]]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:908:9-910:52
+  in [builtin-if ...] at stdlib/prelude.llt:903:9-905:52
    |
-  908 |         [builtin-if [has? path.0 xs]
-  909 |             [get-in [builtin-rest path] [get path.0 xs]]
-  910 |             [error [str "key not found: " path.0]]]]]
+  903 |         [builtin-if [has? path.0 xs]
+  904 |             [get-in [builtin-rest path] [get path.0 xs]]
+  905 |             [error [str "key not found: " path.0]]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:906:5-910:53
+  in [builtin-if ...] at stdlib/prelude.llt:901:5-905:53
    |
-  906 |     [builtin-if [builtin-eq [length path] 0]
-  907 |         xs
-  908 |         [builtin-if [has? path.0 xs]
-  909 |             [get-in [builtin-rest path] [get path.0 xs]]
-  910 |             [error [str "key not found: " path.0]]]]]
+  901 |     [builtin-if [builtin-eq [length path] 0]
+  902 |         xs
+  903 |         [builtin-if [has? path.0 xs]
+  904 |             [get-in [builtin-rest path] [get path.0 xs]]
+  905 |             [error [str "key not found: " path.0]]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [get-in ...] at 4:1-4:32

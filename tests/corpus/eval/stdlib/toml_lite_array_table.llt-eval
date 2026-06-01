@@ -7,18 +7,18 @@
   [Ok parsed]: [get "name" [get 1 [get "items" parsed]]]
   [Error msg]: [raise msg]]
 === error
-[E080] open: failed to open file 'toml-lite.llt': No such file or directory (os error 2) (defined at stdlib/prelude.llt:2936:30-2936:54) (called at stdlib/prelude.llt:2936:3-2936:56)
-  --> stdlib/prelude.llt:2936:30-2936:54
+[E080] open: failed to open file 'toml-lite.llt': No such file or directory (os error 2) (defined at stdlib/prelude.llt:2931:30-2931:54) (called at stdlib/prelude.llt:2931:3-2931:56)
+  --> stdlib/prelude.llt:2931:30-2931:54
    |
-  2936 |   [source: [builtin-read-all [open cap path Readable]]]
+  2931 |   [source: [builtin-read-all [open cap path Readable]]]
        |                              ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [open ...] at stdlib/prelude.llt:2936:30-2936:54
+  in [open ...] at stdlib/prelude.llt:2931:30-2931:54
    |
-  2936 |   [source: [builtin-read-all [open cap path Readable]]]
+  2931 |   [source: [builtin-read-all [open cap path Readable]]]
        |                              ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-read-all ...] at stdlib/prelude.llt:2936:12-2936:55
+  in [builtin-read-all ...] at stdlib/prelude.llt:2931:12-2931:55
    |
-  2936 |   [source: [builtin-read-all [open cap path Readable]]]
+  2931 |   [source: [builtin-read-all [open cap path Readable]]]
        |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in materialized at 5:14-5:31
   in [include ...] at 1:1-1:34

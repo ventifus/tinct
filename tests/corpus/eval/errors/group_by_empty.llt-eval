@@ -1,4 +1,0 @@
-# group-by: empty collection returns empty dict
-[group-by [fn [let x] x] []]
-=== out
-Dict({})

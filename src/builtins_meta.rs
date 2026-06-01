@@ -367,11 +367,10 @@ pub(crate) fn builtin_try(
 
 /// `until`: Repeat f(val) until predicate(val) returns true.
 ///
-/// This is a Rust builtin to avoid the recursion depth limit of the LLT version.
-/// The LLT recursive version hits MAX_EVAL_DEPTH at ~230 iterations.
+/// Rust builtin for performance: avoids per-iteration thunk allocation and memoization
+/// overhead that a TCO-optimized LLT tail-recursive version would still incur.
 ///
-/// This implementation uses a Rust loop with eager materialization at each step,
-/// avoiding both depth limits and stack overflow from long thunk chains.
+/// This implementation uses a Rust loop with eager materialization at each step.
 pub(crate) fn builtin_until(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
