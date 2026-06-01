@@ -1229,7 +1229,7 @@ find-first-or@[doc: "Find first matching element or return default"]: [fn@a [let
 # Separated from group-by to avoid [let raw ...] LetDecl-nesting bug (B-264).
 # group-by-step/group-by-insert/group-by-get-bucket (private dict) handle per-element work.
 # Accumulator starts as [] (empty dict); each step merges one updated bucket entry.
-group-by-finish: [fn [let f xs]
+group-by-finish@[doc: "group-by internal helper — not public API"]: [fn [let f xs]
     [map-entries [fn [let e] [reverse e.value]]
         [builtin-reduce [fn [let acc x] [group-by-step f acc x]] [] xs]]]
 

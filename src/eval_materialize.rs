@@ -3042,43 +3042,44 @@ pub(crate) async fn apply_cont(
 
                                 // Fast path: payload already materialized (common after earlier forcing).
                                 // Use the cached value directly — no executor re-entry needed.
-                                let payload_val = if let Some(val) = payload_thunk.try_get_materialized() {
-                                    val
-                                } else {
-                                    // Slow path: payload not yet forced.
-                                    //
-                                    // SAFETY: materialize_sync calls block_on_anywhere, which under a
-                                    // current-thread runtime uses poll_future_sync (a spin-poll loop on
-                                    // LocalSet::run_until). The CEK machine's run() loop is also on this
-                                    // LocalSet, so we are re-entering the LocalSet from within itself.
-                                    //
-                                    // This is safe in practice because:
-                                    //   1. The LocalSet is cooperative and single-threaded. No thread-
-                                    //      safety issue arises from re-entry on the same thread.
-                                    //   2. poll_future_sync drives the payload's materialize future to
-                                    //      completion synchronously, never suspending back to the outer
-                                    //      CEK loop frame. The outer frame is parked on the Rust call
-                                    //      stack while poll_future_sync spins; there is no interleaving.
-                                    //   3. Eval functions contain no genuine I/O suspension (see
-                                    //      async_rt.rs poll_future_sync contract), so the spin loop
-                                    //      always terminates.
-                                    //
-                                    // The latent hazard is stack depth: each nested block_on_anywhere
-                                    // call adds a Rust stack frame (poll_future_sync + run_until).
-                                    // In practice the payload is a single level of indirection (a
-                                    // Variant wrapping a Dict) so nesting depth is at most 1 here.
-                                    //
-                                    // TODO(B-273): replace with Action::Materialize continuation so
-                                    // the CEK machine forces the payload iteratively without re-entry.
-                                    match crate::eval::materialize_sync(
-                                        &payload_thunk,
-                                        Some(&current_expr.span),
-                                        &ctx,
-                                    ) {
-                                        Ok(v) => v,
-                                        Err(e) => return Action::Continue(Err(e)),
-                                    }
-                                };
+                                let payload_val =
+                                    if let Some(val) = payload_thunk.try_get_materialized() {
+                                        val
+                                    } else {
+                                        // Slow path: payload not yet forced.
+                                        //
+                                        // SAFETY: materialize_sync calls block_on_anywhere, which under a
+                                        // current-thread runtime uses poll_future_sync (a spin-poll loop on
+                                        // LocalSet::run_until). The CEK machine's run() loop is also on this
+                                        // LocalSet, so we are re-entering the LocalSet from within itself.
+                                        //
+                                        // This is safe in practice because:
+                                        //   1. The LocalSet is cooperative and single-threaded. No thread-
+                                        //      safety issue arises from re-entry on the same thread.
+                                        //   2. poll_future_sync drives the payload's materialize future to
+                                        //      completion synchronously, never suspending back to the outer
+                                        //      CEK loop frame. The outer frame is parked on the Rust call
+                                        //      stack while poll_future_sync spins; there is no interleaving.
+                                        //   3. Eval functions contain no genuine I/O suspension (see
+                                        //      async_rt.rs poll_future_sync contract), so the spin loop
+                                        //      always terminates.
+                                        //
+                                        // The latent hazard is stack depth: each nested block_on_anywhere
+                                        // call adds a Rust stack frame (poll_future_sync + run_until).
+                                        // In practice the payload is a single level of indirection (a
+                                        // Variant wrapping a Dict) so nesting depth is at most 1 here.
+                                        //
+                                        // TODO(B-273): replace with Action::Materialize continuation so
+                                        // the CEK machine forces the payload iteratively without re-entry.
+                                        match crate::eval::materialize_sync(
+                                            &payload_thunk,
+                                            Some(&current_expr.span),
+                                            &ctx,
+                                        ) {
+                                            Ok(v) => v,
+                                            Err(e) => return Action::Continue(Err(e)),
+                                        }
+                                    };
 
                                 match crate::builtins::require_dict(
                                     "sequential expression",
