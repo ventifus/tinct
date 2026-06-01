@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use indexmap::IndexMap;
 
 use crate::arena::ThunkId;
-use crate::ast::Span;
+use crate::ast::{CoreExpr, Span, Spanned};
 use crate::error::{EvalError, EvalResult};
 #[allow(unused_imports)] // used in test modules via `use super::*`
 use crate::value::Strictness;
@@ -125,6 +125,25 @@ pub(crate) fn bytes_to_seq(bytes: &[u8], span: Span, ctx: &Arc<crate::eval::Eval
         };
     }
     acc
+}
+
+/// Helper: create a synthetic CoreExpr::Call for builtin-generated calls.
+///
+/// Used when builtins construct PendingCall thunks (e.g., map, filter, until).
+/// The CoreExpr is needed for DepthExceeded restore but won't be re-evaluated.
+pub(crate) fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
+    Arc::new(Spanned {
+        node: CoreExpr::Call {
+            func: Arc::new(Spanned {
+                node: CoreExpr::Int(0), // placeholder, never evaluated
+                span: span.clone(),
+            }),
+            args: vec![],
+            named_args: vec![],
+            implied: false,
+        },
+        span,
+    })
 }
 
 /// Maximum file size for reading LLT files: 10 MB.

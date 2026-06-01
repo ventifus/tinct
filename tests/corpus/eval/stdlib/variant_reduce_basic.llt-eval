@@ -2,7 +2,6 @@
 # variant-payload creates a Variant whose payload is a Seq
 # reduce should unpack the Seq and fold over its elements
 [reduce [+ _ _] 0 [variant-payload "Wrapper" [1 2 3 4 5]]]
-# === out will be added by just update-corpus
 === error
 [E020] arity mismatch: expected 1 argument, got 2 (defined at stdlib/prelude.llt:2060:80-2060:106)
   --> stdlib/prelude.llt:2060:80-2060:106

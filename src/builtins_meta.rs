@@ -46,8 +46,10 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::arena::ThunkId;
-use crate::ast::{CoreExpr, Span, Spanned, SurfaceExpression};
-use crate::builtins::{builtin, ok_val, reject_named, require_string, MAX_COLLECT_SIZE};
+use crate::ast::{Span, SurfaceExpression};
+use crate::builtins::{
+    builtin, ok_val, reject_named, require_string, synthetic_call_expr, MAX_COLLECT_SIZE,
+};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, materialize_sync, wrap_with_nominal_validation};
 use crate::eval_call::{invoke_function, CallContext};
@@ -64,22 +66,6 @@ use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
 /// (e.g., `wrap_with_nominal_validation` in `eval.rs`) to ensure consistent naming.
 pub(crate) fn make_gensym_name(prefix: &str, id: u64) -> String {
     format!("ℊꜱʏᴍ⧼{}⧽{}", prefix, id)
-}
-
-/// Helper: create a synthetic CoreExpr::Call for builtin-generated calls.
-fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
-    Arc::new(Spanned {
-        node: CoreExpr::Call {
-            func: Arc::new(Spanned {
-                node: CoreExpr::Int(0),
-                span: span.clone(),
-            }),
-            args: vec![],
-            named_args: vec![],
-            implied: false,
-        },
-        span,
-    })
 }
 
 /// `materialize`: takes 1 arg, forces it to WHNF and returns it.

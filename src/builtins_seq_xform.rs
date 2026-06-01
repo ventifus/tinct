@@ -16,29 +16,12 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 
-use crate::ast::{CoreExpr, Span, Spanned};
-use crate::builtins::{builtin, bytes_to_seq, flatten_overlay, ok_val, reject_named};
+use crate::builtins::{
+    builtin, bytes_to_seq, flatten_overlay, ok_val, reject_named, synthetic_call_expr,
+};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::value::{BuiltinArgs, Key, Strictness, Thunk, ThunkId, Value};
-
-/// Helper: create a synthetic CoreExpr::Call for builtin-generated calls.
-/// Used when builtins construct PendingCall thunks (e.g., map, filter, until).
-/// The CoreExpr is needed for DepthExceeded restore but won't be re-evaluated.
-fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
-    Arc::new(Spanned {
-        node: CoreExpr::Call {
-            func: Arc::new(Spanned {
-                node: CoreExpr::Int(0), // placeholder, never evaluated
-                span: span.clone(),
-            }),
-            args: vec![],
-            named_args: vec![],
-            implied: false,
-        },
-        span,
-    })
-}
 
 /// `map`: Apply a function to every element of a dict or sequence.
 ///
@@ -553,6 +536,9 @@ pub(crate) fn builtin_take(
             .expect("pre-materialized by force_count/pos_strictness");
         // Flatten Overlay to Dict, unpack Variant payload, and convert Bytes before dispatch.
         let xs = match xs {
+            Value::Overlay(l, r) => {
+                Value::Dict(flatten_overlay(&l, &r, "take", &ctx, call_span.clone())?)
+            }
             // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
             Value::Variant {
                 payload: Some(payload_id),
@@ -669,6 +655,9 @@ pub(crate) fn builtin_drop(
             .expect("pre-materialized by force_count/pos_strictness");
         // Flatten Overlay to Dict, unpack Variant payload, and convert Bytes before dispatch.
         let xs = match xs {
+            Value::Overlay(l, r) => {
+                Value::Dict(flatten_overlay(&l, &r, "drop", &ctx, call_span.clone())?)
+            }
             // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
             Value::Variant {
                 payload: Some(payload_id),

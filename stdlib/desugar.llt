@@ -246,6 +246,6 @@ Parameters:
 Returns:
   Program — The desugared program with all $_ references wrapped in lambdas"]:
   [fn [let p@Program]
-    [builtin-program [map desugar-document p.documents]]]
+    [program [map desugar-document p.documents]]]
 
 ]

@@ -14,27 +14,10 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 
-use crate::ast::{CoreExpr, Span, Spanned};
-use crate::builtins::{builtin, ok_val, reject_named};
+use crate::builtins::{builtin, ok_val, reject_named, synthetic_call_expr};
 use crate::error::{ArityBound, EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::value::{BuiltinArgs, Thunk, Value};
-
-/// Helper: create a synthetic CoreExpr::Call for builtin-generated calls.
-fn synthetic_call_expr(span: Span) -> Arc<Spanned<CoreExpr>> {
-    Arc::new(Spanned {
-        node: CoreExpr::Call {
-            func: Arc::new(Spanned {
-                node: CoreExpr::Int(0),
-                span: span.clone(),
-            }),
-            args: vec![],
-            named_args: vec![],
-            implied: false,
-        },
-        span,
-    })
-}
 
 /// `range`: Sequence of integers from start to end (exclusive), or infinite.
 ///

@@ -3228,9 +3228,10 @@ Rust-level EvalErrors bypass finally.
 #   4. Return {type: "call", fn: {type: "var", name: "str"}, args: [...], named-args: [], implied: true}
 
 # true if character c is a stop character for variable names in interpolated strings.
-# Mirrors the stop-char set in src/lexer.rs lex_interpolated_string VarRef branch.
+# Mirrors the stop-char set in src/lexer.rs lex_interpolated_string VarRef branch
+# (space, tab, CR, LF, delimiters, and common punctuation).
 tmpl-is-stop: [fn [let c]
-  [str-contains? c " \t\n[]:#;\"@.,!?"]]
+  [str-contains? c " \t\r\n[]:#;\"@.,!?"]]
 
 # Find the byte-length of the variable name at the start of string s.
 # Walks from index i until a stop char is found or end of string.
