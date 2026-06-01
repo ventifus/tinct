@@ -26,12 +26,12 @@
   drop-result: [collect [drop 1 [seq 10 [seq 20 [seq 30 []]]]]]
 ]
 === error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 21:27-21:87) (called at stdlib/prelude.llt:2495:15-2495:35)
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 21:27-21:87) (called at stdlib/prelude.llt:2487:15-2487:35)
   in [filter ...] at 21:27-21:87
   in [filter ...] at 21:27-21:87
-  in [builtin-collect ...] at stdlib/prelude.llt:2495:15-2495:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2487:15-2487:35
    |
-  2495 | """] [let xs] [builtin-collect xs]]
+  2487 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
 
 === warn

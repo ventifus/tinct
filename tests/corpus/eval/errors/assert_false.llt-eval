@@ -1,16 +1,16 @@
 [assert false "test failure"]
 === error
-[E080] test failure (defined at stdlib/prelude.llt:2086:28-2086:47)
-  --> stdlib/prelude.llt:2086:28-2086:47
+[E080] test failure (defined at stdlib/prelude.llt:2078:28-2078:47)
+  --> stdlib/prelude.llt:2078:28-2078:47
    |
-  2086 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2078 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2086:28-2086:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2078:28-2078:47
    |
-  2086 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2078 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:2043:28-2043:62
+  in [builtin-if ...] at stdlib/prelude.llt:2035:28-2035:62
    |
-  2043 | """] [let cond msg@String] [builtin-if cond true [error msg]]]
+  2035 | """] [let cond msg@String] [builtin-if cond true [error msg]]]
        |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [assert ...] at 1:1-1:30

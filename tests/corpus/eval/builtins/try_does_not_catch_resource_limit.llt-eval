@@ -5,14 +5,14 @@
 # Both have the same non-catchable semantics in builtin_try (builtins_meta.rs:222-227).
 [try [fn [] [collect [range 0]]]]
 === error
-[E043] collect: exceeded maximum collection size (1000000). Use $take to limit infinite sequences before collecting. (defined at stdlib/prelude.llt:2495:15-2495:35)
-  --> stdlib/prelude.llt:2495:15-2495:35
+[E043] collect: exceeded maximum collection size (1000000). Use $take to limit infinite sequences before collecting. (defined at stdlib/prelude.llt:2487:15-2487:35)
+  --> stdlib/prelude.llt:2487:15-2487:35
    |
-  2495 | """] [let xs] [builtin-collect xs]]
+  2487 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2495:15-2495:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2487:15-2487:35
    |
-  2495 | """] [let xs] [builtin-collect xs]]
+  2487 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in materialized at 5:1-5:34
   in [try ...] at 5:1-5:34

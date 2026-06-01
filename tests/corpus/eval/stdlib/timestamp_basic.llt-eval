@@ -3,9 +3,9 @@
 # 1577836800000000000 nanoseconds = 1577836800 seconds = Jan 1, 2020
 [timestamp-nanos 1577836800000000000]
 === error
-[E002] undefined variable: builtin-timestamp-nanos (did you mean the string "builtin-timestamp-nanos"? Use quotes.) (defined at stdlib/prelude.llt:3004:18-3004:41) (called at 4:1-4:38)
-  --> stdlib/prelude.llt:3004:18-3004:41
+[E002] undefined variable: builtin-timestamp-nanos (did you mean the string "builtin-timestamp-nanos"? Use quotes.) (defined at stdlib/prelude.llt:2996:18-2996:41) (called at 4:1-4:38)
+  --> stdlib/prelude.llt:2996:18-2996:41
    |
-  3004 | timestamp-nanos: builtin-timestamp-nanos
+  2996 | timestamp-nanos: builtin-timestamp-nanos
        |                  ^^^^^^^^^^^^^^^^^^^^^^^
   in [timestamp-nanos ...] at 4:1-4:38

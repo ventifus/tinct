@@ -1,20 +1,20 @@
 # range: error when start argument is a non-Int (quoted string)
 [range "not a number" 10]
 === error
-[E010] range: expected Int, got String (defined at stdlib/prelude.llt:2506:9-2506:50)
-  --> stdlib/prelude.llt:2506:9-2506:50
+[E010] range: expected Int, got String (defined at stdlib/prelude.llt:2498:9-2498:50)
+  --> stdlib/prelude.llt:2498:9-2498:50
    |
-  2506 |         [builtin-range start [builtin-head rest]]
+  2498 |         [builtin-range start [builtin-head rest]]
        |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-range ...] at stdlib/prelude.llt:2506:9-2506:50
+  in [builtin-range ...] at stdlib/prelude.llt:2498:9-2498:50
    |
-  2506 |         [builtin-range start [builtin-head rest]]
+  2498 |         [builtin-range start [builtin-head rest]]
        |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:2505:5-2507:31
+  in [builtin-if ...] at stdlib/prelude.llt:2497:5-2499:31
    |
-  2505 |     [builtin-if [seq? rest]
-  2506 |         [builtin-range start [builtin-head rest]]
-  2507 |         [builtin-range start]]]
+  2497 |     [builtin-if [seq? rest]
+  2498 |         [builtin-range start [builtin-head rest]]
+  2499 |         [builtin-range start]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [range ...] at 1:1-1:26
 

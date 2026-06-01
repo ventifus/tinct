@@ -1,13 +1,13 @@
 # collect: error on non-Seq (assuming collect requires Seq, not just any dict)
 [collect 42]
 === error
-[E010] collect: expected Seq, got Int (defined at stdlib/prelude.llt:2495:32-2495:34) (called at stdlib/prelude.llt:2495:15-2495:35)
-  --> stdlib/prelude.llt:2495:32-2495:34
+[E010] collect: expected Seq, got Int (defined at stdlib/prelude.llt:2487:32-2487:34) (called at stdlib/prelude.llt:2487:15-2487:35)
+  --> stdlib/prelude.llt:2487:32-2487:34
    |
-  2495 | """] [let xs] [builtin-collect xs]]
+  2487 | """] [let xs] [builtin-collect xs]]
        |                                ^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2495:15-2495:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2487:15-2487:35
    |
-  2495 | """] [let xs] [builtin-collect xs]]
+  2487 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in [collect ...] at 1:1-1:13

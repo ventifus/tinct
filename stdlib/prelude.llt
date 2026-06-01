@@ -319,12 +319,15 @@ group-by-insert: [fn [let k x acc]
 group-by-step: [fn [let f acc x]
     [group-by-insert [f x] x acc]]
 
-# uniq-impl: collect unique elements given pre-computed key list.
-# Extracted so that [keys xs] is passed as a plain argument (not a [let ...] binding),
-# avoiding the LetDecl-nesting parser bug (B-264) in the uniq fn body.
-# Uses builtin-length (not the public length wrapper) since this lives in the private dict.
-uniq-impl: [fn [let ks xs@Dict]
-    [builtin-collect [reverse-seq [uniq-seq-impl ks xs [] [] 0 [builtin-length ks]]]]]
+# uniq-impl: collect unique elements using builtin-reduce (Rust loop, no stack frames).
+# builtin-reduce iterates dict values in insertion order, calling uniq-reduce-step for each.
+# The accumulated Seq is reversed (elements were consed, reversing order) then collected to Dict.
+# No longer needs a pre-computed key list — builtin-reduce over the Dict handles iteration.
+uniq-impl: [fn [let xs@Dict]
+    [builtin-collect
+        [reverse-seq
+            [builtin-get "acc"
+                [builtin-reduce uniq-reduce-step [acc: []  seen: []] xs]]]]]
 
 # ============================================================================
 # Aggregate helpers (only depend on builtins + siblings)
@@ -418,24 +421,15 @@ contains-seq?: [fn@Bool [let seq val]
         false
         seq]]
 
-# uniq-seq-impl/uniq-seq-step: Build a reversed Seq of unique elements.
-# O(n) per element * O(n) contains-seq? check = still O(n²), but O(1) cons per step.
-# Caller must reverse-seq the result before collect to restore original order.
-uniq-seq-impl: [fn [let ks xs@Dict acc seen i@Int len@Int]
-    [builtin-if [builtin-gte i len]
-        acc
-        [uniq-seq-step ks xs acc seen i len [builtin-get [builtin-get i ks] xs]]]]
-
-uniq-seq-step: [fn [let ks xs@Dict acc seen i@Int len@Int v]
-    [builtin-if [contains-seq? seen v]
-        # Already seen: skip this element
-        [uniq-seq-impl ks xs acc seen [builtin-add i 1] len]
-        # New element: cons onto both acc and seen (prepends, so reverses order)
-        [uniq-seq-impl ks xs
-            [builtin-seq v acc]
-            [builtin-seq v seen]
-            [builtin-add i 1]
-            len]]]
+# uniq-reduce-step: One step of the builtin-reduce loop for uniq.
+# acc is a dict with keys "acc" (reversed Seq of unique values) and "seen" (Seq of seen values).
+# For each element v: if already in seen, return acc unchanged; otherwise cons v onto both.
+# Uses builtin-reduce (Rust loop) instead of LLT recursion to avoid E040 stack overflow (B-267).
+uniq-reduce-step: [fn [let result v]
+    [builtin-if [contains-seq? [builtin-get "seen" result] v]
+        result
+        [acc:  [builtin-seq v [builtin-get "acc"  result]]
+         seen: [builtin-seq v [builtin-get "seen" result]]]]]
 
 # reverse-seq: Reverse a Seq by building a new Seq with reversed order.
 # Iterates through input Seq, cons-ing each element onto accumulator (which reverses).
@@ -1411,10 +1405,8 @@ contains?@[doc: "Check if collection contains element"]: [fn@Bool [let val xs]
                 [seq? [builtin-filter [fn [let e] [builtin-eq e val]] xs]]
                 [any? [fn [let e] [builtin-eq e val]] xs]]]]]
 
-uniq@[doc: "Remove duplicates (keep first occurrence). Still O(n²) due to O(n) contains-seq? per element, but uses O(1) cons instead of O(n) append."]: [fn@Dict [let xs@Dict]
-    # uniq-impl (private dict) takes [keys xs] as an explicit argument to avoid
-    # [let ks ...] and [let reversed-seq ...] LetDecl-nesting bugs (B-264).
-    [uniq-impl [keys xs] xs]]
+uniq@[doc: "Remove duplicates (keep first occurrence). O(n²) due to O(n) contains-seq? per element, but uses builtin-reduce (Rust loop) to avoid E040 stack overflow (B-267)."]: [fn@Dict [let xs@Dict]
+    [uniq-impl xs]]
 
 # Right fold: fold f over xs from the right, starting with acc.
 # Equivalent to fold(f, acc, reverse(xs)).
