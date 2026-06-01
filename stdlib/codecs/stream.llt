@@ -55,7 +55,7 @@
               [or [starts-with? "#" [trim [head ls]]]
                   [= "---" [trim [head ls]]]]]
         [scan [tail ls] acc depth]
-        [scan-advance ls acc [+ depth [bracket-count [head ls]]]]]]]]
+        [scan-advance ls acc [+ depth [bracket-count [head ls]]]]]]]]]
 
   # balanced-exprs: group a Seq of lines into balanced tinct expressions.
   # Skips blank lines, comment lines (start with #), and --- separators.

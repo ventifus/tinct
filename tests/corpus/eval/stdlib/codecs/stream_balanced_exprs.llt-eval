@@ -3,7 +3,7 @@
 [stream: [include %libdir "codecs/stream.llt"]]
 [collect [stream.balanced-exprs [split "\n" "[x: 1]\n[y: 2]"]]]
 === error
-[E080] load: parse error in "codecs/stream.llt": 66:17: `:` can only appear in dict, call, class, instance, match, or syntax-class forms (defined at stdlib/prelude.llt:2893:5-2893:29) (called at stdlib/prelude.llt:2052:71-2052:89)
+[E080] load: parse error in "codecs/stream.llt": 58:70: unmatched closing bracket (defined at stdlib/prelude.llt:2893:5-2893:29) (called at stdlib/prelude.llt:2052:71-2052:89)
   --> stdlib/prelude.llt:2893:5-2893:29
    |
   2893 |     [load source name: path]
