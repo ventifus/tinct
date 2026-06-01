@@ -1,0 +1,5 @@
+--- uses: ["datetime"]
+# timestamp-nanos: Unix epoch (0 nanoseconds)
+[timestamp-nanos 0]
+=== out
+Timestamp(1970-01-01T00:00:00Z)

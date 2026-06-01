@@ -4,14 +4,14 @@
 # Uses the llt-repr builtin which deep-materializes and formats the value.
 #
 # Concurrent contract:
-# 1. Drain %emit: write each emitted value as llt-repr
+# 1. Drain %emit-channel: write each emitted value as llt-repr
 # 2. Force %: write the return value (or each Seq element) as llt-repr
 # 3. Await drain task completion
 
 # 1. Drain the emit channel concurrently.
 [drain: [task
   [loop-select [context]
-    [seq [ch: %emit  handler: [fn [let v]
+    [seq [ch: %emit-channel  handler: [fn [let v]
       [write-handle %stdout [str [call $llt-repr v] "\n"]]]] []]
     identity]]]
 

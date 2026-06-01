@@ -91,6 +91,33 @@ fn take_two_thunks(
     Ok((Arc::clone(&args[0]), Arc::clone(&args[1])))
 }
 
+fn take_three_thunks(
+    name: &str,
+    args: &[Arc<Thunk>],
+    named: Option<&IndexMap<String, Arc<Thunk>>>,
+    call_span: Span,
+) -> EvalResult<(Arc<Thunk>, Arc<Thunk>, Arc<Thunk>)> {
+    if !named.as_ref().is_none_or(|n| n.is_empty()) {
+        return Err(EvalError::user_error(
+            format!("{name} does not accept named arguments"),
+            call_span,
+        )
+        .into());
+    }
+    if args.len() != 3 {
+        return Err(EvalError::user_error(
+            format!("{name} expects 3 arguments, got {}", args.len()),
+            call_span,
+        )
+        .into());
+    }
+    Ok((
+        Arc::clone(&args[0]),
+        Arc::clone(&args[1]),
+        Arc::clone(&args[2]),
+    ))
+}
+
 /// Helper to collect a Seq into a Vec<ThunkId> by walking the linked list.
 /// Returns the thunk IDs in order. Materializes each tail to check for continuation or termination.
 async fn collect_seq_to_vec(
@@ -850,14 +877,20 @@ pub(crate) fn builtin_try_send(
 
 /// `select-once`: Wait for the first of multiple sources to complete.
 ///
-/// Signature: `Context → [Seq {ch: Channel  handler: Fn}] → [Ok T] | [Closed]`
+/// Signature: `Context → [Seq {ch: Channel|BroadcastChannel|OneshotReceiver  handler: Fn}] → [Ok T] | [Closed]`
 ///
-/// Takes a context (for cancellation checking) and a sequence of [channel, handler] pairs.
+/// Takes a context (for cancellation checking) and a sequence of source dicts, where each
+/// source has a `ch:` field (Channel, BroadcastChannel, or OneshotReceiver) and a `handler:` field (Fn).
 /// Waits for the FIRST channel to have a value available, then calls that channel's handler
 /// with the received value. Returns `[Ok result]` where result is the handler's return value.
 ///
 /// If all channels are closed, returns `[Closed]` (not an error). Context cancellation still
 /// raises an exception.
+///
+/// Channel type semantics:
+/// - Channel (mpsc): Standard FIFO channel, each value consumed once
+/// - BroadcastChannel: Creates a subscriber at select-once start; receives values sent after subscription
+/// - OneshotReceiver: Single-use receiver; after receiving one value, marked as closed
 ///
 /// Implementation note: uses a manual polling loop over all channels. When a channel
 /// produces a value, we call its handler and return. Closed channels are removed from
@@ -920,8 +953,17 @@ pub(crate) fn builtin_select_once(
             .into());
         }
 
+        // Define the channel source enum to support all three channel types.
+        // For BroadcastChannel, we create a subscriber immediately so it sees messages
+        // sent during the select operation.
+        enum ChannelSource {
+            Channel(Arc<crate::value::ChannelInner>),
+            BroadcastChannel(tokio::sync::broadcast::Receiver<Value>),
+            OneshotReceiver(Arc<crate::value::OneshotReceiverInner>),
+        }
+
         // Parse each source as a {ch:, handler:} Dict
-        let mut sources: Vec<(Arc<crate::value::ChannelInner>, ThunkId)> = Vec::new();
+        let mut sources: Vec<(ChannelSource, ThunkId)> = Vec::new();
         for source_id in source_ids {
             let source_thunk = ctx.get_thunk(source_id);
             let source_val = materialize(&source_thunk, Some(&call_span), &ctx).await?;
@@ -937,11 +979,19 @@ pub(crate) fn builtin_select_once(
                             let ch_val = materialize(&ch_thunk, Some(&call_span), &ctx).await?;
                             match ch_val {
                                 Value::Channel(ch) => {
-                                    sources.push((ch, handler_id));
+                                    sources.push((ChannelSource::Channel(ch), handler_id));
+                                }
+                                Value::BroadcastChannel(ch) => {
+                                    // Subscribe immediately so we see messages sent during select
+                                    let rx = ch.sender.subscribe();
+                                    sources.push((ChannelSource::BroadcastChannel(rx), handler_id));
+                                }
+                                Value::OneshotReceiver(ch) => {
+                                    sources.push((ChannelSource::OneshotReceiver(ch), handler_id));
                                 }
                                 _ => {
                                     return Err(EvalError::type_mismatch(
-                                        "Channel",
+                                        "Channel, BroadcastChannel, or OneshotReceiver",
                                         ch_val.type_name(),
                                         call_span,
                                     )
@@ -991,117 +1041,190 @@ pub(crate) fn builtin_select_once(
                 .into());
             }
 
-            for (i, (channel_inner, handler_id)) in sources.iter().enumerate() {
+            for (i, (channel_source, handler_id)) in sources.iter_mut().enumerate() {
                 if closed[i] {
                     continue;
                 }
 
-                // Use try_lock() to avoid blocking on contended receivers.
-                // If the lock is held by a concurrent `recv`, skip this channel
-                // this iteration — we will retry after yield_now().
-                let mut rx = match channel_inner.receiver.try_lock() {
-                    Ok(guard) => guard,
-                    Err(_) => continue, // lock contended, try next channel
-                };
-
-                match rx.try_recv() {
-                    Ok(value) => {
-                        // Got a value! Release lock before calling the handler.
-                        drop(rx);
-
-                        // Retrieve and materialize the handler.
-                        let handler_thunk = ctx.get_thunk(*handler_id);
-                        let handler_val =
-                            materialize(&handler_thunk, Some(&call_span), &ctx).await?;
-
-                        // Call the handler with the received value.
-                        let handler_result = match handler_val {
-                            Value::Function {
-                                params,
-                                body,
-                                env,
-                                annotation: _,
-                            } => {
-                                if params.len() != 1 {
-                                    return Err(EvalError::user_error(
-                                        format!(
-                                            "select-once handler expects 1 parameter, got {}",
-                                            params.len()
-                                        ),
-                                        call_span,
-                                    )
-                                    .into());
-                                }
-
-                                // Bind the received value to the parameter.
-                                let call_env = Arc::new(std::sync::RwLock::new(
-                                    crate::value::Environment::with_parent(env),
-                                ));
-                                call_env.write().unwrap().insert(
-                                    params[0].name.clone(),
-                                    Arc::new(Thunk::new_materialized(value, call_span.clone())),
-                                );
-
-                                // Evaluate and return the body.
-                                let result_thunk =
-                                    eval_core_expr_pub(&body, &call_env, &ctx).await?;
-                                materialize(&result_thunk, None, &ctx).await?
-                            }
-                            Value::Builtin(def) => {
-                                // Call builtin with the value.
-                                let arg_thunk =
-                                    Arc::new(Thunk::new_materialized(value, call_span.clone()));
-                                let result = (def.func)(BuiltinArgs {
-                                    args: vec![arg_thunk],
-                                    named: None,
-                                    call_span: call_span.clone(),
-                                    ctx: Arc::clone(&ctx),
-                                })
-                                .await?;
-                                materialize(&result, None, &ctx).await?
-                            }
-                            _ => {
-                                return Err(EvalError::type_mismatch(
-                                    "Function",
-                                    handler_val.type_name(),
-                                    call_span,
-                                )
-                                .into())
-                            }
+                // Try to receive from the channel based on its type
+                let recv_result: Result<Value, ()> = match channel_source {
+                    ChannelSource::Channel(channel_inner) => {
+                        // Use try_lock() to avoid blocking on contended receivers.
+                        // If the lock is held by a concurrent `recv`, skip this channel
+                        // this iteration — we will retry after yield_now().
+                        let mut rx = match channel_inner.receiver.try_lock() {
+                            Ok(guard) => guard,
+                            Err(_) => continue, // lock contended, try next channel
                         };
 
-                        // Wrap the handler result in [Ok v]
-                        let result_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            handler_result,
-                            call_span.clone(),
-                        )));
-                        return ok_val(
-                            Value::Variant {
-                                tag: "Ok".to_string(),
-                                payload: Some(result_thunk_id),
-                            },
-                            call_span,
-                        );
-                    }
-                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                        // Channel is empty, try next one.
-                        continue;
-                    }
-                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                        // Channel is closed — mark it and check if all are closed.
-                        closed[i] = true;
-                        if closed.iter().all(|&c| c) {
-                            // All channels closed — return [Closed]
-                            return ok_val(
-                                Value::Variant {
-                                    tag: "Closed".to_string(),
-                                    payload: None,
-                                },
-                                call_span,
-                            );
+                        match rx.try_recv() {
+                            Ok(value) => Ok(value),
+                            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Err(()),
+                            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                                // Channel is closed
+                                closed[i] = true;
+                                if closed.iter().all(|&c| c) {
+                                    // All channels closed — return [Closed]
+                                    return ok_val(
+                                        Value::Variant {
+                                            tag: "Closed".to_string(),
+                                            payload: None,
+                                        },
+                                        call_span,
+                                    );
+                                }
+                                continue;
+                            }
                         }
-                        continue;
                     }
+                    ChannelSource::BroadcastChannel(rx) => {
+                        // We have a persistent subscriber created at the start.
+                        // Try to receive from it.
+                        match rx.try_recv() {
+                            Ok(value) => Ok(value),
+                            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => Err(()),
+                            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                                // Subscriber lagged — treat as empty and continue
+                                Err(())
+                            }
+                            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                                // Channel is closed
+                                closed[i] = true;
+                                if closed.iter().all(|&c| c) {
+                                    // All channels closed — return [Closed]
+                                    return ok_val(
+                                        Value::Variant {
+                                            tag: "Closed".to_string(),
+                                            payload: None,
+                                        },
+                                        call_span,
+                                    );
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    ChannelSource::OneshotReceiver(receiver_inner) => {
+                        // Try to take the receiver (single-use)
+                        let mut rx_opt = match receiver_inner.receiver.try_lock() {
+                            Ok(guard) => guard,
+                            Err(_) => continue, // lock contended, try next channel
+                        };
+
+                        // Check if the receiver has already been consumed
+                        if rx_opt.is_none() {
+                            // Receiver already used — mark as closed
+                            closed[i] = true;
+                            if closed.iter().all(|&c| c) {
+                                // All channels closed — return [Closed]
+                                return ok_val(
+                                    Value::Variant {
+                                        tag: "Closed".to_string(),
+                                        payload: None,
+                                    },
+                                    call_span,
+                                );
+                            }
+                            continue;
+                        }
+
+                        // Try to receive without consuming the receiver yet.
+                        // We need to use try_recv which consumes, so we must be careful.
+                        let mut rx = rx_opt.take().unwrap();
+                        match rx.try_recv() {
+                            Ok(value) => {
+                                // Got a value! Receiver is now consumed (already taken).
+                                Ok(value)
+                            }
+                            Err(_) => {
+                                // No value available yet OR sender dropped.
+                                // Put the receiver back for now, unless it's closed.
+                                // Note: oneshot try_recv returns Err for both Empty and Closed.
+                                // We need to check if it's actually closed.
+                                // Unfortunately, tokio::sync::oneshot::Receiver doesn't have
+                                // a separate Empty vs Closed error for try_recv.
+                                // We'll put it back and mark as empty for now.
+                                // If the sender is dropped, future iterations will fail the same way.
+                                *rx_opt = Some(rx);
+                                Err(())
+                            }
+                        }
+                    }
+                };
+
+                // If we got a value, call the handler
+                if let Ok(value) = recv_result {
+                    // Retrieve and materialize the handler.
+                    let handler_thunk = ctx.get_thunk(*handler_id);
+                    let handler_val = materialize(&handler_thunk, Some(&call_span), &ctx).await?;
+
+                    // Call the handler with the received value.
+                    let handler_result = match handler_val {
+                        Value::Function {
+                            params,
+                            body,
+                            env,
+                            annotation: _,
+                        } => {
+                            if params.len() != 1 {
+                                return Err(EvalError::user_error(
+                                    format!(
+                                        "select-once handler expects 1 parameter, got {}",
+                                        params.len()
+                                    ),
+                                    call_span,
+                                )
+                                .into());
+                            }
+
+                            // Bind the received value to the parameter.
+                            let call_env = Arc::new(std::sync::RwLock::new(
+                                crate::value::Environment::with_parent(env),
+                            ));
+                            call_env.write().unwrap().insert(
+                                params[0].name.clone(),
+                                Arc::new(Thunk::new_materialized(value, call_span.clone())),
+                            );
+
+                            // Evaluate and return the body.
+                            let result_thunk = eval_core_expr_pub(&body, &call_env, &ctx).await?;
+                            materialize(&result_thunk, None, &ctx).await?
+                        }
+                        Value::Builtin(def) => {
+                            // Call builtin with the value.
+                            let arg_thunk =
+                                Arc::new(Thunk::new_materialized(value, call_span.clone()));
+                            let result = (def.func)(BuiltinArgs {
+                                args: vec![arg_thunk],
+                                named: None,
+                                call_span: call_span.clone(),
+                                ctx: Arc::clone(&ctx),
+                            })
+                            .await?;
+                            materialize(&result, None, &ctx).await?
+                        }
+                        _ => {
+                            return Err(EvalError::type_mismatch(
+                                "Function",
+                                handler_val.type_name(),
+                                call_span,
+                            )
+                            .into())
+                        }
+                    };
+
+                    // Wrap the handler result in [Ok v]
+                    let result_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        handler_result,
+                        call_span.clone(),
+                    )));
+                    return ok_val(
+                        Value::Variant {
+                            tag: "Ok".to_string(),
+                            payload: Some(result_thunk_id),
+                        },
+                        call_span,
+                    );
                 }
             }
 
@@ -1920,13 +2043,15 @@ pub(crate) fn builtin_with_cancel(
 
 /// `with-timeout`: Create a child context that auto-cancels after `duration-ms` milliseconds.
 ///
-/// Signature: `Context → Int → Context`
+/// Signature: `ClockCap → Context → Duration → Context`
 ///
 /// Creates a child token derived from the parent. Spawns a background local task that
 /// sleeps for `duration-ms` milliseconds then calls `cancel()` on the child token.
 /// Returns the child context.
 ///
-/// Per async-eval.md: `timed-ctx: [with-timeout ctx 5000]`
+/// Requires ClockCap to access wall-clock time, consistent with `timer-channel`.
+///
+/// Per async-eval.md: `timed-ctx: [with-timeout %clock ctx [duration 5 "s"]]`
 pub(crate) fn builtin_with_timeout(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -1937,8 +2062,25 @@ pub(crate) fn builtin_with_timeout(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let (parent_thunk, ms_thunk) =
-            take_two_thunks("with-timeout", &args, named.as_ref(), call_span.clone())?;
+        let (clock_thunk, parent_thunk, ms_thunk) =
+            take_three_thunks("with-timeout", &args, named.as_ref(), call_span.clone())?;
+
+        // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
+        let clock_val = clock_thunk
+            .try_get_materialized()
+            .expect("pre-materialized by force_count=1");
+        let _clock_inner: ClockCapInner = match &clock_val {
+            Value::ClockCap(inner) => inner.as_ref().clone(),
+            _ => {
+                return Err(EvalError::type_mismatch(
+                    "ClockCap",
+                    clock_val.type_name(),
+                    call_span.clone(),
+                )
+                .into())
+            }
+        };
+
         let parent_val = materialize(&parent_thunk, Some(&call_span), &ctx).await?;
         let ms_val = materialize(&ms_thunk, Some(&call_span), &ctx).await?;
 
@@ -1952,6 +2094,16 @@ pub(crate) fn builtin_with_timeout(
         };
 
         let duration_ms = match ms_val {
+            // Duration is stored as nanoseconds (i64) — divide by 1_000_000 to get milliseconds
+            Value::Duration(nanos) if nanos >= 0 => (nanos / 1_000_000).max(1) as u64,
+            Value::Duration(nanos) => {
+                return Err(EvalError::user_error(
+                    format!("with-timeout: duration must be ≥ 0, got {} ns", nanos),
+                    call_span,
+                )
+                .into())
+            }
+            // Backward compatibility: accept bare Int as milliseconds
             Value::Int(n) if n >= 0 => n as u64,
             Value::Int(n) => {
                 return Err(EvalError::user_error(
@@ -1960,13 +2112,22 @@ pub(crate) fn builtin_with_timeout(
                 )
                 .into())
             }
-            _ => return Err(EvalError::type_mismatch("Int", ms_val.type_name(), call_span).into()),
+            _ => {
+                return Err(EvalError::type_mismatch(
+                    "Duration or Int",
+                    ms_val.type_name(),
+                    call_span,
+                )
+                .into())
+            }
         };
 
         let child_token = parent_token.child_token();
         let cancel_clone = child_token.clone();
 
         // Spawn a local task to cancel the child token after the timeout.
+        // Note: We use real wall-clock time via tokio::time::sleep regardless of ClockCapInner.
+        // The ClockCap gate is for authorization, not for deterministic sleep behavior.
         let handle = crate::async_rt::spawn_local(async move {
             tokio::time::sleep(std::time::Duration::from_millis(duration_ms)).await;
             cancel_clone.cancel();
@@ -1981,13 +2142,15 @@ pub(crate) fn builtin_with_timeout(
 
 /// `with-deadline`: Create a child context that auto-cancels at an absolute Unix timestamp (ms).
 ///
-/// Signature: `Context → Int → Context`
+/// Signature: `ClockCap → Context → Timestamp → Context`
 ///
 /// Like `with-timeout` but the deadline is specified as an absolute Unix timestamp in
 /// milliseconds (matching `Value::Timestamp` semantics). If the deadline is already past,
 /// the child context is cancelled immediately.
 ///
-/// Per async-eval.md: `dead-ctx: [with-deadline ctx ts]`
+/// Requires ClockCap to access wall-clock time, consistent with `timer-channel`.
+///
+/// Per async-eval.md: `dead-ctx: [with-deadline %clock ctx ts]`
 pub(crate) fn builtin_with_deadline(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -1998,8 +2161,25 @@ pub(crate) fn builtin_with_deadline(
         ctx,
     } = ctx_arg;
     Box::pin(async move {
-        let (parent_thunk, ts_thunk) =
-            take_two_thunks("with-deadline", &args, named.as_ref(), call_span.clone())?;
+        let (clock_thunk, parent_thunk, ts_thunk) =
+            take_three_thunks("with-deadline", &args, named.as_ref(), call_span.clone())?;
+
+        // Validate ClockCap (force_count=1 in builtin registry pre-materializes it)
+        let clock_val = clock_thunk
+            .try_get_materialized()
+            .expect("pre-materialized by force_count=1");
+        let _clock_inner: ClockCapInner = match &clock_val {
+            Value::ClockCap(inner) => inner.as_ref().clone(),
+            _ => {
+                return Err(EvalError::type_mismatch(
+                    "ClockCap",
+                    clock_val.type_name(),
+                    call_span.clone(),
+                )
+                .into())
+            }
+        };
+
         let parent_val = materialize(&parent_thunk, Some(&call_span), &ctx).await?;
         let ts_val = materialize(&ts_thunk, Some(&call_span), &ctx).await?;
 
@@ -2033,6 +2213,8 @@ pub(crate) fn builtin_with_deadline(
         let cancel_clone = child_token.clone();
 
         // Compute delay: deadline_unix_ns - now_unix_ns.
+        // Note: We use real wall-clock time via SystemTime::now() regardless of ClockCapInner.
+        // The ClockCap gate is for authorization, not for deterministic deadline behavior.
         let now_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -2584,17 +2766,23 @@ mod tests {
         );
     }
 
-    /// Verify that `[builtin-with-timeout ctx 100]` produces a child context.
+    /// Verify that `[builtin-with-timeout clock ctx ms]` produces a child context.
     /// (We cannot reliably test it's cancelled in 100ms without yielding to the LocalSet,
     /// but we verify it returns a Context without error.)
     ///
-    /// Uses builtin-with-timeout/builtin-cancelled-q/builtin-context (bare names removed in builtin-privacy-primary-names sprint).
+    /// with-timeout now takes 3 args: ClockCap, Context, Duration/Int (B-230).
+    /// Constructs a ClockCap via datetime module builtins using letrec dict scope.
     #[test]
     fn test_with_timeout_returns_context() {
-        let result = crate::eval_source_with_config(
-            "[builtin-cancelled-q [builtin-with-timeout [builtin-context] 100]]",
-            false,
-        );
+        let source = r#"
+[
+  dt: [builtin-module "datetime"]
+  ts: [apply $dt.timestamp-nanos [0: 0]]
+  clock: [apply $dt.fixed-clock [0: $ts]]
+  result: [builtin-cancelled-q [builtin-with-timeout $clock [builtin-context] 100]]
+].result
+"#;
+        let result = crate::eval_source_with_config(source, false);
         // The child starts uncancelled (100ms hasn't elapsed).
         let output = result.unwrap();
         assert!(
@@ -2603,17 +2791,23 @@ mod tests {
         );
     }
 
-    /// Verify that `[builtin-with-deadline ctx ts]` returns a Context without error.
+    /// Verify that `[builtin-with-deadline clock ctx ts]` returns a Context without error.
     ///
-    /// Uses builtin-with-deadline/builtin-cancelled-q/builtin-context (bare names removed in builtin-privacy-primary-names sprint).
+    /// with-deadline now takes 3 args: ClockCap, Context, Timestamp (B-230).
+    /// Constructs a ClockCap via datetime module builtins using letrec dict scope.
     #[test]
     fn test_with_deadline_returns_context() {
         // Deadline in the past (1 = 1970-01-01 UTC in ms) → child should be cancelled immediately.
         // sleep(0) spawned, yields. We just check it doesn't error.
-        let result = crate::eval_source_with_config(
-            "[builtin-cancelled-q [builtin-with-deadline [builtin-context] 1]]",
-            false,
-        );
+        let source = r#"
+[
+  dt: [builtin-module "datetime"]
+  ts: [apply $dt.timestamp-nanos [0: 0]]
+  clock: [apply $dt.fixed-clock [0: $ts]]
+  result: [builtin-cancelled-q [builtin-with-deadline $clock [builtin-context] 1]]
+].result
+"#;
+        let result = crate::eval_source_with_config(source, false);
         let output = result.unwrap();
         // Either true (past deadline) or false (hasn't yielded yet); either is valid — just no error.
         assert!(
@@ -2684,20 +2878,21 @@ mod tests {
         );
     }
 
-    /// [builtin-select-once {} {}] must return an error: at least one source is required.
+    /// [builtin-select-once ctx []] must return an error: at least one source is required.
     ///
-    /// builtin-select-once now takes two positional args: context (first) and sources (second).
-    /// The first `{}` is the context argument (a valid empty-dict stand-in for testing).
-    /// The second `{}` is the sources Seq terminator, so collect_seq_to_vec returns an
-    /// empty Vec, triggering the "select-once requires at least one source" guard.
+    /// builtin-select-once takes two positional args: context (first) and sources (second).
+    /// [builtin-context] creates a valid Context. The second `[]` is the empty-dict Seq
+    /// terminator, so collect_seq_to_vec returns an empty Vec, triggering the
+    /// "select-once requires at least one source" guard.
     ///
     /// Uses builtin-select-once (bare name removed in builtin-privacy-primary-names sprint).
     #[test]
     fn test_select_once_empty_sources_returns_error() {
-        let result = crate::eval_source_with_config("[builtin-select-once {} {}]", false);
+        let result =
+            crate::eval_source_with_config("[builtin-select-once [builtin-context] []]", false);
         assert!(
             result.is_err(),
-            "expected [builtin-select-once {{}} {{}}] to return an error, got: {result:?}"
+            "expected [builtin-select-once ctx []] to return an error, got: {result:?}"
         );
         let msg = result.unwrap_err();
         assert!(

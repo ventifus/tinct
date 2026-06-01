@@ -1,0 +1,21 @@
+# Match on variants with and without payloads
+# Some has a payload field, None is unit-like
+
+[
+  type Option [Some value] None
+
+  x: [Some 10]
+  y: None
+
+  result1: [match x
+    [Some n]:  n
+    [None]:    0]
+
+  result2: [match y
+    [Some n]:  n
+    [None]:    0]
+
+  both: [seq result1 result2]
+]
+=== out
+Dict({"Option": Variant(Option, Null), "Some": Variant(Some, Null), "None": Variant(None, Null), "x": Variant(Some, Int(10)), "y": Variant(None, Null), "result1": Int(10), "result2": Int(0), "both": Seq(Int(10), ...)})

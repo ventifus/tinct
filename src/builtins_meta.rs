@@ -1594,6 +1594,144 @@ pub(crate) fn builtin_expand(
     })
 }
 
+/// `builtin-program`: Construct a `Value::Program` from a sequence of Document values.
+///
+/// Takes a single positional argument: a Seq or Dict of `Value::Document` values.
+/// Returns a `Value::Program` with the documents wrapped in a `SurfaceProgram` structure.
+///
+/// This is the primitive for reconstructing programs after transformation (e.g., desugar.llt).
+/// The resolution, type annotation, and expects_resolved tables are initialized as empty —
+/// callers should use `expand` or other builtins to populate them if needed.
+///
+/// Example usage in desugar.llt:
+/// ```llt
+/// [builtin-program [map desugar-document p.documents]]
+/// ```
+pub(crate) fn builtin_program(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        crate::builtins::reject_named("builtin-program", named.as_ref(), call_span.clone())?;
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        let val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        // Extract documents from the input collection (Seq or Dict)
+        let mut documents = Vec::new();
+
+        match val {
+            Value::Dict(map) => {
+                // Iterate through dict entries in insertion order
+                for (_key, thunk_id) in map.into_iter() {
+                    let thunk = ctx.get_thunk(thunk_id);
+                    let doc_val = crate::eval::materialize(&thunk, Some(&call_span), &ctx).await?;
+                    match doc_val {
+                        Value::Document(surface_doc) => {
+                            // Wrap the SurfaceDocument in a Spanned with origin span.
+                            // The document is reconstructed/transformed, so we use origin()
+                            // to indicate synthetic content. The original spans are preserved
+                            // in the expression nodes inside the SurfaceDocument.
+                            documents.push(crate::ast::Spanned {
+                                node: (*surface_doc).clone(),
+                                span: crate::ast::Span::origin(),
+                            });
+                        }
+                        _ => {
+                            return Err(EvalError::type_mismatch_ctx(
+                                "builtin-program".to_string(),
+                                "Document",
+                                doc_val.type_name(),
+                                call_span,
+                            )
+                            .into());
+                        }
+                    }
+                }
+            }
+            Value::Seq { .. } => {
+                // Collect all seq elements
+                let mut current = val;
+                loop {
+                    match current {
+                        Value::Seq { head, tail } => {
+                            let head_thunk = ctx.get_thunk(head);
+                            let doc_val =
+                                crate::eval::materialize(&head_thunk, Some(&call_span), &ctx)
+                                    .await?;
+                            match doc_val {
+                                Value::Document(surface_doc) => {
+                                    documents.push(crate::ast::Spanned {
+                                        node: (*surface_doc).clone(),
+                                        span: crate::ast::Span::origin(),
+                                    });
+                                }
+                                _ => {
+                                    return Err(EvalError::type_mismatch_ctx(
+                                        "builtin-program".to_string(),
+                                        "Document",
+                                        doc_val.type_name(),
+                                        call_span,
+                                    )
+                                    .into());
+                                }
+                            }
+                            let tail_thunk = ctx.get_thunk(tail);
+                            current = crate::eval::materialize(&tail_thunk, Some(&call_span), &ctx)
+                                .await?;
+                        }
+                        Value::Dict(map) if map.is_empty() => {
+                            // Empty dict is the seq terminator
+                            break;
+                        }
+                        _ => {
+                            return Err(EvalError::type_mismatch_ctx(
+                                "builtin-program".to_string(),
+                                "Seq or Dict",
+                                current.type_name(),
+                                call_span,
+                            )
+                            .into());
+                        }
+                    }
+                }
+            }
+            _ => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-program".to_string(),
+                    "Seq or Dict",
+                    val.type_name(),
+                    call_span,
+                )
+                .into());
+            }
+        }
+
+        // Construct the SurfaceProgram
+        let surface_program = crate::ast::SurfaceProgram { documents };
+
+        // Return as Value::Program with empty tables (caller can run expand/resolve if needed)
+        ok_val(
+            Value::Program {
+                program: std::sync::Arc::new(surface_program),
+                resolutions: std::sync::Arc::new(crate::ast::ResolutionTable::new()),
+                types: std::sync::Arc::new(crate::ast::TypeAnnotationTable::new()),
+                expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
+            },
+            call_span,
+        )
+    })
+}
+
 /// `builtin-module`: Returns a dict of all builtins in the named module.
 ///
 /// Takes a module name (String) and returns a Dict mapping builtin names to their

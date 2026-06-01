@@ -2923,9 +2923,10 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     tinct::desugar::desugar_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let resolution_table = std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
-    let (type_errors, type_annotation_table, _expects_resolved) =
+    let (type_errors, type_annotation_table, expects_resolved) =
         tinct::typecheck::typecheck_surface_program_annotation_table(&program);
     let type_annotation_table = std::sync::Arc::new(type_annotation_table);
+    let expects_resolved = std::sync::Arc::new(expects_resolved);
 
     // In strict mode, type errors are fatal
     if strict && !type_errors.is_empty() {
@@ -3057,6 +3058,52 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
         }
     }
 
+    // Inject `%emit` channel into the root environment.
+    // This is a bounded async channel with capacity 64 (same as eval-programs in loader.llt).
+    // User code emits values via `[emit val]`, which sends to this channel.
+    // For literate eval, the channel is created but never drained — emitted values are
+    // discarded. This matches the semantics of `tinct run` without an output formatter:
+    // the none.llt formatter drains %emit and discards all values.
+    {
+        use tinct::Value;
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let channel_inner = tinct::ChannelInner {
+            sender: tx,
+            receiver: tokio::sync::Mutex::new(rx),
+            capacity: 64,
+        };
+        let emit_value = Value::Channel(std::sync::Arc::new(channel_inner));
+        let emit_thunk = tinct::Thunk::new_materialized(emit_value, tinct::Span::origin());
+        env.write()
+            .unwrap()
+            .insert("%emit".to_string(), Arc::new(emit_thunk));
+    }
+
+    // Inject `%stdout` WriteHandle into the root environment.
+    // Output formatters and user code can write directly to %stdout via [write-handle %stdout ...].
+    {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        use std::io::BufWriter;
+        use tinct::Value;
+
+        // Create stdout WriteHandle with default caps (Bool(true) sentinel, consistent with stdin)
+        let mut caps = HashMap::new();
+        caps.insert("Writable".to_string(), Value::Bool(true));
+        caps.insert("Text".to_string(), Value::Bool(true));
+
+        let stdout_handle = Value::WriteHandle {
+            caps,
+            inner: Rc::new(RefCell::new(
+                Box::new(BufWriter::new(std::io::stdout())) as Box<dyn std::io::Write>
+            )),
+        };
+        let stdout_thunk = tinct::Thunk::new_materialized(stdout_handle, tinct::Span::origin());
+        env.write()
+            .unwrap()
+            .insert("%stdout".to_string(), Arc::new(stdout_thunk));
+    }
+
     // Literate mode always runs with --no-env (hard-coded, per doc comment).
     // env_allowed: Some(empty) = all env vars denied.
     let eval_ctx = EvalContext::new_with_options(
@@ -3068,12 +3115,14 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
         Some(std::collections::HashSet::new()),
     );
 
-    let thunk = tinct::async_rt::block_on(tinct::eval_surface_file(
+    let thunk = tinct::async_rt::block_on(tinct::eval_surface_file_with_input(
         &program,
         Arc::clone(&env),
         &eval_ctx,
         &resolution_table,
         &type_annotation_table,
+        &expects_resolved,
+        None,
     ))
     .map_err(|e| {
         let mut msg = format!("{e}");
@@ -3349,6 +3398,52 @@ fn run_literate_weave(
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
             env.write().unwrap().insert(name, Arc::new(cap_thunk));
         }
+    }
+
+    // Inject `%emit` channel into the root environment.
+    // This is a bounded async channel with capacity 64 (same as eval-programs in loader.llt).
+    // User code emits values via `[emit val]`, which sends to this channel.
+    // For literate weave, the channel is created but never drained — emitted values are
+    // discarded. This matches the semantics of `tinct run` without an output formatter:
+    // the none.llt formatter drains %emit and discards all values.
+    {
+        use tinct::Value;
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let channel_inner = tinct::ChannelInner {
+            sender: tx,
+            receiver: tokio::sync::Mutex::new(rx),
+            capacity: 64,
+        };
+        let emit_value = Value::Channel(std::sync::Arc::new(channel_inner));
+        let emit_thunk = tinct::Thunk::new_materialized(emit_value, tinct::Span::origin());
+        env.write()
+            .unwrap()
+            .insert("%emit".to_string(), Arc::new(emit_thunk));
+    }
+
+    // Inject `%stdout` WriteHandle into the root environment.
+    // Output formatters and user code can write directly to %stdout via [write-handle %stdout ...].
+    {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        use std::io::BufWriter;
+        use tinct::Value;
+
+        // Create stdout WriteHandle with default caps (Bool(true) sentinel, consistent with stdin)
+        let mut caps = HashMap::new();
+        caps.insert("Writable".to_string(), Value::Bool(true));
+        caps.insert("Text".to_string(), Value::Bool(true));
+
+        let stdout_handle = Value::WriteHandle {
+            caps,
+            inner: Rc::new(RefCell::new(
+                Box::new(BufWriter::new(std::io::stdout())) as Box<dyn std::io::Write>
+            )),
+        };
+        let stdout_thunk = tinct::Thunk::new_materialized(stdout_handle, tinct::Span::origin());
+        env.write()
+            .unwrap()
+            .insert("%stdout".to_string(), Arc::new(stdout_thunk));
     }
 
     // Create one base EvalContext that owns the shared ThunkArena.

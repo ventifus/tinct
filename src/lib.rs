@@ -177,7 +177,9 @@ pub use repl::run_repl;
 pub use lsp::run_lsp;
 
 /// Runtime value types: values, thunks, environments, and dict keys.
-pub use value::{ClockCapInner, DirPerms, Environment, Key, NetCapEntry, Thunk, Value};
+pub use value::{
+    ChannelInner, ClockCapInner, DirPerms, Environment, Key, NetCapEntry, Thunk, Value,
+};
 
 /// Attach macro expansion provenance to an error by checking if any of the error's
 /// spans (definition, materialization, stack frames, secondary) match a provenance entry.

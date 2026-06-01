@@ -1,0 +1,27 @@
+# Unit variant constructors are callable with one argument to wrap the payload.
+# Runtime behavior: [Ok 42] calls the Ok unit variant constructor, wrapping 42 as payload.
+# Type checker should model this: NominalVariant(tag, {}) + 1 arg → NominalVariant(tag, {0: ArgType})
+#
+# Note: [Some] is a unit constructor (no fields), [Some value] is a field constructor (has field).
+# This test uses unit constructors to verify they can be called with 1 arg.
+[
+  type Option [Some] None
+  type Status Success [Failure]
+
+  # Call unit variant constructor with Int
+  t1: [Some 42]
+
+  # Call unit variant constructor with String
+  t2: [Failure "failed"]
+
+  # Call unit variant constructor with another variant
+  t3: [Some [Failure "nested"]]
+
+  # Bare reference to unit variant (no call)
+  t4: None
+
+  # Bare reference to another unit variant
+  t5: Success
+]
+=== out
+Dict({"t1": Variant(Some, Dict({"0": Int(42)})), "t2": Variant(Failure, Dict({"0": String("failed")})), "t3": Variant(Some, Dict({"0": Variant(Failure, Dict({"0": String("nested")}))})), "t4": Variant(None, Dict({})), "t5": Variant(Success, Dict({}))})

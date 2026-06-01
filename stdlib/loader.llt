@@ -39,13 +39,19 @@
   # State carries:
   #   percent — current % pipeline value
   #   named   — accumulated %name bindings from --- %name document headers
-  # emit-ch is the %emit channel, injected into each document's scope.
+  # emit-ch is the emit channel created in eval-programs.
+  #
+  # FIX B-231: User code sees ONLY the emit function (write-only), not the raw
+  # channel. This prevents [recv %emit] from stealing emitted values. Formatters
+  # (stdlib/cli/out/*.llt) still need the raw channel to drain; they use %emit-channel
+  # which is injected for ALL programs until proper stdlib-only scoping is implemented.
   eval-program: [fn [let prog initial-input emit-ch]
+    [emit-fn: [fn@Null [let v@Any] [builtin-send emit-ch v]]]
     [state: [builtin-reduce
       [fn [let state doc]
         [val: [builtin-eval doc.expressions
                  scope:   [builtin-merge
-                             [%emit: emit-ch]
+                             [emit: emit-fn  %emit-channel: emit-ch]
                              [builtin-merge
                                state.named
                                [builtin-reduce builtin-merge []

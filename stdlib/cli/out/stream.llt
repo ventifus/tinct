@@ -5,14 +5,14 @@
 # a newline.
 #
 # Concurrent contract:
-# 1. Drain %emit: serialize and write each emitted value as tinct source
+# 1. Drain %emit-channel: serialize and write each emitted value as tinct source
 # 2. Force %: serialize and write the return value (or each Seq element)
 # 3. Await drain task completion
 
 # 1. Drain the emit channel concurrently.
 [drain: [task
   [loop-select [context]
-    [seq [ch: %emit  handler: [fn [let v]
+    [seq [ch: %emit-channel  handler: [fn [let v]
       [write-handle %stdout [str [to-tinct v] "\n"]]]] []]
     identity]]]
 

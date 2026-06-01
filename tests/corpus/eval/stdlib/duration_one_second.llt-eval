@@ -1,0 +1,5 @@
+--- uses: ["datetime"]
+# duration-nanos: one second (1,000,000,000 nanoseconds)
+[duration-nanos 1000000000]
+=== out
+Duration(1000000000 ns)

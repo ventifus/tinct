@@ -1,0 +1,4 @@
+# big-int: parse large integer from string (beyond i64 range)
+[big-int "12345678901234567890"]
+=== out
+BigInt(12345678901234567890)

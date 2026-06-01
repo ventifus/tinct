@@ -4,7 +4,7 @@
 # other values are converted via str).
 #
 # Concurrent contract:
-# 1. Drain %emit: write each emitted value as raw text
+# 1. Drain %emit-channel: write each emitted value as raw text
 # 2. Force %: write the return value (or each Seq element) as raw text
 # 3. Await drain task completion
 
@@ -17,7 +17,7 @@
 # 1. Drain the emit channel concurrently.
 [drain: [task
   [loop-select [context]
-    [seq [ch: %emit  handler: [fn [let v]
+    [seq [ch: %emit-channel  handler: [fn [let v]
       [write-handle %stdout [raw v]]]] []]
     identity]]]
 

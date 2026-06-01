@@ -1,6 +1,7 @@
 use super::*;
 use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode};
-use crate::types::{Constraint, Kind};
+use crate::types::{Constraint, Kind, Substitution};
+use crate::Annotation;
 
 /// Build a `Spanned<SurfaceEntry>` for use in `Annotation::PropertyDict` test constructions.
 /// Migrated from old `sp(Entry { ... })` form during rv2-migrate-annotation Phase 1.

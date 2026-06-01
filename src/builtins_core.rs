@@ -55,8 +55,9 @@ use crate::builtins_meta::{
     builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_builtin_module,
     builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_types, builtin_expand,
     builtin_force, builtin_gensym, builtin_include_cache_get, builtin_include_cache_put,
-    builtin_llt_repr, builtin_load, builtin_macro_error, builtin_macro_injects, builtin_raise,
-    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_llt_repr, builtin_load, builtin_macro_error, builtin_macro_injects, builtin_program,
+    builtin_raise, builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate,
+    builtin_variant,
 };
 // I/O implementations.
 use crate::builtins_io::{
@@ -652,6 +653,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         ),
         builtin!("builtin-expand", builtin_expand, [Strictness::Seq], 1),
         builtin!("builtin-load", builtin_load, [Strictness::Seq], 1),
+        builtin!("builtin-program", builtin_program, [Strictness::Spine], 1),
         builtin!(
             "builtin-module",
             builtin_builtin_module,
@@ -778,12 +780,14 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-with-timeout",
             builtin_with_timeout,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            1
         ),
         builtin!(
             "builtin-with-deadline",
             builtin_with_deadline,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq, Strictness::Seq],
+            1
         ),
         builtin!(
             "builtin-cancelled-q",
@@ -3085,22 +3089,30 @@ pub fn core_type_env(env: &mut TypeEnv) {
             variadic: false,
         },
     );
-    // builtin-with-timeout: Unknown → Unknown → Unknown
-    // Creates a context with a timeout; (parent-context, duration) → Context
+    // builtin-with-timeout: Unknown → Unknown → Unknown → Unknown
+    // Creates a context with a timeout; (ClockCap, parent-context, duration) → Context
     env.insert(
         "builtin-with-timeout".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
+            params: vec![
+                (None, Type::Unknown),
+                (None, Type::Unknown),
+                (None, Type::Unknown),
+            ],
             ret: Box::new(Type::Unknown), // Context — opaque
             variadic: false,
         },
     );
-    // builtin-with-deadline: Unknown → Unknown → Unknown
-    // Creates a context with a deadline; (parent-context, deadline) → Context
+    // builtin-with-deadline: Unknown → Unknown → Unknown → Unknown
+    // Creates a context with a deadline; (ClockCap, parent-context, deadline) → Context
     env.insert(
         "builtin-with-deadline".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
+            params: vec![
+                (None, Type::Unknown),
+                (None, Type::Unknown),
+                (None, Type::Unknown),
+            ],
             ret: Box::new(Type::Unknown), // Context — opaque
             variadic: false,
         },

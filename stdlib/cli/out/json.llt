@@ -4,7 +4,7 @@
 # Compatible with jq streaming and other NDJSON consumers.
 #
 # Concurrent contract:
-# 1. Drain %emit: write each emitted value as compact JSON (one line per value)
+# 1. Drain %emit-channel: write each emitted value as compact JSON (one line per value)
 # 2. Force %: serialize the return value as JSON
 # 3. Await drain task completion
 #
@@ -15,7 +15,7 @@
 # 1. Drain the emit channel concurrently.
 [drain: [task
   [loop-select [context]
-    [seq [ch: %emit  handler: [fn [let v]
+    [seq [ch: %emit-channel  handler: [fn [let v]
       [write-handle %stdout [str [call $json.to-json v] "\n"]]]] []]
     identity]]]
 

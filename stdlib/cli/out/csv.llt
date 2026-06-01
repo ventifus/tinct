@@ -1,11 +1,11 @@
 # CSV Streaming Output Formatter — Phase 2 data-streaming contract
 #
 # Responsibilities:
-# 1. Drain %emit — receive emitted values as they arrive; serialize each to stdout
+# 1. Drain %emit-channel — receive emitted values as they arrive; serialize each to stdout
 # 2. Force % — materialize the lazy return value to drive evaluation cascade
 # 3. Await both before exiting
 #
-# Column order is fixed by the first record (from %emit or %).
+# Column order is fixed by the first record (from %emit-channel or %).
 # Subsequent records with different keys produce empty cells for missing columns.
 
 # Private helpers
@@ -33,17 +33,30 @@ csv-row: [fn@String [let row@Dict ks@Dict i@Int acc@String]
 # Sequential document expression 1: set up shared state and start drain task.
 # SEQ-SCOPE forces this dict's entries, spawning the drain task before % is forced.
 [
-  headers: [reactive-cell []]
+  # Oneshot channel for header coordination: first writer sends column keys, wins the race
+  oneshot-pair: [oneshot-channel]
+  header-rx: [head oneshot-pair]
+  header-tx: [head [tail oneshot-pair]]
+
+  # Cached column keys after first resolution (via oneshot coordination)
+  columns: [reactive-cell []]
+
   drain: [task
     [loop-select [context]
-      [seq [ch: %emit  handler: [fn [let v]
-        [if [= [cell-get headers] []]
-          # First record: establish column order, write header + first row
-          [do [cell-set headers [keys v]]
-              [write-handle %stdout [csv-header [keys v] 0 ""]]
-              [write-handle %stdout [csv-row v [keys v] 0 ""]]]
-          # Subsequent records: use captured column order
-          [write-handle %stdout [csv-row v [cell-get headers] 0 ""]]]]] []]
+      [seq [ch: %emit-channel  handler: [fn [let v]
+        # Try to send column keys — succeeds only for first record across both paths
+        [match [try [fn [let] [send header-tx [keys v]]]]
+          [case [let _: Ok]
+            # Won the race: write header + first row, cache keys
+            [do [cell-set columns [keys v]]
+                [write-handle %stdout [csv-header [keys v] 0 ""]]
+                [write-handle %stdout [csv-row v [keys v] 0 ""]]]]
+          [case [let _: Error]
+            # Lost the race: retrieve keys if not cached yet
+            [do [if [= [cell-get columns] []]
+                  [cell-set columns [recv header-rx]]
+                  []]
+                [write-handle %stdout [csv-row v [cell-get columns] 0 ""]]]]]]]] []]
       identity]]
 ]
 
@@ -52,22 +65,35 @@ csv-row: [fn@String [let row@Dict ks@Dict i@Int acc@String]
 [if [seq? %]
   # % is a Seq — write each element as a row
   [reduce [fn [let _ x]
-    [if [= [cell-get headers] []]
-      # First element sets the columns
-      [do [cell-set headers [keys x]]
-          [write-handle %stdout [csv-header [keys x] 0 ""]]
-          [write-handle %stdout [csv-row x [keys x] 0 ""]]]
-      # Subsequent elements use existing columns
-      [write-handle %stdout [csv-row x [cell-get headers] 0 ""]]]]
+    # Try to send column keys — succeeds only for first record across both paths
+    [match [try [fn [let] [send header-tx [keys x]]]]
+      [case [let _: Ok]
+        # Won the race: write header + first row, cache keys
+        [do [cell-set columns [keys x]]
+            [write-handle %stdout [csv-header [keys x] 0 ""]]
+            [write-handle %stdout [csv-row x [keys x] 0 ""]]]]
+      [case [let _: Error]
+        # Lost the race: retrieve keys if not cached yet, then write data row
+        [do [if [= [cell-get columns] []]
+              [cell-set columns [recv header-rx]]
+              []]
+            [write-handle %stdout [csv-row x [cell-get columns] 0 ""]]]]]]
     []
     %]
   # % is a scalar — if it's a dict, write it as a row
   [if [dict? %]
-    [if [= [cell-get headers] []]
-      [do [cell-set headers [keys %]]
-          [write-handle %stdout [csv-header [keys %] 0 ""]]
-          [write-handle %stdout [csv-row % [keys %] 0 ""]]]
-      [write-handle %stdout [csv-row % [cell-get headers] 0 ""]]]
+    [match [try [fn [let] [send header-tx [keys %]]]]
+      [case [let _: Ok]
+        # Won the race: write header + single row, cache keys
+        [do [cell-set columns [keys %]]
+            [write-handle %stdout [csv-header [keys %] 0 ""]]
+            [write-handle %stdout [csv-row % [keys %] 0 ""]]]]
+      [case [let _: Error]
+        # Lost the race: retrieve keys if not cached yet, then write data row
+        [do [if [= [cell-get columns] []]
+              [cell-set columns [recv header-rx]]
+              []]
+            [write-handle %stdout [csv-row % [cell-get columns] 0 ""]]]]]
     []]]
 
 # Sequential document expression 3: await drain (last — materialized by CLI).

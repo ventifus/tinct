@@ -1,0 +1,27 @@
+# Match on unit-like patterns: [Ok] vs [Ok _] should be equivalent
+# This test verifies that both forms match the same way
+
+[
+  result1: [Ok 42]
+  result2: [Error "failed"]
+
+  test1: [match result1
+    [Ok]:     "ok-matched"
+    [Error]:  "err-matched"]
+
+  test2: [match result1
+    [Ok _]:     "ok-matched"
+    [Error _]:  "err-matched"]
+
+  test3: [match result2
+    [Ok]:     "ok-matched"
+    [Error]:  "err-matched"]
+
+  test4: [match result2
+    [Ok _]:     "ok-matched"
+    [Error _]:  "err-matched"]
+
+  all_tests: [seq test1 test2 test3 test4]
+]
+=== out
+Dict({"result1": Variant(Ok, Int(42)), "result2": Variant(Error, String("failed")), "test1": String("ok-matched"), "test2": String("ok-matched"), "test3": String("err-matched"), "test4": String("err-matched"), "all_tests": Seq(String("ok-matched"), ...)})

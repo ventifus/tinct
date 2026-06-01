@@ -569,6 +569,47 @@ pub(crate) fn check_call_with_scheme(
             }
             Ok(Type::Unknown)
         }
+        // Unit variant constructor call: [Ok 42] wraps 42 as Ok's payload.
+        // Runtime behavior (eval_call.rs:136-196): variant constructors with __variant_tag__
+        // marker accept exactly 1 positional arg and wrap it as Value::Variant payload.
+        // Type checking mirrors this: NominalVariant with empty fields + 1 positional arg
+        // → result type is NominalVariant with inferred arg type as single-field payload.
+        Type::NominalVariant { tag, fields } if fields.fields.is_empty() => {
+            // Only allow exactly 1 positional arg, no named args (matches runtime validation)
+            if args.len() != 1 {
+                return Err(vec![TypeError::new(
+                    format!(
+                        "unit variant constructor takes exactly 1 argument, got {}",
+                        args.len()
+                    ),
+                    span,
+                )]);
+            }
+            if !named_args.is_empty() {
+                return Err(vec![TypeError::new(
+                    "unit variant constructor does not accept named arguments".to_string(),
+                    span,
+                )]);
+            }
+
+            // Infer the argument type
+            let arg_ty = infer_surface_expr(&args[0], env, state, type_map)?;
+
+            // Result type: NominalVariant with the arg type as payload.
+            // Runtime stores payload as Some(payload_id), so we model it as a single-field
+            // record with numeric field "0" (consistent with single-positional payload convention).
+            let mut payload_fields = HashMap::new();
+            payload_fields.insert("0".to_string(), arg_ty);
+            Ok(Type::NominalVariant {
+                tag: tag.clone(),
+                fields: Row {
+                    fields: payload_fields,
+                },
+            })
+        }
+        // Non-unit variant constructor: already has payload, cannot be called.
+        // Example: [Ok 42] where Ok already constructed → type error.
+        Type::NominalVariant { .. } => Err(vec![TypeError::not_a_function(&func_ty, func_span)]),
         _ => Err(vec![TypeError::not_a_function(&func_ty, func_span)]),
     }
 }
@@ -1143,6 +1184,47 @@ pub(crate) fn check_call(
             }
             Ok(Type::Unknown)
         }
+        // Unit variant constructor call: [Ok 42] wraps 42 as Ok's payload.
+        // Runtime behavior (eval_call.rs:136-196): variant constructors with __variant_tag__
+        // marker accept exactly 1 positional arg and wrap it as Value::Variant payload.
+        // Type checking mirrors this: NominalVariant with empty fields + 1 positional arg
+        // → result type is NominalVariant with inferred arg type as single-field payload.
+        Type::NominalVariant { tag, fields } if fields.fields.is_empty() => {
+            // Only allow exactly 1 positional arg, no named args (matches runtime validation)
+            if args.len() != 1 {
+                return Err(vec![TypeError::new(
+                    format!(
+                        "unit variant constructor takes exactly 1 argument, got {}",
+                        args.len()
+                    ),
+                    span,
+                )]);
+            }
+            if !named_args.is_empty() {
+                return Err(vec![TypeError::new(
+                    "unit variant constructor does not accept named arguments".to_string(),
+                    span,
+                )]);
+            }
+
+            // Infer the argument type
+            let arg_ty = infer_surface_expr(&args[0], env, state, type_map)?;
+
+            // Result type: NominalVariant with the arg type as payload.
+            // Runtime stores payload as Some(payload_id), so we model it as a single-field
+            // record with numeric field "0" (consistent with single-positional payload convention).
+            let mut payload_fields = HashMap::new();
+            payload_fields.insert("0".to_string(), arg_ty);
+            Ok(Type::NominalVariant {
+                tag: tag.clone(),
+                fields: Row {
+                    fields: payload_fields,
+                },
+            })
+        }
+        // Non-unit variant constructor: already has payload, cannot be called.
+        // Example: [Ok 42] where Ok already constructed → type error.
+        Type::NominalVariant { .. } => Err(vec![TypeError::not_a_function(&func_ty, span)]),
         _ => Err(vec![TypeError::not_a_function(&func_ty, span)]),
     }
 }

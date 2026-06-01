@@ -1,7 +1,7 @@
 # Output: none — silent output formatter: forces % for side effects, discards all output.
 #
 # Concurrent contract:
-# 1. Drain %emit: discard all emitted values
+# 1. Drain %emit-channel: discard all emitted values
 # 2. Force %: force for side effects, write nothing
 # 3. Await drain task completion
 #
@@ -11,7 +11,7 @@
 # 1. Drain the emit channel concurrently, discarding all values.
 [drain: [task
   [loop-select [context]
-    [seq [ch: %emit  handler: [fn [let v] []]] []]
+    [seq [ch: %emit-channel  handler: [fn [let v] []]] []]
     identity]]]
 
 # 2. Force % to drive the evaluation cascade (for side effects).

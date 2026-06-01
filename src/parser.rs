@@ -4986,6 +4986,17 @@ fn surface_node_to_pattern_with_guard(
                             None,
                         )
                     }
+                    (_, 0) if name.chars().next().is_some_and(|c| c.is_uppercase()) => {
+                        // [Constructor] — unit variant pattern (zero-arg constructor)
+                        // Equivalent to [Constructor _]: discard payload
+                        (
+                            Pattern::Constructor {
+                                tag: name.clone(),
+                                binding: None,
+                            },
+                            None,
+                        )
+                    }
                     _ => {
                         return Err(ParseError {
                             message: "invalid pattern: expected identifier, literal, dict, or _"

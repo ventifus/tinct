@@ -1,0 +1,4 @@
+# big-int: convert small integer to BigInt
+[big-int 42]
+=== out
+BigInt(42)

@@ -2192,7 +2192,8 @@ trim@[doc: "Remove leading and trailing whitespace from a string"]: builtin-trim
 # here so user code can access them with bare names.
 
 # Core I/O operations
-emit@[doc: "Emit a value to the %emit channel (data-streaming)"]: [fn@Null [let v@Any] [send %emit v]]
+# NOTE: emit is now injected by loader.llt's eval-program (not exported from prelude)
+# to ensure it closes over the actual emit channel created in eval-programs.
 env@[doc: "Read an environment variable by name; returns null if unset"]: builtin-env
 open@[doc: "Open a file under a DirCap. Returns a Handle."]: builtin-open
 list-dir@[doc: "List directory entries under a DirCap. Returns a Seq of {name: String, type: String} dicts."]: builtin-list-dir
@@ -2240,6 +2241,7 @@ read-chunk@[doc: "Read up to n bytes from a Handle as a Bytes value. Returns [] 
 # Meta primitives: load/expand/eval for AST introspection and meta-programming.
 load@[doc: "Parse tinct source text into a Program value. Named arg name: sets the display path for error spans."]: builtin-load
 expand@[doc: "Macro-expand and desugar a Program value. Returns an expanded Program."]: builtin-expand
+program@[doc: "Construct a Program value from a sequence of Document values. Used for program transformation."]: builtin-program
 eval@[doc: "Evaluate a sequence of expressions. Optional named args: env: (environment), %: (pipeline input), program: (parent program context)."]: builtin-eval
 eval-types@[doc: "Evaluate expressions in the type-stage environment"]: builtin-eval-types
 blake3@[doc: "Compute the BLAKE3 cryptographic hash of a string, returning a hex-encoded digest."]: builtin-blake3
@@ -3016,6 +3018,9 @@ oneshot-channel:    builtin-oneshot-channel
 try-send:           builtin-try-send
 select-once:        builtin-select-once
 
+# Emit function (requires %emit in scope, injected by loader.llt or CLI)
+emit: [fn@Null [let v@Any] [send %emit v]]
+
 # Event-source channels
 signal-channel:  builtin-signal-channel
 timer-channel:   builtin-timer-channel
@@ -3029,8 +3034,8 @@ cell-set:        builtin-cell-set
 # Cancellation contexts
 context:         builtin-context
 with-cancel:     builtin-with-cancel
-with-timeout:    builtin-with-timeout
-with-deadline:   builtin-with-deadline
+with-timeout:    [fn [let ctx dur]   [builtin-with-timeout  %clock ctx dur]]
+with-deadline:   [fn [let ctx ts]    [builtin-with-deadline %clock ctx ts]]
 with-context:    builtin-with-context
 non-cancellable: builtin-non-cancellable
 cancelled?:      builtin-cancelled-q
