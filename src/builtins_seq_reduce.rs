@@ -79,6 +79,14 @@ pub(crate) fn builtin_reduce(
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "reduce", &ctx, call_span.clone())?)
             }
+            // Auto-unpack variant payload — consistent with require_dict/flatten_overlay semantics.
+            Value::Variant {
+                payload: Some(payload_id),
+                ..
+            } => {
+                let payload_thunk = ctx.get_thunk(payload_id);
+                crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
+            }
             Value::Bytes {
                 ref source,
                 start,
@@ -319,6 +327,14 @@ pub(crate) fn builtin_join(
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "join", &ctx, call_span.clone())?)
             }
+            // Auto-unpack variant payload — consistent with require_dict/flatten_overlay semantics.
+            Value::Variant {
+                payload: Some(payload_id),
+                ..
+            } => {
+                let payload_thunk = ctx.get_thunk(payload_id);
+                crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
+            }
             other => other,
         };
         match xs {
@@ -464,6 +480,14 @@ pub(crate) fn builtin_concat(
         let xs = match xs {
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, call_span.clone())?)
+            }
+            // Auto-unpack variant payload — consistent with require_dict/flatten_overlay semantics.
+            Value::Variant {
+                payload: Some(payload_id),
+                ..
+            } => {
+                let payload_thunk = ctx.get_thunk(payload_id);
+                crate::eval::materialize_sync(&payload_thunk, Some(&xs_span), &ctx)?
             }
             other => other,
         };

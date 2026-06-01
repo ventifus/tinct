@@ -1,13 +1,13 @@
 # head: error on non-Seq
 [head 42]
 === error
-[E010] head: expected Seq, got Int (defined at stdlib/prelude.llt:2445:15-2445:32)
-  --> stdlib/prelude.llt:2445:15-2445:32
+[E010] head: expected Seq, got Int (defined at stdlib/prelude.llt:2443:15-2443:32)
+  --> stdlib/prelude.llt:2443:15-2443:32
    |
-  2445 | """] [let xs] [builtin-head xs]]
+  2443 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
-  in [builtin-head ...] at stdlib/prelude.llt:2445:15-2445:32
+  in [builtin-head ...] at stdlib/prelude.llt:2443:15-2443:32
    |
-  2445 | """] [let xs] [builtin-head xs]]
+  2443 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [head ...] at 1:1-1:10

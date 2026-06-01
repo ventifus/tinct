@@ -1,9 +1,9 @@
 # uniq: no duplicates returns same elements
 [uniq [1 2 3]]
 === error
-[E099] let binding name must be an identifier, got: LetDecl { bindings: [] } (defined at stdlib/prelude.llt:1383:47-1383:49) (called at stdlib/prelude.llt:1383:5-1383:65)
-  --> stdlib/prelude.llt:1383:47-1383:49
+[E099] let binding name must be an identifier, got: LetDecl { bindings: [] } (defined at stdlib/prelude.llt:1381:47-1381:49) (called at stdlib/prelude.llt:1381:5-1381:65)
+  --> stdlib/prelude.llt:1381:47-1381:49
    |
-  1383 |     [let reversed-seq [uniq-seq-impl ks xs [] [] 0 [length ks]]]
+  1381 |     [let reversed-seq [uniq-seq-impl ks xs [] [] 0 [length ks]]]
        |                                               ^^
   in [uniq ...] at 1:1-1:15

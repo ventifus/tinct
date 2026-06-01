@@ -44,29 +44,29 @@
   351 |         []
   352 |         [flatten-seq-step xs ks i len [builtin-get i ks]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:1125:5-1125:61
+  in materialized at stdlib/prelude.llt:1123:5-1123:61
    |
-  1125 |     [builtin-collect [flatten-seq-impl xs ks 0 [length ks]]]]
+  1123 |     [builtin-collect [flatten-seq-impl xs ks 0 [length ks]]]]
        |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-collect ...] at stdlib/prelude.llt:1125:5-1125:61
+  in [builtin-collect ...] at stdlib/prelude.llt:1123:5-1123:61
    |
-  1125 |     [builtin-collect [flatten-seq-impl xs ks 0 [length ks]]]]
+  1123 |     [builtin-collect [flatten-seq-impl xs ks 0 [length ks]]]]
        |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:1123:75-1125:62
+  in materialized at stdlib/prelude.llt:1121:75-1123:62
    |
-  1123 | flatten-impl-dict@[doc: "Flatten dict implementation (internal helper)"]: [fn@Dict [let xs@Dict]
-  1124 |     [let ks [keys xs]]
-  1125 |     [builtin-collect [flatten-seq-impl xs ks 0 [length ks]]]]
+  1121 | flatten-impl-dict@[doc: "Flatten dict implementation (internal helper)"]: [fn@Dict [let xs@Dict]
+  1122 |     [let ks [keys xs]]
+  1123 |     [builtin-collect [flatten-seq-impl xs ks 0 [length ks]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:1119:5-1121:32
+  in materialized at stdlib/prelude.llt:1117:5-1119:32
    |
-  1119 |     [builtin-if [seq? xs]
-  1120 |         [error "flatten: expected Dict, got Seq -- collect the Seq first"]
-  1121 |         [flatten-impl-dict xs]]]
+  1117 |     [builtin-if [seq? xs]
+  1118 |         [error "flatten: expected Dict, got Seq -- collect the Seq first"]
+  1119 |         [flatten-impl-dict xs]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:1119:5-1121:32
+  in [builtin-if ...] at stdlib/prelude.llt:1117:5-1119:32
    |
-  1119 |     [builtin-if [seq? xs]
-  1120 |         [error "flatten: expected Dict, got Seq -- collect the Seq first"]
-  1121 |         [flatten-impl-dict xs]]]
+  1117 |     [builtin-if [seq? xs]
+  1118 |         [error "flatten: expected Dict, got Seq -- collect the Seq first"]
+  1119 |         [flatten-impl-dict xs]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

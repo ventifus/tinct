@@ -415,11 +415,12 @@ pub fn ast_pattern_to_coverage(pat: &ast::Pattern) -> CoveragePattern {
         ast::Pattern::Constructor { tag, binding } => {
             let sub_patterns = match binding {
                 Some(inner) => vec![ast_pattern_to_coverage(&inner.node)],
-                // D-1: [Tag]: matches any variant with this tag regardless of payload,
-                // equivalent to [Tag _]: at runtime. Emit a Wildcard sub-pattern so
-                // Maranget specialization treats it as arity-1 (matching payload-bearing
-                // variants) rather than arity-0 (causing false non-exhaustive warnings).
-                None => vec![CoveragePattern::Wildcard],
+                // D-1: [Tag]: with no binding is used for both unit variants (arity 0)
+                // and payload variants (arity 1). The sub_patterns vec is left empty here
+                // and will be fixed up by normalize_constructor_arities (called from
+                // check_coverage) once the sig's declared arity is known.
+                // Using vec![] as a sentinel: zero sub-patterns for an unresolved tag.
+                None => vec![],
             };
             CoveragePattern::Constructor {
                 tag: ConstructorTag::Variant(tag.clone()),
@@ -433,6 +434,88 @@ pub fn ast_pattern_to_coverage(pat: &ast::Pattern) -> CoveragePattern {
                 .collect();
             CoveragePattern::Or(alts)
         }
+    }
+}
+
+/// Normalize `Constructor { tag: Variant(..), sub_patterns }` patterns to match
+/// the declared arity in the sig, enforcing Maranget column-consistency.
+///
+/// Two cases arise from `ast_pattern_to_coverage`:
+///
+/// 1. `Pattern::Constructor { binding: None }` emits `sub_patterns: vec![]`.
+///    - Arity 0 (unit variant): `[Square]:` → keep `vec![]`
+///    - Arity 1 (payload variant): `[Circle]:` → upgrade to `vec![Wildcard]`
+///
+/// 2. `Pattern::Constructor { binding: Some(_) }` emits `sub_patterns: vec![inner]`
+///    (arity 1). For a unit variant (sig arity 0), this pattern is dead — it can
+///    never match because unit variants have no payload. Dead patterns are represented
+///    with a synthetic tag (`__dead_<name>__`) that doesn't appear in the sig and is
+///    therefore always dropped by `specialize`, contributing nothing to coverage.
+///
+/// Maranget (2007) requires that all rows in the pattern matrix have the same width
+/// after specialization by any constructor. Arity mismatches produce incorrect row
+/// widths and corrupt the algorithm's exhaustiveness/redundancy results.
+fn normalize_constructor_arities(
+    pat: &CoveragePattern,
+    sig: &ConstructorSignature,
+) -> CoveragePattern {
+    match pat {
+        CoveragePattern::Constructor { tag, sub_patterns } => {
+            if let ConstructorTag::Variant(name) = tag {
+                let sig_arity = sig.arity(tag);
+                let pat_arity = sub_patterns.len();
+
+                if pat_arity == 0 {
+                    // Bare-tag pattern (binding: None) — normalize to declared arity.
+                    let normalized_sub = if sig_arity == 1 {
+                        // Payload variant: [Tag]: matches like [Tag _]:
+                        vec![CoveragePattern::Wildcard]
+                    } else {
+                        // Unit variant (arity 0): [Tag]: matches with no sub-patterns
+                        vec![]
+                    };
+                    CoveragePattern::Constructor {
+                        tag: tag.clone(),
+                        sub_patterns: normalized_sub,
+                    }
+                } else if pat_arity == 1 && sig_arity == 0 {
+                    // Payload-binding pattern ([Tag n]:) for a unit variant — dead pattern.
+                    // Unit variants have no payload, so this can never match. Use a synthetic
+                    // tag not present in the sig so specialize always drops this row.
+                    CoveragePattern::Constructor {
+                        tag: ConstructorTag::Variant(format!("__dead_{name}__")),
+                        sub_patterns: sub_patterns
+                            .iter()
+                            .map(|sp| normalize_constructor_arities(sp, sig))
+                            .collect(),
+                    }
+                } else {
+                    // Arity already matches sig (pat_arity == sig_arity) — recurse into sub-patterns only.
+                    CoveragePattern::Constructor {
+                        tag: tag.clone(),
+                        sub_patterns: sub_patterns
+                            .iter()
+                            .map(|sp| normalize_constructor_arities(sp, sig))
+                            .collect(),
+                    }
+                }
+            } else {
+                // Non-Variant constructor (DictKey, TypeTag, Literal, Bottom) — recurse only.
+                CoveragePattern::Constructor {
+                    tag: tag.clone(),
+                    sub_patterns: sub_patterns
+                        .iter()
+                        .map(|sp| normalize_constructor_arities(sp, sig))
+                        .collect(),
+                }
+            }
+        }
+        CoveragePattern::Or(alts) => CoveragePattern::Or(
+            alts.iter()
+                .map(|a| normalize_constructor_arities(a, sig))
+                .collect(),
+        ),
+        CoveragePattern::Wildcard => CoveragePattern::Wildcard,
     }
 }
 
@@ -698,6 +781,16 @@ pub fn check_coverage(
     sig: &ConstructorSignature,
     has_guards: &[bool],
 ) -> CoverageResult {
+    // Normalize bare-tag Constructor patterns so their sub_patterns arity matches the sig.
+    // ast_pattern_to_coverage emits vec![] for Pattern::Constructor { binding: None };
+    // this pass fixes them to vec![Wildcard] for arity-1 (payload) variants and keeps
+    // vec![] for arity-0 (unit) variants. Required for Maranget column-consistency.
+    let normalized: Vec<CoveragePattern> = arm_patterns
+        .iter()
+        .map(|p| normalize_constructor_arities(p, sig))
+        .collect();
+    let arm_patterns = &normalized;
+
     let mut matrix: PatternMatrix = Vec::new();
     let mut redundant = Vec::new();
     let mut inaccessible = Vec::new();

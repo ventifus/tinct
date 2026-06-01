@@ -569,10 +569,8 @@ Extract the payload dict from a Variant value.
 Example: [payload-of [variant-payload "Circle" [x: 1  y: 2]]] => [x: 1  y: 2]
 Example: [payload-of [variant "Unit"]] => []
 
-Note: Materializes the Variant's payload by treating the Variant as a Dict
-(auto-unpack semantics). Designed for Variants constructed with a dict payload
-via variant-payload. For unit variants (no payload), returns an empty dict.
-Used by json.llt and macro code to access Variant payload fields.
+For unit variants (no payload), returns an empty dict [].
+For payload variants, returns the payload as a Dict via auto-unpack semantics.
 """]: [fn [let v]
   [merge v []]]
 

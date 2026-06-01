@@ -70,6 +70,14 @@ pub(crate) fn builtin_map(
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "map", &ctx, call_span.clone())?)
             }
+            // Auto-unpack variant payload — consistent with require_dict/flatten_overlay semantics.
+            Value::Variant {
+                payload: Some(payload_id),
+                ..
+            } => {
+                let payload_thunk = ctx.get_thunk(payload_id);
+                crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
+            }
             // Bytes: treat as Seq of Int byte values
             Value::Bytes {
                 ref source,
@@ -182,6 +190,14 @@ pub(crate) fn builtin_filter(
         let xs = match xs {
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "filter", &ctx, call_span.clone())?)
+            }
+            // Auto-unpack variant payload — consistent with require_dict/flatten_overlay semantics.
+            Value::Variant {
+                payload: Some(payload_id),
+                ..
+            } => {
+                let payload_thunk = ctx.get_thunk(payload_id);
+                crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
             }
             // Bytes: treat as Seq of Int byte values
             Value::Bytes {

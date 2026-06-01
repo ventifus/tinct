@@ -245,7 +245,6 @@ pub(crate) fn flatten_overlay(
 
     while let Some(thunk_id) = work_stack.pop() {
         let thunk = ctx.thunk_arena.lock().unwrap().get(thunk_id).clone();
-        let span = thunk.span.clone();
         let val = materialize(&thunk, Some(&call_span), ctx)?;
         match val {
             Value::Dict(map) => {
@@ -257,9 +256,9 @@ pub(crate) fn flatten_overlay(
                 work_stack.push(r);
             }
             Value::Variant { payload, .. } => {
-                // Auto-unpack variant payload — consistent with require_dict auto-unpack semantics.
-                // A Variant with a dict payload is treated as that dict (same as DotAccess behavior).
-                // Unit variants (no payload) contribute an empty layer.
+                // Auto-unpack variant payload. This intentionally diverges from require_dict
+                // which errors on unit variants: flatten_overlay accepts unit variants as
+                // empty dict layers to support the [payload-of [unit-variant]] => [] idiom.
                 match payload {
                     Some(payload_id) => {
                         // Re-push the payload thunk for processing in the next iteration.
@@ -267,19 +266,20 @@ pub(crate) fn flatten_overlay(
                         work_stack.push(payload_id);
                     }
                     None => {
-                        // Unit variant: contribute empty dict layer (no entries).
+                        // Unit variant: contribute an empty dict layer.
                         layers.push(IndexMap::new());
                     }
                 }
             }
             other => {
+                let span = thunk.span.clone();
                 return Err(EvalError::type_mismatch_ctx(
                     name.to_string(),
                     "Dict",
                     other.type_name(),
                     span,
                 )
-                .into())
+                .into());
             }
         }
     }

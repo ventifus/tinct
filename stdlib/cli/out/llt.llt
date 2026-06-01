@@ -1,6 +1,6 @@
 # LLT display format output formatter — concurrent drain/force/await contract.
 #
-# Converts each value to its LLT representation string: Int(42), Dict({...}), etc.
+# Converts each value to its LLT representation string: e.g. 42, "hello", [0: 1  ...], etc.
 # Uses the llt-repr builtin which traverses and formats the value, materializing nested thunks on demand.
 #
 # Concurrent contract:

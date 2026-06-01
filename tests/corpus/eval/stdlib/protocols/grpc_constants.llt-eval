@@ -4,50 +4,50 @@
 ---
 %.GRPC-HEADER-LEN
 === error
-[E080] load: parse error in "protocols/grpc.llt": 35:1: unclosed bracket (defined at stdlib/prelude.llt:2883:5-2883:29) (called at stdlib/prelude.llt:2043:71-2043:89)
-  --> stdlib/prelude.llt:2883:5-2883:29
+[E080] load: parse error in "protocols/grpc.llt": 35:1: unclosed bracket (defined at stdlib/prelude.llt:2881:5-2881:29) (called at stdlib/prelude.llt:2041:71-2041:89)
+  --> stdlib/prelude.llt:2881:5-2881:29
    |
-  2883 |     [load source name: path]
+  2881 |     [load source name: path]
        |     ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [load ...] at stdlib/prelude.llt:2883:5-2883:29
+  in [load ...] at stdlib/prelude.llt:2881:5-2881:29
    |
-  2883 |     [load source name: path]
+  2881 |     [load source name: path]
        |     ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:2043:71-2043:89
+  in [builtin-if ...] at stdlib/prelude.llt:2041:71-2041:89
    |
-  2043 | if@[doc: "Conditional (select branch by condition)"]: [fn [let c t e] [builtin-if c t e]]
+  2041 | if@[doc: "Conditional (select branch by condition)"]: [fn [let c t e] [builtin-if c t e]]
        |                                                                       ^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2882:3-2884:52
+  in materialized at stdlib/prelude.llt:2880:3-2882:52
    |
-  2882 |   [program: [if [null? integrity-hash]
-  2883 |     [load source name: path]
-  2884 |     [load source name: path hash: integrity-hash]]]
+  2880 |   [program: [if [null? integrity-hash]
+  2881 |     [load source name: path]
+  2882 |     [load source name: path hash: integrity-hash]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2872:29-2887:50
+  in materialized at stdlib/prelude.llt:2870:29-2885:50
    |
-  2872 | include-evaluate-and-cache: [fn@[return: Any  doc: """
-  2873 | Evaluate a file and update the content-addressed include cache.
-  2874 | 
-  2875 | source:         source text string
-  2876 | path:           file path string (for error spans)
-  2877 | hash:           content cache key (blake3(cap-identity + "|" + source))
-  2878 | cap:            DirCap — passed as %include-dir; included files start with % = []
-  2879 | integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
-  2880 | """] [let source path hash cap integrity-hash@[default: []]]
-  2881 |   [builtin-include-cache-put hash Pending]
-  2882 |   [program: [if [null? integrity-hash]
-  2883 |     [load source name: path]
-  2884 |     [load source name: path hash: integrity-hash]]]
-  2885 |   [match [try [fn [let] [eval-file [expand program] [] cap]]]
-  2886 |     [Ok result]: [include-cache-success hash result]
-  2887 |     [Error e]:   [include-cache-failure hash e]]]
+  2870 | include-evaluate-and-cache: [fn@[return: Any  doc: """
+  2871 | Evaluate a file and update the content-addressed include cache.
+  2872 | 
+  2873 | source:         source text string
+  2874 | path:           file path string (for error spans)
+  2875 | hash:           content cache key (blake3(cap-identity + "|" + source))
+  2876 | cap:            DirCap — passed as %include-dir; included files start with % = []
+  2877 | integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
+  2878 | """] [let source path hash cap integrity-hash@[default: []]]
+  2879 |   [builtin-include-cache-put hash Pending]
+  2880 |   [program: [if [null? integrity-hash]
+  2881 |     [load source name: path]
+  2882 |     [load source name: path hash: integrity-hash]]]
+  2883 |   [match [try [fn [let] [eval-file [expand program] [] cap]]]
+  2884 |     [Ok result]: [include-cache-success hash result]
+  2885 |     [Error e]:   [include-cache-failure hash e]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2912:3-2915:103
+  in materialized at stdlib/prelude.llt:2910:3-2913:103
    |
-  2912 |   [match [builtin-include-cache-get hash]
-  2913 |     [Cached result]: result
-  2914 |     Pending:         [error [str "circular include: " path]]
-  2915 |     Missing:         [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
+  2910 |   [match [builtin-include-cache-get hash]
+  2911 |     [Cached result]: result
+  2912 |     Pending:         [error [str "circular include: " path]]
+  2913 |     Missing:         [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in materialized at 4:1-4:18
   in [include ...] at 2:1-2:39

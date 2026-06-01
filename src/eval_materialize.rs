@@ -3031,6 +3031,46 @@ pub(crate) async fn apply_cont(
                                 Ok(map) => map,
                                 Err(e) => return Action::Continue(Err(e)),
                             },
+                            Value::Variant {
+                                payload: Some(payload_id),
+                                ..
+                            } => {
+                                // Auto-unpack variant payload for sequential scope-chain binding
+                                // (consistent with require_dict/flatten_overlay semantics).
+                                let payload_thunk = ctx.get_thunk(payload_id);
+                                match crate::eval::materialize_sync(
+                                    &payload_thunk,
+                                    Some(&current_expr.span),
+                                    &ctx,
+                                ) {
+                                    Ok(payload_val) => match payload_val {
+                                        Value::Dict(map) => map,
+                                        Value::Overlay(l, r) => {
+                                            match crate::builtins::flatten_overlay(
+                                                &l,
+                                                &r,
+                                                "sequential expression",
+                                                &ctx,
+                                                current_expr.span.clone(),
+                                            ) {
+                                                Ok(map) => map,
+                                                Err(e) => return Action::Continue(Err(e)),
+                                            }
+                                        }
+                                        other => {
+                                            return Action::Continue(Err(Box::new(
+                                                EvalError::type_mismatch_ctx(
+                                                    format!("sequential expression #{}", idx + 1),
+                                                    "Dict",
+                                                    other.type_name(),
+                                                    current_expr.span.clone(),
+                                                ),
+                                            )));
+                                        }
+                                    },
+                                    Err(e) => return Action::Continue(Err(e)),
+                                }
+                            }
                             _ => {
                                 return Action::Continue(Err(Box::new(
                                     EvalError::type_mismatch_ctx(

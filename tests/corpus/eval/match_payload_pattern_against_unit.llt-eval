@@ -11,6 +11,3 @@
 ]
 === out
 Dict({"Shape": Variant(Shape, Null), "Circle": Variant(Circle, Null), "Square": Variant(Square, Null), "unit-shape": Variant(Square, Null), "result": String("unit-match")})
-
-=== warn
-unreachable match arm: this pattern is already covered by prior arms at 9:5-9:13

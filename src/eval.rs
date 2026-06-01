@@ -3311,6 +3311,28 @@ pub(crate) fn match_pattern<'a>(
                         )
                         .await
                     }
+                    Value::Variant {
+                        payload: Some(payload_id),
+                        ..
+                    } => {
+                        // Auto-unpack variant payload for dict pattern matching:
+                        // a Variant with a dict payload can be matched by a dict pattern
+                        // against its payload (consistent with require_dict/flatten_overlay).
+                        let payload_thunk = ctx.get_thunk(*payload_id);
+                        let payload_val =
+                            materialize(&payload_thunk, Some(value_span), ctx).await?;
+                        match_pattern(
+                            &Pattern::Dict {
+                                fields: fields.clone(),
+                                rest: *rest,
+                            },
+                            &payload_val,
+                            env,
+                            value_span,
+                            ctx,
+                        )
+                        .await
+                    }
                     _ => {
                         // Value is not a dict
                         Ok(None)

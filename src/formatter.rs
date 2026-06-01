@@ -773,10 +773,7 @@ impl<'a> Formatter<'a> {
                 implied,
             } => {
                 // Mirror format_call: if this would be formatted as i"...", measure that width.
-                if !*implied
-                    && named_args.is_empty()
-                    && self.is_interpolated_string_call(func, args)
-                {
+                if named_args.is_empty() && self.is_interpolated_string_call(func, args) {
                     // i" + content + "
                     let mut w = 3; // i""
                     for arg in args {
@@ -1088,7 +1085,7 @@ impl<'a> Formatter<'a> {
         // all args are Str literals or VarRef nodes), format as i"..." instead of [str ...].
         // This is heuristic: user-written [str ...] calls matching the pattern will also
         // round-trip as i"..." syntax, which is acceptable for a pre-1.0 formatter.
-        if !implied && named_args.is_empty() && self.is_interpolated_string_call(func, args) {
+        if named_args.is_empty() && self.is_interpolated_string_call(func, args) {
             self.format_as_interpolated_string(args);
             return;
         }
