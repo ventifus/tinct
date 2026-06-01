@@ -39,4 +39,3 @@ Apply an XOR mask to a string (repeating-key cipher)
 ```tinct
 fn@String [let data@String mask@String]
 ```
-

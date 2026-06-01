@@ -122,7 +122,7 @@ Parts are preserved as typed values. The text formatter joins them with spaces; 
 
 **Corpus/literate routing — level determines section, span determines provenance:**
 
-```
+```text
 ordinal >= Error.ordinal  →  === error
 ordinal >= Warn.ordinal   →  === warn
 else                      →  === out
@@ -338,6 +338,7 @@ WARN  msg="using fallback config"
 **Current:** Macros are registered by name in `MacroEnv::macros`. The expander checks names only.
 
 **Proposed:**
+
 1. `[macro [let params] body]` without a name → produces `Value::Macro { transformer: Arc<Thunk>, params: Arc<SurfaceNode> }` — an anonymous macro value. Works like `[fn ...]` for functions.
 2. When expanding a Call, after checking registered macro names, the expander evaluates the function position against the stdlib env. If the result is `Value::Macro`, it applies expansion: passes args as `Value::Expression`, makes `[call-site]` available (from `call_span`), substitutes the expansion result.
 

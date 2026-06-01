@@ -15,4 +15,3 @@ Build a DNS query message (RFC 1035 §4)
 ```tinct
 fn@String [let id@Int domain@String qtype@Int]
 ```
-

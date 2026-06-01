@@ -134,6 +134,7 @@ For an unevaluated thunk with expression E and environment env: substitute each 
 **Gensym convention — design note.** This whatif changes the output format of the `[gensym ...]` builtin (`src/builtins_meta.rs:595`) from `:prefix:N` (e.g. `:foo:0`) to `ℊꜱʏᴍ⧼prefix⧽N` (e.g. `ℊꜱʏᴍ⧼foo⧽0`). The old `:p:N` format used `:` as a delimiter, which is a lexer-denylist character (`Token::Colon`) — correct for unforgeability but wrong when the output must be parseable source text, as it is for SCN. The new format uses the prefix `ℊꜱʏᴍ` (U+210A SCRIPT SMALL G + U+A731 LATIN LETTER SMALL CAPITAL S + U+028F LATIN LETTER SMALL CAPITAL Y + U+1D0D LATIN LETTER SMALL CAPITAL M) — all Unicode Letter-category characters and therefore valid tinct identifiers. Collision requires deliberate IME input of these codepoints.
 
 **This migration is complete (T-711, sprint S-789).** All callers have been updated:
+
 - `stdlib/prelude.llt` `do-desugar-inferred`: `[gensym "do-infer"]` now produces `ℊꜱʏᴍ⧼do-infer⧽N`. Both sentinel checks were updated atomically:
   - `src/eval.rs` (`CoreExpr::FreeVar` dispatch): uses `name.starts_with("ℊꜱʏᴍ⧼do-infer⧽")`
   - `src/typecheck.rs` (`check_do_infer` dispatch): same sentinel — both updated together so `do_infer_resolutions` map keys remain consistent.
@@ -796,7 +797,6 @@ This enables `loop-select` to be a pure tinct function that matches on `[Ok v]` 
 
 **Impact:** ~60 lines in `src/builtins_async.rs`; ~5 lines in `stdlib/prelude.llt`; `stdlib/async.llt` loop-select-impl retired.
 
-
 ### `src/main.rs` — emit channel wiring and deletion of special-case output paths
 
 **Current:** Three separate code paths all do materialization and serialization in Rust:
@@ -877,6 +877,7 @@ tinct run -i stream scripts/profile/materialize.llt < spans.llt-stream
 ## Prerequisites
 
 **builtin-privacy sprints (S-785, S-786).** This whatif depends on the full builtin-privacy implementation:
+
 - `eval-programs` and `eval-program` exported from prelude (T-735, S-786)
 - `--- uses: ["core"]` header in prelude and stdlib files (S-786)
 - `builtin-module`, `builtin-eval scope:`, `document.uses` field access (S-785)

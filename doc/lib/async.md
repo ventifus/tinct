@@ -55,4 +55,3 @@ fn@Any [let n@Int thunk@Fn]
 ```tinct
 fn@Any [let cleanup@Fn body@Fn]
 ```
-

@@ -23,4 +23,3 @@ Format a timestamp as YYYY-MM-DD HH:MM:SS
 ```tinct
 fn@String [let t@Timestamp]
 ```
-

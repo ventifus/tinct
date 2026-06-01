@@ -86,6 +86,7 @@ literate-eval-programs: [fn [let sections initial-input]
 The `eval-program` calls are standard. The literate engine provides a per-section `%stdout` capture handle so the formatter's `[write %stdout ...]` calls go to a buffer instead of the terminal. After the formatter completes, the buffer contents become the `=== out` section; `block-result` (not the formatter's `[]` return) becomes `%` for the next section.
 
 **The CLI formatters need zero changes.** `stdlib/cli/out/json.llt` running against a literate section:
+
 1. Spawns drain task on `%emit` — drains values emitted during block execution ✓
 2. Forces `%` (= block-result) — serializes the block's return value ✓
 3. Writes to `%stdout` — captured by the literate engine per-section ✓
@@ -170,6 +171,7 @@ The **corpus formatter** is a tinct program in `stdlib/literate/corpus.llt` that
 `eval-program` gains `logger-ch` and `diag-ch` parameters alongside `emit-ch`. The type checker sends `Warning`/`Info` diagnostics into `diag-ch`; the evaluator sends `Error` diagnostics into `diag-ch` or propagates them as tinct exceptions; user logging goes through `%logger` → `logger-ch` → log router → `emit-ch` → `=== out`.
 
 The three channels form a clear ownership boundary:
+
 - `%emit` / `emit-ch` — user program output (emit calls)
 - `%logger` / `logger-ch` — user log entries (structured, level-tagged)
 - `%diagnostics` / `diag-ch` — runtime messages (type checker, evaluator) — user code has no write access
@@ -182,17 +184,21 @@ The `=== out` section contains exactly what the output formatter writes to `%std
 ```tinct raw
 [length [1 2 3 4 5]]
 ```
+
 === out
 5
-```
+
+```markdown
 
 ```markdown
 ```tinct json
 [name: "Alice"  age: 30]
 ```
+
 === out
 {"name": "Alice", "age": 30}
-```
+
+```markdown
 
 ### Transformations Live in the Block
 
@@ -212,7 +218,8 @@ If a block's result needs transformation before formatting, the transformation h
 ```tinct csv
 %
 ```
-```
+
+```markdown
 
 This keeps fence metadata as pure declarations and keeps transformations visible in the code blocks where readers expect them.
 

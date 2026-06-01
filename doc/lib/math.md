@@ -31,4 +31,3 @@ Logarithm with arbitrary base
 ```tinct
 fn@Float [let base@Number x@Number]
 ```
-

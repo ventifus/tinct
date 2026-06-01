@@ -23,4 +23,3 @@ Parse SOCKS5 server response (RFC 1928 §6)
 ```tinct
 fn@Dict [let bytes@String]
 ```
-

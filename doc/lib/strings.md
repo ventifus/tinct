@@ -71,4 +71,3 @@ Join collection elements as strings with a separator
 ```tinct
 fn@String [let sep@String xs]
 ```
-

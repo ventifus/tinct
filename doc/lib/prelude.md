@@ -534,4 +534,3 @@ Lazily read fixed-size byte chunks from a Handle. Returns a Seq of Bytes.
 ```tinct
 fn@Any [let h n@Int]
 ```
-

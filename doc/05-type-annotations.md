@@ -907,11 +907,13 @@ The value `untyped-value` has `Type::Unknown` because `from-json` returns `Unkno
 **Mitigation strategies:**
 
 1. **Annotate public exports** — add type annotations to all bindings exported from library documents:
+
    ```tinct
    values@[Seq Int]: [from-json "[1,2,3]"]
    ```
 
 2. **Use TypeAssert at boundaries** — wrap `Unknown`-typed expressions in `[@Type expr]` to enforce a runtime contract and refine the type for downstream code:
+
    ```tinct
    values: [@[Seq Any] [from-json "[1,2,3]"]]  # Runtime check + static refinement
    ```

@@ -7,4 +7,3 @@ Convert flat dict to KEY=VALUE format (.env file)
 ```tinct
 fn@String [let d@Dict]
 ```
-

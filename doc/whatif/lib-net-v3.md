@@ -46,18 +46,21 @@ Define the **serve/connect layer model** as composable tinct stdlib functions. O
 Three API levels, all built from the same components:
 
 **Level 1 — One-liner.** `fetch` dispatches via the `Protocol` typeclass:
+
 ```tinct
 [fetch %nc [Url "https://api.example.com/data"]]
 [fetch %nc cloudflare-dot [dns-query "IN" "A" "example.com"]]
 ```
 
 **Level 2 — Connection reuse or protocol selection.** Explicit transport + request:
+
 ```tinct
 [c:    [connect %nc Http [HostPort [Hostname "api.example.com"] 443]]
  resp: [http-request c "GET" "/data"  user-agent: "tinct/0.1"]]
 ```
 
 **Level 3 — Raw composition.** Full pipeline control for custom stacks:
+
 ```tinct
 [[connect %nc Tcp [HostPort [Hostname "api.example.com"] 443]] | tls | h2 | [http-request req]]
 [[connect %nc Tcp [HostPort [Hostname "redis.internal"]  6379]] | [codec RedisCodec]]

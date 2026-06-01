@@ -15,4 +15,3 @@ Parse gRPC Length-Prefixed Message header
 ```tinct
 fn@Dict [let bytes@String]
 ```
-

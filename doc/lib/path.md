@@ -39,4 +39,3 @@ Join path components with /
 ```tinct
 fn@String [let parts@Dict]
 ```
-

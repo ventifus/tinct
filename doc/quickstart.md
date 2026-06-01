@@ -350,14 +350,14 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
   s: [Circle r: 2.0]
 
   area: [match s
-    [Circle c]:  [* 3.14159 c.r c.r]
+    [Circle c]:  [* 3.14159 [* c.r c.r]]
     [Rect dims]: [* dims.w dims.h]]
   # → 12.56636
 
   # Nested destructuring inside constructor — bind payload fields directly
   desc: [match s
-    [Circle [r: radius]]:      [str "circle r=" radius]
-    [Rect   [w: w  h: h]]:    [str "rect " w "×" h]]
+    [Circle c]:    [str "circle r=" c.r]
+    [Rect dims]:   [str "rect " dims.w "×" dims.h]]
   # → "circle r=2.0"
 
   # WRONG — bare name is a variable capture, not a constructor match
@@ -469,6 +469,7 @@ The canonical pattern for library files: **first dict is private, second is expo
 The first dict's names are in scope when the second dict evaluates. Callers who `[include %libdir "mylib.llt"]` receive only the second dict.
 
 **Why this matters:**
+
 - Avoids naming collisions with caller scope
 - Lets helpers be refactored freely without breaking the API
 - Documents intent: first dict = internals, second = contract

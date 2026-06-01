@@ -95,4 +95,3 @@ Copy a file from src to dst
 ```tinct
 fn@Null [let cap@DirCap src@String dst@String]
 ```
-

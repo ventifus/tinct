@@ -19,4 +19,3 @@ Returns:
 ```tinct
 fn@Any [let p@Program]
 ```
-

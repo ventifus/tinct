@@ -38,4 +38,3 @@ Raises error on invalid JSON syntax.
 ```tinct
 fn@Any [let s@String]
 ```
-

@@ -55,4 +55,3 @@ Escape replacement string
 ```tinct
 fn@String [let s@String]
 ```
-
