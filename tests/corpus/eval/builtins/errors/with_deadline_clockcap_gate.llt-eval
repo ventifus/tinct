@@ -1,0 +1,10 @@
+# builtin-with-deadline: passing a non-ClockCap first argument produces a type error (E010).
+# This verifies the ClockCap capability gate: only a real ClockCap value may be used.
+# Passing 42 (Int) instead of a ClockCap triggers the runtime guard.
+[builtin-with-deadline 42 [builtin-context] 1000]
+=== error
+[E010] type mismatch: expected ClockCap, got Int (defined at 3:1-3:50)
+  in [builtin-with-deadline ...] at 3:1-3:50
+
+=== warn
+undefined variable: builtin-with-deadline at 3:2-3:23

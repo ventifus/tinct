@@ -2,6 +2,3 @@
 [try-or [fn [] 42] 0]
 === out
 Int(42)
-
-=== warn
-cannot unify [] | _ with 0 at 1:20-1:21

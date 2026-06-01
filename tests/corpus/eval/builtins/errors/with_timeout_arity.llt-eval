@@ -1,0 +1,9 @@
+# builtin-with-timeout: calling with 2 arguments instead of 3 produces a user error (E080)
+# The ClockCap gate requires 3 positional args: (ClockCap, Context, Duration).
+[builtin-with-timeout [builtin-context] 1000]
+=== error
+[E080] with-timeout expects 3 arguments, got 2 (defined at 2:1-2:46)
+  in [builtin-with-timeout ...] at 2:1-2:46
+
+=== warn
+undefined variable: builtin-with-timeout at 2:2-2:22

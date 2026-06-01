@@ -4963,3 +4963,99 @@ fn profile_writes_llt_stream_readable_by_stream_input() {
         String::from_utf8_lossy(&consume.stderr)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Literate eval: %emit and %stdout injection (run_literate_eval)
+//
+// These tests verify that run_literate_eval injects %emit (Channel) and
+// %stdout (WriteHandle) into the root environment, as documented in
+// src/main.rs run_literate_eval. User code can inspect these values via
+// type-of without triggering serialization errors.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn literate_eval_emit_channel_is_injected() {
+    // %emit is a Channel injected by run_literate_eval so that user code can
+    // send values to it (values are discarded — the channel is never drained in
+    // literate eval mode). Verify the binding is in scope and has type "Channel".
+    let md = "# Literate emit injection\n\n```tinct\n[type-of %emit]\n```\n";
+    let (path, _dir) = write_temp_md("literate_emit_injection", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct literate eval");
+
+    assert!(
+        output.status.success(),
+        "literate eval should succeed when %emit is used; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected JSON output from literate eval");
+    // type-of returns a String — %emit is a Channel
+    assert_eq!(
+        json,
+        serde_json::json!("Channel"),
+        "expected %emit to be a Channel, got: {json}"
+    );
+}
+
+#[test]
+fn literate_eval_stdout_handle_is_injected() {
+    // %stdout is a WriteHandle injected by run_literate_eval so that user code
+    // can write directly to stdout. Verify the binding is in scope and has type
+    // "WriteHandle".
+    let md = "# Literate stdout injection\n\n```tinct\n[type-of %stdout]\n```\n";
+    let (path, _dir) = write_temp_md("literate_stdout_injection", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct literate eval");
+
+    assert!(
+        output.status.success(),
+        "literate eval should succeed when %stdout is used; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected JSON output from literate eval");
+    // type-of returns a String — %stdout is a WriteHandle
+    assert_eq!(
+        json,
+        serde_json::json!("WriteHandle"),
+        "expected %stdout to be a WriteHandle, got: {json}"
+    );
+}
+
+#[test]
+fn literate_eval_emit_send_succeeds() {
+    // Verify that [send %emit value] works in literate eval — the value is
+    // buffered in the channel and discarded (literate eval never drains %emit).
+    // send returns null (empty dict), which serializes to JSON null.
+    let md = "# Literate emit send\n\n```tinct\n[send %emit 42]\n```\n";
+    let (path, _dir) = write_temp_md("literate_emit_send", md);
+    let output = Command::new(tinct_bin())
+        .args(["literate", "eval", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run tinct literate eval");
+
+    assert!(
+        output.status.success(),
+        "literate eval should succeed when sending to %emit; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected JSON output from literate eval");
+    // send returns null (empty dict — serialized as null by the JSON formatter)
+    assert_eq!(
+        json,
+        serde_json::json!(null),
+        "expected send to return null, got: {json}"
+    );
+}

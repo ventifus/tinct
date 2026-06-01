@@ -448,7 +448,28 @@ pub(crate) fn collect_pattern_bindings(
                 //
                 // Multi-field variants: always return as record (no single-field unwrapping).
                 let resolve_payload = |fields: &Row| -> Type {
-                    if fields.fields.len() == 1 {
+                    if fields.fields.is_empty() {
+                        // Unit variant declared with no fields (e.g., `[type Option [Some] None]`).
+                        // The declared type carries no payload information, but B-219 allows unit
+                        // variants to be called with a payload: `[Some 42]` produces
+                        // `Variant{Some, payload:Some(42)}`. When pattern-matching `[Some v]`
+                        // against a scrutinee whose declared type is `NominalVariant{Some, {}}`,
+                        // we cannot statically determine the payload type from the declaration alone.
+                        //
+                        // Returning `Type::Record({})` (empty record) was wrong: it falsely asserts
+                        // that `v` is an empty record, causing spurious type errors when `v` is used
+                        // as an Int, Str, etc.
+                        //
+                        // Returning `Type::Unknown` is the correct gradual escape hatch: the declared
+                        // unit variant type genuinely doesn't carry payload type information, so we
+                        // fall back to gradual typing for the binding. This is honest and prevents
+                        // the false `Record{}` assertion while still allowing the body to type-check.
+                        //
+                        // Note: `[Some]:` (zero-arg pattern, binding:None) is handled before
+                        // `resolve_payload` is called — `resolve_payload` is only reached when
+                        // `binding.is_some()`, i.e., when a payload binding `v` is present.
+                        Type::Unknown
+                    } else if fields.fields.len() == 1 {
                         let field_name = fields.fields.keys().next().unwrap();
                         // Positional fields have auto-indexed names ("0", "1", ...).
                         // Check if the field name is a non-negative integer (positional).

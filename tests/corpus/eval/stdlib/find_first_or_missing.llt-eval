@@ -4,3 +4,6 @@
 [E020] arity mismatch: expected 3 arguments, got 4 (defined at 1:1-1:50)
   in [find-first-or ...] at 1:1-1:50
   in [find-first-or ...] at 1:1-1:50
+
+=== warn
+arity mismatch: expected 3 argument(s), got 4 (4 positional, 0 named) at 1:1-1:50

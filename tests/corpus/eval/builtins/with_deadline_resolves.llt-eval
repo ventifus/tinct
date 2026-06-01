@@ -1,0 +1,9 @@
+# with-deadline (prelude wrapper) resolves to a Function value.
+# The wrapper closes over %clock — calling it requires %clock in scope.
+# This test only verifies the name is bound, not that it executes.
+[type-of with-deadline]
+=== out
+String("Function")
+
+=== warn
+cannot unify ⊤ with <error> at 3:10-3:23

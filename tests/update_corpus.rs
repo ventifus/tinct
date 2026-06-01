@@ -234,6 +234,18 @@ fn update_eval_corpus() {
             }
         }
 
+        // Regression guard: if the existing file expected success (=== out) but the
+        // new result is an error, do NOT overwrite it. Silently accepting a regression
+        // as "expected behavior" would mask real bugs in CI.
+        if test.expectations.out.is_some() && error.is_some() {
+            eprintln!(
+                "  SKIP: previously-passing test now produces error — possible regression: {}",
+                relative.display()
+            );
+            skipped += 1;
+            continue;
+        }
+
         // Rebuild the file
         let new_content = rebuild_test_file(
             directive_line.as_deref(),
@@ -366,6 +378,7 @@ fn update_valid_corpus() {
     let mut updated = 0;
     let mut unchanged = 0;
     let mut errors = 0;
+    let mut skipped = 0;
 
     for (i, test_file) in test_files.iter().enumerate() {
         let content = match fs::read_to_string(test_file) {
@@ -412,6 +425,18 @@ fn update_valid_corpus() {
             Err(e) => Some(e),
         };
 
+        // Regression guard: if the existing file expected success (=== out) but parsing
+        // now produces an error, do NOT overwrite it — this would silently lock in a
+        // regression as "expected behavior".
+        if test.expectations.out.is_some() && error.is_some() {
+            eprintln!(
+                "  SKIP: previously-passing test now produces error — possible regression: {}",
+                relative.display()
+            );
+            skipped += 1;
+            continue;
+        }
+
         let new_content = rebuild_test_file(
             directive_line.as_deref(),
             &source,
@@ -451,6 +476,7 @@ fn update_valid_corpus() {
     eprintln!("  Total:     {}", test_files.len());
     eprintln!("  Updated:   {}", updated);
     eprintln!("  Unchanged: {}", unchanged);
+    eprintln!("  Skipped:   {}", skipped);
     eprintln!("  Errors:    {}", errors);
 }
 
@@ -485,6 +511,7 @@ fn update_typecheck_warnings_corpus() {
     let mut updated = 0;
     let mut unchanged = 0;
     let mut errors = 0;
+    let mut skipped = 0;
 
     for (i, test_file) in test_files.iter().enumerate() {
         let content = match fs::read_to_string(test_file) {
@@ -520,13 +547,34 @@ fn update_typecheck_warnings_corpus() {
             tinct::eval_source_with_cap_net(&test.input, test.no_fs, &test.cap_net)
         };
 
-        let output = match eval_result {
-            Ok(actual) => Some(actual),
-            Err(e) => {
-                eprintln!("  WARN: {} eval failed: {}", relative.display(), e);
-                None
-            }
+        let (output, eval_error) = match eval_result {
+            Ok(actual) => (Some(actual), None),
+            Err(e) => (None, Some(format!("{e}"))),
         };
+
+        // Regression guard: if the existing file expected success (=== out) but eval now
+        // produces an error, do NOT overwrite it — this would silently drop a passing
+        // test's expected output and lock in a regression.
+        if test.expectations.out.is_some() && eval_error.is_some() {
+            eprintln!(
+                "  SKIP: previously-passing test now produces error — possible regression: {}",
+                relative.display()
+            );
+            eprintln!(
+                "    eval error: {}",
+                truncate(eval_error.as_deref().unwrap_or(""), 100)
+            );
+            skipped += 1;
+            continue;
+        }
+
+        if eval_error.is_some() {
+            eprintln!(
+                "  WARN: {} eval failed: {}",
+                relative.display(),
+                truncate(eval_error.as_deref().unwrap_or(""), 100)
+            );
+        }
 
         let warnings = match tinct::typecheck_source(&test.input) {
             Ok(()) => None,
@@ -572,5 +620,6 @@ fn update_typecheck_warnings_corpus() {
     eprintln!("  Total:     {}", test_files.len());
     eprintln!("  Updated:   {}", updated);
     eprintln!("  Unchanged: {}", unchanged);
+    eprintln!("  Skipped:   {}", skipped);
     eprintln!("  Errors:    {}", errors);
 }

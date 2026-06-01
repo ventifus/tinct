@@ -19,6 +19,3 @@
 ]
 === out
 Dict({"Shape": Variant(Shape, Null), "Circle": Variant(Circle, Null), "Square": Variant(Square, Null), "shape": Variant(Circle, Int(5)), "area": Int(75)})
-
-=== warn
-arithmetic operator applied to non-numeric type `[]` at 16:17-16:24
