@@ -1591,7 +1591,7 @@ pub(crate) fn builtin_expand(
 ///
 /// Example usage in desugar.llt:
 /// ```llt
-/// [builtin-program [map desugar-document p.documents]]
+/// [program [map desugar-document p.documents]]
 /// ```
 pub(crate) fn builtin_program(
     ctx_arg: BuiltinArgs,

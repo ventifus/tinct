@@ -1,7 +1,6 @@
 # ast-of on fn expression returns Expression without forcing the body
 # The error inside the fn should NOT be triggered
 [type-of [ast-of [fn [] [raise "should not run"]]]]
-# === out will be added by just update-corpus
 === error
 [E099] ast-of: thunk in unknown state (defined at 2:10-2:51)
   in [ast-of ...] at 2:10-2:51

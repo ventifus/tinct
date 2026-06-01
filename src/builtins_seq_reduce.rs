@@ -310,6 +310,11 @@ pub(crate) fn builtin_join(
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "join", &ctx, call_span.clone())?)
             }
+            Value::Bytes {
+                ref source,
+                start,
+                end,
+            } => bytes_to_seq(&source[start..end], call_span.clone(), &ctx),
             // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
             Value::Variant {
                 payload: Some(payload_id),

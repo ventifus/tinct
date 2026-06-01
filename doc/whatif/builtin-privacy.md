@@ -8,20 +8,23 @@ What would it take to make every Rust primitive invisible to user code by defaul
 
 ## Current State
 
-All 238 Rust builtins are pre-injected into the global environment at startup via `standard_builtins()` → `create_root_env()`. User programs inherit `stdlib_env`, which is a child of `bootstrap_env` (= `create_root_env()`), so they can traverse the parent chain and call any builtin by name — `builtin-write`, `builtin-eval`, `open`, `write`, `load`, and ~230 others — without going through prelude.
+`standard_builtins()` and `create_root_env()` were deleted in S-784 as part of the modular builtin registry refactor. The current bootstrap path is `create_stdlib_env_inner()` in `src/builtins.rs`.
+
+The remaining gap is at `src/builtins.rs:1523-1528`, where `create_stdlib_env_inner()` injects the full `core_builtins()` list directly into `stdlib_env` after loading the prelude:
 
 ```rust
-// src/builtins.rs:2337-2378 — create_stdlib_env_inner()
-let bootstrap_env = create_root_env();          // all 238 builtins
-let stdlib_env = Environment::with_parent(      // prelude loads here
-    Arc::clone(&bootstrap_env)
-);
-// user code is a child of stdlib_env → can walk to bootstrap_env
+// src/builtins.rs:1523-1528 — create_stdlib_env_inner()
+for def in core_builtins {
+    let name = def.name.to_string();
+    let builtin_val = Value::Builtin(def);
+    let thunk = Arc::new(Thunk::new_materialized(builtin_val, Span::origin()));
+    stdlib_env.write().unwrap().insert(name, thunk);
+}
 ```
 
-The comment in `create_stdlib_env_inner()` acknowledges the gap: *"This means: user code (child of stdlib_env) can walk up to bootstrap_env and see all builtins. The prelude acts as the primary scope boundary."* The scope boundary is not enforced — it is aspirational.
+This means all core builtins (including `builtin-eval`, `builtin-write`, `builtin-load`, etc.) are visible to user code as top-level bindings in `stdlib_env`. User programs can call them by name without going through the prelude. Enforcement is deferred to S-785.
 
-Additionally, `TypeEnv::with_builtins()` (`src/type_env.rs:1224–3776`, ~2553 lines) loads type signatures for all 238 builtins unconditionally, regardless of what the program imports.
+Additionally, `TypeEnv::with_builtins()` loads type signatures for all builtins unconditionally, regardless of what the program imports.
 
 ### What's Missing
 
