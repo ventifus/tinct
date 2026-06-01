@@ -2,7 +2,7 @@
 # Some has a payload field, None is unit-like
 
 [
-  type Option [Some value] None
+  [type Option [Some value: Int] [None]]
 
   x: [Some 10]
   y: None
@@ -17,8 +17,5 @@
 
   both: [seq result1 result2]
 ]
-=== error
-[E099] syntax error at 6:4 (cannot evaluate error node) (defined at 6:4-6:5)
-
-=== warn
-syntax error at 6:4 (cannot typecheck error node) at 6:4-6:5
+=== out
+Dict({"Option": Variant(Option, Null), "Some": Variant(Some, Null), "None": Variant(None, Null), "x": Variant(Some, Int(10)), "y": Variant(None, Null), "result1": Int(10), "result2": Int(0), "both": Seq(Int(10), ...)})

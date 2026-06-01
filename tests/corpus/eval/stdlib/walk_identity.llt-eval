@@ -1,18 +1,4 @@
 # walk: identity function leaves structure unchanged
-[walk [fn [x] x] [a: 1  b: [c: 2  d: 3]]]
-=== error
-[E099] syntax error at 1:15 (cannot evaluate error node) (defined at 1:15-1:16) (called at stdlib/prelude.llt:1277:9-1277:29)
-  in [f ...] at stdlib/prelude.llt:1277:9-1277:29
-   |
-  1277 |         [f [walk-dict f xs]]
-       |         ^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:1276:5-1278:16
-   |
-  1276 |     [builtin-if [dict? xs]
-  1277 |         [f [walk-dict f xs]]
-  1278 |         [f xs]]]
-       | ^^^^^^^^^^^^^^^
-  in [walk ...] at 1:1-1:42
-
-=== warn
-syntax error at 1:15 (cannot typecheck error node) at 1:15-1:16
+[walk [fn [let x] x] [a: 1  b: [c: 2  d: 3]]]
+=== out
+Dict({"a": Int(1), "b": Dict({"c": Int(2), "d": Int(3)})})

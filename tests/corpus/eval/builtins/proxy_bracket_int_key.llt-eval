@@ -1,13 +1,10 @@
 # proxy : dot access passes String key for all identifiers (Phase 1 not yet implemented)
 # Once Phase 1 is done, p.0 will pass Int(0) and this test should be updated
 [
-  handler: [fn [key] [if [= [type-of key] "Int"] "got-int" "got-str"]]
+  handler: [fn [let key] [if [= [type-of key] "Int"] "got-int" "got-str"]]
   p: [proxy handler]
   a: p.zero
   b: p.one
 ]
-=== error
-[E099] syntax error at 3:70 (cannot evaluate error node) (defined at 3:70-3:71)
-
-=== warn
-syntax error at 3:70 (cannot typecheck error node) at 3:70-3:71
+=== out
+Dict({"handler": Function(key), "p": Proxy, "a": String("got-str"), "b": String("got-str")})

@@ -1,13 +1,5 @@
 [match "test"
-  [case "test"]: "hit"
+  "test": "hit"
   _: "miss"]
----
+=== out
 String("hit")
-=== error
-[E099] syntax error at 2:16 (cannot evaluate error node) (defined at 2:16-2:17)
-
-=== warn
-syntax error at 2:16 (cannot typecheck error node) at 2:16-2:17
-undefined variable: String( at 5:1-5:8
-expected record type, got "hit" at 5:8-5:13
-undefined variable: ) at 5:13-5:14

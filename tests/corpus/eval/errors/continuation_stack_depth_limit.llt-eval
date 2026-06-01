@@ -1,10 +1,10 @@
 # Deeply nested function calls exceed MAX_CONTINUATION_STACK=2048
 # Each recursive call adds continuation frames (Memoize, etc.)
 # Use a Y-combinator style recursive function to build depth
-[f: [fn [self n] [if [= n 0] 0 [+ 1 [call self self [- n 1]]]]]
+[f: [fn [let self n] [if [= n 0] 0 [+ 1 [call self self [- n 1]]]]]
  result: [call f f 2100]]
 === error
-[E099] syntax error at 3:63 (cannot evaluate error node) (defined at 3:63-3:64)
-
-=== warn
-syntax error at 3:63 (cannot typecheck error node) at 3:63-3:64
+[E040] maximum evaluation depth exceeded (2048) (defined at 3:57-3:64) (called at 3:22-3:67)
+  in [= ...] at 3:26-3:33
+  in [if ...] at 3:22-3:67
+  in [+ ...] at 3:36-3:66

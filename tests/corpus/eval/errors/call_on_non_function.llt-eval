@@ -3,4 +3,4 @@
 [E010] type mismatch: expected Function or Builtin, got Int (defined at 1:1-1:10)
 
 === warn
-expected function type, got 42 at 1:1-1:10
+expected function type, got 42 at 1:7-1:9

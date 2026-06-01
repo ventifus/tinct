@@ -1,15 +1,6 @@
-[let x [+ 1 1]]
-[match x
-  [case 2]: "two"
-  _: "other"]
----
-String("two")
-=== error
-[E099] syntax error at 3:11 (cannot evaluate error node) (defined at 3:11-3:12)
-
-=== warn
-multi-element [let ...] pattern not yet supported — use single binding at 1:1-1:16
-syntax error at 3:11 (cannot typecheck error node) at 3:11-3:12
-undefined variable: String( at 6:1-6:8
-expected record type, got "two" at 6:8-6:13
-undefined variable: ) at 6:13-6:14
+[x: [+ 1 1]
+ result: [match x
+   2: "two"
+   _: "other"]]
+=== out
+Dict({"x": Int(2), "result": String("two")})

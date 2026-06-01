@@ -4,14 +4,13 @@
 
 [include %libdir "protocols/socks5.llt"]
 ---
-[call [fn [p]
+[call [fn [let p]
     [set []
         success?: p.success?
         rep:      p.rep
         status:   p.status]]
     [call %.parse-socks5-response [str [chr 5] [chr 5] [chr 0] [chr 1]]]]
 === error
-[E099] syntax error at 10:28 (cannot evaluate error node) (defined at 10:28-10:29)
-
-=== warn
-syntax error at 10:28 (cannot typecheck error node) at 10:28-10:29
+[E022] unexpected named argument: success? (valid parameter names: xs) (defined at 7:5-10:28)
+  in [set ...] at 7:5-10:28
+  in [set ...] at 7:5-10:28

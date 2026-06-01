@@ -1,12 +1,9 @@
 # proxy : dot access passes String key to handler
 # Verifies that $p.fieldname calls handler with Value::String("fieldname")
 [
-  handler: [fn [key] [type-of key]]
+  handler: [fn [let key] [type-of key]]
   p: [proxy handler]
   result: p.myfield
 ]
-=== error
-[E099] syntax error at 3:35 (cannot evaluate error node) (defined at 3:35-3:36)
-
-=== warn
-syntax error at 3:35 (cannot typecheck error node) at 3:35-3:36
+=== out
+Dict({"handler": Function(key), "p": Proxy, "result": String("String")})

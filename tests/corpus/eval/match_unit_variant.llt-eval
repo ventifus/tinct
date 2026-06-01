@@ -1,5 +1,5 @@
 [
-  type Color Red Green Blue
+  [type Color [Red] [Green] [Blue]]
 
   color: Red
 
@@ -8,8 +8,5 @@
     [Green]:  "#00ff00"
     [Blue]:   "#0000ff"]
 ]
-=== error
-[E099] syntax error at 4:8 (cannot evaluate error node) (defined at 4:8-4:9)
-
-=== warn
-syntax error at 4:8 (cannot typecheck error node) at 4:8-4:9
+=== out
+Dict({"Color": Variant(Color, Null), "Red": Variant(Red, Null), "Green": Variant(Green, Null), "Blue": Variant(Blue, Null), "color": Variant(Red, Null), "result": String("#ff0000")})

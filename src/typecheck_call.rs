@@ -1228,6 +1228,6 @@ pub(crate) fn check_call(
         Type::NominalVariant { .. } => {
             Err(vec![TypeError::not_a_function(&func_ty, func.span.clone())])
         }
-        _ => Err(vec![TypeError::not_a_function(&func_ty, span)]),
+        _ => Err(vec![TypeError::not_a_function(&func_ty, func.span.clone())]),
     }
 }

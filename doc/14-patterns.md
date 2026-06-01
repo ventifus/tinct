@@ -134,7 +134,7 @@ Each arm is a `pattern: body` keyed entry — the pattern is the key, the body i
 | Variable | `x` | Matches anything and binds the value to `x` |
 | Literal | `42`, `"text"`, `true` | Matches exact value |
 | Constructor | `[Ok value]` | Matches nominal variant and binds payload to `value` |
-| Constructor (no binding) | `[Tag]:` | Matches any nominal variant with that tag, regardless of payload — equivalent to `[Tag _]:` |
+| Constructor (no binding) | `[Tag]` | Matches any nominal variant with that tag, regardless of payload — equivalent to `[Tag _]`. **Note:** this equivalence is runtime-only; the exhaustiveness checker may emit a false non-exhaustive warning for payload-bearing variants until coverage.rs is updated (see B-252). |
 
 ### Exhaustiveness Checking
 
@@ -168,9 +168,9 @@ error: no match arm satisfied
 
 ### Implementation Notes
 
-- **AST node:** `Expr::Match { scrutinee, arms }`
+- **AST node:** `SurfaceExpression::Match { scrutinee, arms }`
 - **Type inference:** `infer_match` in `src/typecheck.rs` infers the return type as the union of all arm expression types, narrowed by the scrutinee type
-- **Evaluation:** inline handler in `eval_core_expr` for `CoreExpr::Match` in `src/eval.rs` materializes the scrutinee, then evaluates arms in order until a pattern matches
+- **Evaluation:** `eval_materialize.rs` materializes the scrutinee, then evaluates arms in order until a pattern matches
 - **Pattern compilation:** Constructor patterns are compiled to `Pattern::Constructor` AST nodes; the evaluator uses `match_pattern` to test each arm
 
 See `doc/feature/nominal-variants.md` for the nominal variant design and `src/typecheck.rs` for the complete exhaustiveness algorithm.

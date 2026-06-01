@@ -2,14 +2,11 @@
 # Until Phase 1 (integer dot access) is implemented, all dot access uses String keys
 # p.foo, p.int_key, p.int_key_large all pass String keys
 [
-  handler: [fn [key] [type-of key]]
+  handler: [fn [let key] [type-of key]]
   p: [proxy handler]
   int_key: p.int_key
   int_key_large: p.int_key_large
   string_key: p.foo
 ]
-=== error
-[E099] syntax error at 4:35 (cannot evaluate error node) (defined at 4:35-4:36)
-
-=== warn
-syntax error at 4:35 (cannot typecheck error node) at 4:35-4:36
+=== out
+Dict({"handler": Function(key), "p": Proxy, "int_key": String("String"), "int_key_large": String("String"), "string_key": String("String")})

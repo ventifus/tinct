@@ -1,7 +1,7 @@
 # Interpolated strings - parser emits [tmpl "raw-template"]; macro expands to [str ...]
 [name: "World"  greeting: i"Hello $name"]
 === out
-["name": "World"  "greeting": [call tmpl "Hello $name"]]
+["name": "World"  "greeting": [tmpl "Hello $name"]]
 
 === warn
 [E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 1:27-1:41)

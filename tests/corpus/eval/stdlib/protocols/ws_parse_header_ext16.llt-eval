@@ -7,7 +7,7 @@
 
 [include %libdir "protocols/websocket.llt"]
 ---
-[call [fn [p]
+[call [fn [let p]
     [set []
         payload-len: p.payload-len
         header-len:  p.header-len
@@ -15,7 +15,6 @@
     [call %.parse-ws-frame-header
         [str [chr 130] [chr 254] [chr 1] [chr 0] [chr 1] [chr 2] [chr 3] [chr 4]]]]
 === error
-[E099] syntax error at 13:31 (cannot evaluate error node) (defined at 13:31-13:32)
-
-=== warn
-syntax error at 13:31 (cannot typecheck error node) at 13:31-13:32
+[E022] unexpected named argument: payload-len (valid parameter names: xs) (defined at 10:5-13:31)
+  in [set ...] at 10:5-13:31
+  in [set ...] at 10:5-13:31

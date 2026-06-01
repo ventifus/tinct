@@ -949,7 +949,10 @@ bracket_expr = "[" ~ "]"
 
 // === Special Forms ===
 
-special_form = call_form | fn_form | type_form
+special_form = call_form | fn_form | type_form | let_form | case_form | match_form
+             | class_form | instance_form | pattern_form
+             | quote_form | unquote_form | unquote_splice_form
+             | macro_form | syntax_class_form
 
 call_form    = keyword_call ~ value ~ call_args
 call_implied = identifier ~ call_args     // identifier not a keyword, not followed by ":"
@@ -980,7 +983,7 @@ type_assert_body = "@" ~ annotation_value ~ value
 
 fn_annotation = "@" ~ annotation_value
 
-param_list = "[" ~ (variadic_param | param)* ~ "]"
+param_list = "[" ~ "let" ~ (variadic_param | param)* ~ "]"
 
 param = param_name ~ param_annotation?
 

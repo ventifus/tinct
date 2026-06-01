@@ -1,7 +1,7 @@
 # LLT display format output formatter — concurrent drain/force/await contract.
 #
 # Converts each value to its LLT representation string: Int(42), Dict({...}), etc.
-# Uses the llt-repr builtin which deep-materializes and formats the value.
+# Uses the llt-repr builtin which traverses and formats the value, materializing nested thunks on demand.
 #
 # Concurrent contract:
 # 1. Drain %emit-channel: write each emitted value as llt-repr
@@ -12,14 +12,14 @@
 [drain: [task
   [loop-select [context]
     [seq [ch: %emit-channel  handler: [fn [let v]
-      [write-handle %stdout [str [call $llt-repr v] "\n"]]]] []]
+      [write-handle %stdout [str [llt-repr v] "\n"]]]] []]
     identity]]]
 
 # 2. Force the return value to drive the lazy evaluation cascade.
 [if [seq? %]
   [reduce [fn [let _ x]
-    [write-handle %stdout [str [call $llt-repr x] "\n"]]] [] %]
-  [write-handle %stdout [str [call $llt-repr %] "\n"]]]
+    [write-handle %stdout [str [llt-repr x] "\n"]]] [] %]
+  [write-handle %stdout [str [llt-repr %] "\n"]]]
 
 # 3. Wait for drain to finish consuming any emits triggered during forcing.
 [await drain]

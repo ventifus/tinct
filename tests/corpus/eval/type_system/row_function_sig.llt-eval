@@ -1,7 +1,4 @@
 # Row polymorphism - rest in function signatures
-[id: [fn@[name: String ...] [r@[name: String ...]] r]  result: [call $id [name: "Carol"  age: 25]]]
-=== error
-[E099] syntax error at 1:52 (cannot evaluate error node) (defined at 1:52-1:53)
-
-=== warn
-syntax error at 1:52 (cannot typecheck error node) at 1:52-1:53
+[id: [fn@[name: String ...] [let r@[name: String ...]] r]  result: [call $id [name: "Carol"  age: 25]]]
+=== out
+Dict({"id": Function(r), "result": Dict({"name": String("Carol"), "age": Int(25)})})

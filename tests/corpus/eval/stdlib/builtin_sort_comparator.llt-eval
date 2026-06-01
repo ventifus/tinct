@@ -1,8 +1,7 @@
 # builtin-sort with custom comparator (descending)
-[builtin-sort [fn [a b] [> a b]] [3 1 2]]
-=== error
-[E099] syntax error at 1:32 (cannot evaluate error node) (defined at 1:32-1:33)
-  in [builtin-sort ...] at 1:1-1:42
+[builtin-sort [fn [let a b] [> a b]] [3 1 2]]
+=== out
+Dict({0: Int(3), 1: Int(2), 2: Int(1)})
 
 === warn
 undefined variable: builtin-sort at 1:2-1:14

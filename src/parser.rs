@@ -216,7 +216,7 @@ fn emit_tmpl_call(
             func: tmpl_fn,
             args,
             named_args: Vec::new(),
-            implied: false,
+            implied: true,
         },
         span,
     }))
@@ -4989,7 +4989,7 @@ fn surface_node_to_pattern_with_guard(
                     }
                     (_, 0) if name.chars().next().is_some_and(|c| c.is_uppercase()) => {
                         // [Constructor] — unit variant pattern (zero-arg constructor)
-                        // Matches unit variants (no payload) by tag name only
+                        // Matches any variant with this tag, regardless of payload — equivalent to [Tag _]:
                         (
                             Pattern::Constructor {
                                 tag: name.clone(),

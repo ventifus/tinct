@@ -963,7 +963,7 @@ pub(crate) fn builtin_select_once(
         }
 
         // Parse each source as a {ch:, handler:} Dict
-        let mut sources: Vec<(ChannelSource, ThunkId)> = Vec::new();
+        let mut sources: Vec<(ChannelSource, ThunkId)> = Vec::with_capacity(source_ids.len());
         for source_id in source_ids {
             let source_thunk = ctx.get_thunk(source_id);
             let source_val = materialize(&source_thunk, Some(&call_span), &ctx).await?;

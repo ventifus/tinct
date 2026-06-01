@@ -4,7 +4,7 @@
 # rebuilds the call from the original CoreExpr, and already-materialized sub-thunks
 # hit the try_get_materialized() fast path on retry.
 [
-  fact: [fn@Int [n@Int]
+  fact: [fn@Int [let n@Int]
     [if [call $<= n 1]
       1
       [call $* n [call fact [call $- n 1]]]
@@ -12,9 +12,8 @@
   ]
   result: [call fact 5]
 ]
-=== error
-[E099] syntax error at 11:3 (cannot evaluate error node) (defined at 11:3-11:4)
+=== out
+Dict({"fact": Function(n), "result": Int(120)})
 
 === warn
-syntax error at 11:3 (cannot typecheck error node) at 11:3-11:4
-cannot unify Int with [] at 6:9-11:4
+cannot unify Int with Number at 7:5-10:6

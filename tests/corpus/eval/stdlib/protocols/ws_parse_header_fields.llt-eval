@@ -6,7 +6,7 @@
 
 [include %libdir "protocols/websocket.llt"]
 ---
-[call [fn [p]
+[call [fn [let p]
     [set []
         fin:         p.fin
         opcode:      p.opcode
@@ -16,7 +16,6 @@
     [call %.parse-ws-frame-header
         [str [chr 129] [chr 130] [chr 1] [chr 2] [chr 3] [chr 4]]]]
 === error
-[E099] syntax error at 14:35 (cannot evaluate error node) (defined at 14:35-14:36)
-
-=== warn
-syntax error at 14:35 (cannot typecheck error node) at 14:35-14:36
+[E022] unexpected named argument: fin (valid parameter names: xs) (defined at 9:5-14:35)
+  in [set ...] at 9:5-14:35
+  in [set ...] at 9:5-14:35

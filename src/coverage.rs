@@ -415,7 +415,11 @@ pub fn ast_pattern_to_coverage(pat: &ast::Pattern) -> CoveragePattern {
         ast::Pattern::Constructor { tag, binding } => {
             let sub_patterns = match binding {
                 Some(inner) => vec![ast_pattern_to_coverage(&inner.node)],
-                None => vec![],
+                // D-1: [Tag]: matches any variant with this tag regardless of payload,
+                // equivalent to [Tag _]: at runtime. Emit a Wildcard sub-pattern so
+                // Maranget specialization treats it as arity-1 (matching payload-bearing
+                // variants) rather than arity-0 (causing false non-exhaustive warnings).
+                None => vec![CoveragePattern::Wildcard],
             };
             CoveragePattern::Constructor {
                 tag: ConstructorTag::Variant(tag.clone()),

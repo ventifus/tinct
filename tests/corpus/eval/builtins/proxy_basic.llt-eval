@@ -1,7 +1,4 @@
 # proxy : creates a proxy value that echoes field name
-[handler: [fn [field] field]  p: [proxy handler]  result: p.test]
-=== error
-[E099] syntax error at 1:23 (cannot evaluate error node) (defined at 1:23-1:28)
-
-=== warn
-syntax error at 1:23 (cannot typecheck error node) at 1:23-1:28
+[handler: [fn [let field] field]  p: [proxy handler]  result: p.test]
+=== out
+Dict({"handler": Function(field), "p": Proxy, "result": String("test")})
