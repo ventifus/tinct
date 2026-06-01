@@ -70,7 +70,7 @@ pub(crate) fn builtin_map(
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "map", &ctx, call_span.clone())?)
             }
-            // Auto-unpack variant payload — consistent with require_dict/flatten_overlay semantics.
+            // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
             Value::Variant {
                 payload: Some(payload_id),
                 ..
@@ -191,7 +191,7 @@ pub(crate) fn builtin_filter(
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "filter", &ctx, call_span.clone())?)
             }
-            // Auto-unpack variant payload — consistent with require_dict/flatten_overlay semantics.
+            // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
             Value::Variant {
                 payload: Some(payload_id),
                 ..
@@ -551,8 +551,16 @@ pub(crate) fn builtin_take(
         let xs = args[1]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        // Bytes: treat as Seq of Int byte values
+        // Flatten Overlay to Dict, unpack Variant payload, and convert Bytes before dispatch.
         let xs = match xs {
+            // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
+            Value::Variant {
+                payload: Some(payload_id),
+                ..
+            } => {
+                let payload_thunk = ctx.get_thunk(payload_id);
+                crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
+            }
             Value::Bytes {
                 ref source,
                 start,
@@ -659,8 +667,16 @@ pub(crate) fn builtin_drop(
         let xs = args[1]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        // Bytes: treat as Seq of Int byte values
+        // Flatten Overlay to Dict, unpack Variant payload, and convert Bytes before dispatch.
         let xs = match xs {
+            // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
+            Value::Variant {
+                payload: Some(payload_id),
+                ..
+            } => {
+                let payload_thunk = ctx.get_thunk(payload_id);
+                crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
+            }
             Value::Bytes {
                 ref source,
                 start,

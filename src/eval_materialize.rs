@@ -3035,39 +3035,28 @@ pub(crate) async fn apply_cont(
                                 payload: Some(payload_id),
                                 ..
                             } => {
-                                // Auto-unpack variant payload for sequential scope-chain binding
-                                // (consistent with require_dict/flatten_overlay semantics).
+                                // Auto-unpack variant payload for sequential scope-chain binding.
+                                // Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
+                                // Delegates to require_dict which handles Dict, Overlay, and nested
+                                // Variants recursively.
                                 let payload_thunk = ctx.get_thunk(payload_id);
                                 match crate::eval::materialize_sync(
                                     &payload_thunk,
                                     Some(&current_expr.span),
                                     &ctx,
                                 ) {
-                                    Ok(payload_val) => match payload_val {
-                                        Value::Dict(map) => map,
-                                        Value::Overlay(l, r) => {
-                                            match crate::builtins::flatten_overlay(
-                                                &l,
-                                                &r,
-                                                "sequential expression",
-                                                &ctx,
-                                                current_expr.span.clone(),
-                                            ) {
-                                                Ok(map) => map,
-                                                Err(e) => return Action::Continue(Err(e)),
-                                            }
+                                    Ok(payload_val) => {
+                                        match crate::builtins::require_dict(
+                                            "sequential expression",
+                                            payload_val,
+                                            current_expr.span.clone(),
+                                            &ctx,
+                                            current_expr.span.clone(),
+                                        ) {
+                                            Ok(map) => map,
+                                            Err(e) => return Action::Continue(Err(e)),
                                         }
-                                        other => {
-                                            return Action::Continue(Err(Box::new(
-                                                EvalError::type_mismatch_ctx(
-                                                    format!("sequential expression #{}", idx + 1),
-                                                    "Dict",
-                                                    other.type_name(),
-                                                    current_expr.span.clone(),
-                                                ),
-                                            )));
-                                        }
-                                    },
+                                    }
                                     Err(e) => return Action::Continue(Err(e)),
                                 }
                             }
@@ -3075,7 +3064,7 @@ pub(crate) async fn apply_cont(
                                 return Action::Continue(Err(Box::new(
                                     EvalError::type_mismatch_ctx(
                                         format!("sequential expression #{}", idx + 1),
-                                        "Dict",
+                                        "Dict, Overlay, or Variant",
                                         intermediate_value.type_name(),
                                         current_expr.span.clone(),
                                     ),

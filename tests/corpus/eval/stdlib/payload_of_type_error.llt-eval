@@ -1,0 +1,10 @@
+# payload-of: passing a non-variant value produces a deferred type error at access time.
+# merge creates a lazy Overlay; the error surfaces when the Overlay is flattened.
+[payload-of "not-a-variant"]
+# === out and === error will be added by just update-corpus
+=== error
+[E010] value serialization: expected Dict, got String (defined at stdlib/prelude.llt:575:10-575:11)
+  --> stdlib/prelude.llt:575:10-575:11
+   |
+  575 |   [merge v []]]
+      |          ^

@@ -1573,4 +1573,63 @@ mod tests {
         assert!(formatted.contains("[err: _]"));
         assert!(formatted.contains("[warn: _]"));
     }
+
+    // ===== normalize_constructor_arities tests =====
+
+    // Sig helper: Option-like Union (Some=arity-1, None=arity-0)
+    fn option_variant_sig() -> ConstructorSignature {
+        sig(&[
+            (ConstructorTag::Variant("Some".into()), 1),
+            (ConstructorTag::Variant("None".into()), 0),
+        ])
+    }
+
+    #[test]
+    fn test_normalize_bare_tag_payload_variant_emits_wildcard() {
+        // binding:None on a payload variant (arity 1): bare [Some]: with sub_patterns=[]
+        // normalize_constructor_arities must expand it to sub_patterns=[Wildcard],
+        // matching like [Some _]:
+        let sig = option_variant_sig();
+        let bare_some = con(ConstructorTag::Variant("Some".into()), vec![]);
+        let normalized = normalize_constructor_arities(&bare_some, &sig);
+        assert_eq!(
+            normalized,
+            con(ConstructorTag::Variant("Some".into()), vec![wc()]),
+            "bare-tag [Some]: on arity-1 variant must normalize to [Some _]:"
+        );
+    }
+
+    #[test]
+    fn test_normalize_bare_tag_unit_variant_emits_empty() {
+        // binding:None on a unit variant (arity 0): bare [None]: with sub_patterns=[]
+        // normalize_constructor_arities must keep sub_patterns=[] (unit — no payload slot)
+        let sig = option_variant_sig();
+        let bare_none = con(ConstructorTag::Variant("None".into()), vec![]);
+        let normalized = normalize_constructor_arities(&bare_none, &sig);
+        assert_eq!(
+            normalized,
+            con(ConstructorTag::Variant("None".into()), vec![]),
+            "bare-tag [None]: on arity-0 variant must normalize to [] sub-patterns"
+        );
+    }
+
+    #[test]
+    fn test_normalize_binding_some_on_unit_variant_emits_dead_pattern() {
+        // binding:Some on a unit variant (arity 0): [None n]: with sub_patterns=[Wildcard]
+        // normalize_constructor_arities must convert to a __dead_None__ tag so specialize
+        // always drops this row — the pattern can never match (unit variants have no payload).
+        let sig = option_variant_sig();
+        let payload_none = con(ConstructorTag::Variant("None".into()), vec![wc()]);
+        let normalized = normalize_constructor_arities(&payload_none, &sig);
+        match &normalized {
+            CoveragePattern::Constructor { tag, .. } => {
+                assert_eq!(
+                    *tag,
+                    ConstructorTag::Variant("__dead_None__".into()),
+                    "binding on unit variant must produce a __dead__ synthetic tag"
+                );
+            }
+            other => panic!("expected Constructor, got {other}"),
+        }
+    }
 }

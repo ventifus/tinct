@@ -1,0 +1,16 @@
+# Pattern::Dict matching a Variant with dict payload
+# When a Variant has a dict payload, a dict pattern should auto-unpack and match its fields
+[
+  [type Config [Server host: Str port: Int]]
+  val: [Server host: "localhost" port: 8080]
+  result: [match val
+    [host h  port p]: [str h ":" p]]
+]
+# === out will be added by just update-corpus
+=== error
+[E010] type mismatch: expected Function or Builtin, got Variant (defined at 4:8-4:45)
+  in [Server ...] at 4:8-4:45
+
+=== warn
+undefined variable: Server at 4:9-4:15
+syntax error at 6:21 (cannot typecheck error node) at 6:21-6:22

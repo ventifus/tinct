@@ -462,7 +462,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!("until", builtin_until),
         // ── Type introspection ───────────────────────────────────────────────────────
         builtin!("builtin-type-of", builtin_type_of, [Strictness::Seq]),
-        builtin!("ast-of", builtin_ast_of, [Strictness::Id]),
+        builtin!("builtin-ast-of", builtin_ast_of, [Strictness::Id]),
         // ── Schema validation ────────────────────────────────────────────────────────
         builtin!(
             "validate",
@@ -3189,11 +3189,12 @@ pub fn core_type_env(env: &mut TypeEnv) {
     );
 
     // ── Type introspection ────────────────────────────────────────────────────
-    // ast-of: Unknown → Unknown
+    // builtin-ast-of: Unknown → Unknown
     // Takes any expression unevaluated (Strictness::Id), returns a metadata Dict
     // describing the AST or runtime thunk state. Shape is entirely runtime-dependent.
+    // Public alias "ast-of" is re-exported from prelude.llt.
     env.insert(
-        "ast-of".to_string(),
+        "builtin-ast-of".to_string(),
         Type::Function {
             params: vec![(None, Type::Unknown)], // any expression — not materialized
             ret: Box::new(Type::Unknown),        // metadata Dict — shape runtime-dependent

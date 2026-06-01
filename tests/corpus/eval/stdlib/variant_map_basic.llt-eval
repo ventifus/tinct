@@ -1,0 +1,7 @@
+# map auto-unpacks the payload of a Variant before iterating
+# variant-payload creates a Variant whose payload is a Seq
+# map should unpack the Seq and apply the function to each element
+[map [+ _ 1] [variant-payload "Wrapper" [1 2 3]]]
+# === out will be added by just update-corpus
+=== out
+Dict({0: Int(2), 1: Int(3), 2: Int(4)})

@@ -79,7 +79,7 @@ pub(crate) fn builtin_reduce(
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "reduce", &ctx, call_span.clone())?)
             }
-            // Auto-unpack variant payload — consistent with require_dict/flatten_overlay semantics.
+            // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
             Value::Variant {
                 payload: Some(payload_id),
                 ..
@@ -327,7 +327,7 @@ pub(crate) fn builtin_join(
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "join", &ctx, call_span.clone())?)
             }
-            // Auto-unpack variant payload — consistent with require_dict/flatten_overlay semantics.
+            // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
             Value::Variant {
                 payload: Some(payload_id),
                 ..
@@ -481,7 +481,7 @@ pub(crate) fn builtin_concat(
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, call_span.clone())?)
             }
-            // Auto-unpack variant payload — consistent with require_dict/flatten_overlay semantics.
+            // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
             Value::Variant {
                 payload: Some(payload_id),
                 ..

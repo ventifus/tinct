@@ -1,12 +1,12 @@
 # cons on Seq creates O(1) lazy prepend
 [collect [take 3 [cons 0 [iterate [fn [x] [+ x 1]] 1]]]]
 === error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:26-1:54) (called at stdlib/prelude.llt:2555:17-2555:36)
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:26-1:54) (called at stdlib/prelude.llt:2556:17-2556:36)
   in [iterate ...] at 1:26-1:54
   in [iterate ...] at 1:26-1:54
-  in [builtin-cons ...] at stdlib/prelude.llt:2555:17-2555:36
+  in [builtin-cons ...] at stdlib/prelude.llt:2556:17-2556:36
    |
-  2555 | """] [let x xs] [builtin-cons x xs]]
+  2556 | """] [let x xs] [builtin-cons x xs]]
        |                 ^^^^^^^^^^^^^^^^^^^
   in materialized at stdlib/prelude.llt:2061:57-2061:76
    |
@@ -16,8 +16,8 @@
    |
   2061 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2459:15-2459:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2460:15-2460:35
    |
-  2459 | """] [let xs] [builtin-collect xs]]
+  2460 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in [collect ...] at 1:1-1:57

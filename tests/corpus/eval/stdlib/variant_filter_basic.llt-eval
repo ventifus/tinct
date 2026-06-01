@@ -1,0 +1,20 @@
+# filter auto-unpacks the payload of a Variant before iterating
+# variant-payload creates a Variant whose payload is a Seq
+# filter should unpack the Seq and keep elements matching the predicate
+[filter [> _ 2] [variant-payload "Wrapper" [1 2 3 4 5]]]
+# === out will be added by just update-corpus
+=== error
+[E010] filter: expected Dict, got Variant (defined at stdlib/prelude.llt:2058:72-2058:96)
+  --> stdlib/prelude.llt:2058:72-2058:96
+   |
+  2058 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+       |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
+  in call $filter at stdlib/prelude.llt:2058:72-2058:96
+   |
+  2058 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+       |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-filter ...] at stdlib/prelude.llt:2058:72-2058:96
+   |
+  2058 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+       |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
+  in [filter ...] at 3:1-3:57

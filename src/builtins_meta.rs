@@ -826,7 +826,7 @@ pub(crate) fn builtin_type_of(
     })
 }
 
-/// `ast-of`: returns the AST of an expression as a `Value::Expression`.
+/// `builtin-ast-of` (`ast-of` in prelude): returns the AST of an expression as a `Value::Expression`.
 ///
 /// This builtin does NOT materialize its argument, making it safe to use
 /// for introspection of unevaluated expressions.
@@ -847,7 +847,7 @@ pub(crate) fn builtin_ast_of(
         } = ctx_arg;
 
         // Reject named args and ensure exactly 1 arg
-        crate::builtins::reject_named("ast-of", named.as_ref(), call_span.clone())?;
+        crate::builtins::reject_named("builtin-ast-of", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span.clone()).into());
         }

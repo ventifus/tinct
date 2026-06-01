@@ -570,7 +570,7 @@ Example: [payload-of [variant-payload "Circle" [x: 1  y: 2]]] => [x: 1  y: 2]
 Example: [payload-of [variant "Unit"]] => []
 
 For unit variants (no payload), returns an empty dict [].
-For payload variants, returns the payload as a Dict via auto-unpack semantics.
+For payload variants, returns the payload dict directly.
 """]: [fn [let v]
   [merge v []]]
 
@@ -2170,6 +2170,7 @@ apply@[doc: "Apply function to a dict of arguments"]: builtin-apply
 
 # Type introspection
 type-of@[doc: "Return the type name of a value as a String"]: builtin-type-of
+ast-of@[doc: "Return the AST representation of an unevaluated expression as an Expression value"]: builtin-ast-of
 
 # Capability operations
 narrow@[doc: "Narrow a capability to a subset of operations"]: builtin-narrow
