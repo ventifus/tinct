@@ -1,18 +1,18 @@
 [result: [map [fn [let x] [raise "inner error"]] [a: 1]]]
 result.a
 === error
-[E080] inner error (defined at stdlib/prelude.llt:2051:28-2051:47)
-  --> stdlib/prelude.llt:2051:28-2051:47
+[E080] inner error (defined at stdlib/prelude.llt:2079:28-2079:47)
+  --> stdlib/prelude.llt:2079:28-2079:47
    |
-  2051 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2079 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2051:28-2051:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2079:28-2079:47
    |
-  2051 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2079 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in materialized at 2:1-2:9
-  in map at stdlib/prelude.llt:2059:64-2059:82
+  in map at stdlib/prelude.llt:2087:64-2087:82
    |
-  2059 | map@[doc: "Apply function to each element"]: [fn [let f@Fn xs] [builtin-map f xs]]
+  2087 | map@[doc: "Apply function to each element"]: [fn [let f@Fn xs] [builtin-map f xs]]
        |                                                                ^^^^^^^^^^^^^^^^^^
   in map at 1:54-1:55

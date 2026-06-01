@@ -1,9 +1,4 @@
 # uniq: remove duplicates, keep first occurrence
 [uniq [1 2 3 2 1 4]]
-=== error
-[E099] let binding name must be an identifier, got: LetDecl { bindings: [] } (defined at stdlib/prelude.llt:1381:47-1381:49) (called at stdlib/prelude.llt:1381:5-1381:65)
-  --> stdlib/prelude.llt:1381:47-1381:49
-   |
-  1381 |     [let reversed-seq [uniq-seq-impl ks xs [] [] 0 [length ks]]]
-       |                                               ^^
-  in [uniq ...] at 1:1-1:21
+=== out
+Dict({0: Int(1), 1: Int(2), 2: Int(3), 3: Int(4)})

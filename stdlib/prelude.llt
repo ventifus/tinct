@@ -294,6 +294,31 @@ partition-step: [fn@Dict [let acc e passes@Bool]
         [pass: [builtin-get "pass" acc]
          fail: [builtin-seq e [builtin-get "fail" acc]]]]]
 
+# partition-finish: convert the cons-accumulated pass/fail Seqs into integer-keyed Dicts.
+# Separated from partition to avoid [let result ...] binding inside a fn body, which
+# causes the LetDecl-nesting parser bug (B-264).
+partition-finish: [fn [let result]
+    [pass: [builtin-collect [reverse-seq [builtin-get "pass" result]]]
+     fail: [builtin-collect [reverse-seq [builtin-get "fail" result]]]]]
+
+# group-by-insert: set builder bucket for key k, prepending x to existing list.
+# Separated to pass k=[f x] as an explicit argument, avoiding [let k [f x]] inside fn body.
+# Uses builtin-* aliases (not the public wrappers) since this lives in the private dict.
+group-by-insert: [fn [let k x b]
+    [builtin-builder-set k [builtin-cons x [builtin-builder-get-or k [] b]] b]]
+
+# group-by-step: compute key via f, then delegate to group-by-insert.
+# The explicit k parameter avoids the [let k [f x]] LetDecl-nesting bug (B-264).
+group-by-step: [fn [let f b x]
+    [group-by-insert [f x] x b]]
+
+# uniq-impl: collect unique elements given pre-computed key list.
+# Extracted so that [keys xs] is passed as a plain argument (not a [let ...] binding),
+# avoiding the LetDecl-nesting parser bug (B-264) in the uniq fn body.
+# Uses builtin-length (not the public length wrapper) since this lives in the private dict.
+uniq-impl: [fn [let ks xs@Dict]
+    [builtin-collect [reverse-seq [uniq-seq-impl ks xs [] [] 0 [builtin-length ks]]]]]
+
 # ============================================================================
 # Aggregate helpers (only depend on builtins + siblings)
 # ============================================================================
@@ -360,9 +385,13 @@ flatten-seq-step: [fn [let xs@Dict ks i@Int len@Int k]
 
 # flatten-seq-append-dict: Convert dict to Seq of values, then append rest.
 # This uses flatten-seq-concat-values to iterate the dict's values.
-flatten-seq-append-dict: [fn [let d@Dict rest]
-    [let ks [builtin-keys d]]
+# flatten-seq-start: indirection to pass [builtin-keys d] without a [let ks ...] binding
+# (which would be inside a LetDecl frame and misparse [builtin-keys d] as a LetDecl).
+flatten-seq-start: [fn [let ks d@Dict rest]
     [flatten-seq-concat-values d ks 0 [builtin-length ks] rest]]
+
+flatten-seq-append-dict: [fn [let d@Dict rest]
+    [flatten-seq-start [builtin-keys d] d rest]]
 
 # flatten-seq-concat-values: Recursively cons all values from dict onto rest.
 flatten-seq-concat-values: [fn [let d@Dict ks i@Int len@Int rest]
@@ -1119,8 +1148,7 @@ Note: O(n) via lazy Seq construction + collect.
         [flatten-impl-dict xs]]]
 
 flatten-impl-dict@[doc: "Flatten dict implementation (internal helper)"]: [fn@Dict [let xs@Dict]
-    [let ks [keys xs]]
-    [builtin-collect [flatten-seq-impl xs ks 0 [length ks]]]]
+    [builtin-collect [flatten-seq-impl xs [keys xs] 0 [length xs]]]]
 
 # Recursively search for a key in nested dicts.
 # find-deep helpers depend on find-deep and get (public) — live in public dict.
@@ -1177,14 +1205,14 @@ Example: [partition [fn [x] [> x 0]] [1 -2 3 -4]] => [pass: [1 3]  fail: [-2 -4]
 
 Note: Returns a dict with keys `pass` (matching) and `fail` (non-matching). Both groups are integer-keyed dicts (eager, not Seqs). O(n) via Seq cons + reverse + collect for each partition.
 """] [let pred@Fn xs]
-    [let result [builtin-reduce
-        [fn [let acc e]
-            [partition-step acc e [pred e]]]
-        [pass: []  fail: []]
-        xs]]
-    # Reverse each Seq (cons reversed order), then collect to Dict
-    [pass: [builtin-collect [reverse-seq [builtin-get "pass" result]]]
-     fail: [builtin-collect [reverse-seq [builtin-get "fail" result]]]]]
+    # partition-finish converts accumulated Seqs to integer-keyed Dicts.
+    # Single-expression body avoids [let result ...] LetDecl-nesting bug (B-264).
+    [partition-finish
+        [builtin-reduce
+            [fn [let acc e]
+                [partition-step acc e [pred e]]]
+            [pass: []  fail: []]
+            xs]]]
 
 flat-map: [fn@[return: Dict  doc: """
 Map a function over a collection and flatten (concatenate) the results.
@@ -1210,6 +1238,15 @@ find-first-or@[doc: "Find first matching element or return default"]: [fn@a [let
 # Elements with the same key are collected together (insertion order preserved).
 # Inherently materializing: must inspect all elements.
 # Uses transient builder for O(n) construction (was O(n²) with append accumulation).
+
+# group-by-finish: reverse each bucket Seq (insertion order) and return as a dict of lists.
+# Separated from group-by to avoid [let raw ...] LetDecl-nesting bug (B-264).
+# group-by-step (private dict) and group-by-insert (private dict) handle per-element work.
+group-by-finish: [fn [let f xs]
+    [map-entries [fn [let e] [reverse e.value]]
+        [builder-finish
+            [builtin-reduce [fn [let b x] [group-by-step f b x]] [make-builder] xs]]]]
+
 group-by: [fn@[return: Dict  doc: """
 Group elements of xs into a dict of lists, keyed by the result of applying f.
 
@@ -1219,15 +1256,7 @@ Note: Elements with the same key are collected together (insertion order preserv
 Buckets are accumulated with cons (prepend) then reversed at finish to restore insertion order.
 Uses builder-get-or for atomic get-or-insert (single mutex acquisition per element).
 """] [let f@Fn xs]
-    [let raw
-        [builder-finish
-            [builtin-reduce
-                [fn [let b x]
-                    [let k [f x]]
-                    [builder-set k [cons x [builder-get-or k [] b]] b]]
-                [make-builder]
-                xs]]]
-    [map-entries [fn [let e] [reverse e.value]] raw]]
+    [group-by-finish f xs]]
 
 # Merge two dicts recursively. Sub-dicts are merged depth-first;
 # all other values from b override a (right-biased at each level).
@@ -1376,10 +1405,9 @@ contains?@[doc: "Check if collection contains element"]: [fn@Bool [let val xs]
                 [any? [fn [let e] [builtin-eq e val]] xs]]]]]
 
 uniq@[doc: "Remove duplicates (keep first occurrence). Still O(n²) due to O(n) contains-seq? per element, but uses O(1) cons instead of O(n) append."]: [fn@Dict [let xs@Dict]
-    [let ks [keys xs]]
-    # Build reversed Seq, then reverse back and collect
-    [let reversed-seq [uniq-seq-impl ks xs [] [] 0 [length ks]]]
-    [builtin-collect [reverse-seq reversed-seq]]]
+    # uniq-impl (private dict) takes [keys xs] as an explicit argument to avoid
+    # [let ks ...] and [let reversed-seq ...] LetDecl-nesting bugs (B-264).
+    [uniq-impl [keys xs] xs]]
 
 # Right fold: fold f over xs from the right, starting with acc.
 # Equivalent to fold(f, acc, reverse(xs)).
@@ -3117,9 +3145,10 @@ Args:
 
 If drain times out, exits immediately without waiting for remaining tasks.
 """]: [fn [let code@Int timeout-ms@Int]
+  # Inline [with-timeout [context] timeout-ms] directly into [with-context ...] to avoid
+  # [let timed-ctx ...] LetDecl-nesting bug (B-264).
   [cancel-root]
-  [let timed-ctx [with-timeout [context] timeout-ms]]
-  [try [fn [] [with-context timed-ctx [drain]]]]
+  [try [fn [] [with-context [with-timeout [context] timeout-ms] [drain]]]]
   [exit-now code]]
 
 # loop-select: repeatedly call select-once on sources until the context is
