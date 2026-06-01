@@ -23,7 +23,8 @@
 # only place Rust hardcodes a scope. The resulting eval-programs is used (Phase
 # 3) to load prelude, which re-exports both functions for user code.
 #
-# Uses raw builtin-* names — prelude is not loaded yet when this runs.
+# Uses builtin-* names via `--- uses: ["core"]` header below — prelude is not
+# loaded yet when this runs, so these must come from the core module directly.
 #   builtin-reduce, builtin-merge, builtin-map   — sequences and dicts
 #   builtin-module                               — module dict retrieval
 #   builtin-eval (with scope:)                   — document evaluation

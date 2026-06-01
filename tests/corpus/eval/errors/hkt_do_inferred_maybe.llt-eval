@@ -4,7 +4,7 @@
 # Note: Maybe monad resolution via structural types is not yet supported.
 [do [x: [Some 42]] [Some [+ x 1]]]
 === error
-[E002] undefined variable: ℊꜱʏᴍ⧼do-infer⧽6 (defined at 1:1-1:1) (called at 4:1-4:35)
+[E002] undefined variable: ℊꜱʏᴍ⧼do-infer⧽4 (defined at 1:1-1:1) (called at 4:1-4:35)
   in [<dot-access> ...] at 4:1-4:35
   in expansion of `do` at 4:1
 

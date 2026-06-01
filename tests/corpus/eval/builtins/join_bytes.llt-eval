@@ -1,0 +1,13 @@
+# join on Bytes value: converts bytes to Int sequence then joins
+[join "," [bytes-of "AB"]]
+=== error
+[E010] bytes-of: expected Seq or Dict, got String (defined at 1:11-1:26)
+  in [bytes-of ...] at 1:11-1:26
+  in [builtin-join ...] at stdlib/prelude.llt:2512:26-2512:47
+   |
+  2512 | """] [let sep@String xs] [builtin-join sep xs]]
+       |                          ^^^^^^^^^^^^^^^^^^^^^
+  in [join ...] at 1:1-1:27
+
+=== warn
+undefined variable: bytes-of at 1:12-1:20

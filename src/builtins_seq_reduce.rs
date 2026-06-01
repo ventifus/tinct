@@ -310,11 +310,6 @@ pub(crate) fn builtin_join(
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "join", &ctx, call_span.clone())?)
             }
-            Value::Bytes {
-                ref source,
-                start,
-                end,
-            } => bytes_to_seq(&source[start..end], call_span.clone(), &ctx),
             // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
             Value::Variant {
                 payload: Some(payload_id),
@@ -323,6 +318,11 @@ pub(crate) fn builtin_join(
                 let payload_thunk = ctx.get_thunk(payload_id);
                 crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
             }
+            Value::Bytes {
+                ref source,
+                start,
+                end,
+            } => bytes_to_seq(&source[start..end], call_span.clone(), &ctx),
             other => other,
         };
         match xs {
@@ -477,6 +477,11 @@ pub(crate) fn builtin_concat(
                 let payload_thunk = ctx.get_thunk(payload_id);
                 crate::eval::materialize_sync(&payload_thunk, Some(&xs_span), &ctx)?
             }
+            Value::Bytes {
+                ref source,
+                start,
+                end,
+            } => bytes_to_seq(&source[start..end], call_span.clone(), &ctx),
             other => other,
         };
 
@@ -488,7 +493,10 @@ pub(crate) fn builtin_concat(
                 // only manifest deep in the PendingBuiltin chain at high stack depth.
                 let ys_val = materialize(&ys_thunk, None, &ctx).await?;
                 match ys_val {
-                    Value::Dict(_) | Value::Seq { .. } | Value::Overlay(..) => {}
+                    Value::Dict(_)
+                    | Value::Seq { .. }
+                    | Value::Overlay(..)
+                    | Value::Bytes { .. } => {}
                     other => {
                         return Err(EvalError::type_mismatch_ctx(
                             "concat".to_string(),
@@ -526,7 +534,10 @@ pub(crate) fn builtin_concat(
                     // Without this check, concat([], 42) would silently succeed.
                     let ys = materialize(&ys_thunk, None, &ctx).await?;
                     match ys {
-                        Value::Dict(_) | Value::Seq { .. } | Value::Overlay(..) => {}
+                        Value::Dict(_)
+                        | Value::Seq { .. }
+                        | Value::Overlay(..)
+                        | Value::Bytes { .. } => {}
                         other => {
                             return Err(EvalError::type_mismatch_ctx(
                                 "concat".to_string(),
@@ -547,6 +558,11 @@ pub(crate) fn builtin_concat(
                     Value::Overlay(l, r) => {
                         Value::Dict(flatten_overlay(&l, &r, "concat", &ctx, call_span.clone())?)
                     }
+                    Value::Bytes {
+                        ref source,
+                        start,
+                        end,
+                    } => bytes_to_seq(&source[start..end], call_span.clone(), &ctx),
                     other => other,
                 };
                 match ys {

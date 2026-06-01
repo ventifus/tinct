@@ -5,14 +5,14 @@
 # Pure-tinct encoding functions for hex, base64, and simple XOR masking.
 # Since Value::Bytes doesn't exist yet, all functions work with strings.
 #
-# Available builtins used here (all via builtin-* names or prelude wrappers):
-#   String:      builtin-str (str), str-slice, builtin-str-length (length)
-#   Arithmetic:  +, -, *, builtin-div
-#   Comparison:  <, =
+# No raw builtin-* calls — uses prelude-exported names only (T002 compliant).
+#   String:      str, str-slice, str-length
+#   Arithmetic:  +, -, *
+#   Comparison:  <, =, >=, <=
 #   Control:     if
-#   Sequences:   range (prelude wrapper), builtin-reduce
+#   Sequences:   range
 #   Character:   char-code, chr, bxor
-#   Higher-order: quot, mod (prelude wrappers), and, >=, <=
+#   Higher-order: quot, mod, and
 #
 # Encoding conventions:
 #   hex-*        Hexadecimal encoding (lowercase a-f)
