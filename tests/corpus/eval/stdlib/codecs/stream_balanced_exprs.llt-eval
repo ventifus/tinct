@@ -3,30 +3,30 @@
 [stream: [include %libdir "codecs/stream.llt"]]
 [collect [stream.balanced-exprs [split "\n" "[x: 1]\n[y: 2]"]]]
 === error
-[E010] head: expected Seq, got Dict (defined at stdlib/prelude.llt:2443:15-2443:32)
-  --> stdlib/prelude.llt:2443:15-2443:32
+[E010] head: expected Seq, got Dict (defined at stdlib/prelude.llt:2445:15-2445:32)
+  --> stdlib/prelude.llt:2445:15-2445:32
    |
-  2443 | """] [let xs] [builtin-head xs]]
+  2445 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
-  in [builtin-head ...] at stdlib/prelude.llt:2443:15-2443:32
+  in [builtin-head ...] at stdlib/prelude.llt:2445:15-2445:32
    |
-  2443 | """] [let xs] [builtin-head xs]]
+  2445 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [trim ...] at 46:21-46:37
   in [= ...] at 46:15-46:38
-  in materialized at stdlib/prelude.llt:625:16-625:34
+  in materialized at stdlib/prelude.llt:627:16-627:34
    |
-  625 | """] [let a b] [builtin-if a a b]]
+  627 | """] [let a b] [builtin-if a a b]]
       |                ^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:625:16-625:34
+  in [builtin-if ...] at stdlib/prelude.llt:627:16-627:34
    |
-  625 | """] [let a b] [builtin-if a a b]]
+  627 | """] [let a b] [builtin-if a a b]]
       |                ^^^^^^^^^^^^^^^^^^
   in materialized at 43:5-54:60
   in [if ...] at 46:7-54:59
   in [if ...] at 43:5-54:60
-  in [builtin-collect ...] at stdlib/prelude.llt:2459:15-2459:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2461:15-2461:35
    |
-  2459 | """] [let xs] [builtin-collect xs]]
+  2461 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in [collect ...] at 3:1-3:64

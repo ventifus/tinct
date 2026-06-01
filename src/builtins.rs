@@ -256,6 +256,22 @@ pub(crate) fn flatten_overlay(
                 work_stack.push(l);
                 work_stack.push(r);
             }
+            Value::Variant { payload, .. } => {
+                // Auto-unpack variant payload — consistent with require_dict auto-unpack semantics.
+                // A Variant with a dict payload is treated as that dict (same as DotAccess behavior).
+                // Unit variants (no payload) contribute an empty layer.
+                match payload {
+                    Some(payload_id) => {
+                        // Re-push the payload thunk for processing in the next iteration.
+                        // This handles recursive cases (payload is itself an Overlay).
+                        work_stack.push(payload_id);
+                    }
+                    None => {
+                        // Unit variant: contribute empty dict layer (no entries).
+                        layers.push(IndexMap::new());
+                    }
+                }
+            }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     name.to_string(),

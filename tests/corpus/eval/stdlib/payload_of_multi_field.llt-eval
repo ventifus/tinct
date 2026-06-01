@@ -1,0 +1,4 @@
+# payload-of: access a field from the extracted payload dict
+[get "value" [payload-of [variant-payload "Circle" [x: 1  value: 99]]]]
+=== out
+Int(99)

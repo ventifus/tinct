@@ -1,18 +1,18 @@
 # filter: predicate returning Int instead of Bool produces a type mismatch error (E010)
 [filter [fn [let x] 42] [1: a 2: b]]
 === error
-[E010] filter: expected Bool, got Int (defined at stdlib/prelude.llt:2058:72-2058:96)
-  --> stdlib/prelude.llt:2058:72-2058:96
+[E010] filter: expected Bool, got Int (defined at stdlib/prelude.llt:2060:72-2060:96)
+  --> stdlib/prelude.llt:2060:72-2060:96
    |
-  2058 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+  2060 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
        |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
-  in call $filter at stdlib/prelude.llt:2058:72-2058:96
+  in call $filter at stdlib/prelude.llt:2060:72-2060:96
    |
-  2058 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+  2060 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
        |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-filter ...] at stdlib/prelude.llt:2058:72-2058:96
+  in [builtin-filter ...] at stdlib/prelude.llt:2060:72-2060:96
    |
-  2058 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+  2060 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
        |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
   in [filter ...] at 1:1-1:37
 

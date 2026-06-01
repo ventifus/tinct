@@ -566,11 +566,13 @@ variant?@[doc: "Check if value is a Variant."]: [fn@Bool [let v]
 payload-of@[return: Dict  doc: """
 Extract the payload dict from a Variant value.
 
-Example: [payload-of [Ok 42]] => [a: 42] (the payload dict)
+Example: [payload-of [variant-payload "Circle" [x: 1  y: 2]]] => [x: 1  y: 2]
+Example: [payload-of [variant "Unit"]] => []
 
 Note: Materializes the Variant's payload by treating the Variant as a Dict
-(auto-unpack semantics). For unit variants (no payload), returns an empty dict.
-Used by json.llt to serialize Variant payloads.
+(auto-unpack semantics). Designed for Variants constructed with a dict payload
+via variant-payload. For unit variants (no payload), returns an empty dict.
+Used by json.llt and macro code to access Variant payload fields.
 """]: [fn [let v]
   [merge v []]]
 

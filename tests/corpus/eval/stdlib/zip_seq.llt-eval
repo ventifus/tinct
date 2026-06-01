@@ -1,48 +1,48 @@
 # zip on two Seqs produces lazy pairs
 [collect [take 3 [zip [iterate [fn [x] [+ x 1]] 1] [iterate [fn [x] [+ x 10]] 10]]]]
 === error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:23-1:51) (called at stdlib/prelude.llt:1426:60-1426:61)
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:23-1:51) (called at stdlib/prelude.llt:1428:60-1428:61)
   in [iterate ...] at 1:23-1:51
   in [iterate ...] at 1:23-1:51
-  in materialized at stdlib/prelude.llt:1426:53-1426:87
+  in materialized at stdlib/prelude.llt:1428:53-1428:87
    |
-  1426 | seq?@[doc: "Check if value is a Seq"]:  [fn [let x] [match x Seq:      true  _: false]]
+  1428 | seq?@[doc: "Check if value is a Seq"]:  [fn [let x] [match x Seq:      true  _: false]]
        |                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:614:16-614:38
+  in materialized at stdlib/prelude.llt:616:16-616:38
    |
-  614 | """] [let p b] [builtin-if p b false]]
+  616 | """] [let p b] [builtin-if p b false]]
       |                ^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:614:16-614:38
+  in [builtin-if ...] at stdlib/prelude.llt:616:16-616:38
    |
-  614 | """] [let p b] [builtin-if p b false]]
+  616 | """] [let p b] [builtin-if p b false]]
       |                ^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:1104:5-1108:61
+  in materialized at stdlib/prelude.llt:1106:5-1110:61
    |
-  1104 |     [builtin-if [and [seq? xs] [seq? ys]]
-  1105 |         [zip-seq-impl xs ys]
-  1106 |         [zip-dict-impl
-  1107 |             [builtin-if [seq? xs] [builtin-collect xs] xs]
-  1108 |             [builtin-if [seq? ys] [builtin-collect ys] ys]]]]
+  1106 |     [builtin-if [and [seq? xs] [seq? ys]]
+  1107 |         [zip-seq-impl xs ys]
+  1108 |         [zip-dict-impl
+  1109 |             [builtin-if [seq? xs] [builtin-collect xs] xs]
+  1110 |             [builtin-if [seq? ys] [builtin-collect ys] ys]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:1104:5-1108:61
+  in [builtin-if ...] at stdlib/prelude.llt:1106:5-1110:61
    |
-  1104 |     [builtin-if [and [seq? xs] [seq? ys]]
-  1105 |         [zip-seq-impl xs ys]
-  1106 |         [zip-dict-impl
-  1107 |             [builtin-if [seq? xs] [builtin-collect xs] xs]
-  1108 |             [builtin-if [seq? ys] [builtin-collect ys] ys]]]]
+  1106 |     [builtin-if [and [seq? xs] [seq? ys]]
+  1107 |         [zip-seq-impl xs ys]
+  1108 |         [zip-dict-impl
+  1109 |             [builtin-if [seq? xs] [builtin-collect xs] xs]
+  1110 |             [builtin-if [seq? ys] [builtin-collect ys] ys]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2061:57-2061:76
+  in materialized at stdlib/prelude.llt:2063:57-2063:76
    |
-  2061 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+  2063 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-take ...] at stdlib/prelude.llt:2061:57-2061:76
+  in [builtin-take ...] at stdlib/prelude.llt:2063:57-2063:76
    |
-  2061 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+  2063 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2459:15-2459:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2461:15-2461:35
    |
-  2459 | """] [let xs] [builtin-collect xs]]
+  2461 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in [collect ...] at 1:1-1:85
 

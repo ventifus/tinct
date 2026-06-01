@@ -1,0 +1,4 @@
+# payload-of: unit variant (no payload) returns empty dict
+[payload-of [variant "Unit"]]
+=== out
+Dict({})

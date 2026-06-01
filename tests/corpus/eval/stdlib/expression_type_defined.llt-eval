@@ -2,7 +2,7 @@
 # dict? returns false for Value::Expression (not a dict)
 [dict? [ast-of 42]]
 === error
-[E099] ast-of: thunk in unknown state (defined at 2:8-2:19) (called at stdlib/prelude.llt:1423:60-1423:61)
+[E099] ast-of: thunk in unknown state (defined at 2:8-2:19) (called at stdlib/prelude.llt:1425:60-1425:61)
   in [ast-of ...] at 2:8-2:19
   in [dict? ...] at 2:1-2:20
 
