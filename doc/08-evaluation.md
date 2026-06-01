@@ -1662,3 +1662,13 @@ Thunks are allocated in a `ThunkArena` (global bulk deallocation boundary) but s
 | Sequential binding force | `Action::Materialize` (entry value) + `Cont::ForceAndBind` |
 | TypeAssert predicate check | `Action::EvalCore` (predicate) + `Cont::PredicateCheck` |
 | Thunk memoization | `Action::Materialize` (result) + `Cont::Memoize` |
+
+### Arena Migration
+
+The evaluator uses a three-phase arena migration strategy:
+
+- **Phase 1** (complete): `ThunkArena` and `EnvArena` provide `ThunkId`/`EnvId` handle-based allocation. Thunks are allocated in the arena via `ctx.alloc_thunk()`.
+- **Phase 2** (current): Thunks are allocated via the arena BUT `Value` variants still hold `Arc<Thunk>` references (registry approach). This avoids a massive refactor of all exhaustive `Value` matches while establishing the arena allocation pattern.
+- **Phase 3** (future): Replace `Arc<Thunk>` fields in `Value` (Seq, Proxy, Overlay, Function) with `ThunkId` for direct ownership. Requires updating all exhaustive Value matches across the codebase.
+
+Phase 2 preserves `Arc<Thunk>` in Value to reduce risk — the arena pattern is established incrementally before the value representation changes.

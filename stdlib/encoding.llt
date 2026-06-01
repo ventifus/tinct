@@ -216,7 +216,7 @@ mask-apply-step: [fn@String [let data@String mask@String i@Int data-len@Int mask
 # Example: [hex-encode "A"] => "41"
 # Example: [hex-encode ""] => ""
 hex-encode@[doc: "Convert a string to its hexadecimal representation"]: [fn@String [let s@String]
-    [hex-encode-impl s 0 [length s] ""]]
+    [hex-encode-impl s 0 [str-length s] ""]]
 
 # Decode a hexadecimal string back to its original form.
 # Takes pairs of hex digits and converts them to characters.
@@ -225,8 +225,8 @@ hex-encode@[doc: "Convert a string to its hexadecimal representation"]: [fn@Stri
 # Example: [hex-decode "41"] => "A"
 # Example: [hex-decode ""] => ""
 hex-decode@[doc: "Decode a hexadecimal string back to its original form"]: [fn@String [let s@String]
-    [if [= [mod [length s] 2] 0]
-        [hex-decode-impl s 0 [length s] ""]
+    [if [= [mod [str-length s] 2] 0]
+        [hex-decode-impl s 0 [str-length s] ""]
         [error "hex-decode: input length must be even"]]]
 
 # Convert a string to base64 encoding.

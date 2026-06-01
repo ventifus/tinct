@@ -49,6 +49,10 @@ impl std::error::Error for ParseError {}
 /// Maximum nesting depth for bracket expressions (enforced before allocation).
 const MAX_PARSE_DEPTH: usize = 256;
 
+/// Maximum source size in bytes (100 MB). Inputs larger than this are rejected
+/// before tokenization to prevent unbounded memory allocation.
+pub const MAX_SOURCE_SIZE: usize = 100_000_000;
+
 /// Helper: peek at the next significant (non-whitespace, non-newline, non-comment) token.
 fn peek_next_significant(
     tokens: &[Spanned<Token>],
@@ -1165,6 +1169,13 @@ fn recover_from_failed_open(
 /// in `ParseOutput.errors`. Fatal errors (lexer failure, unclosed brackets) still
 /// cause this function to return `Err(...)`.
 pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
+    if input.len() > MAX_SOURCE_SIZE {
+        return Err(ParseError {
+            message: "source exceeds maximum size".to_string(),
+            span: None,
+        });
+    }
+
     // Tokenize the input via the lexer
     let tokens = lexer::tokenize(input).map_err(|e| ParseError {
         message: e.message,

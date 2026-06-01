@@ -1093,8 +1093,6 @@ Note: The function f receives the entry dict and must return the NEW VALUE (not 
 # Both are left folds: f receives (accumulator, element) and the result becomes
 # the new accumulator. Starting accumulator is init.
 # Example: [fold [fn [acc x] [+ acc x]] 0 [1 2 3 4]] => 10
-# NOTE: f@Fn is under-constrained. Ideally f@Fn@a [a Any] to enforce accumulator
-# signature, but parameterized function types are not yet expressible.
 fold@[doc: "Left fold (alias for reduce)"]: [fn@a [let f@Fn init@a xs] [builtin-reduce f init xs]]
 
 slice: [fn@[return: Dict  doc: """
