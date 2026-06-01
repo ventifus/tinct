@@ -3,14 +3,14 @@
 [let mapped [map-entries [fn [e] [* e.value 2]] d]]
 [get 999 mapped]
 === error
-[E001] key not found: 999 (available keys: map-entries) (defined at stdlib/prelude.llt:869:25-869:47)
-  --> stdlib/prelude.llt:869:25-869:47
+[E001] key not found: 999 (available keys: map-entries) (defined at stdlib/prelude.llt:858:25-858:47)
+  --> stdlib/prelude.llt:858:25-858:47
    |
-  869 | """] [let key@k dict@d] [builtin-get key dict]]
+  858 | """] [let key@k dict@d] [builtin-get key dict]]
       |                         ^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-get ...] at stdlib/prelude.llt:869:25-869:47
+  in [builtin-get ...] at stdlib/prelude.llt:858:25-858:47
    |
-  869 | """] [let key@k dict@d] [builtin-get key dict]]
+  858 | """] [let key@k dict@d] [builtin-get key dict]]
       |                         ^^^^^^^^^^^^^^^^^^^^^^
   in [get ...] at 3:1-3:17
 

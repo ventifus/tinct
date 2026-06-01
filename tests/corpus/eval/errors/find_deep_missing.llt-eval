@@ -4,53 +4,53 @@
 # paths are updated to pass available_keys to key_not_found().
 [find-deep "missing" [a: 1 b: [c: 2]]]
 === error
-[E080] key not found: missing (defined at stdlib/prelude.llt:2073:28-2073:47)
-  --> stdlib/prelude.llt:2073:28-2073:47
+[E080] key not found: missing (defined at stdlib/prelude.llt:2062:28-2062:47)
+  --> stdlib/prelude.llt:2062:28-2062:47
    |
-  2073 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2062 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2073:28-2073:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2062:28-2062:47
    |
-  2073 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2062 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:1154:5-1156:53
+  in materialized at stdlib/prelude.llt:1143:5-1145:53
    |
-  1154 |     [builtin-if [builtin-gte i [length ks]]
-  1155 |         [error [str "key not found: " target]]
-  1156 |         [find-deep-check xs target ks i [get i ks]]]]
+  1143 |     [builtin-if [builtin-gte i [length ks]]
+  1144 |         [error [str "key not found: " target]]
+  1145 |         [find-deep-check xs target ks i [get i ks]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:1154:5-1156:53
+  in [builtin-if ...] at stdlib/prelude.llt:1143:5-1145:53
    |
-  1154 |     [builtin-if [builtin-gte i [length ks]]
-  1155 |         [error [str "key not found: " target]]
-  1156 |         [find-deep-check xs target ks i [get i ks]]]]
+  1143 |     [builtin-if [builtin-gte i [length ks]]
+  1144 |         [error [str "key not found: " target]]
+  1145 |         [find-deep-check xs target ks i [get i ks]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:1171:5-1173:72
+  in materialized at stdlib/prelude.llt:1160:5-1162:72
    |
-  1171 |     [match result
-  1172 |         [Ok v]: v
-  1173 |         [Error _]: [find-deep-impl parent target ks [builtin-add i 1]]]]
+  1160 |     [match result
+  1161 |         [Ok v]: v
+  1162 |         [Error _]: [find-deep-impl parent target ks [builtin-add i 1]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:1159:5-1163:62
+  in materialized at stdlib/prelude.llt:1148:5-1152:62
    |
-  1159 |     [builtin-if [builtin-eq current-key target]
-  1160 |         [get current-key xs]
-  1161 |         [builtin-if [dict? [get current-key xs]]
-  1162 |             [find-deep-try [get current-key xs] target xs ks i]
-  1163 |             [find-deep-impl xs target ks [builtin-add i 1]]]]]
+  1148 |     [builtin-if [builtin-eq current-key target]
+  1149 |         [get current-key xs]
+  1150 |         [builtin-if [dict? [get current-key xs]]
+  1151 |             [find-deep-try [get current-key xs] target xs ks i]
+  1152 |             [find-deep-impl xs target ks [builtin-add i 1]]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:1161:9-1163:61
+  in [builtin-if ...] at stdlib/prelude.llt:1150:9-1152:61
    |
-  1161 |         [builtin-if [dict? [get current-key xs]]
-  1162 |             [find-deep-try [get current-key xs] target xs ks i]
-  1163 |             [find-deep-impl xs target ks [builtin-add i 1]]]]]
+  1150 |         [builtin-if [dict? [get current-key xs]]
+  1151 |             [find-deep-try [get current-key xs] target xs ks i]
+  1152 |             [find-deep-impl xs target ks [builtin-add i 1]]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:1159:5-1163:62
+  in [builtin-if ...] at stdlib/prelude.llt:1148:5-1152:62
    |
-  1159 |     [builtin-if [builtin-eq current-key target]
-  1160 |         [get current-key xs]
-  1161 |         [builtin-if [dict? [get current-key xs]]
-  1162 |             [find-deep-try [get current-key xs] target xs ks i]
-  1163 |             [find-deep-impl xs target ks [builtin-add i 1]]]]]
+  1148 |     [builtin-if [builtin-eq current-key target]
+  1149 |         [get current-key xs]
+  1150 |         [builtin-if [dict? [get current-key xs]]
+  1151 |             [find-deep-try [get current-key xs] target xs ks i]
+  1152 |             [find-deep-impl xs target ks [builtin-add i 1]]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [find-deep ...] at 4:1-4:39

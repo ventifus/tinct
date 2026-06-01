@@ -6,25 +6,25 @@
 
 [broken 1]
 === error
-[E010] builtin-get (key 5): expected Dict, got Expression (defined at stdlib/prelude.llt:869:42-869:46) (called at stdlib/prelude.llt:869:25-869:47)
-  --> stdlib/prelude.llt:869:42-869:46
+[E010] builtin-get (key 5): expected Dict, got Expression (defined at stdlib/prelude.llt:858:42-858:46) (called at stdlib/prelude.llt:858:25-858:47)
+  --> stdlib/prelude.llt:858:42-858:46
    |
-  869 | """] [let key@k dict@d] [builtin-get key dict]]
+  858 | """] [let key@k dict@d] [builtin-get key dict]]
       |                                          ^^^^
-  in [builtin-get ...] at stdlib/prelude.llt:869:25-869:47
+  in [builtin-get ...] at stdlib/prelude.llt:858:25-858:47
    |
-  869 | """] [let key@k dict@d] [builtin-get key dict]]
+  858 | """] [let key@k dict@d] [builtin-get key dict]]
       |                         ^^^^^^^^^^^^^^^^^^^^^^
   in in expansion of `broken` at 6:1-6:11
 
 === warn
-[E010] builtin-get (key 5): expected Dict, got Expression (defined at stdlib/prelude.llt:869:42-869:46) (called at stdlib/prelude.llt:869:25-869:47)
-  --> stdlib/prelude.llt:869:42-869:46
+[E010] builtin-get (key 5): expected Dict, got Expression (defined at stdlib/prelude.llt:858:42-858:46) (called at stdlib/prelude.llt:858:25-858:47)
+  --> stdlib/prelude.llt:858:42-858:46
    |
-  869 | """] [let key@k dict@d] [builtin-get key dict]]
+  858 | """] [let key@k dict@d] [builtin-get key dict]]
       |                                          ^^^^
-  in [builtin-get ...] at stdlib/prelude.llt:869:25-869:47
+  in [builtin-get ...] at stdlib/prelude.llt:858:25-858:47
    |
-  869 | """] [let key@k dict@d] [builtin-get key dict]]
+  858 | """] [let key@k dict@d] [builtin-get key dict]]
       |                         ^^^^^^^^^^^^^^^^^^^^^^
   in in expansion of `broken` at 6:1-6:11

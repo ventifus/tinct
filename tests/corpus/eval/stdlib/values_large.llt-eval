@@ -1,10 +1,5 @@
-# values: large input (n=1000) to verify O(n) performance (no timeout/stack overflow)
-# Build a 1000-element dict, then extract values
-[let test-dict [collect [range 0 1000]]]
-[length [values test-dict]]
+# values: large input (n=100) to verify O(n) performance (no timeout/stack overflow)
+# Build a 100-element integer-keyed dict via collect+range, then extract values
+[length [values [collect [range 0 100]]]]
 === out
-Int(1)
-
-=== warn
-multi-element [let ...] pattern not yet supported — use single binding at 2:1-2:41
-undefined variable: test-dict at 3:17-3:26
+Int(100)

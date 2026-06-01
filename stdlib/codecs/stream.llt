@@ -37,6 +37,14 @@
       [depth: 0  in-string: false  escape: false  done: false]
       [str-chars s]].depth]
 
+  # scan-advance: handle a content line with its updated depth.
+  # Extracted to avoid [let d [+ ...] body] form (B-264 parse issue).
+  scan-advance: [fn [let ls acc new-depth]
+    [if [and [<= new-depth 0]
+             [not [= "" [trim [str acc [head ls] "\n"]]]]]
+      [cons [str acc [head ls] "\n"] [scan [tail ls] "" 0]]
+      [scan [tail ls] [str acc [head ls] "\n"] new-depth]]]
+
   # scan: accumulate lines into balanced expressions by bracket depth.
   # Recursive helper for balanced-exprs.
   scan: [fn [let ls acc depth]
@@ -47,11 +55,7 @@
               [or [starts-with? "#" [trim [head ls]]]
                   [= "---" [trim [head ls]]]]]
         [scan [tail ls] acc depth]
-        [let d [+ depth [bracket-count [head ls]]]
-          [if [and [<= d 0]
-                   [not [= "" [trim [str acc [head ls] "\n"]]]]]
-            [cons [str acc [head ls] "\n"] [scan [tail ls] "" 0]]
-            [scan [tail ls] [str acc [head ls] "\n"] d]]]]]]
+        [scan-advance ls acc [+ depth [bracket-count [head ls]]]]]]]]
 
   # balanced-exprs: group a Seq of lines into balanced tinct expressions.
   # Skips blank lines, comment lines (start with #), and --- separators.

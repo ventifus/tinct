@@ -427,17 +427,6 @@ uniq-reduce-step: [fn [let acc v]
         acc
         [builtin-seq v acc]]]
 
-# reverse-seq: Reverse a Seq by building a new Seq with reversed order.
-# Iterates through input Seq, cons-ing each element onto accumulator (which reverses).
-# Used by uniq and partition to restore forward order after cons-accumulation.
-reverse-seq: [fn [let seq]
-    [reverse-seq-impl seq []]]
-
-reverse-seq-impl: [fn [let seq acc]
-    [match seq
-        Seq: [reverse-seq-impl [builtin-tail seq] [builtin-seq [builtin-head seq] acc]]
-        _:   acc]]
-
 # ============================================================================
 # Async private helpers (T-733: moved from stdlib/async.llt)
 # ============================================================================

@@ -1,23 +1,23 @@
 # cons on Seq creates O(1) lazy prepend
 [collect [take 3 [cons 0 [iterate [fn [x] [+ x 1]] 1]]]]
 === error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:26-1:54) (called at stdlib/prelude.llt:2578:17-2578:36)
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:26-1:54) (called at stdlib/prelude.llt:2567:17-2567:36)
   in [iterate ...] at 1:26-1:54
   in [iterate ...] at 1:26-1:54
-  in [builtin-cons ...] at stdlib/prelude.llt:2578:17-2578:36
+  in [builtin-cons ...] at stdlib/prelude.llt:2567:17-2567:36
    |
-  2578 | """] [let x xs] [builtin-cons x xs]]
+  2567 | """] [let x xs] [builtin-cons x xs]]
        |                 ^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2083:57-2083:76
+  in materialized at stdlib/prelude.llt:2072:57-2072:76
    |
-  2083 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+  2072 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-take ...] at stdlib/prelude.llt:2083:57-2083:76
+  in [builtin-take ...] at stdlib/prelude.llt:2072:57-2072:76
    |
-  2083 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+  2072 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2482:15-2482:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2471:15-2471:35
    |
-  2482 | """] [let xs] [builtin-collect xs]]
+  2471 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in [collect ...] at 1:1-1:57

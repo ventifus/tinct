@@ -1,13 +1,13 @@
 # cycle: error when called with empty collection
 [cycle []]
 === error
-[E034] cycle on empty collection (defined at stdlib/prelude.llt:2510:15-2510:33)
-  --> stdlib/prelude.llt:2510:15-2510:33
+[E034] cycle on empty collection (defined at stdlib/prelude.llt:2499:15-2499:33)
+  --> stdlib/prelude.llt:2499:15-2499:33
    |
-  2510 | """] [let xs] [builtin-cycle xs]]
+  2499 | """] [let xs] [builtin-cycle xs]]
        |               ^^^^^^^^^^^^^^^^^^
-  in [builtin-cycle ...] at stdlib/prelude.llt:2510:15-2510:33
+  in [builtin-cycle ...] at stdlib/prelude.llt:2499:15-2499:33
    |
-  2510 | """] [let xs] [builtin-cycle xs]]
+  2499 | """] [let xs] [builtin-cycle xs]]
        |               ^^^^^^^^^^^^^^^^^^
   in [cycle ...] at 1:1-1:11
