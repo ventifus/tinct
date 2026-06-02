@@ -1902,13 +1902,9 @@ fn eval_core_expr<'a>(
             ))),
 
             // Quote: convert CoreExpr→SurfaceNode and walk with eval_quote_walk.
-            //
-            // DESIGN DECISION: This round-trip (CoreExpr→SurfaceNode) is intentional.
-            // Quote captures *surface syntax* for metaprogramming, not the desugared
-            // CoreExpr form with de Bruijn indices. Users expect [quote x] to show
-            // the variable name "x", not FreeVar(0). eval_quote_walk processes the
-            // SurfaceNode tree to handle unquotes and produces Value::Expression(SurfaceNode),
-            // which represents the code as written, not as compiled.
+            // The inner CoreExpr was lowered (giving unquotes proper variable slots),
+            // then converted back here for structural traversal. CoreExpr::Var preserves
+            // the original name alongside the slot so the round-trip is lossless.
             CoreExpr::Quote(inner) => {
                 let surface_node = crate::lower::core_expr_to_surface_node(inner);
                 eval_quote_walk(surface_node, env.clone(), ctx).await

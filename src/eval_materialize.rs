@@ -4727,14 +4727,6 @@ mod deep_tests {
     use super::*;
     use crate::test_util::test_span;
 
-    fn test_ctx() -> Arc<EvalContext> {
-        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let stdlib_env = crate::builtins::create_stdlib_env().expect("stdlib failed");
-        let type_stage_env =
-            crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
-        EvalContext::new(base_dir, stdlib_env, type_stage_env, false)
-    }
-
     #[test]
     fn test_attach_materialization_context_preserves_spans() {
         // Test that attach_materialization_context correctly adds materialization

@@ -3907,11 +3907,11 @@ mod tests {
         }
         // Verify the count matches all_error_kind_variants() — the canonical list.
         // If variants are added or removed, update all_error_kind_variants() to match.
-        // Current count: 37 variants (verified against the ErrorKind enum definition).
+        // Current count: 36 variants (DepthExceeded removed in B-314, absorbed into ResourceLimitExceeded).
         assert_eq!(
             variants.len(),
-            37,
-            "Expected 37 ErrorKind variants in all_error_kind_variants(); got {}. \
+            36,
+            "Expected 36 ErrorKind variants in all_error_kind_variants(); got {}. \
              Update all_error_kind_variants() if variants were added or removed.",
             variants.len()
         );
