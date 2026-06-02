@@ -377,28 +377,45 @@ pub(crate) fn collect_pattern_bindings(
                     // Gradual: field not in known set — Unknown for missing field in pattern
                     Type::Record(row) => row.fields.get(key).cloned().unwrap_or(Type::Unknown),
                     // Union: if all members that are Records agree on the field type, use it.
+                    // Members may be plain Records or BAS-style Intersections of single-field
+                    // Records (produced by multi-field annotations like @[x: Int y: String]).
                     Type::Union(members) => {
-                        // Collect field types from all Record members
+                        // Look up field in a type — handles both Record and Intersection-of-Records.
+                        let lookup_field = |member: &Type, key: &str| -> Option<Type> {
+                            match member {
+                                Type::Record(row) => row.fields.get(key).cloned(),
+                                // Intersection of single-field records (BAS-style multi-field annotation):
+                                // find the member that has the requested field.
+                                Type::Intersection(parts) => parts.iter().find_map(|part| {
+                                    if let Type::Record(row) = part {
+                                        row.fields.get(key).cloned()
+                                    } else {
+                                        None
+                                    }
+                                }),
+                                _ => None,
+                            }
+                        };
+
+                        // Collect field types from all union members (Record or Intersection)
                         let mut field_types = Vec::new();
                         for member in members {
-                            if let Type::Record(row) = member {
-                                if let Some(ty) = row.fields.get(key) {
-                                    field_types.push(ty.clone());
-                                }
+                            if let Some(ty) = lookup_field(member, key) {
+                                field_types.push(ty);
                             }
                         }
 
-                        // If all Record members have this field and all types are equal, use it
-                        if !field_types.is_empty() {
+                        // If all union members have this field and all types are equal, use it
+                        if !field_types.is_empty() && field_types.len() == members.len() {
                             let first_ty = &field_types[0];
                             if field_types.iter().all(|ty| ty == first_ty) {
                                 first_ty.clone()
                             } else {
-                                // Gradual: Union members disagree on field type
-                                Type::Unknown
+                                // Union members disagree on field type — form a union of field types
+                                Type::normalize_union(field_types)
                             }
                         } else {
-                            // Gradual: no Record member has this field
+                            // Not all union members have this field — Unknown (gradual)
                             Type::Unknown
                         }
                     }

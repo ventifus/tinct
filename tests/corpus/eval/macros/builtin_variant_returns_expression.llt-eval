@@ -16,4 +16,4 @@
 
 === warn
 undefined variable: builtin-variant at 4:10-4:25
-cannot unify ⊤ with <error> at 7:23-7:27
+cannot unify Top with <error> at 7:23-7:27

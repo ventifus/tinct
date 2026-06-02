@@ -1166,45 +1166,6 @@ pub(crate) fn resolve_annotation(
                         )),
                     }
                 }
-                "Tuple" => {
-                    // @Tuple@[T0 T1 T2] → closed record {0: T0, 1: T1, 2: T2}
-                    // Parameterized form: takes positional entries as element types.
-                    match inner.as_ref() {
-                        Annotation::PropertyDict(surface_entries) => {
-                            // @Tuple@[T0 T1 T2] → closed record {0: T0, 1: T1, 2: T2}.
-                            // All entries must be positional (auto-indexed); each resolves
-                            // as an element type in declaration order.
-                            let mut fields = HashMap::new();
-                            for (idx, entry) in surface_entries.iter().enumerate() {
-                                let elem_ty = resolve_type_expr(
-                                    &entry.node.value,
-                                    env,
-                                    state,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                )?;
-                                fields.insert(idx.to_string(), elem_ty);
-                            }
-                            let ty = Type::Record(Row { fields });
-                            crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
-                            Ok(ty)
-                        }
-                        _ => {
-                            // Single-type form: @Tuple@Int → {0: Int}
-                            let elem_ty = resolve_annotation(
-                                inner,
-                                env,
-                                span,
-                                state,
-                                ann_mapping,
-                                row_ann_mapping,
-                            )?;
-                            let mut fields = HashMap::new();
-                            fields.insert("0".to_string(), elem_ty);
-                            Ok(Type::Record(Row { fields }))
-                        }
-                    }
-                }
                 "Handle" => {
                     // @Handle@CapType — parameterized handle type in TypeAssert/annotation context.
                     //
@@ -1547,7 +1508,6 @@ pub(crate) fn resolve_type_name_with_guard(
                 | "Dict"
                 | "Map"
                 | "Record"
-                | "Tuple"
                 | "Fn"
                 | "Never"
                 | "Top"
@@ -1625,7 +1585,6 @@ fn is_builtin_type_name(name: &str) -> bool {
             | "Dict"
             | "Map"
             | "Record"
-            | "Tuple"
             | "Fn"
             | "Never"
             | "Top"
@@ -1694,12 +1653,6 @@ pub(crate) fn resolve_type_name(
         }
         "Record" => {
             // Bare @Record → open record (empty fields)
-            Ok(Type::Record(Row {
-                fields: HashMap::new(),
-            }))
-        }
-        "Tuple" => {
-            // Bare @Tuple → empty closed record (zero-element tuple = Null)
             Ok(Type::Record(Row {
                 fields: HashMap::new(),
             }))
@@ -2148,7 +2101,7 @@ fn resolve_type_dict_with_guard(
     // field references like `next: Node` silently returned the Unknown Pass-1 placeholder
     // instead of a fresh TypeVar.
     //
-    // Positional-only forms (Fn types, [Seq T], [Map K V], [Tuple ...], parameterized aliases,
+    // Positional-only forms (Fn types, [Seq T], [Map K V], parameterized aliases,
     // unions) are not keyed, so they fall through to `resolve_type_dict` as before.
     if !all_positional {
         // Reuse the same logic as the tail of resolve_type_dict but route field-value
@@ -2233,7 +2186,7 @@ fn resolve_type_dict_with_guard(
         return Ok(ty);
     }
 
-    // For remaining positional-only cases (function types, [Seq T], [Map K V], [Tuple ...],
+    // For remaining positional-only cases (function types, [Seq T], [Map K V],
     // parameterized alias applications, and multi-type unions), delegate to the normal
     // resolver which has the full dispatch logic for those forms.
     resolve_type_dict(entries, env, span, state, ann_mapping, row_ann_mapping)
@@ -2488,18 +2441,6 @@ pub(crate) fn resolve_type_expr(
             // Check BEFORE parameterized alias lookup so built-in constructors have priority.
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 match name.as_str() {
-                    "Tuple" => {
-                        // [Tuple T0 T1 T2 ...] → closed record {0: T0, 1: T1, 2: T2, ...}
-                        // Encodes tuple types as closed records with integer-string field names.
-                        // args[0..] are the element types (func is "Tuple", args are the types).
-                        let mut fields = HashMap::new();
-                        for (idx, arg) in args.iter().enumerate() {
-                            let elem_ty =
-                                resolve_type_expr(arg, env, state, ann_mapping, row_ann_mapping)?;
-                            fields.insert(idx.to_string(), elem_ty);
-                        }
-                        return Ok(Type::Record(Row { fields }));
-                    }
                     "Seq" => {
                         if args.len() == 1 {
                             let elem_ty = resolve_type_expr(
@@ -2534,24 +2475,9 @@ pub(crate) fn resolve_type_expr(
                                 row_ann_mapping,
                             )?;
                             return Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)));
-                        } else if args.len() == 1 {
-                            // Single-arg form: [Map Int] → Map(fresh_key, Int)
-                            // Use a fresh TypeVar for the key so callers can unify against
-                            // concrete key types instead of being stuck with Unknown.
-                            let value_ty = resolve_type_expr(
-                                &args[0],
-                                env,
-                                state,
-                                ann_mapping,
-                                row_ann_mapping,
-                            )?;
-                            return Ok(Type::Map(
-                                Box::new(state.fresh_type_var()),
-                                Box::new(value_ty),
-                            ));
                         } else {
                             return Err(TypeError::new(
-                                "Map requires 1 or 2 type arguments",
+                                "Map requires 2 type arguments: [Map KeyType ValueType]",
                                 node.span.clone(),
                             ));
                         }
@@ -2770,25 +2696,6 @@ pub(crate) fn resolve_type_dict(
                                 return Err(TypeError::new("Seq requires 1 type argument", span));
                             }
                         }
-                        "Tuple" => {
-                            // [Tuple T0 T1 T2 ...] → closed record {0: T0, 1: T1, 2: T2, ...}
-                            // Encodes tuple types as closed records with integer-string field names.
-                            // Matches the evaluation model: tuples are dicts with integer keys.
-                            // Zero-element tuple → empty closed record (Null type).
-                            // entries[0] is the "Tuple" keyword; entries[1..] are the element types.
-                            let mut fields = HashMap::new();
-                            for (idx, entry) in entries[1..].iter().enumerate() {
-                                let elem_ty = resolve_type_expr(
-                                    &entry.node.value,
-                                    env,
-                                    state,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                )?;
-                                fields.insert(idx.to_string(), elem_ty);
-                            }
-                            return Ok(Type::Record(Row { fields }));
-                        }
                         "Map" => {
                             if entries.len() == 3 {
                                 let key_ty = resolve_type_expr(
@@ -2806,24 +2713,9 @@ pub(crate) fn resolve_type_dict(
                                     row_ann_mapping,
                                 )?;
                                 return Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)));
-                            } else if entries.len() == 2 {
-                                // Single-arg form: [Map Int] → Map(fresh_key, Int)
-                                // Use a fresh TypeVar for the key so callers can unify against
-                                // concrete key types instead of being stuck with Unknown.
-                                let value_ty = resolve_type_expr(
-                                    &entries[1].node.value,
-                                    env,
-                                    state,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                )?;
-                                return Ok(Type::Map(
-                                    Box::new(state.fresh_type_var()),
-                                    Box::new(value_ty),
-                                ));
                             } else {
                                 return Err(TypeError::new(
-                                    "Map requires 1 or 2 type arguments",
+                                    "Map requires 2 type arguments: [Map KeyType ValueType]",
                                     span,
                                 ));
                             }

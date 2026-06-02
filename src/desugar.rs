@@ -328,15 +328,12 @@ fn extract_surface_adt_ctor_names_from_expr(body: &SurfaceExpression) -> Vec<Str
     let mut names = Vec::new();
 
     fn try_extract_surface(expr: &SurfaceExpression, names: &mut Vec<String>) {
-        match expr {
-            SurfaceExpression::Call { func, .. } => {
-                if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                    if crate::eval::is_constructor_name(name) {
-                        names.push(name.clone());
-                    }
+        if let SurfaceExpression::Call { func, .. } = expr {
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                if crate::eval::is_constructor_name(name) {
+                    names.push(name.clone());
                 }
             }
-            _ => {}
         }
     }
 

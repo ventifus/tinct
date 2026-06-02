@@ -685,7 +685,22 @@ fn improve_functional_dependency_inner(
                     None => {
                         // B-317: All determining positions are ground at this point
                         // (checked at line 525). If lookup_mptc returns None, there's
-                        // genuinely no matching instance. Error uniformly for all classes.
+                        // genuinely no matching instance — unless a determining position
+                        // is `Unknown` (gradual) or a structural type that could satisfy
+                        // the class at runtime. Only error when all determining positions
+                        // are definitively non-matching scalar types.
+                        //
+                        // For Indexable specifically: Record/Union/Intersection/Top are
+                        // structural types that may be sequences at runtime (Tinct's `[]`
+                        // syntax is ambiguous between record and sequence). Unknown is the
+                        // gradual escape hatch. Only scalar types (Int, Float, Bool, Str,
+                        // Function, etc.) are definitively non-Indexable.
+                        let should_defer = det_types
+                            .iter()
+                            .any(|(_, _, ty)| !is_definitely_no_instance_for(class, ty));
+                        if should_defer {
+                            continue;
+                        }
                         return Err(TypeError::new(
                             format!("no instance for {}", class),
                             span.clone(),
@@ -818,11 +833,12 @@ fn lookup_arithmetic_instance(
             ("Int", "Int") => Ok(Type::Int),
             ("Float", "Float") => Ok(Type::Float),
             ("Int", "Float") | ("Float", "Int") => Ok(Type::Float),
-            ("Number", "Number")
-            | ("Number", "Int")
-            | ("Int", "Number")
-            | ("Number", "Float")
-            | ("Float", "Number") => Ok(Type::Number),
+            // Number op Number — result is Number (could be Int or Float at runtime)
+            ("Number", "Number") | ("Number", "Int") | ("Int", "Number") => Ok(Type::Number),
+            // Number op Float or Float op Number — result is always Float.
+            // Reasoning: Int op Float = Float and Float op Float = Float, so either
+            // way the result is Float. This matches the Divisible rule below.
+            ("Number", "Float") | ("Float", "Number") => Ok(Type::Float),
             // T1 FIX: Never ∨ τ = Never (⊥ absorbs all operations)
             ("Never", _) | (_, "Never") => Ok(Type::Never),
             _ => Err(TypeError::new(
@@ -834,11 +850,12 @@ fn lookup_arithmetic_instance(
             ("Int", "Int") | ("Float", "Float") | ("Int", "Float") | ("Float", "Int") => {
                 Ok(Type::Float)
             }
-            ("Number", "Number")
-            | ("Number", "Int")
-            | ("Int", "Number")
-            | ("Number", "Float")
-            | ("Float", "Number") => Ok(Type::Number),
+            // Number / Number or Number / Int or Int / Number — result is Number
+            // (could be Float or Int depending on runtime values; Int/Int→Float though)
+            ("Number", "Number") | ("Number", "Int") | ("Int", "Number") => Ok(Type::Number),
+            // Number / Float or Float / Number — result is always Float.
+            // Int / Float = Float and Float / Float = Float.
+            ("Number", "Float") | ("Float", "Number") => Ok(Type::Float),
             // T1 FIX: Never ∨ τ = Never (⊥ absorbs all operations)
             ("Never", _) | (_, "Never") => Ok(Type::Never),
             _ => Err(TypeError::new(
@@ -904,6 +921,47 @@ fn lookup_arithmetic_instance(
                     span,
                 )),
             }
+        }
+    }
+}
+
+/// Returns true when `ty` is definitively not a member of `class` — i.e., we can
+/// statically rule out any runtime instance.  Returns false when we cannot rule
+/// it out, meaning we should defer the constraint rather than error.
+///
+/// Used in `improve_functional_dependency_inner` to decide whether to emit a
+/// "no instance" error or silently defer (continue) when `lookup_mptc` returns
+/// `None` despite all determining positions being ground.
+///
+/// Conservative rule: only return `true` for scalar/primitive types that are
+/// structurally incompatible with the class.  Structural types (Record, Union,
+/// Intersection, Top, Seq, Map) and the gradual `Unknown` can always
+/// potentially satisfy a class at runtime, so we return `false` for them.
+fn is_definitely_no_instance_for(class: &str, ty: &Type) -> bool {
+    match class {
+        "Indexable" => {
+            // A type is definitively non-Indexable only if it is a scalar/primitive
+            // that cannot possibly be a container at runtime.
+            // Record, Union, Intersection, Top, Seq, Map, Unknown, NominalVariant — might work.
+            // Scalars (Int/Float/Bool/Str/Number and their literals), Function, Never — cannot.
+            matches!(
+                ty,
+                Type::Int
+                    | Type::Float
+                    | Type::Number
+                    | Type::Bool
+                    | Type::Str
+                    | Type::Never
+                    | Type::Function { .. }
+                    | Type::IntLiteral(_)
+                    | Type::StringLiteral(_)
+            )
+        }
+        _ => {
+            // For other MPTC classes, treat any ground non-Unknown type as
+            // definitely non-matching when lookup_mptc returns None.
+            // Unknown gets special handling (defer).
+            !matches!(ty, Type::Unknown)
         }
     }
 }

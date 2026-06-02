@@ -248,14 +248,14 @@ Type declarations and construction:
 
 ```tinct
 [
-  [type Color [Red] [Green] [Blue]]   # enum — unit variants
+  Color: [type Red Green Blue]   # unit constructors are bare uppercase words
 
-  color: Red      # unit variant as a value
+  color: Color.Red   # access via type name — Color is also a dict of its constructors
 
   hex: [match color
-    [Red _]:   "#ff0000"
-    [Green _]: "#00ff00"
-    [Blue _]:  "#0000ff"]
+    Color.Red:   "#ff0000"   # unit constructor patterns — just the qualified value
+    Color.Green: "#00ff00"
+    Color.Blue:  "#0000ff"]
   # → "#ff0000"
 ]
 ```
@@ -269,8 +269,8 @@ Sum types with payloads use `try` in the standard library:
 
   # Pattern match on the result
   value: [match result
-    [Ok v]:    v     # → 3
-    [Error _]: 0]
+    [Result.Ok v]:    v     # → 3
+    [Result.Error _]: 0]
 ]
 ```
 
@@ -278,47 +278,46 @@ Sum types with payloads use `try` in the standard library:
 
 ## Nominal Variants
 
-`[type ...]` declarations auto-generate constructor functions. After the declaration, the constructor name is callable:
+`[type ...]` declares a type and makes its constructors accessible through the type name (dot access). The type name evaluates to a dict containing all its constructors.
 
 ```tinct
 [
-  [type Option [Some value: Int] [None]]   # auto-generates constructors in this scope
+  Option: [type [Some value: Int] None]
 
-  # Unit variant: just use the name
-  nothing: None
+  # Unit variant: access via type name
+  nothing: Option.None
 
-  # Payload variant: call the constructor with named field
-  something: [Some value: 42]
+  # Payload variant: call via type name
+  something: [Option.Some value: 42]
 
-  # Pattern match — [Tag v] binds the payload to v
+  # Pattern match — qualified constructor patterns
   n: [match something
-        [Some v]: v     # v is the payload → 42
-        [None _]: 0]
+        [Option.Some v]: v.value   # v is the payload dict → 42
+        Option.None:     0]
 ]
 ```
 
-**Constructors are ordinary values** — unit variants can be used directly as values:
+**Constructors are accessed via the type name** — the type is both a type annotation and a dict of constructors:
 
 ```tinct
 [
-  [type Color [Red] [Green] [Blue]]
-  c: Red
-  is-red: [= c Red]   # → true
+  Color: [type Red Green Blue]
+  c: Color.Red
+  is-red: [= c Color.Red]   # → true
 ]
 ```
 
-**Named-field variants** — the payload is a dict; fields are accessible directly:
+**Named-field variants** — payload is a dict; match and access fields via the bound name:
 
 ```tinct
 [
-  [type Geometry [Point x: Float y: Float] [Origin]]
+  Geometry: [type [Point x: Float y: Float] Origin]
 
-  p: [Point x: 1.0  y: 2.0]
+  p: [Geometry.Point x: 1.0  y: 2.0]
 
-  # Match and access the payload
   desc: [match p
-           [Point v]:  [str v.x "," v.y]
-           [Origin _]: "origin"]   # v is the payload dict
+    [Geometry.Point v]:  [str v.x "," v.y]   # v is the payload dict
+    Geometry.Origin:     "origin"]
   # → "1.0,2.0"
 ]
 ```
@@ -356,41 +355,34 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
 ]
 ```
 
-**Constructor patterns** match nominal variants. `[Tag binding]` binds the payload to a single name; the binding itself can be a full destructuring pattern:
+**Constructor patterns** always use the qualified `TypeName.CtorName` form. Unit constructors match as literal values; payload constructors use `[TypeName.CtorName binding]` to bind the payload:
 
 ```tinct
 [
-  [type Colors [Red] [Green] [Blue]]
-  color: Red
+  Colors: [type Red Green Blue]
+  color: Colors.Red
 
-  # Unit variant — [Tag _] discards the empty payload
+  # Unit constructors — pattern is just the qualified value
   hex: [match color
-    [Red _]:   "#ff0000"
-    [Green _]: "#00ff00"
-    [Blue _]:  "#0000ff"]
+    Colors.Red:   "#ff0000"
+    Colors.Green: "#00ff00"
+    Colors.Blue:  "#0000ff"]
   # → "#ff0000"
 
-  # Payload variant — single binding then field access
-  [type Shape [Circle r: Float] [Rect w: Float  h: Float]]
-  s: [Circle r: 2.0]
+  # Payload constructors — [TypeName.CtorName binding] binds the payload dict
+  Shape: [type [Circle r: Float] [Rect w: Float  h: Float]]
+  s: [Shape.Circle r: 2.0]
 
   area: [match s
-    [Circle c]:  [* 3.14159 [* c.r c.r]]
-    [Rect dims]: [* dims.w dims.h]]
+    [Shape.Circle c]:  [* 3.14159 [* c.r c.r]]
+    [Shape.Rect dims]: [* dims.w dims.h]]
   # → 12.56636
-
-  # Nested destructuring inside constructor — bind payload fields directly
-  desc: [match s
-    [Circle c]:    [str "circle r=" c.r]
-    [Rect dims]:   [str "rect " dims.w "×" dims.h]]
-  # → "circle r=2.0"
-
-  # WRONG — bare name is a variable capture, not a constructor match
-  # [match color  Red: "#ff0000"  ...]  ← Red: captures anything
 ]
 ```
 
 Patterns compose: a constructor pattern's binding can itself be a dict pattern, a literal, another constructor, or a wildcard `_`.
+
+**Why qualified patterns?** Bare names in pattern position are variable captures (`_` or any lowercase name). Qualified names (`TypeName.CtorName`) unambiguously identify a specific constructor of a specific type, making patterns self-documenting and removing any risk of accidental capture.
 
 ---
 
@@ -412,13 +404,13 @@ Errors propagate automatically through the thunk graph. Unused values never erro
 
   # match on the result
   value:   [match [try [fn [] [+ 1 2]]]
-    [Ok v]:    v   # → 3
-    [Error _]: 0]
+    [Result.Ok v]:    v   # → 3
+    [Result.Error _]: 0]
 
   # match on try result for fallback pattern
   safe:    [match [try [fn [] [/ 1 0]]]
-              [Ok v]:    v
-              [Error _]: 0]
+              [Result.Ok v]:    v
+              [Result.Error _]: 0]
   # → 0 (division error caught)
 ]
 ```

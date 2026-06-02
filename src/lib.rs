@@ -32,6 +32,7 @@ pub(crate) mod error;
 pub(crate) mod eval;
 pub(crate) mod eval_access;
 pub(crate) mod eval_call;
+pub(crate) mod eval_core;
 pub(crate) mod eval_materialize;
 pub mod formatter;
 pub mod lexer;

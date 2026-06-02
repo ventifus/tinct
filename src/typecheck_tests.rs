@@ -1228,10 +1228,12 @@ fn test_builtin_keys_returns_seq_str() {
         .body
         .clone();
 
+    // keys returns Seq(Int | Str) because dict keys can be either integers (seq-style)
+    // or strings (record-style). The type accurately reflects both possibilities.
     assert_eq!(
         result_ty,
-        Type::Seq(Box::new(Type::Str)),
-        "keys should return Seq(Str), got: {result_ty}"
+        Type::Seq(Box::new(Type::normalize_union(vec![Type::Int, Type::Str]))),
+        "keys should return Seq(Int | Str), got: {result_ty}"
     );
 }
 
@@ -1371,8 +1373,9 @@ fn test_null_return_annotation() {
 
 #[test]
 fn test_builtin_collect_returns_record_not_seq() {
-    // $builtin-collect returns Record (open row), not Seq.
-    // build_builtins_type_env() registers builtin-collect as Fn(Seq(Any)) -> Record({...}).
+    // $builtin-collect returns Seq(T) — it materializes a lazy Seq to an integer-keyed Dict,
+    // which is represented as Seq(T) at the type level.
+    // build_builtins_type_env() registers builtin-collect as ∀T. Seq(T) → Seq(T).
     // (The user-facing $collect and $range wrappers live in prelude.llt and are not present here.)
     let input = "[s: [call $builtin-range 0 5]]\n[result: [call $builtin-collect $s]]";
     let mut program = crate::parse(input).unwrap().program;
@@ -1414,16 +1417,12 @@ fn test_builtin_collect_returns_record_not_seq() {
         .body
         .clone();
 
-    // Should be a Record type (open row with RowVar tail)
+    // builtin-collect returns Seq(T) — materializes lazy Seq to integer-keyed Dict,
+    // which is Seq(T) at the type level (integer-keyed Dict = Seq by tinct convention).
+    // builtin-range 0 5 returns Seq(Int), so builtin-collect returns Seq(Int).
     assert!(
-        matches!(result_ty, Type::Record(_)),
-        "collect should return Record, got: {result_ty}"
-    );
-
-    // Explicitly verify it's NOT a Seq
-    assert!(
-        !matches!(result_ty, Type::Seq(_)),
-        "collect should not return a Seq type"
+        matches!(result_ty, Type::Seq(_)),
+        "collect should return Seq(T), got: {result_ty}"
     );
 }
 
@@ -9126,6 +9125,42 @@ fn test_arithmetic_add_int_int_through_prelude_refinement() {
     assert!(
         matches!(ty, Type::Int | Type::IntLiteral(_)),
         "[+ 1 2] should refine to Int via Addable MPTC FD, got {ty}"
+    );
+}
+
+#[test]
+fn test_arithmetic_mul_number_float_returns_float() {
+    // [* n 1.0] where n@Number: Number * Float → Float (not Number).
+    // Regression test: before the (Number, Float) → Float table fix, the Multipliable FD
+    // returned Number for (Number, Float), causing "cannot unify Float with Number" T003
+    // in stdlib/math.llt functions like deg->rad and rad->deg.
+    let ty = infer_with_builtins("[f: [fn [let n@Number] [* n 1.0]]]\n[x: [f 2]]", "x");
+    assert_eq!(
+        ty,
+        Type::Float,
+        "[* n 1.0] with n@Number should infer Float (not Number), got {ty}"
+    );
+}
+
+#[test]
+fn test_arithmetic_add_number_float_returns_float() {
+    // [+ n 1.0] where n@Number: Number + Float → Float (not Number).
+    let ty = infer_with_builtins("[f: [fn [let n@Number] [+ n 1.0]]]\n[x: [f 2]]", "x");
+    assert_eq!(
+        ty,
+        Type::Float,
+        "[+ n 1.0] with n@Number should infer Float (not Number), got {ty}"
+    );
+}
+
+#[test]
+fn test_arithmetic_div_number_float_returns_float() {
+    // [/ n 1.0] where n@Number: Number / Float → Float (not Number).
+    let ty = infer_with_builtins("[f: [fn [let n@Number] [/ n 1.0]]]\n[x: [f 2]]", "x");
+    assert_eq!(
+        ty,
+        Type::Float,
+        "[/ n 1.0] with n@Number should infer Float (not Number), got {ty}"
     );
 }
 

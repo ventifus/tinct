@@ -214,6 +214,7 @@ fn test_corpus_structure() {
         "tests/corpus/eval/letrec",
         "tests/corpus/eval/underscore",
         "tests/corpus/eval/documents",
+        "tests/corpus/eval/slow",
         // Invalid corpus
         "tests/corpus/invalid/pipeline",
         "tests/corpus/invalid/semantic_errors",
@@ -303,6 +304,9 @@ fn test_eval_corpus() {
     // type_errors/ files are expected to fail typecheck (not produce eval output);
     // they are handled by test_typecheck_error_corpus_eval instead.
     let type_errors_dir = corpus_dir.join("type_errors");
+    // slow/ contains 10,000-iteration TCO tests excluded from the default CI run;
+    // use `just test-slow` to run them explicitly.
+    let slow_dir = corpus_dir.join("slow");
 
     // Spawn thread with large stack to prevent overflow in deeply-nested test cases.
     // Same rationale as test_eval_error_corpus: the stdlib Rc<Environment> recursive
@@ -311,22 +315,83 @@ fn test_eval_corpus() {
     let result = std::thread::Builder::new()
         .stack_size(256 * 1024 * 1024) // 256MB — debug-mode stdlib cleanup needs ~100MB; extra headroom for prelude growth
         .spawn(move || {
-            run_corpus_dir(&corpus_dir, &[type_errors_dir.as_path()], |test| {
-                // Clear the stdlib cache before each test to prevent memory accumulation.
-                // The STDLIB_ARENA_CACHE retains Arc<Thunk> references from previous test
-                // iterations, preventing the ThunkArena from being freed. After ~500 iterations
-                // in an 8GB container, cumulative memory growth causes OOM/SIGKILL.
+            run_corpus_dir(
+                &corpus_dir,
+                &[type_errors_dir.as_path(), slow_dir.as_path()],
+                |test| {
+                    // Clear the stdlib cache before each test to prevent memory accumulation.
+                    // The STDLIB_ARENA_CACHE retains Arc<Thunk> references from previous test
+                    // iterations, preventing the ThunkArena from being freed. After ~500 iterations
+                    // in an 8GB container, cumulative memory growth causes OOM/SIGKILL.
+                    tinct::clear_stdlib_cache();
+                    // Return freed heap pages to the OS. Without this, glibc malloc retains
+                    // freed pages in thread-local pools, causing RSS to grow across tests even
+                    // though each test's env+arena is freed. The 512MB stack thread + accumulated
+                    // malloc pools can exceed the 10GB container limit.
+                    #[cfg(target_os = "linux")]
+                    unsafe {
+                        libc::malloc_trim(0);
+                    }
+
+                    // Eval pipeline: eval_source_with_config() + typecheck_source()
+                    let eval_result = if test.cap_net.is_empty() {
+                        eval_source_with_config(&test.input, test.no_fs)
+                    } else {
+                        eval_source_with_cap_net(&test.input, test.no_fs, &test.cap_net)
+                    };
+                    let typecheck_result = typecheck_source_errors_only(&test.input);
+
+                    let (output, error) = match eval_result {
+                        Ok(actual) => (Some(actual), None),
+                        Err(e) => (None, Some(format!("{e}"))),
+                    };
+
+                    let warnings = match typecheck_result {
+                        Ok(()) => None,
+                        Err(type_errors) => Some(type_errors),
+                    };
+
+                    CorpusOutcome {
+                        output,
+                        warnings,
+                        error,
+                    }
+                },
+            )
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+
+    if !result.is_empty() {
+        eprintln!("\n{} eval test(s) failed:", result.len());
+        for failure in &result {
+            eprintln!("  - {}: {}", failure.path.display(), failure.message);
+        }
+        panic!("Eval corpus tests failed");
+    }
+}
+
+/// Slow eval corpus runner — runs `tests/corpus/eval/slow/` in isolation.
+///
+/// These tests are excluded from the default `just test` / `just ci` run because they
+/// execute 10,000-iteration loops to verify TCO. Run them with `just test-slow` when
+/// you want to confirm that tail-call optimization handles large iteration counts.
+#[test]
+#[ignore = "slow: 10,000-iteration TCO tests; run with `just test-slow`"]
+fn test_eval_corpus_slow() {
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/eval/slow");
+
+    let result = std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || {
+            run_corpus_dir(&corpus_dir, &[], |test| {
                 tinct::clear_stdlib_cache();
-                // Return freed heap pages to the OS. Without this, glibc malloc retains
-                // freed pages in thread-local pools, causing RSS to grow across tests even
-                // though each test's env+arena is freed. The 512MB stack thread + accumulated
-                // malloc pools can exceed the 10GB container limit.
                 #[cfg(target_os = "linux")]
                 unsafe {
                     libc::malloc_trim(0);
                 }
 
-                // Eval pipeline: eval_source_with_config() + typecheck_source()
                 let eval_result = if test.cap_net.is_empty() {
                     eval_source_with_config(&test.input, test.no_fs)
                 } else {
@@ -356,11 +421,11 @@ fn test_eval_corpus() {
         .unwrap();
 
     if !result.is_empty() {
-        eprintln!("\n{} eval test(s) failed:", result.len());
+        eprintln!("\n{} slow eval test(s) failed:", result.len());
         for failure in &result {
             eprintln!("  - {}: {}", failure.path.display(), failure.message);
         }
-        panic!("Eval corpus tests failed");
+        panic!("Slow eval corpus tests failed");
     }
 }
 

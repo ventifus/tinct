@@ -15,7 +15,8 @@ use crate::value::{Environment, Key, Thunk, ThunkId, Value};
 // eval.rs imports invoke_function/CallContext from this module, while
 // this module imports eval/EvalContext from eval.rs. Neither module's
 // initialization depends on the other.
-use crate::eval::{eval_core_expr_pub, materialize, EvalContext};
+use crate::eval::{materialize, EvalContext};
+use crate::eval_core::eval_core_expr;
 
 const DEFAULT_ANNOTATION_KEY: &str = "default";
 
@@ -58,10 +59,10 @@ pub(crate) async fn eval_call_core(
     call_span: &Span,
     original_call: Arc<Spanned<CoreExpr>>,
 ) -> EvalResult<Arc<Thunk>> {
-    // Evaluate the function as a thunk using eval_core_expr_pub directly.
+    // Evaluate the function as a thunk using eval_core_expr directly.
     // This keeps the CoreExpr path end-to-end without round-tripping through Expr,
     // preserving de Bruijn coordinates and other CoreExpr-specific data.
-    let func_thunk = eval_core_expr_pub(func_expr, env, ctx).await?;
+    let func_thunk = eval_core_expr(func_expr, env, ctx).await?;
 
     // Wrap positional arguments as Unevaluated CoreExpr thunks (lazy).
     let pos_thunks: SmallVec<[Arc<Thunk>; 4]> = args
@@ -371,7 +372,7 @@ pub(crate) async fn bind_args_thunks(
                     if variadic_param.is_some() {
                         // Collect into unmatched_named for later merging into variadic dict
                         unmatched_named
-                            .get_or_insert_with(|| IndexMap::new())
+                            .get_or_insert_with(IndexMap::new)
                             .insert(name.clone(), Arc::clone(thunk));
                     } else {
                         // No variadic param: raise E022 (Kotlin model: ANY param can be named)

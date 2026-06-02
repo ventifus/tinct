@@ -991,27 +991,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_session_depth_exhaustion() {
-        // Non-tail-recursive function: the [+ 1 ...] wrapper prevents TCO,
-        // so the continuation stack grows until MAX_CONTINUATION_STACK (2048).
-        // Tail-recursive calls are optimized by the CEK machine and don't
-        // exhaust the continuation stack — that's correct TCO behavior.
-        let result = std::thread::Builder::new()
-            .stack_size(128 * 1024 * 1024) // 128MB — debug-mode needs large stack for deep continuations
-            .spawn(|| {
-                let mut session = ReplSession::new().unwrap();
-                eval_input_sync(&mut session, "[f: [fn [let x] [+ 1 [f [+ x 1]]]]]").unwrap();
-                eval_input_sync(&mut session, "[f 0]").unwrap_err()
-            })
-            .unwrap()
-            .join()
-            .unwrap();
-        assert!(
-            result.contains("depth") || result.contains("limit"),
-            "expected depth exhaustion error, got: {result}"
-        );
-    }
+    // test_session_depth_exhaustion removed — E040 continuation stack depth limit was
+    // removed in T-908 (tinct is a single-process CLI with no multi-tenant threat model).
 
     #[test]
     fn test_session_whitespace_only_input() {

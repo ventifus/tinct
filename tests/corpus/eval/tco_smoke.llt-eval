@@ -1,0 +1,6 @@
+# Smoke test: tail recursion works (O(1) stack, not O(n)).
+# Uses 100 iterations — enough to verify TCO without being slow.
+[f: [fn [let n@Int] [if [= n 0] "done" [f [- n 1]]]]]
+[f 100]
+=== out
+String("done")

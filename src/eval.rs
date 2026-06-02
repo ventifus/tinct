@@ -136,11 +136,11 @@ pub(crate) async fn eval_document_exprs(
 
         if i == last_idx {
             // Last expression: return its thunk lazily (no materialization).
-            return eval_core_expr_pub(&core_spanned, &current_env, ctx).await;
+            return eval_core_expr(&core_spanned, &current_env, ctx).await;
         }
 
         // Intermediate expression: eval and materialize to extract potential bindings.
-        let thunk = eval_core_expr_pub(&core_spanned, &Arc::clone(&current_env), ctx).await?;
+        let thunk = eval_core_expr(&core_spanned, &Arc::clone(&current_env), ctx).await?;
         let value = materialize(&thunk, Some(&node_span), ctx).await?;
 
         // If the result is a non-empty Dict or Overlay, promote ALL Key::String entries
@@ -2016,29 +2016,6 @@ fn eval_core_expr<'a>(
     }) // end Box::pin(async move {
 }
 
-/// Public wrapper for `eval_core_expr` used by `eval_materialize.rs` force_step.
-///
-/// The Surface thunk handler in force_step needs to call eval_core_expr after lower()
-/// to get a result thunk. eval_core_expr is private to this module, so this thin
-/// wrapper exposes it for the CEK machine without making eval_core_expr fully pub.
-///
-/// eval_core_expr, maybe_wrap_guard, and eval_quote_walk should move to eval_core.rs (T-918).
-/// This wrapper exists until that extraction is done.
-#[inline]
-pub(crate) fn eval_core_expr_pub<'a>(
-    expr: &'a crate::ast::Spanned<crate::ast::CoreExpr>,
-    env: &'a std::sync::Arc<std::sync::RwLock<crate::value::Environment>>,
-    ctx: &'a std::sync::Arc<EvalContext>,
-) -> std::pin::Pin<
-    Box<
-        dyn std::future::Future<
-                Output = crate::error::EvalResult<std::sync::Arc<crate::value::Thunk>>,
-            > + 'a,
-    >,
-> {
-    eval_core_expr(expr, env, ctx)
-}
-
 /// Force a thunk to its concrete value, memoizing the result.
 ///
 /// On first materialization, evaluates the thunk and caches the result (or error).
@@ -2646,20 +2623,17 @@ pub fn materialize<'a>(
                                 Err(err) => {
                                     // Guard validation failed - use default if present
                                     if let Some((default_expr, default_env)) = default {
-                                        let default_thunk = match eval_core_expr_pub(
-                                            &default_expr,
-                                            &default_env,
-                                            ctx,
-                                        )
-                                        .await
-                                        {
-                                            Ok(t) => t,
-                                            Err(e) => {
-                                                // Restore Guarded state for non-cacheable errors.
-                                                if e.kind.is_cacheable() {
-                                                    thunk.cache_failure_once(&e);
-                                                } else {
-                                                    thunk.restore_unevaluated(
+                                        let default_thunk =
+                                            match eval_core_expr(&default_expr, &default_env, ctx)
+                                                .await
+                                            {
+                                                Ok(t) => t,
+                                                Err(e) => {
+                                                    // Restore Guarded state for non-cacheable errors.
+                                                    if e.kind.is_cacheable() {
+                                                        thunk.cache_failure_once(&e);
+                                                    } else {
+                                                        thunk.restore_unevaluated(
                                                         crate::value::UnevaluatedState::Guarded {
                                                             inner,
                                                             expected,
@@ -2672,10 +2646,10 @@ pub fn materialize<'a>(
                                                             )),
                                                         },
                                                     );
+                                                    }
+                                                    return Err(e);
                                                 }
-                                                return Err(e);
-                                            }
-                                        };
+                                            };
                                         let default_value = match run(
                                             Action::Materialize {
                                                 thunk: default_thunk,
@@ -2719,32 +2693,27 @@ pub fn materialize<'a>(
                         } else {
                             // Expected Record/Intersection but got non-Dict - use default if present
                             if let Some((default_expr, default_env)) = default {
-                                let default_thunk = match eval_core_expr_pub(
-                                    &default_expr,
-                                    &default_env,
-                                    ctx,
-                                )
-                                .await
-                                {
-                                    Ok(t) => t,
-                                    Err(e) => {
-                                        if e.kind.is_cacheable() {
-                                            thunk.cache_failure_once(&e);
-                                        } else {
-                                            thunk.restore_unevaluated(
-                                                crate::value::UnevaluatedState::Guarded {
-                                                    inner,
-                                                    expected,
-                                                    field_path,
-                                                    guard_span,
-                                                    blame_label,
-                                                    default: Some((default_expr, default_env)),
-                                                },
-                                            );
+                                let default_thunk =
+                                    match eval_core_expr(&default_expr, &default_env, ctx).await {
+                                        Ok(t) => t,
+                                        Err(e) => {
+                                            if e.kind.is_cacheable() {
+                                                thunk.cache_failure_once(&e);
+                                            } else {
+                                                thunk.restore_unevaluated(
+                                                    crate::value::UnevaluatedState::Guarded {
+                                                        inner,
+                                                        expected,
+                                                        field_path,
+                                                        guard_span,
+                                                        blame_label,
+                                                        default: Some((default_expr, default_env)),
+                                                    },
+                                                );
+                                            }
+                                            return Err(e);
                                         }
-                                        return Err(e);
-                                    }
-                                };
+                                    };
                                 let default_value = match run(
                                     Action::Materialize {
                                         thunk: default_thunk,
@@ -2807,32 +2776,27 @@ pub fn materialize<'a>(
                         } else {
                             // Type mismatch for non-Record types - use default if present
                             if let Some((default_expr, default_env)) = default {
-                                let default_thunk = match eval_core_expr_pub(
-                                    &default_expr,
-                                    &default_env,
-                                    ctx,
-                                )
-                                .await
-                                {
-                                    Ok(t) => t,
-                                    Err(e) => {
-                                        if e.kind.is_cacheable() {
-                                            thunk.cache_failure_once(&e);
-                                        } else {
-                                            thunk.restore_unevaluated(
-                                                crate::value::UnevaluatedState::Guarded {
-                                                    inner,
-                                                    expected,
-                                                    field_path,
-                                                    guard_span,
-                                                    blame_label,
-                                                    default: Some((default_expr, default_env)),
-                                                },
-                                            );
+                                let default_thunk =
+                                    match eval_core_expr(&default_expr, &default_env, ctx).await {
+                                        Ok(t) => t,
+                                        Err(e) => {
+                                            if e.kind.is_cacheable() {
+                                                thunk.cache_failure_once(&e);
+                                            } else {
+                                                thunk.restore_unevaluated(
+                                                    crate::value::UnevaluatedState::Guarded {
+                                                        inner,
+                                                        expected,
+                                                        field_path,
+                                                        guard_span,
+                                                        blame_label,
+                                                        default: Some((default_expr, default_env)),
+                                                    },
+                                                );
+                                            }
+                                            return Err(e);
                                         }
-                                        return Err(e);
-                                    }
-                                };
+                                    };
                                 let default_value = match run(
                                     Action::Materialize {
                                         thunk: default_thunk,

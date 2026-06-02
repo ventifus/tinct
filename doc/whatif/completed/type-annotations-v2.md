@@ -160,7 +160,7 @@ Annotation brackets `@[...]` are evaluated in the type-stage Env (built from `--
 
 Name resolution order in the type-stage Env: type-stage bindings → type alias table → primitive named types (`Int`, `String`, `Bool`, `Null`, `Any`, `Unknown`).
 
-**Recursive type-stage functions are not supported.** The lazy evaluator defers self-calls as thunks; the annotation resolver forces thunks during traversal, causing infinite unrolling until the 256-layer depth limit fires. Recursive types use `μ`-types (equirecursive, `isorecursive-types` whatif).
+**Recursive type-stage functions are not supported.** The lazy evaluator defers self-calls as thunks; the annotation resolver forces thunks during traversal, causing infinite unrolling until the 256-layer depth limit fires. Recursive types use `μ`-types (equirecursive, `equirecursive-types` whatif).
 
 ### `is:` in Match Patterns — Soft Guard
 

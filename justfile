@@ -92,6 +92,11 @@ test-lsp-summary:
 test-corpus:
     {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests
 
+# Run slow TCO tests (10,000-iteration loops, excluded from default `just test`).
+# Use this to verify tail-call optimization handles large iteration counts.
+test-slow:
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test corpus_tests -- test_eval_corpus_slow --include-ignored --test-threads=1
+
 # Update corpus test expected outputs to match actual evaluator output.
 # Usage:
 #   just update-corpus                          # update all eval corpus tests

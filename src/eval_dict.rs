@@ -133,7 +133,7 @@ pub(crate) async fn eval_dict_core(
     // Unit constructors are handled exclusively here (T-902 removed them from the
     // desugar pass). Field constructors ([Ok a], [Error String]) continue to be
     // injected by the desugar pass as `Ctor: [variant "CtorName"]` entries.
-    if let Some(ref d_env) = dict_env.as_ref() {
+    if let Some(d_env) = dict_env.as_ref() {
         for entry in entries {
             if let CoreExpr::TypeDecl { unit_constructors } = &entry.node.value.node {
                 for ctor_name in unit_constructors {

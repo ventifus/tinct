@@ -15,12 +15,13 @@ use crate::ast::{Annotation, CoreExpr, Span, Spanned, SurfaceExpression, Surface
 use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
-    as_record_row_merged, eval_core_expr_pub, format_field_path, format_type_for_assert,
-    match_pattern, materialize, maybe_wrap_guard, validate_and_wrap_record, value_matches_type,
-    EvalContext, DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
+    as_record_row_merged, format_field_path, format_type_for_assert, match_pattern, materialize,
+    maybe_wrap_guard, validate_and_wrap_record, value_matches_type, EvalContext,
+    DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
 };
 use crate::eval_access::invoke_proxy_handler;
 use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
+use crate::eval_core::eval_core_expr;
 use crate::types::Type;
 use crate::value::{string_val, Environment, Key, Thunk, Value};
 
@@ -972,7 +973,7 @@ pub(crate) async fn force_step(
             field,
         } = &lowered.node
         {
-            match crate::eval::eval_core_expr_pub(target, &env, &thunk_ctx).await {
+            match eval_core_expr(target, &env, &thunk_ctx).await {
                 Ok(target_thunk) => {
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                         thunk: Arc::clone(thunk),
@@ -1019,7 +1020,7 @@ pub(crate) async fn force_step(
             resolved_type,
         } = &lowered.node
         {
-            let inner_thunk = match crate::eval::eval_core_expr_pub(inner, &env, &thunk_ctx).await {
+            let inner_thunk = match eval_core_expr(inner, &env, &thunk_ctx).await {
                 Ok(t) => t,
                 Err(e) => {
                     let decorated = attach_materialization_context(
@@ -1061,7 +1062,7 @@ pub(crate) async fn force_step(
 
         // Remaining CoreExpr variants (Call, Dict, Quote, etc.) fall through to eval_core_expr_pub.
         // Sequential and Match are handled inline above (lines ~1214 and ~1257) via CEK continuations.
-        match crate::eval::eval_core_expr_pub(&lowered, &env, &thunk_ctx).await {
+        match eval_core_expr(&lowered, &env, &thunk_ctx).await {
             Ok(result_thunk) => {
                 // Fast path: if eval_core_expr already produced a materialized thunk
                 // (e.g., literals), skip the Memoize push entirely.
@@ -1129,7 +1130,7 @@ pub(crate) async fn force_step(
             field,
         } = &core_expr.node
         {
-            match eval_core_expr_pub(target, &env, &thunk_ctx).await {
+            match eval_core_expr(target, &env, &thunk_ctx).await {
                 Ok(target_thunk) => {
                     stack.push(Cont::Memoize(Box::new(MemoizeData {
                         thunk: Arc::clone(thunk),
@@ -1181,7 +1182,7 @@ pub(crate) async fn force_step(
             resolved_type,
         } = &core_expr.node
         {
-            let inner_thunk = match eval_core_expr_pub(inner, &env, &thunk_ctx).await {
+            let inner_thunk = match eval_core_expr(inner, &env, &thunk_ctx).await {
                 Ok(t) => t,
                 Err(e) => {
                     let decorated = attach_materialization_context(
@@ -1272,7 +1273,7 @@ pub(crate) async fn force_step(
         // The CEK machine evaluates arms iteratively via MatchDispatch continuations.
         if let crate::ast::CoreExpr::Match { scrutinee, arms } = &core_expr.node {
             // Evaluate the scrutinee first
-            let scrutinee_thunk = match eval_core_expr_pub(scrutinee, &env, &thunk_ctx).await {
+            let scrutinee_thunk = match eval_core_expr(scrutinee, &env, &thunk_ctx).await {
                 Ok(t) => t,
                 Err(e) => {
                     let decorated = attach_materialization_context(
@@ -1322,7 +1323,7 @@ pub(crate) async fn force_step(
             };
         }
 
-        match eval_core_expr_pub(&core_expr, &env, &thunk_ctx).await {
+        match eval_core_expr(&core_expr, &env, &thunk_ctx).await {
             Ok(result_thunk) => {
                 // Fast path: literal or already-materialized result.
                 if let Some(value) = result_thunk.try_get_materialized() {
@@ -3845,7 +3846,7 @@ pub(crate) async fn run(initial: Action, ctx: &Arc<EvalContext>) -> EvalResult<V
                 // If the result is already materialized (e.g., literals), take the
                 // fast path and return Continue(Ok(value)) without pushing to the
                 // continuation stack. Otherwise return Materialize to force iteratively.
-                action = match eval_core_expr_pub(&expr, &env, &action_ctx).await {
+                action = match eval_core_expr(&expr, &env, &action_ctx).await {
                     Ok(thunk) => match thunk.try_get_materialized() {
                         Some(value) => Action::Continue(Ok(value)),
                         None => Action::Materialize {

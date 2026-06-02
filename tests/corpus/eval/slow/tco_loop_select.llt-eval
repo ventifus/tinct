@@ -1,0 +1,6 @@
+# Test that loop pattern survives 10,000 iterations with TCO.
+# This tests the recursion-through-builtin path (if builtin returning thunk).
+[loop: [fn [let n@Int] [if [= n 0] "looped" [loop [- n 1]]]]]
+[loop 10000]
+=== out
+String("looped")

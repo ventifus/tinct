@@ -439,7 +439,14 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // inconsistently marks the FD constraint vars, causing it to be dropped as ambiguous.
     // Restoring the authoritative builtin scheme ensures `get 1 (Seq[String])` resolves
     // the return type to `String` via the Indexable FD machinery.
-    for name in &["=", "<"] {
+    // Restore arithmetic operators (+, -, *, /) in addition to equality/comparison.
+    // The prelude may define or override these operators (e.g., via [+ x y] desugaring),
+    // and the inferred scheme can be degraded to monomorphic Number → Number → Number
+    // instead of the correct Addable a b c => a → b → c with MPTC functional dependency.
+    // A degraded arithmetic scheme means FD improvement never fires, causing return types
+    // to be Number instead of the more precise Int or Float, and causing "cannot unify
+    // Int with Number" errors when the narrower type is expected.
+    for name in &["=", "<", "+", "-", "*", "/"] {
         let is_degraded = env
             .get_own(name)
             .map(|s| s.type_vars.is_empty() || s.constraints.is_empty())

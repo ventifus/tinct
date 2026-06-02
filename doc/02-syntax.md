@@ -539,10 +539,7 @@ process: [fn [hosts@T2] ...]   # alias resolves transitively
 
 **Bracket application for type parameters.** In `xs@[Seq Int]`, the `@` is the annotation separator and `[Seq Int]` is the annotation — a type-stage function application. `Seq` is called with `Int` as its element type argument. This is identical to how data bracket expressions work: `[Seq Int]` evaluates `Seq` in the type-stage Env and applies `Int` as an argument.
 
-**`[Map T]` vs `[Map [K: V]]`.** These are two perspectives on the same map type:
-
-- `[Map T]` — collection perspective: iterate the values, key type is `Any`. Useful when you only care about the value type.
-- `[Map [K: V]]` — lookup perspective: access by key of type `K`, value type `V`. Useful when the key type matters.
+**`[Map K V]` and `[Map Any V]`.** Map always requires two type arguments — the key type and the value type. When you don't care about the key type, write `Any` explicitly: `[Map Any Config]` means "a map of Config values with unconstrained key type." This mirrors how `[Seq Any]` means "a sequence of unconstrained element type."
 
 **Records with reserved field names.** The shorthand `x@[field: Type ...]` works when field names are unambiguous. When field names collide with annotation property keys (`type`, `return`, `default`, `doc`, `is`, `repr`, `constraint`, `bind`, `kinds`), define a type alias and annotate with the alias name — `x@[type: String]` is parsed as a property dict (setting the `type` property), not as a Record with a `type` field.
 
@@ -585,7 +582,7 @@ The annotation value after `@` may be a single word or a full property dict. A s
 | `"a@b"` | Quoted string "a@b" |
 | `x@[Seq Int]` | Annotation: x with type Seq(Int) |
 | `x@[Map [String: Int]]` | Annotation: x with type Map(String, Int) |
-| `x@[Map T1]` | Annotation: x with type Map(Any, T1) |
+| `x@[Map Any T1]` | Annotation: x with type Map(Any, T1) |
 | `Config: [type [record host: String  port: Int]]` | Type alias Config = Record{host:String, port:Int} |
 
 ---
@@ -626,7 +623,7 @@ Aliases compose with parameterized type annotations:
 
 ```tinct
 Config:     [type [record host: String  port: Int]]
-Hosts:      [type [Map Config]]           # collection of Config values (key: Any)
+Hosts:      [type [Map Any Config]]       # collection of Config values (key: Any)
 NamedHosts: [type [Map [String: Config]]] # lookup: name → Config
 ```
 
@@ -636,7 +633,7 @@ Type aliases are resolved at type-check time — they have no runtime cost.
 
 ```tinct
 @[Seq Int]        # Apply Seq constructor to Int
-@[Map String]     # Apply Map constructor to String
+@[Map String Int] # Apply Map constructor to String key, Int value
 ```
 
 The parser produces `Annotation::PropertyDict` for `@[...]` forms. During type checking, `resolve_type_expr` in `src/typecheck_annot.rs` resolves these by pattern-matching on the constructor name (`Seq`, `Map`, etc.) and creating the corresponding `Type::*` variant (`Type::Seq`, `Type::Map`). This happens after parsing completes, when annotations are resolved to concrete types.

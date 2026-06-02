@@ -1,6 +1,6 @@
 # What If: Equirecursive Types for tinct
 
-TODO: Handle this case as an example of isorecursive types: The main challenge is that Expr is recursive (Call contains Expr which contains Call).
+TODO: Handle this case as an example of equirecursive types: The main challenge is that Expr is recursive (Call contains Expr which contains Call).
 
 **State:** Proposal
 
@@ -275,7 +275,7 @@ For the annotation resolver, mutual recursion is detected when the expansion sta
 
 ## Downstream: validate-tinct-rewrite
 
-Once isorecursive types land, `validate_value` in `src/builtins_meta.rs` (~267 lines) can be rewritten as a tinct stdlib function. `regex-match?` is already available; the only missing piece is a recursive type alias to type the schema dict.
+Once equirecursive types land, `validate_value` in `src/builtins_meta.rs` (~267 lines) can be rewritten as a tinct stdlib function. `regex-match?` is already available; the only missing piece is a recursive type alias to type the schema dict.
 
 - Define the schema dict type in `stdlib/prelude.llt` using a `mu`-type alias covering all schema keys: `type`, `min`, `max`, `min-length`, `max-length`, `pattern`, `required`, `default`, `items`, `fields`, `enum`
 - Rewrite `validate` as a tinct function: call `regex-match?` for `pattern`, recurse on `fields:` and `items:` entries, collect violations into a Seq; remove `validate_value` from `src/builtins_meta.rs`
@@ -284,6 +284,7 @@ Once isorecursive types land, `validate_value` in `src/builtins_meta.rs` (~267 l
 
 ## Prerequisites
 
+- [`user-type-constructors.md`](user-type-constructors.md) — the `Type::TyCon` + `Type::App` representation and nominal parameterized ADTs are required before this feature. Nominal ADTs (Seq, Tree, Either) eliminate the depth-limit problem for constructor-defined recursive types; this feature handles the remaining case: structural recursive types (JsonValue, Config) that don't use constructors.
 - `type-ann-v2-infra` sprint — establishes the `--- stage: type` environment where `mu` and `recvar` are defined; establishes the type dict schema that `[kind: "recursive" ...]` extends
 
 ## References

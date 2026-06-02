@@ -36,7 +36,8 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::builtins::{ok_val, MAX_COLLECT_SIZE};
 use crate::error::{EvalError, EvalResult};
-use crate::eval::{eval_core_expr_pub, materialize};
+use crate::eval::materialize;
+use crate::eval_core::eval_core_expr;
 use crate::value::{BuiltinArgs, ClockCapInner, Key, StrKey, Thunk, ThunkId, Value};
 
 /// Helper to check argument count and extract first argument as a thunk.
@@ -251,7 +252,7 @@ pub(crate) fn builtin_task(
                         crate::value::Environment::with_parent(env),
                     ));
                     // Evaluate the body
-                    let thunk = eval_core_expr_pub(&body, &call_env, &ctx_clone).await?;
+                    let thunk = eval_core_expr(&body, &call_env, &ctx_clone).await?;
                     // Materialize the result
                     materialize(&thunk, None, &ctx_clone).await
                 }
@@ -1210,7 +1211,7 @@ pub(crate) fn builtin_select_once(
                             );
 
                             // Evaluate the body — return the thunk directly (lazy, no force).
-                            eval_core_expr_pub(&body, &call_env, &ctx).await?
+                            eval_core_expr(&body, &call_env, &ctx).await?
                         }
                         Value::Builtin(def) => {
                             // Call builtin with the value — return result thunk directly.
@@ -1347,7 +1348,7 @@ pub(crate) fn builtin_par_map(
                         );
 
                         // Evaluate the body
-                        let result_thunk = eval_core_expr_pub(&body, &call_env, &ctx_clone).await?;
+                        let result_thunk = eval_core_expr(&body, &call_env, &ctx_clone).await?;
                         materialize(&result_thunk, None, &ctx_clone).await
                     }
                     Value::Builtin(def) => {
@@ -1483,7 +1484,7 @@ pub(crate) fn builtin_par_filter(
                         );
 
                         // Evaluate the body
-                        let result_thunk = eval_core_expr_pub(&body, &call_env, &ctx_clone).await?;
+                        let result_thunk = eval_core_expr(&body, &call_env, &ctx_clone).await?;
                         materialize(&result_thunk, None, &ctx_clone).await?
                     }
                     Value::Builtin(def) => {

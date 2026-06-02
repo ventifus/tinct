@@ -344,11 +344,8 @@ pub(crate) fn builtin_try(
                 // DepthExceeded and ResourceLimitExceeded are non-catchable:
                 // they indicate system-level limits, not user-level errors.
                 use crate::error::ErrorKind;
-                match &e.kind {
-                    ErrorKind::ResourceLimitExceeded { .. } => {
-                        return Err(e);
-                    }
-                    _ => {}
+                if let ErrorKind::ResourceLimitExceeded { .. } = &e.kind {
+                    return Err(e);
                 }
                 // Error: return Value::Variant { tag: "Error", payload: Some(message) }
                 let msg_thunk_id =

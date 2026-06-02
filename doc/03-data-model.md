@@ -75,19 +75,19 @@ validate: [fn [r] [@[host: String  port: Int] r]]             # type assertion
 # Shorthand @[...] form also works for parameters (no collision with type/default/doc fields)
 process: [fn [config@[host: String  port: Int]] ...]
 
-# Map@T — "collection" perspective: key type irrelevant, you iterate over values
+# Map with unconstrained key type — iterate values, key type is Any
 T1: [type [record host: String  port: Int]]
-Hosts: [type [Map T1]]                            # a bag of T1 values, any keys
+Hosts: [type [Map Any T1]]                        # a bag of T1 values, any keys
 process-all: [fn [hosts@Hosts] [map do-work hosts]]
 
-# Map@[K: V] — "lookup" perspective: string-keyed lookup table
-Scoreboard: [type [Map [String: Int]]]
+# Map with explicit key type — string-keyed lookup table
+Scoreboard: [type [Map String Int]]
 lookup: [fn@Int [s@Scoreboard  key@String] [get-or key 0 s]]
 
 # Inline forms
-hosts@[Map T1]                                    # collection of T1 values
-index@[Map [String: Any]]                         # string-keyed, untyped values
-transitions@[Map [key: Int  value: [Seq Int]]]    # explicit named form
+hosts@[Map Any T1]                                # collection of T1 values (key: Any)
+index@[Map String Any]                            # string-keyed, untyped values
+transitions@[Map Int [Seq Int]]                   # int-keyed sequences
 cache@Map                                         # bare: Map@[Any: Any]
 
 # Dict — either form accepted
