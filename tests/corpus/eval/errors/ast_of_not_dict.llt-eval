@@ -1,6 +1,6 @@
 # ast-of returns Value::Expression, not a Dict — dict? returns false
 [dict? [ast-of 42]]
 === error
-[E099] ast-of: thunk in unknown state (defined at 1:8-1:19) (called at stdlib/prelude.llt:1432:60-1432:61)
+[E099] ast-of: thunk in unknown state (defined at 1:8-1:19) (called at stdlib/prelude.llt:1430:60-1430:61)
   in [ast-of ...] at 1:8-1:19
   in [dict? ...] at 1:1-1:20

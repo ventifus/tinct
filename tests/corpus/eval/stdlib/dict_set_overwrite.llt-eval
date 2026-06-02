@@ -1,6 +1,4 @@
 # set: overwrite existing key
 [set [x: 1 y: 2] x: 99]
-=== error
-[E022] unexpected named argument: x (valid parameter names: xs) (defined at 1:1-1:24)
-  in [set ...] at 1:1-1:24
-  in [set ...] at 1:1-1:24
+=== out
+Dict({"x": Int(99), "y": Int(2)})

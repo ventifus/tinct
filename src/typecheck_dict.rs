@@ -17,20 +17,28 @@ use crate::types::{
 /// registers each constructor as a callable function in `dict_env`. This makes constructors
 /// available as typed functions both for type-checking call sites and for runtime injection.
 ///
+/// Also records each injected constructor's type in `out_constructor_types` so the caller
+/// can include them in the dict's exported schemes (B-296: constructors must be visible as
+/// standalone names in the enclosing scope, not just as siblings within the dict body).
+///
 /// Constructor type for variant with fields `{k1: T1, k2: T2, ...}`:
 ///   `Function { params: [(Some("k1"), T1), (Some("k2"), T2), ...], ret: NominalVariant{tag, fields}, variadic: false }`
 ///
 /// Constructor type for unit variant (no fields):
 ///   `NominalVariant { tag, fields: {} }` (a value, not a function — constructed by bare reference)
-fn inject_adt_constructor_schemes(alias_ty: &Type, dict_env: &mut TypeEnv) {
+fn inject_adt_constructor_schemes(
+    alias_ty: &Type,
+    dict_env: &mut TypeEnv,
+    out_constructor_types: &mut HashMap<String, Type>,
+) {
     match alias_ty {
         Type::NominalVariant { tag, fields } => {
-            inject_single_constructor(tag, fields, dict_env);
+            inject_single_constructor(tag, fields, dict_env, out_constructor_types);
         }
         Type::Union(members) => {
             for member in members {
                 if let Type::NominalVariant { tag, fields } = member {
-                    inject_single_constructor(tag, fields, dict_env);
+                    inject_single_constructor(tag, fields, dict_env, out_constructor_types);
                 }
             }
         }
@@ -39,7 +47,8 @@ fn inject_adt_constructor_schemes(alias_ty: &Type, dict_env: &mut TypeEnv) {
     }
 }
 
-/// Register a single NominalVariant constructor into `dict_env`.
+/// Register a single NominalVariant constructor into `dict_env` and record its type in
+/// `out_constructor_types`.
 ///
 /// For **unit constructors** (no fields), the constructor IS the value — it has type
 /// `NominalVariant { tag, fields: {} }`. Example: `None` in `[type Option [Some a] None]`.
@@ -50,19 +59,21 @@ fn inject_adt_constructor_schemes(alias_ty: &Type, dict_env: &mut TypeEnv) {
 ///
 /// This allows the type checker to verify constructor call correctness: `[Circle r: 5]` ✓,
 /// `[Circle r: "hello"]` ✗ (type error: expected Int, got String).
-fn inject_single_constructor(tag: &str, fields: &Row, dict_env: &mut TypeEnv) {
-    if fields.fields.is_empty() {
+fn inject_single_constructor(
+    tag: &str,
+    fields: &Row,
+    dict_env: &mut TypeEnv,
+    out_constructor_types: &mut HashMap<String, Type>,
+) {
+    let constructor_ty = if fields.fields.is_empty() {
         // Unit constructor: no fields → the constructor is a value, not a function.
         // Type: NominalVariant { tag, fields: {} }
-        dict_env.insert(
-            tag.to_string(),
-            Type::NominalVariant {
-                tag: tag.to_string(),
-                fields: Row {
-                    fields: std::collections::HashMap::new(),
-                },
+        Type::NominalVariant {
+            tag: tag.to_string(),
+            fields: Row {
+                fields: std::collections::HashMap::new(),
             },
-        );
+        }
     } else {
         // Field constructor: has fields → the constructor is a function.
         // Type: Function { params: [(field_name, field_type), ...], ret: NominalVariant }
@@ -82,15 +93,15 @@ fn inject_single_constructor(tag: &str, fields: &Row, dict_env: &mut TypeEnv) {
             fields: fields.clone(),
         };
 
-        dict_env.insert(
-            tag.to_string(),
-            Type::Function {
-                params,
-                ret: Box::new(ret),
-                variadic: false,
-            },
-        );
-    }
+        Type::Function {
+            params,
+            ret: Box::new(ret),
+            variadic: false,
+        }
+    };
+
+    dict_env.insert(tag.to_string(), constructor_ty.clone());
+    out_constructor_types.insert(tag.to_string(), constructor_ty);
 }
 
 /// Strongly Connected Component - a group of mutually dependent bindings
@@ -355,6 +366,14 @@ pub(crate) fn infer_dict(
     let sccs = compute_sccs(entries, &key_entries);
 
     // Pass 2: Register type aliases (before SCC processing)
+    //
+    // `injected_constructor_types`: Maps constructor name → its concrete type, for ALL
+    // constructors injected into dict_env during this pass. These constructors are not
+    // present in key_entries (they have no explicit dict entry), so they would otherwise
+    // be invisible in the returned `schemes` map. We track them here so they can be
+    // included in the final schemes output (B-296).
+    let mut injected_constructor_types: HashMap<String, Type> = HashMap::new();
+
     for ((key_name, is_alias), entry) in key_entries.iter().zip(entries.iter()) {
         if *is_alias {
             if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
@@ -395,7 +414,14 @@ pub(crate) fn infer_dict(
                         //
                         // Constructor type: for fields {k1: T1, k2: T2, ...} → Fn@Ret [k1: T1 k2: T2 ...]
                         // where Ret = NominalVariant{tag, fields}.
-                        inject_adt_constructor_schemes(&alias_ty, &mut dict_env);
+                        //
+                        // Also record each injected constructor type in injected_constructor_types
+                        // so it can be exported in the returned schemes map (B-296 fix).
+                        inject_adt_constructor_schemes(
+                            &alias_ty,
+                            &mut dict_env,
+                            &mut injected_constructor_types,
+                        );
                     }
                 }
             }
@@ -474,6 +500,27 @@ pub(crate) fn infer_dict(
         }
         let mut fresh_vars_storage = None;
 
+        // B-275 LIMITATION: Pre-binding ALL SCC entries to fresh TypeVars in dict_env
+        // enables mutual recursion (letrec) but creates a name-shadowing problem:
+        // if ANY dict key name coincides with an outer-scope prelude function (e.g., a
+        // key named `trim`), the placeholder binds `trim` in dict_env and shadows the
+        // prelude `trim: Fn[Str→Str]` for ALL sibling entries — in the same SCC AND
+        // in subsequent SCCs (because dict_env is updated with the concrete type after
+        // each SCC's Pass 4).
+        //
+        // Primary mechanism (cross-SCC): After SCC1 ({trim: "hello"}) completes Pass 4,
+        // dict_env is updated with `trim → TypeScheme::mono(StringLiteral("hello"))`.
+        // SCC2 ({f: [fn ...]})'s body looks up "trim" via env.get() and finds the Str
+        // binding before reaching the prelude, causing T003 at the `[trim s]` call site.
+        //
+        // Secondary mechanism (same-SCC): Within a single SCC, the TypeVar placeholder
+        // from Pass 1_i gets bound in state.subst during Pass 3_i. check_call applies
+        // state.subst to func_ty (typecheck_call.rs ~line 651), resolving the TypeVar to
+        // Str BEFORE the TypeVar arm can suppress the error.
+        //
+        // Fix tracked in B-275. Fix direction: mark letrec placeholder TypeSchemes
+        // (via a boolean flag on TypeScheme) and prefer parent-env function bindings
+        // in check_call when the current binding is a non-function-typed placeholder.
         for &idx in &scc.indices {
             let (ref key_name, is_alias) = key_entries[idx];
             if !is_alias {
@@ -846,6 +893,47 @@ pub(crate) fn infer_dict(
                 schemes.insert(name.clone(), scheme.clone());
             }
         }
+    }
+
+    // B-296: Export injected constructor types as schemes.
+    //
+    // Constructors from `[type ...]` declarations (e.g., `Tcp` from `Transport: [type [Tcp] ...]`)
+    // are injected into dict_env during Pass 2 so sibling entries can reference them. However,
+    // they are NOT in key_entries (no explicit dict entry), so they never appear in the schemes
+    // map built above. Without this step, constructors are invisible to the enclosing scope —
+    // `Tcp` resolves as "undefined variable" in user code even after importing the prelude.
+    //
+    // Fix: generalize each injected constructor type at enclosing_level (matching the level used
+    // for regular dict entries in Pass 4), then insert it into both `schemes` and `field_types`.
+    //
+    // Generalization is necessary for parameterized constructors: `Ok` in
+    // `Result: [type [Ok a] [Error String]]` has a TypeVar `a` at level `state.level`
+    // (= enclosing_level + 1). Generalizing at enclosing_level promotes `a` → ∀a, producing
+    // the correct polymorphic scheme `∀a. a → NominalVariant("Ok", {0: a})`.
+    //
+    // Constructor types take precedence over any same-named explicit dict entry (e.g., workaround
+    // re-exports like `Tcp: [variant "Tcp"]` or `Ok: Ok`). The `[type ...]` constructors are the
+    // canonical definitions; workaround entries should be removed from prelude.llt now that B-296
+    // is fixed.
+    for (constructor_name, constructor_ty) in &injected_constructor_types {
+        // Constructor types from `[type ...]` always take precedence over any explicit dict entry
+        // with the same name (e.g., `Ok: Ok` or `Tcp: [variant "Tcp"]` workaround re-exports).
+        //
+        // Rationale: when `Result: [type [Ok a] [Error String]]` is declared in a dict, `Ok`
+        // and `Error` ARE that type's constructors — the canonical definitions. Any same-named
+        // dict entry is either a workaround re-export (should now be deleted) or an incorrect
+        // shadowing that would produce a wrong type (e.g., `Ok: Ok` infers ∀a.a via VarRef
+        // self-reference, whereas the constructor type is the precise `∀a. a → NominalVariant`).
+        //
+        // Overriding here is safe: the old `field_types[name]` (from the explicit entry) is
+        // discarded and replaced by the correct constructor type. The stale TypeVar from Pass 1_i
+        // remains in `state.subst` but is unreferenced and harmless.
+        let scheme =
+            generalize_with_doc(enclosing_level, constructor_ty, state, None, span.clone());
+        schemes.insert(constructor_name.clone(), scheme);
+        // Also add to field_types so the constructor appears in the returned Record type.
+        // This ensures the constructor is part of the module's exported type signature.
+        field_types.insert(constructor_name.clone(), constructor_ty.clone());
     }
 
     // Restore enclosing level

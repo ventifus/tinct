@@ -1228,6 +1228,32 @@ pub(crate) fn check_call(
         Type::NominalVariant { .. } => {
             Err(vec![TypeError::not_a_function(&func_ty, func.span.clone())])
         }
-        _ => Err(vec![TypeError::not_a_function(&func_ty, func.span.clone())]),
+        _ => {
+            // T003: func_ty is a concrete non-callable type (e.g., Str, Int, Bool).
+            //
+            // B-275 FALSE POSITIVE: This arm fires incorrectly when a dict key has the same
+            // name as an outer-scope prelude function (e.g., key `trim: "hello"` in a dict
+            // where a sibling entry also calls `trim` as a function).
+            //
+            // Confirmed root cause: infer_dict processes SCCs in topological order. After
+            // SCC1 ({trim: "hello"}) completes, dict_env is updated with
+            // `trim → TypeScheme::mono(StringLiteral("hello"))` (concrete Str). This shadows
+            // the prelude `trim: Fn[Str→Str]` for all subsequent SCCs. When SCC2 ({f: ...})
+            // processes f's body, env.get("trim") finds the dict_env Str binding before the
+            // prelude, so func_ty resolves to StringLiteral("hello") → T003.
+            //
+            // Secondary mechanism (same-SCC case): Pass 1_i in typecheck_dict.rs pre-binds
+            // ALL SCC keys to TypeVar placeholders. If `trim` and `f` land in the same SCC,
+            // state.subst.apply() (line ~651-655) resolves the TypeVar to Str before this
+            // match, bypassing the TypeVar arm (line 1140) that would suppress the error.
+            //
+            // Fix direction (tracked in B-275): in check_call's VarRef dispatch (line ~1436),
+            // after env.get(name) returns a monomorphic scheme with a non-function body, check
+            // the env's parent chain for a function-typed binding under the same name. If
+            // found AND the current binding came from a same-dict level (detectable via
+            // TypeScheme level metadata or a "letrec_placeholder" flag), use the parent
+            // binding instead. See typecheck_tests.rs::test_b275_letrec_typevar_does_not_shadow_prelude_function.
+            Err(vec![TypeError::not_a_function(&func_ty, func.span.clone())])
+        }
     }
 }

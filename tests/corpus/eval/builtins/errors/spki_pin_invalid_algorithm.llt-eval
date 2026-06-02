@@ -6,11 +6,8 @@
 [pin: [spki-pin InvalidAlgorithm [bytes-of [65 66 67]]]]
 [tag-of pin.algorithm]
 
-=== error
-[E022] unexpected named argument: algorithm (valid parameter names: xs) (defined at 100:5-100:59)
-  in [set ...] at 100:5-100:59
-  in [set ...] at 100:5-100:59
-  in materialized at 5:1-5:57
+=== out
+String("InvalidAlgorithm")
 
 === warn
 undefined variable: spki-pin at 5:8-5:16

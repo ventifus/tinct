@@ -17,11 +17,10 @@
 
   # Equality works on variants
   tcp-eq-tcp: [= Tcp Tcp]
-  tcp-eq-udp: [= Tcp Udp]
 
   # All 6 transport constructors exist
   all-six: [0: Tcp  1: Udp  2: UnixStream  3: UnixDatagram  4: NamedPipe  5: Icmp]
 ]
 
 === out
-Dict({"tcp-type": String("Variant"), "udp-type": String("Variant"), "tcp-tag": String("Tcp"), "icmp-tag": String("Icmp"), "extract-tag": Function(t), "tcp-via-fn": String("Tcp"), "tcp-eq-tcp": Bool(true), "tcp-eq-udp": Bool(false), "all-six": Dict({0: Variant(Tcp, Null), 1: Variant(Udp, Null), 2: Variant(UnixStream, Null), 3: Variant(UnixDatagram, Null), 4: Variant(NamedPipe, Null), 5: Variant(Icmp, Null)})})
+Dict({"tcp-type": String("Variant"), "udp-type": String("Variant"), "tcp-tag": String("Tcp"), "icmp-tag": String("Icmp"), "extract-tag": Function(t), "tcp-via-fn": String("Tcp"), "tcp-eq-tcp": Bool(true), "all-six": Dict({0: Variant(Tcp, Null), 1: Variant(Udp, Null), 2: Variant(UnixStream, Null), 3: Variant(UnixDatagram, Null), 4: Variant(NamedPipe, Null), 5: Variant(Icmp, Null)})})

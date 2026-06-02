@@ -10,7 +10,5 @@
         rep:      p.rep
         status:   p.status]]
     [call %.parse-socks5-response [str [chr 5] [chr 5] [chr 0] [chr 1]]]]
-=== error
-[E022] unexpected named argument: success? (valid parameter names: xs) (defined at 7:5-10:28)
-  in [set ...] at 7:5-10:28
-  in [set ...] at 7:5-10:28
+=== out
+Dict({"success?": Bool(false), "rep": Int(5), "status": String("Connection refused")})

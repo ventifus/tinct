@@ -432,18 +432,20 @@ A named argument must not target a parameter already bound positionally.
 **[C-NAMED-VALID] Named argument validity:**
 
 ```text
-∀(k, _) ∈ named:  ∃pᵢ ∈ P such that pᵢ.name = k
+∀(k, _) ∈ named:  (∃pᵢ ∈ P such that pᵢ.name = k)  ∨  V ≠ ∅
 ```
 
-Named arguments may target any parameter (required or optional), but must target an existing parameter. This enables the Kotlin model: to reach a required parameter past an optional one, name it at the call site.
+Named arguments may target any parameter (required or optional), but must target an existing parameter OR the function must have a variadic parameter. This enables the Kotlin model: to reach a required parameter past an optional one, name it at the call site. When a variadic parameter exists, unmatched named arguments flow into the variadic collection alongside excess positional arguments.
 
 **[C-VARIADIC] Variadic collection:**
 
 ```text
-V ≠ ∅ ⟹ env_call(V) = Dict({k↦pos[|P|+k] | k ∈ 0..(|pos|-|P|)})
+unmatched_named = {k↦θ ∈ named | ¬∃pᵢ ∈ P such that pᵢ.name = k}
+V ≠ ∅ ⟹ env_call(V) = Dict({Int(k)↦pos[|P|+k] | k ∈ 0..(|pos|-|P|)}
+                             ∪ {Str(k)↦θ | (k,θ) ∈ unmatched_named})
 ```
 
-Excess positional arguments (beyond `|P|`) are collected into a Dict with integer keys starting at 0. If `|pos| = |P|`, the variadic Dict is empty (`{}`).
+Excess positional arguments (beyond `|P|`) are collected into a Dict with integer keys starting at 0. Unmatched named arguments (those not targeting any parameter in P) are merged into the same Dict with string keys. If `|pos| = |P|` and `unmatched_named = ∅`, the variadic Dict is empty (`{}`).
 
 **[C-COMPLETE] Completeness:**
 
@@ -506,35 +508,40 @@ Parameters are bound left-to-right. For each parameter, the priority chain deter
 
 The `env_d` parameter controls where default expressions are evaluated — this is the Garrigue (1995) separation. Defaults are wrapped as lazy thunks; errors surface at the parameter's first use in the body, not at the call site.
 
-**[BIND-NAMED]** (validation only)
+**[BIND-NAMED]** (validation and unmatched collection)
 
 ```text
+unmatched_named = ∅
 For each (k, θ) ∈ named:
     if ∃i < |pos| such that pᵢ.name = k:
         error("parameter 'k' received both positional and named argument")
     if ¬∃pᵢ ∈ P such that pᵢ.name = k:
-        error("unexpected named argument: k (valid parameter names: p₀.name, …, p_{n-1}.name)")
+        if V = ∅:
+            error("unexpected named argument: k (valid parameter names: p₀.name, …, p_{n-1}.name)")
+        else:
+            unmatched_named = unmatched_named ∪ {k↦θ}
 ───────────────────────────
-bind_named(P, pos, named, env_{|P|}) ⇒ env_{|P|} | error
+bind_named(P, V, pos, named, env_{|P|}) ⇒ (env_{|P|}, unmatched_named) | error
 ```
 
-BIND-NAMED is a pure validation phase — it performs no bindings. All named args that target valid parameters were already consumed by BIND-POSITIONAL (which checks `pᵢ.name ∈ dom(named)` for params past the positional args). After BIND-POSITIONAL, every param in P is bound in `env_{|P|}`. BIND-NAMED verifies two conditions: (1) overlap — no named arg targets a positionally-bound parameter, (2) existence — every named arg targets a parameter that exists. Named args may target any parameter (required or optional) — this is the Kotlin model.
+BIND-NAMED was originally a pure validation phase, but now also collects unmatched named arguments for variadic functions. All named args that target valid parameters were already consumed by BIND-POSITIONAL (which checks `pᵢ.name ∈ dom(named)` for params past the positional args). After BIND-POSITIONAL, every param in P is bound in `env_{|P|}`. BIND-NAMED verifies two conditions: (1) overlap — no named arg targets a positionally-bound parameter, (2) existence (amended for B-277) — every named arg must target an existing parameter OR the function must have a variadic parameter (in which case the unmatched arg is collected for merging into the variadic Dict). Named args may target any parameter (required or optional) — this is the Kotlin model.
 
-The implementation may split this into two loops for engineering clarity (one for overlap, one for existence) without affecting semantics.
+The implementation may split this into two loops for engineering clarity (one for overlap, one for existence/collection) without affecting semantics.
 
 **[BIND-VARIADIC]**
 
 ```text
 V ≠ ∅:
-    var_dict = Dict({k↦pos[|P|+k] | k ∈ 0..(|pos|-|P|)})
+    var_dict = Dict({Int(k)↦pos[|P|+k] | k ∈ 0..(|pos|-|P|)}
+                     ∪ {Str(k)↦θ | (k,θ) ∈ unmatched_named})
     env_call = env'[V.name ↦ Materialized(var_dict)]
 V = ∅:
     env_call = env'
 ───────────────────────────
-bind_variadic(V, P, pos, env') ⇒ env_call
+bind_variadic(V, P, pos, unmatched_named, env') ⇒ env_call
 ```
 
-The variadic parameter receives a Dict with integer keys. The Dict is materialized immediately (not a thunk) — the values within it are thunks from the positional args, preserving laziness of the individual arguments.
+The variadic parameter receives a Dict with integer keys (for excess positional args) and string keys (for unmatched named args). The Dict is materialized immediately (not a thunk) — the values within it are thunks from the positional args and named args, preserving laziness of the individual arguments.
 
 ### Part 3: Correctness Proof
 

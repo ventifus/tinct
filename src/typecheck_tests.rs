@@ -860,6 +860,86 @@ fn test_type_alias_cycle_resolves_to_unknown() {
     // We just verify that there IS a type error, not the specific message.
 }
 
+// -- B-296: ADT constructor names exported as standalone bindings from [type ...] --
+
+#[test]
+fn test_b296_unit_constructors_exported_as_bindings() {
+    // B-296: Constructors from `[type ...]` must be visible as standalone names in the
+    // enclosing dict's type environment — not just as sibling-scope entries during inference.
+    // Before this fix, `Foo` and `Bar` would resolve as "undefined variable" in user code
+    // even after importing the dict (e.g., from prelude).
+    //
+    // Test: `Foo` and `Bar` are unit constructors from `MyType`. Using them as values should
+    // typecheck without error.
+    check("[MyType: [type [Foo] [Bar]]  x: Foo  y: Bar]").unwrap();
+}
+
+#[test]
+fn test_b296_unit_constructor_has_nominal_variant_type() {
+    // B-296: Unit constructors exported by [type ...] should have type NominalVariant.
+    // A unit constructor is a value (not a function), so its type is NominalVariant{tag, fields:{}}
+    let env = doc_env("[MyType: [type [Foo] [Bar]]]");
+    let foo_scheme = env.get("Foo").expect("Foo should be in the exported env");
+    assert!(
+        matches!(&foo_scheme.body, Type::NominalVariant { tag, .. } if tag == "Foo"),
+        "Foo should have NominalVariant type, got {:?}",
+        foo_scheme.body
+    );
+    let bar_scheme = env.get("Bar").expect("Bar should be in the exported env");
+    assert!(
+        matches!(&bar_scheme.body, Type::NominalVariant { tag, .. } if tag == "Bar"),
+        "Bar should have NominalVariant type, got {:?}",
+        bar_scheme.body
+    );
+}
+
+#[test]
+fn test_b296_field_constructor_exported_as_function_type() {
+    // B-296: Field constructors from [type ...] should have Function type.
+    // [Circle r: Int] is a field constructor: its type is Function {params: [(Some("r"), Int)], ret: NominalVariant}
+    let env = doc_env("[Shape: [type [Circle r: Int] [Square s: Int]]]");
+    let circle_scheme = env
+        .get("Circle")
+        .expect("Circle should be in the exported env");
+    assert!(
+        matches!(&circle_scheme.body, Type::Function { .. }),
+        "Circle should have Function type, got {:?}",
+        circle_scheme.body
+    );
+}
+
+#[test]
+fn test_b296_field_constructor_callable_without_error() {
+    // B-296: Field constructors should be callable at their correct types without type errors.
+    // [Circle r: 5] calls the Circle constructor with r=5 — should typecheck cleanly.
+    check("[Shape: [type [Circle r: Int] [Square s: Int]]  c: [Circle r: 5]  sq: [Square s: 10]]")
+        .unwrap();
+}
+
+#[test]
+fn test_b296_unit_constructor_usable_in_function() {
+    // B-296: Unit constructors should be usable inside function bodies as values.
+    // Before the fix, Foo was "undefined variable" inside the function body.
+    check("[Status: [type [Active] [Inactive]]  get-active: [fn [] Active]]").unwrap();
+}
+
+#[test]
+fn test_b296_union_type_constructors_all_exported() {
+    // B-296: ALL constructors in a Union ADT are exported, not just the first.
+    // Transport: [type [Tcp] [Udp] [UnixStream]] → Tcp, Udp, UnixStream all visible.
+    let env = doc_env("[T: [type [A] [B] [C] [D]]]");
+    for name in &["A", "B", "C", "D"] {
+        let scheme = env
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} should be in the exported env"));
+        assert!(
+            matches!(&scheme.body, Type::NominalVariant { .. }),
+            "{name} should have NominalVariant type, got {:?}",
+            scheme.body
+        );
+    }
+}
+
 #[test]
 #[ignore = "pre-existing regression from runtime-v2 merge: parser rejects [type ...] in expression position"]
 fn test_type_alias_field_named_type() {
@@ -7660,7 +7740,7 @@ fn test_i_case3_wildcard_remaining_is_never() {
 fn test_check_get_map_returns_value_type() {
     // [builtin-get key map] where map : Map[String Int] should return Int.
     // Seed TypeEnv directly with m : Map[String Int] since there is no Map literal syntax in LLT.
-    // Resolved by check_get special case: Map(K, V) → V without needing Indexable FD lookup.
+    // Resolved by Indexable MPTC FD: Map instance (K, V) → V.
     let mut base_env = crate::builtins::build_builtins_type_env();
     base_env.insert(
         "m".to_string(),
@@ -7699,8 +7779,8 @@ fn test_check_get_map_returns_value_type() {
 #[test]
 fn test_check_get_optional_map_returns_value_or_null() {
     // [get? key map] where map : Map[String Int] should return Int|Null.
-    // Note: get? uses the Indexable scheme directly (not check_get), so Map FD behavior
-    // depends on lookup_mptc. Seed TypeEnv directly with m : Map[String Int].
+    // Resolved by Indexable MPTC FD: Map instance (K, V) → V | Null.
+    // Seed TypeEnv directly with m : Map[String Int].
     let mut base_env = crate::builtins::build_builtins_type_env();
     base_env.insert(
         "m".to_string(),
@@ -7753,7 +7833,7 @@ fn test_check_get_optional_map_returns_value_or_null() {
 #[test]
 fn test_check_get_record_known_field_returns_field_type() {
     // [builtin-get "a" rec] where rec : [a: Int] should return Int.
-    // Uses builtin-get (Indexable FD) with Record special case (HasField-style lookup).
+    // Resolved by Indexable MPTC FD: Record case routed through resolve_has_field.
     let env = doc_env_with_builtins(
         "[rec: [a: 42]]\n\
              [result: [builtin-get \"a\" rec]]",
@@ -7799,7 +7879,7 @@ fn test_check_get_optional_record_known_field_returns_field_type_or_null() {
 #[test]
 fn test_check_get_unknown_type_falls_back_to_unknown() {
     // [builtin-get key unknown_dict] where unknown_dict : unknown type should not error.
-    // With Indexable FD: no instance matches → determined type stays Unknown (falls back).
+    // Indexable FD: no instance matches for unknown container → falls back to Unknown.
     let env = doc_env_with_builtins(
         "[d: [if true [] []]]\n\
              [result: [builtin-get \"x\" d]]",
@@ -7863,10 +7943,10 @@ fn test_builtin_get_integer_key_falls_back_to_unknown() {
     let _ = env.get("result");
 }
 
-// ========== check_get special-case dispatch tests (prelude `get` name) ==========
+// ========== Indexable MPTC FD tests for prelude `get` name ==========
 // These tests verify that `get` (the prelude wrapper) produces precise return types
-// via the check_get special case, even though the prelude scheme has lost the
-// Indexable constraint due to the [fn@[return: a] ...] annotation.
+// via the Indexable MPTC FD path. imports.rs restores the authoritative Indexable-
+// constrained builtin scheme for `get` to ensure FD fires reliably at call sites.
 
 #[test]
 fn test_check_get_prelude_seq_integer_key_returns_element_type() {
@@ -7878,14 +7958,14 @@ fn test_check_get_prelude_seq_integer_key_returns_element_type() {
     );
     match env.get("result").map(|s| &s.body) {
         Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
-        Some(other) => panic!("expected Str from [get 1 Seq[Str]] via check_get, got {other}"),
+        Some(other) => panic!("expected Str from [get 1 Seq[Str]] via Indexable FD, got {other}"),
         None => panic!("field 'result' not found"),
     }
 }
 
 #[test]
 fn test_check_get_prelude_record_string_literal_key_returns_field_type() {
-    // [get "host" cfg] where cfg : [host: Str] should return Str via check_get.
+    // [get "host" cfg] where cfg : [host: Str] should return Str via Indexable MPTC FD.
     let env = doc_env_with_builtins(
         "[cfg: [host: \"localhost\"]]\n\
              [result: [get \"host\" cfg]]",
@@ -7893,7 +7973,7 @@ fn test_check_get_prelude_record_string_literal_key_returns_field_type() {
     match env.get("result").map(|s| &s.body) {
         Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
         Some(other) => {
-            panic!("expected Str from [get \"host\" record] via check_get, got {other}")
+            panic!("expected Str from [get \"host\" record] via Indexable FD, got {other}")
         }
         None => panic!("field 'result' not found"),
     }
@@ -7909,7 +7989,7 @@ fn test_check_get_prelude_integer_literal_key_into_seq_str() {
     );
     match env.get("result").map(|s| &s.body) {
         Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
-        Some(other) => panic!("expected Str from [get 0 Seq[Str]] via check_get, got {other}"),
+        Some(other) => panic!("expected Str from [get 0 Seq[Str]] via Indexable FD, got {other}"),
         None => panic!("field 'result' not found"),
     }
 }
@@ -8944,7 +9024,7 @@ fn test_do_infer_corpus_diagnostics() {
     eprintln!("{}", out);
 }
 
-// -- check_arithmetic / check_div: arithmetic return-type refinement --
+// -- Arithmetic MPTC FD (Addable/Subtractable/Multipliable/Divisible): return-type refinement --
 
 /// Helper: type-check a single-document with `build_builtins_type_env()` and return
 /// the type of the named field. Panics if the field is absent or parsing fails.
@@ -8958,7 +9038,7 @@ fn infer_with_builtins(input: &str, field: &str) -> Type {
 
 #[test]
 fn test_arithmetic_add_int_int_returns_int() {
-    // [+ 1 2]: both args are IntLiteral → refined to Int (not Number)
+    // [+ 1 2]: both args are IntLiteral → refined to Int (not Number) via Addable MPTC FD.
     // Uses build_builtins_type_env() which has `+` with Addable FD.
     let ty = infer_with_builtins("[x: [+ 1 2]]", "x");
     assert!(
@@ -9040,13 +9120,12 @@ fn test_arithmetic_add_number_number_stays_number() {
 
 #[test]
 fn test_arithmetic_add_int_int_through_prelude_refinement() {
-    // The original motivating case: the prelude wrapper gives `+` a scheme of
-    // `Fn Number [Number Number]`, causing CALL-MONO to return Number instead of Int.
-    // check_arithmetic intercepts the name-dispatch for `+`/`builtin-add` and refines to Int.
+    // The original motivating case: [+ 1 2] with both IntLiteral args should refine to Int.
+    // Resolved by Addable MPTC FD: instance (Int, Int) → Int via lookup_arithmetic_instance.
     let ty = infer_with_builtins("[result: [+ 1 2]]", "result");
     assert!(
         matches!(ty, Type::Int | Type::IntLiteral(_)),
-        "[+ 1 2] should refine to Int via check_arithmetic, got {ty}"
+        "[+ 1 2] should refine to Int via Addable MPTC FD, got {ty}"
     );
 }
 
@@ -9485,5 +9564,47 @@ fn test_prelude_instance_cache_seeds_appendable() {
              If this fails, PRELUDE_INSTANCE_CACHE is empty — the prelude's Appendable instances \
              (AppendableDict, AppendableSeq) were not registered during prelude type-checking.",
         instance_count, class_names
+    );
+}
+
+// -- B-275: letrec TypeVar shadowing outer-scope prelude functions --
+
+#[test]
+#[ignore = "B-275: known false positive — same-dict key named after prelude fn causes T003"]
+fn test_b275_letrec_typevar_does_not_shadow_prelude_function() {
+    // A dict entry whose key name collides with a prelude function (e.g., `trim`) causes
+    // T003 "expected function type, got String" when a sibling entry calls `trim` as a
+    // function. This is a false positive: `trim` should resolve to the prelude `Fn[Str→Str]`,
+    // but instead it resolves to the same-dict non-function binding.
+    //
+    // Root cause (confirmed): infer_dict's SCC-based processing inserts EVERY dict key into
+    // dict_env (including non-function values). After SCC1 ({trim: "hello"}) completes Pass 4,
+    // dict_env is updated with `trim → TypeScheme::mono(StringLiteral("hello"))`. This concrete
+    // Str scheme then shadows the prelude `trim: Fn[Str→Str]` for all subsequent SCCs.
+    //
+    // When SCC2 ({f: [fn ...]}) processes f's body and calls `env.get("trim")`, it finds the
+    // dict_env's StringLiteral binding BEFORE the prelude function, producing T003 at [trim s].
+    //
+    // The TypeVar phase (Pass 1_i) plays a secondary role: within the SAME SCC, the TypeVar
+    // placeholder for a key shadows the outer prelude immediately; after Pass 3_i the TypeVar
+    // gets bound in state.subst, so check_call's state.subst.apply() resolves it to a concrete
+    // non-function type before the TypeVar arm can suppress the error. Either way, a dict key
+    // named after a prelude function shadows it.
+    //
+    // When B-275 is fixed, this test should be promoted to a non-ignored passing test that
+    // asserts `check(input).is_ok()`.
+    //
+    // Current observed behavior: T003 at the `[trim s]` call site.
+    // Expected behavior after fix: no errors (trim resolves to the prelude function).
+    let input = r#"[
+  trim: "hello"
+  f: [fn@String [let s@String] [trim s]]
+]"#;
+    // Currently produces T003: remove #[ignore] and change is_err() to is_ok() when fixed.
+    let result = check(input);
+    assert!(
+        result.is_err(),
+        "B-275 regression: expected T003 false positive (known bug), got no error — \
+         the bug may be fixed; remove #[ignore] and flip assertion to is_ok()"
     );
 }

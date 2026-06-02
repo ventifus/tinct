@@ -10,7 +10,5 @@
     ADDR-IPV4:              %.ADDR-IPV4
     ADDR-DOMAIN:            %.ADDR-DOMAIN
     ADDR-IPV6:              %.ADDR-IPV6]
-=== error
-[E022] unexpected named argument: SOCKS5-VERSION (valid parameter names: xs) (defined at 4:1-11:41)
-  in [set ...] at 4:1-11:41
-  in [set ...] at 4:1-11:41
+=== out
+Dict({"SOCKS5-VERSION": Int(5), "NO-AUTH": Int(0), "AUTH-USERNAME-PASSWORD": Int(2), "CMD-CONNECT": Int(1), "ADDR-IPV4": Int(1), "ADDR-DOMAIN": Int(3), "ADDR-IPV6": Int(4)})

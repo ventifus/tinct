@@ -1,5 +1,6 @@
 //! Function call evaluation: argument binding, default parameters, and variadic support.
 
+use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
@@ -7,7 +8,7 @@ use smallvec::SmallVec;
 
 use crate::ast::{CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode};
 use crate::error::{ArityBound, EvalError, EvalResult};
-use crate::value::{Environment, Thunk, Value};
+use crate::value::{Environment, Key, Thunk, ThunkId, Value};
 
 // Import eval function and context from eval module
 // Note: this creates a circular dependency, but it's safe because
@@ -336,15 +337,20 @@ pub(crate) async fn bind_args_thunks(
         call_env.write().unwrap().insert(param.name.clone(), thunk);
     }
 
-    // BIND-NAMED: Validation only (all bindings were already done in BIND-POSITIONAL)
+    // BIND-NAMED: Validation and collection for variadic
     //
     // Why two checks? BIND-POSITIONAL silently resolves conflicts via priority
     // (positional wins over named), but the caller likely made a mistake if they
     // supplied both. This second pass detects that mistake and reports it as an
     // error (C-NO-OVERLAP), while also catching named args that don't match any
     // parameter at all (C-NAMED-VALID).
+    //
+    // NEW (B-277): If a variadic param exists, collect unmatched named args into
+    // a separate collection for merging into the variadic dict (C-NAMED-VALID amended:
+    // named args must match explicit param OR variadic param exists → flows into ...args).
+    let mut unmatched_named: Option<IndexMap<String, Arc<Thunk>>> = None;
     if let Some(named_args) = named {
-        for (name, _) in named_args {
+        for (name, thunk) in named_args {
             // Single scan: C-NO-OVERLAP and C-NAMED-VALID in one position() call
             match regular_params.iter().position(|p| &p.name == name) {
                 Some(idx) if idx < positional.len() => {
@@ -360,46 +366,95 @@ pub(crate) async fn bind_args_thunks(
                     continue;
                 }
                 None => {
-                    // C-NAMED-VALID: named arg must target an existing parameter
-                    // (Kotlin model: ANY param can be named, not just optional params)
-                    let valid_params: Vec<String> =
-                        regular_params.iter().map(|p| p.name.clone()).collect();
-                    return Err(Box::new(EvalError::unknown_named_arg(
-                        name.clone(),
-                        valid_params,
-                        call_span.clone(),
-                    )));
+                    // C-NAMED-VALID (amended): named arg must target an existing parameter
+                    // OR variadic param exists (collects unmatched named args).
+                    if variadic_param.is_some() {
+                        // Collect into unmatched_named for later merging into variadic dict
+                        unmatched_named
+                            .get_or_insert_with(|| IndexMap::new())
+                            .insert(name.clone(), Arc::clone(thunk));
+                    } else {
+                        // No variadic param: raise E022 (Kotlin model: ANY param can be named)
+                        let valid_params: Vec<String> =
+                            regular_params.iter().map(|p| p.name.clone()).collect();
+                        return Err(Box::new(EvalError::unknown_named_arg(
+                            name.clone(),
+                            valid_params,
+                            call_span.clone(),
+                        )));
+                    }
                 }
             }
         }
     }
 
-    // BIND-VARIADIC: Collect excess positional args into a lazy Seq cons-list.
-    // Empty variadic = Value::Dict({}) (the standard Seq nil sentinel).
-    // Non-empty: build cons-list right-to-left so the first arg becomes the outermost head.
+    // BIND-VARIADIC: Collect excess positional args + unmatched named args into a Dict.
+    //
+    // NEW (B-277): C-VARIADIC amended: Dict = integer-keyed positionals ∪ string-keyed unmatched named.
+    // Empty variadic = Value::Dict({}).
+    //
+    // For untyped variadic params, we build a mixed Dict directly (legacy behavior: Seq cons-list
+    // is still correct for PURE positional args, but once named args are present we need a Dict).
+    // For typed variadic params (future: type-annotated ...args), only positional args are collected
+    // into a Seq, and unmatched named args are rejected (not implemented yet, see doc/feature/inference-completeness.md).
     if let Some(var_param) = variadic_param {
         let start = max_positional.min(positional.len());
-        let variadic_args = &positional[start..];
-        // Nil sentinel: empty dict is the standard end-of-Seq marker.
-        let nil = Arc::new(Thunk::new_materialized(
-            Value::Dict(IndexMap::new()),
-            call_span.clone(),
-        ));
-        let seq_thunk = variadic_args.iter().rev().fold(nil, |tail, head_arg| {
-            let head_id = ctx.alloc_thunk(Arc::clone(head_arg));
-            let tail_id = ctx.alloc_thunk(Arc::clone(&tail));
-            Arc::new(Thunk::new_materialized(
-                Value::Seq {
-                    head: head_id,
-                    tail: tail_id,
-                },
+        let variadic_positional = &positional[start..];
+
+        // Check if there are any unmatched named args to merge
+        let has_named = unmatched_named.as_ref().is_some_and(|m| !m.is_empty());
+
+        if has_named {
+            // Mixed Dict: integer keys for positional, string keys for named
+            let mut dict: IndexMap<Key, ThunkId> = IndexMap::new();
+
+            // Insert positional args with integer keys (0-based indexing)
+            for (i, arg) in variadic_positional.iter().enumerate() {
+                let id = ctx.alloc_thunk(Arc::clone(arg));
+                dict.insert(Key::Int(i as i64), id);
+            }
+
+            // Merge unmatched named args with string keys
+            if let Some(named_map) = unmatched_named {
+                for (name, thunk) in named_map {
+                    let id = ctx.alloc_thunk(thunk);
+                    dict.insert(Key::String(Rc::from(name.as_str())), id);
+                }
+            }
+
+            let dict_thunk = Arc::new(Thunk::new_materialized(
+                Value::Dict(dict),
                 call_span.clone(),
-            ))
-        });
-        call_env
-            .write()
-            .unwrap()
-            .insert(var_param.name.clone(), seq_thunk);
+            ));
+            call_env
+                .write()
+                .unwrap()
+                .insert(var_param.name.clone(), dict_thunk);
+        } else {
+            // Pure positional: use legacy Seq cons-list representation (backward compatible)
+            let nil = Arc::new(Thunk::new_materialized(
+                Value::Dict(IndexMap::new()),
+                call_span.clone(),
+            ));
+            let seq_thunk = variadic_positional
+                .iter()
+                .rev()
+                .fold(nil, |tail, head_arg| {
+                    let head_id = ctx.alloc_thunk(Arc::clone(head_arg));
+                    let tail_id = ctx.alloc_thunk(Arc::clone(&tail));
+                    Arc::new(Thunk::new_materialized(
+                        Value::Seq {
+                            head: head_id,
+                            tail: tail_id,
+                        },
+                        call_span.clone(),
+                    ))
+                });
+            call_env
+                .write()
+                .unwrap()
+                .insert(var_param.name.clone(), seq_thunk);
+        }
     }
 
     Ok(call_env)

@@ -1,13 +1,13 @@
 # drop: error when xs is not a Dict or Seq (n is valid Int)
 [drop 2 "hello"]
 === error
-[E010] drop: expected Dict or Seq, got String (defined at stdlib/prelude.llt:2071:57-2071:76)
-  --> stdlib/prelude.llt:2071:57-2071:76
+[E010] drop: expected Dict or Seq, got String (defined at stdlib/prelude.llt:2045:57-2045:76)
+  --> stdlib/prelude.llt:2045:57-2045:76
    |
-  2071 | drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
+  2045 | drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-drop ...] at stdlib/prelude.llt:2071:57-2071:76
+  in [builtin-drop ...] at stdlib/prelude.llt:2045:57-2045:76
    |
-  2071 | drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
+  2045 | drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
   in [drop ...] at 1:1-1:17

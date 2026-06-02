@@ -14,7 +14,5 @@
         opcode:      p.opcode]]
     [call %.parse-ws-frame-header
         [str [chr 130] [chr 254] [chr 1] [chr 0] [chr 1] [chr 2] [chr 3] [chr 4]]]]
-=== error
-[E022] unexpected named argument: payload-len (valid parameter names: xs) (defined at 10:5-13:31)
-  in [set ...] at 10:5-13:31
-  in [set ...] at 10:5-13:31
+=== out
+Dict({"payload-len": Int(256), "header-len": Int(8), "opcode": Int(2)})

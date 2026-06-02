@@ -13,7 +13,5 @@
         payload-len: p.payload-len
         header-len:  p.header-len]]
     [call %.parse-ws-frame-header [str [chr 138] [chr 0]]]]
-=== error
-[E022] unexpected named argument: fin (valid parameter names: xs) (defined at 8:5-13:35)
-  in [set ...] at 8:5-13:35
-  in [set ...] at 8:5-13:35
+=== out
+Dict({"fin": Bool(true), "opcode": Int(10), "masked": Bool(false), "payload-len": Int(0), "header-len": Int(2)})

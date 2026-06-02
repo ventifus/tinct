@@ -1465,6 +1465,17 @@ fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvWit
     // at which point STDLIB_RESULT_CACHE is populated and the macros can be registered.
 
     crate::desugar::desugar_surface_program(&mut prelude_program);
+    // B-296: Inject `CtorName: [variant "CtorName"]` entries for all `[type ...]` ADT
+    // declarations in prelude.llt. This runs BEFORE resolve so de Bruijn slots are correct.
+    // Must run after desugar ($_ lowering) but before resolve (slot assignment).
+    //
+    // This is the runtime counterpart to the type checker's inject_adt_constructor_schemes
+    // (in typecheck_dict.rs). The type checker exports constructors with precise NominalVariant
+    // or Function types; the desugar injection makes them available as runtime values.
+    //
+    // Previously, prelude.llt had explicit `Tcp: [variant "Tcp"]` entries as a workaround.
+    // Those were removed (B-296 fix) and replaced by this injection call.
+    crate::desugar::inject_adt_constructors_surface_program(&mut prelude_program);
     let prelude_resolution_table =
         std::sync::Arc::new(crate::resolve::resolve_surface_program(&prelude_program));
     let prelude_type_table = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());

@@ -70,10 +70,10 @@
 
   # IncludeCacheEntry: three-state variant for the content-addressed include cache.
   # Used by builtin-include-cache-get and builtin-include-cache-put Rust primitives.
-  # [Missing]      — not yet loaded (or previously failed)
-  # [Pending]      — currently being evaluated (circular if seen again)
+  # Missing        — not yet loaded (or previously failed)
+  # Pending        — currently being evaluated (circular if seen again)
   # [Cached value] — previously evaluated result
-  IncludeCacheEntry: [type [Missing] [Pending] [Cached Any]]
+  IncludeCacheEntry: [type Missing Pending [Cached Any]]
 ]
 
 --- uses: ["core"]
@@ -562,7 +562,7 @@ Declaration: [type
   [SyntaxClass  name: String  pattern: Expression  message: String]
   [Splice       forms: [Seq Expression]]]
 
-DocumentName: [type [Named String] [Unnamed]]
+DocumentName: [type [Named String] Unnamed]
 
 Document: [type [Document
   name:         DocumentName
@@ -1026,26 +1026,26 @@ Note: Preserves values and insertion order. Useful after drop or sparse slicing 
 # Example: [sort ["c" "a" "b"]] => ["a" "b" "c"]
 
 # Sort a list using a custom comparator.
-# Type: ((a -> a -> Bool) -> Dict a -> Dict a)
+# Type: ((a -> a -> Bool) -> Dict a -> Seq a)
 # cmp is a less-than function: [cmp a b] returns true if a should come before b.
 # Example: [sort-by [fn [a b] [> a b]] [3 1 2]] => [3 2 1]  (descending)
 # Inherently materializing: must compare values to determine order.
-sort-by@[doc: "Sort with custom comparator"]: [fn@Dict [let cmp@Fn xs@Dict]
+sort-by@[doc: "Sort with custom comparator"]: [fn@[Seq a] [let cmp@Fn xs@Dict]
     [builtin-if [seq? xs]
         [error "sort-by: expected Dict, got Seq -- collect the Seq first"]
         [builtin-sort cmp xs]]]
 
 # Like Python's sorted() — accepts both Seq and Dict; collects a Seq first.
-# Type: (Seq a | Dict Comparable -> Dict Comparable)
+# Type: (Seq a | Dict Comparable -> Seq Comparable)
 # Example: [sorted [filter [fn [x] [> x 2]] [1 3 2 4]]] => [3 4]
 # Example: [sorted [3 1 2]] => [1 2 3]
-sorted@[doc: "Sort collection in ascending order"]: [fn@[return: Dict constraint: [a: Comparable]] [let xs]
+sorted@[doc: "Sort collection in ascending order"]: [fn@[return: [Seq a] constraint: [a: Comparable]] [let xs]
     [builtin-sort [builtin-if [seq? xs] [builtin-collect xs] xs]]]
 
 # Like sorted, with a custom comparator.
-# Type: ((a -> a -> Bool) -> Seq a | Dict a -> Dict a)
+# Type: ((a -> a -> Bool) -> Seq a | Dict a -> Seq a)
 # Example: [sorted-by [fn [a b] [> a b]] [filter [fn [x] [> x 0]] [-1 3 -2 4]]] => [4 3]
-sorted-by@[doc: "Sort with custom comparator (accepts Seq or Dict)"]: [fn@Dict [let cmp@Fn xs]
+sorted-by@[doc: "Sort with custom comparator (accepts Seq or Dict)"]: [fn@[Seq a] [let cmp@Fn xs]
     [sort-by cmp [builtin-if [seq? xs] [builtin-collect xs] xs]]]
 
 # ============================================================================
@@ -1485,15 +1485,9 @@ Note: Wraps the function call in error handling. Returns the function's result i
 
 # Transport type: union of network transport variants
 # Used by connect builtin to specify connection type
-Transport: [type [Tcp] [Udp] [UnixStream] [UnixDatagram] [NamedPipe] [Icmp]]
-
-# Re-export transport variant constructors
-Tcp: [variant "Tcp"]
-Udp: [variant "Udp"]
-UnixStream: [variant "UnixStream"]
-UnixDatagram: [variant "UnixDatagram"]
-NamedPipe: [variant "NamedPipe"]
-Icmp: [variant "Icmp"]
+Transport: [type Tcp Udp UnixStream UnixDatagram NamedPipe Icmp]
+# Constructors Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp are automatically exported
+# by the type checker (B-296 fix) — no explicit re-exports needed.
 
 # ============================================================================
 # OpenFlag Type (File Open Mode Variants)
@@ -1509,25 +1503,15 @@ Icmp: [variant "Icmp"]
 #
 # DirCap permission flags (used by [narrow]) that do not conflict with open flags:
 # Statable, Listable, Deletable, Renameable.
-OpenFlag: [type [Readable] [Writable] [Binary] [Text] [Seekable]]
-
-# Re-export OpenFlag variant constructors (used as args to [open])
-# These are unit variants: [variant "Name"] creates Value::Variant { tag: "Name", payload: None }
-Readable: [variant "Readable"]
-Writable: [variant "Writable"]
-Binary: [variant "Binary"]
-Text: [variant "Text"]
-Seekable: [variant "Seekable"]
+OpenFlag: [type Readable Writable Binary Text Seekable]
+# Constructors Readable, Writable, Binary, Text, Seekable are automatically exported
+# by the type checker (B-296 fix) — no explicit re-exports needed.
 
 # DirCapFlag type: permission flags passed to the [narrow] builtin.
 # Controls which capabilities a narrowed DirCap inherits from its source.
-DirCapFlag: [type [Statable] [Listable] [Deletable] [Renameable]]
-
-# Re-export DirCapFlag variant constructors
-Statable: [variant "Statable"]
-Listable: [variant "Listable"]
-Deletable: [variant "Deletable"]
-Renameable: [variant "Renameable"]
+DirCapFlag: [type Statable Listable Deletable Renameable]
+# Constructors Statable, Listable, Deletable, Renameable are automatically exported
+# by the type checker (B-296 fix) — no explicit re-exports needed.
 
 # ============================================================================
 # Result Type and Combinators
@@ -1535,12 +1519,8 @@ Renameable: [variant "Renameable"]
 
 # Result type: Ok[a] | Error[String]
 Result: [type [Ok a] [Error String]]
-
-# Re-export Ok constructor: wraps a success value
-Ok: [variant "Ok"]
-
-# Re-export Error constructor: wraps an error message
-Error: [variant "Error"]
+# Constructors Ok and Error are automatically exported by the type checker (B-296 fix) —
+# no explicit re-exports needed.
 
 ok?: [fn@[return: Bool  doc: """
 Check if Result is Ok.
@@ -1731,13 +1711,9 @@ TraversableResult@[doc: "Traversable instance for Result"]:
 # Simpler than Result (no error information), used for safe dict lookups.
 
 # Maybe type: Some[a] | None — represents optional values
-Maybe: [type [Some a] [None]]
-
-# Re-export Some constructor: wraps a value (present case)
-Some: [variant "Some"]
-
-# Re-export None constructor: represents absence (unit variant)
-None: [variant "None"]
+Maybe: [type [Some a] None]
+# Constructors Some and None are automatically exported by the type checker (B-296 fix) —
+# no explicit re-exports needed.
 
 maybe-map@[doc: "Map over Maybe value"]: [fn [let f ma]
   [match ma
@@ -2756,19 +2732,15 @@ Example:
 #
 # The IncludeCacheEntry variant type is declared in the type-stage prelude
 # (--- stage: type) so it is available in the type namespace.
-# At runtime the cache holds: [Missing] | [Pending] | [Cached value]
+# At runtime the cache holds: Missing | Pending | [Cached value]
 #
 # See doc/whatif/include-decomposition.md for full design rationale.
 
 # IncludeCacheEntry runtime variant constructors.
-# Also declared in the type-stage section for the type namespace, but the
-# variant constructors must be in scope at runtime for builtin-include-cache-put/get.
-IncludeCacheEntry: [type [Missing] [Pending] [Cached Any]]
-
-# Re-export IncludeCacheEntry variant constructors
-Missing: [variant "Missing"]
-Pending: [variant "Pending"]
-Cached: [variant "Cached"]
+# Also declared in the type-stage section for the type namespace.
+IncludeCacheEntry: [type Missing Pending [Cached Any]]
+# Constructors Missing, Pending, Cached are automatically exported by the type checker
+# (B-296 fix) — no explicit re-exports needed.
 
 # eval-document-runtime: evaluate one Runtime-stage document, returning updated
 # pipeline state dict {prev: result, named: accumulated-named-sections}.
@@ -2975,23 +2947,17 @@ duration-nanos: builtin-duration-nanos
 # Signal type: POSIX signal variants for signal-channel
 # Used to specify which signal to listen for when creating a signal channel.
 # Supported on Unix platforms only (macOS, Linux, BSD).
-Signal: [type [SIGTERM] [SIGINT] [SIGHUP] [SIGQUIT] [SIGUSR1] [SIGUSR2]]
-
-# Re-export Signal variant constructors
-SIGTERM: [variant "SIGTERM"]
-SIGINT:  [variant "SIGINT"]
-SIGHUP:  [variant "SIGHUP"]
-SIGQUIT: [variant "SIGQUIT"]
-SIGUSR1: [variant "SIGUSR1"]
-SIGUSR2: [variant "SIGUSR2"]
+Signal: [type SIGTERM SIGINT SIGHUP SIGQUIT SIGUSR1 SIGUSR2]
+# Constructors SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2 are automatically exported
+# by the type checker (B-296 fix) — no explicit re-exports needed.
 
 # Action: zero-arg side-effecting function (Moggi/Haskell IO distinction)
 Action: [type [Fn@Null []]]
 
 # Channel recv/select result types
-Closed: [type [Closed]]
+Closed: [type Closed]
 Lagged: [type [Lagged count: Int]]
-Full:   [type [Full]]   # returned by try-send when channel buffer is full
+Full:   [type Full]   # returned by try-send when channel buffer is full
 
 CancelHandle: [type [child-ctx: Context  cancel: Context]]  # return value of with-cancel; cancel is a Context, not an Action — fire with [cancel-task pair.cancel]
 # SelectSource: [type [let t r] [SelectSource  ch: [Channel t]  handler: [Fn@r [t]]]]  — one source entry for select-once

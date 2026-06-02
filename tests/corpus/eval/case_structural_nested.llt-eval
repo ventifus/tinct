@@ -7,4 +7,4 @@
 Int(3)
 
 === warn
-unreachable match arm: this pattern is already covered by prior arms at 4:3-4:23
+cannot unify Number with _t5 at 3:24-3:27

@@ -670,7 +670,16 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
         "builtin-tls-peer-cert".to_string(),
         Type::Function {
             params: vec![(None, Type::Handle(Box::new(cap_flag("readable"))))],
-            ret: Box::new(Type::Unknown), // {subject, issuer, sans, not-before, not-after, spki-sha256}
+            ret: Box::new(Type::Record(Row {
+                fields: HashMap::from([
+                    ("subject".to_string(), Type::Str),
+                    ("issuer".to_string(), Type::Str),
+                    ("sans".to_string(), Type::Seq(Box::new(Type::Str))),
+                    ("not-before".to_string(), Type::Int),
+                    ("not-after".to_string(), Type::Int),
+                    ("spki-sha256".to_string(), Type::Str),
+                ]),
+            })),
             variadic: false,
         },
     );
@@ -693,7 +702,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
         },
     );
 
-    // ── recv-datagram: DatagramHandle → {data: String} ───────────────────────
+    // ── recv-datagram: DatagramHandle → {data: Bytes, addr: Str, port: Int} ──
     env.insert(
         "builtin-recv-datagram".to_string(),
         Type::Function {
@@ -701,7 +710,13 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 None,
                 Type::normalize_union(vec![Type::DatagramHandle, Type::QuicDatagramHandle]),
             )],
-            ret: Box::new(Type::Unknown), // {data: String}
+            ret: Box::new(Type::Record(Row {
+                fields: HashMap::from([
+                    ("data".to_string(), Type::Bytes),
+                    ("addr".to_string(), Type::Str),
+                    ("port".to_string(), Type::Int),
+                ]),
+            })),
             variadic: false,
         },
     );
@@ -776,7 +791,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
     );
 
     // ── http-request: (Http2Session | Http3Session) → String → String → Dict → String → Dict ──
-    // Returns {status: Int, headers: Dict, body: String} on success (or error via builtin-try).
+    // Returns {status: Int, headers: Map[Str Str], body: Str} on success (or error via builtin-try).
     env.insert(
         "http-request".to_string(),
         Type::Function {
@@ -795,13 +810,22 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 ), // headers dict (any dict; BAS width subtyping)
                 (None, Type::Str), // body: runtime calls require_string — Bytes not accepted
             ],
-            ret: Box::new(Type::Unknown), // {status: Int, headers: Dict, body: String}
+            ret: Box::new(Type::Record(Row {
+                fields: HashMap::from([
+                    ("status".to_string(), Type::Int),
+                    (
+                        "headers".to_string(),
+                        Type::Map(Box::new(Type::Str), Box::new(Type::Str)),
+                    ),
+                    ("body".to_string(), Type::Str),
+                ]),
+            })),
             variadic: false,
         },
     );
 
     // ── icmp-ping: NetCap → String → Int → Dict ───────────────────────────────
-    // Returns {ok: {latency-ms: Int}} or {err: String} via builtin-try.
+    // Returns {ok: {latency-ms: Int}} or {err: Str} via builtin-try.
     env.insert(
         "icmp-ping".to_string(),
         Type::Function {
@@ -810,7 +834,19 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (None, Type::Str), // host
                 (None, Type::Int), // timeout_ms
             ],
-            ret: Box::new(Type::Unknown), // {ok: {latency-ms: Int}} | {err: String}
+            ret: Box::new(Type::normalize_union(vec![
+                Type::Record(Row {
+                    fields: HashMap::from([(
+                        "ok".to_string(),
+                        Type::Record(Row {
+                            fields: HashMap::from([("latency-ms".to_string(), Type::Int)]),
+                        }),
+                    )]),
+                }),
+                Type::Record(Row {
+                    fields: HashMap::from([("err".to_string(), Type::Str)]),
+                }),
+            ])),
             variadic: false,
         },
     );

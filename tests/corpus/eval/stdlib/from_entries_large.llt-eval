@@ -4,14 +4,14 @@
 [let pairs [each-kv d]]
 [length [from-entries [collect pairs]]]
 === error
-[E010] collect: expected Seq, got Dict (defined at stdlib/prelude.llt:2459:32-2459:34) (called at stdlib/prelude.llt:2459:15-2459:35)
-  --> stdlib/prelude.llt:2459:32-2459:34
+[E010] collect: expected Seq, got Dict (defined at stdlib/prelude.llt:2433:32-2433:34) (called at stdlib/prelude.llt:2433:15-2433:35)
+  --> stdlib/prelude.llt:2433:32-2433:34
    |
-  2459 | """] [let xs] [builtin-collect xs]]
+  2433 | """] [let xs] [builtin-collect xs]]
        |                                ^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2459:15-2459:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2433:15-2433:35
    |
-  2459 | """] [let xs] [builtin-collect xs]]
+  2433 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in materialized at stdlib/prelude.llt:975:18-975:36
    |
@@ -21,13 +21,12 @@
    |
   975 | """] [let pairs] [build-dict pairs]]
       |                  ^^^^^^^^^^^^^^^^^^
-  in [builtin-length ...] at stdlib/prelude.llt:2083:20-2083:39
+  in [builtin-length ...] at stdlib/prelude.llt:2057:20-2057:39
    |
-  2083 | """]: [fn [let xs] [builtin-length xs]]
+  2057 | """]: [fn [let xs] [builtin-length xs]]
        |                    ^^^^^^^^^^^^^^^^^^^
   in [length ...] at 4:1-4:40
 
 === warn
 multi-element [let ...] pattern not yet supported — use single binding at 2:1-2:33
 multi-element [let ...] pattern not yet supported — use single binding at 3:1-3:24
-undefined variable: pairs at 4:32-4:37

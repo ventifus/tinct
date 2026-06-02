@@ -1,0 +1,16 @@
+# failed_bindings uses Type::Error — no E099 cascade
+# When a dict entry fails type checking, downstream references should
+# propagate Type::Error (not cascade into E099 runtime crashes).
+# After B-282: [+ 1 "string"] is caught statically (Addable Int String has
+# no instance), so x gets Type::Error. The eval still produces E013 at runtime
+# because the evaluator always runs regardless of type errors.
+
+[x: [+ 1 "string"]]
+[y: x]
+y
+=== error
+[E013] no instance for Addable (Int, String) (defined at 7:5-7:19) (called at 7:1-7:20)
+  in [+ ...] at 7:5-7:19
+
+=== warn
+cannot unify Number with "string" at 7:10-7:18

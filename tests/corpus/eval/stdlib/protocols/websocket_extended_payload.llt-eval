@@ -16,12 +16,8 @@
 [byte8: [char-code [str-slice 8 9 hdr]]]
 [set [] byte1: byte1 byte7: byte7 byte8: byte8]
 === error
-[E022] unexpected named argument: header (valid parameter names: xs) (defined at 175:5-178:39)
-  in [set ...] at 175:5-178:39
-  in [set ...] at 175:5-178:39
-  in materialized at 146:5-150:66
-  in [if ...] at 148:9-150:65
-  in [if ...] at 146:5-150:66
-  in materialized at 273:9-275:72
-  in [if ...] at 273:9-275:72
-  in materialized at 8:1-8:76
+[E001] key not found: header (available keys: Continuation, Text, Binary, Close, Ping, ...) (defined at 4:1-4:44) (accessed at 9:8-9:16)
+  in accessing .header at 9:8-9:16
+  in materialized at 9:7-9:23
+  in materialized at 9:1-9:24
+  in [<dot-access> ...] at 9:7-9:23

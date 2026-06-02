@@ -3,22 +3,22 @@
 
 [slice 1.0 2 data]
 === error
-[E010] drop: expected Int, got Float (defined at stdlib/prelude.llt:1108:53-1108:86)
-  --> stdlib/prelude.llt:1108:53-1108:86
+[E010] drop: expected Int, got Float (defined at stdlib/prelude.llt:1106:53-1106:86)
+  --> stdlib/prelude.llt:1106:53-1106:86
    |
-  1108 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
+  1106 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
        |                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-drop ...] at stdlib/prelude.llt:1108:53-1108:86
+  in [builtin-drop ...] at stdlib/prelude.llt:1106:53-1106:86
    |
-  1108 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
+  1106 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
        |                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-take ...] at stdlib/prelude.llt:1108:15-1108:87
+  in [builtin-take ...] at stdlib/prelude.llt:1106:15-1106:87
    |
-  1108 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
+  1106 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
        |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [build-dict ...] at stdlib/prelude.llt:1108:3-1108:88
+  in [build-dict ...] at stdlib/prelude.llt:1106:3-1106:88
    |
-  1108 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
+  1106 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]
        |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [slice ...] at 3:1-3:19
 

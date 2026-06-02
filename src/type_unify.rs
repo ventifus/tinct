@@ -683,9 +683,8 @@ fn improve_functional_dependency_inner(
                         }
                     }
                     None => {
-                        // KNOWN ISSUE: Indexable falls back to Unknown when no instance matches
-                        // (e.g., unknown container type or TypeVar container). The old check_get
-                        // returned Unknown in these cases; restoring that behavior here prevents
+                        // KNOWN ISSUE: Indexable falls back gracefully when no instance matches
+                        // (e.g., unknown container type or TypeVar container). This prevents
                         // false-positive "no instance for Indexable" errors for unresolvable
                         // containers. Determined TypeVar remains unbound → resolves to Unknown.
                         // Non-Indexable MPTC classes still report errors on lookup failure.
@@ -1442,16 +1441,23 @@ fn unify_rows(
     if shared_count == 0 && !row1.fields.is_empty() && !row2.fields.is_empty() {
         if row1_has_inference_vars || row2_has_inference_vars {
             // Conservative path: cannot prove incompatibility statically.
-            // Lower all TypeVars to level 0 to prevent unsound generalization.
-            let mut vars = HashSet::new();
+            // Lower TypeVars in FTV(row1) ∩ FTV(row2) to level 0 to prevent unsound
+            // generalization of variables constrained by both sides.
+            //
+            // Only variables appearing in BOTH rows are constrained by this cross-row
+            // relationship. Variables unique to one row are independent and can be
+            // generalized freely — zeroing them is unsoundly conservative.
+            // (Kiselyov 2013: level-zeroing should target only actually-constrained vars.)
+            let mut vars1 = HashSet::new();
             for ty in row1.fields.values() {
-                ty.collect_type_vars(&mut vars);
+                ty.collect_type_vars(&mut vars1);
             }
+            let mut vars2 = HashSet::new();
             for ty in row2.fields.values() {
-                ty.collect_type_vars(&mut vars);
+                ty.collect_type_vars(&mut vars2);
             }
-            for var_name in vars {
-                if let Some(current_level) = state.levels.get_mut(&var_name) {
+            for var_name in vars1.intersection(&vars2) {
+                if let Some(current_level) = state.levels.get_mut(var_name) {
                     *current_level = 0;
                 }
             }

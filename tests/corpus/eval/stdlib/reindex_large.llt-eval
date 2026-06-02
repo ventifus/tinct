@@ -6,4 +6,3 @@ Int(1)
 
 === warn
 multi-element [let ...] pattern not yet supported — use single binding at 1:1-1:41
-undefined variable: test-dict at 2:18-2:27

@@ -316,6 +316,23 @@ impl InferState {
             resolver_injective: false,
         });
 
+        // Concatable: 3-parameter type class with functional dependency (a, b) → c
+        // Models concatenation: Seq(T)++Seq(T)→Seq(T), Record++Record→Record,
+        // Str++Str→Str, Bytes++Bytes→Bytes.
+        // Built-in instances registered below in instance_env.
+        class_env.insert(ClassDecl {
+            name: "Concatable".to_string(),
+            params: vec![
+                ("a".to_string(), Kind::Type),
+                ("b".to_string(), Kind::Type),
+                ("c".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            determines: vec![(vec![0, 1], vec![2])], // (a, b) → c
+            resolver: None,
+            resolver_injective: false,
+        });
+
         let mut instance_env = InstanceEnv::new();
 
         // Register built-in Indexable instances for Map, Seq, and Record.
@@ -369,6 +386,95 @@ impl InferState {
         // Record/Union/Intersection/Top types for Indexable are handled via resolve_has_field
         // in improve_functional_dependency_inner (type_unify.rs). No instance registration
         // needed — records are structural, so [HAS-FIELD-*] rules apply directly.
+
+        // ── Concatable instances ──────────────────────────────────────────────
+        // Concatable Seq[T] Seq[T] Seq[T]
+        // Concatenating two sequences of the same element type produces a sequence of that type.
+        let concat_t_var = Type::TypeVar("T".to_string(), 0);
+        let concatable_seq_instance = InstanceDecl {
+            class_name: "Concatable".to_string(),
+            instance_type: Type::Record(Row {
+                fields: {
+                    let mut fields = HashMap::new();
+                    fields.insert("0".to_string(), Type::Seq(Box::new(concat_t_var.clone())));
+                    fields.insert("1".to_string(), Type::Seq(Box::new(concat_t_var.clone())));
+                    fields.insert("2".to_string(), Type::Seq(Box::new(concat_t_var.clone())));
+                    fields
+                },
+            }),
+            det_positions: vec![0, 1],
+            method_types: HashMap::new(),
+        };
+        instance_env.insert(concatable_seq_instance).unwrap();
+
+        // Concatable Record Record Record
+        // Concatenating (merging) two open records produces an open record.
+        let concatable_record_instance = InstanceDecl {
+            class_name: "Concatable".to_string(),
+            instance_type: Type::Record(Row {
+                fields: {
+                    let mut fields = HashMap::new();
+                    fields.insert(
+                        "0".to_string(),
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
+                    );
+                    fields.insert(
+                        "1".to_string(),
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
+                    );
+                    fields.insert(
+                        "2".to_string(),
+                        Type::Record(Row {
+                            fields: HashMap::new(),
+                        }),
+                    );
+                    fields
+                },
+            }),
+            det_positions: vec![0, 1],
+            method_types: HashMap::new(),
+        };
+        instance_env.insert(concatable_record_instance).unwrap();
+
+        // Concatable Str Str Str
+        // Concatenating two strings produces a string.
+        let concatable_str_instance = InstanceDecl {
+            class_name: "Concatable".to_string(),
+            instance_type: Type::Record(Row {
+                fields: {
+                    let mut fields = HashMap::new();
+                    fields.insert("0".to_string(), Type::Str);
+                    fields.insert("1".to_string(), Type::Str);
+                    fields.insert("2".to_string(), Type::Str);
+                    fields
+                },
+            }),
+            det_positions: vec![0, 1],
+            method_types: HashMap::new(),
+        };
+        instance_env.insert(concatable_str_instance).unwrap();
+
+        // Concatable Bytes Bytes Bytes
+        // Concatenating two byte strings produces a byte string.
+        let concatable_bytes_instance = InstanceDecl {
+            class_name: "Concatable".to_string(),
+            instance_type: Type::Record(Row {
+                fields: {
+                    let mut fields = HashMap::new();
+                    fields.insert("0".to_string(), Type::Bytes);
+                    fields.insert("1".to_string(), Type::Bytes);
+                    fields.insert("2".to_string(), Type::Bytes);
+                    fields
+                },
+            }),
+            det_positions: vec![0, 1],
+            method_types: HashMap::new(),
+        };
+        instance_env.insert(concatable_bytes_instance).unwrap();
 
         Self {
             name_counter: 0,

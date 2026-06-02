@@ -1,10 +1,11 @@
 # Triple-quoted string as doc: value in function annotation
-# Verifies that """...""" (desugared to unindent(...)) is accepted by the doc: handler
+# Verifies that """...""" (desugared to unindent(...)) is accepted by the doc: handler.
+# Uses return: Number (not Int) because + returns Number in the prelude type env.
 [
   add: [fn@[doc: """
     Adds two numbers.
     Returns their sum.
-    """ return: Int] [let x@Int y@Int] [+ x y]]
+    """ return: Number] [let x@Int y@Int] [+ x y]]
   result: [add 2 3]
 ]
 

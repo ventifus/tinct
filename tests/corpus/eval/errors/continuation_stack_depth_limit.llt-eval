@@ -7,4 +7,6 @@
 [E040] maximum evaluation depth exceeded (2048) (defined at 3:57-3:64) (called at 3:22-3:67)
   in [= ...] at 3:26-3:33
   in [if ...] at 3:22-3:67
+  in [self ...] at 3:41-3:65
+  in type guard at 3:41-3:65
   in [+ ...] at 3:36-3:66

@@ -1,8 +1,9 @@
-# Arithmetic with non-numeric argument: type checker rejects String operand
+# Arithmetic with non-numeric argument: type checker rejects String operand via
+# Addable MPTC — no instance for Addable String Int.
 # The function is never called so eval succeeds; type checker catches the mismatch.
 [f: [fn [let x@String] [+ x 1]]]
 === out
 Dict({"f": Function(x)})
 
 === warn
-arithmetic operator applied to non-numeric type `String` at 2:24-2:31
+cannot unify Number with String at 3:27-3:28

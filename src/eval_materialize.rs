@@ -149,6 +149,17 @@ pub(crate) enum RestoreState {
         call_span: Span,
         ctx: Arc<EvalContext>,
     },
+    /// Restore a Call (PendingCall) thunk for non-cacheable errors (e.g., DepthExceeded).
+    /// Captures the deferred function call state so it can be retried.
+    Call {
+        func: Arc<Thunk>,
+        args: Vec<Arc<Thunk>>,
+        named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
+        call_span: Span,
+        caller_env: Arc<RwLock<Environment>>,
+        ctx: Arc<EvalContext>,
+        original_call: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
+    },
     Guarded {
         inner: Arc<Thunk>,
         expected: Type,
@@ -192,6 +203,23 @@ impl RestoreState {
                 named,
                 call_span,
                 ctx,
+            },
+            RestoreState::Call {
+                func,
+                args,
+                named,
+                call_span,
+                caller_env,
+                ctx,
+                original_call,
+            } => UnevaluatedState::Call {
+                func,
+                args,
+                named,
+                call_span,
+                caller_env,
+                ctx,
+                original_call,
             },
             RestoreState::Guarded {
                 inner,
@@ -1519,18 +1547,17 @@ pub(crate) async fn apply_cont(
                                     if e.kind.is_cacheable() {
                                         thunk.cache_failure_once(&e);
                                     } else {
-                                        // Move args/named into PendingCall — no clone needed.
-                                        thunk.restore_unevaluated(
-                                            crate::value::UnevaluatedState::Call {
-                                                func: func_thunk,
-                                                args: args.take().expect("args set above"),
-                                                named: named.take().expect("named set above"),
-                                                call_span,
-                                                caller_env,
-                                                ctx: thunk_ctx,
-                                                original_call: original_call.clone(),
-                                            },
-                                        );
+                                        // Restore via RestoreState for consistency.
+                                        let restore = RestoreState::Call {
+                                            func: func_thunk,
+                                            args: args.take().expect("args set above"),
+                                            named: named.take().expect("named set above"),
+                                            call_span,
+                                            caller_env,
+                                            ctx: thunk_ctx,
+                                            original_call: original_call.clone(),
+                                        };
+                                        restore.restore(&thunk);
                                     }
                                     Action::Continue(Err(e))
                                 }
@@ -1583,18 +1610,17 @@ pub(crate) async fn apply_cont(
                                     if e.kind.is_cacheable() {
                                         thunk.cache_failure_once(&e);
                                     } else {
-                                        // Move args/named into PendingCall — no clone needed.
-                                        thunk.restore_unevaluated(
-                                            crate::value::UnevaluatedState::Call {
-                                                func: func_thunk,
-                                                args: args.take().expect("args set above"),
-                                                named: named.take().expect("named set above"),
-                                                call_span,
-                                                caller_env,
-                                                ctx: thunk_ctx,
-                                                original_call: original_call.clone(),
-                                            },
-                                        );
+                                        // Restore via RestoreState for consistency.
+                                        let restore = RestoreState::Call {
+                                            func: func_thunk,
+                                            args: args.take().expect("args set above"),
+                                            named: named.take().expect("named set above"),
+                                            call_span,
+                                            caller_env,
+                                            ctx: thunk_ctx,
+                                            original_call: original_call.clone(),
+                                        };
+                                        restore.restore(&thunk);
                                     }
                                     Action::Continue(Err(e))
                                 }
@@ -1793,8 +1819,8 @@ pub(crate) async fn apply_cont(
                         if decorated.kind.is_cacheable() {
                             thunk.cache_failure_once(&decorated);
                         } else {
-                            // Move args/named into PendingCall — no clone needed.
-                            thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
+                            // Restore via RestoreState for consistency.
+                            let restore = RestoreState::Call {
                                 func: func_thunk,
                                 args: args.take().expect("args set above"),
                                 named: named.take().expect("named set above"),
@@ -1802,7 +1828,8 @@ pub(crate) async fn apply_cont(
                                 caller_env,
                                 ctx: thunk_ctx,
                                 original_call: original_call.clone(),
-                            });
+                            };
+                            restore.restore(&thunk);
                         }
                         Action::Continue(Err(decorated))
                     }
@@ -1813,8 +1840,8 @@ pub(crate) async fn apply_cont(
                     if e.kind.is_cacheable() {
                         thunk.cache_failure_once(&e);
                     } else {
-                        // Move args/named into PendingCall — no clone needed.
-                        thunk.restore_unevaluated(crate::value::UnevaluatedState::Call {
+                        // Restore via RestoreState for consistency.
+                        let restore = RestoreState::Call {
                             func: func_thunk,
                             args: args.take().expect("args set above"),
                             named: named.take().expect("named set above"),
@@ -1822,7 +1849,8 @@ pub(crate) async fn apply_cont(
                             caller_env,
                             ctx: thunk_ctx,
                             original_call: original_call.clone(),
-                        });
+                        };
+                        restore.restore(&thunk);
                     }
                     Action::Continue(Err(e))
                 }

@@ -1,5 +1,7 @@
 # What If: Equirecursive Types for tinct
 
+TODO: Handle this case as an example of isorecursive types: The main challenge is that Expr is recursive (Call contains Expr which contains Call).
+
 **State:** Proposal
 
 What would it take to support properly recursive data types — linked lists, trees, and other self-referential structures — in tinct's type system?
@@ -184,7 +186,7 @@ fn is_subtype_recursive(a: &Type, b: &Type, visited: &mut HashSet<(TypeId, TypeI
         return true;   // coinductive hypothesis: assume true, check body
     }
     visited.insert(key);
-    
+
     let a_unfolded = unfold_once(a);
     let b_unfolded = unfold_once(b);
     is_subtype_impl(a_unfolded, b_unfolded, visited)
@@ -237,38 +239,38 @@ For the annotation resolver, mutual recursion is detected when the expansion sta
 
 ### `src/types.rs` — `Type` enum
 
-**Current:** No recursive type variant; alias expansion with depth limit.  
-**Proposed:** Add `Type::Recursive { var: String, body: Box<Type> }` and `Type::RecVar(String)`. Update all exhaustive `match` arms throughout the codebase (~40 sites based on existing pattern).  
+**Current:** No recursive type variant; alias expansion with depth limit.
+**Proposed:** Add `Type::Recursive { var: String, body: Box<Type> }` and `Type::RecVar(String)`. Update all exhaustive `match` arms throughout the codebase (~40 sites based on existing pattern).
 **Impact:** Major — touches every type operation (subtype, unify, collect_type_vars, apply_inner, display).
 
 ### `src/typecheck_annot.rs` — Alias expansion and resolver
 
-**Current:** `expand_alias_body_guarded` halts at `MAX_ALIAS_DEPTH` and returns `Type::Unknown`.  
-**Proposed:** Add expansion stack tracking; detect cycles and produce `Type::Recursive` nodes; `mu` combinator in type prelude maps to `Type::Recursive`.  
+**Current:** `expand_alias_body_guarded` halts at `MAX_ALIAS_DEPTH` and returns `Type::Unknown`.
+**Proposed:** Add expansion stack tracking; detect cycles and produce `Type::Recursive` nodes; `mu` combinator in type prelude maps to `Type::Recursive`.
 **Impact:** Moderate — alias expansion + `mu`/`recvar` resolver arms.
 
 ### `src/type_unify.rs` — `is_subtype` and `unify`
 
-**Current:** No handling of `Type::Recursive`; would hit unreachable arms.  
-**Proposed:** Add coinductive `is_subtype_recursive` with visited-pairs set; add unify arms that unfold recursive types.  
+**Current:** No handling of `Type::Recursive`; would hit unreachable arms.
+**Proposed:** Add coinductive `is_subtype_recursive` with visited-pairs set; add unify arms that unfold recursive types.
 **Impact:** Moderate — new algorithm; performance implications for subtype-heavy programs.
 
 ### `src/types.rs` — Type dict schema
 
-**Current:** No `kind: "recursive"` or `kind: "recvar"` schema entries.  
-**Proposed:** Document and handle these two new `kind:` values throughout the type dict mapping code.  
+**Current:** No `kind: "recursive"` or `kind: "recvar"` schema entries.
+**Proposed:** Document and handle these two new `kind:` values throughout the type dict mapping code.
 **Impact:** Minor — schema extension; annotation resolver and `ast-of` conversion.
 
 ### `stdlib/prelude.llt` — `mu` and `recvar` in type prelude
 
-**Current:** No recursive type combinators.  
-**Proposed:** Add `mu: [fn [var body] [kind: "recursive"  var: var  body: body]]` and `recvar: [fn [name] [kind: "recvar"  name: name]]` to the `--- stage: type` section.  
+**Current:** No recursive type combinators.
+**Proposed:** Add `mu: [fn [var body] [kind: "recursive"  var: var  body: body]]` and `recvar: [fn [name] [kind: "recvar"  name: name]]` to the `--- stage: type` section.
 **Impact:** Minor — two new type-stage functions.
 
 ### Type checker performance
 
-**Current:** Subtype checking terminates quickly (no coinductive loop).  
-**Proposed:** Visited-pairs set adds overhead proportional to the depth of mutual recursive unfolding. For typical config schemas (finite depth), this is bounded. For pathological mutual recursion, the visited set size grows. A cache keyed by structural type identity amortizes repeated checks.  
+**Current:** Subtype checking terminates quickly (no coinductive loop).
+**Proposed:** Visited-pairs set adds overhead proportional to the depth of mutual recursive unfolding. For typical config schemas (finite depth), this is bounded. For pathological mutual recursion, the visited set size grows. A cache keyed by structural type identity amortizes repeated checks.
 **Impact:** Moderate — performance regression in subtype-heavy programs; acceptable for config-scale programs.
 
 ## Downstream: validate-tinct-rewrite

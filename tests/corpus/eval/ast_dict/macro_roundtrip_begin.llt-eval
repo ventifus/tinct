@@ -8,4 +8,4 @@
 Int(12)
 
 === warn
-sequential expression requires intermediate expressions to be dicts, got Int at 5:8-5:15
+sequential expression requires intermediate expressions to be dicts, got Number at 5:8-5:15

@@ -30,4 +30,6 @@
 
 === warn
 coverage violation for class 'Addable': determined parameter 'c' (variable '_t0') does not appear in any determining position at 15:5-15:26
-arithmetic operator applied to non-numeric type `[n: _t11]` at 20:6-20:15
+cannot unify Number with [n: _t11] at 20:9-20:11
+cannot unify Number with [n: _t12] at 20:12-20:14
+undefined variable: n at 20:16-20:17

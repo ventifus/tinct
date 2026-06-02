@@ -1,13 +1,10 @@
 # Constraint violation warning: a function body applies $+ to a string argument.
-# In the full corpus pipeline, $+ resolves to a TypeVar (the prelude is being
-# processed as a letrec), so the call returns Unknown and T010 fires rather than
-# a specific Addable-constraint T013. The unit tests (src/typecheck.rs) directly
-# verify T013 via test_constraint_dropped_when_typevar_not_in_return_type.
+# $+ resolves to the prelude's + function (Number -> Number -> Number).
+# Passing "hello" (String) where Number is expected triggers a unification error.
 # Eval proceeds — the function body is never invoked so no runtime error occurs.
 [f: [fn [let x] [call $+ x "hello"]]]
 === out
 Dict({"f": Function(x)})
 
 === warn
-inferred type is Unknown — consider adding a type annotation
-inferred type is Unknown — consider adding a type annotation
+cannot unify Number with "hello"

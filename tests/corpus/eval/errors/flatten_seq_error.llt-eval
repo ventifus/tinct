@@ -1,20 +1,20 @@
 # flatten: Seq input produces descriptive error
 [flatten [seq 1 [seq 2 []]]]
 === error
-[E080] flatten: expected Dict, got Seq -- collect the Seq first (defined at stdlib/prelude.llt:2060:28-2060:47)
-  --> stdlib/prelude.llt:2060:28-2060:47
+[E080] flatten: expected Dict, got Seq -- collect the Seq first (defined at stdlib/prelude.llt:2034:28-2034:47)
+  --> stdlib/prelude.llt:2034:28-2034:47
    |
-  2060 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2034 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2060:28-2060:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2034:28-2034:47
    |
-  2060 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2034 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:1130:5-1132:32
+  in [builtin-if ...] at stdlib/prelude.llt:1128:5-1130:32
    |
-  1130 |     [builtin-if [seq? xs]
-  1131 |         [error "flatten: expected Dict, got Seq -- collect the Seq first"]
-  1132 |         [flatten-impl-dict xs]]]
+  1128 |     [builtin-if [seq? xs]
+  1129 |         [error "flatten: expected Dict, got Seq -- collect the Seq first"]
+  1130 |         [flatten-impl-dict xs]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [flatten ...] at 1:1-1:29
 

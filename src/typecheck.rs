@@ -1257,23 +1257,6 @@ pub(crate) fn infer_surface_expr(
                     return check_connect(args, env, node.span.clone(), state, type_map);
                 }
 
-                // Special case: `builtin-first`/`builtin-head` synthesizes a precise return type
-                // based on collection type. `builtin-head` is the Seq-specific head alias used
-                // internally by prelude helpers (zip-seq-impl, take-while-seq, etc.) and by `head`.
-                if (name == "builtin-first" || name == "builtin-head")
-                    && named_args.is_empty()
-                    && args.len() == 1
-                {
-                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_first(args, env, node.span.clone(), state, type_map);
-                }
-
-                // Special case: `builtin-last` synthesizes a precise return type based on collection type.
-                if name == "builtin-last" && named_args.is_empty() && args.len() == 1 {
-                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_last(args, env, node.span.clone(), state, type_map);
-                }
-
                 // Special case: `map` synthesizes a precise return type for Seq input with callback.
                 if name == "map" && named_args.is_empty() && args.len() == 2 {
                     let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
@@ -1286,59 +1269,10 @@ pub(crate) fn infer_surface_expr(
                     return check_map(args, env, node.span.clone(), state, type_map);
                 }
 
-                // Special case: `builtin-concat` synthesizes a precise return type for Seq + Seq.
-                if name == "builtin-concat" && named_args.is_empty() && args.len() == 2 {
-                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_concat(args, env, node.span.clone(), state, type_map);
-                }
-
                 // Special case: `tls-layer` preserves input handle's capability row.
                 if name == "tls-layer" && named_args.is_empty() && args.len() == 3 {
                     let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
                     return check_tls_layer(args, env, node.span.clone(), state, type_map);
-                }
-
-                // Special case: `get` / `builtin-get` — precise return type via Indexable FD
-                // emulation. The prelude `get` scheme loses FD precision through annotation
-                // wrapping; `check_get` restores it for the common Seq/Map/Record cases.
-                if (name == "get" || name == "builtin-get")
-                    && named_args.is_empty()
-                    && args.len() == 2
-                {
-                    let _ = infer_surface_expr(func, env, state, type_map); // Record func type for LSP hover
-                    return check_get(args, env, node.span.clone(), state, type_map);
-                }
-
-                // Special case: `+`/`-`/`*` (and builtin-* aliases) — refine return type from
-                // Number to Int/Float based on operand types. The prelude scheme returns Number
-                // for all arithmetic which loses precision for Int-only code.
-                if matches!(
-                    name.as_str(),
-                    "+" | "-" | "*" | "builtin-add" | "builtin-sub" | "builtin-mul"
-                ) && named_args.is_empty()
-                    && args.len() == 2
-                {
-                    // Infer func for LSP hover only. Save and restore constraints to prevent
-                    // the Addable constraint from scheme instantiation from leaking into the
-                    // outer scope — it would trigger spurious T013 warnings for the enclosing
-                    // dict entry, since check_arithmetic bypasses the constraint-based path.
-                    let saved_constraints = std::mem::take(&mut state.constraints);
-                    let _ = infer_surface_expr(func, env, state, type_map);
-                    state.constraints = saved_constraints;
-                    return check_arithmetic(args, env, node.span.clone(), state, type_map);
-                }
-
-                // Special case: `/` / `builtin-div` — always returns Float (IEEE division).
-                if (name == "/" || name == "builtin-div")
-                    && named_args.is_empty()
-                    && args.len() == 2
-                {
-                    // Same constraint isolation as arithmetic above: `/`'s scheme instantiation
-                    // would add a Divisible constraint that check_div bypasses.
-                    let saved_constraints = std::mem::take(&mut state.constraints);
-                    let _ = infer_surface_expr(func, env, state, type_map);
-                    state.constraints = saved_constraints;
-                    return check_div(args, env, node.span.clone(), state, type_map);
                 }
             }
 
