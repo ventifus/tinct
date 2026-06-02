@@ -40,13 +40,17 @@ pub fn desugar_surface_program(program: &mut SurfaceProgram) {
     }
 }
 
-/// Inject ADT constructor bindings into dicts that contain `[type ...]` declarations.
+/// Inject field constructor bindings into dicts that contain `[type ...]` declarations.
 ///
 /// For each dict containing a `SurfaceExpression::Decl(TypeAlias)` entry, extracts the
-/// NominalVariant constructor names from the TypeAlias body and injects synthetic
-/// `CtorName: [variant "CtorName"]` entries at the BEGINNING of the dict. This runs
-/// BEFORE `resolve_surface_program`, so the resolver correctly assigns de Bruijn slots to
-/// the constructor names — making `$Circle` and `[Circle r: 5]` resolvable by slot.
+/// field constructor names (Call forms like `[Ok a]`, `[Error String]`) from the TypeAlias
+/// body and injects synthetic `CtorName: [variant "CtorName"]` entries at the BEGINNING of
+/// the dict. This runs BEFORE `resolve_surface_program`, so the resolver correctly assigns
+/// de Bruijn slots to the constructor names — making `[Ok value]` and `[Error msg]` resolvable
+/// by slot.
+///
+/// Unit constructors (bare uppercase names like `Tcp`, `None`) are NOT injected here —
+/// they are handled at evaluation time by `eval_dict_core` via `CoreExpr::TypeDecl` (B-296).
 ///
 /// The TypeAlias Decl entry itself is preserved so the type checker can still register it.
 /// At runtime, the Decl entry lowers to `CoreExpr::Placeholder` and is skipped via the
@@ -85,10 +89,10 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
             let syn_span = Span::origin();
             let mut new_entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
             let mut has_injection = false;
-            // Track already-injected constructor names to prevent duplicates when two
-            // types in the same dict share a variant name (e.g., `Annotated` in both
-            // `Annotation` and `Expression`). Without deduplication, the second injection
-            // would cause E030 "duplicate key: Annotated" at runtime.
+            // Track already-injected field constructor names to prevent duplicates when two
+            // types in the same dict share a field constructor name (e.g., `Error` in both
+            // `Result` and some other type). Without deduplication, the second injection
+            // would cause E030 "duplicate key" at runtime.
             let mut injected_names: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
 
@@ -311,19 +315,20 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
     }
 }
 
-/// Extract ADT constructor names from a surface TypeAlias body expression.
+/// Extract field (payload-bearing) ADT constructor names from a surface TypeAlias body expression.
 ///
 /// A TypeAlias body that is `[Shape [Circle r: Int] [Square s: Int]]` (all-positional Dict)
-/// has each positional entry as a union member. Uppercase VarRef entries are unit constructors;
-/// Call entries whose func is an uppercase VarRef are named-field constructors.
+/// has each positional entry as a union member. Only Call entries whose func is an uppercase
+/// VarRef are extracted — these are field constructors like `[Ok a]` or `[Error String]`.
+///
+/// Unit constructors (bare uppercase VarRef entries like `Tcp`, `None`) are intentionally
+/// NOT extracted here. They are handled at evaluation time via `CoreExpr::TypeDecl` injection
+/// in `eval_dict_core` (B-296). The desugar pass is no longer responsible for unit constructors.
 fn extract_surface_adt_ctor_names_from_expr(body: &SurfaceExpression) -> Vec<String> {
     let mut names = Vec::new();
 
     fn try_extract_surface(expr: &SurfaceExpression, names: &mut Vec<String>) {
         match expr {
-            SurfaceExpression::VarRef { name, .. } if crate::eval::is_constructor_name(name) => {
-                names.push(name.clone());
-            }
             SurfaceExpression::Call { func, .. } => {
                 if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                     if crate::eval::is_constructor_name(name) {

@@ -80,9 +80,10 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
 ///   — no CoreExpr→Expr round-trip for dict values.
 ///
 /// **B-296 constructor injection**: Unit constructors from `CoreExpr::TypeDecl` entries
-/// are injected directly into `dict_env` as materialized Variant thunks. This replaces
-/// the desugar-pass injection for unit constructors (field constructors still use desugar
-/// pass for now).
+/// are injected directly into `dict_env` as materialized Variant thunks. Field constructors
+/// (`[Ok a]`, `[Error String]`) are still injected by the desugar pass as
+/// `Ctor: [variant "CtorName"]` entries. T-902 removed unit constructors from the desugar
+/// pass, so there is no double-injection and no deduplication is needed.
 pub(crate) async fn eval_dict_core(
     entries: &[Spanned<CoreEntry>],
     parent_env: &Arc<RwLock<Environment>>,
@@ -129,13 +130,9 @@ pub(crate) async fn eval_dict_core(
     // BEGINNING of the dict (before other entries). We inject into both dict_map
     // (as dict fields) and dict_env (as letrec bindings).
     //
-    // Tracks injected names so the main loop can skip the corresponding desugar-pass
-    // entries (which produce identical `Ctor: [variant "CtorName"]` bindings). Without
-    // this skip, both mechanisms would insert the same key into dict_map and trigger
-    // E030. T-902 will delete the desugar pass entirely, at which point
-    // pre_injected_constructors will always be empty and this guard becomes a no-op.
-    let mut pre_injected_constructors: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    // Unit constructors are handled exclusively here (T-902 removed them from the
+    // desugar pass). Field constructors ([Ok a], [Error String]) continue to be
+    // injected by the desugar pass as `Ctor: [variant "CtorName"]` entries.
     if let Some(ref d_env) = dict_env.as_ref() {
         for entry in entries {
             if let CoreExpr::TypeDecl { unit_constructors } = &entry.node.value.node {
@@ -158,9 +155,6 @@ pub(crate) async fn eval_dict_core(
                         .write()
                         .unwrap()
                         .insert(ctor_name.clone(), Arc::clone(&variant_thunk));
-
-                    // Record name so the main loop skips the desugar-pass duplicate
-                    pre_injected_constructors.insert(ctor_name.clone());
                 }
             }
         }
@@ -224,20 +218,6 @@ pub(crate) async fn eval_dict_core(
             )),
         };
 
-        // B-296 deduplication: check whether this key was already inserted into dict_map
-        // by the pre-scan (TypeDecl constructor injection). If so, skip the dict_map insert
-        // to avoid an E030 duplicate key error. The FlatEnv slot is still filled below so
-        // that slot_idx stays aligned with the resolver's slot assignment — the desugar
-        // thunk and the pre-scan's materialized Variant thunk evaluate to the same value.
-        //
-        // T-902 will delete the desugar pass entirely; at that point pre_injected_constructors
-        // is always empty and this branch is dead code.
-        let is_pre_injected = if !pre_injected_constructors.is_empty() {
-            matches!(&key, Key::String(name) if pre_injected_constructors.contains(name.as_ref()))
-        } else {
-            false
-        };
-
         // String keys become bindings so sibling entries can reference via $name (letrec).
         // Only insert if we have a dict_env (i.e., if there are non-literals).
         // CRITICAL: Only insert static-key entries to preserve slot alignment with the resolver.
@@ -252,30 +232,24 @@ pub(crate) async fn eval_dict_core(
             }
         }
 
+        // Task 1: Move key into dict_map instead of cloning (saves Rc::from allocation per entry).
+        // If duplicate, reconstruct key string from entry (rare error path).
         let thunk_id = ctx.alloc_thunk(thunk);
-        if is_pre_injected {
-            // The pre-scan already inserted a materialized Variant thunk for this constructor
-            // into dict_map. Keep the pre-scan's thunk (avoid the unevaluated desugar thunk).
-            // Still fall through to fill the FlatEnv slot for variable-reference correctness.
-        } else {
-            // Task 1: Move key into dict_map instead of cloning (saves Rc::from allocation per entry).
-            // If duplicate, reconstruct key string from entry (rare error path).
-            if dict_map.insert(key, thunk_id).is_some() {
-                // key was moved; reconstruct string representation from entry for error message
-                let key_str = match &entry.node.key {
-                    Some(k_expr) => match &k_expr.node {
-                        CoreExpr::Str(s) => s.clone(),
-                        CoreExpr::Int(n) => n.to_string(),
-                        CoreExpr::Annotated { name, .. } => name.clone(),
-                        _ => "<computed key>".to_string(),
-                    },
-                    None => (auto_index - 1).to_string(),
-                };
-                return Err(Box::new(EvalError::duplicate_key(
-                    &key_str,
-                    entry.span.clone(),
-                )));
-            }
+        if dict_map.insert(key, thunk_id).is_some() {
+            // key was moved; reconstruct string representation from entry for error message
+            let key_str = match &entry.node.key {
+                Some(k_expr) => match &k_expr.node {
+                    CoreExpr::Str(s) => s.clone(),
+                    CoreExpr::Int(n) => n.to_string(),
+                    CoreExpr::Annotated { name, .. } => name.clone(),
+                    _ => "<computed key>".to_string(),
+                },
+                None => (auto_index - 1).to_string(),
+            };
+            return Err(Box::new(EvalError::duplicate_key(
+                &key_str,
+                entry.span.clone(),
+            )));
         }
 
         if is_static_key && env_id.is_some() {
