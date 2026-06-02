@@ -314,6 +314,16 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
             Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
         );
     }
+    // %stdout is Handle[Writable Text]
+    {
+        let mut caps = HashMap::new();
+        caps.insert("Writable".to_string(), Type::Bool);
+        caps.insert("Text".to_string(), Type::Bool);
+        env.insert(
+            "%stdout".to_string(),
+            Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
+        );
+    }
 
     // Only prelude.llt is loaded at startup.
     // strings.llt, math.llt, and encoding.llt require explicit [include libdir "module.llt"].
@@ -331,6 +341,16 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
         caps.insert("Text".to_string(), Type::Bool);
         builtins_env.insert(
             "%stdin".to_string(),
+            crate::types::Type::Handle(Box::new(Type::Record(crate::types::Row { fields: caps }))),
+        );
+    }
+    // %stdout is Handle[Writable Text]
+    {
+        let mut caps = std::collections::HashMap::new();
+        caps.insert("Writable".to_string(), Type::Bool);
+        caps.insert("Text".to_string(), Type::Bool);
+        builtins_env.insert(
+            "%stdout".to_string(),
             crate::types::Type::Handle(Box::new(Type::Record(crate::types::Row { fields: caps }))),
         );
     }
@@ -1207,7 +1227,7 @@ fn apply_include_type_to_node(
 /// fully-populated type environment for a given program.
 ///
 /// 1. Start with the prelude environment from `build_prelude_env()`
-/// 2. Seed the environment with always-available cap variables (`%cwd`, `%libdir`, `%stdin`)
+/// 2. Seed the environment with always-available cap variables (`%cwd`, `%libdir`, `%stdin`, `%stdout`)
 /// 3. If `base_dir` is provided, collect include paths from `program` and
 ///    resolve them recursively, extending the environment with each included
 ///    file's top-level bindings.
@@ -1252,6 +1272,16 @@ pub fn build_type_env_with_cap(
         caps.insert("Text".to_string(), Type::Bool);
         env.insert(
             "%stdin".to_string(),
+            Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
+        );
+    }
+    // %stdout is Handle[Writable Text]
+    {
+        let mut caps = HashMap::new();
+        caps.insert("Writable".to_string(), Type::Bool);
+        caps.insert("Text".to_string(), Type::Bool);
+        env.insert(
+            "%stdout".to_string(),
             Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
         );
     }
@@ -1480,6 +1510,7 @@ mod tests {
         assert!(env.get("%cwd").is_some(), "expected %cwd in type env");
         assert!(env.get("%libdir").is_some(), "expected %libdir in type env");
         assert!(env.get("%stdin").is_some(), "expected %stdin in type env");
+        assert!(env.get("%stdout").is_some(), "expected %stdout in type env");
 
         // Verify types
         use crate::types::Type;
@@ -1493,6 +1524,15 @@ mod tests {
             );
         } else {
             panic!("expected Handle type for %stdin");
+        }
+        // %stdout is Handle[Writable Text]
+        if let Type::Handle(inner) = &env.get("%stdout").unwrap().body {
+            assert!(
+                !matches!(inner.as_ref(), Type::Unknown),
+                "expected Handle with concrete capability row, got Handle(Unknown)"
+            );
+        } else {
+            panic!("expected Handle type for %stdout");
         }
     }
 

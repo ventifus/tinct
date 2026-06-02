@@ -575,6 +575,23 @@ Document: [type [Document
 Program: [type [Program
   documents: [Seq Document]]]
 
+# Expr: simplified variant-level view of expression AST nodes used by macro
+# infrastructure (tmpl, do, begin, let-decl helpers).  Recursive positions use
+# Any because the type system does not yet support iso-recursive types.
+# These tags match the Variant tags produced by [builtin-variant "Tag" payload].
+Expr: [type
+  [Literal    kind: String  bare: Bool  value: Any]
+  [VarRef     name: String]
+  [Call       fn: Any  args: Any  named-args: Any  implied: Bool]
+  [Fn         params: Any  body: Any  return-ann: Any  desugared: Bool]
+  [Dict       entries: Any]
+  [DotAccess  target: Any  field: String]
+  [Sequential exprs: Any]
+  [LetDecl    bindings: Any]
+  [Annotated  name: String  annotation: Any]
+  [TypeAssert annotation: Any  value: Any]
+  [ExprError  span: Any]]
+
 variant?@[doc: "Check if value is a Variant."]: [fn@Bool [let v]
   [= [type-of v] "Variant"]]
 

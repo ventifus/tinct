@@ -1,13 +1,13 @@
 # sort: Seq input produces descriptive error
 [sort [range 0 10]]
 === error
-[E010] sort: expected Dict, got Seq (defined at stdlib/prelude.llt:2547:29-2547:31)
-  --> stdlib/prelude.llt:2547:29-2547:31
+[E010] sort: expected Dict, got Seq (defined at stdlib/prelude.llt:2564:29-2564:31)
+  --> stdlib/prelude.llt:2564:29-2564:31
    |
-  2547 | """] [let xs] [builtin-sort xs]]
+  2564 | """] [let xs] [builtin-sort xs]]
        |                             ^^
-  in [builtin-sort ...] at stdlib/prelude.llt:2547:15-2547:32
+  in [builtin-sort ...] at stdlib/prelude.llt:2564:15-2564:32
    |
-  2547 | """] [let xs] [builtin-sort xs]]
+  2564 | """] [let xs] [builtin-sort xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [sort ...] at 1:1-1:20

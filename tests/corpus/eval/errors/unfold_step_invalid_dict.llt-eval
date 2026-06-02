@@ -1,13 +1,13 @@
 # unfold: step function returning dict with fewer than 2 entries produces an error
 [unfold [fn [let s] [value: s]] 1]
 === error
-[E010] unfold: expected Dict with at least 2 entries, got Dict with 1 entry (defined at stdlib/prelude.llt:2478:22-2478:45)
-  --> stdlib/prelude.llt:2478:22-2478:45
+[E010] unfold: expected Dict with at least 2 entries, got Dict with 1 entry (defined at stdlib/prelude.llt:2495:22-2495:45)
+  --> stdlib/prelude.llt:2495:22-2495:45
    |
-  2478 | """] [let f@Fn seed] [builtin-unfold f seed]]
+  2495 | """] [let f@Fn seed] [builtin-unfold f seed]]
        |                      ^^^^^^^^^^^^^^^^^^^^^^^
-  in call $unfold at stdlib/prelude.llt:2478:22-2478:45
+  in call $unfold at stdlib/prelude.llt:2495:22-2495:45
    |
-  2478 | """] [let f@Fn seed] [builtin-unfold f seed]]
+  2495 | """] [let f@Fn seed] [builtin-unfold f seed]]
        |                      ^^^^^^^^^^^^^^^^^^^^^^^
   in [unfold ...] at 1:1-1:35

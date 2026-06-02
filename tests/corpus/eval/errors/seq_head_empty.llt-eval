@@ -1,13 +1,13 @@
 # head: error on empty seq
 [head []]
 === error
-[E034] head on empty collection (defined at stdlib/prelude.llt:2418:15-2418:32)
-  --> stdlib/prelude.llt:2418:15-2418:32
+[E034] head on empty collection (defined at stdlib/prelude.llt:2435:15-2435:32)
+  --> stdlib/prelude.llt:2435:15-2435:32
    |
-  2418 | """] [let xs] [builtin-head xs]]
+  2435 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
-  in [builtin-head ...] at stdlib/prelude.llt:2418:15-2418:32
+  in [builtin-head ...] at stdlib/prelude.llt:2435:15-2435:32
    |
-  2418 | """] [let xs] [builtin-head xs]]
+  2435 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [head ...] at 1:1-1:10

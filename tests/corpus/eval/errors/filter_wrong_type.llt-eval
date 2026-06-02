@@ -1,13 +1,13 @@
 # filter: error when xs is not a Dict or Seq
 [filter [fn [let x] true] 42]
 === error
-[E010] filter: expected Dict or Seq, got Int (defined at stdlib/prelude.llt:2042:72-2042:96)
-  --> stdlib/prelude.llt:2042:72-2042:96
+[E010] filter: expected Dict or Seq, got Int (defined at stdlib/prelude.llt:2059:72-2059:96)
+  --> stdlib/prelude.llt:2059:72-2059:96
    |
-  2042 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+  2059 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
        |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-filter ...] at stdlib/prelude.llt:2042:72-2042:96
+  in [builtin-filter ...] at stdlib/prelude.llt:2059:72-2059:96
    |
-  2042 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+  2059 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
        |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
   in [filter ...] at 1:1-1:30

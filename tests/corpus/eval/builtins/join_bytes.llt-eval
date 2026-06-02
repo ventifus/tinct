@@ -3,9 +3,9 @@
 === error
 [E010] bytes-of: expected Seq or Dict, got String (defined at 1:11-1:26)
   in [bytes-of ...] at 1:11-1:26
-  in [builtin-join ...] at stdlib/prelude.llt:2486:26-2486:47
+  in [builtin-join ...] at stdlib/prelude.llt:2503:26-2503:47
    |
-  2486 | """] [let sep@String xs] [builtin-join sep xs]]
+  2503 | """] [let sep@String xs] [builtin-join sep xs]]
        |                          ^^^^^^^^^^^^^^^^^^^^^
   in [join ...] at 1:1-1:27
 
