@@ -1,0 +1,12 @@
+# B-304: macro declared in later document is available in earlier document.
+# With single-pass pre-scan the expansion loop processes documents one at a time:
+# doc 1 is pre-scanned then expanded, then doc 2 is pre-scanned. This means a macro
+# declared in doc 2 is not in the registry when doc 1 is expanded.
+# With two-pass pre-scan, all macros are collected first (pass 1), then all documents
+# are expanded (pass 2) — so the macro is available regardless of declaration order.
+[my-id [a: 1  b: 2]]
+---
+[macro my-id [let x] x]
+[my-id [a: 1  b: 2]]
+=== out
+Dict({"a": Int(1), "b": Int(2)})

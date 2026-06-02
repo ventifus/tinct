@@ -399,12 +399,32 @@ pub async fn expand_surface_program(
         }
     }
 
-    // Process each document in the program
+    // Two-pass macro expansion (B-304):
+    //
+    // Pass 1 — collect ALL macro declarations from ALL documents before expanding anything.
+    // This ensures a macro declared in any document (including a later one) is available
+    // when expanding call sites in any earlier document.
+    //
+    // Without this two-pass approach, the single combined loop would pre-scan doc N and
+    // immediately expand doc N before doc N+1 is even pre-scanned — so macros declared
+    // in doc N+1 are invisible to call sites in doc N.
+    //
+    // Prelude note: prelude.llt is NEVER run through expand_surface_program (see
+    // src/imports.rs typecheck_and_merge_stdlib_module — macro expansion is skipped for
+    // stdlib modules to avoid circular bootstrap recursion). The prelude pre-scan block
+    // above (lines 393-399) only registers prelude macros so user code can call them; it
+    // does NOT expand call sites inside prelude itself. Consequently, a [begin ...] call
+    // inside prelude.llt is NOT a macro call site — it is a raw variable lookup for a
+    // name "begin" in the prelude's value environment. If prelude.llt uses [begin ...],
+    // the fix must be to prelude.llt (replace [begin ...] with an equivalent expression
+    // that does not depend on macro expansion), not to the expander.
+    for doc_spanned in &program.documents {
+        pre_scan_surface_document(&doc_spanned.node, &mut env_macro, &ctx, &stdlib_env).await?;
+    }
+
+    // Pass 2 — expand all documents using the complete macro registry from pass 1.
     for doc_spanned in &mut program.documents {
         let doc = &mut doc_spanned.node;
-
-        // Pre-scan: register macros from declarations
-        pre_scan_surface_document(doc, &mut env_macro, &ctx, &stdlib_env).await?;
 
         // Expand items
         let mut expanded_items = Vec::new();
