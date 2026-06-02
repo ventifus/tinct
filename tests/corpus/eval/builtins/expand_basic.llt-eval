@@ -6,7 +6,8 @@
   has-exprs: [> [length [collect expanded.exprs]] 0]
   [and type-ok has-exprs]
 ]
-=== warn
-expected record type, got ⊤ at 4:15-4:28
 === error
 [E035] cannot serialize Program to JSON (defined at 3:13-3:33)
+
+=== warn
+expected record type, got ⊤ at 4:15-4:28

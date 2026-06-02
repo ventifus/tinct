@@ -5,7 +5,8 @@
   results: [collect [eval-types exprs]]
   [length results]
 ]
-=== warn
-expected record type, got ⊤ at 3:10-3:28
 === error
 [E035] cannot serialize Program to JSON (defined at 2:8-2:30)
+
+=== warn
+expected record type, got ⊤ at 3:10-3:28

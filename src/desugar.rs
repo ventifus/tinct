@@ -525,11 +525,21 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
             desugar_surface(target, depth);
         }
 
-        // Pipe: recurse into both sides at the CURRENT depth, then rewrite the pipe itself.
-        SurfaceExpression::Pipe { lhs, rhs } => {
-            desugar_surface(lhs, depth);
-            desugar_surface(rhs, depth);
-            desugar_pipe_surface(node);
+        // Pipe: collect the right-associative chain into a flat list of stages, desugar each
+        // stage independently, then left-fold into nested calls.
+        //
+        // The parser produces right-associative trees: `a | b | c | d` parses as
+        // `Pipe(a, Pipe(b, Pipe(c, d)))`. A naïve recurse-then-rewrite approach would first
+        // desugar the inner `Pipe(b, Pipe(c, d))` into `Call(d, [c, b])`, and then the outer
+        // `desugar_pipe_surface` would see a `Call` rhs and append `a`, producing `[d c b a]`
+        // (flat) instead of `[d [c [b a]]]` (correctly nested left-folded calls).
+        //
+        // The correct fix: flatten the chain into stages [a, b, c, d], desugar each stage
+        // independently (not as a pipe sub-chain), then left-fold:
+        //   acc = a; acc = [b acc]; acc = [c acc]; acc = [d acc]
+        // producing the correct `[d [c [b a]]]`.
+        SurfaceExpression::Pipe { .. } => {
+            desugar_pipe_chain(node, depth);
         }
 
         // Sequential: recurse into all expressions
@@ -666,33 +676,80 @@ fn desugar_surface_annotation(ann: &mut Annotation, depth: usize) {
     }
 }
 
-/// Desugar a Pipe SurfaceNode by transforming it into a Call.
+/// Desugar a pipe chain starting at `node` (which must be a `Pipe` node).
 ///
-/// Rules:
-/// - `Pipe(lhs, Call(f, args))` → `Call(f, args ++ [lhs])`
-/// - `Pipe(lhs, VarRef(n))` → `Call(VarRef(n), [lhs])`
-/// - `Pipe(lhs, other)` → `Call(other, [lhs])`
-fn desugar_pipe_surface(node: &mut Arc<SurfaceNode>) {
-    let node_mut = Arc::make_mut(node);
+/// Flattens the right-associative chain into stages, desugars each stage independently,
+/// then left-folds them into nested `Call` nodes using `apply_pipe_step`.
+///
+/// For `a | b | c | d` (parsed as `Pipe(a, Pipe(b, Pipe(c, d)))`):
+/// - Stages: `[a, b, c, d]`
+/// - After fold: `apply_pipe_step(apply_pipe_step(apply_pipe_step(a, b), c), d)`
+/// - Result: `[d [c [b a]]]` (correct left-associative nesting)
+fn desugar_pipe_chain(node: &mut Arc<SurfaceNode>, depth: usize) {
+    // Collect all pipe stages by walking the right-associative chain.
+    // The span of the outermost Pipe node is used for the final result node.
+    let span = node.span.clone();
+    let mut stages: Vec<Arc<SurfaceNode>> = Vec::new();
+    collect_pipe_stages(node, &mut stages);
 
-    // Extract lhs and rhs from the Pipe node
-    let (lhs, rhs) = match &mut node_mut.expr {
+    // Desugar each stage independently (not as part of a pipe chain).
+    for stage in &mut stages {
+        desugar_surface(stage, depth);
+    }
+
+    // Left-fold the stages: acc = stages[0], then for each subsequent stage,
+    // acc = apply_pipe_step(acc, stage).
+    debug_assert!(stages.len() >= 2, "Pipe node must have at least two stages");
+    let mut stages_iter = stages.into_iter();
+    let mut acc: Arc<SurfaceNode> = stages_iter.next().expect("at least one stage");
+    for step in stages_iter {
+        acc = apply_pipe_step(acc, step, span.clone());
+    }
+
+    // Replace node's expression with the folded result.
+    Arc::make_mut(node).expr = acc.expr.clone();
+}
+
+/// Collect all stages of a right-associative pipe chain into a flat `Vec`.
+///
+/// `Pipe(a, Pipe(b, Pipe(c, d)))` → `[a, b, c, d]`.
+///
+/// Only `Pipe` nodes are unwrapped; any non-`Pipe` node becomes a leaf stage.
+fn collect_pipe_stages(node: &Arc<SurfaceNode>, stages: &mut Vec<Arc<SurfaceNode>>) {
+    match &node.expr {
         SurfaceExpression::Pipe { lhs, rhs } => {
-            // Clone the Arc pointers to preserve ownership
-            (Arc::clone(lhs), Arc::clone(rhs))
+            stages.push(Arc::clone(lhs));
+            collect_pipe_stages(rhs, stages);
         }
-        _ => return, // Not a Pipe, nothing to do
-    };
+        _ => {
+            stages.push(Arc::clone(node));
+        }
+    }
+}
 
-    // Transform based on RHS type
-    let new_expr = match &rhs.expr {
+/// Apply one pipe step: `lhs | rhs_stage` → `Call`.
+///
+/// Rules (applied to the already-desugared `rhs_stage`):
+/// - `Pipe(lhs, Call(f, args))` → `Call(f, args ++ [lhs])`  (extend existing call)
+/// - `Pipe(lhs, VarRef(n))`    → `Call(VarRef(n), [lhs])`
+/// - `Pipe(lhs, other)`        → `Call(other, [lhs])`
+///
+/// Note: `rhs_stage` must already be desugared and must NOT be a `Pipe` node
+/// (all `Pipe` nodes in the chain were collected and desugared before folding).
+fn apply_pipe_step(
+    lhs: Arc<SurfaceNode>,
+    rhs_stage: Arc<SurfaceNode>,
+    span: Span,
+) -> Arc<SurfaceNode> {
+    let new_expr = match &rhs_stage.expr {
         SurfaceExpression::Call {
             func,
             args,
             named_args,
             implied,
         } => {
-            // Append lhs as final positional argument
+            // rhs_stage is an explicit call in the source (e.g., `[f x y]`).
+            // Append lhs as the final positional argument.
             let mut new_args = args.clone();
             new_args.push(lhs);
             SurfaceExpression::Call {
@@ -703,14 +760,14 @@ fn desugar_pipe_surface(node: &mut Arc<SurfaceNode>) {
             }
         }
         SurfaceExpression::VarRef { name, escaped } => {
-            // Bare word: call it with lhs as the only argument
+            // Bare name (e.g., `a | f`): call it with lhs as the sole argument.
             SurfaceExpression::Call {
                 func: Arc::new(SurfaceNode {
                     expr: SurfaceExpression::VarRef {
                         name: name.clone(),
                         escaped: *escaped,
                     },
-                    span: rhs.span.clone(),
+                    span: rhs_stage.span.clone(),
                 }),
                 args: vec![lhs],
                 named_args: vec![],
@@ -718,9 +775,9 @@ fn desugar_pipe_surface(node: &mut Arc<SurfaceNode>) {
             }
         }
         _ => {
-            // Any other expression: call it with lhs
+            // Any other desugared expression: call it with lhs.
             SurfaceExpression::Call {
-                func: rhs,
+                func: rhs_stage,
                 args: vec![lhs],
                 named_args: vec![],
                 implied: true,
@@ -728,7 +785,10 @@ fn desugar_pipe_surface(node: &mut Arc<SurfaceNode>) {
         }
     };
 
-    node_mut.expr = new_expr;
+    Arc::new(SurfaceNode {
+        expr: new_expr,
+        span,
+    })
 }
 
 /// Desugar an optional annotation.

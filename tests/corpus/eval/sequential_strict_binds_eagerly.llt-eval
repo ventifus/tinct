@@ -5,13 +5,13 @@
 
 42
 === error
-[E080] unused and not evaluated (defined at stdlib/prelude.llt:2034:28-2034:47)
-  --> stdlib/prelude.llt:2034:28-2034:47
+[E080] unused and not evaluated (defined at stdlib/prelude.llt:2035:28-2035:47)
+  --> stdlib/prelude.llt:2035:28-2035:47
    |
-  2034 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2035 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2034:28-2034:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2035:28-2035:47
    |
-  2034 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2035 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in materialized at 3:1-3:51

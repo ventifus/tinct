@@ -2,14 +2,14 @@
 [json: [include %libdir "codecs/json.llt"]]
 [json.from-json "\"hello\\qworld\""]
 === error
-[E080] JSON: unknown escape \q (defined at stdlib/prelude.llt:2034:28-2034:47)
-  --> stdlib/prelude.llt:2034:28-2034:47
+[E080] JSON: unknown escape \q (defined at stdlib/prelude.llt:2035:28-2035:47)
+  --> stdlib/prelude.llt:2035:28-2035:47
    |
-  2034 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2035 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2034:28-2034:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2035:28-2035:47
    |
-  2034 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2035 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in materialized at stdlib/prelude.llt:206:5-210:50
    |

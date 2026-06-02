@@ -1,14 +1,14 @@
 # drop: error when n is not an Int
 [drop "not-a-number" [range 0 10]]
 === error
-[E010] drop: expected Int, got String (defined at stdlib/prelude.llt:2045:57-2045:76)
-  --> stdlib/prelude.llt:2045:57-2045:76
+[E010] drop: expected Int, got String (defined at stdlib/prelude.llt:2046:57-2046:76)
+  --> stdlib/prelude.llt:2046:57-2046:76
    |
-  2045 | drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
+  2046 | drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-drop ...] at stdlib/prelude.llt:2045:57-2045:76
+  in [builtin-drop ...] at stdlib/prelude.llt:2046:57-2046:76
    |
-  2045 | drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
+  2046 | drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
   in [drop ...] at 1:1-1:35
 

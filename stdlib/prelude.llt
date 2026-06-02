@@ -451,7 +451,8 @@ loop-select-impl: [fn [let ctx sources@Seq handler@Fn]
         null
         [match [builtin-select-once ctx sources]
             [case [let v: Ok]
-                [begin [handler v] [loop-select-impl ctx sources handler]]]
+                [handler v]
+                [loop-select-impl ctx sources handler]]
             [case [let _: Closed]
                 [variant "Closed"]]]]]
 

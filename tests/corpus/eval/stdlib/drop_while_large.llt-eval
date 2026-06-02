@@ -5,9 +5,9 @@
 [E020] arity mismatch: expected 2 arguments, got 3 (defined at 2:9-2:42)
   in [drop-while ...] at 2:9-2:42
   in [drop-while ...] at 2:9-2:42
-  in [builtin-length ...] at stdlib/prelude.llt:2057:20-2057:39
+  in [builtin-length ...] at stdlib/prelude.llt:2058:20-2058:39
    |
-  2057 | """]: [fn [let xs] [builtin-length xs]]
+  2058 | """]: [fn [let xs] [builtin-length xs]]
        |                    ^^^^^^^^^^^^^^^^^^^
   in [length ...] at 2:1-2:43
 

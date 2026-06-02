@@ -4,26 +4,26 @@
 [let pairs [each-kv d]]
 [length [from-entries [collect pairs]]]
 === error
-[E010] collect: expected Seq, got Dict (defined at stdlib/prelude.llt:2433:32-2433:34) (called at stdlib/prelude.llt:2433:15-2433:35)
-  --> stdlib/prelude.llt:2433:32-2433:34
+[E010] collect: expected Seq, got Dict (defined at stdlib/prelude.llt:2434:32-2434:34) (called at stdlib/prelude.llt:2434:15-2434:35)
+  --> stdlib/prelude.llt:2434:32-2434:34
    |
-  2433 | """] [let xs] [builtin-collect xs]]
+  2434 | """] [let xs] [builtin-collect xs]]
        |                                ^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2433:15-2433:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2434:15-2434:35
    |
-  2433 | """] [let xs] [builtin-collect xs]]
+  2434 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:975:18-975:36
+  in materialized at stdlib/prelude.llt:976:18-976:36
    |
-  975 | """] [let pairs] [build-dict pairs]]
+  976 | """] [let pairs] [build-dict pairs]]
       |                  ^^^^^^^^^^^^^^^^^^
-  in [build-dict ...] at stdlib/prelude.llt:975:18-975:36
+  in [build-dict ...] at stdlib/prelude.llt:976:18-976:36
    |
-  975 | """] [let pairs] [build-dict pairs]]
+  976 | """] [let pairs] [build-dict pairs]]
       |                  ^^^^^^^^^^^^^^^^^^
-  in [builtin-length ...] at stdlib/prelude.llt:2057:20-2057:39
+  in [builtin-length ...] at stdlib/prelude.llt:2058:20-2058:39
    |
-  2057 | """]: [fn [let xs] [builtin-length xs]]
+  2058 | """]: [fn [let xs] [builtin-length xs]]
        |                    ^^^^^^^^^^^^^^^^^^^
   in [length ...] at 4:1-4:40
 

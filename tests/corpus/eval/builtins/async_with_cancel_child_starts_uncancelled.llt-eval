@@ -3,5 +3,6 @@
 [cancelled? [with-cancel [context]].child-ctx]
 === out
 Bool(false)
+
 === warn
 expected record type, got ⊤ at 2:13-2:46

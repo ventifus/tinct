@@ -4,13 +4,13 @@
 # (the internal loop skips without depth accumulation). Using a bounded input here.
 [head [filter [fn [let n] false] [take 100 [range 0]]]]
 === error
-[E034] head on empty collection (defined at stdlib/prelude.llt:2417:15-2417:32)
-  --> stdlib/prelude.llt:2417:15-2417:32
+[E034] head on empty collection (defined at stdlib/prelude.llt:2418:15-2418:32)
+  --> stdlib/prelude.llt:2418:15-2418:32
    |
-  2417 | """] [let xs] [builtin-head xs]]
+  2418 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
-  in [builtin-head ...] at stdlib/prelude.llt:2417:15-2417:32
+  in [builtin-head ...] at stdlib/prelude.llt:2418:15-2418:32
    |
-  2417 | """] [let xs] [builtin-head xs]]
+  2418 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [head ...] at 4:1-4:56

@@ -7,12 +7,12 @@
   with_entries_empty: [with-entries [fn [e] [key: e.key  value: e.value]] []]
 ]
 === error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 4:35-4:95) (called at stdlib/prelude.llt:975:18-975:36)
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 4:35-4:95) (called at stdlib/prelude.llt:976:18-976:36)
   in [map ...] at 4:35-4:95
   in [map ...] at 4:35-4:95
-  in [build-dict ...] at stdlib/prelude.llt:975:18-975:36
+  in [build-dict ...] at stdlib/prelude.llt:976:18-976:36
    |
-  975 | """] [let pairs] [build-dict pairs]]
+  976 | """] [let pairs] [build-dict pairs]]
       |                  ^^^^^^^^^^^^^^^^^^
 
 === warn
