@@ -3191,44 +3191,6 @@ mod tests {
     }
 
     #[test]
-    fn try_depth_exceeded_not_catchable() {
-        // DepthExceeded errors should NOT be caught by $try - they should propagate
-        // NOTE: No corpus test exists for this because triggering DepthExceeded
-        // reliably requires either a custom builtin (not available in corpus tests)
-        // or recursive thunk forcing with 16MB stack (impractical in corpus format).
-        fn depth_exceeded_builtin(
-            ctx: BuiltinArgs,
-        ) -> Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>>>> {
-            Box::pin(async move {
-                let call_span = ctx.call_span;
-                Err(EvalError::depth_exceeded(256, call_span).into())
-            })
-        }
-        let b = Value::Builtin(crate::value::BuiltinDef {
-            func: depth_exceeded_builtin,
-            name: "depth_fail",
-            pos_strictness: &[],
-            force_count: 0,
-        });
-        let err = run(builtin_try(BuiltinArgs {
-            args: vec![thunk(b)],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .unwrap_err();
-        // Should propagate as error, not return err dict
-        assert!(
-            err.kind
-                .to_string()
-                .contains("maximum evaluation depth exceeded"),
-            "expected depth error to propagate, got: {}",
-            err.kind
-        );
-        assert_eq!(err.kind.code(), "E040");
-    }
-
-    #[test]
     fn try_resource_limit_exceeded_not_catchable() {
         // ResourceLimitExceeded errors should NOT be caught by $try - they should propagate
         fn resource_limit_builtin(

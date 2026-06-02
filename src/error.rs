@@ -2356,7 +2356,6 @@ mod tests {
                 builtin: "floor".to_string(),
                 value: 1e20,
             },
-            ErrorKind::DepthExceeded { limit: 256 },
             ErrorKind::ResourceLimitExceeded {
                 message: "test: resource limit exceeded (1000)".to_string(),
             },
@@ -2512,12 +2511,9 @@ mod tests {
 
     #[test]
     fn test_is_cacheable() {
-        // DepthExceeded is NOT cacheable (must retry at different depth)
-        assert!(!ErrorKind::DepthExceeded { limit: 256 }.is_cacheable());
-
-        // All other (error_kind_variant_count() - 1) variants ARE cacheable (can be stored in Failed thunk state).
-        // ResourceLimitExceeded IS cacheable (unlike DepthExceeded, resource limits
-        // are not context-dependent on call depth — a failed resource limit check
+        // All ErrorKind variants ARE cacheable (can be stored in Failed thunk state).
+        // ResourceLimitExceeded IS cacheable (resource limits are absolute,
+        // not context-dependent — a failed resource limit check
         // will fail consistently regardless of when it's retried).
         assert!(ErrorKind::KeyNotFound {
             key: "foo".to_string(),
@@ -2901,10 +2897,6 @@ mod tests {
 
         // Limit errors (E040-E049)
         assert_eq!(
-            format!("{}", ErrorKind::DepthExceeded { limit: 256 }),
-            "maximum evaluation depth exceeded (256)"
-        );
-        assert_eq!(
             format!(
                 "{}",
                 ErrorKind::ResourceLimitExceeded {
@@ -3213,7 +3205,7 @@ mod tests {
 
     #[test]
     fn test_resource_limit_exceeded_not_catchable() {
-        // Verify that ResourceLimitExceeded is non-catchable like DepthExceeded
+        // Verify that ResourceLimitExceeded is non-catchable
         let err = ErrorKind::ResourceLimitExceeded {
             message: "collect: exceeded maximum collection size (1000000)".to_string(),
         };
@@ -3225,7 +3217,7 @@ mod tests {
 
     #[test]
     fn test_resource_limit_exceeded_is_cacheable() {
-        // Unlike DepthExceeded, ResourceLimitExceeded IS cacheable
+        // ResourceLimitExceeded IS cacheable
         // (resource limits are absolute, not context-dependent)
         let err = ErrorKind::ResourceLimitExceeded {
             message: "upper: output would exceed 64 MB limit".to_string(),
@@ -3560,290 +3552,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_depth_exceeded_elision_self_recursion() {
-        // P=1 (self-recursion): same frame repeated many times
-        let def_span = test_span(5, 1, 5, 20);
-        let frame_span = test_span(10, 5, 10, 15);
-        let mut err = EvalError::depth_exceeded(256, def_span);
 
-        // Add the same frame 256 times (simulating deep self-recursion)
-        for _ in 0..256 {
-            err.push_frame("[f ...]".to_string(), frame_span.clone());
-        }
-
-        let display = format!("{err}");
-
-        // Should contain error code and message
-        assert!(display.contains("[E040]"));
-        assert!(display.contains("maximum evaluation depth exceeded (256)"));
-
-        // Should show one frame copy
-        assert!(display.contains("in [f ...] at 10:5-10:15"));
-
-        // Should show elision summary (255 more repetitions of 1 frame)
-        assert!(display.contains("[... 255 more repetitions of the above 1 frame ...]"));
-
-        // Should NOT repeat the same frame 256 times
-        let frame_count = display.matches("in [f ...] at").count();
-        assert_eq!(
-            frame_count, 1,
-            "should show frame exactly once, not {frame_count} times"
-        );
-    }
-
-    #[test]
-    fn test_depth_exceeded_elision_mutual_recursion() {
-        // P=2 (mutual recursion): alternating frames A, B, A, B, ...
-        let def_span = test_span(1, 1, 1, 5);
-        let frame_a_span = test_span(10, 1, 10, 10);
-        let frame_b_span = test_span(20, 1, 20, 10);
-        let mut err = EvalError::depth_exceeded(256, def_span);
-
-        // Add alternating A/B frames 128 times each (256 total)
-        for _ in 0..128 {
-            err.push_frame("[a ...]".to_string(), frame_a_span.clone());
-            err.push_frame("[b ...]".to_string(), frame_b_span.clone());
-        }
-
-        let display = format!("{err}");
-
-        // Should contain error code
-        assert!(display.contains("[E040]"));
-
-        // Should show both frames once each (the period)
-        assert!(display.contains("in [a ...] at 10:1-10:10"));
-        assert!(display.contains("in [b ...] at 20:1-20:10"));
-
-        // Should show elision summary (127 more repetitions of 2 frames)
-        assert!(display.contains("[... 127 more repetitions of the above 2 frames ...]"));
-
-        // Should show each frame exactly once in the visible output
-        let a_count = display.matches("in [a ...] at").count();
-        let b_count = display.matches("in [b ...] at").count();
-        assert_eq!(a_count, 1, "should show frame A exactly once");
-        assert_eq!(b_count, 1, "should show frame B exactly once");
-    }
-
-    #[test]
-    fn test_depth_exceeded_no_elision_non_repeating() {
-        // Non-repeating frames: should show all frames normally
-        let def_span = test_span(1, 1, 1, 5);
-        let mut err = EvalError::depth_exceeded(256, def_span);
-
-        // Add different frames (not repeating)
-        err.push_frame("[a ...]".to_string(), test_span(10, 1, 10, 5));
-        err.push_frame("[b ...]".to_string(), test_span(20, 1, 20, 5));
-        err.push_frame("[c ...]".to_string(), test_span(30, 1, 30, 5));
-        err.push_frame("[d ...]".to_string(), test_span(40, 1, 40, 5));
-
-        let display = format!("{err}");
-
-        // Should contain error code
-        assert!(display.contains("[E040]"));
-
-        // Should show all frames (no elision)
-        assert!(display.contains("in [a ...] at 10:1-10:5"));
-        assert!(display.contains("in [b ...] at 20:1-20:5"));
-        assert!(display.contains("in [c ...] at 30:1-30:5"));
-        assert!(display.contains("in [d ...] at 40:1-40:5"));
-
-        // Should NOT show elision summary
-        assert!(!display.contains("more repetitions"));
-    }
-
-    #[test]
-    fn test_depth_exceeded_elision_with_tail_frames() {
-        // Repeating pattern followed by non-repeating tail
-        let def_span = test_span(1, 1, 1, 5);
-        let frame_span = test_span(10, 1, 10, 5);
-        let tail_span = test_span(50, 1, 50, 5);
-        let mut err = EvalError::depth_exceeded(256, def_span);
-
-        // Add 9 identical frames (3 full repetitions of period 3)
-        for _ in 0..3 {
-            err.push_frame("[f ...]".to_string(), frame_span.clone());
-            err.push_frame("[f ...]".to_string(), frame_span.clone());
-            err.push_frame("[f ...]".to_string(), frame_span.clone());
-        }
-
-        // Add a tail frame
-        err.push_frame("[final ...]".to_string(), tail_span);
-
-        let display = format!("{err}");
-
-        // Should show one period copy
-        assert!(display.contains("in [f ...] at 10:1-10:5"));
-
-        // Should show elision summary (2 more repetitions of 3 frames)
-        assert!(display.contains("[... 2 more repetitions of the above 3 frames ...]"));
-
-        // Should show the tail frame
-        assert!(display.contains("in [final ...] at 50:1-50:5"));
-    }
-
-    #[test]
-    fn test_depth_exceeded_elision_filters_origin_frames() {
-        // Elision operates on visible frames (respects should_display_frame filter).
-        // Only Span::origin() frames are hidden; all other frames are visible.
-        let def_span = test_span(1, 1, 1, 5);
-        let visible_span = test_span(10, 1, 10, 5);
-        let mut err = EvalError::depth_exceeded(256, def_span);
-
-        // Add mix of visible and origin (hidden) frames.
-        // "[hidden-impl ...]" has a real span, so it IS visible (no suffix filtering).
-        // "[origin ...]" has Span::origin(), so it is NOT visible.
-        for _ in 0..100 {
-            err.push_frame("[f ...]".to_string(), visible_span.clone());
-            err.push_frame("[hidden-impl ...]".to_string(), visible_span.clone()); // real span — visible
-            err.push_frame("[origin ...]".to_string(), Span::origin()); // origin span — hidden
-        }
-
-        let display = format!("{err}");
-
-        // "[f ...]" and "[hidden-impl ...]" both appear in the repeating pattern.
-        // The period-2 pattern ([f ...], [hidden-impl ...]) repeats 100 times.
-        assert!(display.contains("in [f ...] at 10:1-10:5"));
-        assert!(
-            display.contains("hidden-impl"),
-            "real-span frames must appear even with -impl suffix"
-        );
-
-        // Origin-span frames must NOT appear
-        assert!(
-            !display.contains("1:1-1:1"),
-            "origin-span frames must be hidden"
-        );
-    }
-
-    #[test]
-    fn test_non_depth_exceeded_no_elision() {
-        // Elision should ONLY apply to DepthExceeded errors, not other error kinds
-        let def_span = test_span(1, 1, 1, 5);
-        let frame_span = test_span(10, 1, 10, 5);
-        let mut err = EvalError::type_mismatch("Int", "String", def_span);
-
-        // Add many identical frames
-        for _ in 0..256 {
-            err.push_frame("[f ...]".to_string(), frame_span.clone());
-        }
-
-        let display = format!("{err}");
-
-        // Should NOT apply elision (not a DepthExceeded error)
-        assert!(!display.contains("more repetitions"));
-
-        // Should show all frames normally (TypeMismatch errors show all frames)
-        let frame_count = display.matches("in [f ...] at").count();
-        assert_eq!(
-            frame_count, 256,
-            "non-DepthExceeded errors should show all frames"
-        );
-    }
-
-    #[test]
-    fn test_detect_repeating_period_p1() {
-        // Period 1: same frame repeated
-        let span = test_span(10, 1, 10, 5);
-        let frame = StackFrame {
-            label: "[f ...]".to_string(),
-            definition_span: span.clone(),
-            materialization_span: span,
-        };
-        let frames: Vec<&StackFrame> = vec![&frame, &frame, &frame, &frame, &frame];
-
-        let result = detect_repeating_period(&frames);
-        assert_eq!(
-            result,
-            Some((1, 5)),
-            "should detect period 1 with 5 repeats"
-        );
-    }
-
-    #[test]
-    fn test_detect_repeating_period_p2() {
-        // Period 2: alternating A, B
-        let span_a = test_span(10, 1, 10, 5);
-        let span_b = test_span(20, 1, 20, 5);
-        let frame_a = StackFrame {
-            label: "[a ...]".to_string(),
-            definition_span: span_a.clone(),
-            materialization_span: span_a,
-        };
-        let frame_b = StackFrame {
-            label: "[b ...]".to_string(),
-            definition_span: span_b.clone(),
-            materialization_span: span_b,
-        };
-        let frames: Vec<&StackFrame> =
-            vec![&frame_a, &frame_b, &frame_a, &frame_b, &frame_a, &frame_b];
-
-        let result = detect_repeating_period(&frames);
-        assert_eq!(
-            result,
-            Some((2, 3)),
-            "should detect period 2 with 3 repeats"
-        );
-    }
-
-    #[test]
-    fn test_detect_repeating_period_none_too_few_frames() {
-        // Less than 3 frames: no pattern
-        let span = test_span(10, 1, 10, 5);
-        let frame = StackFrame {
-            label: "[f ...]".to_string(),
-            definition_span: span.clone(),
-            materialization_span: span,
-        };
-        let frames: Vec<&StackFrame> = vec![&frame, &frame];
-
-        let result = detect_repeating_period(&frames);
-        assert_eq!(result, None, "should return None for < 3 frames");
-    }
-
-    #[test]
-    fn test_detect_repeating_period_none_non_repeating() {
-        // Different frames: no pattern
-        let frame_a = StackFrame {
-            label: "[a ...]".to_string(),
-            definition_span: test_span(10, 1, 10, 5),
-            materialization_span: test_span(10, 1, 10, 5),
-        };
-        let frame_b = StackFrame {
-            label: "[b ...]".to_string(),
-            definition_span: test_span(20, 1, 20, 5),
-            materialization_span: test_span(20, 1, 20, 5),
-        };
-        let frame_c = StackFrame {
-            label: "[c ...]".to_string(),
-            definition_span: test_span(30, 1, 30, 5),
-            materialization_span: test_span(30, 1, 30, 5),
-        };
-        let frames: Vec<&StackFrame> = vec![&frame_a, &frame_b, &frame_c];
-
-        let result = detect_repeating_period(&frames);
-        assert_eq!(result, None, "should return None for non-repeating frames");
-    }
-
-    #[test]
-    fn test_detect_repeating_period_minimal_period_wins() {
-        // Frame repeated 6 times: could be period 1, 2, or 3
-        // Should return minimal period (1)
-        let span = test_span(10, 1, 10, 5);
-        let frame = StackFrame {
-            label: "[f ...]".to_string(),
-            definition_span: span.clone(),
-            materialization_span: span,
-        };
-        let frames: Vec<&StackFrame> = vec![&frame, &frame, &frame, &frame, &frame, &frame];
-
-        let result = detect_repeating_period(&frames);
-        assert_eq!(
-            result,
-            Some((1, 6)),
-            "should return minimal period 1, not 2 or 3"
-        );
-    }
 
     // -----------------------------------------------------------------------
     // Constructor-level unit tests: one test per EvalError named constructor
@@ -3852,27 +3561,6 @@ mod tests {
     // and test_error_kind_display_all_variants() by exercising each constructor
     // directly and verifying the resulting kind, message, code, and span.
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_eval_error_depth_exceeded_constructor() {
-        let span = test_span(1, 1, 1, 10);
-        let err = EvalError::depth_exceeded(256, span.clone());
-        assert!(matches!(err.kind, ErrorKind::DepthExceeded { limit: 256 }));
-        assert_eq!(err.kind.code(), "E040");
-        assert_eq!(
-            err.kind.to_string(),
-            "maximum evaluation depth exceeded (256)"
-        );
-        assert!(
-            !err.kind.is_cacheable(),
-            "DepthExceeded must not be cacheable"
-        );
-        assert!(
-            !err.kind.is_catchable(),
-            "DepthExceeded must not be catchable"
-        );
-        assert_eq!(err.definition_span, span);
-    }
 
     #[test]
     fn test_eval_error_user_error_constructor() {
@@ -4333,7 +4021,6 @@ mod tests {
                 ErrorKind::EmptyCollection { .. } => "E034",
                 ErrorKind::ValueNotSerializable { .. } => "E035",
                 ErrorKind::FloatOutOfRange { .. } => "E036",
-                ErrorKind::DepthExceeded { .. } => "E040",
                 ErrorKind::ResourceLimitExceeded { .. } => "E043",
                 ErrorKind::IncludeIoError { .. } => "E051",
                 ErrorKind::IncludeCycle { .. } => "E052",

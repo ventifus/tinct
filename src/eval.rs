@@ -6717,7 +6717,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pre-existing regression from runtime-v2 merge: materialize returns Ok for infinite recursion instead of DepthExceeded"]
+    #[ignore = "pre-existing regression from runtime-v2 merge: materialize returns Ok for infinite recursion instead of ResourceLimitExceeded"]
     fn test_pending_call_cycle_detection() {
         // 256 levels of LLT recursion needs more than the default 8MB Rust stack.
         let result = std::thread::Builder::new()
@@ -6765,11 +6765,11 @@ mod tests {
         );
     }
 
-    // ── Non-cacheable error tests (is_cacheable) ───────────────────────
+    // ── Error caching tests ──────────────────────────────────────────────
 
     #[test]
     fn test_regular_error_does_cache() {
-        // Regular errors (not DepthExceeded) should transition to Failed state
+        // Regular errors should transition to Failed state
         let ctx = test_ctx();
         let dict_thunk = eval_str("[x: $undefined]", empty_env(), &ctx).unwrap();
         let dict_val = materialize(&dict_thunk, None, &ctx).unwrap();
@@ -6800,32 +6800,6 @@ mod tests {
                 .contains("undefined variable: undefined"),
             "cached error mismatch: got: {}",
             cached_err.to_string()
-        );
-    }
-
-    #[test]
-    fn test_depth_exceeded_does_not_cache() {
-        // DepthExceeded errors should NOT cache in Failed state — they should allow retry.
-        // This test verifies the is_cacheable() contract for DepthExceeded errors.
-        //
-        // NOTE: Constructing a deep-enough non-cyclic computation to actually trigger
-        // DepthExceeded is complex (requires 256+ nested calls without cycles).
-        // This test validates the is_cacheable() property directly.
-        use crate::error::ErrorKind;
-
-        // Verify DepthExceeded is non-cacheable
-        assert!(
-            !ErrorKind::DepthExceeded { limit: 256 }.is_cacheable(),
-            "DepthExceeded must be non-cacheable (allows retry at different depth)"
-        );
-
-        // All other error kinds should be cacheable (tested in error.rs::test_is_cacheable)
-        assert!(
-            ErrorKind::UndefinedVariable {
-                name: "x".to_string()
-            }
-            .is_cacheable(),
-            "Regular errors should be cacheable"
         );
     }
 
@@ -7819,7 +7793,7 @@ mod tests {
     fn test_materialize_cached_thunk_at_high_depth() {
         // Pre-materialized thunks should succeed even at depth > MAX_CONTINUATION_STACK.
         // Previously, the depth check fired BEFORE the Materialized early-return,
-        // causing spurious DepthExceeded errors when accessing cached values at high depth.
+        // causing spurious depth errors when accessing cached values at high depth.
         let span = test_span(1, 1, 1, 5);
         let thunk = Thunk::new_materialized(Value::Int(42), span);
         let ctx = test_ctx();
@@ -7848,7 +7822,7 @@ mod tests {
 
         let ctx = test_ctx();
 
-        // Materialize at depth=300 should return the cached error, not DepthExceeded
+        // Materialize should return the cached error
         let result = materialize(&thunk, None, &ctx);
         assert!(result.is_err(), "Expected cached error");
         let error = result.unwrap_err();
