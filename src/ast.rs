@@ -952,6 +952,12 @@ pub enum CoreExpr {
         func: Arc<Spanned<CoreExpr>>,
         arg: Arc<Spanned<CoreExpr>>,
     },
+    /// Type declaration in dict value position (B-296 evaluator-level constructor injection).
+    /// Carries only unit constructor names extracted from the TypeAlias body.
+    /// Field constructors continue to use desugar-pass injection for now.
+    TypeDecl {
+        unit_constructors: Vec<String>,
+    },
     Placeholder,
     Error(Span),
 }

@@ -1,0 +1,19 @@
+# B-310: load builtin accepts optional name: and hash: named arguments.
+# The TypeScheme marks it as variadic, so unmatched named args are collected
+# into the variadic dict at runtime per B-277 [C-NAMED-VALID].
+---
+[
+  # Just source (required positional arg)
+  basic: [builtin-load "x: 1"]
+
+  # With name: named arg
+  with-name: [builtin-load "x: 1" name: "test.llt"]
+
+  # With hash: named arg
+  with-hash: [builtin-load "x: 1" hash: "abc123"]
+
+  # With both named args
+  with-both: [builtin-load "x: 1" name: "test.llt" hash: "abc123"]
+]
+===
+OK

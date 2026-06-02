@@ -2,6 +2,3 @@
 [eval [seq [quote $x] []] env: [x: 100]]
 === out
 Int(100)
-
-=== warn
-unknown named argument: function has no parameter named 'env' at 1:32-1:40

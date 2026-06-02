@@ -4,7 +4,3 @@
  result: [f 1 2 3 y: 4 z: 5]]
 === out
 Dict({"f": Function(x, rest), "result": Dict({0: Int(2), 1: Int(3), "y": Int(4), "z": Int(5)})})
-
-=== warn
-unknown named argument: function has no parameter named 'y' at 3:22-3:23
-unknown named argument: function has no parameter named 'z' at 3:27-3:28

@@ -24,4 +24,4 @@
   t5: Success
 ]
 === out
-Dict({"Option": Variant(Option, Null), "Some": Variant(Some, Null), "None": Variant(None, Null), "Status": Variant(Status, Null), "Success": Variant(Success, Null), "Failure": Variant(Failure, Null), "t1": Variant(Some, Int(42)), "t2": Variant(Failure, String("failed")), "t3": Variant(Some, Variant(Failure, String("nested"))), "t4": Variant(None, Null), "t5": Variant(Success, Null)})
+Dict({"Option": Variant(Option, Null), "None": Variant(None, Null), "Status": Variant(Status, Null), "Success": Variant(Success, Null), "Some": Variant(Some, Null), "Failure": Variant(Failure, Null), "t1": Variant(Some, Int(42)), "t2": Variant(Failure, String("failed")), "t3": Variant(Some, Variant(Failure, String("nested"))), "t4": Variant(None, Null), "t5": Variant(Success, Null)})

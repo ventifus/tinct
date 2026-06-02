@@ -1,0 +1,10 @@
+# B-296: Unit constructor evaluator-level injection
+# Unit constructors from [type ...] declarations are injected by the evaluator
+# as dict entries. The TypeDecl entry itself is skipped.
+[
+  Transport: [type Tcp Udp]
+  tcp-val: Tcp
+  udp-val: Udp
+]
+=== out
+Dict({"Tcp": Variant(Tcp, Null), "Udp": Variant(Udp, Null), "tcp-val": Variant(Tcp, Null), "udp-val": Variant(Udp, Null)})

@@ -501,13 +501,30 @@ pub(crate) fn check_call_with_scheme(
                             }
                         }
                         None => {
-                            arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
-                                format!(
-                                    "unknown named argument: function has no parameter named '{}'",
-                                    arg_name
-                                ),
-                                na.span.clone(),
-                            ));
+                            // B-310: Variadic functions accept arbitrary named args (B-277).
+                            // Unmatched named args are collected into the variadic dict at runtime
+                            // per [C-NAMED-VALID]: ∀(k,_)∈named: (∃pᵢ∈P: pᵢ.name=k) ∨ V≠∅.
+                            // When variadic=true, infer the named arg value for type map population
+                            // and error propagation, but DO NOT emit "unknown named argument".
+                            if !*variadic {
+                                arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                                    format!(
+                                        "unknown named argument: function has no parameter named '{}'",
+                                        arg_name
+                                    ),
+                                    na.span.clone(),
+                                ));
+                            } else {
+                                // Variadic function: infer the named arg value for type map and error propagation.
+                                // The value will be collected into the variadic dict at runtime; we don't know
+                                // the element type of the variadic dict statically (it's a mixed Dict of positionals
+                                // and named args), so we just ensure the arg itself type-checks.
+                                if let Err(mut errs) =
+                                    infer_surface_expr(&na.node.value, env, state, type_map)
+                                {
+                                    arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
+                                }
+                            }
                         }
                     }
                 }
@@ -922,13 +939,30 @@ pub(crate) fn check_call(
                             }
                         }
                         None => {
-                            errors.push(TypeError::new(
-                                format!(
-                                    "unknown named argument: function has no parameter named '{}'",
-                                    arg_name
-                                ),
-                                na.span.clone(),
-                            ));
+                            // B-310: Variadic functions accept arbitrary named args (B-277).
+                            // Unmatched named args are collected into the variadic dict at runtime
+                            // per [C-NAMED-VALID]: ∀(k,_)∈named: (∃pᵢ∈P: pᵢ.name=k) ∨ V≠∅.
+                            // When variadic=true, infer the named arg value for type map population
+                            // and error propagation, but DO NOT emit "unknown named argument".
+                            if !*variadic {
+                                errors.push(TypeError::new(
+                                    format!(
+                                        "unknown named argument: function has no parameter named '{}'",
+                                        arg_name
+                                    ),
+                                    na.span.clone(),
+                                ));
+                            } else {
+                                // Variadic function: infer the named arg value for type map and error propagation.
+                                // The value will be collected into the variadic dict at runtime; we don't know
+                                // the element type of the variadic dict statically (it's a mixed Dict of positionals
+                                // and named args), so we just ensure the arg itself type-checks.
+                                if let Err(mut errs) =
+                                    infer_surface_expr(&na.node.value, env, state, type_map)
+                                {
+                                    errors.append(&mut errs);
+                                }
+                            }
                         }
                     }
                 }
@@ -1111,13 +1145,30 @@ pub(crate) fn check_call(
                             }
                         }
                         None => {
-                            arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
-                                format!(
-                                    "unknown named argument: function has no parameter named '{}'",
-                                    arg_name
-                                ),
-                                na.span.clone(),
-                            ));
+                            // B-310: Variadic functions accept arbitrary named args (B-277).
+                            // Unmatched named args are collected into the variadic dict at runtime
+                            // per [C-NAMED-VALID]: ∀(k,_)∈named: (∃pᵢ∈P: pᵢ.name=k) ∨ V≠∅.
+                            // When variadic=true, infer the named arg value for type map population
+                            // and error propagation, but DO NOT emit "unknown named argument".
+                            if !*variadic {
+                                arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                                    format!(
+                                        "unknown named argument: function has no parameter named '{}'",
+                                        arg_name
+                                    ),
+                                    na.span.clone(),
+                                ));
+                            } else {
+                                // Variadic function: infer the named arg value for type map and error propagation.
+                                // The value will be collected into the variadic dict at runtime; we don't know
+                                // the element type of the variadic dict statically (it's a mixed Dict of positionals
+                                // and named args), so we just ensure the arg itself type-checks.
+                                if let Err(mut errs) =
+                                    infer_surface_expr(&na.node.value, env, state, type_map)
+                                {
+                                    arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
+                                }
+                            }
                         }
                     }
                 }

@@ -17,6 +17,52 @@ use crate::ast::{
 };
 use crate::type_def::Type;
 
+/// Extract unit constructor names (bare uppercase identifiers) from a TypeAlias body.
+///
+/// Unit constructors are VarRef nodes with uppercase-first names (e.g., `Tcp`, `None`).
+/// Field constructors (Call nodes like `[Ok value]`) are NOT extracted — they continue
+/// to use the desugar pass injection for now (B-296 scope: unit constructors only).
+///
+/// Used by B-296 evaluator-level constructor injection during lowering.
+fn extract_unit_constructor_names_from_surface(body: &SurfaceExpression) -> Vec<String> {
+    let mut names = Vec::new();
+
+    fn is_constructor_name(name: &str) -> bool {
+        name.chars().next().is_some_and(|c| c.is_uppercase())
+    }
+
+    fn try_extract_unit(expr: &SurfaceExpression, names: &mut Vec<String>) {
+        match expr {
+            // Unit constructor: bare uppercase VarRef (e.g., `Tcp`, `None`, `Readable`)
+            SurfaceExpression::VarRef { name, .. } if is_constructor_name(name) => {
+                names.push(name.clone());
+            }
+            // Field constructor: Call with uppercase func — skip (not a unit constructor)
+            SurfaceExpression::Call { .. } => {
+                // Handled by desugar pass for now — B-296 only implements unit constructors
+            }
+            _ => {}
+        }
+    }
+
+    match body {
+        SurfaceExpression::Dict(entries) => {
+            for entry in entries {
+                if entry.node.key.is_none() {
+                    // Positional entry in [type ...] body — may be a constructor
+                    try_extract_unit(&entry.node.value.expr, &mut names);
+                }
+            }
+        }
+        other => {
+            // Single constructor (e.g., `[type Foo]` instead of `[type [Foo ...]]`)
+            try_extract_unit(other, &mut names);
+        }
+    }
+
+    names
+}
+
 /// Lower a single surface node to a CoreExpr.
 ///
 /// This is the entry point for per-thunk lowering. Called from `eval_materialize.rs`
@@ -83,20 +129,37 @@ fn lower_expr(
         SurfaceExpression::Dict(entries) => {
             let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::with_capacity(entries.len());
             for se in entries {
-                // ADT constructor scoping: skip TypeAlias (and other Decl) entries at runtime.
-                // TypeAlias entries are compile-time declarations; forcing them as values
-                // produces a Placeholder error (E081). The constructors were already injected
-                // as real `CtorName: [variant "CtorName"]` surface entries by
-                // `desugar::inject_adt_constructors_surface_program` (runs before resolve),
-                // so skipping the Decl here is safe.
-                if let SurfaceExpression::Decl(_) = &se.node.value.expr {
-                    // Declaration form in dict value position: skip entirely at runtime.
-                    // Type checker handles it via Pass 0c (typecheck_dict.rs).
-                    continue;
+                // B-296: TypeDecl entries are lowered to CoreExpr::TypeDecl with unit constructor
+                // names extracted. The evaluator injects unit constructors directly into dict_env.
+                // Field constructors continue to use desugar-pass injection for now.
+                // Other Decl forms (ClassDecl, InstanceDecl, MacroDecl) are skipped at runtime.
+                if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
+                    match decl.as_ref() {
+                        crate::ast::SurfaceDeclaration::TypeAlias { body, .. } => {
+                            // Extract unit constructor names from TypeAlias body
+                            let unit_ctors =
+                                extract_unit_constructor_names_from_surface(&body.expr);
+                            let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
+                            let value = Arc::new(Spanned::new(
+                                CoreExpr::TypeDecl {
+                                    unit_constructors: unit_ctors,
+                                },
+                                se.node.value.span.clone(),
+                            ));
+                            core_entries
+                                .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                        }
+                        _ => {
+                            // ClassDecl, InstanceDecl, MacroDecl: skip entirely at runtime.
+                            // Type checker handles them via Pass 0c (typecheck_dict.rs).
+                            continue;
+                        }
+                    }
+                } else {
+                    let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
+                    let value = Arc::new(lower(&se.node.value, res, types));
+                    core_entries.push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                 }
-                let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
-                let value = Arc::new(lower(&se.node.value, res, types));
-                core_entries.push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
             }
             CoreExpr::Dict(core_entries)
         }
@@ -372,6 +435,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             arg: core_expr_to_surface_node(arg),
         },
         CoreExpr::Error(span) => SurfaceExpression::Error(span.clone()),
+        CoreExpr::TypeDecl { .. } => SurfaceExpression::Placeholder,
         CoreExpr::Placeholder => SurfaceExpression::Placeholder,
     }
 }
