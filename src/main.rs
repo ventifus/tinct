@@ -4773,19 +4773,6 @@ finite float whose value is outside the i64 range.
 Fix: check the float value before converting, or use a float output type."
         }
 
-        "E040" => {
-            "\
-E040: Maximum evaluation depth exceeded
-
-The evaluator exceeded its recursion limit. This usually indicates infinite
-or very deep mutual recursion.
-
-Fix: restructure the computation to avoid deep recursion. Use iterative
-patterns ($fold, $map) instead of recursive function calls where possible.
-If the recursion is intentional but bounded, the limit may be raised with
---depth (if supported)."
-        }
-
         "E043" => {
             "\
 E043: Resource limit exceeded
@@ -5072,7 +5059,7 @@ annotation or the scrutinee expression to align with the intended logic."
                 "unknown error code: {code}\n\
                  Run 'tinct explain <code>' with a valid code, e.g. E001 through E099 or T000-T020.\n\
                  Known codes: E001, E002, E010, E011, E020-E024, E030-E036, \
-                 E040, E043-E044, E051-E056, E060, E063, E070, E080, E090, E099, \
+                 E043-E044, E051-E056, E060, E063, E070, E080, E090, E099, \
                  T000, T001, T002, T003, T004, T017, T018, T019, T020."
             ));
         }

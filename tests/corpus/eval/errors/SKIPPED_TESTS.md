@@ -47,11 +47,14 @@ The corpus test format doesn't support multi-file scenarios, and the `# no_fs` d
 **Status**: Partially covered
 
 - **E042 (IncludeForbidden)**: This error code no longer exists. The `ErrorKind` variant was
-  removed during the include-decomp-prelude sprint when `builtin_include` was deleted. The error
-  code range E040–E049 now contains only E040 (DepthExceeded), E043 (ResourceLimitExceeded), and
-  E044 (CapabilityRequired). The file `include_forbidden.llt-eval` was repurposed to test E055
-  (IncludeHashMismatch) and no longer tests any E042 path. No corpus test is needed or possible
-  for E042 because the variant is absent from `src/error.rs`.
+  removed during the include-decomp-prelude sprint when `builtin_include` was deleted. The file
+  `include_forbidden.llt-eval` was repurposed to test E055 (IncludeHashMismatch) and no longer
+  tests any E042 path. No corpus test is needed or possible for E042 because the variant is absent
+  from `src/error.rs`.
+- **E040 (DepthExceeded)**: This error code was removed in B-314 / T-908. The continuation stack
+  depth limit was removed — tinct runs as a single-process CLI with no multi-tenant threat model.
+  The error code range E040–E049 now contains E043 (ResourceLimitExceeded) and E044
+  (CapabilityRequired).
 - **E050 (IncludeNotAvailable)**: Cannot distinguish from other include errors in corpus tests
   with `# no_fs` directive
 - **E051 (IncludeIoError)**: Would require actual filesystem errors (permission denied, etc.)

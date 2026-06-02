@@ -9,13 +9,13 @@ of only the span of the blackholed thunk.
 Before this feature, the error reported only the endpoint of the cycle:
 
 ```text
-[E040] circular dependency detected while evaluating x at 3:5
+[E070] circular dependency detected while evaluating x at 3:5
 ```
 
 Now the error includes each step in the chain:
 
 ```text
-[E040] circular dependency detected while evaluating x at 3:5
+[E070] circular dependency detected while evaluating x at 3:5
   cycle: a (1:1) → b (2:3) → x (3:5) → [cycle back to a]
 ```
 

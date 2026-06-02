@@ -136,7 +136,7 @@ pub(crate) fn builtin_reduce(
 /// Args: (f, acc, xs_dict, idx)
 ///
 /// Processes all remaining entries in a loop to avoid creating a chain of
-/// N nested thunk materializations that would exhaust the continuation stack (E040).
+/// N nested thunk materializations (performance optimization).
 pub(crate) fn builtin_reduce_dict_step(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {

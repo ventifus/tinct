@@ -222,12 +222,11 @@ This is explicit by design — no accidental infinite materialization.
 
 **tinct makes no static productivity guarantee.** This is a deliberate choice, shared by every practical lazy language with general recursion (Haskell, Nix, Nickel, Jsonnet). Static productivity checking requires either totality (Turner 2004, Dhall's approach — Turing-incomplete) or sized types (Abel & Pientka 2013, Abel 2012 — require constraint solving beyond HM unification, incompatible with tinct's type inference). Guardedness alone is insufficient: Coquand's proof that guardedness implies productivity assumes all sub-computations terminate, which general recursion does not guarantee. Sequence constructors (`$seq`, `$range`, `$repeat`, etc.) infer as `Type::Seq` — see [Type System Extensions](07-type-extensions.md) §Precision.
 
-**Three layers of runtime protection:**
+**Two layers of runtime protection:**
 
 | Layer | Mechanism | What it catches |
 |-------|-----------|----------------|
 | Blackholing | `InProgress` thunk state sentinel | Direct cycles: a thunk that references itself during evaluation |
-| Continuation stack limit | `MAX_CONTINUATION_STACK = 2048` | Runaway recursion: deeply nested or diverging evaluation chains (iterative CEK machine) |
 | Tail discipline | `$collect`/`$head`/`$tail` type checks | Malformed tails: sequence tail that evaluates to a non-Seq, non-`[]` value |
 
 **Built-in constructors are productive by construction.** The standard sequence API guarantees productivity for well-behaved arguments:
@@ -446,9 +445,9 @@ materialize(θ_inner) ⇒ error(e)               where ¬e.is_cacheable()
 materialize(θ) ⇒ error(e)
 ```
 
-Note: `DepthExceeded` can arise from the continuation stack depth guard (`check_stack_depth()` enforcing `MAX_CONTINUATION_STACK = 2048` frames) inside the CEK loop, and from individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`). The backward `InProgress → Guarded` edge handles non-cacheable errors from both sources.
+Note: As of T-908, the continuation stack depth limit has been removed. Resource limits now come from individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`) and OS memory constraints. The backward `InProgress → Guarded` edge handles non-cacheable errors from these sources.
 
-[MATERIALIZE-GUARD-NONCACHEABLE] fires when the inner thunk's materialization fails with a non-cacheable error (e.g., DepthExceeded from a builtin). The Guarded state is restored because non-cacheable errors are transient resource-bound conditions, not semantic errors. (`src/eval_materialize.rs`, in the `Guarded` arm of `force_step()`)
+[MATERIALIZE-GUARD-NONCACHEABLE] fires when the inner thunk's materialization fails with a non-cacheable error (e.g., ResourceLimitExceeded from a builtin). The Guarded state is restored because non-cacheable errors are transient resource-bound conditions, not semantic errors. (`src/eval_materialize.rs`, in the `Guarded` arm of `force_step()`)
 
 **[MATERIALIZE-GUARD-TYPE-ERR]** — inner thunk succeeds but value does not inhabit the expected type:
 
@@ -1440,13 +1439,13 @@ Per execution context (deferred per-section model):
 
 ## Iterative Evaluator (CEK Machine)
 
-**Implementation:** The evaluator uses an iterative CEK machine (Control-Environment-Kontinuation) with an explicit bounded continuation stack (`MAX_CONTINUATION_STACK = 2048` in `src/eval_materialize.rs`). This replaced the old recursive evaluator which used `MAX_EVAL_DEPTH = 256` and relied on Rust's call stack.
+**Implementation:** The evaluator uses an iterative CEK machine (Control-Environment-Kontinuation) with an unbounded continuation stack in `src/eval_materialize.rs`. This replaced the old recursive evaluator which used `MAX_EVAL_DEPTH = 256` and relied on Rust's call stack. As of T-908, the continuation stack depth limit was removed — tinct runs as a single-process CLI with no multi-tenant threat model, so the OS enforces memory limits via OOM.
 
 **Evaluation depth is bounded by:**
 
 - Parser depth limit: `MAX_PARSE_DEPTH = 256` (nested syntax depth)
-- Continuation stack limit: `MAX_CONTINUATION_STACK = 2048` (evaluation nesting depth)
 - Cycle detection: `InProgress` thunk state sentinel (catches circular references)
+- OS memory: the continuation stack grows on the heap until OOM
 - Rust stack bounds: the CEK machine runs iteratively on the heap, avoiding deep Rust recursion
 
 **Decision:** Replace the recursive `eval()` / `materialize()` call stack with an iterative CEK machine. Continuations are defunctionalized — each closure that CPS would create becomes a variant in a `Cont` enum, stored in a `Vec<Cont>` stack.
@@ -1539,7 +1538,7 @@ This is **structurally determined** by the `Cont` variant on the stack, not infe
 
 **Tail-call optimization:** TCO via `Memoize`-reuse was investigated but reverted due to `EvalStackGuard` invariant violations — reusing the memoize frame caused guard bookkeeping to go out of sync, producing double-cache-writes and incorrect failure propagation. Proper TCO is tracked in the issue tracker. Until that sprint lands, recursive calls always push a fresh `Cont::Memoize` frame. Builtin calls likewise always push a continuation — builtins rely on `PendingBuiltin` thunk deferral for lazy behavior, not tail-call elimination.
 
-**TCO and infinite loops.** Tail-recursive functions without a base case run as infinite loops under TCO — the continuation stack stays bounded but the function runs indefinitely. This is intentional: infinite loops are valid programs in tinct (event loops, streaming pipelines). The `--timeout`/`--max-cpu` flags provide external resource limits. The depth limit (MAX_CONTINUATION_STACK) only applies to non-tail-recursive calls.
+**TCO and infinite loops.** Tail-recursive functions without a base case run as infinite loops under TCO — the continuation stack stays bounded but the function runs indefinitely. This is intentional: infinite loops are valid programs in tinct (event loops, streaming pipelines). The `--timeout`/`--max-cpu` flags provide external resource limits.
 
 **Error stack traces:** Walk `Vec<Cont>` to reconstruct the call stack, using each variant's stored span and label to produce precise "materialized at" context for every frame. This replaces the current `EvalError::stack` vector with a continuation-derived trace.
 

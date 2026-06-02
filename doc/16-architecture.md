@@ -226,7 +226,7 @@ async fn run(initial: Action, _ctx: &Arc<EvalContext>) -> EvalResult<Value> {
 }
 ```
 
-**Frame size discipline:** The `≤96B` budget keeps `Vec<Cont>` cache-friendly. Large fields (`Vec`, `IndexMap`, `Arc<Spanned<CoreExpr>>`) are heap-allocated via `Box`. The `Action` and `Cont` enums together represent the full CEK machine state; depth tracking becomes `stack.len()` (no separate counter needed; `MAX_CONTINUATION_STACK = 2048` is applied as `stack.len() > 2048`).
+**Frame size discipline:** The `≤96B` budget keeps `Vec<Cont>` cache-friendly. Large fields (`Vec`, `IndexMap`, `Arc<Spanned<CoreExpr>>`) are heap-allocated via `Box`. The `Action` and `Cont` enums together represent the full CEK machine state; depth tracking becomes `stack.len()` (no separate counter needed). As of T-908, the continuation stack is unbounded — depth is limited only by OS memory.
 
 **Relationship to current `ThunkState`:** `PendingBuiltin` and `PendingCall` in `ThunkState` are proto-continuations — defunctionalized call sites captured as data. The CEK machine processes them via `Cont` variants (`Cont::BuiltinForceArg`, `Cont::PendingCallDispatch`) but does NOT remove them from ThunkState. PendingBuiltin and PendingCall are **permanent design elements** — they represent persistent deferred computation (lazy sequence steps, proxy handler dispatch) that cannot be converted to Unevaluated because builtin function pointers have no AST representation. The 7-state model (`{Unevaluated, PendingBuiltin, PendingCall, Guarded, InProgress, Materialized, Failed}`) is the stable design, not a transitional artifact.
 
@@ -609,11 +609,10 @@ LLT source files are **untrusted input**. The parser, type checker, and evaluato
 | **Split parts** | `MAX_SPLIT_PARTS = 1,000,000` | `src/builtins_string.rs:23` | Prevents memory exhaustion from adversarial `$split` patterns |
 | **LSP document size** | `MAX_DOCUMENT_SIZE = 10 MB` | `src/lsp/server.rs:22` | Rejects oversized documents before parsing (equals `MAX_FILE_SIZE`) |
 | **LSP method names** | `MAX_METHOD_NAME_LEN = 256` | `src/lsp/server.rs:33` | Prevents pathological LSP method name allocation |
-| **Continuation stack** | `MAX_CONTINUATION_STACK = 2048` | `src/eval_materialize.rs` | Bounds iterative CEK machine continuation depth; prevents unbounded stack growth |
 | **File I/O** | `--no-fs` flag, LSP default | `src/main.rs:39`, `src/lsp/document.rs:109` | Disables `$include` and `$from-json` file reads; LSP enables by default (CWE-22 mitigation) |
 | **Eval timeout** | `--timeout` flag (Unix only) | `src/main.rs:43` | Wall-clock timeout with SIGALRM; exits with code 2 on expiry |
 
-**Note:** Evaluation depth is bounded by the iterative CEK machine's continuation stack (`MAX_CONTINUATION_STACK = 2048`), cycle detection (`InProgress` sentinel), and parser depth limit (`MAX_PARSE_DEPTH = 256`). The old recursive evaluator with `MAX_EVAL_DEPTH = 256` was replaced by the iterative CEK machine in the runtime-v2 migration.
+**Note:** As of T-908, the continuation stack depth limit has been removed. Evaluation depth is bounded by cycle detection (`InProgress` sentinel) and parser depth limit (`MAX_PARSE_DEPTH = 256`). The old recursive evaluator with `MAX_EVAL_DEPTH = 256` was replaced by the iterative CEK machine in the runtime-v2 migration.
 
 **What is NOT restricted:**
 

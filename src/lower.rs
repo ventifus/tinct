@@ -301,12 +301,11 @@ fn lower_expr(
 /// Bridges through `Expr` via `core_expr_to_expr` + `expr_to_surface_node`.
 /// Used by the `CoreExpr::Quote` arm to get a `SurfaceNode` for `eval_quote_walk`.
 ///
-/// DESIGN DECISION: This round-trip (CoreExpr→Expr→SurfaceNode) is intentional.
-/// Quote captures *surface syntax* for metaprogramming, not the desugared CoreExpr form
-/// with de Bruijn indices. Users expect `[quote x]` to show the variable name "x",
-/// not `FreeVar(0)`.
-///
-/// Direct CoreExpr→SurfaceNode conversion (no Expr bridge).
+/// The inner CoreExpr is converted back to SurfaceNode for eval_quote_walk.
+/// This round-trip is necessary: Quote's inner expression is lowered (so unquote
+/// expressions within it get proper variable slot resolution), but at eval time
+/// the structural view is needed. CoreExpr::Var preserves the original name alongside
+/// the slot, so the round-trip is lossless for variable names.
 pub fn core_expr_to_surface_node(
     expr: &crate::ast::Spanned<crate::ast::CoreExpr>,
 ) -> Arc<SurfaceNode> {

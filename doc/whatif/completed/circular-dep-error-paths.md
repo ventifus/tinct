@@ -9,7 +9,7 @@ What would it take to show the full A→B→A cycle chain when `ThunkState::InPr
 When tinct detects a circular dependency (a thunk is forced while it is already `InProgress`), it reports a `CircularDependency` error with the span of the blackholed thunk. This gives the user only the endpoint of the cycle — not the path that led there.
 
 ```text
-[E040] circular dependency detected while evaluating x at 3:5
+[E070] circular dependency detected while evaluating x at 3:5
 ```
 
 The user sees where `x` is defined but not the chain `a → b → x → a` that caused the cycle.
@@ -45,7 +45,7 @@ struct EvalState {
 **Error format:**
 
 ```text
-[E040] circular dependency detected while evaluating x at 3:5
+[E070] circular dependency detected while evaluating x at 3:5
   cycle: a (1:1) → b (2:3) → x (3:5) → [cycle back to a]
 ```
 

@@ -3352,7 +3352,6 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 continue;
             }
 
-            // Other tokens: deferred to later sprints or ignored
             Token::Comment(comment_text) => {
                 // Determine if this is a trailing or leading comment based on line position
                 // Trailing: comment on the same line as the previous significant token

@@ -3552,8 +3552,6 @@ mod tests {
         );
     }
 
-
-
     // -----------------------------------------------------------------------
     // Constructor-level unit tests: one test per EvalError named constructor
     // that was not already covered by test_eval_error_* tests above.

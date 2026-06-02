@@ -1,13 +1,9 @@
 # Test mutually recursive functions with TCO.
-# f and g call each other in tail position for 50,000 iterations total.
+# f and g call each other in tail position for 10,000 iterations total.
 [
   f: [fn [let n@Int] [if [= n 0] "mutual-done" [g [- n 1]]]]
   g: [fn [let n@Int] [f n]]
 ]
 [f 10000]
-=== error
-[E040] maximum evaluation depth exceeded (2048) (defined at 1:1-1:1) (called at 3:22-3:60)
-  in [- ...] at 3:51-3:58
-  in [= ...] at 3:26-3:33
-  in [if ...] at 3:22-3:60
-  in [f ...] at 6:1-6:10
+=== out
+String("mutual-done")

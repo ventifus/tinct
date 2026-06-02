@@ -1,12 +1,9 @@
-# Deeply nested function calls exceed MAX_CONTINUATION_STACK=2048
-# Each recursive call adds continuation frames (Memoize, etc.)
-# Use a Y-combinator style recursive function to build depth
+# Deeply nested function calls no longer limited by MAX_CONTINUATION_STACK
+# With T-908, the continuation stack depth limit has been removed.
+# This Y-combinator style recursive function now succeeds (limited only by OS memory).
+# Note: This is NOT tail-recursive, so each call adds continuation frames.
+# The test uses a small depth (100) to avoid excessive runtime.
 [f: [fn [let self n] [if [= n 0] 0 [+ 1 [call self self [- n 1]]]]]
- result: [call f f 2100]]
-=== error
-[E040] maximum evaluation depth exceeded (2048) (defined at 3:57-3:64) (called at 3:22-3:67)
-  in [= ...] at 3:26-3:33
-  in [if ...] at 3:22-3:67
-  in [self ...] at 3:41-3:65
-  in type guard at 3:41-3:65
-  in [+ ...] at 3:36-3:66
+ result: [call f f 100]]
+=== out
+Int(100)

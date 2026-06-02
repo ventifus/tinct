@@ -651,7 +651,6 @@ Each variant maps to a stable error code. Codes are `E` followed by a three-digi
 | E034 | `EmptyCollection` | Value |
 | E035 | `ValueNotSerializable` | Value |
 | E036 | `FloatOutOfRange` | Value |
-| E040 | `DepthExceeded` | Limit |
 | E041 | `JsonDepthExceeded` | Limit |
 | E042 | `IncludeForbidden` | Limit |
 | E043 | `ResourceLimitExceeded` | Limit |
@@ -718,7 +717,6 @@ impl ErrorKind {
             Self::EmptyCollection { .. } => "E034",
             Self::ValueNotSerializable { .. } => "E035",
             Self::FloatOutOfRange { .. } => "E036",
-            Self::DepthExceeded { .. } => "E040",
             Self::JsonDepthExceeded { .. } => "E041",
             Self::IncludeForbidden => "E042",
             Self::ResourceLimitExceeded { .. } => "E043",
@@ -1082,7 +1080,6 @@ All 36 `ErrorKind` variants map to stable error codes and human-readable message
 | **EmptyCollection** | E034 | `"{op} on empty collection"` | Builtin call expression |
 | **ValueNotSerializable** | E035 | `"cannot serialize {value_type} to JSON"` | Value being serialized |
 | **FloatOutOfRange** | E036 | `"{builtin}: {value} is out of range for Int"` | Builtin call expression |
-| **DepthExceeded** | E040 | `"maximum evaluation depth exceeded ({limit})"` | Thunk being materialized when limit hit |
 | **JsonDepthExceeded** | E041 | `"maximum JSON nesting depth exceeded ({limit})"` | `from-json` call expression |
 | **IncludeForbidden** | E042 | `"filesystem access is disabled (--no-fs)"` | `include` call expression |
 | **ResourceLimitExceeded** | E043 | `"{message}"` (implementation-defined) | Context-dependent |

@@ -683,14 +683,9 @@ fn improve_functional_dependency_inner(
                         }
                     }
                     None => {
-                        // KNOWN ISSUE: Indexable falls back gracefully when no instance matches
-                        // (e.g., unknown container type or TypeVar container). This prevents
-                        // false-positive "no instance for Indexable" errors for unresolvable
-                        // containers. Determined TypeVar remains unbound → resolves to Unknown.
-                        // Non-Indexable MPTC classes still report errors on lookup failure.
-                        if class == "Indexable" {
-                            continue;
-                        }
+                        // B-317: All determining positions are ground at this point
+                        // (checked at line 525). If lookup_mptc returns None, there's
+                        // genuinely no matching instance. Error uniformly for all classes.
                         return Err(TypeError::new(
                             format!("no instance for {}", class),
                             span.clone(),
@@ -2324,8 +2319,8 @@ pub fn unify(
         // Union vs Union: defer when both sides have inference vars (TypeVars, row vars, TypeStageApp).
         // This prevents hard errors from Union([Int, TypeVar(a)]) ~ Union([Str, TypeVar(b)]).
         // Conservative approximation: the constraint is dropped if TypeVars get bound elsewhere
-        // through other unification paths. See `process_deferred_equalities` for future improvement
-        // (currently not called; enabling it requires a stable call site after dict-level inference).
+        // through other unification paths. process_deferred_equalities in typecheck_dict.rs
+        // retries these after each SCC's substitution merge.
         (Type::Union(m1), Type::Union(m2))
             if m1.iter().any(|ty| ty.has_inference_vars())
                 || m2.iter().any(|ty| ty.has_inference_vars()) =>

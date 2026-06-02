@@ -1,10 +1,7 @@
-# Test simple tail recursion with 50,000 iterations.
+# Test simple tail recursion with 10,000 iterations.
 # Pre-TCO this would hit continuation stack depth limit (~500-1000 iterations).
 # With TCO, it runs in O(1) stack space.
 [f: [fn [let n@Int] [if [= n 0] "done" [f [- n 1]]]]]
 [f 10000]
-=== error
-[E040] maximum evaluation depth exceeded (2048) (defined at 3:43-3:50) (called at 3:21-3:52)
-  in [= ...] at 3:25-3:32
-  in [if ...] at 3:21-3:52
-  in [f ...] at 4:1-4:10
+=== out
+String("done")

@@ -1,8 +1,8 @@
-# try does NOT catch DepthExceeded (E040) — system-level limits propagate.
+# try does NOT catch ResourceLimitExceeded (E043) — system-level limits propagate.
 # This verifies the non-catchable semantics: try wrapping collect on an infinite range
-# still surfaces the depth error rather than wrapping it in Variant(Error, ...).
-# DepthExceeded fires at ~256 elements before ResourceLimitExceeded (E043, 1M elements).
-# Both have the same non-catchable semantics in builtin_try (builtins_meta.rs:222-227).
+# still surfaces the resource limit error rather than wrapping it in Variant(Error, ...).
+# ResourceLimitExceeded (E043) fires at 1M elements for collect.
+# (Note: DepthExceeded (E040) was removed in B-314 / T-908.)
 [try [fn [] [collect [range 0]]]]
 === error
 [E043] collect: exceeded maximum collection size (1000000). Use $take to limit infinite sequences before collecting. (defined at stdlib/prelude.llt:2451:15-2451:35)

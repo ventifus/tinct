@@ -2022,9 +2022,8 @@ fn eval_core_expr<'a>(
 /// to get a result thunk. eval_core_expr is private to this module, so this thin
 /// wrapper exposes it for the CEK machine without making eval_core_expr fully pub.
 ///
-/// Moving eval_core_expr to a dedicated eval_core.rs was investigated (T-694) and deferred:
-/// the function depends on maybe_wrap_guard, eval_quote_walk, and other eval.rs internals
-/// that are too entangled to extract cleanly without a much larger reorganization.
+/// eval_core_expr, maybe_wrap_guard, and eval_quote_walk should move to eval_core.rs (T-918).
+/// This wrapper exists until that extraction is done.
 #[inline]
 pub(crate) fn eval_core_expr_pub<'a>(
     expr: &'a crate::ast::Spanned<crate::ast::CoreExpr>,

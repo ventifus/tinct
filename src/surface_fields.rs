@@ -139,7 +139,7 @@ use crate::value::{string_val, Key, Value};
 /// Sequence-typed fields (args, params, entries, bindings, arms) return
 /// `Value::Dict(IndexMap<Key::Int, ThunkId>)` — integer-keyed lists of
 /// `Value::Expression` entries, allocated into the EvalContext arena.
-/// The `span` field returns null (Span→Dict encoding deferred).
+/// The `span` field returns a Dict with start_line, start_col, end_line, end_col, start_offset, end_offset fields.
 /// Unrecognized fields return null.
 pub fn surface_node_get_field(
     node: &Arc<SurfaceNode>,

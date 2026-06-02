@@ -294,7 +294,7 @@ partition-step: [fn@Dict [let acc e passes@Bool]
 # partition-finish: convert the cons-accumulated pass/fail Seqs into integer-keyed Dicts.
 # Separated from partition to avoid [let result ...] binding inside a fn body, which
 # causes the LetDecl-nesting parser bug (B-264).
-# Uses builtin-reverse + builtin-collect (both Rust-native iterative) to avoid E040 (B-269).
+# Uses builtin-reverse + builtin-collect (both Rust-native iterative) for performance (B-269).
 partition-finish: [fn [let result]
     [pass: [builtin-reverse [builtin-collect [builtin-get "pass" result]]]
      fail: [builtin-reverse [builtin-collect [builtin-get "fail" result]]]]]
@@ -421,7 +421,7 @@ contains-seq?: [fn@Bool [let seq val]
 # uniq-reduce-step: One step of the builtin-reduce loop for uniq.
 # acc is a plain Seq of unique values in reversed insertion order (most-recent first).
 # For each element v: if already in acc, return acc unchanged; otherwise cons v onto acc.
-# Uses builtin-reduce (Rust loop) instead of LLT recursion to avoid E040 stack overflow (B-267).
+# Uses builtin-reduce (Rust loop) instead of LLT recursion for performance (B-267).
 uniq-reduce-step: [fn [let acc v]
     [builtin-if [contains-seq? acc v]
         acc
@@ -1402,7 +1402,7 @@ contains?@[doc: "Check if collection contains element"]: [fn@Bool [let val xs]
                 [seq? [builtin-filter [fn [let e] [builtin-eq e val]] xs]]
                 [any? [fn [let e] [builtin-eq e val]] xs]]]]]
 
-uniq@[doc: "Remove duplicates (keep first occurrence). O(n²) due to O(n) contains-seq? per element, but uses builtin-reduce (Rust loop) to avoid E040 stack overflow (B-267)."]: [fn@Dict [let xs@Dict]
+uniq@[doc: "Remove duplicates (keep first occurrence). O(n²) due to O(n) contains-seq? per element, but uses builtin-reduce (Rust loop) for performance (B-267)."]: [fn@Dict [let xs@Dict]
     [uniq-impl xs]]
 
 # Right fold: fold f over xs from the right, starting with acc.
