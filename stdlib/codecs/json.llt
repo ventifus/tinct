@@ -115,14 +115,16 @@ to-json-pretty-seq: [fn [let s depth@Int]
 
 to-json-pretty-primitive: [fn [let v depth@Int]
   [cond [
-    [[= v []]     "null"]
-    [[bool? v]    [if v "true" "false"]]
-    [[int?  v]    [str v]]
-    [[float? v]   [str v]]
-    [[str?   v]   [json-string v]]
-    [[seq?   v]   [to-json-pretty-seq v depth]]
-    [[dict?  v]   [to-json-pretty-dict v depth]]
-    [true         "null"]]]]
+    [[= v []]      "null"]
+    [[bool? v]     [if v "true" "false"]]
+    [[int?  v]     [str v]]
+    [[float? v]    [str v]]
+    [[str?   v]    [json-string v]]
+    [[seq?   v]    [to-json-pretty-seq v depth]]
+    [[dict?  v]    [to-json-pretty-dict v depth]]
+    [[variant? v]  [to-json-user-variant v]]
+    # Fn, Handle, Task, Channel, and other non-serializable types produce null.
+    [true          "null"]]]]
 
 to-json-pretty-impl: [fn [let v depth@Int]
   [match v
@@ -243,20 +245,29 @@ json-document: [fn [let d@Document]
 json-program: [fn [let p@Program]
   [to-json-dict [documents: [to-json-seq [map json-document p.documents]]]]]
 
+to-json-user-variant: [fn [let v]
+  # Serialize a user-defined Variant (not Program/Document/Expression, which are handled
+  # by the match dispatch in to-json/to-json-pretty-impl above).
+  # Nullary variants (empty payload) → {"Tag": null}
+  # Payload variants               → {"Tag": <serialized-payload>}
+  [tag:     [tag-of v]]
+  [payload: [payload-of v]]
+  [if [= [length payload] 0]
+    [str "{" [json-string tag] ":null}"]
+    [str "{" [json-string tag] ":" [to-json payload] "}"]]]
+
 to-json-primitive: [fn [let v]
   [cond [
-    [[= v []]     "null"]
-    [[bool? v]    [if v "true" "false"]]
-    [[int?  v]    [str v]]
-    [[float? v]   [str v]]
-    [[str?   v]   [json-string v]]
-    [[seq?   v]   [to-json-seq v]]
-    [[dict?  v]   [to-json-dict v]]
-    # Variant values (Program/Document/Expression) are handled by the match dispatch in
-    # to-json above. All other variant values (user-defined, Ok/Error, etc.) produce "null"
-    # here — payload-of is now available in prelude (added in runtime-v2-rebase sprint);
-    # Variant serialization can be improved to use it in a future sprint.
-    [true         "null"]]]]
+    [[= v []]      "null"]
+    [[bool? v]     [if v "true" "false"]]
+    [[int?  v]     [str v]]
+    [[float? v]    [str v]]
+    [[str?   v]    [json-string v]]
+    [[seq?   v]    [to-json-seq v]]
+    [[dict?  v]    [to-json-dict v]]
+    [[variant? v]  [to-json-user-variant v]]
+    # Fn, Handle, Task, Channel, and other non-serializable types produce null.
+    [true          "null"]]]]
 
 # ---- Deserializer helpers ----
 # Uses str-length and str-slice from prelude (both available without strings.llt).
@@ -513,9 +524,11 @@ Each yielded string is a complete JSON value ready to be parsed by from-json."]:
 # ---- Public API ----
 
 to-json@[doc: "Serialize any tinct value to a compact JSON string.
-Expression, Document, and Program values use the Variant encoding {\"Tag\": {fields}}.
-Primitive types serialize directly. Not every tinct type is serializable to JSON —
-Fn, Handle, Task, Channel etc. produce null."]:
+Expression, Document, and Program values use their full AST Variant encoding.
+User-defined Variant values (Ok, Err, None, etc.) serialize as {\"Tag\": payload}
+where nullary variants produce {\"Tag\": null} and payload variants produce {\"Tag\": <fields>}.
+Primitive types (Bool, Int, Float, String, Dict, Seq, null) serialize directly.
+Not every tinct type is serializable — Fn, Handle, Task, Channel etc. produce null."]:
   [fn [let v]
     [match v
       [Program  _]:   [json-program v]
@@ -524,9 +537,11 @@ Fn, Handle, Task, Channel etc. produce null."]:
       _:              [to-json-primitive v]]]
 
 to-json-pretty@[doc: "Serialize any tinct value to a pretty-printed JSON string with 2-space indentation.
-Expression, Document, and Program values use the Variant encoding {\"Tag\": {fields}}.
-Primitive types serialize directly. Not every tinct type is serializable to JSON —
-Fn, Handle, Task, Channel etc. produce null.
+Expression, Document, and Program values use their full AST Variant encoding.
+User-defined Variant values (Ok, Err, None, etc.) serialize as {\"Tag\": payload}
+where nullary variants produce {\"Tag\": null} and payload variants produce {\"Tag\": <fields>}.
+Primitive types (Bool, Int, Float, String, Dict, Seq, null) serialize directly.
+Not every tinct type is serializable — Fn, Handle, Task, Channel etc. produce null.
 Empty dicts render as {}, empty arrays as [] (compact, no newlines)."]:
   [fn [let v]
     [to-json-pretty-impl v 0]]
