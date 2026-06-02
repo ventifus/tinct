@@ -31,7 +31,7 @@
   span-to-event: [fn [let s]
     [ph:   "X"
      ts:   s.start-us
-     dur:  [- s.end-us s.start-us]
+     dur:  [- [@Int s.end-us] [@Int s.start-us]]
      name: [span-name s]
      cname: [stall-color s]
      pid:  1
@@ -40,7 +40,7 @@
             materialize-parent: s.materialize-parent
             create-parent:      s.create-parent
             origin:             s.origin-builtin
-            cpu-us:             [- [- s.end-us s.start-us] s.stall-us]
+            cpu-us:             [- [- [@Int s.end-us] [@Int s.start-us]] [@Int s.stall-us]]
             stall-us:           s.stall-us
             stall-kind:         s.stall-kind]]]
 

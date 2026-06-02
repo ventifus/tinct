@@ -9,6 +9,7 @@
 [
   strings: [include %libdir "strings.llt"]
   net:     [include %libdir "net.llt"]
+  json:    [include %libdir "codecs/json.llt"]
 ]
 
 [
@@ -84,7 +85,7 @@ crate-latest: [fn@String [let name@String]
           [Error "empty response"]
           [Ok [get "max_stable_version"
                  [get "crate"
-                   [from-json resp.body]]]]]]
+                   [json.from-json resp.body]]]]]]
       [fetch %nc [str "https://crates.io/api/v1/crates/" name]]]]]
 
 rust-version: [env "RUST_VERSION"]
