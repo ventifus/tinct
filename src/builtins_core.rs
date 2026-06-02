@@ -1920,6 +1920,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
     // builtin-load: parse tinct source text into a Program value.
+    // Accepts optional named args: name: String, hash: String (via variadic).
     env.insert(
         "builtin-load".to_string(),
         Type::Function {

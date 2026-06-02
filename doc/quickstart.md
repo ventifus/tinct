@@ -196,6 +196,18 @@ The `|` operator threads a value left-to-right through a sequence of functions. 
 ]
 ```
 
+**Pipeline LHS: bare name vs `$name`** — a bare name in bracket head position is always an implied call (`[f]` = call `f`). To use a binding's *value* as the pipeline LHS, prefix it with `$` for an explicit variable reference:
+
+```tinct
+[
+  handle: [open %cwd "data.txt" Readable]
+
+  # WRONG — [handle | lines] calls handle as a zero-arg function
+  # CORRECT — [$handle | lines] uses handle's value as the LHS
+  text: [$handle | lines | collect | [join "\n"]]
+]
+```
+
 **Threading with `->` (alternative for runtime stage lists):**
 
 ```tinct

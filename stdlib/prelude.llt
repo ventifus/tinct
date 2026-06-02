@@ -3056,7 +3056,9 @@ Example: [exit 0]
 
 Note: Waits indefinitely for tasks to drain. For bounded wait, use graceful-exit.
 """]: [fn [let code@Int]
-    [begin [cancel-root] [drain] [exit-now code]]]
+    [cancel-root]
+    [drain]
+    [exit-now code]]
 
 # graceful-exit: bounded graceful shutdown with an explicit drain timeout.
 #

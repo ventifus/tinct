@@ -13,8 +13,10 @@
 
 [
 
-cargo-toml-text: [@String [join "\n" [collect [lines [open %cwd "Cargo.toml" Readable]]]]]
-cargo-lock-text: [@String [join "\n" [collect [lines [open %cwd "Cargo.lock"  Readable]]]]]
+toml-handle:     [open %cwd "Cargo.toml" Readable]
+lock-handle:     [open %cwd "Cargo.lock"  Readable]
+cargo-toml-text: [@String [$toml-handle | lines | collect | [join "\n"]]]
+cargo-lock-text: [@String [$lock-handle  | lines | collect | [join "\n"]]]
 
 fetch: net.fetch
 
@@ -47,26 +49,30 @@ dep-name-append: [fn@Dict [let state@Dict t@String]
   [name: [dep-name-from t]]
   [if [= [length name] 0] state [merge state [names: [append name state.names]]]]]
 
-dep-names: [sorted [reduce
-  [fn@Dict [let state@Dict line@String]
-    [t: [trim line]]
-    [if [starts-with? t "["]
-      [merge state [in-deps: [str-contains? t "dependencies"]]]
-      [if [and state.in-deps [and [< 0 [length t]] [not [starts-with? t "#"]]]]
-        [dep-name-append state t]
-        state]]]
-  [in-deps: false  names: []]
-  [split "\n" cargo-toml-text]].names]
+dep-names: [
+  $cargo-toml-text
+  | [split "\n"]
+  | [reduce
+      [fn@Dict [let state@Dict line@String]
+        [t: [trim line]]
+        [if [starts-with? t "["]
+          [merge state [in-deps: [str-contains? t "dependencies"]]]
+          [if [and state.in-deps [and [< 0 [length t]] [not [starts-with? t "#"]]]]
+            [dep-name-append state t]
+            state]]]
+      [in-deps: false  names: []]]
+  | [fn [let r] r.names]
+  | sorted]
 
 # Find a package's locked version in Cargo.lock.
 ver-after: [fn@String [let after@String]
-  [ver-line: [trim [get 1 [split "\n" after]]]]
+  [ver-line: [$after | [split "\n"] | [get 1] | trim]]
   [str-slice 11 [trunc [- [length ver-line] 1]] ver-line]]
 
 find-locked: [fn@String [let name@String]
   [pattern: [str "\nname = \"" name "\""]]
   [if [str-contains? cargo-lock-text pattern]
-    [ver-after [get 1 [split pattern cargo-lock-text]]]
+    [$cargo-lock-text | [split pattern] | [get 1] | ver-after]
     "—"]]
 
 # Fetch the latest stable version for a crate from crates.io — "?" on failure.

@@ -76,7 +76,7 @@ ann-return-prop: [fn@String [let ann]
 
 # Safe string extraction: call f, return "" if it errors or returns null.
 try-str: [fn@String [let f@[Fn [] String]]
-  [v: [try-or f []]]
+  [v: [try-or f ""]]
   [if [null? v] "" [str v]]]
 
 # Determine the return type text from a return-ann Annotation Variant.
