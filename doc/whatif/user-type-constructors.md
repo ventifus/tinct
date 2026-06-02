@@ -144,9 +144,7 @@ Handle: [type [let a] ...]                   # OS resource; values from builtins
 
 # ── BUILTINS DECLARED IN PRELUDE (in --- stage: type block) ──────────────────
 
-Seq:    [type [let a@Covariant]              # nominal — Seq is inductively structured
-  Nil
-  [Cons head: a  tail: [Seq a]]]
+Seq:    [type [let a@Covariant]  Nil  [Cons head: a  tail: [Seq a]]]
 ```
 
 **Variance on parameters** — ImmediateAt annotation, same as `f@Operator` on class params:
@@ -180,18 +178,24 @@ Both use `[let ...]` to bind names into a scope. Both allow `@` annotations on t
 
 ### Builtin Declarations
 
-**`Seq` — nominal** (inductively structured):
+**`Seq` — nominal** (genuinely inductively structured):
+
 ```tinct
 Seq: [type [let a@Covariant]  Nil  [Cons head: a  tail: [Seq a]]]
 ```
-`Nil` = `Value::Dict(empty)`. `Cons` = `Value::Seq{head, tail}`. `cons` builtin becomes alias for `Cons`. Spread pattern `[h ...t]` remains as sugar.
 
-**`Map` — opaque** (not inductively structured; key-value collections are not spine-recursive):
+`Seq` is nominal for the same reason any inductive type is nominal — its structure is defined by its constructors. Migrating sequence builtins (`cons`, `range`, `iterate`, etc.) to produce `Value::Variant { tag: "Seq.Cons" }` rather than the current `Value::Seq` struct is a migration, not a fundamental change. The `Value::Seq` specialization is a performance optimization; it is not required for correctness. Laziness is preserved: the payload dict contains ThunkIds for head and tail exactly as today. The spread pattern `[h ...t]` becomes sugar for `[Seq.Cons c]` with `c.head` and `c.tail`.
+
+**`Map` — transparent alias** using the column constraint mechanism described below. `Map K V` is not a constructive type — it is a structural constraint that any dict whose values are all of type `V` satisfies. It is expressed as:
+
 ```tinct
-Map: [type [let a b@Covariant] ...]
+Map: [type [let k v]  [_ : v]]    # uniform-value dict; k documents the key type
 ```
 
-**`Handle` — opaque** (OS resource; no user-writable constructor exists):
+`{_ : v}` is the column constraint syntax — a record type where `_` is the "uniform field" key, meaning all present fields have type `v`. This is a transparent alias: any dict with all-`v` values qualifies, without having been created by a `Map` constructor.
+
+**`Handle` — opaque** (OS resource; no tinct-expressible constructor exists):
+
 ```tinct
 Handle: [type [let a] ...]
 ```
@@ -227,6 +231,66 @@ For user-defined opaques: produce `Type::App(TyCon("Tree"), arg)` etc.
 For transparent aliases: expand body (existing path, unchanged).
 
 `apply_builtin_constructor` is deleted. No builtin needs special construction — `App(TyCon(name), args...)` is the representation for all of them.
+
+### Column Constraints — `RowTail::Uniform(V)`
+
+The type system currently expresses structural constraints as named-field record types (`{host: String, port: Int}`) and open records (`{host: String ...r}`). The goal is to make the type system as expressive as the runtime `validate` schema, bringing more structural contract enforcement to compile time. This section introduces the first extension: the **column constraint**, which asserts a uniform value type across all present fields.
+
+This is the start of a continuum. Subsequent extensions to the row system could enable:
+- `{_@k : v}` — typed-key column constraint. **Required to fully express `Map k v`**: until this exists, `k` in `Map: [type [let k v] [_ : v]]` is phantom — documentation only, not enforced. With `{_@k : v}`, the key type is statically checked: `[get "host" d]` is only valid on a `Map String V`, not `Map Int V`. The key type parameter `k` is constrained by `@Equatable` — any type that implements equality can serve as a key, keeping the design open to future key types beyond the current String and Int:
+
+  ```tinct
+  Map: [type [let k@Equatable v]  [_@k : v]]
+  ```
+
+  `RowTail::Uniform` carries an optional key type (`Type::Unknown` when unconstrained, concrete type otherwise). The `{_ : v}` form (unconstrained key) remains valid for the gradual case where you know values are uniform but don't care about key type.
+
+  Note: the `k@Equatable` constraint also exposes a deeper limitation — the runtime `Key` enum is currently `String | Int` rather than any equatable value. Fully realizing `Map k v` with arbitrary key types requires generalizing `Key` to support any equatable value (T-921).
+- Optional field markers — `[host: [or Absent String]  port: Int]` expresses "host may be absent; if present it is String." `Absent` (defined below) handles this without new syntax — it is simply a type in a union annotation.
+- Value predicates at the type level — `[port: Int@[min: 1  max: 65535]]` bringing more of the runtime `validate` schema into static checking
+
+`RowTail::Uniform(V)` is the first step in this direction. It extends the structural contract expressiveness of the type system without requiring dependent types or a separate schema language for the common case of uniform-value dicts.
+
+Structural contracts apply to any annotation site — parameters, local bindings, pipeline inputs — and column constraints simply add a new type that can appear in those annotations. See `doc/whatif/completed/structural-contracts.md`.
+
+The mechanism: extend `RowTail` with a `Uniform(V)` variant meaning "all fields in this row have type V":
+
+```rust
+pub enum RowTail {
+    Empty,
+    RowVar(u32),            // open row variable (existing)
+    Uniform(Box<Type>),     // NEW: all fields have this type
+}
+```
+
+**Syntax in annotations** — `{_ : V}` where `_` is the uniform-field sentinel:
+
+```tinct
+# These structural types become expressible:
+config@{_ : String}              # any dict, all values String
+counts@{_ : Int}                 # any dict, all values Int
+mixed@{host: String  _ : Int}    # host is String; all other fields are Int
+```
+
+**User-defined column constraint types** follow the normal alias form:
+
+```tinct
+# Standard aliases
+Map: [type [let k v]  [_ : v]]          # uniform-value dict
+StringMap: [type [let v]  [_ : v]]      # String-keyed by convention
+Headers: [type  [_ : String]]           # HTTP headers: all values String
+
+# Parametric constraint on a specific value type
+Counter: [type  [_ : Int]]              # frequency/count dict
+```
+
+**Unification**: `unify(Row{tail: Uniform(V1)}, Row{tail: Uniform(V2)})` → `unify(V1, V2)`. A named row `{a: Int, b: Int}` unifies with `{_ : Int}` by checking each named field against the uniform type.
+
+**Subtyping**: `{a: V, b: V} <: {_ : V}` when all field types unify with `V`. Under BAS, covariance distributes: `{_ : Int} <: {_ : Number}`.
+
+**Runtime**: `value_matches_type({_ : V}, d)` verifies the constraint by checking each entry — O(n) in the number of dict entries. For gradual typing, this check fires only at explicit TypeAssert sites (`[@{_ : Int} d]`), not during normal dict access. The type annotation is a programmer-asserted contract, verified incrementally at access time rather than with a full scan at assertion time.
+
+This eliminates the Rust-side `value_matches_type` special case for `TyCon("Map")` — Map becomes a transparent alias obeying general row-matching rules.
 
 ### Unification
 
@@ -381,8 +445,6 @@ Codec.Framing.LengthPrefixed
 
 **Pattern heads are resolved at type-check time, not at match runtime.** The type checker elaborates each pattern head — a dot-access expression — to a resolved qualified tag before the evaluator runs. At runtime, pattern matching uses the pre-computed qualified tag, identical to today's static string comparison. This is what makes exhaustiveness checking sound: the type checker knows which tags are reachable without evaluating expressions.
 
-**`[_ v]` in pattern head position** matches any constructor and binds the payload to `v`. `_` in pattern head position is the "match any constructor" wildcard — it does not perform a scope lookup.
-
 **Qualified tags in the runtime.** The runtime representation stores qualified tags: `Value::Variant { tag: "Result.Ok" }`, not bare `"Ok"`. This is required for soundness — without qualification, two distinct types sharing a constructor name (e.g., `Result.Ok` and `Validated.Ok`) would be indistinguishable at runtime. All existing variant-producing builtins (`try`, etc.) must emit qualified tags after this change.
 
 This applies at **every constructor usage site**: construction, pattern matching, equality checks, passing as values. There are no sites where bare unqualified constructor names are accepted.
@@ -406,15 +468,25 @@ Rebinding a constructor is normal value binding. The type checker follows the in
 
 ### Opaque Types at Runtime
 
-Opaque types (`Map: [type [let a b@Covariant] ...]`) are **not bound at the value level**. The type system registers the name and its kind, but the evaluator creates no runtime dict. `Map.Cons` in value position would be a scope error ("undefined variable Map"), not a dict-field-not-found error. The `...` body signals to the type checker "this is Rust-backed" and to the evaluator "do not create a value binding."
+Opaque types (`Map: [type [let a b@Covariant] ...]`) bind the name to the evaluation of their body — `...` (`Placeholder`). The evaluator binds `Map` to a `Placeholder` thunk, exactly as it does with any other `...` in expression position.
 
-This is distinct from transparent aliases and nominal ADTs, both of which produce a value binding.
+`Placeholder` errors only when forced. Code that uses `Map` only in type annotation position (`xs@[Map String Int]`) never forces `$Map` — the annotation is resolved by the type checker at type-check time, not at runtime. Code that uses `Map` as a runtime value (`$Map`, `[f Map]`) fires the error: "placeholder `...` was evaluated."
 
-### Lowering Constraint for Recursive ADTs
+**Reflection works uniformly.** `describe` reads the annotation on the dict entry key — it does not force the value. Opaque and nominal types behave identically:
 
-Field types in ADT bodies are **type-checker-only annotations** — they are not lowered to runtime `CoreExpr`. In `[Cons head: a tail: [Seq a]]`, the `[Seq a]` in the `tail` field type is resolved during type checking; the evaluator never sees it as a runtime expression. This prevents forcing `Seq.Cons` from triggering a circular dependency on `$Seq`.
+```tinct
+Color@[doc: "RGB color"]: [type Red Green Blue]
+Map@[doc: "Key-value map"]: [type [let a b@Covariant] ...]
 
-The lowering pass must explicitly skip field type annotations when lowering ADT constructor bodies to `CoreExpr`.
+[describe Color].doc   # → "RGB color"     — reads key annotation, never forces $Color
+[describe Map].doc     # → "Key-value map"  — reads key annotation, never forces $Map
+```
+
+No special evaluator handling is required: the body of `[type ...]` is always evaluated and bound to the name, whether it produces a constructor dict or a `Placeholder`.
+
+### Recursive ADTs and the Lowering Pass
+
+Field type annotations in ADT bodies (`[Seq a]` in `tail: [Seq a]`) are type-checker-only — they are resolved during type checking and not lowered to runtime `CoreExpr`. This is the same behavior as all other type annotations in tinct: `@Int`, `fn@String`, and field types in record type expressions are all type-stage constructs that the evaluator never sees. No special handling is required by the lowering pass beyond what it already does for type annotations.
 
 ```tinct
 # Construction
@@ -429,6 +501,64 @@ p: [Geometry.Point x: 1.0  y: 2.0]
 # Passing as value
 [map [fn [let x] [= x Color.Red]] colors]
 ```
+
+### `Absent` — First-Class Absence
+
+`[]` (the empty dict) is currently overloaded as both "empty collection" and "nothing/null." This conflation is inelegant: an empty dict is a meaningful value, not nothing. `Absent` separates these concerns, giving "this thing is not here" a proper type-level representation.
+
+**`Absent` is a unit nominal type declared in prelude:**
+
+```tinct
+Absent: [type Absent]
+```
+
+This creates one value: `Absent.Absent` — the singleton representing absence. No named `absent` binding is needed, for the same reason there is no named `null` binding: you never produce absence explicitly (it is produced by builtins like `get?` and `env`), and you test for it with a predicate, not with equality:
+
+```tinct
+absent?: [fn@Bool [let x] [= [type-name x] "Absent.Absent"]]
+```
+
+`[= x absent]` is not the pattern, just as `[= x []]` is not how you test for null. Use `[absent? x]`.
+
+**`[or Absent T]` in the type algebra — structural `Optional T`:**
+
+```tinct
+[or Absent String]           # optional String
+[or Absent String Int]       # absent, or String, or Int
+Absent & String              # Never — cannot be both absent and present
+
+# Absent distributes through union:
+[or Absent String] | [or Absent Int]  =  [or Absent String Int]
+```
+
+**Optional record fields** fall out without special syntax:
+
+```tinct
+config@[host: [or Absent String]  port: Int]
+# host may be absent; if present, must be String
+```
+
+**Narrowing with existing predicates — no new syntax:**
+
+```tinct
+[has? "host" d]    # true branch:  d.host : String   (Absent narrowed away)
+                   # false branch: d.host : Absent
+[absent? x]        # true branch:  x : Absent
+                   # false branch: x : T             (Absent narrowed away)
+```
+
+**`[]` regains its clean meaning.** With `Absent` carrying the "nothing" role, `[]` means only "empty dict/collection" — a valid, meaningful value. Builtins that currently return `[]` to signal missing now return `Absent.Absent`:
+
+| Builtin | Current return for missing | With Absent |
+|---|---|---|
+| `get?` | `[]` (null) | `[or Absent V]` |
+| `env "VAR"` | error or `[]` | `[or Absent String]` |
+| `head []` | error | `[or Absent a]` |
+| `get-in?` path | `[]` | `[or Absent V]` |
+
+**No special-casing.** `Absent.Absent` is a standard `Value::Variant { tag: "Absent.Absent" }`. `value_matches_type(Absent, v)` uses the standard nominal variant matching. `absent?` is a prelude function, not a builtin. The type checker handles `[or Absent T]` via the existing union type machinery. No new Rust primitives are required.
+
+**Relationship to `Maybe`.** `[or Absent T]` is the structural equivalent of `Maybe T` — without wrapper types, without unwrapping, integrated into the existing union algebra. Where Haskell requires `case x of { Nothing -> ...; Just v -> ... }`, tinct uses `[match x absent: ... v: ...]` or `[if [absent? x] ... ...]`, with narrowing providing the type refinement.
 
 ### Kind Registration
 
@@ -454,56 +584,130 @@ Map:    [type [let a b@Covariant] ...]               # opaque — not inductivel
 Handle: [type [let a] ...]                           # opaque — OS resource, no constructors
 ```
 
-Runtime value matching (`value_matches_type`) is handled by a Rust-side table mapping TyCon names to Value predicates — `Nil` → empty dict, `Cons` → `Value::Seq`, `Map` → `Value::Dict`. This table is the only remaining builtin-specific code.
+**One unavoidable special case:** `value_matches_type` for opaque types requires a Rust-side entry for `Handle` → handle?. Map is no longer in this table — it is a transparent alias `{_ : v}` whose value matching follows from general uniform-row matching rules. `Handle` remains opaque because it has no structural tinct representation. The entry is ~3 lines in `eval_materialize.rs`.
+
+Every other aspect of the design is fully general: annotation resolution, unification, variance, constructor access, pattern elaboration, and reflection all treat user-defined and builtin types identically. Seq participates as a standard nominal ADT. Map participates as a transparent alias.
 
 ## What Would Change
 
-### `src/type_def.rs` — New `TyCon` variant and variance table
+### `src/type_def.rs` — Remove Seq/Map/Handle; add TyCon and RowTail::Uniform
 
-**Current:** `Type::Seq(Box<Type>)`, `Type::Map(Box<Type>, Box<Type>)`, `Type::Handle(Box<Type>)` as dedicated variants. No variance information in the type system.  
-**Proposed:** `Type::TyCon(String)` replaces all three. `Type::App` (already exists) is used for application. A new `TyConEnv` table (parallel to `TypeEnv` for types) stores per-TyCon variance: `HashMap<String, Vec<Variance>>` where `Variance` is `Covariant | Contravariant | Invariant | Bivariant`. Populated from declarations and prelude.  
-**Impact:** Major — every exhaustive match on `Type` gains one arm (TyCon); three arms (Seq, Map, Handle) are removed. Net change is neutral in match count. Variance table adds ~30 lines of infrastructure used only in `is_subtype`.
+**Deleted variants:**
+- `Type::Seq(Box<Type>)` — ~100 match arm occurrences across the codebase
+- `Type::Map(Box<Type>, Box<Type>)` — ~100 match arm occurrences
+- `Type::Handle(Box<Type>)` — ~50 match arm occurrences
 
-### `src/typecheck_annot.rs` — Uniform constructor lookup
+Every exhaustive `match ty { ... }` in the codebase loses these three arms. Affected files include `type_def.rs`, `type_unify.rs`, `type_normalize.rs`, `typecheck.rs`, `typecheck_annot.rs`, `typecheck_call.rs`, `typecheck_narrow.rs`, `eval.rs`, `eval_materialize.rs`, `imports.rs`, `builtins_core.rs`, `type_env.rs`, `type_class.rs`, `coverage.rs`, and test files — estimated 300+ match sites total.
 
-**Current:** String-match on "Seq", "Map", "Handle"; `apply_builtin_constructor`; separate alias instantiation path.  
-**Proposed:** Single path: look up name in type environment (either as TyCon or as alias), retrieve arity, collect arguments, produce `App(TyCon(name), args...)` or expanded alias body.  
-**Impact:** Moderate — the string match and `apply_builtin_constructor` are deleted; replaced by a 15-line general lookup. The two existing paths (alias and builtin) merge into one.
+**Added:**
+- `Type::TyCon(String)` — new variant replacing all three. One new arm in every exhaustive `match ty`.
+- `RowTail::Uniform { key_type: Type, value_type: Box<Type> }` — new row tail variant. One new arm in every exhaustive `match tail`.
+- `TyConEnv: HashMap<String, Vec<Variance>>` — per-TyCon variance table, populated from declarations.
 
-### `src/type_unify.rs` — UNIFY-TYCON
+**Impact:** Major.
 
-**Current:** `UNIFY-OPERATOR` handles type constructor variables. `UNIFY-APP` handles application decomposition.  
-**Proposed:** Add `UNIFY-TYCON`: two `TyCon` nodes unify iff they have the same name. No other changes — `UNIFY-APP` already handles decomposition.  
-**Impact:** Minor — one new match arm in `unify`.
+### `src/typecheck_annot.rs` — Delete builtin dispatch; replace with general lookup
 
-### `src/type_subtype.rs` — Variance-aware subtyping
+**Deleted code:**
+- `fn apply_builtin_constructor(...)` — entire function deleted
+- `fn is_builtin_type_name(name: &str)` — entries `"Seq"`, `"Map"`, `"Handle"` removed (line ~1622)
+- `resolve_annotation` arms for `"Seq"` (lines ~168–179), `"Handle"` (lines ~180–198)
+- `Annotation::Annotated` match arms for `"Seq"` (line ~1053), `"Map"` (line ~1059), `"Handle"` (line ~1169)
+- `resolve_type_dict` string-match arms for `"Seq"` (line ~2444), `"Map"` (line ~2461), `"Handle"` (line ~2505)
+- Bare name resolution `"Seq"` → `Type::Seq(Unknown)`, `"Map"` → `Type::Map(...)`, `"Handle"` → `Type::Handle(Unknown)` (lines ~1632–1652)
 
-**Current:** BAS distribution `App(m, a) | App(m, b) <: App(m, a|b)` is hardcoded for specific types only.  
-**Proposed:** Variance-directed BAS distribution for all `App(TyCon(name), ...)` applications. When a constructor parameter is marked `+A`, union distributes outward (`F (A|B) = F A | F B`). When marked `-A`, union becomes intersection (`F (A|B) = F A & F B`). When invariant, no distribution.
+**Added:** Single general lookup path — check type environment for registered TyCon name, retrieve arity, produce `App(TyCon(name), args...)` or expand alias body. ~15 lines replacing all deleted code.
 
-A variance table mapping TyCon names to per-parameter variance tags is populated from declarations: `Vec<Variance>` where `Variance` is `Covariant | Contravariant | Invariant | Bivariant`.
+**RowTail::Uniform parsing:** New arm in `resolve_type_dict` that recognizes `{_ : V}` syntax (where `_` is the uniform-field sentinel) and produces `RowTail::Uniform { key_type: Unknown, value_type: V }`. For `{_@k : V}`, key_type is resolved from the annotation.
 
-For `App(App(TyCon("Map"), k), v)`, the variance table says Map has `[Invariant, Covariant]` (keys are invariant, values are covariant), so `Map String Int <: Map String Number`.
+**Impact:** Major deletions; moderate additions.
 
-**Impact:** Moderate — the variance table is new; `is_subtype` for `App(TyCon(_), ...)` gains a variance-directed decomposition rule; BAS union/intersection distribution is generalized.
+### `src/type_unify.rs` — Add UNIFY-TYCON and uniform-row unification
 
-### `src/eval_materialize.rs` — `value_matches_type`
+**Added:**
+- `UNIFY-TYCON`: `unify(TyCon(n1), TyCon(n2))` succeeds iff `n1 == n2`. One new arm.
+- Uniform row unification: `unify(Uniform{k1,v1}, Uniform{k2,v2})` → `unify(k1,k2)` then `unify(v1,v2)`. Named-field row vs. uniform row: check each named field against the uniform value type.
+- Uniform row subtyping in `is_subtype`: `{a:V, b:V} <: {_:V}` when all field types unify with V.
 
-**Current:** Matches `Type::Seq(_)` against `Value::Seq{...}`, `Type::Map(_, _)` against `Value::Dict(...)`, etc.  
-**Proposed:** Matches `Type::App(Type::TyCon("Seq"), _)` etc. A small Rust table maps TyCon names to Value predicates for builtins. User-defined types match by nominal tag (existing NominalVariant logic).  
-**Impact:** Moderate — match arms update; TyCon table added (~10 lines).
+**Deleted:** App normalization paths `App(Operator("Seq"), T) → Seq(T)` and similar (lines ~1335, ~2277) — no longer needed since Seq is a nominal type, not a builtin TyCon.
 
-### `stdlib/prelude.llt` — Declare builtins as type constructors
+**Impact:** Moderate.
 
-**Current:** `Seq`, `Map`, `Handle` are recognized only via Rust string-matching.  
-**Proposed:** Declared in prelude (type stage) so the type checker registers them as TyCon entries.  
-**Impact:** Minor — three `[type [Name ...]]` declarations in prelude, no body.
+### `src/value.rs` — Seq migrates from Value::Seq to Value::Variant
 
-### T-920 — Simplified
+**Deleted:** `Value::Seq { head: ThunkId, tail: ThunkId }` — all match sites (~50 occurrences) across `eval.rs`, `eval_materialize.rs`, `builtins_seq_prim.rs`, `builtins_seq_gen.rs`, `builtins_seq_xform.rs`, `builtins_seq_reduce.rs`, `builtins.rs`.
 
-**Current (T-920 design):** Adds `Kind::Arrow`, pre-registers builtins in `kind_env`, `apply_builtin_constructor`.  
-**Proposed:** T-920 is superseded. `Kind::Arrow` is still needed for multi-arg constructors in `kind_env`, but `apply_builtin_constructor` and the builtin string-match are replaced by the general TyCon path.  
-**Impact:** T-920 scope narrows — keep `Kind::Arrow` and kind registration; delete `apply_builtin_constructor` step.
+**Added:** No new runtime variant — Seq values become `Value::Variant { tag: "Seq.Cons", payload: ThunkId }` and `Value::Variant { tag: "Seq.Nil" }` (unit). All Seq-producing builtins (`cons`, `range`, `iterate`, `repeat`, `cycle`, `concat`, and every function that returns a sequence) migrate to producing `Value::Variant` instead of `Value::Seq`.
+
+**Impact:** Major — every sequence-producing and sequence-consuming site in the builtins.
+
+### `src/eval.rs` and `src/eval_materialize.rs` — Pattern matching for Seq
+
+**Deleted:**
+- `Pattern::Seq { head, tail }` match arm — the spread pattern `[h ...t]` currently matches `Value::Seq`. After migration, it matches `Value::Variant { tag: "Seq.Cons", payload }` and `Value::Variant { tag: "Seq.Nil" }`.
+- `ground_type_of(Value::Seq { .. })` → `Type::Seq(Unknown)` — updated to use `Value::Variant` tag lookup.
+- `values_equal` Seq comparison — updated to compare via variant tags.
+
+**`value_matches_type` changes:**
+- **Deleted:** `Type::Seq(_)` → check `Value::Seq` (removed with variant)
+- **Deleted:** `Type::Map(_,_)` → check `Value::Dict` (Map is now transparent alias; match goes through uniform-row checking)
+- **Kept (one remaining special case):** `TyCon("Handle")` → check `Value::Handle` (~3 lines)
+- **Added:** Uniform-row matching `{_ : V}` → iterate dict entries, check each value against V
+
+**Impact:** Major.
+
+### `src/value.rs` — Qualified variant tags
+
+All `Value::Variant { tag: "..." }` constructions with bare unqualified tags change to qualified tags. Specifically:
+
+- `builtins_meta.rs:337` — `try` success: `tag: "Ok"` → `tag: "Result.Ok"`
+- `builtins_meta.rs:355` — `try` failure: `tag: "Error"` → `tag: "Result.Error"`
+- All ADT constructor injection sites in `eval_dict.rs` — tags must be prefixed with the type name
+- All `match variant_tag { "Ok" => ...}` comparisons in pattern matching — updated to qualified form
+
+**Impact:** Major — affects every nominal variant usage across the codebase.
+
+### `src/parser.rs` — Pattern head for qualified constructors
+
+**Changed:** `surface_node_to_pattern_with_guard` (line ~4843):
+- Current: accepts only `SurfaceExpression::VarRef { name }` in constructor pattern head (`[Ok v]`)
+- Proposed: accepts `SurfaceExpression::DotAccess { .. }` chains in addition — `[Result.Ok v]` where `Result.Ok` is parsed as `DotAccess(VarRef("Result"), "Ok")`
+- Unit constructor patterns (`Color.Red:` in match arms) require a `DotAccess` arm in pattern key handling
+
+**`Pattern::Constructor` in `src/ast.rs`:** tag field changes from bare string `"Ok"` to qualified string `"Result.Ok"`. Propagates through all pattern-matching code in `eval.rs`, `typecheck_match.rs`, `coverage.rs`.
+
+**Impact:** Moderate — parser and AST changes, pattern evaluator updates.
+
+### `src/ast.rs` — TypeAlias params preserve variance
+
+**Changed:** `SurfaceDeclaration::TypeAlias { params: Vec<String>, body: Arc<SurfaceNode> }` → `params: Vec<(String, Option<Spanned<Annotation>>)>` (or a `TypeParam` struct).
+
+**Impact:** Moderate — all TypeAlias construction/match sites in `typecheck.rs`, `typecheck_annot.rs`, `type_env.rs`, `imports.rs`, `expand.rs` (~30 occurrences).
+
+### `src/coverage.rs` — Exhaustiveness for nominal Seq
+
+**Changed:** `Type::Seq(_) => constructors.push((ConstructorTag::TypeTag("Seq".into()), 0))` (line ~217) → updated to handle `App(TyCon("Seq"), _)` and enumerate `Seq.Nil` and `Seq.Cons` as the two constructors for exhaustiveness checking.
+
+**Impact:** Minor.
+
+### `stdlib/prelude.llt` — Builtin declarations and Absent
+
+**Added:**
+```tinct
+Absent: [type Absent]                                       # unit nominal type
+absent?: [fn@Bool [let x] ...]                             # presence predicate
+Seq:    [type [let a@Covariant]  Nil  [Cons head: a  tail: [Seq a]]]
+Map:    [type [let k@Equatable v]  [_@k : v]]              # transparent column constraint
+Handle: [type [let a] ...]                                  # opaque
+```
+
+**Changed:** `get?`, `env`, `head`, `get-in?` — return `[or Absent V]` instead of `[]` or erroring on missing. Existing callers using `null?` to check for missing values need updating to `absent?`.
+
+**Impact:** Moderate for declarations; significant downstream impact on any code using `get?`, `env`, `head` with null-checking patterns.
+
+### T-920 — Superseded (narrowed scope)
+
+T-920's `apply_builtin_constructor` step is deleted by this feature. `Kind::Arrow` (for multi-arg kind registration in `kind_env`) is still needed and remains in scope.
 
 ## Prerequisites
 

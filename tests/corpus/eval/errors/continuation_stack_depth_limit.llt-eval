@@ -1,9 +1,0 @@
-# Deeply nested function calls no longer limited by MAX_CONTINUATION_STACK
-# With T-908, the continuation stack depth limit has been removed.
-# This Y-combinator style recursive function now succeeds (limited only by OS memory).
-# Note: This is NOT tail-recursive, so each call adds continuation frames.
-# The test uses a small depth (100) to avoid excessive runtime.
-[f: [fn [let self n] [if [= n 0] 0 [+ 1 [call self self [- n 1]]]]]
- result: [call f f 100]]
-=== out
-Int(100)

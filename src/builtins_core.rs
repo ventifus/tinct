@@ -2208,11 +2208,11 @@ pub fn core_type_env(env: &mut TypeEnv) {
     env.insert(
         "flush".to_string(),
         Type::Function {
-            // Legitimately Unknown: flush preserves input handle's capabilities.
-            // Without dependent types (Handle[C] → Handle[C]), Unknown is the closest
-            // approximation.
-            params: vec![(None, Type::Handle(Box::new(Type::Unknown)))],
-            ret: Box::new(Type::Handle(Box::new(Type::Unknown))),
+            // Use Top so any concrete Handle type satisfies it (is_subtype(Cap, Top) = true).
+            // Unknown would fail for handles with explicit capability rows because
+            // is_subtype(Cap, Unknown) = false (Unknown is not a supertype in BAS).
+            params: vec![(None, Type::Handle(Box::new(Type::Top)))],
+            ret: Box::new(Type::Handle(Box::new(Type::Top))),
             variadic: false,
         },
     );

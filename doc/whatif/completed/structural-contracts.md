@@ -415,6 +415,10 @@ is the tooling complement to contract declaration.
 Phase 4 (pipeline blame): adopt after Phase 3. Multi-stage pipeline
 debugging is the primary motivator for the entire contract system.
 
+## Related
+
+- [`user-type-constructors.md`](../user-type-constructors.md) — introduces `RowTail::Uniform(V)` and `{_ : V}` column constraint syntax, enabling structural contracts to express "all values of type V" on any dict. This is a type system extension that structural contracts can use at any annotation site, not just pipeline input.
+
 ## References
 
 **Contract systems:**

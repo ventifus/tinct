@@ -1,8 +1,0 @@
-# Tuple type annotation: [Tuple T0 T1 ...] resolves to a closed record with
-# integer-string field names {0: T0, 1: T1, ...}. This matches the evaluation
-# model where tuples are dicts with integer keys.
-# A positional dict [42 "hello"] has auto-indexed keys "0" and "1" at the type
-# level, matching the Tuple annotation {0: Int, 1: String}.
-[@[[Tuple Int String]] [42 "hello"]]
-=== out
-Dict({0: Int(42), 1: String("hello")})

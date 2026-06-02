@@ -342,7 +342,7 @@ version:
 versions:
     {{container}} run {{run_flags}} --network=host \
         -e RUST_VERSION={{rust_version}} \
-        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run -o raw --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 --profile samples/versions-spans.llt-stream samples/versions.llt && (cargo build --release 2>/dev/null && ./target/release/tinct --max-memory {{tinct_max_memory}} run -i stream -o json scripts/profile/trace.llt < samples/versions-spans.llt-stream > samples/versions-trace.json || echo 'note: profiling trace skipped')"
+        {{rust_image}} sh -c "ulimit -s unlimited && cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run -o raw --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 --profile samples/versions-spans.llt-stream samples/versions.llt && (cargo run --release --bin tinct -- --max-memory {{tinct_max_memory}} run -i stream -o json scripts/profile/trace.llt < samples/versions-spans.llt-stream > samples/versions-trace.json 2>/dev/null || echo 'note: profiling trace skipped')"
 
 # Generate stdlib API reference from @[doc: "..."] annotations.
 # Writes one file per module to doc/lib/<module>.md.

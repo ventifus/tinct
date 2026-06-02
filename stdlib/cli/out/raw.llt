@@ -21,12 +21,18 @@
     identity]]]
 
 # 2. Force the return value to drive the lazy evaluation cascade.
-# Wrapped in a dict so this intermediate document extends the scope (LLT requires
-# intermediate documents to be record types). The _: binding is unused.
+# Only write % if it is non-null ([] means "no return value" — output was via emit).
+# Wrapped in a dict so this intermediate document extends the scope.
 [_: [if [seq? %]
   [reduce [fn [let _ x]
     [write-handle %stdout [raw x]]] [] %]
-  [write-handle %stdout [raw %]]]]
+  [if [= [] %]
+    []
+    [write-handle %stdout [raw %]]]]]
 
 # 3. Wait for drain to finish consuming any emits triggered during forcing.
-[await drain]
+# Wrapped in a dict so this intermediate document extends the scope.
+[_: [await drain]]
+
+# 4. Flush stdout to ensure BufWriter contents reach the OS pipe buffer.
+[flush %stdout]
