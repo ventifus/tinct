@@ -332,6 +332,22 @@ fn typecheck_surface_document(
         env.insert(format!("%{}", name), ty.clone());
     }
 
+    // Seed runtime-injected names that are not in the prelude type env.
+    // %emit-channel: raw emit channel injected for all programs by eval-program (loader.llt).
+    // Typed as Top to avoid T002 false positives in output formatters (e.g. none.llt).
+    // See B-307: removed once %emit-channel gets proper stdlib-only scoping.
+    env.insert("%emit-channel".to_string(), Type::Top);
+    // materialize: builtin force function available at runtime but not re-exported by prelude.
+    // none.llt calls [materialize %] — seed here to suppress T002 for formatters.
+    env.insert(
+        "materialize".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top),
+            variadic: false,
+        },
+    );
+
     let mut env = Rc::new(env);
 
     // Validate expects annotation if present (advisory errors)

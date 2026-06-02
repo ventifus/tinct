@@ -549,7 +549,7 @@ Expression: [type
   [LetDecl      bindings: [Seq Expression]  span: Span]
   [CaseArm      pattern: Expression  body: Expression  span: Span]
   [Placeholder  span: Span]
-  [Error  span: Span]]
+  [ExprError  span: Span]]
 
 # Pattern is an alias for Expression - patterns in match arms are Expression nodes.
 # This alias provides API clarity for function signatures accepting patterns.

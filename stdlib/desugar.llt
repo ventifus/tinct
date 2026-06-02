@@ -119,7 +119,7 @@ desugar-children: [fn [let expr@Expression depth@Int]
     [Var name: _ escaped: _ span: _]: expr
     [Rest name: _ span: _]: expr
     [Placeholder span: _]: expr
-    [Error span: _]: expr
+    [ExprError span: _]: expr
 
     # Access expressions: recurse into target
     [DotAccess target: t field: f span: s]:

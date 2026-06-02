@@ -409,15 +409,12 @@ pub async fn expand_surface_program(
     // immediately expand doc N before doc N+1 is even pre-scanned — so macros declared
     // in doc N+1 are invisible to call sites in doc N.
     //
-    // Prelude note: prelude.llt is NEVER run through expand_surface_program (see
-    // src/imports.rs typecheck_and_merge_stdlib_module — macro expansion is skipped for
-    // stdlib modules to avoid circular bootstrap recursion). The prelude pre-scan block
-    // above (lines 393-399) only registers prelude macros so user code can call them; it
-    // does NOT expand call sites inside prelude itself. Consequently, a [begin ...] call
-    // inside prelude.llt is NOT a macro call site — it is a raw variable lookup for a
-    // name "begin" in the prelude's value environment. If prelude.llt uses [begin ...],
-    // the fix must be to prelude.llt (replace [begin ...] with an equivalent expression
-    // that does not depend on macro expansion), not to the expander.
+    // Prelude note: prelude.llt is expanded through expand_surface_program in the TYPECHECK
+    // path (src/imports.rs typecheck_and_merge_stdlib_module), but NOT in the runtime
+    // bootstrap path (src/builtins.rs create_stdlib_env_inner). The runtime path skips
+    // expansion because expand_surface_program requires a live stdlib env to evaluate macro
+    // transformer functions — calling it from create_stdlib_env_inner causes infinite
+    // recursion. See B-309 for the tracked follow-up to fix the runtime path properly.
     for doc_spanned in &program.documents {
         pre_scan_surface_document(&doc_spanned.node, &mut env_macro, &ctx, &stdlib_env).await?;
     }

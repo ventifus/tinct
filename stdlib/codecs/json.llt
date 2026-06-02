@@ -213,7 +213,7 @@ json-expression: [fn [let expr@Expression]
     [CaseArm pattern: p  body: b  span: s]:
       [json-variant "CaseArm" [pattern: [json-expression p]  body: [json-expression b]  span: [json-span s]]]
     [Placeholder  span: s]: [json-variant "Placeholder" [span: [json-span s]]]
-    [Error        span: s]: [json-variant "Error"        [span: [json-span s]]]
+    [ExprError    span: s]: [json-variant "ExprError"   [span: [json-span s]]]
     # MacroDecl, Splice, SyntaxClass are Declaration forms —
     # they appear in Document.declarations, not expressions. See json-declaration.
     ]]

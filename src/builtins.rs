@@ -1457,13 +1457,22 @@ fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvWit
         })?;
     let mut prelude_program = prelude_parsed.program.clone();
 
-    // NOTE: We do NOT call expand_surface_program() here. Macro expansion requires
-    // the stdlib env (for evaluating transformer bodies), but we are building the
-    // stdlib env — calling expand would cause infinite recursion. The prelude does not
-    // USE any macros; it only DEFINES them via [macro ...] declarations. These are
-    // discovered later when expand_surface_program() runs on user files (depth == 0),
-    // at which point STDLIB_RESULT_CACHE is populated and the macros can be registered.
-
+    // NOTE: prelude.llt is intentionally NOT expanded here (runtime bootstrap path).
+    //
+    // The circularity is real for runtime evaluation: expand_surface_program calls
+    // create_stdlib_env to build the EvalContext needed to run macro transformer
+    // functions. If create_stdlib_env_inner itself calls expand_surface_program, it
+    // triggers infinite recursion (detected as "depth=6" by EXPAND_MACROS_DEPTH guard).
+    //
+    // The typecheck path (src/imports.rs typecheck_and_merge_stdlib_module) does expand
+    // prelude.llt safely because typecheck does not evaluate macro transformers the same
+    // way — it can expand structural macros (begin, do, tmpl) without a fully-bootstrapped
+    // runtime env.
+    //
+    // TODO(B-309): The correct fix for the runtime path is to apply only
+    // STDLIB_MACRO_SPECS expansion (not full user-macro expansion with transformer
+    // evaluation) during runtime bootstrap, so that structural macros in prelude.llt
+    // are expanded without requiring a live stdlib env. This is left for a future sprint.
     crate::desugar::desugar_surface_program(&mut prelude_program);
     // B-296: Inject `CtorName: [variant "CtorName"]` entries for all `[type ...]` ADT
     // declarations in prelude.llt. This runs BEFORE resolve so de Bruijn slots are correct.

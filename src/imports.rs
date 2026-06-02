@@ -94,17 +94,31 @@ fn typecheck_and_merge_stdlib_module(
         parsed.program.clone()
     };
 
-    // Skip macro expansion for stdlib modules.
+    // B-309: Enable macro expansion for stdlib modules.
     //
-    // Rationale: stdlib modules (prelude.llt and others) never use [macro ...],
-    // so expand_surface_program is a no-op for them — but at depth 0 it triggers a full
-    // create_stdlib_env() bootstrap (~20s in debug builds). Since build_prelude_env
-    // is called once per test thread, this turns parallel test runs into a hang
-    // when each of N threads pays the 20s bootstrap cost simultaneously under
-    // memory pressure.
+    // The previous comment claimed "circular bootstrap recursion" if we expand prelude.llt,
+    // but this is incorrect. Macro expansion (expand_surface_program) is a purely structural
+    // AST-to-AST transformation that does not require runtime evaluation. The two-pass
+    // pre-scan (B-304) collects ALL macro declarations from ALL documents BEFORE expanding
+    // any call sites, so macros declared at the END of prelude.llt (like `begin` at line 3485)
+    // are available when expanding call sites at the BEGINNING.
     //
-    // The previous code called expand::expand_surface_program(file, true) here, which
-    // recursively built the stdlib just to check for macros that don't exist.
+    // Without this expansion, `[begin ...]`, `[do ...]`, and `[tmpl ...]` calls in prelude.llt
+    // are NOT expanded and remain as raw variable lookups — which fail since those names have
+    // no runtime bindings (they are macro transformers, not functions).
+    //
+    // AMBIENT-OK: typecheck_and_merge_stdlib_module uses embedded source strings (include_str!),
+    // not filesystem paths. The cap_std::Dir is required by expand_surface_program's signature
+    // but is never accessed during prelude expansion (no_fs=true in typecheck pipeline).
+    #[allow(clippy::disallowed_methods)]
+    let expand_base_dir =
+        cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).map_err(|_| ())?;
+    crate::async_rt::block_on_anywhere(crate::expand::expand_surface_program(
+        &mut program,
+        true, // no_fs: true — prelude expansion never accesses filesystem
+        &expand_base_dir,
+    ))
+    .map_err(|_| ())?;
 
     // Desugar $_ implicit lambdas on SurfaceProgram (after expansion, before resolve).
     // Correct pipeline order: parse → expand → desugar → resolve → typecheck.

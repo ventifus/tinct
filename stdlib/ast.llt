@@ -67,7 +67,7 @@
 
   # Special
   [Placeholder]
-  [Error span: Unknown]]  # span is Span — opaque from LLT
+  [ExprError span: Unknown]]  # span is Span — opaque from LLT
 
 # flatten-args — re-extract flat element sequence from a parsed bracket
 #

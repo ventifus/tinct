@@ -64,7 +64,7 @@
           [percent: val
            named: [match doc.name
                     [case [let n: Named]
-                      [builtin-merge state.named [make-entry [builtin-str "%" n] val]]]
+                      [builtin-merge state.named [make-entry [builtin-str "%" [@String n]] val]]]
                     [case [let _: Unnamed]
                       state.named]]]]]
       [percent: initial-input  named: []]

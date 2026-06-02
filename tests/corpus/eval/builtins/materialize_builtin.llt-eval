@@ -2,6 +2,3 @@
 [materialize [+ 1 2]]
 === out
 Int(3)
-
-=== warn
-undefined variable: materialize at 1:2-1:13
