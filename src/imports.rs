@@ -314,11 +314,23 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
             Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
         );
     }
-    // %stdout is Handle[Writable Text]
+    // %stdout is Handle[Writable Text] — use __cap_flag_* format consistent with write-handle's type.
+    // write-handle expects Handle[[__cap_flag_writable: []]] (from cap_flag("writable") in builtins_core.rs).
+    // Under BAS width subtyping, Handle[[__cap_flag_writable: [], __cap_flag_text: []]] satisfies it.
     {
         let mut caps = HashMap::new();
-        caps.insert("Writable".to_string(), Type::Bool);
-        caps.insert("Text".to_string(), Type::Bool);
+        caps.insert(
+            "__cap_flag_writable".to_string(),
+            Type::Record(Row {
+                fields: HashMap::new(),
+            }),
+        );
+        caps.insert(
+            "__cap_flag_text".to_string(),
+            Type::Record(Row {
+                fields: HashMap::new(),
+            }),
+        );
         env.insert(
             "%stdout".to_string(),
             Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
@@ -344,14 +356,26 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
             crate::types::Type::Handle(Box::new(Type::Record(crate::types::Row { fields: caps }))),
         );
     }
-    // %stdout is Handle[Writable Text]
+    // %stdout — use __cap_flag_* format consistent with write-handle's type expectation.
     {
         let mut caps = std::collections::HashMap::new();
-        caps.insert("Writable".to_string(), Type::Bool);
-        caps.insert("Text".to_string(), Type::Bool);
+        caps.insert(
+            "__cap_flag_writable".to_string(),
+            crate::types::Type::Record(crate::types::Row {
+                fields: std::collections::HashMap::new(),
+            }),
+        );
+        caps.insert(
+            "__cap_flag_text".to_string(),
+            crate::types::Type::Record(crate::types::Row {
+                fields: std::collections::HashMap::new(),
+            }),
+        );
         builtins_env.insert(
             "%stdout".to_string(),
-            crate::types::Type::Handle(Box::new(Type::Record(crate::types::Row { fields: caps }))),
+            crate::types::Type::Handle(Box::new(crate::types::Type::Record(crate::types::Row {
+                fields: caps,
+            }))),
         );
     }
     // Inject builtin-* aliases for prelude type-checking only.
@@ -1275,11 +1299,23 @@ pub fn build_type_env_with_cap(
             Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
         );
     }
-    // %stdout is Handle[Writable Text]
+    // %stdout — use __cap_flag_* format consistent with write-handle's type expectation.
+    // write-handle expects Handle[[__cap_flag_writable: []]] (from cap_flag("writable") in builtins_core.rs).
+    // Under BAS width subtyping, Handle[[__cap_flag_writable: [], __cap_flag_text: []]] satisfies it.
     {
         let mut caps = HashMap::new();
-        caps.insert("Writable".to_string(), Type::Bool);
-        caps.insert("Text".to_string(), Type::Bool);
+        caps.insert(
+            "__cap_flag_writable".to_string(),
+            Type::Record(Row {
+                fields: HashMap::new(),
+            }),
+        );
+        caps.insert(
+            "__cap_flag_text".to_string(),
+            Type::Record(Row {
+                fields: HashMap::new(),
+            }),
+        );
         env.insert(
             "%stdout".to_string(),
             Type::Handle(Box::new(Type::Record(Row { fields: caps }))),

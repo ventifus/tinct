@@ -345,7 +345,7 @@ pub(crate) fn builtin_try(
                 // they indicate system-level limits, not user-level errors.
                 use crate::error::ErrorKind;
                 match &e.kind {
-                    ErrorKind::DepthExceeded { .. } | ErrorKind::ResourceLimitExceeded { .. } => {
+                    ErrorKind::ResourceLimitExceeded { .. } => {
                         return Err(e);
                     }
                     _ => {}

@@ -94,16 +94,6 @@ type GuardDefault = (
     Arc<RwLock<Environment>>,
 );
 
-/// Maximum continuation stack depth. Prevents resource exhaustion from deeply
-/// nested evaluation chains that would otherwise exhaust heap memory.
-///
-/// This limit replaces the old recursive evaluator's MAX_EVAL_DEPTH (256). Set higher because:
-/// - Each continuation is ~96 bytes, so 2048 frames = ~192 KB stack allocation
-/// - Deep materialization chains (e.g., nested function calls, deeply nested
-///   record validation) can legitimately exceed parse depth
-/// - The CEK machine is iterative, so this limit protects heap, not Rust stack
-const MAX_CONTINUATION_STACK: usize = 2048;
-
 /// Attach materialization span and origin frame to an error.
 /// This function is called at every error site in the CEK machine to ensure
 /// errors carry full context (definition span, materialization span, stack trace).
@@ -149,7 +139,7 @@ pub(crate) enum RestoreState {
         call_span: Span,
         ctx: Arc<EvalContext>,
     },
-    /// Restore a Call (PendingCall) thunk for non-cacheable errors (e.g., DepthExceeded).
+    /// Restore a Call (PendingCall) thunk for non-cacheable errors.
     /// Captures the deferred function call state so it can be retried.
     Call {
         func: Arc<Thunk>,
@@ -168,7 +158,7 @@ pub(crate) enum RestoreState {
         blame_label: Option<crate::error::BlameLabel>,
         default: Option<GuardDefault>,
     },
-    /// Restore a Surface thunk for non-cacheable errors (e.g., DepthExceeded).
+    /// Restore a Surface thunk for non-cacheable errors.
     /// Holds the raw SurfaceNode so the thunk can be re-lowered on retry.
     Surface {
         node: std::sync::Arc<crate::ast::SurfaceNode>,
@@ -177,7 +167,7 @@ pub(crate) enum RestoreState {
         env: Arc<RwLock<Environment>>,
         ctx: Arc<EvalContext>,
     },
-    /// Restore a CoreExpr thunk for non-cacheable errors (e.g., DepthExceeded).
+    /// Restore a CoreExpr thunk for non-cacheable errors.
     /// Stores the Arc<Spanned<CoreExpr>> directly — no re-lowering on retry.
     CoreExpr {
         expr: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
@@ -304,7 +294,7 @@ pub(crate) struct GuardedValidateData {
     pub(crate) blame_label: Option<crate::error::BlameLabel>,
     /// Default expression and environment from TypeAssert `default:` annotation.
     pub(crate) default: Option<GuardDefault>,
-    /// Restoration state for non-cacheable errors (e.g., DepthExceeded).
+    /// Restoration state for non-cacheable errors.
     /// Wrapped in Option to enable .take() when passing to default-fallback Memoize continuations.
     pub(crate) restore: Option<RestoreState>,
 }
@@ -587,20 +577,6 @@ impl Drop for EvalStackGuard {
     }
 }
 
-/// Check continuation stack depth before pushing. Returns `Err(DepthExceeded)` if
-/// the stack has reached MAX_CONTINUATION_STACK, otherwise returns `Ok(())`.
-///
-/// This guard prevents resource exhaustion from deeply nested evaluation chains.
-/// The error is non-cacheable (restores thunk state) to allow retry at lower depth.
-#[inline]
-fn check_stack_depth(stack: &[Cont], span: Span) -> EvalResult<()> {
-    if stack.len() >= MAX_CONTINUATION_STACK {
-        Err(EvalError::depth_exceeded(MAX_CONTINUATION_STACK, span).into())
-    } else {
-        Ok(())
-    }
-}
-
 /// Action to perform next in the iterative evaluation loop.
 pub(crate) enum Action {
     /// Result ready — pop top continuation and apply, or return if stack empty
@@ -641,13 +617,6 @@ pub(crate) async fn force_step(
 
     // Open profiling span if profiling is enabled. The guard closes the span on drop.
     let _profile_guard = ProfilingSpanGuard::new(ctx, thunk);
-
-    // Check continuation stack depth before processing. This prevents resource exhaustion
-    // from deeply nested evaluation chains. Checked here (before any continuations are
-    // pushed) rather than at every push site for simplicity and performance.
-    if let Err(depth_err) = check_stack_depth(stack, thunk_span.clone()) {
-        return Action::Continue(Err(depth_err));
-    }
 
     // Early returns for already-resolved states
     // Check Materialized state first (hot path)
@@ -709,9 +678,9 @@ pub(crate) async fn force_step(
     //    This ensures `Arc::ptr_eq` holds across all references to the same thunk.
     //
     // 2. MONOTONICITY: State transitions are one-way (Unevaluated/PendingBuiltin/
-    //    PendingCall/Guarded → InProgress → Materialized/Failed). Exception: DepthExceeded
-    //    errors are non-cacheable and trigger state restoration (e.g., InProgress →
-    //    PendingBuiltin) so the computation can be retried.
+    //    PendingCall/Guarded → InProgress → Materialized/Failed). Exception: non-cacheable
+    //    errors (ResourceLimitExceeded) trigger state restoration (e.g., InProgress →
+    //    PendingBuiltin) so the computation can be retried if conditions change.
     //    Failed → Failed self-transition (lines 353-371) refines diagnostic metadata
     //    (materialization spans, stack frames) without changing the error's identity.
     //
@@ -820,7 +789,7 @@ pub(crate) async fn force_step(
 
         // Clone args/named for the builtin call; keep originals in the Option slots for
         // state restoration on the slow path (non-pre-materialized result) or on
-        // non-cacheable errors (e.g. DepthExceeded). This defers Vec/IndexMap container
+        // non-cacheable errors. This defers Vec/IndexMap container
         // allocs to after the fast-path check — when the builtin returns a pre-materialized
         // thunk, the originals are simply dropped with no restore clone needed.
         let builtin_args = crate::value::BuiltinArgs {
@@ -872,7 +841,7 @@ pub(crate) async fn force_step(
                     thunk_span.clone(),
                 );
                 // eval_stack_guard pops on drop (armed)
-                // Restore to PendingBuiltin for non-cacheable errors (e.g. DepthExceeded) so
+                // Restore to PendingBuiltin for non-cacheable errors so
                 // the thunk can be retried. Cache as Failed only for cacheable errors.
                 if decorated.kind.is_cacheable() {
                     thunk.cache_failure_once(&decorated);
@@ -1135,7 +1104,7 @@ pub(crate) async fn force_step(
         // surface_node_get_field returns a Value directly — no thunk to force.
         //
         // No RestoreState needed: field extraction is pure/deterministic and cannot
-        // raise non-cacheable errors (no DepthExceeded, no I/O). All errors would be
+        // raise non-cacheable errors (no I/O, no resource limits). All errors would be
         // cacheable, so no state restoration is required on error paths.
         let value = crate::surface_fields::surface_node_get_field(&node, field, &thunk_ctx);
         thunk.set_materialized(value.clone());
@@ -1144,7 +1113,7 @@ pub(crate) async fn force_step(
         // CoreExpr thunk — created by invoke_function from Value::Function.body.
         // Calls eval_core_expr_pub directly (no CoreExpr→Expr round-trip).
         //
-        // Restore state on DepthExceeded so the thunk can be retried.
+        // Restore state on non-cacheable error so the thunk can be retried.
         let restore = crate::value::UnevaluatedState::CoreExpr {
             expr: Arc::clone(&core_expr),
             env: Arc::clone(&env),
@@ -1154,7 +1123,7 @@ pub(crate) async fn force_step(
         // Handle CoreExpr::DotAccess inline. MUST NOT delegate to eval_core_expr_pub
         // here: eval_core_expr(CoreExpr::DotAccess) returns new_unevaluated_core(DotAccess),
         // which loops back into this branch and adds an extra Memoize continuation per
-        // access level, causing DepthExceeded on deeply-nested DotAccess chains.
+        // access level, causing unbounded stack growth on deeply-nested DotAccess chains.
         if let crate::ast::CoreExpr::DotAccess {
             expr: target,
             field,
@@ -1448,7 +1417,7 @@ pub(crate) async fn apply_cont(
                     // restore is Some for all Memoize push sites. GuardedValidate
                     // default-fallback paths build a fresh RestoreState::Guarded rather than
                     // consuming the original via take(), so Memoize always receives Some(restore)
-                    // when the default expression hits a non-cacheable error (e.g., DepthExceeded).
+                    // when the default expression hits a non-cacheable error.
                     // PendingBuiltin and PendingCall paths always provide Some(restore).
                     Action::Continue(Err(e))
                 }
@@ -1943,9 +1912,9 @@ pub(crate) async fn apply_cont(
                                         //
                                         // Build a fresh RestoreState for Memoize rather than
                                         // consuming `restore` via take(). If the default expression
-                                        // hits DepthExceeded, Memoize must be able to restore the
-                                        // thunk to Guarded state — including the original default
-                                        // so a retry at shallower depth can attempt it again.
+                                        // hits a non-cacheable error, Memoize must be able to restore
+                                        // the thunk to Guarded state — including the original default
+                                        // so a retry can attempt it again.
                                         // Consuming restore here would leave Memoize with None on a
                                         // second call (if restore was already taken by another path).
                                         let memoize_restore = if let Some(RestoreState::Guarded {
@@ -2343,7 +2312,7 @@ pub(crate) async fn apply_cont(
                         }
                         Err(e) => {
                             // eval_stack_guard pops on drop (armed)
-                            // Restore to PendingBuiltin for non-cacheable errors (e.g. DepthExceeded).
+                            // Restore to PendingBuiltin for non-cacheable errors.
                             if e.kind.is_cacheable() {
                                 thunk.cache_failure_once(&e);
                             } else {
@@ -4764,183 +4733,6 @@ mod deep_tests {
         let type_stage_env =
             crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
         EvalContext::new(base_dir, stdlib_env, type_stage_env, false)
-    }
-
-    // ========== test-coverage-cycle311 tests ==========
-
-    #[test]
-    fn test_max_continuation_stack_enforced() {
-        // Test that MAX_CONTINUATION_STACK=2048 is enforced.
-        //
-        // Build a chain of PendingBuiltin thunks: each forces the next as an arg,
-        // creating ~depth Memoize+BuiltinForceArg continuations. At 2100 levels
-        // the continuation stack exceeds the 2048 limit.
-        //
-        // Direct source parsing can't build this depth (lexer limits to 256 brackets),
-        // so we construct thunks programmatically.
-        //
-        // Uses the iterative CEK `run()` function (not the recursive `materialize()`)
-        // to exercise the continuation stack limit without Rust stack overflow.
-        //
-        // Runs in a large-stack thread because 2100-deep Arc<Thunk> drop chains
-        // overflow the default test thread stack.
-        std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
-            .spawn(|| {
-                use crate::ast::Span;
-                use crate::value::{Thunk, Value};
-                use std::sync::Arc;
-
-                let ctx = test_ctx();
-                let origin = Span::origin();
-
-                // Get the $+ builtin definition directly from the core builtins list
-                // (not from stdlib_env, which wraps arithmetic ops with operator dispatch).
-                let builtin_def = crate::builtins::builtin_module("core")
-                    .expect("core module must exist")
-                    .into_iter()
-                    .find(|b| b.name == "+")
-                    .expect("$+ must exist in builtin_module(\"core\")");
-
-                // Build chain: thunk_0 = Materialized(Int(0))
-                // thunk_i = PendingBuiltin($+, [thunk_{i-1}, 1])
-                let mut prev = Arc::new(Thunk::new_materialized(Value::Int(0), origin.clone()));
-
-                for _ in 0..2100 {
-                    let one = Arc::new(Thunk::new_materialized(Value::Int(1), origin.clone()));
-                    let thunk = Arc::new(Thunk::new_pending_builtin(
-                        builtin_def,
-                        vec![Arc::clone(&prev), one],
-                        None,
-                        origin.clone(),
-                        None,
-                        Arc::clone(&ctx),
-                    ));
-                    prev = thunk;
-                }
-
-                // Force `prev` via the iterative CEK machine to exercise the continuation
-                // stack limit (check_stack_depth in force_step).
-                let result = crate::async_rt::block_on_anywhere(super::run(
-                    super::Action::Materialize {
-                        thunk: Arc::clone(&prev),
-                        mat_span: None,
-                    },
-                    &ctx,
-                ));
-
-                assert!(
-                    result.is_err(),
-                    "Expected depth-exceeded error for 2100-deep PendingBuiltin chain"
-                );
-                let err = format!("{}", result.unwrap_err());
-                assert!(
-                    err.contains("maximum evaluation depth exceeded") || err.contains("[E040]"),
-                    "Error should be E040 (maximum evaluation depth exceeded), got: {}",
-                    err
-                );
-            })
-            .expect("thread spawn failed")
-            .join()
-            .expect("test thread panicked");
-    }
-
-    #[test]
-    fn test_restore_state_pending_builtin_non_cacheable_error() {
-        // Test that a non-cacheable error (DepthExceeded / E040) is consistently
-        // raised on repeated evaluation attempts.
-        //
-        // DepthExceeded is the canonical non-cacheable error: the CEK machine cannot
-        // memoize it on the thunk because a retry at shallower depth might succeed.
-        // Both calls to `run` here force a fresh thunk chain, verifying the error
-        // surface is stable: both calls report a depth/limit error, not a crash or
-        // silent success.
-        //
-        // The existing test_restore_state_pending_builtin (line 2569) covers the
-        // RestoreState::PendingBuiltin internal restore mechanism directly.
-        //
-        // Uses a large-stack thread because 2100-deep Arc<Thunk> drop chains
-        // overflow the default test thread stack.
-        std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
-            .spawn(|| {
-                use crate::ast::Span;
-                use crate::value::{Thunk, Value};
-                use std::sync::Arc;
-
-                let ctx = test_ctx();
-                let origin = Span::origin();
-
-                let builtin_def = crate::builtins::builtin_module("core")
-                    .expect("core module must exist")
-                    .into_iter()
-                    .find(|b| b.name == "+")
-                    .expect("$+ must exist in builtin_module(\"core\")");
-
-                // Helper: build a 2100-deep PendingBuiltin thunk chain.
-                let build_chain = |def: &crate::value::BuiltinDef,
-                                   ctx: &Arc<crate::eval::EvalContext>|
-                 -> Arc<Thunk> {
-                    let mut prev = Arc::new(Thunk::new_materialized(Value::Int(0), origin.clone()));
-                    for _ in 0..2100 {
-                        let one = Arc::new(Thunk::new_materialized(Value::Int(1), origin.clone()));
-                        let thunk = Arc::new(Thunk::new_pending_builtin(
-                            *def,
-                            vec![Arc::clone(&prev), one],
-                            None,
-                            origin.clone(),
-                            None,
-                            Arc::clone(ctx),
-                        ));
-                        prev = thunk;
-                    }
-                    prev
-                };
-
-                // First call — should hit depth limit
-                let chain1 = build_chain(&builtin_def, &ctx);
-                let result1 = crate::async_rt::block_on_anywhere(super::run(
-                    super::Action::Materialize {
-                        thunk: Arc::clone(&chain1),
-                        mat_span: None,
-                    },
-                    &ctx,
-                ));
-                assert!(
-                    result1.is_err(),
-                    "First call: expected depth-exceeded error"
-                );
-                let err1 = format!("{}", result1.unwrap_err());
-                assert!(
-                    err1.contains("maximum evaluation depth exceeded") || err1.contains("[E040]"),
-                    "First call: error should mention depth limit, got: {}",
-                    err1
-                );
-
-                // Second call — fresh chain, same pattern. Should produce the same class
-                // of error, confirming the non-cacheable error path is stable.
-                let chain2 = build_chain(&builtin_def, &ctx);
-                let result2 = crate::async_rt::block_on_anywhere(super::run(
-                    super::Action::Materialize {
-                        thunk: Arc::clone(&chain2),
-                        mat_span: None,
-                    },
-                    &ctx,
-                ));
-                assert!(
-                    result2.is_err(),
-                    "Second call: expected depth-exceeded error"
-                );
-                let err2 = format!("{}", result2.unwrap_err());
-                assert!(
-                    err2.contains("maximum evaluation depth exceeded") || err2.contains("[E040]"),
-                    "Second call: error should mention depth limit, got: {}",
-                    err2
-                );
-            })
-            .expect("thread spawn failed")
-            .join()
-            .expect("test thread panicked");
     }
 
     #[test]

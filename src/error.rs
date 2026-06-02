@@ -186,13 +186,9 @@ pub enum ErrorKind {
         value: f64,
     },
 
-    // --- Limit errors (E040-E049) ---
-    /// Evaluation depth limit (recursive thunk forcing).
-    DepthExceeded {
-        limit: usize,
-    },
+    // --- Limit errors (E041+) ---
     /// Resource limit exceeded (collection size, string size, etc.).
-    /// Like `DepthExceeded`, this is non-catchable — resource limits are
+    /// This is non-catchable — resource limits are
     /// safety boundaries, not application-level errors.
     ResourceLimitExceeded {
         message: String,
@@ -417,7 +413,6 @@ impl PartialEq for ErrorKind {
                 Self::ValueNotSerializable { value_type: t1 },
                 Self::ValueNotSerializable { value_type: t2 },
             ) => t1 == t2,
-            (Self::DepthExceeded { limit: l1 }, Self::DepthExceeded { limit: l2 }) => l1 == l2,
             (
                 Self::ResourceLimitExceeded { message: m1 },
                 Self::ResourceLimitExceeded { message: m2 },
@@ -541,7 +536,6 @@ impl ErrorKind {
             Self::EmptyCollection { .. } => "E034",
             Self::ValueNotSerializable { .. } => "E035",
             Self::FloatOutOfRange { .. } => "E036",
-            Self::DepthExceeded { .. } => "E040",
             Self::ResourceLimitExceeded { .. } => "E043",
             Self::CapabilityRequired { .. } => "E044",
             Self::IncludeIoError { .. } => "E051",
@@ -748,49 +742,41 @@ impl ErrorKind {
     }
 
     /// Returns `false` for errors that must not be cached in Failed thunk state.
-    /// Currently only `DepthExceeded` — a thunk that fails at one depth may
-    /// succeed at a shallower depth (PROP-DEPTH in §Error Semantics).
+    /// All errors are cacheable — a failed thunk is always stored in Failed state
+    /// and subsequent accesses return the cached error without re-evaluation.
     ///
     /// # INVARIANT
-    /// This method and `is_catchable()` serve distinct semantic roles and already
-    /// diverge: for example, `ResourceLimitExceeded` is non-catchable (resource
-    /// limits are advisory suppressible) but IS cacheable (hitting a limit will
-    /// always fail again — deterministic).
+    /// This method and `is_catchable()` serve distinct semantic roles:
     /// - **Cacheability**: Enforces Launchbury (1993) thunk state machine
-    ///   monotonicity. Non-cacheable errors do not transition a thunk to Failed
-    ///   state; the same thunk may succeed under different evaluation conditions.
+    ///   monotonicity. All errors transition to Failed state and are memoized.
     /// - **Catchability**: Defines user-facing `try` semantics per Nix `tryEval`
     ///   model. Non-catchable errors propagate to the runtime regardless of
     ///   try/catch constructs.
     ///
     /// Cross-reference: see `is_catchable()` for `try` semantics.
     pub fn is_cacheable(&self) -> bool {
-        !matches!(self, Self::DepthExceeded { .. })
+        true
     }
 
     /// Returns `false` for errors that must not be caught by `try`.
-    /// Resource limit errors (`DepthExceeded`, `ResourceLimitExceeded`) should
-    /// propagate to the runtime, not be suppressible by user code.
+    /// Resource limit errors (`ResourceLimitExceeded`) should propagate to the
+    /// runtime, not be suppressible by user code.
     /// Follows GHC's StackOverflow and Racket's exn:fail:resource semantics.
     ///
     /// # INVARIANT
-    /// This method and `is_cacheable()` serve distinct semantic roles and already
-    /// diverge: for example, `ResourceLimitExceeded` is non-catchable (resource
-    /// limits are advisory suppressible) but IS cacheable (hitting a limit will
-    /// always fail again — deterministic).
+    /// This method and `is_cacheable()` serve distinct semantic roles:
+    /// `ResourceLimitExceeded` is non-catchable (resource limits are safety
+    /// boundaries) but IS cacheable (hitting a limit will always fail again —
+    /// deterministic).
     /// - **Catchability**: Defines user-facing `try` semantics per Nix `tryEval`
     ///   model. Non-catchable errors propagate to the runtime regardless of
     ///   try/catch constructs.
     /// - **Cacheability**: Enforces Launchbury (1993) thunk state machine
-    ///   monotonicity. Non-cacheable errors do not transition a thunk to Failed
-    ///   state; the same thunk may succeed under different evaluation conditions.
+    ///   monotonicity. All errors transition to Failed state and are memoized.
     ///
     /// Cross-reference: see `is_cacheable()` for thunk state machine semantics.
     pub fn is_catchable(&self) -> bool {
-        !matches!(
-            self,
-            Self::DepthExceeded { .. } | Self::ResourceLimitExceeded { .. }
-        )
+        !matches!(self, Self::ResourceLimitExceeded { .. })
     }
 }
 
@@ -925,9 +911,6 @@ impl fmt::Display for ErrorKind {
             }
             Self::FloatOutOfRange { builtin, value } => {
                 write!(f, "{builtin}: {value} is out of range for Int")
-            }
-            Self::DepthExceeded { limit } => {
-                write!(f, "maximum evaluation depth exceeded ({limit})")
             }
             Self::ResourceLimitExceeded { message } => write!(f, "{}", message),
             Self::CapabilityRequired { message } => write!(f, "{}", message),
@@ -1257,19 +1240,6 @@ impl EvalError {
             kind: ErrorKind::DuplicateVariable {
                 name: name.to_string(),
             },
-            definition_span,
-            materialization_span: None,
-            stack: SmallVec::new(),
-            secondary_span: None,
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-        }
-    }
-
-    pub fn depth_exceeded(limit: usize, definition_span: Span) -> Self {
-        Self {
-            kind: ErrorKind::DepthExceeded { limit },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -1745,46 +1715,6 @@ fn infer_materialization_verb(stack: &[StackFrame]) -> &'static str {
     "materialized at"
 }
 
-/// Detect the minimal repeating period in a sequence of stack frames for DepthExceeded errors.
-/// Returns `Some((period, full_repeats))` if a repeating pattern is found with at least 3 full
-/// repetitions, otherwise `None`.
-///
-/// The algorithm tries period sizes from 1 up to len/3, checking if frames[i].label and
-/// frames[i].span match frames[i % period] for all i in the repeating range.
-fn detect_repeating_period(frames: &[&StackFrame]) -> Option<(usize, usize)> {
-    let len = frames.len();
-    if len < 3 {
-        return None; // Need at least 3 frames for a meaningful pattern
-    }
-
-    // Try period sizes from 1 to len/3 (need at least 3 full repetitions)
-    for period in 1..=(len / 3) {
-        let full_repeats = len / period;
-        if full_repeats < 3 {
-            continue; // Need at least 3 full repetitions
-        }
-
-        // Check if all frames in the repeating range match the pattern
-        let repeating_range = period * full_repeats;
-        let mut is_repeating = true;
-        for i in 0..repeating_range {
-            let base_idx = i % period;
-            if frames[i].label != frames[base_idx].label
-                || frames[i].definition_span != frames[base_idx].definition_span
-            {
-                is_repeating = false;
-                break;
-            }
-        }
-
-        if is_repeating {
-            return Some((period, full_repeats));
-        }
-    }
-
-    None
-}
-
 /// Format a span location string, prefixing with the file path when available.
 /// Used for both the primary error location and stack frame locations.
 ///
@@ -1856,56 +1786,15 @@ impl fmt::Display for EvalError {
             )?;
         }
 
-        // For DepthExceeded errors, detect and elide repeating frame cycles
-        if matches!(self.kind, ErrorKind::DepthExceeded { .. }) {
-            // Collect visible frames first
-            let visible_frames: Vec<&StackFrame> = self
-                .stack
-                .iter()
-                .filter(|f| should_display_frame(f))
-                .collect();
-
-            if let Some((period, full_repeats)) = detect_repeating_period(&visible_frames) {
-                // Display one period copy
-                for frame in visible_frames.iter().take(period) {
-                    let loc = format_span_location(&frame.definition_span);
-                    write!(f, "\n  in {} at {}", frame.label, loc)?;
-                    write_frame_snippet(f, &frame.definition_span)?;
-                }
-                // Display summary line
-                let remaining = full_repeats - 1;
-                let plural = if period == 1 { "" } else { "s" };
-                write!(
-                    f,
-                    "\n  [... {remaining} more repetitions of the above {period} frame{plural} ...]"
-                )?;
-
-                // Display any tail frames beyond the repeated cycles
-                let tail_start = period * full_repeats;
-                for frame in &visible_frames[tail_start..] {
-                    let loc = format_span_location(&frame.definition_span);
-                    write!(f, "\n  in {} at {}", frame.label, loc)?;
-                    write_frame_snippet(f, &frame.definition_span)?;
-                }
-            } else {
-                // No repeating pattern found - display all frames normally
-                for frame in visible_frames {
-                    let loc = format_span_location(&frame.definition_span);
-                    write!(f, "\n  in {} at {}", frame.label, loc)?;
-                    write_frame_snippet(f, &frame.definition_span)?;
-                }
+        // Display all visible stack frames
+        for frame in &self.stack {
+            if !should_display_frame(frame) {
+                continue;
             }
-        } else {
-            // Non-DepthExceeded errors: display all visible frames normally
-            for frame in &self.stack {
-                if !should_display_frame(frame) {
-                    continue;
-                }
 
-                let loc = format_span_location(&frame.definition_span);
-                write!(f, "\n  in {} at {}", frame.label, loc)?;
-                write_frame_snippet(f, &frame.definition_span)?;
-            }
+            let loc = format_span_location(&frame.definition_span);
+            write!(f, "\n  in {} at {}", frame.label, loc)?;
+            write_frame_snippet(f, &frame.definition_span)?;
         }
 
         // Macro expansion provenance: shows "in expansion of `<name>` at line:col"
@@ -2246,8 +2135,7 @@ mod tests {
 
     #[test]
     fn test_is_catchable() {
-        // DepthExceeded and ResourceLimitExceeded are NOT catchable
-        assert!(!ErrorKind::DepthExceeded { limit: 256 }.is_catchable());
+        // ResourceLimitExceeded is NOT catchable
         assert!(!ErrorKind::ResourceLimitExceeded {
             message: "test".to_string(),
         }

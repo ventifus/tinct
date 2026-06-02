@@ -1549,6 +1549,10 @@ impl Type {
                 }
                 // Top absorbs all in union: T | Top = Top
                 Type::Top => return Type::Top,
+                // Unknown absorbs all in gradual union: T | Unknown = Unknown (AGT: ? ∪ T = ?)
+                // Without this, Unknown | TypeVar(a) cannot be unified with TypeVar(a) due
+                // to the occurs check (a appears in the union), causing spurious infinite type errors.
+                Type::Unknown => return Type::Unknown,
                 // Never is the identity in union: T | Never = T — skip it
                 Type::Never => continue,
                 _ => {

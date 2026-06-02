@@ -111,6 +111,43 @@ pub(crate) fn check_dot_access(
         // Gradual: Negation type ~A narrows inhabitance, not field structure.
         // We cannot extract field types from a negation, so fall back to Unknown.
         Type::Negation(_) => Ok(Type::Unknown),
+        // NominalVariant: look up the field in the variant's payload fields.
+        // This handles dot-access on typed variant values (e.g., ann.text where ann: Simple).
+        Type::NominalVariant { ref fields, .. } => match fields.fields.get(field_str) {
+            Some(ty) => Ok(ty.clone()),
+            None => Ok(Type::Unknown), // field not declared on this variant — gradual
+        },
+        // Union: collect field types from all members that declare the field.
+        // Used for dot-access on NominalVariant union types (e.g., ann.text where
+        // ann: Annotation = Simple | PropertyDict | Annotated, all having text: String).
+        // Returns the union of all member field types; Unknown for members lacking the field.
+        Type::Union(ref members) => {
+            let mut field_types: Vec<Type> = Vec::new();
+            let mut all_unknown = true;
+            for member in members {
+                let member_field = match member {
+                    Type::Record(Row { ref fields, .. }) => {
+                        fields.get(field_str).cloned().unwrap_or(Type::Unknown)
+                    }
+                    Type::NominalVariant { ref fields, .. } => fields
+                        .fields
+                        .get(field_str)
+                        .cloned()
+                        .unwrap_or(Type::Unknown),
+                    Type::Unknown => Type::Unknown,
+                    _ => Type::Unknown,
+                };
+                if !matches!(member_field, Type::Unknown) {
+                    all_unknown = false;
+                }
+                field_types.push(member_field);
+            }
+            if all_unknown {
+                Ok(Type::Unknown)
+            } else {
+                Ok(Type::normalize_union(field_types))
+            }
+        }
         _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
     }
 }
@@ -414,21 +451,34 @@ pub(crate) fn check_call_with_scheme(
                     }
                 }
                 // Check variadic args: if the function is variadic, unify all arg_types starting at
-                // non_variadic_param_count against the Seq element type. Widen literals first.
+                // non_variadic_param_count against the variadic param type. Widen literals first.
                 if *variadic && arg_types.len() > non_variadic_param_count {
-                    // The last param is the variadic param — extract its Seq element type
-                    if let Some((_, Type::Seq(elem_ty))) = params.last() {
-                        for arg_ty in arg_types.iter().skip(non_variadic_param_count) {
-                            // Widen literal types before unifying
-                            let widened_ty = match arg_ty {
-                                Type::IntLiteral(_) => Type::Int,
-                                Type::StringLiteral(_) => Type::Str,
-                                other => other.clone(),
-                            };
-                            if let Err(e) =
-                                unify(elem_ty, &widened_ty, &mut subst, state, span.clone())
-                            {
-                                arg_errors.get_or_insert_with(Vec::new).push(e);
+                    // The last param is the variadic param — extract the type to unify each arg against.
+                    // Two cases:
+                    //   Seq(T): standard variadic — each arg unified with element type T
+                    //   TypeVar: polymorphic variadic (e.g., `str: Showable a => a* -> Str`) — each
+                    //            arg unified directly with the TypeVar, discharging class constraints.
+                    //            Without this, the TypeVar is never unified and Showable constraints
+                    //            stay ambiguous, causing spurious T013 warnings.
+                    if let Some((_, variadic_param_ty)) = params.last() {
+                        let elem_ty: Option<Type> = match variadic_param_ty {
+                            Type::Seq(elem) => Some(*elem.clone()),
+                            Type::TypeVar(_, _) => Some(variadic_param_ty.clone()),
+                            _ => None,
+                        };
+                        if let Some(elem_ty) = elem_ty {
+                            for arg_ty in arg_types.iter().skip(non_variadic_param_count) {
+                                // Widen literal types before unifying
+                                let widened_ty = match arg_ty {
+                                    Type::IntLiteral(_) => Type::Int,
+                                    Type::StringLiteral(_) => Type::Str,
+                                    other => other.clone(),
+                                };
+                                if let Err(e) =
+                                    unify(&elem_ty, &widened_ty, &mut subst, state, span.clone())
+                                {
+                                    arg_errors.get_or_insert_with(Vec::new).push(e);
+                                }
                             }
                         }
                     }

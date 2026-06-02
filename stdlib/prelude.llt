@@ -448,11 +448,10 @@ retry-impl: [fn [let n@Int thunk@Fn]
 # Tail-recursive with TCO support (O(1) stack depth in the CEK machine).
 loop-select-impl: [fn [let ctx sources@Seq handler@Fn]
     [builtin-if [builtin-cancelled-q ctx]
-        null
+        []
         [match [builtin-select-once ctx sources]
             [case [let v: Ok]
-                [handler v]
-                [loop-select-impl ctx sources handler]]
+                [[fn [let item] [handler item] [loop-select-impl ctx sources handler]] v]]
             [case [let _: Closed]
                 [variant "Closed"]]]]]
 
@@ -495,13 +494,13 @@ Span: [type [Span
 DotKey: [type [Ident String] [Index Int]]
 
 Annotation: [type
-  [Simple       value: String]
-  [PropertyDict entries: [Seq AnnotationEntry]]
-  [Annotated    name: String  inner: Annotation]]
-
-AnnotationEntry: [type [AnnotationEntry
-  key:   String
-  value: Annotation]]
+  # text: always present — the full display string of the annotation (e.g. "String", "[return: X]", "A@B")
+  # Simple: bare type name or TypeVar — name is the identifier string
+  [Simple       text: String  name: String]
+  # PropertyDict: bracketed annotation with keys — doc: and return: exposed when present, else null
+  [PropertyDict text: String  doc: Any  return: Any]
+  # Annotated: chained @-form — name is the outer identifier, inner is the inner annotation as a string
+  [Annotated    text: String  name: String  inner: String]]
 
 Parameter: [type [Parameter
   name:       String
@@ -1564,7 +1563,7 @@ Note: Predicate for Result error case.
         [Ok _]: false
         [Error _]: true]]
 
-and-then: [fn@[return: Result  doc: """
+and-then: [fn@[doc: """
 Monad bind for Result (chain computations).
 
 Example: [and-then [fn [x] [Ok [* x 2]]] [Ok 21]] => [Ok 42]

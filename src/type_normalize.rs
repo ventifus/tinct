@@ -486,7 +486,7 @@ impl fmt::Display for Type {
             Type::Proxy => write!(f, "Proxy"),
             Type::TypeVar(name, _level) => write!(f, "{}", name),
             Type::Unknown => write!(f, "_"),
-            Type::Top => write!(f, "\u{22a4}"),
+            Type::Top => write!(f, "Top"),
             Type::Error => write!(f, "<error>"),
             Type::Union(types) => {
                 for (i, ty) in types.iter().enumerate() {
@@ -542,7 +542,7 @@ impl fmt::Display for Type {
                     _ => write!(f, "~{}", inner),
                 }
             }
-            Type::Never => write!(f, "\u{22a5}"), // ⊥ symbol
+            Type::Never => write!(f, "Never"),
             Type::NominalVariant { tag, .. } => write!(f, "{}", tag),
             Type::App(func, arg) => write!(f, "[{} {}]", func, arg),
             Type::Operator(name) => write!(f, "{}", name),

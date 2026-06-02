@@ -74,10 +74,9 @@ ann-doc: [fn@String [let ann]
 ann-return-prop: [fn@String [let ann]
   [try-str [fn [let] ann.return]]]
 
-# Safe string extraction: call f, return "" if it errors or returns null.
-try-str: [fn@String [let f@[Fn [] String]]
-  [v: [try-or f ""]]
-  [if [null? v] "" [str v]]]
+# Safe string extraction: call f, return "" if it errors.
+try-str: [fn@String [let f@[Fn@String []]]
+  [try-or f ""]]
 
 # Determine the return type text from a return-ann Annotation Variant.
 #   Simple      → use ann.text directly (e.g. "String", "Bool")
@@ -89,7 +88,7 @@ return-type-text: [fn@String [let return-ann]
   [if [= tag ""]
     "Any"
     [if [= tag "PropertyDict"]
-      [call [fn@String [let ret]
+      [call [fn@String [let ret@String]
         [if [= ret ""] [ann-text return-ann] ret]]
        [ann-return-prop return-ann]]
       # Simple or Annotated — use display text directly
@@ -230,7 +229,7 @@ render-entry: [fn@String [let e]
 
 # Write content to %docdir/<filename>.md and return the module name.
 write-module-file: [fn@String [let name@String content@String]
-  [w: [io.write-file %docdir [str [mod-filename name] ".md"] content]]
+  [w: [@[] [io.write-file %docdir [str [mod-filename name] ".md"] content]]]
   [if [= w w] name name]]
 
 # Load, parse, and write documentation for one stdlib file.

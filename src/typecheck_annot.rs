@@ -3152,23 +3152,6 @@ pub(crate) fn resolve_type_dict(
         }
     }
 
-    // Multi-entry union type from `[type T1 T2 ...]` declarations.
-    // When ALL entries are auto-indexed (no keys) and there are 2+ entries,
-    // this is a union of type expressions (not a record type).
-    // Single auto-indexed entry falls through to existing handling.
-    // Note: simplify_type is intentionally NOT called here — annotation-declared
-    // union types (e.g., ADT type aliases [type [Ok a] [Err String]]) must be
-    // preserved exactly as declared and not collapsed by S-RcdTop/S-ClsBot rules.
-    if all_positional && entries.len() >= 2 {
-        let mut members = Vec::new();
-        for entry in entries {
-            let member_ty =
-                resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
-            members.push(member_ty);
-        }
-        return Ok(Type::normalize_union(members));
-    }
-
     // Mixed positional + metadata-keyed annotation: [Int String default: 0]
     // Positional entries are union type members; metadata keys (default, repr, doc) are ignored.
     // E.g.: @[Int String default: 0] → Union(Int, Str) (default: 0 is runtime metadata, not a type).
@@ -3194,6 +3177,36 @@ pub(crate) fn resolve_type_dict(
                     resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
                 members.push(member_ty);
             }
+            return Ok(Type::normalize_union(members));
+        }
+    }
+
+    // All-positional multi-entry union path: when all entries have no key and don't match
+    // any of the specific forms above (constructor, keyword, Fn type, etc.), treat each
+    // entry's value as a union member type. This handles TypeAlias bodies like
+    // `[type [Foo] [Bar]]` where each `[Foo]` resolves to NominalVariant("Foo", {}).
+    // Note: B-314 plans to retire this in favor of explicit `[or ...]` syntax.
+    if all_positional && entries.len() >= 2 {
+        // Check if any entry has a None key (all positional) — confirmed by all_positional
+        // Try resolving each positional entry as a type expression for a union
+        let mut members = Vec::new();
+        let mut all_ok = true;
+        for entry in entries {
+            if entry.node.key.is_none() {
+                match resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)
+                {
+                    Ok(ty) => members.push(ty),
+                    Err(_) => {
+                        all_ok = false;
+                        break;
+                    }
+                }
+            } else {
+                all_ok = false;
+                break;
+            }
+        }
+        if all_ok && !members.is_empty() {
             return Ok(Type::normalize_union(members));
         }
     }

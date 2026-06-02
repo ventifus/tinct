@@ -1226,15 +1226,10 @@ pub(crate) fn infer_surface_expr(
                         }
 
                         current_env = Rc::new(child_env);
-                    } else {
-                        return Err(vec![TypeError::new(
-                            format!(
-                                "sequential expression requires intermediate expressions to be dicts, got {}",
-                                expr_ty
-                            ),
-                            seq_expr.span.clone(),
-                        )]);
                     }
+                    // Non-record intermediate expressions (e.g., side-effect calls returning Top)
+                    // contribute nothing to scope but are valid — runtime evaluates them for
+                    // side effects. Only record-typed intermediates extend the type environment.
                 }
             }
 
