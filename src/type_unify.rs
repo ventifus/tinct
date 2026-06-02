@@ -2130,6 +2130,33 @@ pub fn unify(
         // Handle: unify capability rows
         (Type::Handle(cap_a), Type::Handle(cap_b)) => unify(cap_a, cap_b, subst, state, span),
 
+        // UNIFY-OPERATOR-TO-OPERATOR: bind higher-level Operator to lower-level Operator.
+        // Follows Kiselyov L3 invariant (same as TypeVar-to-TypeVar at lines 1837-1860).
+        (Type::Operator(m), Type::Operator(n)) if m != n => {
+            let level_m = state.levels.get(m).copied().unwrap_or(0);
+            let level_n = state.levels.get(n).copied().unwrap_or(0);
+
+            // Bind the higher-level operator to the lower-level one.
+            // If levels are equal, bind left-to-right for determinism.
+            if level_m >= level_n {
+                // Bind m → Operator(n)
+                transfer_class_constraints(m, n, state);
+                subst
+                    .type_map
+                    .borrow_mut()
+                    .insert(m.clone(), Type::Operator(n.clone()));
+            } else {
+                // Bind n → Operator(m)
+                transfer_class_constraints(n, m, state);
+                subst
+                    .type_map
+                    .borrow_mut()
+                    .insert(n.clone(), Type::Operator(m.clone()));
+            }
+            subst.check_size(span)?;
+            Ok(())
+        }
+
         // UNIFY-OPERATOR: bind type constructor variable m to a type T.
         // Occurs check prevents infinite kinds (m ∉ ftv(T)).
         // Kind check premise is deferred to hkt-kind-inference.
@@ -2142,12 +2169,9 @@ pub fn unify(
                     span,
                 ));
             }
-            // CONSTRAINT TRANSFER: when binding m to another Operator or TypeVar, transfer constraints
+            // CONSTRAINT TRANSFER: when binding m to TypeVar, transfer constraints
             // instead of checking. When binding to a concrete type, check constraints normally.
-            if let Type::Operator(n_name) = &b {
-                transfer_class_constraints(m, n_name, state);
-                subst.type_map.borrow_mut().insert(m.clone(), b.clone());
-            } else if let Type::TypeVar(beta_name, _) = &b {
+            if let Type::TypeVar(beta_name, _) = &b {
                 transfer_class_constraints(m, beta_name, state);
                 subst.type_map.borrow_mut().insert(m.clone(), b.clone());
             } else {
@@ -2168,12 +2192,9 @@ pub fn unify(
                     span,
                 ));
             }
-            // CONSTRAINT TRANSFER: when binding m to another Operator or TypeVar, transfer constraints
+            // CONSTRAINT TRANSFER: when binding m to TypeVar, transfer constraints
             // instead of checking. When binding to a concrete type, check constraints normally.
-            if let Type::Operator(n_name) = &a {
-                transfer_class_constraints(m, n_name, state);
-                subst.type_map.borrow_mut().insert(m.clone(), a.clone());
-            } else if let Type::TypeVar(beta_name, _) = &a {
+            if let Type::TypeVar(beta_name, _) = &a {
                 transfer_class_constraints(m, beta_name, state);
                 subst.type_map.borrow_mut().insert(m.clone(), a.clone());
             } else {

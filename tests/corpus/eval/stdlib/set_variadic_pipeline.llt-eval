@@ -1,5 +1,6 @@
 # set variadic: pipeline form and multi-key inline
 # Now succeeds: unmatched named args y and z flow into ...xs variadic param
+# B-295 fix: [[dict] | f] unwraps to return f(dict) directly, not {0: f(dict)}
 [[x: 1] | [set y: 2  z: 3]]
 === out
-Dict({0: Dict({"x": Int(1), "y": Int(2), "z": Int(3)})})
+Dict({"x": Int(1), "y": Int(2), "z": Int(3)})

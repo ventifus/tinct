@@ -243,7 +243,7 @@ pub(crate) fn check_call_with_scheme(
 
     // Error cascade suppression: if the instantiated type is Error (e.g., a scheme with
     // Type::Error body — unlikely but possible if a prelude binding was recorded as Error),
-    // infer arguments for side effects and return Unknown rather than propagating T003.
+    // infer arguments for side effects and return Error to cascade the failure.
     // This prevents spurious "expected function type, got <error>" on call sites when the
     // function definition itself failed type-checking. The root cause has already been reported.
     if matches!(func_ty, Type::Error) {
@@ -255,7 +255,7 @@ pub(crate) fn check_call_with_scheme(
         for na in named_args {
             let _ = infer_surface_expr(&na.node.value, env, state, type_map);
         }
-        return Ok(Type::Unknown);
+        return Ok(Type::Error);
     }
 
     match &func_ty {
@@ -659,7 +659,7 @@ pub(crate) fn check_call(
     // and return Unknown rather than propagating "expected function type, got <error>" (T003).
     // This prevents spurious T003 errors on every [include %libdir "..."] call when the prelude's
     // self-type-check encounters errors. The underlying cause (prelude type error) has already
-    // been reported; cascading T003 on every call site is noise.
+    // been reported; return Error to cascade the failure rather than going gradual.
     if matches!(func_ty, Type::Error) {
         // Infer positional args for type map population and error propagation.
         for arg in args {
@@ -669,7 +669,7 @@ pub(crate) fn check_call(
         for na in named_args {
             let _ = infer_surface_expr(&na.node.value, env, state, type_map);
         }
-        return Ok(Type::Unknown);
+        return Ok(Type::Error);
     }
 
     match &func_ty {
@@ -1159,7 +1159,14 @@ pub(crate) fn check_call(
             if !named_arg_errors.is_empty() {
                 return Err(named_arg_errors);
             }
-            Ok(Type::Unknown)
+            // TypeVar callee — create a fresh TypeVar for the return type to preserve inference.
+            // This allows `[f x]` to unify later when `f`'s type becomes known, rather than
+            // immediately going gradual with Unknown.
+            let fresh_name = format!("_t{}", state.name_counter);
+            state.name_counter = state.name_counter.saturating_add(1);
+            state.levels.insert(fresh_name.clone(), state.level);
+            let ret_var = Type::TypeVar(fresh_name, state.level);
+            Ok(ret_var)
         }
         // Gradual: callee type is Unknown — infer args for LSP hover, return Unknown (check_call path)
         Type::Unknown => {

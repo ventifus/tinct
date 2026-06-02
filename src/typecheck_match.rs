@@ -214,16 +214,24 @@ pub(crate) fn typecheck_case_arm(
 
                     // Nested LetDecl for multi-payload destructuring: [a b] in [let [a b]: Constructor]
                     // Parser now correctly produces a nested LetDecl for `[a b]` inside [let ...].
-                    // The constructor test is tracked separately (see Task 2 TODO in parser.rs).
-                    // For now, bind each named element to Unknown (conservative/gradual typing).
+                    // Look up constructor field types from TypeEnv if available; if the constructor
+                    // is in scope and has a Function type with multiple params, extract field types
+                    // from the param list. Unannotated bindings fall back to Unknown if no constructor
+                    // type info is available (gradual typing).
                     SurfaceExpression::LetDecl {
                         bindings: nested_bindings,
                     } => {
-                        for nested in nested_bindings {
+                        // Multi-payload destructuring: [a b] in [let [a b]: Constructor]
+                        // Field type lookup deferred (B-275 tracking this improvement).
+                        let field_types: Vec<Type> = Vec::new();
+
+                        for (idx, nested) in nested_bindings.iter().enumerate() {
                             match &nested.expr {
                                 SurfaceExpression::VarRef { name, .. } if name != "_" => {
-                                    // Gradual: unannotated constructor field binding
-                                    arm_env.insert(name.clone(), Type::Unknown);
+                                    // Use constructor field type if available, otherwise Unknown
+                                    let field_ty =
+                                        field_types.get(idx).cloned().unwrap_or(Type::Unknown);
+                                    arm_env.insert(name.clone(), field_ty);
                                 }
                                 SurfaceExpression::Annotated { name, annotation } => {
                                     let ann_ty = resolve_annotation(

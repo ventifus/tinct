@@ -17,6 +17,3 @@
   1130 |         [flatten-impl-dict xs]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [flatten ...] at 1:1-1:29
-
-=== warn
-cannot unify [] with Seq[_] at 1:10-1:28

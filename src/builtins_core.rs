@@ -1278,29 +1278,29 @@ pub fn core_type_env(env: &mut TypeEnv) {
             variadic: false,
         },
     );
-    // builder-set: (key, value, builder) → Unknown
+    // builder-set: (key, value, builder) → Top
     // T-777 parameter order: key-first, builder-last (was builder-first)
     env.insert(
         "builder-set".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::Unknown), // key
-                (None, Type::Unknown), // value
-                (None, Type::Unknown), // builder
+                (None, Type::Top), // key
+                (None, Type::Top), // value
+                (None, Type::Top), // builder
             ],
-            ret: Box::new(Type::Unknown), // builder (mutated in-place)
+            ret: Box::new(Type::Top), // builder (mutated in-place)
             variadic: false,
         },
     );
-    // builder-delete: (key, builder) → Unknown
+    // builder-delete: (key, builder) → Top
     env.insert(
         "builder-delete".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::Unknown), // key
-                (None, Type::Unknown), // builder
+                (None, Type::Top), // key
+                (None, Type::Top), // builder
             ],
-            ret: Box::new(Type::Unknown), // builder
+            ret: Box::new(Type::Top), // builder
             variadic: false,
         },
     );
@@ -1309,53 +1309,53 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builder-has?".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::Unknown), // key
-                (None, Type::Unknown), // builder
+                (None, Type::Top), // key
+                (None, Type::Top), // builder
             ],
             ret: Box::new(Type::Bool),
             variadic: false,
         },
     );
-    // builder-get: (key, builder) → Unknown
+    // builder-get: (key, builder) → Top
     env.insert(
         "builder-get".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::Unknown), // key
-                (None, Type::Unknown), // builder
+                (None, Type::Top), // key
+                (None, Type::Top), // builder
             ],
-            ret: Box::new(Type::Unknown), // value — opaque
+            ret: Box::new(Type::Top), // value — opaque
             variadic: false,
         },
     );
-    // builder-get-or: (key, default, builder) → Unknown
+    // builder-get-or: (key, default, builder) → Top
     env.insert(
         "builder-get-or".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::Unknown), // key
-                (None, Type::Unknown), // default
-                (None, Type::Unknown), // builder
+                (None, Type::Top), // key
+                (None, Type::Top), // default
+                (None, Type::Top), // builder
             ],
-            ret: Box::new(Type::Unknown), // value or default
+            ret: Box::new(Type::Top), // value or default
             variadic: false,
         },
     );
-    // builder-finish: (builder) → Unknown
+    // builder-finish: (builder) → Top
     env.insert(
         "builder-finish".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)], // builder
-            ret: Box::new(Type::Unknown),        // Dict — shape unknown statically
+            params: vec![(None, Type::Top)], // builder
+            ret: Box::new(Type::Top),        // Dict — shape unknown statically
             variadic: false,
         },
     );
-    // builder-snapshot: (builder) → Unknown
+    // builder-snapshot: (builder) → Top
     env.insert(
         "builder-snapshot".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)], // builder
-            ret: Box::new(Type::Unknown),        // Dict snapshot
+            params: vec![(None, Type::Top)], // builder
+            ret: Box::new(Type::Top),        // Dict snapshot
             variadic: false,
         },
     );
@@ -1367,8 +1367,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
     env.insert(
         "reactive-cell".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)], // initial value
-            ret: Box::new(Type::Unknown),        // ReactiveCell — opaque
+            params: vec![(None, Type::Top)], // initial value
+            ret: Box::new(Type::Top),        // ReactiveCell — opaque
             variadic: false,
         },
     );
@@ -1376,8 +1376,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
     env.insert(
         "cell-get".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)], // ReactiveCell
-            ret: Box::new(Type::Unknown),        // current value — opaque
+            params: vec![(None, Type::Top)], // ReactiveCell
+            ret: Box::new(Type::Top),        // current value — opaque
             variadic: false,
         },
     );
@@ -1385,8 +1385,10 @@ pub fn core_type_env(env: &mut TypeEnv) {
     env.insert(
         "cell-set".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown), (None, Type::Unknown)], // val, cell
-            ret: Box::new(Type::Unknown),                               // Null
+            params: vec![(None, Type::Top), (None, Type::Top)], // val, cell
+            ret: Box::new(Type::Record(Row {
+                fields: HashMap::new(),
+            })), // Null = empty record
             variadic: false,
         },
     );
@@ -1894,17 +1896,17 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-module".to_string(),
         Type::Function {
             params: vec![(None, Type::Str)],
-            ret: Box::new(Type::Unknown), // Returns a Dict of builtins
+            ret: Box::new(Type::Top), // Returns a Dict of builtins
             variadic: false,
         },
     );
     // builtin-eval: evaluate a Document/Program/Seq of expressions with optional env/input.
-    // Return type is Unknown — genuinely opaque (output depends on runtime values).
+    // Return type is Top — genuinely opaque (output depends on runtime values).
     env.insert(
         "builtin-eval".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
-            ret: Box::new(Type::Unknown),
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top),
             variadic: true,
         },
     );
@@ -1912,8 +1914,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
     env.insert(
         "eval-types".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
-            ret: Box::new(Type::Unknown),
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top),
             variadic: true,
         },
     );
@@ -1922,7 +1924,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-load".to_string(),
         Type::Function {
             params: vec![(None, Type::Str)],
-            ret: Box::new(Type::Unknown), // Returns a Program (AST value)
+            ret: Box::new(Type::Top), // Returns a Program (AST value)
             variadic: true,
         },
     );
@@ -1930,8 +1932,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
     env.insert(
         "builtin-expand".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
-            ret: Box::new(Type::Unknown), // Returns expanded Program
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top), // Returns expanded Program
             variadic: false,
         },
     );
@@ -1958,7 +1960,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-include-cache-get".to_string(),
         Type::Function {
             params: vec![(None, Type::Str)],
-            ret: Box::new(Type::Unknown),
+            ret: Box::new(Type::Top),
             variadic: false,
         },
     );
@@ -1966,8 +1968,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
     env.insert(
         "builtin-include-cache-put".to_string(),
         Type::Function {
-            params: vec![(None, Type::Str), (None, Type::Unknown)],
-            ret: Box::new(Type::Unknown),
+            params: vec![(None, Type::Str), (None, Type::Top)],
+            ret: Box::new(Type::Top),
             variadic: false,
         },
     );
@@ -2476,9 +2478,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     Type::Handle(Box::new(cap_flag("readable"))),
                 ]),
             )],
-            // Genuinely unknown: JSON parse output can be any JSON value (object, array,
+            // Top: JSON parse output can be any JSON value (object, array,
             // string, number, bool, null). A precise type requires schema information.
-            ret: Box::new(Type::Unknown),
+            ret: Box::new(Type::Top),
             variadic: false,
         },
     );
@@ -2557,11 +2559,11 @@ pub fn core_type_env(env: &mut TypeEnv) {
             inner_schemes: None,
         },
     );
-    // builtin-build-dict: Unknown → Record({})
+    // builtin-build-dict: Top → Record({})
     env.insert(
         "builtin-build-dict".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
+            params: vec![(None, Type::Top)],
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
             })),
@@ -2841,8 +2843,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![
                 (None, Type::Str),
-                // Genuinely unknown: join stringifies any element type via stringify().
-                (None, Type::Seq(Box::new(Type::Unknown))),
+                // Top: join stringifies any element type via stringify().
+                (None, Type::Seq(Box::new(Type::Top))),
             ],
             ret: Box::new(Type::Str),
             variadic: false,
@@ -3161,111 +3163,111 @@ pub fn core_type_env(env: &mut TypeEnv) {
     );
 
     // ── Async concurrency ─────────────────────────────────────────────────────
-    // Task and Channel are opaque runtime types; use Unknown for all async I/O
+    // Task and Channel are opaque runtime types; use Top for all async I/O
     // boundaries. The key requirement is that every entry has type Function (not
     // Unknown or Error) so prelude wrappers (await, task, …) resolve correctly.
 
-    // builtin-task: Unknown → Unknown
+    // builtin-task: Top → Top
     // Takes any expression value (the task body evaluated lazily), returns an opaque Task.
     // The runtime does not require a zero-arg function — any value is accepted.
     env.insert(
         "builtin-task".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
-            ret: Box::new(Type::Unknown), // Task — opaque async handle
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top), // Task — opaque async handle
             variadic: false,
         },
     );
-    // builtin-await: Unknown → Unknown
+    // builtin-await: Top → Top
     // Awaits a Task and returns its result.
     env.insert(
         "builtin-await".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
-            ret: Box::new(Type::Unknown), // Task result — genuinely opaque
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top), // Task result — genuinely opaque
             variadic: false,
         },
     );
-    // builtin-channel: Int → Unknown
+    // builtin-channel: Int → Top
     // Creates a buffered channel with the given capacity.
     env.insert(
         "builtin-channel".to_string(),
         Type::Function {
             params: vec![(None, Type::Int)],
-            ret: Box::new(Type::Unknown), // Channel — opaque
+            ret: Box::new(Type::Top), // Channel — opaque
             variadic: false,
         },
     );
-    // builtin-send: Unknown → Unknown → Unknown
+    // builtin-send: Top → Top → Top
     // Sends a value on a channel: (channel, value) → Null/result
     env.insert(
         "builtin-send".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
-            ret: Box::new(Type::Unknown),
+            params: vec![(None, Type::Top), (None, Type::Top)],
+            ret: Box::new(Type::Top),
             variadic: false,
         },
     );
-    // builtin-recv: Unknown → Unknown
+    // builtin-recv: Top → Top
     // Receives a value from a channel.
     env.insert(
         "builtin-recv".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
-            ret: Box::new(Type::Unknown), // Received value — genuinely opaque
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top), // Received value — genuinely opaque
             variadic: false,
         },
     );
-    // builtin-select-once: Unknown → Unknown → Unknown
+    // builtin-select-once: Top → Top → Top
     // Selects the first ready channel from a seq of SelectSource values.
     // First arg is a context (for cancellation), second arg is the sources Seq.
     env.insert(
         "builtin-select-once".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
-            ret: Box::new(Type::Unknown),
+            params: vec![(None, Type::Top), (None, Type::Top)],
+            ret: Box::new(Type::Top),
             variadic: false,
         },
     );
-    // builtin-broadcast-channel: Int → Unknown
+    // builtin-broadcast-channel: Int → Top
     // Creates a broadcast channel of the given capacity.
     // Each subscriber (via recv) receives every value sent after it subscribes.
     env.insert(
         "builtin-broadcast-channel".to_string(),
         Type::Function {
             params: vec![(None, Type::Int)],
-            ret: Box::new(Type::Unknown), // BroadcastChannel — opaque
+            ret: Box::new(Type::Top), // BroadcastChannel — opaque
             variadic: false,
         },
     );
-    // builtin-oneshot-channel: () → Unknown
+    // builtin-oneshot-channel: () → Top
     // Creates a one-shot channel (single send/recv pair).
     // Returns a dict with sender and receiver fields.
     env.insert(
         "builtin-oneshot-channel".to_string(),
         Type::Function {
             params: vec![],
-            ret: Box::new(Type::Unknown), // {sender, receiver} dict — opaque
+            ret: Box::new(Type::Top), // {sender, receiver} dict — opaque
             variadic: false,
         },
     );
-    // builtin-try-send: Unknown → Unknown → Unknown
+    // builtin-try-send: Top → Top → Top
     // Non-blocking send: returns [Ok null] if sent, [Full] if buffer is full.
     env.insert(
         "builtin-try-send".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
-            ret: Box::new(Type::Unknown),
+            params: vec![(None, Type::Top), (None, Type::Top)],
+            ret: Box::new(Type::Top),
             variadic: false,
         },
     );
-    // builtin-par: Unknown → Unknown → Unknown
+    // builtin-par: Top → Top → Top
     // Runs two thunks in parallel, returns both results.
     env.insert(
         "builtin-par".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
-            ret: Box::new(Type::Unknown),
+            params: vec![(None, Type::Top), (None, Type::Top)],
+            ret: Box::new(Type::Top),
             variadic: false,
         },
     );
@@ -3323,13 +3325,13 @@ pub fn core_type_env(env: &mut TypeEnv) {
             inner_schemes: None,
         },
     );
-    // builtin-signal-channel: Unknown → Unknown
+    // builtin-signal-channel: Top → Top
     // Creates a channel for OS signals; argument is a seq of Signal values.
     env.insert(
         "builtin-signal-channel".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
-            ret: Box::new(Type::Unknown), // Channel — opaque
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top), // Channel — opaque
             variadic: false,
         },
     );
@@ -3343,7 +3345,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 (None, Type::ClockCap),
                 (None, Type::normalize_union(vec![Type::Duration, Type::Int])),
             ],
-            ret: Box::new(Type::Unknown), // Channel — opaque, no Channel type variant
+            ret: Box::new(Type::Top), // Channel — opaque, no Channel type variant
             variadic: false,
         },
     );
@@ -3354,116 +3356,116 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-watch-channel".to_string(),
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
-            ret: Box::new(Type::Unknown), // Channel@Null — opaque, no Channel type variant
+            ret: Box::new(Type::Top), // Channel@Null — opaque, no Channel type variant
             variadic: false,
         },
     );
-    // builtin-context: Unknown → Unknown
+    // builtin-context: Top → Top
     // Returns the current task context. Typically called as (builtin-context).
     // Typed as 1-arg to satisfy Function requirement; arg is variadic-style optional.
     env.insert(
         "builtin-context".to_string(),
         Type::Function {
             params: vec![],
-            ret: Box::new(Type::Unknown), // Context — opaque
+            ret: Box::new(Type::Top), // Context — opaque
             variadic: true,
         },
     );
-    // builtin-with-cancel: Unknown → Unknown
+    // builtin-with-cancel: Top → Top
     // Creates a cancellable child context from a parent context.
     env.insert(
         "builtin-with-cancel".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
-            ret: Box::new(Type::Unknown), // (Context, cancel-fn) pair — opaque
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top), // (Context, cancel-fn) pair — opaque
             variadic: false,
         },
     );
-    // builtin-with-timeout: ClockCap → Unknown → Duration → Unknown
+    // builtin-with-timeout: ClockCap → Top → Duration → Top
     // Creates a context with a timeout; (ClockCap, parent-context, duration) → Context
     env.insert(
         "builtin-with-timeout".to_string(),
         Type::Function {
             params: vec![
                 (None, Type::ClockCap),
-                (None, Type::Unknown),
+                (None, Type::Top),
                 (None, Type::Duration),
             ],
-            ret: Box::new(Type::Unknown), // Context — opaque
+            ret: Box::new(Type::Top), // Context — opaque
             variadic: false,
         },
     );
-    // builtin-with-deadline: ClockCap → Unknown → Timestamp → Unknown
+    // builtin-with-deadline: ClockCap → Top → Timestamp → Top
     // Creates a context with a deadline; (ClockCap, parent-context, deadline) → Context
     env.insert(
         "builtin-with-deadline".to_string(),
         Type::Function {
             params: vec![
                 (None, Type::ClockCap),
-                (None, Type::Unknown),
+                (None, Type::Top),
                 (None, Type::Timestamp),
             ],
-            ret: Box::new(Type::Unknown), // Context — opaque
+            ret: Box::new(Type::Top), // Context — opaque
             variadic: false,
         },
     );
-    // builtin-cancelled?: Unknown → Bool
+    // builtin-cancelled?: Top → Bool
     // Checks whether a context has been cancelled.
     env.insert(
         "builtin-cancelled-q".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
+            params: vec![(None, Type::Top)],
             ret: Box::new(Type::Bool),
             variadic: false,
         },
     );
-    // builtin-cancel-task: Unknown → Unknown
+    // builtin-cancel-task: Top → Top
     // Cancels a task or context.
     env.insert(
         "builtin-cancel-task".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
-            ret: Box::new(Type::Unknown),
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top),
             variadic: false,
         },
     );
-    // builtin-non-cancellable: Unknown → Unknown
+    // builtin-non-cancellable: Top → Top
     // Wraps a thunk so it runs in a non-cancellable context.
     env.insert(
         "builtin-non-cancellable".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
-            ret: Box::new(Type::Unknown),
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top),
             variadic: false,
         },
     );
-    // builtin-with-context: Unknown → Unknown → Unknown
+    // builtin-with-context: Top → Top → Top
     // Runs a thunk with a specific context: (context, thunk) → result
     env.insert(
         "builtin-with-context".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
-            ret: Box::new(Type::Unknown),
+            params: vec![(None, Type::Top), (None, Type::Top)],
+            ret: Box::new(Type::Top),
             variadic: false,
         },
     );
-    // builtin-cancel-root: Unknown → Unknown
+    // builtin-cancel-root: Top → Top
     // Cancels the root context of the current task.
     env.insert(
         "builtin-cancel-root".to_string(),
         Type::Function {
             params: vec![],
-            ret: Box::new(Type::Unknown),
+            ret: Box::new(Type::Top),
             variadic: true,
         },
     );
-    // builtin-drain: Unknown → Unknown
+    // builtin-drain: Top → Top
     // Drains a channel, consuming all buffered values.
     env.insert(
         "builtin-drain".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)],
-            ret: Box::new(Type::Unknown),
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top),
             variadic: false,
         },
     );
@@ -3486,8 +3488,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
     env.insert(
         "builtin-ast-of".to_string(),
         Type::Function {
-            params: vec![(None, Type::Unknown)], // any expression — not materialized
-            ret: Box::new(Type::Unknown),        // metadata Dict — shape runtime-dependent
+            params: vec![(None, Type::Top)], // any expression — not materialized
+            ret: Box::new(Type::Top),        // metadata Dict — shape runtime-dependent
             variadic: false,
         },
     );

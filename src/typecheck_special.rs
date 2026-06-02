@@ -363,10 +363,12 @@ pub(crate) fn check_tls_layer(
             // Unknown handle → fall back to Handle(Unknown)
             Ok(Type::Handle(Box::new(Type::Unknown)))
         }
-        _ => {
-            // Non-handle argument → fall back to Handle(Unknown)
-            // (This should ideally be a type error, but we're being conservative)
-            Ok(Type::Handle(Box::new(Type::Unknown)))
+        other => {
+            // Non-handle argument is a type error
+            Err(vec![TypeError::new(
+                format!("tls-layer requires a Handle argument, got {}", other),
+                span,
+            )])
         }
     }
 }

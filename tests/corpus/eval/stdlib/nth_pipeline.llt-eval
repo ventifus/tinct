@@ -1,4 +1,5 @@
 # nth subject-last enables pipeline: dict | [nth n]
+# B-295 fix: [[dict] | f] unwraps to return f(dict) directly, not {0: f(dict)}
 [[0: "a"  1: "b"  2: "c"] | [nth 1]]
 === out
-Dict({0: String("b")})
+String("b")

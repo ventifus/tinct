@@ -8,5 +8,3 @@ Int(1)
 === warn
 multi-element [let ...] pattern not yet supported — use single binding at 1:1-1:34
 multi-element [let ...] pattern not yet supported — use single binding at 2:1-2:37
-undefined variable: xs at 3:14-3:16
-undefined variable: ys at 3:17-3:19

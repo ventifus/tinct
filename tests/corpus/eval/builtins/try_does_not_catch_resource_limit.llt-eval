@@ -4,6 +4,8 @@
 # DepthExceeded fires at ~256 elements before ResourceLimitExceeded (E043, 1M elements).
 # Both have the same non-catchable semantics in builtin_try (builtins_meta.rs:222-227).
 [try [fn [] [collect [range 0]]]]
+=== warn
+cannot unify ⊤ with <error> at 5:13-5:32
 === error
 [E043] collect: exceeded maximum collection size (1000000). Use $take to limit infinite sequences before collecting. (defined at stdlib/prelude.llt:2433:15-2433:35)
   --> stdlib/prelude.llt:2433:15-2433:35

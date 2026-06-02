@@ -1687,7 +1687,8 @@ pub(crate) fn infer_surface_expr(
             }
 
             let match_ty = if arm_result_types.is_empty() {
-                Type::Unknown
+                // Empty match is uninhabited — no arms to execute means no value can be produced.
+                Type::Never
             } else {
                 let raw_union = Type::normalize_union(arm_result_types);
                 Type::simplify_type(raw_union)
@@ -1873,10 +1874,11 @@ fn infer_class_decl_from_surface(
             }
         };
         // Method values in class declarations are type signatures ([fn params body] form).
-        // Use graceful fallback: if resolve_type_expr fails (e.g., raw Fn expression),
-        // treat as Unknown rather than propagating an error.
+        // If resolve_type_expr fails, use Error to cascade the failure rather than going gradual.
+        // Dead code: current implementation doesn't use this result, but if it did, Error is
+        // correct for failed inference (not Unknown which would activate gradual typing).
         let _method_type = resolve_type_expr(&method.node.value, env, state, &mut None, &mut None)
-            .unwrap_or(crate::types::Type::Unknown);
+            .unwrap_or(crate::types::Type::Error);
     }
 
     let existing_param_kinds: std::collections::HashMap<String, Kind> = state

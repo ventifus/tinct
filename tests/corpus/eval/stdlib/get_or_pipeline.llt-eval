@@ -1,4 +1,5 @@
 # get-or subject-last enables pipeline: dict | [get-or key default]
+# B-295 fix: [[dict] | f] unwraps to return f(dict) directly, not {0: f(dict)}
 [[x: 42] | [get-or "missing" 99]]
 === out
-Dict({0: Int(99)})
+Int(99)

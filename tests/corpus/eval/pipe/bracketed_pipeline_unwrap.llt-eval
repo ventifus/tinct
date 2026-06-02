@@ -1,0 +1,17 @@
+# B-295: [[call args] | pipeline] unwraps when used as dict entry value
+# The outer brackets group the pipeline for use in a dict entry context,
+# but don't create an extra {0: result} wrapper when the content is a single pipeline.
+
+[
+  # Direct pipeline (no unwrapping needed, top-level expression)
+  direct: [0: "a"  1: "b"] | [nth 0]
+
+  # Grouped pipeline as dict entry value (unwrapping applies)
+  grouped: [[0: "x"  1: "y"  2: "z"] | [nth 1]]
+
+  # Multi-stage pipeline (unwrapping applies)
+  multi: [[0: 1  1: 2  2: 3] | [nth 0] | [+ _ 10]]
+]
+
+=== out
+Dict({"direct": String("a"), "grouped": String("y"), "multi": Int(11)})

@@ -310,14 +310,16 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // Inject capability types into builtins_env for prelude type-checking
     builtins_env.insert("%cwd".to_string(), crate::types::Type::DirCap);
     builtins_env.insert("%libdir".to_string(), crate::types::Type::DirCap);
-    builtins_env.insert(
-        "%stdin".to_string(),
-        crate::types::Type::Handle(Box::new(Type::Unknown)),
-    );
-    // %rust injection: previously needed for [include %rust "..."] calls in prelude.llt.
-    // include-decomp-prelude removed those calls; this entry is now a no-op but harmless.
-    // Kept here to avoid type errors if any external code still references %rust.
-    builtins_env.insert("%rust".to_string(), crate::types::Type::Unknown);
+    // %stdin is Handle[Readable Text]
+    {
+        let mut caps = std::collections::HashMap::new();
+        caps.insert("Readable".to_string(), Type::Bool);
+        caps.insert("Text".to_string(), Type::Bool);
+        builtins_env.insert(
+            "%stdin".to_string(),
+            crate::types::Type::Handle(Box::new(Type::Record(crate::types::Row { fields: caps }))),
+        );
+    }
     // Inject builtin-* aliases for prelude type-checking only.
     // prelude.llt uses builtin-lt, builtin-eq, etc. to call Rust primitives
     // by stable names. These are NOT in user scope — inject_builtin_aliases()
@@ -551,7 +553,7 @@ pub fn build_type_stage_env() -> Option<Arc<RwLock<crate::value::Environment>>> 
     })
 }
 
-/// Replace all TypeVar occurrences in a type with Unknown.
+/// Replace all TypeVar occurrences in a type with Top.
 ///
 /// TypeVars extracted from the prelude's type_map are stale: they were created
 /// in the prelude's InferState and have no meaning in user code's InferState.
@@ -559,12 +561,13 @@ pub fn build_type_stage_env() -> Option<Arc<RwLock<crate::value::Environment>>> 
 /// the first argument binds the TypeVar and subsequent arguments are checked via
 /// subsumption against the first argument's type — producing false type errors.
 ///
-/// Replacing stale TypeVars with Unknown restores the pre-sprint gradual behavior:
-/// any argument type is acceptable (Unknown ~ T for all T).
+/// Replacing stale TypeVars with Top is correct: Top admits any value via subtyping
+/// (τ <: Top for all τ), expressing "we don't know the precise type" without
+/// activating gradual consistency checking (which Unknown would do).
 fn erase_type_vars(ty: &crate::types::Type) -> crate::types::Type {
     use crate::types::{Row, Type};
     match ty {
-        Type::TypeVar(_, _) => Type::Unknown,
+        Type::TypeVar(_, _) => Type::Top,
         Type::Function {
             params,
             ret,
@@ -1238,10 +1241,6 @@ pub fn build_type_env_with_cap(
             Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
         );
     }
-    // %rust is a legacy virtual module cap — stdlib files (net.llt, io.llt) may reference it.
-    // The runtime module system was deleted, but the type checker must still accept the identifier
-    // without raising "undefined variable: %rust" errors during stdlib include type-checking.
-    env.insert("%rust".to_string(), crate::types::Type::Unknown);
     let mut env = Rc::new(env);
 
     let mut include_bindings = HashMap::new();

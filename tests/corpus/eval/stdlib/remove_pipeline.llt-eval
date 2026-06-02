@@ -1,4 +1,5 @@
 # remove subject-last enables pipeline: dict | [remove key]
+# B-295 fix: [[dict] | f] unwraps to return f(dict) directly, not {0: f(dict)}
 [[x: 1  y: 2] | [remove "x"]]
 === out
-Dict({0: Dict({"y": Int(2)})})
+Dict({"y": Int(2)})

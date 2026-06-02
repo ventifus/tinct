@@ -1859,33 +1859,67 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 span: Some(key_expr.span.clone()),
                             });
                         } else {
-                            // Construct the dict expression
-                            let spanned_dict = Arc::new(SurfaceNode {
-                                expr: SurfaceExpression::Dict(
-                                    entries
-                                        .into_iter()
-                                        .map(|e| {
-                                            let entry_span = if let Some(ref key) = e.node.key {
-                                                Span {
-                                                    start: key.span.start,
-                                                    end: e.node.value.span.end,
-                                                    file: None,
-                                                }
-                                            } else {
-                                                e.node.value.span.clone()
-                                            };
-                                            Spanned::new(e.node, entry_span)
-                                        })
-                                        .collect(),
-                                ),
-                                span: dict_span(span_start),
-                            });
+                            // B-295 fix: when a Dict contains exactly one auto-indexed entry
+                            // and that entry is a Pipe expression, unwrap it and return the
+                            // Pipe directly. This allows `[[call ...] | f | g]` to work as
+                            // a grouped pipeline in dict entry contexts without creating an
+                            // extra `{0: result}` wrapper.
+                            //
+                            // Example: `result: [[open file] | lines | collect]`
+                            // Without unwrapping: `result: {0: ["line1", "line2", ...]}`
+                            // With unwrapping: `result: ["line1", "line2", ...]`
+                            //
+                            // This only applies when:
+                            // - Exactly one entry (no multiple values)
+                            // - Entry has no key (auto-indexed, not `key: pipe-expr`)
+                            // - Entry value is a Pipe expression
+                            let should_unwrap_pipe = entries.len() == 1
+                                && entries[0].node.key.is_none()
+                                && matches!(
+                                    entries[0].node.value.expr,
+                                    SurfaceExpression::Pipe { .. }
+                                );
 
-                            // Push to parent or document (via push_value to handle pending_key)
-                            if let Err(push_err) =
-                                push_value(&mut stack, &mut current_document_items, spanned_dict)
-                            {
-                                close_bracket_recover!(push_err);
+                            if should_unwrap_pipe {
+                                // Unwrap: return the Pipe expression directly
+                                let pipe_expr = entries.into_iter().next().unwrap().node.value;
+                                // Push to parent or document
+                                if let Err(push_err) =
+                                    push_value(&mut stack, &mut current_document_items, pipe_expr)
+                                {
+                                    close_bracket_recover!(push_err);
+                                }
+                            } else {
+                                // Standard dict construction
+                                let spanned_dict = Arc::new(SurfaceNode {
+                                    expr: SurfaceExpression::Dict(
+                                        entries
+                                            .into_iter()
+                                            .map(|e| {
+                                                let entry_span = if let Some(ref key) = e.node.key {
+                                                    Span {
+                                                        start: key.span.start,
+                                                        end: e.node.value.span.end,
+                                                        file: None,
+                                                    }
+                                                } else {
+                                                    e.node.value.span.clone()
+                                                };
+                                                Spanned::new(e.node, entry_span)
+                                            })
+                                            .collect(),
+                                    ),
+                                    span: dict_span(span_start),
+                                });
+
+                                // Push to parent or document (via push_value to handle pending_key)
+                                if let Err(push_err) = push_value(
+                                    &mut stack,
+                                    &mut current_document_items,
+                                    spanned_dict,
+                                ) {
+                                    close_bracket_recover!(push_err);
+                                }
                             }
                         }
                     }
