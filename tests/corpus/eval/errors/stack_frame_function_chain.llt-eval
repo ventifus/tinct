@@ -4,13 +4,13 @@
 ]
 [f2 []]
 === error
-[E034] head on empty collection (defined at stdlib/prelude.llt:2477:15-2477:32)
-  --> stdlib/prelude.llt:2477:15-2477:32
+[E034] head on empty collection (defined at stdlib/prelude.llt:2476:15-2476:32)
+  --> stdlib/prelude.llt:2476:15-2476:32
    |
-  2477 | """] [let xs] [builtin-head xs]]
+  2476 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
-  in [builtin-head ...] at stdlib/prelude.llt:2477:15-2477:32
+  in [builtin-head ...] at stdlib/prelude.llt:2476:15-2476:32
    |
-  2477 | """] [let xs] [builtin-head xs]]
+  2476 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [f2 ...] at 5:1-5:8

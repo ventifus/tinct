@@ -1,29 +1,29 @@
 # quot: integer division by zero propagates E031 (DivisionByZero) through stdlib
 [quot 10 0]
 === error
-[E031] /: division by zero (defined at stdlib/prelude.llt:728:37-728:54) (called at stdlib/prelude.llt:634:14-634:39)
-  --> stdlib/prelude.llt:728:37-728:54
+[E031] /: division by zero (defined at stdlib/prelude.llt:727:37-727:54) (called at stdlib/prelude.llt:633:14-633:39)
+  --> stdlib/prelude.llt:727:37-727:54
    |
-  728 | """] [let a@Number b@Number] [trunc [builtin-div a b]]]
+  727 | """] [let a@Number b@Number] [trunc [builtin-div a b]]]
       |                                     ^^^^^^^^^^^^^^^^^
-  in [builtin-div ...] at stdlib/prelude.llt:728:37-728:54
+  in [builtin-div ...] at stdlib/prelude.llt:727:37-727:54
    |
-  728 | """] [let a@Number b@Number] [trunc [builtin-div a b]]]
+  727 | """] [let a@Number b@Number] [trunc [builtin-div a b]]]
       |                                     ^^^^^^^^^^^^^^^^^
-  in [builtin-lt ...] at stdlib/prelude.llt:715:25-715:41
+  in [builtin-lt ...] at stdlib/prelude.llt:714:25-714:41
    |
-  715 | """] [let x@a y@a] [not [builtin-lt x y]]]
+  714 | """] [let x@a y@a] [not [builtin-lt x y]]]
       |                         ^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:634:14-634:39
+  in [builtin-if ...] at stdlib/prelude.llt:633:14-633:39
    |
-  634 | """] [let x] [builtin-if x false true]]
+  633 | """] [let x] [builtin-if x false true]]
       |              ^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:760:21-760:61
+  in materialized at stdlib/prelude.llt:759:21-759:61
    |
-  760 | """] [let x@Number] [builtin-if [>= x 0] [floor x] [ceil x]]]
+  759 | """] [let x@Number] [builtin-if [>= x 0] [floor x] [ceil x]]]
       |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:760:21-760:61
+  in [builtin-if ...] at stdlib/prelude.llt:759:21-759:61
    |
-  760 | """] [let x@Number] [builtin-if [>= x 0] [floor x] [ceil x]]]
+  759 | """] [let x@Number] [builtin-if [>= x 0] [floor x] [ceil x]]]
       |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [quot ...] at 1:1-1:12

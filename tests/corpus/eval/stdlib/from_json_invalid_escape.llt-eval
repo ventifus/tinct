@@ -2,14 +2,14 @@
 [json: [include %libdir "codecs/json.llt"]]
 [json.from-json "\"hello\\qworld\""]
 === error
-[E080] JSON: unknown escape \q (defined at stdlib/prelude.llt:2051:28-2051:47)
-  --> stdlib/prelude.llt:2051:28-2051:47
+[E080] JSON: unknown escape \q (defined at stdlib/prelude.llt:2050:28-2050:47)
+  --> stdlib/prelude.llt:2050:28-2050:47
    |
-  2051 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2050 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2051:28-2051:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2050:28-2050:47
    |
-  2051 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2050 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in materialized at stdlib/prelude.llt:206:5-210:50
    |
@@ -33,8 +33,8 @@
   209 |             [builtin-get i pairs].1
   210 |             [cond-impl pairs [builtin-add i 1]]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at 398:14-398:58
-  in [str ...] at 398:14-398:58
-  in [str ...] at 400:48-400:76
-  in materialized at 572:5-572:17
+  in materialized at 396:14-396:58
+  in [str ...] at 396:14-396:58
+  in [str ...] at 398:48-398:76
+  in materialized at 570:5-570:17
   in [<dot-access> ...] at 2:1-2:37

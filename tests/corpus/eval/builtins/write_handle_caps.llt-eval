@@ -7,18 +7,18 @@
 [include %libdir "io.llt"]
 [has-cap? [open [narrow %cwd "target"] "tinct-test-write-caps.txt" Readable] "Readable"]
 === error
-[E002] undefined variable: cap-data (did you mean the string "cap-data"? Use quotes.) (defined at 60:16-60:24) (called at stdlib/prelude.llt:1446:75-1446:76)
-  in materialized at stdlib/prelude.llt:1446:68-1446:102
+[E002] undefined variable: cap-data (did you mean the string "cap-data"? Use quotes.) (defined at 60:16-60:24) (called at stdlib/prelude.llt:1445:75-1445:76)
+  in materialized at stdlib/prelude.llt:1445:68-1445:102
    |
-  1446 | null?@[doc: "Check if value is null (empty dict [])"]: [fn [let x] [match x []:       true  _: false]]
+  1445 | null?@[doc: "Check if value is null (empty dict [])"]: [fn [let x] [match x []:       true  _: false]]
        |                                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:634:14-634:39
+  in materialized at stdlib/prelude.llt:633:14-633:39
    |
-  634 | """] [let x] [builtin-if x false true]]
+  633 | """] [let x] [builtin-if x false true]]
       |              ^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:634:14-634:39
+  in [builtin-if ...] at stdlib/prelude.llt:633:14-633:39
    |
-  634 | """] [let x] [builtin-if x false true]]
+  633 | """] [let x] [builtin-if x false true]]
       |              ^^^^^^^^^^^^^^^^^^^^^^^^^
   in [has-cap? ...] at 7:1-7:89
 

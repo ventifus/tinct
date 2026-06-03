@@ -2,13 +2,13 @@
 [json: [include %libdir "codecs/json.llt"]]
 [json.from-json "[1, 2"]
 === error
-[E099] str-slice: end index 1 out of bounds (string has 0 characters) (defined at 279:3-279:26)
-  in [str-slice ...] at 279:3-279:26
+[E099] str-slice: end index 1 out of bounds (string has 0 characters) (defined at 277:3-277:26)
+  in [str-slice ...] at 277:3-277:26
   in materialized at stdlib/prelude.llt:208:21-208:44
    |
   208 |         [builtin-if [builtin-get i pairs].0
       |                     ^^^^^^^^^^^^^^^^^^^^^^^
-  in [= ...] at 412:6-412:33
+  in [= ...] at 410:6-410:33
   in materialized at stdlib/prelude.llt:206:5-210:50
    |
   206 |     [builtin-if [builtin-gte i [builtin-length pairs]]
@@ -31,13 +31,13 @@
   209 |             [builtin-get i pairs].1
   210 |             [cond-impl pairs [builtin-add i 1]]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at 406:25-414:59
-  in materialized at 419:3-421:50
-  in [if ...] at 419:3-421:50
-  in materialized at 416:19-421:51
-  in materialized at 450:3-460:81
-  in [if ...] at 450:3-460:81
-  in materialized at 448:19-460:82
-  in materialized at 567:5-571:65
-  in [if ...] at 568:7-571:64
+  in materialized at 404:25-412:59
+  in materialized at 417:3-419:50
+  in [if ...] at 417:3-419:50
+  in materialized at 414:19-419:51
+  in materialized at 448:3-458:81
+  in [if ...] at 448:3-458:81
+  in materialized at 446:19-458:82
+  in materialized at 565:5-569:65
+  in [if ...] at 566:7-569:64
   in [<dot-access> ...] at 2:1-2:25

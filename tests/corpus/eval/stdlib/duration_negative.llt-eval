@@ -2,9 +2,9 @@
 # duration-nanos: negative duration (durations are signed)
 [duration-nanos -500]
 === error
-[E002] undefined variable: builtin-duration-nanos (did you mean the string "builtin-duration-nanos"? Use quotes.) (defined at stdlib/prelude.llt:2996:17-2996:39) (called at 3:1-3:22)
-  --> stdlib/prelude.llt:2996:17-2996:39
+[E002] undefined variable: builtin-duration-nanos (did you mean the string "builtin-duration-nanos"? Use quotes.) (defined at stdlib/prelude.llt:2995:17-2995:39) (called at 3:1-3:22)
+  --> stdlib/prelude.llt:2995:17-2995:39
    |
-  2996 | duration-nanos: builtin-duration-nanos
+  2995 | duration-nanos: builtin-duration-nanos
        |                 ^^^^^^^^^^^^^^^^^^^^^^
   in [duration-nanos ...] at 3:1-3:22
