@@ -77,7 +77,11 @@ Because `ast-of` uses the existing `ast_to_dict` schema (with the recursive-valu
 ```tinct
 annotation-of:   [fn [val] [get "return-ann" [ast-of val]]]
 source-of:       [fn [val] [get "body"        [ast-of val]]]
+```
 
+> **Note (B-323):** `source-of` does not yet work for fully-evaluated functions. When called on a `Value::Function`, `ast-of` returns `{type, doc, return-ann, params}` with no `"body"` key — the body AST is not serialized for fully-evaluated closures. `source-of` only works in unevaluated contexts (macro/quote). The example below using `[source-of f]` on a named function is aspirational; full support requires a `CoreExpr→SurfaceExpression` round-trip (tracked as B-323).
+
+```tinct
 # Stringify an annotation entry's value.
 # Simple values (Str, Int) are already plain tinct values.
 # Compound values (e.g. [a: Numeric] as a nested dict) are full AST dicts —
@@ -252,6 +256,8 @@ io — module (17 exports)
 ```
 
 **Metaprogramming** — `source-of` returns the body AST dict (not a string); pass to a formatter for display:
+
+> **Note (B-323):** The `debug-fn` example below is aspirational. `source-of` currently returns `null` for fully-evaluated `Value::Function` objects because `ast-of` does not yet serialize the body AST for closures. This will work once B-323 (CoreExpr→SurfaceExpression round-trip) is implemented.
 
 ```tinct
 debug-fn: [fn [f args]

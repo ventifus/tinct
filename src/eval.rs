@@ -504,36 +504,7 @@ pub struct EvalState {
     ///
     /// Upper bound: continuation stack frames (2048) × ~80 bytes/entry ≈ 160 KB.
     pub eval_stack: Vec<(Arc<str>, Span)>,
-    /// Runtime class registry: class_name -> (params, superclasses, method_defaults)
-    /// Stores default method implementations for filling in instance dictionaries.
-    pub class_registry: HashMap<String, RuntimeClassDecl>,
-    /// Runtime instance registry: (class_name, type_tags) -> instance_dict
-    /// Stores materialized method dictionaries for each instance.
-    /// class_name is &'static str; type_tags is a Vec<String> (from Value::type_name()
-    /// on determining-position args) for MPTC support.
-    pub instance_registry: HashMap<(&'static str, Vec<String>), Arc<Thunk>>,
-    /// O(1) set of class names that have at least one registered instance.
-    /// Updated in sync with `instance_registry`. Used by builtins (e.g. `+`, `str`)
-    /// to avoid a linear scan over registry keys on every arithmetic/string operation.
-    pub registered_classes: HashSet<String>,
     // future: trace_log, eval_stats
-}
-
-/// Runtime representation of a class declaration.
-/// Stores information needed to construct instance dictionaries.
-#[derive(Debug, Clone)]
-pub struct RuntimeClassDecl {
-    pub params: Vec<String>,
-    /// Superclass constraints as (class_name, param_name) tuples
-    pub superclasses: Vec<(String, String)>,
-    /// Default method implementations: method_name -> thunk
-    /// These are wrapped as thunks to preserve laziness.
-    pub method_defaults: IndexMap<String, Arc<Thunk>>,
-    /// Number of determining-position type parameters for MPTC dispatch.
-    /// For single-param classes (Equatable, Comparable): 1.
-    /// For arithmetic classes (Addable a b c with FD (a,b)→c): 2.
-    /// Used to truncate instance_registry keys so they match try_dispatch_method lookups.
-    pub num_determining: usize,
 }
 
 /// Evaluation infrastructure context: separates session config from variable bindings.
@@ -652,9 +623,6 @@ impl EvalContext {
                 string_include_cache: HashMap::new(),
                 include_chain: Vec::new(),
                 eval_stack: Vec::new(),
-                class_registry: HashMap::new(),
-                instance_registry: HashMap::new(),
-                registered_classes: HashSet::new(),
             })),
             thunk_arena: Arc::new(Mutex::new(ThunkArena::new())),
             env_arena: Arc::new(Mutex::new(EnvArena::new())),
@@ -696,9 +664,6 @@ impl EvalContext {
                 string_include_cache: HashMap::new(),
                 include_chain: Vec::new(),
                 eval_stack: Vec::new(),
-                class_registry: HashMap::new(),
-                instance_registry: HashMap::new(),
-                registered_classes: HashSet::new(),
             })),
             thunk_arena,
             env_arena: Arc::new(Mutex::new(EnvArena::new())),
@@ -749,9 +714,6 @@ impl EvalContext {
                 string_include_cache: HashMap::new(),
                 include_chain: Vec::new(),
                 eval_stack: Vec::new(),
-                class_registry: HashMap::new(),
-                instance_registry: HashMap::new(),
-                registered_classes: HashSet::new(),
             })),
             thunk_arena: shared_arena,
             env_arena: Arc::new(Mutex::new(EnvArena::new())),
@@ -8945,6 +8907,97 @@ mod tests {
         assert!(
             result_neg.contains("String(\"other\")"),
             "guard callable should fail for negative: {result_neg:?}"
+        );
+    }
+
+    /// T-933 Option 3: directly exercise the PipelineBlame runtime enrichment path.
+    ///
+    /// The corpus test runner passes an empty `expects_resolved` HashMap, so the pipeline
+    /// TypeAssert always uses `Type::Unknown` (accepts all values) and the blame code at
+    /// `eval_materialize.rs:2855-2860,2893-2897,2949-2953` is never reached.
+    ///
+    /// This test populates `expects_resolved` via the typechecker so the TypeAssert gets
+    /// a concrete `Type::Str`. When document 0 produces `Int(42)`, the TypeAssert fails
+    /// and `EvalError::with_pipeline_blame` fires, attaching `PipelineBlame { producer:
+    /// "document 0", consumer: Some("document 1") }` to the error.
+    #[test]
+    fn test_pipeline_blame_runtime_enrichment() {
+        // Program: doc 0 produces Int(42); doc 1 declares `--- expects: @String` and
+        // returns `%` (the pipeline input).  The `expects:` annotation causes `%` to be
+        // wrapped in a TypeAssert thunk whose resolved_type is `Type::Str`.  Materializing
+        // `%` forces the TypeAssert, detects Int ≠ Str, and attaches PipelineBlame.
+        let source = "42\n--- expects: @String\n%";
+
+        // Parse.
+        let parsed = crate::parse(source).expect("parse must succeed");
+        let mut program = parsed.program;
+
+        // Desugar (no macros in this source, but maintain pipeline invariant).
+        crate::desugar::desugar_surface_program(&mut program);
+        crate::desugar::inject_adt_constructors_surface_program(&mut program);
+
+        // Resolve variable references.
+        let res = std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));
+
+        // Typecheck: populates `expects_resolved` with the span of the `expects: @String`
+        // annotation mapped to `Type::Str`.  Without this map the TypeAssert falls back to
+        // `Type::Unknown` (accepts everything) and the blame code is unreachable.
+        let (_type_errors, type_annotation_table, expects_resolved) =
+            crate::typecheck::typecheck_surface_program_annotation_table(&program);
+        assert!(
+            !expects_resolved.is_empty(),
+            "typechecker must have resolved `@String` into expects_resolved; got empty map"
+        );
+        let types = std::sync::Arc::new(type_annotation_table);
+
+        // Build a minimal eval context.  No stdlib needed: doc 0 is a bare literal and
+        // doc 1 evaluates `%` (provided by the pipeline, not the environment).
+        let env = empty_env();
+        let ctx = test_ctx();
+
+        // Evaluate: doc 0 produces Int(42), % in doc 1 is wrapped with TypeAssert(@String).
+        // The result thunk is the TypeAssert-wrapped % — still unevaluated (lazy).
+        let result_thunk = crate::async_rt::block_on_anywhere(super::eval_surface_file_with_input(
+            &program,
+            Arc::clone(&env),
+            &ctx,
+            &res,
+            &types,
+            &expects_resolved,
+            None,
+        ))
+        .expect("eval_surface_file_with_input must not fail (TypeAssert is lazy)");
+
+        // Materializing the result forces the TypeAssert: Int(42) ≠ Str → error.
+        let err = materialize(&result_thunk, None, &ctx)
+            .expect_err("materializing Int(42) against @String must produce a type error");
+
+        let msg = err.to_string();
+
+        // Verify that PipelineBlame was attached and rendered correctly.
+        assert!(
+            msg.contains("produced by: document 0"),
+            "error must contain 'produced by: document 0'; got:\n{msg}"
+        );
+        assert!(
+            msg.contains("consumed by: document 1"),
+            "error must contain 'consumed by: document 1'; got:\n{msg}"
+        );
+
+        // Also verify the pipeline_stage field is directly populated on the error.
+        assert!(
+            err.pipeline_stage.is_some(),
+            "EvalError.pipeline_stage must be Some after blame enrichment"
+        );
+        let blame = err.pipeline_stage.as_ref().unwrap();
+        assert_eq!(
+            blame.producer, "document 0",
+            "blame.producer must be 'document 0'"
+        );
+        assert_eq!(
+            blame.consumer.as_deref(),
+            Some("document 1"),
+            "blame.consumer must be Some('document 1')"
         );
     }
 

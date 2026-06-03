@@ -204,8 +204,6 @@ json-expression: [fn [let expr@Expression]
     [Quote         expr: e  span: s]: [json-variant "Quote"         [expr: [json-expression e]  span: [json-span s]]]
     [Unquote       expr: e  span: s]: [json-variant "Unquote"       [expr: [json-expression e]  span: [json-span s]]]
     [UnquoteSplice expr: e  span: s]: [json-variant "UnquoteSplice" [expr: [json-expression e]  span: [json-span s]]]
-    [TypeApp fn: f  arg: a  span: s]:
-      [json-variant "TypeApp" [fn: [json-expression f]  arg: [json-expression a]  span: [json-span s]]]
     [PatternDecl bindings: bs  span: s]:
       [json-variant "PatternDecl" [bindings: [to-json-seq [map json-expression bs]]  span: [json-span s]]]
     [LetDecl     bindings: bs  span: s]:

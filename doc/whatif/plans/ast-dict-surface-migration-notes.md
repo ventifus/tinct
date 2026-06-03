@@ -44,7 +44,6 @@ Porting is mechanical: swap field types (`Box<Spanned<Expr>>` → `Arc<SurfaceNo
 | `Expr::PatternDecl { bindings }` | `SurfaceExpression::PatternDecl { bindings }` | `"PatternDecl"` | `bindings: List` |
 | `Expr::LetDecl { bindings }` | `SurfaceExpression::LetDecl { bindings }` | `"LetDecl"` | `bindings: List` |
 | `Expr::CaseArm { pattern, body }` | `SurfaceExpression::CaseArm { pattern, body }` | `"CaseArm"` | `pattern: ExprDict`, `body: ExprDict` |
-| `Expr::TypeApp { func, arg }` | `SurfaceExpression::TypeApp { func, arg }` | `"TypeApp"` | `func: ExprDict`, `arg: ExprDict` |
 | `Expr::Placeholder` | `SurfaceExpression::Placeholder` | `"Placeholder"` | (none) |
 | `Expr::Error(Span)` | `SurfaceExpression::Error(Span)` | `"AstError"` | `span: SpanDict` |
 | `Expr::Match { scrutinee, arms }` | `SurfaceExpression::Match { scrutinee, arms }` | `"Match"` | `scrutinee: ExprDict`, `arms: List` |

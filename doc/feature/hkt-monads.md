@@ -13,7 +13,7 @@ The existing `[do monad ...]` syntax is complete and backward-compatible. The HK
 addition enables:
 
 - **`[do]` without explicit monad argument** — when the return type is annotated `@Result`, the monad is inferred automatically
-- **Generic functions polymorphic over functors** — `traverse`, `sequence`, `liftM2`, `forM`, `when` all become expressible and type-checked
+- **Generic functions polymorphic over functors** — `traverse`, `sequence`, `liftM2`, `forM`, `whenM` all become expressible and type-checked
 - **`Functor`, `Applicative`, `Monad` typeclass hierarchy** — generic combinators as typed library functions requiring a type variable of kind `* → *`
 - **`Mappable` via typeclass** — the hardcoded fixed-instance set in `src/typecheck.rs` replaced by a proper class/instance declaration; user-defined types can declare themselves `Mappable`
 - **Precise field access types** — `get "host" config` returns `String` (not `Unknown`) when `config`'s type is known; `get "port" (A | B)` returns `A.port | B.port` via BAS union distribution
@@ -302,8 +302,8 @@ traverse: [fn@[f [t b]] [f@Monad  t@Traversable  fn@[f b] [a]  xs@[t a]]
 forM: [fn@[m [Seq b]] [m@Monad  xs@[Seq a]  f@[Fn@[m b] [a]]]
   [traverse m f xs]]
 
-# when: conditionally execute a monadic action
-when: [fn@[m []] [m@Monad  cond@Bool  action@[m []]]
+# whenM: conditionally execute a monadic action
+whenM: [fn@[m []] [m@Monad  cond@Bool  action@[m []]]
   [if cond action [m.pure []]]]
 
 # liftM2: lift a two-argument function into the monad
@@ -509,7 +509,7 @@ before widening `StringLiteral(s) → Str`, check `state.kind_env.get(var_name)`
 
 ### Standard Library (`stdlib/prelude.llt`)
 
-New generic functions: `sequence`, `traverse`, `forM`, `when`, `liftM2`.
+New generic functions: `sequence`, `traverse`, `forM`, `whenM`, `liftM2`.
 
 New class declarations: `Functor`, `Applicative`, `Monad`, `Foldable`, `Traversable`,
 `Mappable`, `Appendable`, `Equatable`, `Comparable`, `Showable`.

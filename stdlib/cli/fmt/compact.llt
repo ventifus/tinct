@@ -92,7 +92,6 @@ format-node: [fn@[return: String  doc: """Main dispatch: format any AST node to 
     "Match":          [format-match node]
     "ClassDecl":      [format-class node]
     "InstanceDecl":   [format-instance node]
-    "TypeApp":        [format-type-app node]
     "AstError":       "<error>"
     _:                [error [str "unknown node type: " [tag-of node]]]]]
 
@@ -277,9 +276,6 @@ format-instance: [fn@[return: String  doc: """Format instance declaration. Emits
       [str " <" [str [length [get "arms" node]]] " arm(s)>"]
       ""]
     "]"]]
-
-format-type-app: [fn@[return: String  doc: """Format type application: @[func arg]"""] [let node]
-  [str "@[" [format-node [get "func" node]] " " [format-node [get "arg" node]] "]"]]
 
 # ---- Document & File formatters ----
 

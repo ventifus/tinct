@@ -543,7 +543,6 @@ Expression: [type
   [Quote         expr: Expression  span: Span]
   [Unquote       expr: Expression  span: Span]
   [UnquoteSplice expr: Expression  span: Span]
-  [TypeApp  fn: Expression  arg: Expression  span: Span]
   [PatternDecl  bindings: [Seq Expression]  span: Span]
   [LetDecl      bindings: [Seq Expression]  span: Span]
   [CaseArm      pattern: Expression  body: Expression  span: Span]
@@ -2175,7 +2174,7 @@ ast-of@[doc: "Return the AST representation of an unevaluated expression as an E
 annotation-of@[doc: "Get the return annotation dict from ast-of result"]:
   [fn [val] [get "return-ann" [ast-of val]]]
 
-source-of@[doc: "Get the body AST dict from ast-of result"]:
+source-of@[doc: "Get the body AST dict from ast-of result. NOTE: only works for unevaluated thunks (macro/quote context), not for fully-evaluated Value::Function — use ast-of directly for functions."]:
   [fn [val] [get "body" [ast-of val]]]
 
 annotation-value-str@[doc: "Stringify an annotation entry value"]:

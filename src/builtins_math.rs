@@ -19,13 +19,10 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 
-use std::rc::Rc;
-
 use crate::ast::Span;
 use crate::builtins::{check_float_result, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize_sync as materialize, EvalContext};
-use crate::eval_call::{invoke_function_sync as invoke_function, CallContext};
 use crate::value::Key;
 use crate::value::{BuiltinArgs, Thunk, Value};
 
@@ -50,131 +47,6 @@ fn check_int_to_float_precision(n: i64, span: crate::ast::Span) -> EvalResult<()
     Ok(())
 }
 
-/// Try to dispatch a binary operation to a typeclass instance method.
-///
-/// Looks up `(class_name, type_tags)` in the runtime instance registry. If a
-/// matching instance dict is found, extracts `method_name` from that dict and
-/// calls it with `arg_thunks` as positional arguments.
-///
-/// Returns:
-/// - `Ok(Some(thunk))` — dispatch succeeded; `thunk` is the method's result
-/// - `Ok(None)` — no instance registered for these types (caller handles fallthrough)
-/// - `Err(e)` — instance found but method call (or method materialization) failed
-///
-/// **Laziness note**: `arg_thunks` are passed as-is (already-allocated `Arc<Thunk>`)
-/// without re-materializing. The called method decides what to force.
-///
-/// **Non-recursion guarantee**: arithmetic operators call `builtin-add/mul/…` (pure
-/// primitives) which hit the Int/Float fast path and never dispatch. Equatable/Comparable
-/// instances call `builtin-eq/lt` (pure) similarly. No infinite recursion is possible.
-async fn try_dispatch_method(
-    class_name: &'static str,
-    method_name: &str,
-    type_tags: Vec<String>,
-    arg_thunks: Vec<Arc<Thunk>>,
-    ctx: Arc<EvalContext>,
-    call_span: Span,
-) -> EvalResult<Option<Arc<Thunk>>> {
-    // Fast-path: skip registry lookup if the class has no instances at all.
-    // `registered_classes` is an O(1) HashSet updated in sync with `instance_registry`.
-    {
-        let state = ctx.state.lock().unwrap();
-        if !state.registered_classes.contains(class_name) {
-            return Ok(None);
-        }
-    }
-
-    // Look up the instance dict for this (class, type_tags) pair.
-    let instance_thunk = {
-        let state = ctx.state.lock().unwrap();
-        state
-            .instance_registry
-            .get(&(class_name, type_tags.clone()))
-            .cloned()
-    };
-
-    let instance_thunk = match instance_thunk {
-        Some(t) => t,
-        None => return Ok(None),
-    };
-
-    // Materialize the instance dict.
-    let instance_val = materialize(&instance_thunk, Some(&call_span), &ctx)?;
-
-    // The instance dict has method names as string keys.
-    let method_key = Key::String(Rc::from(method_name));
-    let method_id = match &instance_val {
-        Value::Dict(map) => match map.get(&method_key) {
-            Some(id) => *id,
-            None => {
-                // Instance registered but method not present — should not happen with
-                // well-formed prelude instances. Return NoInstance to surface the gap.
-                return Err(EvalError::no_instance(class_name, type_tags, call_span).into());
-            }
-        },
-        _ => {
-            return Err(EvalError::internal(
-                format!(
-                    "instance registry entry for {} is not a Dict (got {})",
-                    class_name,
-                    instance_val.type_name()
-                ),
-                call_span,
-            )
-            .into());
-        }
-    };
-
-    // Resolve the method ThunkId to Arc<Thunk> via the arena.
-    let method_thunk = ctx.get_thunk(method_id);
-
-    // Materialize the method itself to dispatch (Function or Builtin).
-    let method_val = materialize(&method_thunk, Some(&call_span), &ctx)?;
-
-    // Call the method with the original arg thunks.
-    let result_thunk = match &method_val {
-        Value::Function {
-            params,
-            body,
-            env: closure_env,
-            ..
-        } => invoke_function(&CallContext {
-            params,
-            body,
-            closure_env,
-            positional: &arg_thunks,
-            named: None,
-            default_env: closure_env,
-            call_span,
-            origin: Some(Arc::from(
-                format!("[{class_name}.{method_name} ...]").as_str(),
-            )),
-            ctx: &ctx,
-        })?,
-        Value::Builtin(def) => {
-            let dispatch_args: Vec<Arc<Thunk>> = arg_thunks.to_vec();
-            (def.func)(BuiltinArgs {
-                args: dispatch_args,
-                named: None,
-                call_span,
-                ctx: Arc::clone(&ctx),
-            })
-            .await?
-        }
-        _ => {
-            return Err(EvalError::type_mismatch_ctx(
-                format!("{class_name}.{method_name}"),
-                "Function or Builtin",
-                method_val.type_name(),
-                method_thunk.span.clone(),
-            )
-            .into());
-        }
-    };
-
-    Ok(Some(result_thunk))
-}
-
 /// `builtin-add`: Pure Int/Float addition primitive. No typeclass dispatch.
 /// Dispatch for user-defined numeric types happens at the `+` operator level.
 /// Int + Int -> Int (checked), any Float operand -> Float (auto-promotion).
@@ -185,7 +57,7 @@ pub(crate) fn builtin_add(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
     Box::pin(async move {
         reject_named("+", named.as_ref(), call_span.clone())?;
@@ -215,23 +87,8 @@ pub(crate) fn builtin_add(
                 check_float_result(a + (*b as f64), "+", call_span)
             }
             _ => {
-                // Non-Int/Float: try dispatching to an Addable instance.
-                // type_tags uses num_determining=2 (a,b)→c functional dependency.
                 let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
-                if let Some(result) = try_dispatch_method(
-                    "Addable",
-                    "+",
-                    type_tags.clone(),
-                    args,
-                    ctx,
-                    call_span.clone(),
-                )
-                .await?
-                {
-                    Ok(result)
-                } else {
-                    Err(EvalError::no_instance("Addable", type_tags, call_span).into())
-                }
+                Err(EvalError::no_instance("Addable", type_tags, call_span).into())
             }
         }
     })
@@ -245,7 +102,7 @@ pub(crate) fn builtin_sub(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
     Box::pin(async move {
         reject_named("-", named.as_ref(), call_span.clone())?;
@@ -276,20 +133,7 @@ pub(crate) fn builtin_sub(
             }
             _ => {
                 let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
-                if let Some(result) = try_dispatch_method(
-                    "Subtractable",
-                    "-",
-                    type_tags.clone(),
-                    args,
-                    ctx,
-                    call_span.clone(),
-                )
-                .await?
-                {
-                    Ok(result)
-                } else {
-                    Err(EvalError::no_instance("Subtractable", type_tags, call_span).into())
-                }
+                Err(EvalError::no_instance("Subtractable", type_tags, call_span).into())
             }
         }
     })
@@ -303,7 +147,7 @@ pub(crate) fn builtin_mul(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
     Box::pin(async move {
         reject_named("*", named.as_ref(), call_span.clone())?;
@@ -334,20 +178,7 @@ pub(crate) fn builtin_mul(
             }
             _ => {
                 let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
-                if let Some(result) = try_dispatch_method(
-                    "Multipliable",
-                    "*",
-                    type_tags.clone(),
-                    args,
-                    ctx,
-                    call_span.clone(),
-                )
-                .await?
-                {
-                    Ok(result)
-                } else {
-                    Err(EvalError::no_instance("Multipliable", type_tags, call_span).into())
-                }
+                Err(EvalError::no_instance("Multipliable", type_tags, call_span).into())
             }
         }
     })
@@ -362,7 +193,7 @@ pub(crate) fn builtin_div_float(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
     Box::pin(async move {
         reject_named("/", named.as_ref(), call_span.clone())?;
@@ -397,20 +228,7 @@ pub(crate) fn builtin_div_float(
             }
             _ => {
                 let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
-                if let Some(result) = try_dispatch_method(
-                    "Divisible",
-                    "/",
-                    type_tags.clone(),
-                    args,
-                    ctx,
-                    call_span.clone(),
-                )
-                .await?
-                {
-                    Ok(result)
-                } else {
-                    Err(EvalError::no_instance("Divisible", type_tags, call_span).into())
-                }
+                Err(EvalError::no_instance("Divisible", type_tags, call_span).into())
             }
         }
     })
@@ -656,41 +474,9 @@ pub(crate) fn builtin_eq(
                 let mut visited = std::collections::HashSet::new();
                 values_eq_impl(&left, &right, &ctx, call_span.clone(), &mut visited)?
             }
-            // For types not handled above (e.g. user-defined opaque wrappers), try dispatching
-            // to an Equatable instance. Equatable uses num_determining=1 (single type param).
-            // If no instance is registered, fall back to `false` (preserving prior behavior).
-            _ => {
-                let type_tags = vec![left.type_name().to_string()];
-                match try_dispatch_method(
-                    "Equatable",
-                    "eq",
-                    type_tags,
-                    args,
-                    Arc::clone(&ctx),
-                    call_span.clone(),
-                )
-                .await?
-                {
-                    Some(result_thunk) => {
-                        // The instance method must return a Bool.
-                        let val = materialize(&result_thunk, Some(&call_span), &ctx)?;
-                        match val {
-                            Value::Bool(b) => b,
-                            _ => {
-                                return Err(EvalError::type_mismatch_ctx(
-                                    "Equatable.eq".to_string(),
-                                    "Bool",
-                                    val.type_name(),
-                                    call_span,
-                                )
-                                .into())
-                            }
-                        }
-                    }
-                    // No Equatable instance: heterogeneous/unknown types are not equal.
-                    None => false,
-                }
-            }
+            // For types not handled above, no Equatable instance is registered —
+            // heterogeneous/unknown types are not equal.
+            _ => false,
         };
         ok_val(Value::Bool(result), call_span)
     })
@@ -708,7 +494,7 @@ pub(crate) fn builtin_lt(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
     } = ctx_arg;
     Box::pin(async move {
         reject_named("<", named.as_ref(), call_span.clone())?;
@@ -753,48 +539,15 @@ pub(crate) fn builtin_lt(
                 check_int_to_float_precision(*b, args[1].span.clone())?;
                 *a < (*b as f64)
             }
-            // For types not handled above, try dispatching to a Comparable instance.
-            // Comparable uses num_determining=1 (single type param: the left operand's type).
-            // If no instance is registered, fall back to a type error (same as before).
+            // For types not handled above, produce a type error.
             _ => {
-                let type_tags = vec![left.type_name().to_string()];
-                // Save arg spans before moving args into try_dispatch_method.
-                let arg0_span = args[0].span.clone();
-                match try_dispatch_method(
-                    "Comparable",
-                    "lt",
-                    type_tags,
-                    args,
-                    Arc::clone(&ctx),
-                    call_span.clone(),
+                return Err(EvalError::type_mismatch_ctx(
+                    "<".to_string(),
+                    "Int, Float, String, or Bool (same or compatible types)",
+                    &format!("{} and {}", left.type_name(), right.type_name()),
+                    args[0].span.clone(),
                 )
-                .await?
-                {
-                    Some(result_thunk) => {
-                        let val = materialize(&result_thunk, Some(&call_span), &ctx)?;
-                        match val {
-                            Value::Bool(b) => b,
-                            _ => {
-                                return Err(EvalError::type_mismatch_ctx(
-                                    "Comparable.lt".to_string(),
-                                    "Bool",
-                                    val.type_name(),
-                                    call_span,
-                                )
-                                .into())
-                            }
-                        }
-                    }
-                    None => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "<".to_string(),
-                            "Int, Float, String, or Bool (same or compatible types)",
-                            &format!("{} and {}", left.type_name(), right.type_name()),
-                            arg0_span,
-                        )
-                        .into());
-                    }
-                }
+                .into());
             }
         };
         ok_val(Value::Bool(result), call_span)
@@ -1626,8 +1379,6 @@ mod tests {
     }
 
     /// Non-numeric types with no Addable instance → NoInstance error.
-    /// With operator-level dispatch, String+String falls through to try_dispatch_method
-    /// which finds no Addable instance (no prelude loaded in test_ctx) → NoInstance.
     #[test]
     fn test_add_non_numeric_no_instance_error() {
         use crate::value::string_val;

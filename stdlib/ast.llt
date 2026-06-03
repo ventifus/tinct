@@ -62,7 +62,6 @@
   # Type classes
   [ClassDecl   name: String  params: [Seq Str]  methods: [Seq Entry]]  # simplified
   [InstanceDecl class-name: String  arms: [Seq Unknown]]  # arms structure opaque
-  [TypeApp     func: Expr  arg: Expr]
   [PatternDecl bindings: [Seq Expr]]
 
   # Special

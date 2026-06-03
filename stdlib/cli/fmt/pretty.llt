@@ -107,7 +107,6 @@ render-inline: [fn@[return: String  doc: """Render a node assuming single-line (
     "Match":          [str "[match " [render-inline [get "scrutinee" node]] [render-match-arms [get "arms" node]] "]"]
     "ClassDecl":      [format-class node]
     "InstanceDecl":   [format-instance node]
-    "TypeApp":        [str "@[" [render-inline [get "func" node]] " " [render-inline [get "arg" node]] "]"]
     "AstError":       "<error>"
     _:                [error [str "unknown node type: " [tag-of node]]]]]
 
@@ -209,7 +208,6 @@ format-node: [fn@[return: String  doc: """Main dispatch: format any AST node wit
     "Match":          [format-match node indent]
     "ClassDecl":      [format-class node]
     "InstanceDecl":   [format-instance node]
-    "TypeApp":        [format-type-app node]
     "AstError":       "<error>"
     _:                [error [str "unknown node type: " [tag-of node]]]]]
 
@@ -444,9 +442,6 @@ format-instance: [fn@[return: String  doc: """Format instance declaration. Emits
       [str " <" [str [length [get "arms" node]]] " arm(s)>"]
       ""]
     "]"]]
-
-format-type-app: [fn@[return: String  doc: """Format type application: @[func arg]"""] [let node]
-  [str "@[" [format-node [get "func" node] 0] " " [format-node [get "arg" node] 0] "]"]]
 
 # ---- Document & File formatters ----
 

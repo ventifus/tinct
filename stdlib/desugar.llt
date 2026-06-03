@@ -179,10 +179,6 @@ desugar-children: [fn [let expr@Expression depth@Int]
         arms: [map [fn [let a] [desugar-match-arm a depth]] as]
         span: s]
 
-    # TypeApp: recurse into both
-    [TypeApp fn: f arg: a span: s]:
-      [TypeApp fn: [desugar-expr-impl f depth] arg: [desugar-expr-impl a depth] span: s]
-
     # Pattern/LetDecl: recurse into bindings
     [PatternDecl bindings: bs span: s]:
       [PatternDecl bindings: [map [fn [let b] [desugar-expr-impl b depth]] bs] span: s]
