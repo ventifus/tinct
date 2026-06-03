@@ -1182,6 +1182,94 @@ pub(crate) fn builtin_str_map_chars(
     })
 }
 
+/// `json-parse`: Parse a JSON string into a tinct Value using serde_json.
+///
+/// Takes 1 arg: `input` (String) — the JSON text to parse.
+/// Returns the parsed value:
+///   - JSON null    → `Value::Dict(IndexMap::new())` (LLT null is `[]`)
+///   - JSON bool    → `Value::Bool`
+///   - JSON integer → `Value::Int`
+///   - JSON float   → `Value::Float`
+///   - JSON string  → `Value::String`
+///   - JSON array   → `Value::Dict` with integer keys `Key::Int(0..n)`
+///   - JSON object  → `Value::Dict` with string keys
+///
+/// Returns a `UserError` on invalid JSON input.
+/// This is the Rust-backed replacement for the pure-tinct O(n²) `json-parse-value`
+/// in `stdlib/codecs/json.llt`, needed for acceptable performance on large payloads.
+pub(crate) fn builtin_json_parse(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val = expect_one_arg("json-parse", &args, named.as_ref(), &ctx, call_span.clone())?;
+        let s = require_string("json-parse", val, args[0].span.clone())?;
+
+        let json_val: serde_json::Value = serde_json::from_str(&s).map_err(|e| {
+            EvalError::user_error(
+                format!("json-parse: invalid JSON: {}", e),
+                call_span.clone(),
+            )
+        })?;
+
+        let converted = serde_to_tinct(json_val, &ctx, &call_span)?;
+        ok_val(converted, call_span)
+    })
+}
+
+/// Recursively convert a `serde_json::Value` into a tinct `Value`.
+///
+/// Arrays become integer-keyed dicts. Objects become string-keyed dicts.
+/// Each dict value is wrapped as a materialized thunk via `ctx.alloc_thunk`.
+/// JSON null becomes an empty dict (LLT's representation of null).
+fn serde_to_tinct(
+    val: serde_json::Value,
+    ctx: &Arc<crate::eval::EvalContext>,
+    span: &crate::ast::Span,
+) -> EvalResult<Value> {
+    match val {
+        serde_json::Value::Null => Ok(Value::Dict(IndexMap::new())),
+        serde_json::Value::Bool(b) => Ok(Value::Bool(b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(Value::Int(i))
+            } else {
+                Ok(Value::Float(n.as_f64().unwrap_or(0.0)))
+            }
+        }
+        serde_json::Value::String(s) => Ok(string_val(&s)),
+        serde_json::Value::Array(arr) => {
+            let mut map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(arr.len());
+            for (i, elem) in arr.into_iter().enumerate() {
+                let elem_val = serde_to_tinct(elem, ctx, span)?;
+                let thunk = Arc::new(Thunk::new_materialized(elem_val, span.clone()));
+                let key = Key::Int(i64::try_from(i).map_err(|_| {
+                    EvalError::resource_limit_exceeded(
+                        "json-parse: array index exceeds i64::MAX".to_string(),
+                        span.clone(),
+                    )
+                })?);
+                map.insert(key, ctx.alloc_thunk(thunk));
+            }
+            Ok(Value::Dict(map))
+        }
+        serde_json::Value::Object(obj) => {
+            let mut map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(obj.len());
+            for (k, v) in obj {
+                let v_val = serde_to_tinct(v, ctx, span)?;
+                let thunk = Arc::new(Thunk::new_materialized(v_val, span.clone()));
+                map.insert(Key::String(Rc::from(k.as_str())), ctx.alloc_thunk(thunk));
+            }
+            Ok(Value::Dict(map))
+        }
+    }
+}
+
 /// `regex-match?`: Test if a regex pattern matches anywhere in a haystack string.
 ///
 /// Takes 2 args: `pattern` (String), `haystack` (String).

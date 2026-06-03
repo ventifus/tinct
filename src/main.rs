@@ -329,6 +329,12 @@ struct BlockOutput {
 }
 
 fn main() {
+    // Install ring as the process-level TLS crypto provider.
+    // Both ring and aws-lc-rs are compiled in (via quinn+reqwest feature flags);
+    // rustls panics at runtime if the process default is ambiguous.
+    // quinn already requires ring, so ring is the consistent choice.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let cli = Cli::parse();
 
     // Apply resource limits globally (before subcommand dispatch).

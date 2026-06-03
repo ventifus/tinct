@@ -37,10 +37,11 @@ use crate::builtins_dict::{
 };
 // String implementations.
 use crate::builtins_string::{
-    builtin_bytes_str, builtin_char_code, builtin_chr, builtin_regex_match, builtin_replace,
-    builtin_split, builtin_str, builtin_str_bytes, builtin_str_chars, builtin_str_index_of,
-    builtin_str_length, builtin_str_map_chars, builtin_str_slice, builtin_str_to_lower_char,
-    builtin_str_to_upper_char, builtin_trim, builtin_trim_end, builtin_trim_start,
+    builtin_bytes_str, builtin_char_code, builtin_chr, builtin_json_parse, builtin_regex_match,
+    builtin_replace, builtin_split, builtin_str, builtin_str_bytes, builtin_str_chars,
+    builtin_str_index_of, builtin_str_length, builtin_str_map_chars, builtin_str_slice,
+    builtin_str_to_lower_char, builtin_str_to_upper_char, builtin_trim, builtin_trim_end,
+    builtin_trim_start,
 };
 // Bytes implementations.
 use crate::builtins_bytes::{
@@ -352,6 +353,12 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             builtin_regex_match,
             [Strictness::Seq, Strictness::Seq],
             2
+        ),
+        builtin!(
+            "builtin-json-parse",
+            builtin_json_parse,
+            [Strictness::Seq],
+            1
         ),
         // ── Bytes ────────────────────────────────────────────────────────────────────
         builtin!("bytes", builtin_bytes, []),
@@ -1484,6 +1491,15 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::Str), (None, Type::Str)],
             ret: Box::new(Type::Bool),
+            variadic: false,
+        },
+    );
+    // builtin-json-parse: String → Top (parsed JSON value, type is dynamic)
+    env.insert(
+        "builtin-json-parse".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Top),
             variadic: false,
         },
     );

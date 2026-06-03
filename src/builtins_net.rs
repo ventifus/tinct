@@ -2254,9 +2254,17 @@ pub(crate) fn builtin_http2_session(
         // "Cannot drop a runtime in a context where blocking is not allowed."
         // The async client piggybacks on the existing outer tokio runtime and is safe to
         // drop from any context.
+
+        // Use reqwest's built-in rustls TLS setup. System CA roots are used by default
+        // (rustls-platform-verifier on Linux loads from the system cert store).
+        // The ring crypto provider is installed as the process default in main() to
+        // resolve the ring/aws-lc-rs ambiguity.
+        // Note: opts dict is accepted but currently unused (reserved for future: mozilla-roots, ca-bundle).
         let client = reqwest::Client::builder()
             .use_rustls_tls()
             .user_agent("tinct/0.1 (https://github.com/anthropics/tinct)")
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| {
                 EvalError::user_error(
@@ -2588,7 +2596,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let method = match reqwest::Method::from_bytes(method_str.as_bytes()) {
         Ok(m) => m,
         Err(e) => {
-            return http_request_err_val(
+            return http_request_result_error(
                 format!("http-request: invalid HTTP method '{}': {}", method_str, e),
                 span,
                 ctx,
@@ -2607,7 +2615,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let response = match builder.send().await {
         Ok(r) => r,
         Err(e) => {
-            return http_request_err_val(format!("http-request: request failed: {}", e), span, ctx);
+            return http_request_result_error(format!("http-request: request failed: {}", e), span, ctx);
         }
     };
 
@@ -2628,7 +2636,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let body_bytes = match response.bytes().await {
         Ok(b) => b,
         Err(e) => {
-            return http_request_err_val(
+            return http_request_result_error(
                 format!("http-request: failed to read response body: {}", e),
                 span,
                 ctx,
@@ -2637,8 +2645,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     };
     let body_string = String::from_utf8_lossy(&body_bytes).into_owned();
 
-    // Build {status: Int, headers: Dict, body: String} — callers use builtin-try for Ok/Err wrapping.
-    // The old {ok: {status, headers, body}} wrapper is not needed since fetch uses builtin-try.
+    // Build inner response dict: {status: Int, headers: Dict, body: String}
     let mut inner = IndexMap::new();
     inner.insert(
         crate::value::Key::String("status".into()),
@@ -2652,7 +2659,13 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
         crate::value::Key::String("body".into()),
         ctx.alloc_thunk(ok_val(string_val(&body_string), span.clone())?),
     );
-    ok_val(Value::Dict(inner), span)
+
+    // Return {ok: {status: Int, headers: Dict, body: String}} — direct Result, no try needed.
+    let resp_id = ctx.alloc_thunk(ok_val(Value::Dict(inner), span.clone())?);
+    ok_val(
+        Value::Variant { tag: "Ok".to_string(), payload: Some(resp_id) },
+        span,
+    )
 }
 
 /// Issue an HTTP/3 request on an existing `h3::client::SendRequest` session.
@@ -2680,7 +2693,7 @@ fn http_request_h3(
     let request = match builder.body(()) {
         Ok(r) => r,
         Err(e) => {
-            return http_request_err_val(
+            return http_request_result_error(
                 format!("http-request: invalid request: {}", e),
                 span,
                 ctx,
@@ -2696,7 +2709,7 @@ fn http_request_h3(
         {
             Ok(s) => s,
             Err(e) => {
-                return http_request_err_val(
+                return http_request_result_error(
                     format!("http-request: send_request failed: {}", e),
                     span,
                     ctx,
@@ -2709,7 +2722,7 @@ fn http_request_h3(
         if let Err(e) =
             crate::async_rt::block_on(stream.send_data(Bytes::from(body_str.into_bytes())))
         {
-            return http_request_err_val(
+            return http_request_result_error(
                 format!("http-request: send_data failed: {}", e),
                 span,
                 ctx,
@@ -2719,14 +2732,14 @@ fn http_request_h3(
 
     // Signal end of request stream (no trailers).
     if let Err(e) = crate::async_rt::block_on(stream.finish()) {
-        return http_request_err_val(format!("http-request: finish failed: {}", e), span, ctx);
+        return http_request_result_error(format!("http-request: finish failed: {}", e), span, ctx);
     }
 
     // Receive response headers.
     let response = match crate::async_rt::block_on(stream.recv_response()) {
         Ok(r) => r,
         Err(e) => {
-            return http_request_err_val(
+            return http_request_result_error(
                 format!("http-request: recv_response failed: {}", e),
                 span,
                 ctx,
@@ -2766,7 +2779,7 @@ fn http_request_h3(
             }
             Ok(None) => break,
             Err(e) => {
-                return http_request_err_val(
+                return http_request_result_error(
                     format!("http-request: recv_data failed: {}", e),
                     span,
                     ctx,
@@ -2792,18 +2805,25 @@ fn http_request_h3(
         ctx.alloc_thunk(ok_val(string_val(&body_string), span.clone())?),
     );
 
-    // Return {status: Int, headers: Dict, body: String} — callers use builtin-try for wrapping.
-    ok_val(Value::Dict(inner), span)
+    // Return {ok: {status: Int, headers: Dict, body: String}} — direct Result, no try needed.
+    let resp_id = ctx.alloc_thunk(ok_val(Value::Dict(inner), span.clone())?);
+    ok_val(
+        Value::Variant { tag: "Ok".to_string(), payload: Some(resp_id) },
+        span,
+    )
 }
 
-/// Raise a user-visible error for http-request failures.
-/// `builtin-try` will catch this and wrap it as Variant(Err, msg).
-fn http_request_err_val(
+/// Return an Error Result value — never raises. User code handles via match/and-then/result-or.
+fn http_request_result_error(
     msg: String,
-    span: crate::ast::Span,
-    _ctx: &crate::eval::EvalContext,
+    span: Span,
+    ctx: &crate::eval::EvalContext,
 ) -> EvalResult<Arc<Thunk>> {
-    Err(EvalError::user_error(msg, span).into())
+    let msg_id = ctx.alloc_thunk(ok_val(string_val(&msg), span.clone())?);
+    ok_val(
+        Value::Variant { tag: "Error".to_string(), payload: Some(msg_id) },
+        span,
+    )
 }
 
 /// `icmp-ping`: Send an ICMP echo request to a host.
@@ -4089,8 +4109,9 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
         },
     );
 
-    // ── http-request: (Http2Session | Http3Session) → String → String → Dict → String → Dict ──
-    // Returns {status: Int, headers: Map[Str Str], body: Str} on success (or error via builtin-try).
+    // ── http-request: (Http2Session | Http3Session) → String → String → Dict → String → Result ──
+    // Returns {ok: {status: Int, headers: Dict, body: Str}} or {err: msg} — direct Result, no try needed.
+    // Returns Top since Result variant is nominal.
     env.insert(
         "http-request".to_string(),
         Type::Function {
@@ -4109,16 +4130,8 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 ), // headers dict (any dict; BAS width subtyping)
                 (None, Type::Str), // body: runtime calls require_string — Bytes not accepted
             ],
-            ret: Box::new(Type::Record(Row {
-                fields: HashMap::from([
-                    ("status".to_string(), Type::Int),
-                    (
-                        "headers".to_string(),
-                        Type::Map(Box::new(Type::Str), Box::new(Type::Str)),
-                    ),
-                    ("body".to_string(), Type::Str),
-                ]),
-            })),
+            // Returns {ok: {status headers body}} or {err: msg} — Top since Result variant is nominal.
+            ret: Box::new(Type::Top),
             variadic: false,
         },
     );

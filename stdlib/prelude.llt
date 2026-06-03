@@ -2766,9 +2766,12 @@ IncludeCacheEntry: [type Missing Pending [Cached Any]]
 # doc:         document AST dict (from load/expand)
 # include-dir: DirCap injected as %include-dir into each doc's env
 #
-# The scope-promotion env merges: string-keyed entries from prev (if dict),
-# plus accumulated named sections, plus %include-dir (always wins — not in
-# state.named so a --- %include-dir section header cannot shadow it).
+# The scope-promotion env merges (lowest to highest priority):
+#   doc.uses module builtins  — e.g. ["net"] injects url, http2-session, etc.
+#   string-keyed entries from prev (if dict)
+#   accumulated named sections
+#   %include-dir (always wins — not in state.named so a --- %include-dir
+#                section header cannot shadow it)
 eval-document-runtime: [fn@[return: Dict  doc: """
 Evaluate one Runtime-stage document, returning updated pipeline state.
 
@@ -2783,7 +2786,8 @@ Returns: updated state {prev: result, named: updated-named-sections}
     doc.expressions
     %:   prev-val
     env: [merge
-           [merge [if [dict? prev-val] prev-val []] state.named]
+           [merge [reduce merge [] [map module doc.uses]]
+                  [merge [if [dict? prev-val] prev-val []] state.named]]
            ["%include-dir": include-dir]]]]
   [prev:  result
    named: [match doc.name

@@ -13,7 +13,7 @@
 #   parse-http-response   — raw response String -> [status: headers: body:]
 #   http-get              — url-based HTTP GET (dispatches on url.scheme)
 #   fetch                 — url + http-get (http) or http2-session (https)
-#
+--- uses: ["net"]
 # Internal helpers — not exported
 [
   # Recursively parse header lines into accumulator dict.
@@ -60,27 +60,36 @@
   #   http  — uses raw TCP connect + HTTP/1.0 request string
   #             returns parsed response dict (throws on network error)
   #   other — throws "unsupported scheme"
+  # http-get: returns {ok: {status headers body}} or {err: msg} in all cases.
+  # HTTPS path: http-request returns Result directly (no try needed).
+  # HTTP path: TCP ops may raise — wrapped in try.
+  # Bad scheme: returns {err: ...}.
   http-get: [fn [let cap@NetCap url@Url]
     [if [= url.scheme "https"]
-      [http-request
-        [http2-session cap [uri-origin url] []]
-        "GET"
-        [str url.path [if [match url.query []: true _: false] "" [str "?" url.query]]]
-        []
-        ""]
+      # Session creation may fail (cert load, cap check) — wrap in try.
+      # http-request returns {ok: resp} or {err: msg} directly; and-then flattens without double-wrapping.
+      [and-then
+        [fn [let session]
+          [http-request session "GET"
+            [str url.path [if [match url.query []: true _: false] "" [str "?" url.query]]]
+            [make-entry "user-agent" "tinct/0.1"]
+            ""]]
+        [try [fn [let] [http2-session cap [uri-origin url] []]]]]
       [if [= url.scheme "http"]
-        [parse-http-response
-          [bytes-str [bytes-concat [collect [chunks
-            [write-handle
-              [connect cap Tcp url.host url.port]
-              [str-bytes [build-http-request "GET" url.path url.host]]]
-            65536]]]]]
-        [raise [str "http-get: unsupported scheme: " url.scheme]]]]]
+        [try [fn [let]
+          [parse-http-response
+            [bytes-str [bytes-concat [collect [chunks
+              [write-handle
+                [connect cap Tcp url.host url.port]
+                [str-bytes [build-http-request "GET" url.path url.host]]]
+              65536]]]]]]]
+        [Error [str "http-get: unsupported scheme: " url.scheme]]]]]
 
   # Parse URL string and call http-get.
-  # Returns Ok(response-dict) on success or Err(message) on failure (via try).
+  # Returns {ok: response-dict} or {err: message} — http-get returns Result directly.
+  # URL parse errors propagate as hard errors (programming errors, not network errors).
   fetch: [fn [let cap@NetCap url-string@String]
-    [try [fn [let] [http-get cap [url url-string]]]]]
+    [http-get cap [url url-string]]]
 
   # Parse query string into a Dict of key-value pairs.
   # Returns empty dict if query is null.

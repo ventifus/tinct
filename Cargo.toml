@@ -25,7 +25,7 @@ codegen-units = 1
 default = ["cli", "repl", "lsp"]
 cli = ["dep:clap"]
 repl = ["dep:rustyline"]
-lsp = ["dep:lsp-server", "dep:lsp-types", "dep:url", "dep:serde_json"]
+lsp = ["dep:lsp-server", "dep:lsp-types", "dep:url"]
 
 [dependencies]
 blake3 = "1"
@@ -52,7 +52,7 @@ sha2 = "0.11"  # SHA-2 hash algorithms (SHA-256, SHA-384, SHA-512) for SPKI pins
 sha3 = "0.11"  # SHA3 hash algorithms for SPKI pins
 rustls-pemfile = "2"  # PEM file parsing for CA bundles and client certificates
 x509-parser = "0.18.1"  # X.509 certificate parsing for tls-peer-cert and SPKI extraction
-reqwest = { version = "0.13", features = ["blocking", "rustls"], default-features = false }  # HTTP client for http-connect/http-get
+reqwest = { version = "0.13", features = ["blocking", "rustls", "http2"], default-features = false }  # HTTP client for http-connect/http-get
 tokio = { version = "1", features = ["full"] }  # Async runtime for QUIC/HTTP3 builtins (via async_rt::block_on)
 tokio-util = "0.7"  # Async utilities (CancellationToken, etc.)
 dashmap = "6"  # Concurrent hashmap for parallel evaluation
@@ -62,10 +62,12 @@ h3-quinn = "0.0.10"  # Quinn QUIC adapter for h3 (0.0.10+ compatible with quinn 
 bytes = "1"  # Byte buffer abstraction (shared dep with quinn/h3; used in Http3Session body type)
 http = "1"  # HTTP types (Request, Response, HeaderMap) used in http-request builtin via h3
 serde = { version = "1.0", features = ["derive"] }
-# serde_json is required by src/lsp/server.rs, which uses serde_json::Value directly
-# (lsp-server's Request.params and Response.result fields are serde_json::Value).
-# It is scoped to the lsp feature so it is not compiled into non-LSP builds.
-serde_json = { version = "1", optional = true }
+# serde_json is used by both src/lsp/server.rs (LSP protocol JSON) and
+# src/builtins_string.rs (builtin-json-parse). It is a non-optional dependency
+# since builtin-json-parse is a core language feature.
+# preserve_order: JSON objects are parsed into IndexMap (preserving key order),
+# matching the behavior of the pure-tinct parser and passing existing corpus tests.
+serde_json = { version = "1", features = ["preserve_order"] }
 strsim = "0.11"
 
 [dev-dependencies]
