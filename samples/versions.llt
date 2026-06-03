@@ -73,15 +73,18 @@ find-locked: [fn@String [let name@String]
     "—"]]
 
 # Fetch the latest stable version for a crate from crates.io — returns "?" on failure.
+# Extracts "max_stable_version" via string splitting to avoid full JSON parsing
+# of the large (~80KB) crates.io response body.
 crate-latest: [fn@String [let name@String]
   [result-or "?"
     [and-then
       [fn [let resp]
         [if [= [length resp.body] 0]
           [Error "empty response"]
-          [Ok [get "max_stable_version"
-                 [get "crate"
-                   [json.from-json resp.body]]]]]]
+          # Extract "max_stable_version":"X.Y.Z" directly — same pattern as latest-rust.
+          [after-key: [get 1 [split "\"max_stable_version\":\"" resp.body]]]
+          [if [= after-key []] [Error "max_stable_version not found"]
+            [Ok [get 0 [split "\"" after-key]]]]]]
       [fetch %nc [str "https://crates.io/api/v1/crates/" name]]]]]
 
 rust-version: [env "RUST_VERSION"]

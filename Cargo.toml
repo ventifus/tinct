@@ -25,7 +25,7 @@ codegen-units = 1
 default = ["cli", "repl", "lsp"]
 cli = ["dep:clap"]
 repl = ["dep:rustyline"]
-lsp = ["dep:lsp-server", "dep:lsp-types", "dep:url"]
+lsp = ["dep:lsp-server", "dep:lsp-types", "dep:url", "dep:serde_json"]
 
 [dependencies]
 blake3 = "1"
@@ -62,12 +62,7 @@ h3-quinn = "0.0.10"  # Quinn QUIC adapter for h3 (0.0.10+ compatible with quinn 
 bytes = "1"  # Byte buffer abstraction (shared dep with quinn/h3; used in Http3Session body type)
 http = "1"  # HTTP types (Request, Response, HeaderMap) used in http-request builtin via h3
 serde = { version = "1.0", features = ["derive"] }
-# serde_json is used by both src/lsp/server.rs (LSP protocol JSON) and
-# src/builtins_string.rs (builtin-json-parse). It is a non-optional dependency
-# since builtin-json-parse is a core language feature.
-# preserve_order: JSON objects are parsed into IndexMap (preserving key order),
-# matching the behavior of the pure-tinct parser and passing existing corpus tests.
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", optional = true }  # JSON serialization for LSP protocol (lsp feature only)
 strsim = "0.11"
 
 [dev-dependencies]

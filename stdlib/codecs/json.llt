@@ -562,11 +562,13 @@ Returns:
 Raises error on invalid JSON syntax.
 
 Note: Handle input is eagerly read into memory before parsing.
-Uses the Rust-backed builtin-json-parse for O(n) performance on large payloads."]:
+Lazy element-by-element streaming is a future optimization."]:
   [fn [let input]
-    [if [str? input]
-      [builtin-json-parse input]
-      # Handle path: read all lines, join with newlines, then parse
-      [builtin-json-parse [join "\n" [collect [lines input]]]]]]
+    [parsed:
+      [if [str? input]
+        [json-parse-value input]
+        # Handle path: read all lines, join with newlines, then parse
+        [json-parse-value [join "\n" [collect [lines input]]]]]]
+    parsed.value]
 
 ]
