@@ -29,8 +29,13 @@ type GuardDefault = (Arc<Spanned<CoreExpr>>, Arc<RwLock<Environment>>);
 pub struct FnAnnotation {
     /// Doc string extracted from function's annotation metadata dict.
     pub doc: Option<String>,
+    /// The full function-level annotation (fn@[...]), if present.
+    /// Stores the return type, constraints, and other metadata entries.
+    pub return_ann: Option<crate::ast::Annotation>,
     /// Source file path where the function was defined (if available).
     pub source_file: Option<String>,
+    /// Span of the `fn` expression itself — always available at eval time.
+    pub source_span: crate::ast::Span,
 }
 
 /// Arguments passed to built-in functions.

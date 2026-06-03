@@ -39,7 +39,9 @@ Work through each topic below sequentially. For each topic:
 - Look for tasks closed with "deferred" or "not needed" justifications without a new tracker item to capture what was deferred — untracked deferrals are lost work (FIX NOW: create the tracker item).
 - Any task that is only partially implemented is a FIX NOW, regardless of how much work the partial implementation represents.
 
-**Tech Debt** (do this second): Scan every changed file for patterns that introduce parallel code paths or bypass the canonical implementation:
+**Tech Debt** (do this second): Scan every changed file for patterns that introduce parallel code paths or bypass the canonical implementation.
+
+**Core mandate:** a change that works around a bug in the general implementation instead of fixing it is itself a bug. The correct fix is always to the general path, even when that requires substantially more work. There is no acceptable "simple fix now, correct fix later" — correctness deferred is correctness denied. If you see a workaround introduced to unblock a sprint, that is a FIX NOW: do the correct fix in this sprint.
 - **Unjustified special-case handling**: `if name == "foo"`, `match` arms that exist only because the general path doesn't handle a specific input correctly, error suppression for one specific caller, type-specific branches that should be handled by the type system. If a special case exists because the general implementation is wrong or incomplete, the fix is to the general implementation — not the special case (FIX NOW).
 - **Fast paths**: ad-hoc pre-checks that shadow the normal flow. Ask: will this fast path and the general path stay in sync as the codebase evolves? If not, it's tech debt (FIX NOW).
 - **Parallel code paths**: two or more functions that do the "same thing" for different call sites. The correct fix is one general implementation, not N callers each with their own version.
@@ -62,6 +64,8 @@ Work through each topic below sequentially. For each topic:
 **Architecture**: For each changed function, identify its layer (parser → AST → evaluator → type checker → builtins → stdlib → CLI). Check layer boundaries, abstraction leaks, coupling.
 
 **Design**: Read relevant `doc/*.md` chapters (docs are aspirational — if code diverges from the spec, the fix is to the code, not the doc). Does implementation match? Are decisions being made implicitly without being recorded?
+- **No deferred correctness**: if the correct implementation requires structural changes, those changes must happen in this sprint. A workaround that produces correct output via an architecturally wrong path is not an acceptable implementation, even if it passes all tests. Challenge any expedient path: is this genuinely the right design, or does it exist because the general case is hard? If the latter, fix the general case.
+- **Challenge every shortcut**: early returns, special-case branches, and parallel implementations are suspicious by default. They must be justified as the architecturally correct approach — not as a temporary measure.
 
 **Maintainability**: Any surprising behavior? Non-obvious side effects? Bad names? Dead code? High cyclomatic complexity? Simplification opportunities?
 

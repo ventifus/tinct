@@ -1,0 +1,9 @@
+# PipelineBlame: pipeline blame shows producer/consumer stage labels.
+42
+--- expects: @String
+%
+=== out
+Int(42)
+
+=== warn
+Pipeline input type 42 does not satisfy expects contract String at 2:15-2:21

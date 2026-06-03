@@ -1182,7 +1182,6 @@ pub(crate) fn builtin_str_map_chars(
     })
 }
 
-
 /// `regex-match?`: Test if a regex pattern matches anywhere in a haystack string.
 ///
 /// Takes 2 args: `pattern` (String), `haystack` (String).

@@ -1789,18 +1789,6 @@ pub(crate) fn infer_surface_expr(
             node.span.clone(),
         )]),
 
-        SurfaceExpression::TypeApp { .. } => {
-            // TypeApp is type-level only — look up the resolved App type from type_map.
-            if let Some(ref map) = type_map {
-                let key = (node.span.start.offset, node.span.end.offset);
-                if let Some(resolved_ty) = map.get(&key) {
-                    return Ok(resolved_ty.clone());
-                }
-            }
-            // Gradual: TypeApp outside annotation context
-            Ok(Type::Unknown)
-        }
-
         SurfaceExpression::PatternDecl { .. } => {
             // PatternDecl should never appear in value positions (only in instance arms)
             Err(vec![TypeError::new(

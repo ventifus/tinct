@@ -614,23 +614,26 @@ pub(crate) fn eval_core_expr<'a>(
 
                 // Extract doc string from annotation if present.
                 // Uses get_property("doc") which works directly on SurfaceEntry via SurfaceExpression::Str keys.
-                let annotation = return_ann.as_ref().and_then(|ann_spanned| {
-                    let doc: Option<String> =
-                        ann_spanned.node.get_property("doc").and_then(|doc_node| {
-                            if let crate::ast::SurfaceExpression::Str(s) = &doc_node.expr {
-                                Some(s.clone())
-                            } else {
-                                None
-                            }
-                        });
-
-                    doc.map(|doc_str| {
-                        Box::new(crate::value::FnAnnotation {
-                            doc: Some(doc_str),
-                            source_file: ctx.config.source_file.clone(),
-                        })
+                let doc: Option<String> = return_ann.as_ref().and_then(|ann_spanned| {
+                    ann_spanned.node.get_property("doc").and_then(|doc_node| {
+                        if let crate::ast::SurfaceExpression::Str(s) = &doc_node.expr {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
                     })
                 });
+                let return_ann_clone: Option<crate::ast::Annotation> =
+                    return_ann.as_ref().map(|a| a.node.clone());
+
+                // Always construct FnAnnotation — source_span is always available even for
+                // unannotated functions, enabling ast-of and LSP go-to-definition.
+                let annotation = Some(Box::new(crate::value::FnAnnotation {
+                    doc,
+                    return_ann: return_ann_clone,
+                    source_file: ctx.config.source_file.clone(),
+                    source_span: span.clone(),
+                }));
 
                 // Store the body directly as Arc<Spanned<CoreExpr>>.
                 // CoreExpr::Fn.body is already Arc<Spanned<CoreExpr>> — no conversion needed.
@@ -753,13 +756,6 @@ pub(crate) fn eval_core_expr<'a>(
             // CaseArm: error (not an expression)
             CoreExpr::CaseArm { .. } => Err(EvalError::internal(
                 "case arms are not expressions".to_string(),
-                span.clone(),
-            )
-            .into()),
-
-            // TypeApp: error (type annotation node)
-            CoreExpr::TypeApp { .. } => Err(EvalError::internal(
-                "TypeApp is a type annotation node and cannot be evaluated".to_string(),
                 span.clone(),
             )
             .into()),

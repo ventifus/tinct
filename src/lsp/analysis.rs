@@ -668,17 +668,6 @@ fn hover_at_surface_node(
             )
         )),
 
-        SurfaceExpression::TypeApp { .. } => Some(format!(
-            "Type application{}",
-            type_suffix(
-                node.span.clone(),
-                type_map,
-                scheme_map,
-                include_graph,
-                doc_url
-            )
-        )),
-
         SurfaceExpression::Error(error_span) => Some(format!(
             "Parse error at {}:{}",
             error_span.start.line, error_span.start.column
@@ -946,10 +935,6 @@ fn name_at_offset(node: &Arc<SurfaceNode>, offset: usize) -> Option<String> {
             name_at_offset(pattern, offset).or_else(|| name_at_offset(body, offset))
         }
 
-        SurfaceExpression::TypeApp { func, arg } => {
-            name_at_offset(func, offset).or_else(|| name_at_offset(arg, offset))
-        }
-
         // Literals, Error, Rest, Annotated, Placeholder, Decl: no VarRef to extract.
         SurfaceExpression::Int(_)
         | SurfaceExpression::Float(_)
@@ -1033,10 +1018,6 @@ fn find_key_definition(node: &Arc<SurfaceNode>, name: &str) -> Option<Span> {
 
         SurfaceExpression::CaseArm { pattern, body } => {
             find_key_definition(pattern, name).or_else(|| find_key_definition(body, name))
-        }
-
-        SurfaceExpression::TypeApp { func, arg } => {
-            find_key_definition(func, name).or_else(|| find_key_definition(arg, name))
         }
 
         // Literals, VarRef, Error, Rest, Annotated, Placeholder, Decl: no definitions here.
@@ -1360,7 +1341,7 @@ fn collect_var_refs_spanned(
             collect_var_refs_spanned(body, name, source, uri, out);
         }
 
-        // Literals, TypeApp, Error, Rest, Annotated, Placeholder, Decl: no VarRef children.
+        // Literals, Error, Rest, Annotated, Placeholder, Decl: no VarRef children.
         SurfaceExpression::Int(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Bool(_)
@@ -1369,7 +1350,6 @@ fn collect_var_refs_spanned(
         | SurfaceExpression::Decl(_)
         | SurfaceExpression::Rest(_)
         | SurfaceExpression::Annotated { .. }
-        | SurfaceExpression::TypeApp { .. }
         | SurfaceExpression::Error(_) => {}
     }
 }
@@ -3198,7 +3178,6 @@ fn collect_rename_edits_spanned(
         | SurfaceExpression::Decl(_)
         | SurfaceExpression::Rest(_)
         | SurfaceExpression::Annotated { .. }
-        | SurfaceExpression::TypeApp { .. }
         | SurfaceExpression::Error(_) => {}
     }
 }

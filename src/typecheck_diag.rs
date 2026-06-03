@@ -120,10 +120,6 @@ pub(crate) fn stq_walk_node_unknown(node: &SurfaceNode, spans: &mut HashSet<(usi
         SurfaceExpression::Quote(e)
         | SurfaceExpression::Unquote(e)
         | SurfaceExpression::UnquoteSplice(e) => stq_walk_node_unknown(e, spans),
-        SurfaceExpression::TypeApp { func, arg } => {
-            stq_walk_node_unknown(func, spans);
-            stq_walk_node_unknown(arg, spans);
-        }
         SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
             for b in bindings {
                 stq_walk_node_unknown(b, spans);
@@ -263,10 +259,6 @@ pub(crate) fn stq_walk_node_overbroad(
         SurfaceExpression::Quote(e)
         | SurfaceExpression::Unquote(e)
         | SurfaceExpression::UnquoteSplice(e) => stq_walk_node_overbroad(e, type_map, diagnostics),
-        SurfaceExpression::TypeApp { func, arg } => {
-            stq_walk_node_overbroad(func, type_map, diagnostics);
-            stq_walk_node_overbroad(arg, type_map, diagnostics);
-        }
         SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
             for b in bindings {
                 stq_walk_node_overbroad(b, type_map, diagnostics);
@@ -403,10 +395,6 @@ pub(crate) fn stq_collect_node_spans(node: &SurfaceNode, map: &mut HashMap<(usiz
         SurfaceExpression::Quote(e)
         | SurfaceExpression::Unquote(e)
         | SurfaceExpression::UnquoteSplice(e) => stq_collect_node_spans(e, map),
-        SurfaceExpression::TypeApp { func, arg } => {
-            stq_collect_node_spans(func, map);
-            stq_collect_node_spans(arg, map);
-        }
         SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
             for b in bindings {
                 stq_collect_node_spans(b, map);
@@ -550,10 +538,6 @@ pub(crate) fn scan_explicit_unknown_t011(
             SurfaceExpression::Quote(e)
             | SurfaceExpression::Unquote(e)
             | SurfaceExpression::UnquoteSplice(e) => emit_t011_for_node(e, diagnostics),
-            SurfaceExpression::TypeApp { func, arg } => {
-                emit_t011_for_node(func, diagnostics);
-                emit_t011_for_node(arg, diagnostics);
-            }
             SurfaceExpression::PatternDecl { bindings }
             | SurfaceExpression::LetDecl { bindings } => {
                 for b in bindings {

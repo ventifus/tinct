@@ -172,6 +172,7 @@ pub enum CoreExpr {
         annotation: Spanned<Annotation>,
         expr: Arc<Spanned<CoreExpr>>,
         resolved_type: Type,  // Type::Unknown for macro-synthesized/error cases
+        pipeline_blame: Option<PipelineBlame>,  // None for user-written [@T expr]; Some only at --- expects: boundaries
     },
     Annotated {
         name: String,
@@ -194,10 +195,6 @@ pub enum CoreExpr {
     CaseArm {
         pattern: Arc<Spanned<CoreExpr>>,
         body: Arc<Spanned<CoreExpr>>,
-    },
-    TypeApp {
-        func: Arc<Spanned<CoreExpr>>,
-        arg: Arc<Spanned<CoreExpr>>,
     },
     Placeholder,
     Error(Span),

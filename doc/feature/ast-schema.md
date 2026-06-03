@@ -219,9 +219,6 @@ Variant("InstanceDecl"  {
     ...
   ]
   span: ...})
-
-# @[Func Arg] — type application
-Variant("TypeApp"  {func: ...node...  arg: ...node...  span: ...})
 ```
 
 `methods` in `ClassDecl` is a plain dict (not a Seq) keyed by method name. `params` in `ClassDecl` is a Seq of string values.

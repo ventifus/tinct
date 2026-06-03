@@ -490,7 +490,7 @@ Decisions made:
 ### Parser (`src/parser.rs`, `src/lexer.rs`) — `hkt-foundation`
 
 - Recognize `Operator` as a reserved kind-level name in annotation positions.
-- Parse `[f a]` (no colons) as `Expr::TypeApp(f, a)` when `f` is an Operator-kinded type variable or user-defined parameterized type alias.
+- Type constructor application `@[f a]` in annotation positions is resolved by `typecheck_annot.rs::resolve_type_dict`. `SurfaceExpression::TypeApp` is not used — it has been removed from the AST.
 - Extend `class` declaration parsing to accept `extends [SuperClass param]` clause.
 
 ### Type System (`src/types.rs`, `src/type_unify.rs`) — `hkt-foundation`

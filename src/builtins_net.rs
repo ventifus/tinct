@@ -2615,7 +2615,11 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let response = match builder.send().await {
         Ok(r) => r,
         Err(e) => {
-            return http_request_result_error(format!("http-request: request failed: {}", e), span, ctx);
+            return http_request_result_error(
+                format!("http-request: request failed: {}", e),
+                span,
+                ctx,
+            );
         }
     };
 
@@ -2663,7 +2667,10 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     // Return {ok: {status: Int, headers: Dict, body: String}} — direct Result, no try needed.
     let resp_id = ctx.alloc_thunk(ok_val(Value::Dict(inner), span.clone())?);
     ok_val(
-        Value::Variant { tag: "Ok".to_string(), payload: Some(resp_id) },
+        Value::Variant {
+            tag: "Ok".to_string(),
+            payload: Some(resp_id),
+        },
         span,
     )
 }
@@ -2808,7 +2815,10 @@ fn http_request_h3(
     // Return {ok: {status: Int, headers: Dict, body: String}} — direct Result, no try needed.
     let resp_id = ctx.alloc_thunk(ok_val(Value::Dict(inner), span.clone())?);
     ok_val(
-        Value::Variant { tag: "Ok".to_string(), payload: Some(resp_id) },
+        Value::Variant {
+            tag: "Ok".to_string(),
+            payload: Some(resp_id),
+        },
         span,
     )
 }
@@ -2821,7 +2831,10 @@ fn http_request_result_error(
 ) -> EvalResult<Arc<Thunk>> {
     let msg_id = ctx.alloc_thunk(ok_val(string_val(&msg), span.clone())?);
     ok_val(
-        Value::Variant { tag: "Error".to_string(), payload: Some(msg_id) },
+        Value::Variant {
+            tag: "Error".to_string(),
+            payload: Some(msg_id),
+        },
         span,
     )
 }

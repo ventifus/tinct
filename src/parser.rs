@@ -6261,11 +6261,6 @@ fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
             stamp_node(body, file);
         }
 
-        SurfaceExpression::TypeApp { func, arg } => {
-            stamp_node(func, file);
-            stamp_node(arg, file);
-        }
-
         SurfaceExpression::Decl(decl) => {
             stamp_decl(decl, file);
         }

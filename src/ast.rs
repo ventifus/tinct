@@ -378,7 +378,6 @@ impl fmt::Display for SurfaceExpression {
             SurfaceExpression::CaseArm { pattern, body } => {
                 write!(f, "[case {} {}]", pattern, body)
             }
-            SurfaceExpression::TypeApp { func, arg } => write!(f, "@[{} {}]", func, arg),
             SurfaceExpression::Decl(decl) => {
                 // Delegate to SurfaceDeclaration Display.
                 write!(f, "{}", decl)
@@ -644,10 +643,6 @@ pub enum SurfaceExpression {
     CaseArm {
         pattern: Arc<SurfaceNode>,
         body: Arc<SurfaceNode>,
-    },
-    TypeApp {
-        func: Arc<SurfaceNode>,
-        arg: Arc<SurfaceNode>,
     },
 
     // Placeholder `...` — evaluates to error when forced
@@ -925,6 +920,10 @@ pub enum CoreExpr {
         annotation: Spanned<Annotation>,
         expr: Arc<Spanned<CoreExpr>>,
         resolved_type: Type,
+        /// Pipeline blame for `--- expects: @Type` contract assertions.
+        /// Set by `wrap_with_nominal_validation` when a document has an `expects:` annotation.
+        /// None for all other TypeAssert sites (user-written `[@Type expr]` annotations).
+        pipeline_blame: Option<crate::error::PipelineBlame>,
     },
     Annotated {
         name: String,
@@ -947,10 +946,6 @@ pub enum CoreExpr {
     CaseArm {
         pattern: Arc<Spanned<CoreExpr>>,
         body: Arc<Spanned<CoreExpr>>,
-    },
-    TypeApp {
-        func: Arc<Spanned<CoreExpr>>,
-        arg: Arc<Spanned<CoreExpr>>,
     },
     /// Type declaration in dict value position (B-296 evaluator-level constructor injection).
     /// Carries only unit constructor names extracted from the TypeAlias body.

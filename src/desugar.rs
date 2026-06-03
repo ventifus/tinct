@@ -647,10 +647,6 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
             desugar_surface(pattern, depth);
             desugar_surface(body, depth);
         }
-        SurfaceExpression::TypeApp { func, arg } => {
-            desugar_surface(func, depth);
-            desugar_surface(arg, depth);
-        }
     }
 }
 

@@ -230,12 +230,14 @@ fn lower_expr(
                         annotation: annotation.clone(),
                         expr: Arc::new(lower(inner, res, types)),
                         resolved_type: Type::Unknown,
+                        pipeline_blame: None,
                     }
                 }
                 Some(ty) => CoreExpr::TypeAssert {
                     annotation: annotation.clone(),
                     expr: Arc::new(lower(inner, res, types)),
                     resolved_type: ty.clone(),
+                    pipeline_blame: None,
                 },
             }
         }
@@ -278,11 +280,6 @@ fn lower_expr(
         SurfaceExpression::CaseArm { pattern, body } => CoreExpr::CaseArm {
             pattern: Arc::new(lower(pattern, res, types)),
             body: Arc::new(lower(body, res, types)),
-        },
-
-        SurfaceExpression::TypeApp { func, arg } => CoreExpr::TypeApp {
-            func: Arc::new(lower(func, res, types)),
-            arg: Arc::new(lower(arg, res, types)),
         },
 
         SurfaceExpression::Placeholder => CoreExpr::Placeholder,
@@ -428,10 +425,6 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
         CoreExpr::CaseArm { pattern, body } => SurfaceExpression::CaseArm {
             pattern: core_expr_to_surface_node(pattern),
             body: core_expr_to_surface_node(body),
-        },
-        CoreExpr::TypeApp { func, arg } => SurfaceExpression::TypeApp {
-            func: core_expr_to_surface_node(func),
-            arg: core_expr_to_surface_node(arg),
         },
         CoreExpr::Error(span) => SurfaceExpression::Error(span.clone()),
         CoreExpr::TypeDecl { .. } => SurfaceExpression::Placeholder,

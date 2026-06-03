@@ -343,7 +343,6 @@ impl<'a> Formatter<'a> {
             | SurfaceExpression::Unquote(_)
             | SurfaceExpression::UnquoteSplice(_)
             | SurfaceExpression::Match { .. }
-            | SurfaceExpression::TypeApp { .. }
             | SurfaceExpression::LetDecl { .. }
             | SurfaceExpression::CaseArm { .. }
             | SurfaceExpression::Error(_) => false,
@@ -611,14 +610,6 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(n);
                 }
             }
-            SurfaceExpression::TypeApp { func, arg } => {
-                // Format as @[func arg]
-                self.output.push_str("@[");
-                self.format_expr(func, false);
-                self.output.push(' ');
-                self.format_expr(arg, false);
-                self.output.push(']');
-            }
             SurfaceExpression::Error(span) => {
                 // Emit original source text verbatim for error nodes
                 let text = &self.source[span.start.offset..span.end.offset];
@@ -874,10 +865,6 @@ impl<'a> Formatter<'a> {
             }
             SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => 3, // ...
             SurfaceExpression::Rest(name) => 3 + name.as_ref().map_or(0, |n| n.len()),
-            SurfaceExpression::TypeApp { func, arg } => {
-                // @[func arg]
-                2 + self.measure_expr_width(func) + 1 + self.measure_expr_width(arg) + 1
-            }
             SurfaceExpression::Error(span) => {
                 // Measure the width of the original source text
                 span.end.offset - span.start.offset
@@ -1424,7 +1411,6 @@ impl<'a> Formatter<'a> {
             | SurfaceExpression::PatternDecl { .. }
             | SurfaceExpression::LetDecl { .. }
             | SurfaceExpression::CaseArm { .. } => Some('['),
-            SurfaceExpression::TypeApp { .. } => Some('@'), // starts with @[
             SurfaceExpression::Annotated { name, .. } => name.chars().next(),
             SurfaceExpression::Placeholder
             | SurfaceExpression::Rest(_)
@@ -2060,7 +2046,7 @@ mod tests {
         assert_eq!(result, "[x: 3.14]\n");
     }
 
-    // --- Match / Pipe / TypeApp expression tests ---
+    // --- Match / Pipe expression tests ---
 
     #[test]
     fn test_format_match_single_arm() {
@@ -2147,27 +2133,5 @@ mod tests {
             formatted, reformatted,
             "multi-module uses: header must be idempotent under repeated formatting"
         );
-    }
-
-    #[test]
-    #[ignore = "TypeApp (@[Maybe Int]) is not yet parseable from raw source; the parser rejects \
-               `@` annotations outside type-assert or param contexts. Re-enable once the parser \
-               supports top-level TypeApp expressions."]
-    fn test_format_typeapp_simple() {
-        // @[func arg] — type application
-        let input = "@[Maybe Int]";
-        let formatted = format_source(input).unwrap();
-        assert_eq!(formatted.trim(), "@[Maybe Int]");
-    }
-
-    #[test]
-    #[ignore = "TypeApp (@[Maybe Int]) is not yet parseable from raw source; the parser rejects \
-               `@` annotations outside type-assert or param contexts. Re-enable once the parser \
-               supports top-level TypeApp expressions."]
-    fn test_format_typeapp_idempotent() {
-        let input = "@[Maybe Int]";
-        let once = format_source(input).unwrap();
-        let twice = format_source(&once).unwrap();
-        assert_eq!(once, twice, "TypeApp formatting must be idempotent");
     }
 }

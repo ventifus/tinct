@@ -638,7 +638,7 @@ Type aliases are resolved at type-check time — they have no runtime cost.
 
 The parser produces `Annotation::PropertyDict` for `@[...]` forms. During type checking, `resolve_type_expr` in `src/typecheck_annot.rs` resolves these by pattern-matching on the constructor name (`Seq`, `Map`, etc.) and creating the corresponding `Type::*` variant (`Type::Seq`, `Type::Map`). This happens after parsing completes, when annotations are resolved to concrete types.
 
-Note: The `SurfaceExpression::TypeApp` AST variant exists for legacy reasons but is never constructed by the parser. Type constructor applications are resolved directly during type checking, not during parsing.
+Note: `SurfaceExpression::TypeApp` has been removed from the AST. Type constructor applications in `@[f a]` annotation positions are resolved directly by `typecheck_annot.rs::resolve_type_dict` to `Type::App`/`Type::Seq`/etc. during type checking, not during parsing.
 
 **Row polymorphism.** `...` marks an open record type; `...name` introduces a named row variable:
 

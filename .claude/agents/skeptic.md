@@ -60,6 +60,7 @@ Would the proposed fix actually work?
 - Would it compile? (Check types, trait bounds, lifetimes, imports)
 - Would it introduce new issues? (Premature materialization, span loss, broken laziness invariant, new panic site)
 - Is it the right fix for the right problem?
+- **Does the fix introduce a special case, fast path, bypass, or workaround?** If the fix papers over a root-cause problem rather than correcting it — a special-case guard, an early-return bypass, a parallel code path — then it is the wrong fix regardless of whether it produces correct output. Mark **PARTIAL** and note that the correct fix must address the root cause. A workaround that passes all tests is still a wrong fix.
 
 ## Verdict Rules
 
@@ -77,7 +78,7 @@ Would the proposed fix actually work?
 - The code doesn't have the described problem
 - The proposed fix is incorrect, incomplete, or would introduce new issues
 
-**PARTIAL** (problem real, fix wrong): The problem exists and passes all policy/existence/location checks, but the proposed fix is incorrect, incomplete, or would introduce new issues. Mark as `PARTIAL` — the orchestrator will use your corrected fix instead of the original.
+**PARTIAL** (problem real, fix wrong): The problem exists and passes all policy/existence/location checks, but the proposed fix is incorrect, incomplete, would introduce new issues, or takes the wrong approach (workaround, special case, bypass instead of root-cause fix). Mark as `PARTIAL` — the orchestrator will use your corrected fix instead of the original. Always provide the correct approach: fix the general path, not the specific symptom.
 
 **No benefit of the doubt: ambiguous = DISPROVEN.**
 

@@ -483,6 +483,19 @@ pub(crate) fn check_call_with_scheme(
                         }
                     }
                 }
+                // B-321: Merge local subst (containing positional arg bindings, including
+                // determining-position bindings for FD constraints) back into state.subst
+                // BEFORE named arg processing. If any named arg value inference triggers
+                // dict inference → generalize_with_doc → is_discharged checks, those checks
+                // must see the determining-position bindings or FD constraints will
+                // spuriously fire T013.
+                for (k, v) in subst.type_map.borrow().iter() {
+                    state
+                        .subst
+                        .type_map
+                        .borrow_mut()
+                        .insert(k.clone(), v.clone());
+                }
                 // Check for duplicate named argument names
                 let mut seen_names: HashSet<&str> = HashSet::new();
                 for na in named_args {
@@ -578,14 +591,13 @@ pub(crate) fn check_call_with_scheme(
                         }
                     }
                 }
-                if let Some(errors) = arg_errors {
-                    return Err(errors);
-                }
                 // Merge local subst back into state.subst so that constraints from this
                 // polymorphic call site are visible to subsequent inference steps. Without
                 // this merge, bindings accumulated during argument unification (e.g., a
                 // TypeVar constrained to Int) are lost for downstream entries in the same
                 // letrec group. This mirrors infer_dict Pass 3d (lines 764-773).
+                // B-321: Merge BEFORE error return so that even if there are type errors,
+                // the bindings are visible to generalization (avoids spurious T013 warnings).
                 for (k, v) in subst.type_map.borrow().iter() {
                     state
                         .subst
@@ -594,6 +606,9 @@ pub(crate) fn check_call_with_scheme(
                         .insert(k.clone(), v.clone());
                 }
                 state.subst.check_size(span).map_err(|e| vec![e])?;
+                if let Some(errors) = arg_errors {
+                    return Err(errors);
+                }
                 // After merging local subst into state.subst, state.subst is a superset of subst.
                 // Applying state.subst directly is sufficient — a prior double-application
                 // (subst.apply then state.subst.apply) was redundant because state.subst already

@@ -37,11 +37,10 @@ use crate::builtins_dict::{
 };
 // String implementations.
 use crate::builtins_string::{
-    builtin_bytes_str, builtin_char_code, builtin_chr, builtin_regex_match,
-    builtin_replace, builtin_split, builtin_str, builtin_str_bytes, builtin_str_chars,
-    builtin_str_index_of, builtin_str_length, builtin_str_map_chars, builtin_str_slice,
-    builtin_str_to_lower_char, builtin_str_to_upper_char, builtin_trim, builtin_trim_end,
-    builtin_trim_start,
+    builtin_bytes_str, builtin_char_code, builtin_chr, builtin_regex_match, builtin_replace,
+    builtin_split, builtin_str, builtin_str_bytes, builtin_str_chars, builtin_str_index_of,
+    builtin_str_length, builtin_str_map_chars, builtin_str_slice, builtin_str_to_lower_char,
+    builtin_str_to_upper_char, builtin_trim, builtin_trim_end, builtin_trim_start,
 };
 // Bytes implementations.
 use crate::builtins_bytes::{

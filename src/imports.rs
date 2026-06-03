@@ -836,10 +836,6 @@ fn collect_include_paths_from_node(
             collect_include_paths_from_node(pattern, paths);
             collect_include_paths_from_node(body, paths);
         }
-        SurfaceExpression::TypeApp { func, arg } => {
-            collect_include_paths_from_node(func, paths);
-            collect_include_paths_from_node(arg, paths);
-        }
         // Literals and other leaf nodes: no recursive traversal needed
         SurfaceExpression::Int(_)
         | SurfaceExpression::Float(_)
@@ -1232,10 +1228,6 @@ fn apply_include_type_to_node(
         SurfaceExpression::CaseArm { pattern, body } => {
             apply_include_type_to_node(pattern, include_bindings, type_map);
             apply_include_type_to_node(body, include_bindings, type_map);
-        }
-        SurfaceExpression::TypeApp { func, arg } => {
-            apply_include_type_to_node(func, include_bindings, type_map);
-            apply_include_type_to_node(arg, include_bindings, type_map);
         }
         // Leaf nodes: no recursive traversal needed
         SurfaceExpression::Int(_)

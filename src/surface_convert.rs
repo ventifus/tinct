@@ -413,15 +413,6 @@ fn dict_to_surface_node_inner(
             SurfaceExpression::Error(error_span)
         }
 
-        // ---- TypeApp ----
-        "type-app" | "TypeApp" => {
-            let func_val = get_dict_field(&dict, "func", &["type"], ctx)?;
-            let func = dict_to_surface_node(&func_val, ctx)?;
-            let arg_val = get_dict_field(&dict, "arg", &["type"], ctx)?;
-            let arg = dict_to_surface_node(&arg_val, ctx)?;
-            SurfaceExpression::TypeApp { func, arg }
-        }
-
         // ---- Match ----
         "match" | "Match" => {
             use crate::ast::SurfaceMatchArm;
@@ -1204,7 +1195,7 @@ fn span_to_thunk_id(span: Span, ctx: &Arc<crate::eval::EvalContext>) -> EvalResu
 }
 
 /// Convert a Vec<ThunkId> to a dict-based list (auto-indexed dict with integer keys).
-fn list_to_thunk_id(
+pub(crate) fn list_to_thunk_id(
     items: impl ExactSizeIterator<Item = ThunkId>,
     span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1552,7 +1543,7 @@ fn pattern_to_thunk_id(
     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
 
-fn annotation_to_thunk_id(
+pub(crate) fn annotation_to_thunk_id(
     ann: &Annotation,
     span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
@@ -2155,7 +2146,6 @@ fn surface_node_to_thunk_id(
         SurfaceExpression::PatternDecl { .. } | SurfaceExpression::LetDecl { .. } => 1,
         SurfaceExpression::CaseArm { .. } => 2,
         SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => 0,
-        SurfaceExpression::TypeApp { .. } => 2,
         SurfaceExpression::Error(_) => 1,
     };
 
@@ -2565,18 +2555,6 @@ fn surface_node_to_thunk_id(
 
         SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => {
             variant_tag = "Placeholder";
-        }
-
-        SurfaceExpression::TypeApp { func, arg } => {
-            variant_tag = "TypeApp";
-            dict.insert(
-                Key::String("func".into()),
-                surface_node_to_thunk_id(func, opts, ctx)?,
-            );
-            dict.insert(
-                Key::String("arg".into()),
-                surface_node_to_thunk_id(arg, opts, ctx)?,
-            );
         }
 
         SurfaceExpression::Error(error_span) => {

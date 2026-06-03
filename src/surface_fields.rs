@@ -51,7 +51,6 @@ pub fn surface_expr_tag(expr: &SurfaceExpression) -> &'static str {
         SurfaceExpression::PatternDecl { .. } => "PatternDecl",
         SurfaceExpression::LetDecl { .. } => "LetDecl",
         SurfaceExpression::CaseArm { .. } => "CaseArm",
-        SurfaceExpression::TypeApp { .. } => "TypeApp",
         SurfaceExpression::Placeholder => "Placeholder",
         SurfaceExpression::Decl(_) => "Placeholder", // Treats embedded decl as Placeholder at runtime
         SurfaceExpression::Error(_) => "Error",
@@ -120,7 +119,6 @@ pub fn surface_expr_field_names(expr: &SurfaceExpression) -> &'static [&'static 
         SurfaceExpression::PatternDecl { .. } => &["bindings", "span"],
         SurfaceExpression::LetDecl { .. } => &["bindings", "span"],
         SurfaceExpression::CaseArm { .. } => &["pattern", "body", "span"],
-        SurfaceExpression::TypeApp { .. } => &["fn", "arg", "span"],
         SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => &["span"],
         SurfaceExpression::Error(_) => &["span"],
     }
@@ -243,10 +241,6 @@ pub fn surface_node_get_field(
             Value::Expression(Arc::clone(pattern))
         }
         (SurfaceExpression::CaseArm { body, .. }, "body") => Value::Expression(Arc::clone(body)),
-
-        // --- TypeApp ---
-        (SurfaceExpression::TypeApp { func, .. }, "fn") => Value::Expression(Arc::clone(func)),
-        (SurfaceExpression::TypeApp { arg, .. }, "arg") => Value::Expression(Arc::clone(arg)),
 
         // Field not applicable to this variant — return null sentinel
         _ => null(),
@@ -810,13 +804,6 @@ mod tests {
                 SurfaceExpression::CaseArm {
                     pattern: node.clone(),
                     body: node.clone(),
-                },
-            ),
-            (
-                "TypeApp",
-                SurfaceExpression::TypeApp {
-                    func: node.clone(),
-                    arg: node.clone(),
                 },
             ),
             ("Placeholder", SurfaceExpression::Placeholder),

@@ -312,10 +312,6 @@ fn collect_dependencies(
             | SurfaceExpression::UnquoteSplice(e) => {
                 worklist.push(e);
             }
-            SurfaceExpression::TypeApp { func, arg } => {
-                worklist.push(func);
-                worklist.push(arg);
-            }
             SurfaceExpression::Decl(_) => {
                 // Type aliases, class/instance/macro declarations have no sibling variable
                 // dependencies in the dict scope — they are fully processed in Pass 0c/Pass 2.

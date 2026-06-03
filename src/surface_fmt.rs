@@ -400,11 +400,6 @@ fn collect_free_vars(
             collect_free_vars(&expr.node, param_scope, stdlib_env, out);
         }
 
-        CoreExpr::TypeApp { func, arg } => {
-            collect_free_vars(&func.node, param_scope, stdlib_env, out);
-            collect_free_vars(&arg.node, param_scope, stdlib_env, out);
-        }
-
         CoreExpr::Match { scrutinee, arms } => {
             collect_free_vars(&scrutinee.node, param_scope, stdlib_env, out);
             for arm in arms {
@@ -538,10 +533,6 @@ fn collect_free_vars_in_quote(
                 }
                 collect_free_vars_in_quote(&arm.body.node, depth, param_scope, stdlib_env, out);
             }
-        }
-        CoreExpr::TypeApp { func, arg } => {
-            collect_free_vars_in_quote(&func.node, depth, param_scope, stdlib_env, out);
-            collect_free_vars_in_quote(&arg.node, depth, param_scope, stdlib_env, out);
         }
         CoreExpr::TypeAssert { expr, .. } => {
             collect_free_vars_in_quote(&expr.node, depth, param_scope, stdlib_env, out);
@@ -859,15 +850,6 @@ fn core_expr_to_tinct(
         // not emitted in SCN (the consumer re-checks types in their own context).
         CoreExpr::TypeAssert { expr, .. } => {
             core_expr_to_tinct(&expr.node, param_scope, substitutions, rename_map, ctx)
-        }
-
-        // TypeApp: `[func arg]` — type-level application, treat as a call
-        CoreExpr::TypeApp { func, arg } => {
-            let func_str =
-                core_expr_to_tinct(&func.node, param_scope, substitutions, rename_map, ctx)?;
-            let arg_str =
-                core_expr_to_tinct(&arg.node, param_scope, substitutions, rename_map, ctx)?;
-            Ok(format!("[{} {}]", func_str, arg_str))
         }
 
         // Match: `[match scrutinee [pattern: body] ...]`
@@ -1189,25 +1171,6 @@ fn core_expr_to_tinct_raw(
             rename_map,
             ctx,
         ),
-        CoreExpr::TypeApp { func, arg } => {
-            let fs = core_expr_to_tinct_in_quote(
-                &func.node,
-                depth,
-                param_scope,
-                substitutions,
-                rename_map,
-                ctx,
-            )?;
-            let as_ = core_expr_to_tinct_in_quote(
-                &arg.node,
-                depth,
-                param_scope,
-                substitutions,
-                rename_map,
-                ctx,
-            )?;
-            Ok(format!("[{} {}]", fs, as_))
-        }
         CoreExpr::Match { scrutinee, arms } => {
             let ss = core_expr_to_tinct_in_quote(
                 &scrutinee.node,
@@ -1382,7 +1345,7 @@ fn serialize_pattern(pattern: &Pattern) -> Result<String, String> {
 /// This is an AST → source text unparser, the inverse of the parser.
 ///
 /// Basic version handling common SurfaceExpression variants. Uncommon variants (Quote, Match,
-/// TypeApp, etc.) return a fallback error.
+/// etc.) return a fallback error.
 pub fn fmt_expression(node: &Arc<crate::ast::SurfaceNode>) -> Result<String, String> {
     use crate::ast::SurfaceExpression;
 
@@ -1547,13 +1510,6 @@ pub fn fmt_expression(node: &Arc<crate::ast::SurfaceNode>) -> Result<String, Str
             let pattern_str = fmt_expression(pattern)?;
             let body_str = fmt_expression(body)?;
             Ok(format!("[{}: {}]", pattern_str, body_str))
-        }
-
-        // TypeApp — @[func arg]
-        SurfaceExpression::TypeApp { func, arg } => {
-            let func_str = fmt_expression(func)?;
-            let arg_str = fmt_expression(arg)?;
-            Ok(format!("@[{} {}]", func_str, arg_str))
         }
 
         // PatternDecl — [pattern bindings...]

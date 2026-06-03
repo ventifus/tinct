@@ -52,12 +52,17 @@ thread_local! {
 ///
 /// Creates a synthetic `CoreExpr::TypeAssert` wrapping a gensym'd `FreeVar` reference.
 /// When evaluated, it performs the same validation as a regular `[@Type expr]` assertion.
+///
+/// `pipeline_blame` is `Some` when the assertion is for a `--- expects: @Type` contract at
+/// a `---` boundary; it identifies the producing stage (positive party) and consuming stage
+/// (negative party). Pass `None` for all other assertion sites.
 pub(crate) fn wrap_with_nominal_validation(
     inner: Arc<Thunk>,
     annotation: &crate::ast::Spanned<crate::ast::Annotation>,
     resolved_type: Option<crate::types::Type>,
     validation_span: Span,
     ctx: &Arc<EvalContext>,
+    pipeline_blame: Option<crate::error::PipelineBlame>,
 ) -> Arc<Thunk> {
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -79,6 +84,7 @@ pub(crate) fn wrap_with_nominal_validation(
                 validation_span.clone(),
             )),
             resolved_type: resolved_type.unwrap_or(crate::types::Type::Unknown),
+            pipeline_blame,
         },
         validation_span.clone(),
     ));
@@ -309,6 +315,10 @@ pub async fn eval_surface_file_with_input(
 ) -> EvalResult<Arc<Thunk>> {
     let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(Arc::clone));
     let mut named: IndexMap<String, Arc<Thunk>> = IndexMap::new();
+    // Track the label of the previous (producing) document for pipeline blame.
+    // Stage-skipped documents are excluded from the index so runtime indices are contiguous.
+    let mut prev_doc_label: String = "initial input".to_string();
+    let mut runtime_doc_idx: usize = 0;
 
     for surface_doc in &program.documents {
         // Skip type-stage documents
@@ -319,15 +329,28 @@ pub async fn eval_surface_file_with_input(
         // Each document gets a fresh scope with % and %name bindings
         let doc_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
 
+        // Derive the consumer label for the current document.
+        let consumer_label = surface_doc
+            .node
+            .name
+            .as_deref()
+            .map(|n| format!("document '{}'", n))
+            .unwrap_or_else(|| format!("document {}", runtime_doc_idx));
+
         // Bind % (pipeline variable), wrapping with validation if expects: is declared
         let percent_thunk = if let Some(ref expects_ann) = surface_doc.node.expects {
             let resolved_type = expects_resolved.get(&expects_ann.span).cloned();
+            let blame = crate::error::PipelineBlame {
+                producer: prev_doc_label.clone(),
+                consumer: Some(consumer_label.clone()),
+            };
             wrap_with_nominal_validation(
                 Arc::clone(&prev_output),
                 expects_ann,
                 resolved_type,
                 surface_doc.span.clone(),
                 ctx,
+                Some(blame),
             )
         } else {
             Arc::clone(&prev_output)
@@ -352,6 +375,8 @@ pub async fn eval_surface_file_with_input(
             named.insert(name.clone(), Arc::clone(&result));
         }
 
+        prev_doc_label = consumer_label;
+        runtime_doc_idx += 1;
         prev_output = result; // lazy: no materialization at boundary
     }
 
@@ -1837,23 +1862,26 @@ fn eval_core_expr<'a>(
 
                 // Extract doc string from annotation if present.
                 // Uses get_property("doc") which works directly on SurfaceEntry via SurfaceExpression::Str keys.
-                let annotation = return_ann.as_ref().and_then(|ann_spanned| {
-                    let doc: Option<String> =
-                        ann_spanned.node.get_property("doc").and_then(|doc_node| {
-                            if let crate::ast::SurfaceExpression::Str(s) = &doc_node.expr {
-                                Some(s.clone())
-                            } else {
-                                None
-                            }
-                        });
-
-                    doc.map(|doc_str| {
-                        Box::new(crate::value::FnAnnotation {
-                            doc: Some(doc_str),
-                            source_file: ctx.config.source_file.clone(),
-                        })
+                let doc: Option<String> = return_ann.as_ref().and_then(|ann_spanned| {
+                    ann_spanned.node.get_property("doc").and_then(|doc_node| {
+                        if let crate::ast::SurfaceExpression::Str(s) = &doc_node.expr {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
                     })
                 });
+                let return_ann_clone: Option<crate::ast::Annotation> =
+                    return_ann.as_ref().map(|a| a.node.clone());
+
+                // Always construct FnAnnotation — source_span is always available even for
+                // unannotated functions, enabling ast-of and LSP go-to-definition.
+                let annotation = Some(Box::new(crate::value::FnAnnotation {
+                    doc,
+                    return_ann: return_ann_clone,
+                    source_file: ctx.config.source_file.clone(),
+                    source_span: span.clone(),
+                }));
 
                 // Store the body directly as Arc<Spanned<CoreExpr>>.
                 // CoreExpr::Fn.body is already Arc<Spanned<CoreExpr>> — no conversion needed.
@@ -1976,13 +2004,6 @@ fn eval_core_expr<'a>(
             // CaseArm: error (not an expression)
             CoreExpr::CaseArm { .. } => Err(EvalError::internal(
                 "case arms are not expressions".to_string(),
-                span.clone(),
-            )
-            .into()),
-
-            // TypeApp: error (type annotation node)
-            CoreExpr::TypeApp { .. } => Err(EvalError::internal(
-                "TypeApp is a type annotation node and cannot be evaluated".to_string(),
                 span.clone(),
             )
             .into()),
@@ -4792,6 +4813,7 @@ mod tests {
                 annotation: sp(Annotation::Simple("Int".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Int,
+                pipeline_blame: None,
             },
             span,
         );
@@ -4816,6 +4838,7 @@ mod tests {
                 annotation: sp(Annotation::Simple("String".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
                 resolved_type: Type::Str,
+                pipeline_blame: None,
             },
             span,
         );
@@ -4864,6 +4887,7 @@ mod tests {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Int,
+                pipeline_blame: None,
             },
             span,
         );
@@ -4913,6 +4937,7 @@ mod tests {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Int,
+                pipeline_blame: None,
             },
             span,
         );
@@ -4938,6 +4963,7 @@ mod tests {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Int,
+                pipeline_blame: None,
             },
             span,
         );
@@ -4971,6 +4997,7 @@ mod tests {
                 annotation: sp(Annotation::PropertyDict(entries_pass)),
                 expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
                 resolved_type: Type::Number,
+                pipeline_blame: None,
             },
             span.clone(),
         );
@@ -4994,6 +5021,7 @@ mod tests {
                 annotation: sp(Annotation::PropertyDict(entries_fail)),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("nope".into()), span.clone())),
                 resolved_type: Type::Number,
+                pipeline_blame: None,
             },
             span,
         );
@@ -5039,6 +5067,7 @@ mod tests {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Int,
+                pipeline_blame: None,
             },
             span,
         );
@@ -6778,6 +6807,7 @@ mod tests {
                 annotation: sp(Annotation::Simple("Int".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
                 resolved_type: Type::Int,
+                pipeline_blame: None,
             },
             span,
         );
@@ -6796,6 +6826,7 @@ mod tests {
                 annotation: sp(Annotation::Simple("Int".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Int,
+                pipeline_blame: None,
             },
             span,
         );
@@ -6817,6 +6848,7 @@ mod tests {
                 annotation: sp(Annotation::Simple("Str".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Str,
+                pipeline_blame: None,
             },
             span,
         );
@@ -6834,6 +6866,7 @@ mod tests {
                 annotation: sp(Annotation::Simple("Any".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("anything".into()), span.clone())),
                 resolved_type: Type::Top,
+                pipeline_blame: None,
             },
             span,
         );
@@ -6851,6 +6884,7 @@ mod tests {
                 annotation: sp(Annotation::Simple("Any".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Int(99), span.clone())),
                 resolved_type: Type::Top,
+                pipeline_blame: None,
             },
             span,
         );
@@ -6906,6 +6940,7 @@ mod tests {
                     span.clone(),
                 )),
                 resolved_type: record_type,
+                pipeline_blame: None,
             },
             span,
         );
@@ -6952,6 +6987,7 @@ mod tests {
                     span.clone(),
                 )),
                 resolved_type: record_type,
+                pipeline_blame: None,
             },
             span,
         );
@@ -7003,6 +7039,7 @@ mod tests {
                     span.clone(),
                 )),
                 resolved_type: record_type,
+                pipeline_blame: None,
             },
             span,
         );
@@ -7047,6 +7084,7 @@ mod tests {
                     span.clone(),
                 )),
                 resolved_type: record_type,
+                pipeline_blame: None,
             },
             span,
         );
@@ -7076,6 +7114,7 @@ mod tests {
                 annotation: sp(Annotation::Simple("Record".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
                 resolved_type: record_type,
+                pipeline_blame: None,
             },
             span,
         );
@@ -7127,6 +7166,7 @@ mod tests {
                     span.clone(),
                 )),
                 resolved_type: Type::Int,
+                pipeline_blame: None,
             },
             span,
         );
@@ -7286,6 +7326,7 @@ mod tests {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
                 resolved_type: record_type,
+                pipeline_blame: None,
             },
             span,
         );

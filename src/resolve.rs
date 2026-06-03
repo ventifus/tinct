@@ -213,11 +213,6 @@ impl SurfaceResolver {
                 self.walk_surface_annotation(annotation);
             }
 
-            SurfaceExpression::TypeApp { func, arg } => {
-                self.walk_surface_node(func);
-                self.walk_surface_node(arg);
-            }
-
             // Terminals with no child expressions
             SurfaceExpression::Int(_)
             | SurfaceExpression::Float(_)

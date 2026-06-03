@@ -67,21 +67,21 @@ pub struct BlameLabel {
 /// Identifies the producing stage (positive party) and consuming stage (negative party)
 /// per Findler & Felleisen (2002) contract blame semantics.
 ///
-/// KNOWN ISSUE (BT4): PipelineBlame is defined but never instantiated. When a document
-/// has a %@Type annotation (expects: field in SurfaceDocument), the pipeline should
-/// construct PipelineBlame { producer: prev_stage_label, consumer: current_stage_label }
-/// and thread it through the validation path. This requires:
-/// 1. Tracking stage labels (document names or indices) during pipeline evaluation
-/// 2. Passing PipelineBlame to wrap_with_nominal_validation in eval.rs
-/// 3. Threading it through TypeAssert → GuardedValidate → validate_and_wrap_record
-/// 4. Enriching type assertion errors with pipeline blame context
+/// Constructed by `eval_surface_file_with_input` (eval.rs) when a document has an
+/// `expects:` annotation (`--- expects: @Type`). The blame is carried through
+/// `CoreExpr::TypeAssert::pipeline_blame` → `TypeAssertCheckData::pipeline_blame` →
+/// `Cont::TypeAssertCheck` error paths → `EvalError::with_pipeline_blame`.
+///
+/// Stage labels use document names when available (`--- %name`), falling back to
+/// `"document N"` for unnamed runtime documents (stage-skipped docs excluded).
+/// The initial `%` input (before any document) is labelled `"initial input"`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipelineBlame {
     /// The producing stage label (positive party — blamed for wrong output shape).
-    /// E.g., "data.llt" or "stage 0".
+    /// E.g., "document 'data'" or "document 0".
     pub producer: String,
     /// The consuming stage label (negative party — blamed for wrong contract).
-    /// E.g., "transform.llt" or "stage 1".
+    /// E.g., "document 'transform'" or "document 1".
     pub consumer: Option<String>,
 }
 

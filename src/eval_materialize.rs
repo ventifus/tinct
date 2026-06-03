@@ -313,6 +313,10 @@ pub(crate) struct TypeAssertCheckData {
     pub(crate) thunk_span: Span,
     pub(crate) env: Arc<RwLock<Environment>>,
     pub(crate) ctx: Arc<EvalContext>,
+    /// Pipeline blame for `--- expects: @Type` contract assertions.
+    /// Carried from `CoreExpr::TypeAssert::pipeline_blame` (set by `wrap_with_nominal_validation`).
+    /// None for user-written `[@Type expr]` annotations.
+    pub(crate) pipeline_blame: Option<crate::error::PipelineBlame>,
 }
 
 /// Payload for Cont::BuiltinForceArg. Boxed to keep the Cont enum ≤96 bytes.
@@ -1018,6 +1022,7 @@ pub(crate) async fn force_step(
             annotation,
             expr: inner,
             resolved_type,
+            pipeline_blame,
         } = &lowered.node
         {
             let inner_thunk = match eval_core_expr(inner, &env, &thunk_ctx).await {
@@ -1053,6 +1058,7 @@ pub(crate) async fn force_step(
                 thunk_span: inner_span,
                 env,
                 ctx: Arc::clone(&thunk_ctx),
+                pipeline_blame: pipeline_blame.clone(),
             })));
             return Action::Materialize {
                 thunk: inner_thunk,
@@ -1180,6 +1186,7 @@ pub(crate) async fn force_step(
             annotation,
             expr: inner,
             resolved_type,
+            pipeline_blame,
         } = &core_expr.node
         {
             let inner_thunk = match eval_core_expr(inner, &env, &thunk_ctx).await {
@@ -1219,6 +1226,7 @@ pub(crate) async fn force_step(
                 thunk_span: inner_span,
                 env,
                 ctx: Arc::clone(&thunk_ctx),
+                pipeline_blame: pipeline_blame.clone(),
             })));
             return Action::Materialize {
                 thunk: inner_thunk,
@@ -2777,6 +2785,7 @@ pub(crate) async fn apply_cont(
                 thunk_span,
                 env,
                 ctx,
+                pipeline_blame,
             } = *data;
             let expected = *resolved;
             match result {
@@ -2842,6 +2851,12 @@ pub(crate) async fn apply_cont(
                                             ctx: Arc::clone(&ctx),
                                         }
                                     } else {
+                                        // Attach pipeline blame if this assertion is from a --- expects: boundary.
+                                        let err = if let Some(ref blame) = pipeline_blame {
+                                            Box::new((*err).with_pipeline_blame(blame.clone()))
+                                        } else {
+                                            err
+                                        };
                                         Action::Continue(Err(err))
                                     }
                                 }
@@ -2874,6 +2889,12 @@ pub(crate) async fn apply_cont(
                                         "value produced here",
                                     );
                                 }
+                                // Attach pipeline blame if this assertion is from a --- expects: boundary.
+                                let err = if let Some(ref blame) = pipeline_blame {
+                                    err.with_pipeline_blame(blame.clone())
+                                } else {
+                                    err
+                                };
                                 Action::Continue(Err(err.into()))
                             }
                         }
@@ -2924,6 +2945,12 @@ pub(crate) async fn apply_cont(
                             err =
                                 err.with_secondary_span(thunk_span.clone(), "value produced here");
                         }
+                        // Attach pipeline blame if this assertion is from a --- expects: boundary.
+                        let err: crate::error::EvalError = if let Some(ref blame) = pipeline_blame {
+                            err.with_pipeline_blame(blame.clone())
+                        } else {
+                            err
+                        };
                         Action::Continue(Err(err.into()))
                     }
                 }

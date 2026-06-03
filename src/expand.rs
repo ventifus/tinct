@@ -873,18 +873,6 @@ async fn expand_surface_expr_inner(
             }))
         }
 
-        SurfaceExpression::TypeApp { func, arg } => {
-            let expanded_func = expand_surface_expr(func, env, ctx, stdlib_env).await?;
-            let expanded_arg = expand_surface_expr(arg, env, ctx, stdlib_env).await?;
-            Ok(Arc::new(SurfaceNode {
-                expr: SurfaceExpression::TypeApp {
-                    func: expanded_func,
-                    arg: expanded_arg,
-                },
-                span,
-            }))
-        }
-
         // Leaf nodes — clone the Arc (shared immutable data)
         SurfaceExpression::Int(_)
         | SurfaceExpression::Float(_)
@@ -1639,11 +1627,6 @@ fn pre_scan_surface_expr<'a>(
             SurfaceExpression::CaseArm { pattern, body } => {
                 pre_scan_surface_expr(pattern, env, &ctx, &stdlib_env).await?;
                 pre_scan_surface_expr(body, env, &ctx, &stdlib_env).await
-            }
-
-            SurfaceExpression::TypeApp { func, arg } => {
-                pre_scan_surface_expr(func, env, &ctx, &stdlib_env).await?;
-                pre_scan_surface_expr(arg, env, &ctx, &stdlib_env).await
             }
 
             // Leaf nodes — no children to scan

@@ -969,6 +969,12 @@ pub(crate) fn builtin_ast_of(
             )));
         }
 
+        // Force the thunk if it is in CoreExpr unevaluated state (the only remaining state after
+        // the peek checks above).  This is necessary for Value::Function, which only exists as a
+        // materialized value — there is no way to reconstruct function metadata from the CoreExpr
+        // body without evaluating it.  For already-materialized thunks this is a no-op (cached).
+        materialize(&**thunk, Some(&call_span), &ctx).await?;
+
         // Check for Materialized — construct synthetic SurfaceNode for simple literals
         // For complex values, ast-of should be called on unevaluated expressions, but we
         // provide a fallback for materialized literals to avoid breaking existing code.
@@ -981,6 +987,91 @@ pub(crate) fn builtin_ast_of(
                 })
             };
 
+            // Handle Value::Function — build a metadata dict: {type: "fn", doc: ..., return-ann: ..., params: [...]}
+            if let crate::value::Value::Function {
+                params, annotation, ..
+            } = &val
+            {
+                let mut dict = IndexMap::new();
+
+                // type: "fn"
+                dict.insert(
+                    Key::String("type".into()),
+                    ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                        string_val("fn"),
+                        call_span.clone(),
+                    ))),
+                );
+
+                // doc: string or empty string
+                let doc_str = annotation
+                    .as_ref()
+                    .and_then(|a| a.doc.as_deref())
+                    .unwrap_or("");
+                dict.insert(
+                    Key::String("doc".into()),
+                    ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                        string_val(doc_str),
+                        call_span.clone(),
+                    ))),
+                );
+
+                // return-ann: annotation dict or empty dict (null)
+                let return_ann_tid = match annotation.as_ref().and_then(|a| a.return_ann.as_ref()) {
+                    Some(ann) => crate::surface_convert::annotation_to_thunk_id(
+                        ann,
+                        call_span.clone(),
+                        &ctx,
+                    )?,
+                    None => ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                        Value::Dict(IndexMap::new()),
+                        call_span.clone(),
+                    ))),
+                };
+                dict.insert(Key::String("return-ann".into()), return_ann_tid);
+
+                // params: integer-keyed dict of param entry dicts [{name: "x", annotation: ...}, ...]
+                let param_tids: Vec<crate::arena::ThunkId> = params
+                    .iter()
+                    .map(|p| {
+                        let mut param_dict = IndexMap::new();
+                        param_dict.insert(
+                            Key::String("name".into()),
+                            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                                string_val(&p.name),
+                                call_span.clone(),
+                            ))),
+                        );
+                        if let Some(ann) = &p.annotation {
+                            let ann_tid = crate::surface_convert::annotation_to_thunk_id(
+                                &ann.node,
+                                call_span.clone(),
+                                &ctx,
+                            )?;
+                            param_dict.insert(Key::String("annotation".into()), ann_tid);
+                        }
+                        Ok(
+                            ctx.alloc_thunk(Arc::new(crate::value::Thunk::new_materialized(
+                                Value::Dict(param_dict),
+                                call_span.clone(),
+                            ))),
+                        )
+                    })
+                    .collect::<crate::error::EvalResult<Vec<_>>>()?;
+
+                let params_tid = crate::surface_convert::list_to_thunk_id(
+                    param_tids.into_iter(),
+                    call_span.clone(),
+                    &ctx,
+                )?;
+                dict.insert(Key::String("params".into()), params_tid);
+
+                return Ok(Arc::new(crate::value::Thunk::new_materialized(
+                    Value::Dict(dict),
+                    call_span,
+                )));
+            }
+
             let synthetic_node = match val {
                 crate::value::Value::Int(n) => make_node(SurfaceExpression::Int(n)),
                 crate::value::Value::Float(f) => make_node(SurfaceExpression::Float(f)),
@@ -988,7 +1079,7 @@ pub(crate) fn builtin_ast_of(
                 crate::value::Value::String { source, start, end } => {
                     make_node(SurfaceExpression::Str(source[start..end].to_string()))
                 }
-                // For other materialized values (Function, Builtin, Dict, etc.), we cannot
+                // For other materialized values (Builtin, Dict, etc.), we cannot
                 // reconstruct the original AST, so error out.
                 _ => {
                     return Err(EvalError::type_mismatch(
@@ -1161,7 +1252,6 @@ pub(crate) fn builtin_variant(
                                 | "Pipe"
                                 | "AstError"
                                 | "PatternDecl"
-                                | "TypeApp"
                                 | "CaseArm"
                         );
 
@@ -1920,6 +2010,7 @@ pub(crate) fn builtin_eval(
                                 resolved_type,
                                 call_span.clone(),
                                 &ctx,
+                                None, // no pipeline blame for $eval (not a --- boundary)
                             ))
                         }
                         // Non-TypeAssert expression node in expects: position — not expected,
