@@ -21,10 +21,13 @@
     identity]]]
 
 # 2. Force the return value to drive the lazy evaluation cascade.
-[if [seq? %]
+[_: [if [seq? %]
   [reduce [fn [let _ x]
     [write-handle %stdout [str [call $json.to-json-pretty x] "\n\n"]]] [] %]
-  [write-handle %stdout [str [call $json.to-json-pretty %] "\n\n"]]]
+  [write-handle %stdout [str [call $json.to-json-pretty %] "\n\n"]]]]
 
 # 3. Wait for drain to finish consuming any emits triggered during forcing.
-[await drain]
+[_: [await drain]]
+
+# 4. Flush stdout.
+[flush %stdout]

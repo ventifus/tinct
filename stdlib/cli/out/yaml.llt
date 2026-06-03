@@ -129,10 +129,13 @@ yaml@[doc: "Convert value to YAML 1.2 string"]: [fn@String [let val@Any]
     identity]]]
 
 # 2. Force the return value to drive the lazy evaluation cascade.
-[if [seq? %]
+[_: [if [seq? %]
   [reduce [fn [let _ x]
     [write-handle %stdout [str [yaml x] "\n"]]] [] %]
-  [write-handle %stdout [str [yaml %] "\n"]]]
+  [write-handle %stdout [str [yaml %] "\n"]]]]
 
 # 3. Wait for drain to finish consuming any emits triggered during forcing.
-[await drain]
+[_: [await drain]]
+
+# 4. Flush stdout.
+[flush %stdout]
