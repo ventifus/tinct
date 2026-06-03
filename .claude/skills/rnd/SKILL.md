@@ -309,9 +309,9 @@ Add `**State:** Accepted — YYYY-MM-DD` (use today's date) as the second line o
 What would it take to...?
 ```
 
-#### 6c: Design Review (optional)
+#### 6c: Design Review
 
-For proposals that touch formal semantics, multiple subsystems, or introduce new runtime or type system behavior, dispatch specialist agents to review soundness before writing to `doc/*.md`. Use the same agent panel as Design items (§2e). For simple or already-vetted proposals, skip — whatif docs are advocates, not vetted designs, so complex ones warrant a soundness pass.
+Dispatch specialist agents to review the proposal for soundness before writing to `doc/*.md`. Use the same agent panel as Design items (§2e). This review is unconditional — run it regardless of how simple the proposal seems or whether agents have previously reviewed it. Accepting a whatif is a permanent integration into the spec; a final soundness pass is always warranted.
 
 #### 6d: Integrate into Spec
 

@@ -16,4 +16,4 @@
 Dict({"fact": Function(n), "result": Int(120)})
 
 === warn
-cannot unify Number with _t2 at 9:18-9:43
+cannot unify Int with 1 | _t4 at 7:5-10:6

@@ -2,6 +2,6 @@
 # ast-of is a standard builtin re-exported from the prelude
 [type-of [ast-of str]]
 === error
-[E099] ast-of: thunk in unknown state (defined at 2:10-2:22)
+[E010] type mismatch: expected Expression, got Builtin (defined at 2:10-2:22)
   in [ast-of ...] at 2:10-2:22
   in [type-of ...] at 2:1-2:23

@@ -5,18 +5,18 @@
 
 [call %.parse-toml-lite "# comment\nkey = \"value\"\n# another comment"]
 === error
-[E080] open: failed to open file 'toml-lite.llt': No such file or directory (os error 2) (defined at stdlib/prelude.llt:2896:30-2896:54) (called at stdlib/prelude.llt:2896:3-2896:56)
-  --> stdlib/prelude.llt:2896:30-2896:54
+[E080] open: failed to open file 'toml-lite.llt': No such file or directory (os error 2) (defined at stdlib/prelude.llt:2938:30-2938:54) (called at stdlib/prelude.llt:2938:3-2938:56)
+  --> stdlib/prelude.llt:2938:30-2938:54
    |
-  2896 |   [source: [builtin-read-all [open cap path Readable]]]
+  2938 |   [source: [builtin-read-all [open cap path Readable]]]
        |                              ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [open ...] at stdlib/prelude.llt:2896:30-2896:54
+  in [open ...] at stdlib/prelude.llt:2938:30-2938:54
    |
-  2896 |   [source: [builtin-read-all [open cap path Readable]]]
+  2938 |   [source: [builtin-read-all [open cap path Readable]]]
        |                              ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-read-all ...] at stdlib/prelude.llt:2896:12-2896:55
+  in [builtin-read-all ...] at stdlib/prelude.llt:2938:12-2938:55
    |
-  2896 |   [source: [builtin-read-all [open cap path Readable]]]
+  2938 |   [source: [builtin-read-all [open cap path Readable]]]
        |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in materialized at 5:7-5:24
   in [include ...] at 1:1-1:34

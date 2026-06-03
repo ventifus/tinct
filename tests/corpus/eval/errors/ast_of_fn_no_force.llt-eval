@@ -1,7 +1,5 @@
-# ast-of on fn expression returns Expression without forcing the body
+# ast-of on fn expression returns a Dict without forcing the body (T-923)
 # The error inside the fn should NOT be triggered
 [type-of [ast-of [fn [] [raise "should not run"]]]]
-=== error
-[E099] ast-of: thunk in unknown state (defined at 2:10-2:51)
-  in [ast-of ...] at 2:10-2:51
-  in [type-of ...] at 2:1-2:52
+=== out
+String("Dict")

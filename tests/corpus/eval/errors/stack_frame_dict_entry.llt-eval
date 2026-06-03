@@ -9,4 +9,4 @@
   in [+ ...] at 3:12-3:32
 
 === warn
-cannot unify Number with "not a number" at 3:17-3:31
+no instance for Addable Int String at 3:12-3:32

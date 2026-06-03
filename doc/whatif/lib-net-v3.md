@@ -1,5 +1,7 @@
 # What If: Network Serve and Connect Layers (lib-net-v3)
 
+TODO: make sure we have robust error reporting and handling capabilities. Specific nominal Error types matching TLS errors / DNS errors / etc?
+
 **State:** Draft — 2026-05-21
 
 **Depends on:** [`runtime-v2.md`](runtime-v2.md) ✓ complete — `task`/`await`/`channel`/`recv`/`send`/`select-once`/`loop-select`, `Arc`-based thunks, async Tokio runtime. All async utilities are in `stdlib/prelude.llt` (merged from the now-deleted `stdlib/async.llt`). All concurrency primitives are used here without redefinition. `tcp-connect` is the only Rust primitive here — `tls`, `quic`, `h2`, `h3`, and `connect` are tinct stdlib functions defined in this whatif.

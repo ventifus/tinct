@@ -13,4 +13,4 @@ y
   in [+ ...] at 7:5-7:19
 
 === warn
-cannot unify Number with "string" at 7:10-7:18
+no instance for Addable Int String at 7:5-7:19

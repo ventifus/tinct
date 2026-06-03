@@ -1,13 +1,13 @@
 # Unquote in nested dict entry value: [quote [x: [unquote (+ 1 2)]]] → AST with x: 3
 [= [get "value" [get "value" [get 0 [get "entries" [quote [x: [unquote [+ 1 2]]]]]]]] 3]
 === error
-[E010] builtin-get (key "entries"): expected Dict, got Expression (defined at stdlib/prelude.llt:874:42-874:46) (called at stdlib/prelude.llt:874:25-874:47)
-  --> stdlib/prelude.llt:874:42-874:46
+[E010] builtin-get (key "entries"): expected Dict, got Expression (defined at stdlib/prelude.llt:873:42-873:46) (called at stdlib/prelude.llt:873:25-873:47)
+  --> stdlib/prelude.llt:873:42-873:46
    |
-  874 | """] [let key@k dict@d] [builtin-get key dict]]
+  873 | """] [let key@k dict@d] [builtin-get key dict]]
       |                                          ^^^^
-  in [builtin-get ...] at stdlib/prelude.llt:874:25-874:47
+  in [builtin-get ...] at stdlib/prelude.llt:873:25-873:47
    |
-  874 | """] [let key@k dict@d] [builtin-get key dict]]
+  873 | """] [let key@k dict@d] [builtin-get key dict]]
       |                         ^^^^^^^^^^^^^^^^^^^^^^
   in [= ...] at 1:1-1:89

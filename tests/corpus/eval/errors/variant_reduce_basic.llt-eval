@@ -3,22 +3,22 @@
 # reduce should unpack the Seq and fold over its elements
 [reduce [+ _ _] 0 [variant-payload "Wrapper" [1 2 3 4 5]]]
 === error
-[E020] arity mismatch: expected 1 argument, got 2 (defined at stdlib/prelude.llt:2061:80-2061:106)
-  --> stdlib/prelude.llt:2061:80-2061:106
+[E020] arity mismatch: expected 1 argument, got 2 (defined at stdlib/prelude.llt:2060:80-2060:106)
+  --> stdlib/prelude.llt:2060:80-2060:106
    |
-  2061 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
+  2060 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
        |                                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^
   in reduce at 3:47-3:48
-  in reduce at stdlib/prelude.llt:2061:80-2061:106
+  in reduce at stdlib/prelude.llt:2060:80-2060:106
    |
-  2061 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
+  2060 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
        |                                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in in reduce at stdlib/prelude.llt:2061:80-2061:106
+  in in reduce at stdlib/prelude.llt:2060:80-2060:106
    |
-  2061 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
+  2060 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
        |                                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-reduce ...] at stdlib/prelude.llt:2061:80-2061:106
+  in [builtin-reduce ...] at stdlib/prelude.llt:2060:80-2060:106
    |
-  2061 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
+  2060 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
        |                                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [reduce ...] at 3:1-3:59

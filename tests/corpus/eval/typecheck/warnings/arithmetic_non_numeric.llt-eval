@@ -6,4 +6,4 @@
 Dict({"f": Function(x)})
 
 === warn
-cannot unify Number with String at 3:27-3:28
+no instance for Addable String Int at 3:24-3:31

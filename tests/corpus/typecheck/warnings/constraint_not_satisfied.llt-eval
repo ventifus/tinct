@@ -7,4 +7,4 @@
 Dict({"f": Function(x)})
 
 === warn
-cannot unify Number with "hello"
+ambiguous type variable

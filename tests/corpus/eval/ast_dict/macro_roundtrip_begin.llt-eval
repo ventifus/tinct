@@ -6,6 +6,3 @@
 [begin [+ 1 2] [* 3 4]]
 === out
 Int(12)
-
-=== warn
-sequential expression requires intermediate expressions to be dicts, got Number at 5:8-5:15

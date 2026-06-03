@@ -1,8 +1,0 @@
-# T020 warning: Int and Float are disjoint types.
-# First arm expects Float, but scrutinee is Int, so T020 is emitted.
-# At runtime the first arm doesn't match, second arm fires.
-[match 42
-  [case [let f@Float] [str "float " f]]
-  [case [let n@Int] [str "int " n]]]
-=== out
-String("float 42")

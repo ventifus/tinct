@@ -2,6 +2,3 @@
 [begin 1 2 3]
 === out
 Int(3)
-
-=== warn
-sequential expression requires intermediate expressions to be dicts, got 1 at 1:8-1:9

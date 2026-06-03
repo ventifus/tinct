@@ -4,18 +4,18 @@
 [has-cap? [open %cwd "Cargo.toml" Readable] "Readable"]
 
 === error
-[E002] undefined variable: cap-data (did you mean the string "cap-data"? Use quotes.) (defined at 60:16-60:24) (called at stdlib/prelude.llt:1447:75-1447:76)
-  in materialized at stdlib/prelude.llt:1447:68-1447:102
+[E002] undefined variable: cap-data (did you mean the string "cap-data"? Use quotes.) (defined at 60:16-60:24) (called at stdlib/prelude.llt:1446:75-1446:76)
+  in materialized at stdlib/prelude.llt:1446:68-1446:102
    |
-  1447 | null?@[doc: "Check if value is null (empty dict [])"]: [fn [let x] [match x []:       true  _: false]]
+  1446 | null?@[doc: "Check if value is null (empty dict [])"]: [fn [let x] [match x []:       true  _: false]]
        |                                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:635:14-635:39
+  in materialized at stdlib/prelude.llt:634:14-634:39
    |
-  635 | """] [let x] [builtin-if x false true]]
+  634 | """] [let x] [builtin-if x false true]]
       |              ^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:635:14-635:39
+  in [builtin-if ...] at stdlib/prelude.llt:634:14-634:39
    |
-  635 | """] [let x] [builtin-if x false true]]
+  634 | """] [let x] [builtin-if x false true]]
       |              ^^^^^^^^^^^^^^^^^^^^^^^^^
   in [has-cap? ...] at 3:1-3:56
 

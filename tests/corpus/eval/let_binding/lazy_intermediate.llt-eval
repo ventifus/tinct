@@ -3,14 +3,14 @@
 [test: [fn [let x] [unused: [raise "dead binding"]] [+ x 1]]]
 [test 41]
 === error
-[E080] dead binding (defined at stdlib/prelude.llt:2052:28-2052:47)
-  --> stdlib/prelude.llt:2052:28-2052:47
+[E080] dead binding (defined at stdlib/prelude.llt:2051:28-2051:47)
+  --> stdlib/prelude.llt:2051:28-2051:47
    |
-  2052 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2051 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2052:28-2052:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2051:28-2051:47
    |
-  2052 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2051 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in materialized at 2:20-2:52
   in [test ...] at 3:1-3:10

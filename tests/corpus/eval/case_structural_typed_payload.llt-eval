@@ -8,4 +8,5 @@
 Int(100)
 
 === warn
-cannot unify Number with _t2 at 3:27-3:28
+unreachable match arm: this pattern is already covered by prior arms at 4:3-4:27
+unreachable match arm: this pattern is already covered by prior arms at 5:3-5:26

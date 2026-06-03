@@ -1,7 +1,5 @@
 # ast-of on literal expression returns Expression value
 # ast-of is a standard builtin re-exported from the prelude
 [type-of [ast-of 42]]
-=== error
-[E099] ast-of: thunk in unknown state (defined at 2:10-2:21)
-  in [ast-of ...] at 2:10-2:21
-  in [type-of ...] at 2:1-2:22
+=== out
+String("Expression")

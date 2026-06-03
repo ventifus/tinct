@@ -1,13 +1,13 @@
 # tail: error on non-Seq
 [tail 42]
 === error
-[E010] tail: expected Seq, got Int (defined at stdlib/prelude.llt:2443:15-2443:32)
-  --> stdlib/prelude.llt:2443:15-2443:32
+[E010] tail: expected Seq, got Int (defined at stdlib/prelude.llt:2485:15-2485:32)
+  --> stdlib/prelude.llt:2485:15-2485:32
    |
-  2443 | """] [let xs] [builtin-tail xs]]
+  2485 | """] [let xs] [builtin-tail xs]]
        |               ^^^^^^^^^^^^^^^^^
-  in [builtin-tail ...] at stdlib/prelude.llt:2443:15-2443:32
+  in [builtin-tail ...] at stdlib/prelude.llt:2485:15-2485:32
    |
-  2443 | """] [let xs] [builtin-tail xs]]
+  2485 | """] [let xs] [builtin-tail xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [tail ...] at 1:1-1:10

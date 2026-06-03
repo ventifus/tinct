@@ -2,6 +2,8 @@
 
 **State:** Proposal — 2026-05-22
 
+TODO: evaluate if we can use phantom types for this
+
 **Depends on:** [`lib-net-v3.md`](lib-net-v3.md) — network boundaries are the primary taint introduction points; the `LabeledBytes t` and `ByteLabel` typeclass designs motivate this proposal.
 
 ---

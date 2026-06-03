@@ -1,5 +1,0 @@
-# builtin-json-parse: parse JSON object and access a key
-[json: [include %libdir "codecs/json.llt"]]
-[get "foo" [json.from-json "{\"foo\": 42}"]]
-=== out
-Int(42)

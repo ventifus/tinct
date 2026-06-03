@@ -9,4 +9,4 @@
 Dict({"f": Function(x)})
 
 === warn
-cannot unify Number with "hello"
+no instance for Addable Int String

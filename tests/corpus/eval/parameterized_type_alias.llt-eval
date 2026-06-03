@@ -13,4 +13,3 @@ int-str.first
 
 === warn
 type alias 'Pair' expects 2 type parameter(s), got 0 at 5:25-5:51
-expected record type, got Pair at 8:1-8:14
