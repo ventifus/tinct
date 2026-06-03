@@ -2271,20 +2271,13 @@ as %name bindings available to subsequent documents via scope injection.
       [val: [eval doc.expressions
                scope:   [merge
                            [emit: emit-fn  %emit-channel: emit-ch]
-                           [merge
-                             state.named
-                             [reduce merge []
-                               [map module doc.uses]]]]
+                           [merge state.named [uses-scope doc]]]
                program: prog
                expects: doc.expects
                %: state.percent]]
       [merge state
         [percent: val
-         named: [match doc.name
-                  [case [let n: Named]
-                    [merge state.named [make-entry [str "%" n] val]]]
-                  [case [let _: Unnamed]
-                    state.named]]]]]
+         named: [update-named state val doc]]]]
     [percent: initial-input  named: []]
     prog.documents]]
   state.percent]
@@ -2786,15 +2779,11 @@ Returns: updated state {prev: result, named: updated-named-sections}
     doc.expressions
     %:   prev-val
     env: [merge
-           [merge [reduce merge [] [map module doc.uses]]
+           [merge [uses-scope doc]
                   [merge [if [dict? prev-val] prev-val []] state.named]]
            ["%include-dir": include-dir]]]]
   [prev:  result
-   named: [match doc.name
-            [case [let n: Named]
-              [merge state.named [make-entry [str "%" n] result]]]
-            [case [let _: Unnamed]
-              state.named]]]]
+   named: [update-named state result doc]]]
 
 # eval-document-pipeline: thread % through all documents in a file AST dict.
 #

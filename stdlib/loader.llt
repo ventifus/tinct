@@ -36,6 +36,23 @@
 ]
 
 [
+  # Compute module builtins from --- uses: ["net", "core"] header.
+  # Returns a flat merged dict of all builtins from the listed modules.
+  # This is the single source of truth shared by both eval-program (bootstrap)
+  # and eval-document-runtime (include path) — changes here affect both.
+  uses-scope: [fn [let doc]
+    [builtin-reduce builtin-merge []
+      [builtin-map builtin-module doc.uses]]]
+
+  # Accumulate named sections from --- %name document headers.
+  # Returns the updated named dict (or unchanged state.named if doc.name is Unnamed).
+  update-named: [fn [let state val doc]
+    [match doc.name
+      [case [let n: Named]
+        [builtin-merge state.named [make-entry [builtin-str "%" n] val]]]
+      [case [let _: Unnamed]
+        state.named]]]
+
   # Evaluate a single program's documents, threading % through them.
   # State carries:
   #   percent — current % pipeline value
@@ -53,20 +70,13 @@
         [val: [builtin-eval doc.expressions
                  scope:   [builtin-merge
                              [emit: emit-fn  %emit-channel: emit-ch]
-                             [builtin-merge
-                               state.named
-                               [builtin-reduce builtin-merge []
-                                 [builtin-map builtin-module doc.uses]]]]
+                             [builtin-merge state.named [uses-scope doc]]]
                  program: prog
                  expects: doc.expects
                  %: state.percent]]
         [builtin-merge state
           [percent: val
-           named: [match doc.name
-                    [case [let n: Named]
-                      [builtin-merge state.named [make-entry [builtin-str "%" [@String n]] val]]]
-                    [case [let _: Unnamed]
-                      state.named]]]]]
+           named: [update-named state val doc]]]]
       [percent: initial-input  named: []]
       prog.documents]]
     state.percent]

@@ -81,10 +81,10 @@ crate-latest: [fn@String [let name@String]
       [fn [let resp]
         [if [= [length resp.body] 0]
           [Error "empty response"]
-          # Extract "max_stable_version":"X.Y.Z" directly — same pattern as latest-rust.
-          [after-key: [get 1 [split "\"max_stable_version\":\"" resp.body]]]
-          [if [= after-key []] [Error "max_stable_version not found"]
-            [Ok [get 0 [split "\"" after-key]]]]]]
+          # Extract "max_stable_version":"X.Y.Z" via string splitting — avoids full JSON parse.
+          [if [= [length [split "\"max_stable_version\":\"" resp.body]] 1]
+            [Error "max_stable_version not found"]
+            [Ok [get 0 [split "\"" [get 1 [split "\"max_stable_version\":\"" resp.body]]]]]]]]
       [fetch %nc [str "https://crates.io/api/v1/crates/" name]]]]]
 
 rust-version: [env "RUST_VERSION"]
