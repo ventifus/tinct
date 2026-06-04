@@ -152,6 +152,7 @@ pub(crate) fn check_open(
                     format!("__cap_flag_{}", canonical),
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 );
             }
@@ -176,12 +177,15 @@ pub(crate) fn check_open(
     // specific capabilities without being certain that all capabilities are accounted for.
     // The gradual Handle(Unknown) is conservative and correct: it accepts any Handle consumer.
     let cap_type = if all_flags_known && !cap_fields.is_empty() {
-        Type::Record(Row { fields: cap_fields })
+        Type::Record(Row {
+            fields: cap_fields,
+            tail: crate::type_def::RowTail::Empty,
+        })
     } else {
         Type::Unknown
     };
 
-    Ok(Type::Handle(Box::new(cap_type)))
+    Ok(Type::handle(cap_type))
 }
 
 /// Type check `connect` — precise return type based on transport variant.
@@ -230,18 +234,21 @@ pub(crate) fn check_connect(
                     "__cap_flag_readable".to_string(),
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
                 (
                     "__cap_flag_writable".to_string(),
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
             ]);
-            Ok(Type::Handle(Box::new(Type::Record(Row {
+            Ok(Type::handle(Type::Record(Row {
                 fields: cap_fields,
-            }))))
+                tail: crate::type_def::RowTail::Empty,
+            })))
         }
         Some("Udp") | Some("UnixDatagram") => {
             // Datagram transports → DatagramHandle
@@ -254,17 +261,22 @@ pub(crate) fn check_connect(
                     "__cap_flag_readable".to_string(),
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
                 (
                     "__cap_flag_writable".to_string(),
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
             ]);
             Ok(Type::normalize_union(vec![
-                Type::Handle(Box::new(Type::Record(Row { fields: cap_fields }))),
+                Type::handle(Type::Record(Row {
+                    fields: cap_fields,
+                    tail: crate::type_def::RowTail::Empty,
+                })),
                 Type::DatagramHandle,
             ]))
         }
@@ -305,11 +317,11 @@ pub(crate) fn check_map(
 
     // Synthesize return type based on collection and callback
     match (&coll_ty, &callback_ty) {
-        (Type::Seq(_elem_ty), Type::Function { ret, .. }) => {
+        (coll, Type::Function { ret, .. }) if coll.as_seq().is_some() => {
             // Seq(A) with callback → Seq(B) where B is the callback's return type
-            Ok(Type::Seq(ret.clone()))
+            Ok(Type::seq(*ret.clone()))
         }
-        (Type::Seq(_), _) => {
+        (coll, _) if coll.as_seq().is_some() => {
             // Seq input but callback is not a function (could be Unknown, TypeVar, etc.)
             // Fall back to Unknown
             Ok(Type::Unknown)
@@ -354,19 +366,19 @@ pub(crate) fn check_tls_layer(
     infer_surface_expr(&args[2], env, state, type_map)?; // opts
 
     // Preserve the handle's capability row
-    match &handle_ty {
-        Type::Handle(cap_row) => {
+    match handle_ty.as_handle() {
+        Some(cap_row) => {
             // Return Handle with the same capability row
-            Ok(Type::Handle(cap_row.clone()))
+            Ok(Type::handle(cap_row.clone()))
         }
-        Type::Unknown => {
+        None if matches!(&handle_ty, Type::Unknown) => {
             // Unknown handle → fall back to Handle(Unknown)
-            Ok(Type::Handle(Box::new(Type::Unknown)))
+            Ok(Type::handle(Type::Unknown))
         }
-        other => {
+        None => {
             // Non-handle argument is a type error
             Err(vec![TypeError::new(
-                format!("tls-layer requires a Handle argument, got {}", other),
+                format!("tls-layer requires a Handle argument, got {}", handle_ty),
                 span,
             )])
         }
@@ -701,8 +713,6 @@ pub(crate) fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<
             }
             resolved
         }
-        // Seq — could be seq monad, but no dict var exists yet
-        // Type::Seq(_) => Some("seq-monad".to_string()),
         _ => None,
     }
 }

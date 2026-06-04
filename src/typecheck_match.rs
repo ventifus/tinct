@@ -384,7 +384,7 @@ pub(crate) fn infer_fn(
             // Variadic params collect extra positional args into a Seq(T) where T is inferred.
             // Runtime still uses Dict with int keys (gradual typing allows this mismatch).
             let elem_ty = state.fresh_type_var();
-            let variadic_ty = Type::Seq(Box::new(elem_ty));
+            let variadic_ty = Type::seq(elem_ty);
             // Update param_types[i] to match the env binding so the function signature is accurate.
             param_types[i].1 = variadic_ty.clone();
             fn_env.insert(param.node.name.clone(), variadic_ty);

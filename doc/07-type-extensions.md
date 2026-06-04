@@ -65,7 +65,7 @@ See `doc/feature/boolean-algebraic-subtyping.md` (canonical post-implementation 
 
 ## Column Constraints — `RowTail::Uniform`
 
-> **Design target**: This section describes the target state after the row-extensions sprint. The current `Row` struct in `src/type_def.rs` has only `fields: HashMap<String, Type>` with no `tail` field. `RowTail::Uniform` does not yet exist in the codebase.
+> **Implemented in S-842**: `RowTail` enum and `Row.tail` field are now in `src/type_def.rs`. `UNIFY-UNIFORM` is implemented in `type_unify.rs`. The annotation parser for `{_ : V}` and `{_@K : V}` syntax is deferred to S-843/S-844.
 
 `RowTail::Uniform` is a deterministic constraint on the tail of a row — not a row variable. It expresses "whatever fields are present, their values have type V." This is distinct from BAS row variables (eliminated); `RowTail::Uniform` is a finite conjunction of field-type constraints that happen to be uniform.
 
@@ -230,7 +230,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 | `Record(fields, Open)` | Shape only | Immediate | Required keys present |
 | `Record` field types | Per-field via guard | On access | Proxy contract — lazy |
 | `Fn(params → ret)` | Tag only — "is callable" | Immediate | Params/return opaque (Findler-style monitor would be needed for deep checking) |
-| `Seq(τ)` | Tag only — "is sequence" | Immediate | Element type opaque; materializing all would diverge |
+| `App(TyCon("Seq"), τ)` | Tag only — "is sequence" | Immediate | Element type opaque; materializing all would diverge |
 | `TypeVar(α)` | Always passes | Immediate | Residual from polymorphic instantiation; treated as `Unknown` |
 
 Note on type-level variables: `TypeVar(α)` and `RowVar(r)` are both "variables" but serve different purposes. A `TypeVar` in a field type position indicates unconstrained polymorphism — treated as `Any` at runtime. A `RowVar` in the row rest position indicates structural openness — treated as `Open` at runtime (allow extra fields). `TypeVar` values in `resolved_type` arise only from polymorphic type schemes where a variable was not constrained during inference. Unresolved type aliases produce a `TypeError` during elaboration — they never reach the evaluator as `TypeVar`.

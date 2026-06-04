@@ -21,8 +21,8 @@ pub(crate) fn stq_contains_unknown(ty: &Type) -> bool {
         Type::Function { params, ret, .. } => {
             params.iter().any(|(_, t)| stq_contains_unknown(t)) || stq_contains_unknown(ret)
         }
-        Type::Seq(elem) => stq_contains_unknown(elem),
-        Type::Map(k, v) => stq_contains_unknown(k) || stq_contains_unknown(v),
+        Type::App(f, a) => stq_contains_unknown(f) || stq_contains_unknown(a),
+        Type::TyCon(_) => false,
         Type::Union(members) | Type::Intersection(members) => {
             members.iter().any(stq_contains_unknown)
         }
@@ -188,8 +188,8 @@ pub(crate) fn stq_walk_node_overbroad(
             if let Some(declared_type) = stq_resolve_simple_annotation(&ann.node) {
                 let body_key = (body.span.start.offset, body.span.end.offset);
                 if let Some(inferred_type) = type_map.get(&body_key) {
-                    if Type::is_subtype(inferred_type, &declared_type)
-                        && !Type::is_subtype(&declared_type, inferred_type)
+                    if Type::is_subtype(inferred_type, &declared_type, None)
+                        && !Type::is_subtype(&declared_type, inferred_type, None)
                     {
                         let type_str = format!("{}", inferred_type);
                         let ann_str = format!("{}", ann.node);

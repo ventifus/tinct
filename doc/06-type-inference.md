@@ -54,7 +54,7 @@ The `Row` tail field carries `RowTail::Empty` (closed record, current default) o
 
 ## TyCon Registry
 
-> **Design target**: This section describes the target state after the user-type-constructors sprint series. The current implementation retains `Type::Seq(Box<Type>)`, `Type::Map(Box<Type>, Box<Type>)`, and `Type::Handle(Box<Type>)` as distinct Type variants. `TyConDef`, `Variance`, and `Type::TyCon` do not yet exist in the codebase.
+> **Implemented in S-842**: `TyConDef`, `Variance`, `TyConEnv` are now defined in `src/type_def.rs`. `Type::TyCon(String)` and `Type::App(Box<Type>, Box<Type>)` have replaced `Type::Seq`, `Type::Map`, and `Type::Handle`. The `kind_env` + `tycon_env` dual-registration approach is in place.
 
 **`TyConDef`** is stored in a third map on `TypeEnv` alongside bindings and type aliases:
 
@@ -1372,7 +1372,7 @@ UNIFY-APP:
 
 **Implementation:** `src/type_unify.rs` — `unify()` UNIFY-OPERATOR and UNIFY-APP arms. UNIFY-OPERATOR binds Operator variables in `subst.type_map` with occurs check (`m ∉ ftv(T)`). UNIFY-APP delegates to recursive `unify()` calls, relying on substitution application at the top of `unify()` to thread bindings from constructor unification into argument unification.
 
-**Normalization:** After unification resolves `Operator("Seq")` or `Operator("Result")` to a builtin constructor, `apply_type` normalizes `App(Operator("Seq"), T)` → `Type::Seq(T)` to maintain the invariant that builtin constructors use dedicated Type variants (see `apply_type()` function in `src/type_unify.rs`).
+**Normalization:** After unification resolves an `Operator` variable, `apply_type` substitutes it with the bound type and recurses into the App structure. `App(TyCon("Seq"), T)` remains as-is — there is no dedicated `Type::Seq` variant; `Seq` is represented uniformly as `App(TyCon("Seq"), T)` (see `apply_type()` in `src/type_unify.rs` and `Type::seq()` constructor helper in `src/type_def.rs`).
 
 ### Constraint Generation
 

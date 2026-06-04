@@ -577,6 +577,14 @@ pub struct EvalContext {
     /// write to the same collector.
     /// Public for CLI initialization (main.rs --profile flag).
     pub profiling: Option<Arc<Mutex<crate::profiling::ProfilingCollector>>>,
+    /// Type constructor environment from type inference: name → TyConDef.
+    /// Set once after typechecking via `set_tycon_env`; read-only thereafter (OnceLock).
+    /// Used by `is_subtype` to determine variance and structural rules for user-defined
+    /// type constructors. `None` before typechecking or when `--no-typecheck` is used;
+    /// `is_subtype` falls back to invariant behaviour in that case.
+    /// Propagated to child contexts (with_base_dir, with_cancel_token, with_explicit_cancel,
+    /// with_timeout_ms) so nested includes and scoped cancellation see the same TyConEnv.
+    pub tycon_env: std::sync::OnceLock<std::sync::Arc<crate::type_def::TyConEnv>>,
 }
 
 impl EvalContext {
@@ -634,6 +642,7 @@ impl EvalContext {
             cancel: tokio_util::sync::CancellationToken::new(),
             task_registry: Arc::new(Mutex::new(Vec::new())),
             profiling: None,
+            tycon_env: std::sync::OnceLock::new(),
         })
     }
 
@@ -675,6 +684,7 @@ impl EvalContext {
             cancel: tokio_util::sync::CancellationToken::new(),
             task_registry: Arc::new(Mutex::new(Vec::new())),
             profiling: None,
+            tycon_env: std::sync::OnceLock::new(),
         })
     }
 
@@ -725,6 +735,7 @@ impl EvalContext {
             cancel: tokio_util::sync::CancellationToken::new(),
             task_registry: Arc::new(Mutex::new(Vec::new())),
             profiling: None,
+            tycon_env: std::sync::OnceLock::new(),
         })
     }
 
@@ -762,6 +773,13 @@ impl EvalContext {
             cancel: self.cancel.clone(),
             task_registry: Arc::clone(&self.task_registry),
             profiling: self.profiling.as_ref().map(Arc::clone),
+            tycon_env: {
+                let child_lock = std::sync::OnceLock::new();
+                if let Some(env) = self.tycon_env.get() {
+                    child_lock.set(std::sync::Arc::clone(env)).ok();
+                }
+                child_lock
+            },
         })
     }
 
@@ -799,6 +817,13 @@ impl EvalContext {
             cancel: child_token.clone(),
             task_registry: Arc::clone(&self.task_registry),
             profiling: self.profiling.as_ref().map(Arc::clone),
+            tycon_env: {
+                let child_lock = std::sync::OnceLock::new();
+                if let Some(env) = self.tycon_env.get() {
+                    child_lock.set(std::sync::Arc::clone(env)).ok();
+                }
+                child_lock
+            },
         });
         (child_ctx, child_token)
     }
@@ -830,6 +855,13 @@ impl EvalContext {
             cancel,
             task_registry: Arc::clone(&self.task_registry),
             profiling: self.profiling.as_ref().map(Arc::clone),
+            tycon_env: {
+                let child_lock = std::sync::OnceLock::new();
+                if let Some(env) = self.tycon_env.get() {
+                    child_lock.set(std::sync::Arc::clone(env)).ok();
+                }
+                child_lock
+            },
         })
     }
 
@@ -862,6 +894,13 @@ impl EvalContext {
             cancel: child_token,
             task_registry: Arc::clone(&self.task_registry),
             profiling: self.profiling.as_ref().map(Arc::clone),
+            tycon_env: {
+                let child_lock = std::sync::OnceLock::new();
+                if let Some(env) = self.tycon_env.get() {
+                    child_lock.set(std::sync::Arc::clone(env)).ok();
+                }
+                child_lock
+            },
         })
     }
 
@@ -898,6 +937,32 @@ impl EvalContext {
     /// the monad dict variable names (e.g., "result") resolved by the type checker.
     pub fn set_do_infer_resolutions(&self, resolutions: HashMap<String, String>) {
         *self.do_infer_resolutions.write().unwrap() = resolutions;
+    }
+
+    /// Set the type constructor environment from type inference.
+    /// Called after type checking to wire user-defined TyCon variance and structural rules
+    /// to the evaluator's subtype checker. The OnceLock silently no-ops if already set —
+    /// this covers two cases:
+    ///
+    /// 1. **Child context inheritance** (normal, harmless): a child `EvalContext` propagates
+    ///    the parent's `TyConEnv` in its constructor, so `set_tycon_env` on the child is a
+    ///    no-op. This is correct — the child already has the right environment.
+    ///
+    /// 2. **REPL re-evaluation** (silent degradation): in REPL mode `ctx` is reused across
+    ///    REPL inputs. The first input's `set_tycon_env` succeeds; all subsequent inputs hit
+    ///    the no-op branch, meaning new `[type ...]` declarations entered after the first
+    ///    REPL input are invisible to the evaluator's TyConEnv. The TyCon is registered in
+    ///    `tycon_env` for type-checking purposes (InferState is fresh each input) but the
+    ///    evaluator cannot see it for runtime subtype checks. Tracked in B-329 (REPL
+    ///    TyConEnv frozen after first input).
+    pub fn set_tycon_env(&self, env: crate::type_def::TyConEnv) {
+        self.tycon_env.set(std::sync::Arc::new(env)).ok();
+    }
+
+    /// Get the type constructor environment, if available.
+    /// Returns `None` before typechecking or when `--no-typecheck` is used.
+    pub fn tycon_env(&self) -> Option<&crate::type_def::TyConEnv> {
+        self.tycon_env.get().map(|arc| arc.as_ref())
     }
 
     /// Set the already-open libdir Dir so that `builtin_include` can inject `%libdir`
@@ -947,10 +1012,11 @@ pub fn ground_type_of(v: &Value) -> Type {
         // consistent with Overlay field validation being static-only.
         Value::Overlay(..) => Type::Record(Row {
             fields: HashMap::new(),
+            tail: crate::type_def::RowTail::Empty,
         }),
         // Element type erased (lazy Seq — forcing all elements would break laziness).
         // is_consistent_subtype accepts Seq(Unknown) ~<: Seq(T) for any T.
-        Value::Seq { .. } => Type::Seq(Box::new(Type::Unknown)),
+        Value::Seq { .. } => Type::seq(Type::Unknown),
         // Param/return types erased — consistent subtyping accepts Function([Unknown..], Unknown)
         // against any function annotation with matching arity.
         Value::Function { params, .. } => Type::Function {
@@ -968,6 +1034,7 @@ pub fn ground_type_of(v: &Value) -> Type {
             tag: tag.clone(),
             fields: Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             },
         },
         // Decimal/BigInt: no Type::Decimal/Type::BigInt in the type system yet.
@@ -1000,7 +1067,10 @@ fn extract_row(map: &IndexMap<Key, ThunkId>) -> Row {
             Key::Int(_) => None,
         })
         .collect::<HashMap<String, Type>>();
-    Row { fields }
+    Row {
+        fields,
+        tail: crate::type_def::RowTail::Empty,
+    }
 }
 
 /// Check if a materialized value matches a type for structural TypeAssert validation.
@@ -1051,6 +1121,7 @@ pub(crate) fn as_record_row_merged(expected: &Type) -> Option<Cow<'_, Row>> {
             }
             Some(Cow::Owned(Row {
                 fields: merged_fields,
+                tail: crate::type_def::RowTail::Empty,
             }))
         }
         _ => None,
@@ -6862,7 +6933,10 @@ mod tests {
         // The record type check is immediate (shape check), field guard wrapping deferred.
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), Type::Str);
-        let record_type = Type::Record(Row { fields });
+        let record_type = Type::Record(Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        });
 
         let span = Span::origin();
         let dict_node = eval_str("[name: Alice  age: 30]", empty_env(), &test_ctx()).unwrap();
@@ -6926,7 +7000,10 @@ mod tests {
         // Structural path: record type requires field "id", dict doesn't have it -> error
         let mut fields = HashMap::new();
         fields.insert("id".to_string(), Type::Int);
-        let record_type = Type::Record(Row { fields });
+        let record_type = Type::Record(Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        });
 
         let span = Span::origin();
         let inner_expr = Spanned::new(
@@ -6969,7 +7046,10 @@ mod tests {
         // because the annotation only constrains what it declares.
         let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(Row { fields });
+        let record_type = Type::Record(Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        });
 
         let span = Span::origin();
         let inner_expr = Spanned::new(
@@ -7026,7 +7106,10 @@ mod tests {
         // Structural path: closed record, dict has exactly the required fields -> pass
         let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(Row { fields });
+        let record_type = Type::Record(Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        });
 
         let span = Span::origin();
         let inner_expr = Spanned::new(
@@ -7068,7 +7151,10 @@ mod tests {
         // Structural path: resolved_type = Some(Type::Record(...)), value is Int -> error
         let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(Row { fields });
+        let record_type = Type::Record(Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        });
 
         let span = Span::origin();
         let inner_expr = Spanned::new(
@@ -7270,7 +7356,10 @@ mod tests {
         // is_consistent_subtype(Int, Unknown)=true and the TypeAssert passes trivially.
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), Type::Str);
-        let record_type = Type::Record(Row { fields });
+        let record_type = Type::Record(Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        });
 
         let span = Span::origin();
         let entries = vec![
@@ -7441,7 +7530,10 @@ mod tests {
         // is only called for non-record types.
         let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(Row { fields });
+        let record_type = Type::Record(Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        });
         // Non-Dict value: ground_type_of(Int) = Type::Int, not a subtype of Record.
         assert!(!value_matches_type(&Value::Int(99), &record_type));
         // Empty Dict: ground_type_of(Dict({})) = Record({}), missing required field "x".
@@ -7492,7 +7584,10 @@ mod tests {
         // Create a row type requiring field "y"
         let mut fields = HashMap::new();
         fields.insert("y".to_string(), Type::Int);
-        let row = Row { fields };
+        let row = Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        };
 
         // Create entries that are missing field "y"
         let entries: IndexMap<Key, ThunkId> = IndexMap::new();
@@ -7551,7 +7646,10 @@ mod tests {
         // Create a row type requiring only field "x"
         let mut fields = HashMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let row = Row { fields };
+        let row = Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        };
 
         // Create entries with "x" plus an extra field "z"
         let ctx = test_ctx();
@@ -7600,7 +7698,10 @@ mod tests {
         // Create a row type requiring field "name"
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), Type::Str);
-        let row = Row { fields };
+        let row = Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        };
 
         // Create empty entries (missing "name")
         let entries: IndexMap<Key, ThunkId> = IndexMap::new();
@@ -7657,7 +7758,10 @@ mod tests {
 
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), Type::Str);
-        let row = Row { fields };
+        let row = Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        };
 
         // Create entries with "name" (valid) plus an integer-keyed entry
         let ctx = test_ctx();
@@ -7708,7 +7812,10 @@ mod tests {
 
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), Type::Str);
-        let row = Row { fields };
+        let row = Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        };
 
         let ctx = test_ctx();
         let mut entries: IndexMap<Key, ThunkId> = IndexMap::new();

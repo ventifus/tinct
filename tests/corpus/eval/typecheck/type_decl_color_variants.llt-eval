@@ -1,0 +1,14 @@
+# [type Color Red Green Blue] produces unit variant constructors.
+# S-842 adds TyConDef to tycon_env for this declaration (T-941/T-942).
+# Verifies the evaluator injects Color, Red, Green, Blue as Variant(_, Null)
+# entries and that match dispatch on unit variants works correctly.
+[
+  [type Color Red Green Blue]
+  c:    Red
+  name: [match c
+    [Red]:   "red"
+    [Green]: "green"
+    [Blue]:  "blue"]
+]
+=== out
+Dict({"Color": Variant(Color, Null), "Red": Variant(Red, Null), "Green": Variant(Green, Null), "Blue": Variant(Blue, Null), "c": Variant(Red, Null), "name": String("red")})

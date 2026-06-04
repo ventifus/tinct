@@ -14,8 +14,8 @@ use crate::ast::{
 // No Expr bridge needed — tests use parse_surface_expression directly.
 use crate::coverage;
 use crate::types::{
-    generalize, instantiate_scheme, unify, InferState, Row, Type, TypeAlias, TypeEnv, TypeError,
-    TypeScheme,
+    generalize, instantiate_scheme, unify, InferState, Row, TyConDef, Type, TypeAlias, TypeEnv,
+    TypeError, TypeScheme, Variance,
 };
 
 // Split modules — annotation resolution and dict inference
@@ -101,6 +101,7 @@ pub fn typecheck_surface_program_annotation_table(
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
 
     for doc_spanned in &program.documents {
@@ -226,6 +227,7 @@ pub fn typecheck_surface_program_with_env(
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
 
     for doc_spanned in &program.documents {
@@ -374,10 +376,13 @@ fn typecheck_surface_document(
                         state.subst.apply(&expected_type),
                     )
                 };
-                let passes = Type::is_subtype(&pipeline_type_resolved, &expected_type_resolved)
-                    || ((contains_unknown_or_top(&pipeline_type_resolved)
-                        || contains_unknown_or_top(&expected_type_resolved))
-                        && Type::is_consistent(&pipeline_type_resolved, &expected_type_resolved));
+                let passes = Type::is_subtype(
+                    &pipeline_type_resolved,
+                    &expected_type_resolved,
+                    Some(&state.tycon_env),
+                ) || ((contains_unknown_or_top(&pipeline_type_resolved)
+                    || contains_unknown_or_top(&expected_type_resolved))
+                    && Type::is_consistent(&pipeline_type_resolved, &expected_type_resolved));
                 if !passes {
                     advisory_errors.push(TypeError::new(
                         format!(
@@ -443,6 +448,7 @@ fn typecheck_surface_document(
 
     let mut result_type = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
 
     // Process declarations first (TypeAlias, ClassDecl, InstanceDecl)
@@ -557,13 +563,13 @@ fn typecheck_surface_document(
                             state.subst.apply(&expected_output),
                         )
                     };
-                    let passes = Type::is_subtype(&result_type_resolved, &expected_output_resolved)
-                        || ((contains_unknown_or_top(&result_type_resolved)
-                            || contains_unknown_or_top(&expected_output_resolved))
-                            && Type::is_consistent(
-                                &result_type_resolved,
-                                &expected_output_resolved,
-                            ));
+                    let passes = Type::is_subtype(
+                        &result_type_resolved,
+                        &expected_output_resolved,
+                        Some(&state.tycon_env),
+                    ) || ((contains_unknown_or_top(&result_type_resolved)
+                        || contains_unknown_or_top(&expected_output_resolved))
+                        && Type::is_consistent(&result_type_resolved, &expected_output_resolved));
                     if !passes {
                         advisory_errors.push(TypeError::new(
                             format!(
@@ -697,10 +703,13 @@ fn typecheck_surface_document(
                         state.subst.apply(&expected_output),
                     )
                 };
-                let passes = Type::is_subtype(&result_type_resolved, &expected_output_resolved)
-                    || ((contains_unknown_or_top(&result_type_resolved)
-                        || contains_unknown_or_top(&expected_output_resolved))
-                        && Type::is_consistent(&result_type_resolved, &expected_output_resolved));
+                let passes = Type::is_subtype(
+                    &result_type_resolved,
+                    &expected_output_resolved,
+                    Some(&state.tycon_env),
+                ) || ((contains_unknown_or_top(&result_type_resolved)
+                    || contains_unknown_or_top(&expected_output_resolved))
+                    && Type::is_consistent(&result_type_resolved, &expected_output_resolved));
                 if !passes {
                     advisory_errors.push(TypeError::new(
                         format!(
@@ -777,6 +786,7 @@ pub(crate) fn typecheck_surface_document_native(
     let parent_env = Rc::new(env.clone());
     let pipeline_type = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     let named_types = HashMap::new();
 
@@ -1028,6 +1038,19 @@ fn register_type_aliases(
                             body: alias_ty,
                         },
                     );
+
+                    // Register TyConDef for TyCon identity checking and variance-directed subtyping.
+                    // Variance annotations are not yet parsed (S-843/S-844), so all parameters
+                    // are conservatively Invariant. Constructors are populated in S-843.
+                    // This ensures is_subtype can look up user-defined types via state.tycon_env
+                    // even before full variance inference is implemented.
+                    let tycon_def = TyConDef {
+                        variance: vec![Variance::Invariant; params.len()],
+                        constructors: vec![],
+                        builtin_type: None,
+                    };
+                    target_env.insert_tycon_def(name.clone(), tycon_def.clone());
+                    state.tycon_env.insert(name.clone(), tycon_def);
                 }
                 Err(e) => errors.push(e),
             }
@@ -1158,6 +1181,7 @@ pub(crate) fn infer_surface_expr(
             if exprs.is_empty() {
                 return Ok(Type::Record(Row {
                     fields: HashMap::new(),
+                    tail: crate::type_def::RowTail::Empty,
                 }));
             }
 
@@ -1527,6 +1551,7 @@ pub(crate) fn infer_surface_expr(
             // [quote expr] produces a dict representing the AST.
             Ok(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             }))
         }
 
@@ -1541,6 +1566,7 @@ pub(crate) fn infer_surface_expr(
 
             let expected_list_ty = Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             });
 
             let mut subst = std::mem::take(&mut state.subst);
@@ -1589,6 +1615,7 @@ pub(crate) fn infer_surface_expr(
                                 tag: tag.clone(),
                                 fields: crate::type_def::Row {
                                     fields: std::collections::HashMap::new(),
+                                    tail: crate::type_def::RowTail::Empty,
                                 },
                             };
                             let members = vec![remaining_scrutinee.clone(), tag_ty];
@@ -1635,6 +1662,7 @@ pub(crate) fn infer_surface_expr(
                                 tag: tag.clone(),
                                 fields: crate::type_def::Row {
                                     fields: std::collections::HashMap::new(),
+                                    tail: crate::type_def::RowTail::Empty,
                                 },
                             }));
                             remaining_scrutinee = Type::normalize_intersection(vec![
@@ -1950,6 +1978,7 @@ fn infer_class_decl_from_surface(
 
     Ok(Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     }))
 }
 
@@ -1971,6 +2000,7 @@ fn infer_instance_decl_from_surface(
     if arms.is_empty() {
         return Ok(Type::Record(Row {
             fields: HashMap::new(),
+            tail: crate::type_def::RowTail::Empty,
         }));
     }
 
@@ -2127,6 +2157,7 @@ fn infer_instance_decl_from_surface(
                     .enumerate()
                     .map(|(i, ty)| (i.to_string(), ty.clone()))
                     .collect(),
+                tail: crate::type_def::RowTail::Empty,
             })
         };
 
@@ -2213,6 +2244,7 @@ fn infer_instance_decl_from_surface(
 
     Ok(Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     }))
 }
 
@@ -2244,7 +2276,8 @@ fn contains_unknown_or_top(ty: &Type) -> bool {
         Type::Function { params, ret, .. } => {
             params.iter().any(|(_, t)| contains_unknown_or_top(t)) || contains_unknown_or_top(ret)
         }
-        Type::Seq(elem) => contains_unknown_or_top(elem),
+        Type::App(f, arg) => contains_unknown_or_top(f) || contains_unknown_or_top(arg),
+        Type::TyCon(_) => false,
         Type::Record(row) => row.fields.values().any(contains_unknown_or_top),
         Type::Union(members) => members.iter().any(contains_unknown_or_top),
         _ => false,
@@ -2369,7 +2402,7 @@ pub(super) fn check_surface_expr(
                                     } else {
                                         (state.subst.apply(expected_ty), state.subst.apply(&resolved))
                                     };
-                                    let sub_passes = Type::is_subtype(&expected_ty_resolved, &resolved_ty)
+                                    let sub_passes = Type::is_subtype(&expected_ty_resolved, &resolved_ty, Some(&state.tycon_env))
                                         || ((contains_unknown_or_top(&expected_ty_resolved)
                                             || contains_unknown_or_top(&resolved_ty))
                                             && Type::is_consistent(&expected_ty_resolved, &resolved_ty));
@@ -2395,7 +2428,7 @@ pub(super) fn check_surface_expr(
                             // This allows type checking on operations over the rest sequence
                             // (e.g., [length xs] infers Seq(T) → Int).
                             let elem_var = state.fresh_type_var();
-                            fn_env.insert(param.node.name.clone(), Type::Seq(Box::new(elem_var)));
+                            fn_env.insert(param.node.name.clone(), Type::seq(elem_var));
                         } else {
                             fn_env.insert(param.node.name.clone(), ty.clone());
                         }
@@ -2446,13 +2479,16 @@ pub(super) fn check_surface_expr(
                                         )
                                     };
                                 let sub_passes =
-                                    Type::is_subtype(&declared_resolved, &expected_ret_resolved)
-                                        || ((contains_unknown_or_top(&declared_resolved)
-                                            || contains_unknown_or_top(&expected_ret_resolved))
-                                            && Type::is_consistent(
-                                                &declared_resolved,
-                                                &expected_ret_resolved,
-                                            ));
+                                    Type::is_subtype(
+                                        &declared_resolved,
+                                        &expected_ret_resolved,
+                                        Some(&state.tycon_env),
+                                    ) || ((contains_unknown_or_top(&declared_resolved)
+                                        || contains_unknown_or_top(&expected_ret_resolved))
+                                        && Type::is_consistent(
+                                            &declared_resolved,
+                                            &expected_ret_resolved,
+                                        ));
                                 if !sub_passes {
                                     return Err(vec![TypeError::type_mismatch(
                                         &expected_ret_resolved,
@@ -2555,7 +2591,7 @@ pub(super) fn check_surface_expr(
             )
         };
 
-        let passes = Type::is_subtype(&actual_resolved, &expected_final)
+        let passes = Type::is_subtype(&actual_resolved, &expected_final, Some(&state.tycon_env))
             || ((contains_unknown_or_top(&actual_resolved)
                 || contains_unknown_or_top(&expected_final))
                 && Type::is_consistent(&actual_resolved, &expected_final));

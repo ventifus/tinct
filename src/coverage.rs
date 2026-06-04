@@ -214,7 +214,9 @@ impl ConstructorSignature {
                     constructors.push((ConstructorTag::TypeTag("Int".into()), 0));
                     constructors.push((ConstructorTag::TypeTag("Float".into()), 0));
                 }
-                Type::Seq(_) => constructors.push((ConstructorTag::TypeTag("Seq".into()), 0)),
+                _ if member.as_seq().is_some() => {
+                    constructors.push((ConstructorTag::TypeTag("Seq".into()), 0))
+                }
                 Type::StringLiteral(s) => {
                     constructors.push((ConstructorTag::LiteralStr(s.clone()), 0));
                 }
@@ -1457,9 +1459,11 @@ mod tests {
         let union_members = vec![
             Type::Record(Row {
                 fields: [("ok".to_string(), Type::Unknown)].into_iter().collect(),
+                tail: crate::type_def::RowTail::Empty,
             }),
             Type::Record(Row {
                 fields: [("err".to_string(), Type::Str)].into_iter().collect(),
+                tail: crate::type_def::RowTail::Empty,
             }),
         ];
         let sig = ConstructorSignature::from_union(&union_members)

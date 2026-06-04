@@ -72,6 +72,7 @@ fn inject_single_constructor(
             tag: tag.to_string(),
             fields: Row {
                 fields: std::collections::HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             },
         }
     } else {
@@ -1010,6 +1011,7 @@ pub(crate) fn infer_dict(
 
     let record_type = Type::Record(Row {
         fields: field_types,
+        tail: crate::type_def::RowTail::Empty,
     });
 
     // Always return best-effort results along with any errors.

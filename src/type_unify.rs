@@ -110,22 +110,16 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
     // [CONSTRAIN-CONTAINER]: Seq[T] and Map[K V] are always Showable and Appendable,
     // regardless of their element types. The runtime str() and ++ operations work for any
     // collection at the semantic level. This rule is needed to handle structural propagation
-    // through Record fields that contain Seq or Map types:
-    //   Record({f: Seq[Int]}) satisfies Showable
-    //     ← satisfies_constraint_inner(Seq[Int], "Showable", 1)
-    //     ← [CONSTRAIN-CONTAINER]: Seq satisfies Showable → true
-    //   Record({f: Seq[Int]}) satisfies Appendable (via [CONSTRAIN-FIELD] NOT firing, so
-    //   this rule is only for Seq/Map appearing as leaf types under structural propagation.)
+    // through Record fields that contain Seq or Map types.
     //
-    // Note: Seq/Map for Comparable/Numeric are NOT satisfied here — those require ordered/arithmetic
-    // semantics that collection types do not have. Seq/Map for Equatable is handled by the
-    // [CONSTRAIN-EQUATABLE-CONTAINER] rule below.
-    if matches!(ty, Type::Seq(_) | Type::Map(_, _)) && class_name == "Showable" {
+    // Seq and Map are now App(TyCon("Seq"), ...) and App(App(TyCon("Map"), ...), ...).
+    // Use the as_seq() / as_map() helpers for detection.
+    if (ty.as_seq().is_some() || ty.as_map().is_some()) && class_name == "Showable" {
         return true;
     }
     // Appendable for Seq (any Seq can be appended via concat semantics).
     // Appendable for Map: maps are not appendable (no Appendable Map instance in prelude).
-    if matches!(ty, Type::Seq(_)) && class_name == "Appendable" {
+    if ty.as_seq().is_some() && class_name == "Appendable" {
         return true;
     }
     // Record for Appendable: any record satisfies Appendable (dict merge semantics).
@@ -135,17 +129,9 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
 
     // [CONSTRAIN-EQUATABLE-CONTAINER]: Seq[T], Map[K V], and Record are structurally
     // equatable — the runtime equality check works for any sequence, map, or record.
-    // This restores the hardcoded arms that T-910 removed when migrating to dynamic
-    // instance resolution.
-    //
-    // Note: Record is already handled earlier by [CONSTRAIN-FIELD], which recurses into
-    // fields. The Record arm here is therefore dead code but is included for clarity and
-    // to ensure that if the earlier arm is ever removed, Equatable for Record still holds.
-    //
-    // Note: We intentionally do NOT check element types recursively here (unlike
-    // [CONSTRAIN-FIELD] for Record). This matches the pre-T-910 unconditional behavior
-    // and avoids false negatives when Seq/Map element types are TypeVars (unresolved).
-    if class_name == "Equatable" && matches!(ty, Type::Record(_) | Type::Map(_, _) | Type::Seq(_)) {
+    if class_name == "Equatable"
+        && (matches!(ty, Type::Record(_)) || ty.as_seq().is_some() || ty.as_map().is_some())
+    {
         return true;
     }
 
@@ -1494,13 +1480,6 @@ impl Substitution {
                 ret: Box::new(self.apply_type(ret, depth + 1, visited_types).into_owned()),
                 variadic: *variadic,
             }),
-            Type::Seq(elem) => Cow::Owned(Type::Seq(Box::new(
-                self.apply_type(elem, depth + 1, visited_types).into_owned(),
-            ))),
-            Type::Map(key, val) => Cow::Owned(Type::Map(
-                Box::new(self.apply_type(key, depth + 1, visited_types).into_owned()),
-                Box::new(self.apply_type(val, depth + 1, visited_types).into_owned()),
-            )),
             Type::Union(members) => {
                 let applied_members: Vec<Type> = members
                     .iter()
@@ -1525,22 +1504,21 @@ impl Substitution {
                 let f_applied = self.apply_type(f, depth + 1, visited_types).into_owned();
                 let a_applied = self.apply_type(a, depth + 1, visited_types).into_owned();
 
-                // Normalize App(concrete_constructor, T) to builtin forms (hkt-kind-inference Task 5)
-                // When an Operator TypeVar resolves to a concrete constructor name, normalize to
-                // the corresponding builtin type variant to maintain type system invariants.
+                // Normalize App(Operator("Seq"), T) → App(TyCon("Seq"), T) (bind Operator → TyCon)
+                // When an Operator TypeVar resolves to a concrete constructor name, update to TyCon.
                 if let Type::Operator(ctor_name) = &f_applied {
                     if ctor_name.as_str() == "Seq" {
-                        return Cow::Owned(Type::Seq(Box::new(a_applied)));
+                        return Cow::Owned(Type::seq(a_applied));
                     }
-                }
-
-                // Normalize App(App(Operator("Map"), K), V) → Type::Map(K, V) (Task 6)
-                // Map has kind (* → * → *), so full application is App(App(Map, K), V)
-                if let Type::App(inner_f, k) = &f_applied {
-                    if let Type::Operator(ctor_name) = inner_f.as_ref() {
-                        if ctor_name == "Map" {
-                            return Cow::Owned(Type::Map(k.clone(), Box::new(a_applied)));
-                        }
+                    if ctor_name.as_str() == "Map" {
+                        // App(Operator("Map"), K) → App(TyCon("Map"), K) (partial application)
+                        return Cow::Owned(Type::App(
+                            Box::new(Type::TyCon("Map".into())),
+                            Box::new(a_applied),
+                        ));
+                    }
+                    if ctor_name.as_str() == "Handle" {
+                        return Cow::Owned(Type::handle(a_applied));
                     }
                 }
 
@@ -1560,9 +1538,7 @@ impl Substitution {
                     fields: applied_fields,
                 })
             }
-            Type::Handle(cap) => Cow::Owned(Type::Handle(Box::new(
-                self.apply_type(cap, depth + 1, visited_types).into_owned(),
-            ))),
+            Type::TyCon(_) => Cow::Borrowed(ty), // TyCon is always concrete, no substitution needed
             Type::Operator(name) => {
                 // Look up Operator variable in substitution map (local frame + parent chain)
                 if visited_types.contains(name) {
@@ -1604,7 +1580,7 @@ impl Substitution {
             return row.clone();
         }
 
-        // Apply substitution to field types only (no row variable tails under BAS).
+        // Apply substitution to field types and to RowTail::Uniform key/value types.
         let new_fields: HashMap<String, Type> = row
             .fields
             .iter()
@@ -1616,7 +1592,27 @@ impl Substitution {
             })
             .collect();
 
-        Row { fields: new_fields }
+        let new_tail = match &row.tail {
+            crate::type_def::RowTail::Empty => crate::type_def::RowTail::Empty,
+            crate::type_def::RowTail::Uniform { key, value } => {
+                let new_key = key
+                    .as_ref()
+                    .map(|k| Box::new(self.apply_type(k, depth + 1, visited_types).into_owned()));
+                let new_value = Box::new(
+                    self.apply_type(value, depth + 1, visited_types)
+                        .into_owned(),
+                );
+                crate::type_def::RowTail::Uniform {
+                    key: new_key,
+                    value: new_value,
+                }
+            }
+        };
+
+        Row {
+            fields: new_fields,
+            tail: new_tail,
+        }
     }
 
     /// Test-only introspection: lookup a type variable binding in the type_map.
@@ -1680,12 +1676,15 @@ impl PartialEq for Substitution {
 // row_var_occurs, row_var_occurs_in_type, row_var_occurs_pub, lower_row_var_levels_pub
 // were all removed. Tests in types.rs that used these functions have been updated.
 
-/// BAS record unification: unify only the fields shared between both rows.
+/// BAS record unification: unify only the fields shared between both rows, then unify tails.
 /// Fields unique to one row are ignored — BAS width subtyping handles openness
 /// via is_subtype (a record with MORE fields satisfies an annotation with FEWER fields).
 ///
-/// This replaces the full Rémy-style Wand 4-case algorithm. Under BAS there are no
-/// RowVar tails to bind, so unification is simply: for each field in both rows, unify types.
+/// Tail unification rules (T-939):
+///   (Empty, Empty)           — no-op (both closed, field unification above is sufficient)
+///   (Empty, Uniform{V, ..})  — error: closed row does not satisfy uniform column constraint
+///   (Uniform{V, ..}, Empty)  — error: uniform row cannot be unified with closed row
+///   (Uniform{V1, k1}, Uniform{V2, k2}) — unify value types V1 ~ V2; unify key types if both present
 fn unify_rows(
     row1: &Row,
     row2: &Row,
@@ -1693,7 +1692,9 @@ fn unify_rows(
     state: &mut InferState,
     span: Span,
 ) -> Result<(), TypeError> {
-    // Fast-path: identical field sets — avoid collecting intersection.
+    // Fast-path: identical field sets — unify all named fields, then fall through to tail.
+    // Previously had an early return here, which silently swallowed tail mismatches when both
+    // rows had identical named fields but different tails (e.g., Empty vs Uniform).
     if row1.fields.len() == row2.fields.len()
         && row1.fields.keys().all(|k| row2.fields.contains_key(k))
     {
@@ -1701,64 +1702,112 @@ fn unify_rows(
             let ty2 = &row2.fields[key];
             unify(ty1, ty2, subst, state, span.clone())?;
         }
-        return Ok(());
-    }
-
-    // General case: unify only fields that appear in BOTH rows (intersection).
-    // Fields unique to one side are not errors — BAS width subtyping handles them via is_subtype.
-    let mut shared_count = 0;
-    let mut row1_has_inference_vars = false;
-    let mut row2_has_inference_vars = false;
-    for (key, ty1) in &row1.fields {
-        if ty1.has_inference_vars() {
-            row1_has_inference_vars = true;
-        }
-        if let Some(ty2) = row2.fields.get(key) {
-            shared_count += 1;
-            unify(ty1, ty2, subst, state, span.clone())?;
-        }
-    }
-    for ty2 in row2.fields.values() {
-        if ty2.has_inference_vars() {
-            row2_has_inference_vars = true;
-        }
-    }
-
-    // Disjoint record detection: two non-empty records with ZERO shared fields and all-concrete
-    // field types are incompatible — no value can satisfy both `[a: Int]` and `[b: Str]` under
-    // unification (BAS width subtyping is handled by is_subtype, not unification).
-    //
-    // Conservative guard: if either row contains inference variables (TypeVars), we cannot
-    // determine incompatibility statically — the variable might be bound to a compatible type.
-    // In that case, fall back to level-zeroing to prevent unsound generalization.
-    if shared_count == 0 && !row1.fields.is_empty() && !row2.fields.is_empty() {
-        if row1_has_inference_vars || row2_has_inference_vars {
-            // Conservative path: cannot prove incompatibility statically.
-            // Lower TypeVars in FTV(row1) ∩ FTV(row2) to level 0 to prevent unsound
-            // generalization of variables constrained by both sides.
-            //
-            // Only variables appearing in BOTH rows are constrained by this cross-row
-            // relationship. Variables unique to one row are independent and can be
-            // generalized freely — zeroing them is unsoundly conservative.
-            // (Kiselyov 2013: level-zeroing should target only actually-constrained vars.)
-            let mut vars1 = HashSet::new();
-            for ty in row1.fields.values() {
-                ty.collect_type_vars(&mut vars1);
+        // Fall through to tail unification — do NOT return here.
+    } else {
+        // General case: unify only fields that appear in BOTH rows (intersection).
+        // Fields unique to one side are not errors — BAS width subtyping handles them via is_subtype.
+        let mut shared_count = 0;
+        let mut row1_has_inference_vars = false;
+        let mut row2_has_inference_vars = false;
+        for (key, ty1) in &row1.fields {
+            if ty1.has_inference_vars() {
+                row1_has_inference_vars = true;
             }
-            let mut vars2 = HashSet::new();
-            for ty in row2.fields.values() {
-                ty.collect_type_vars(&mut vars2);
+            if let Some(ty2) = row2.fields.get(key) {
+                shared_count += 1;
+                unify(ty1, ty2, subst, state, span.clone())?;
             }
-            for var_name in vars1.intersection(&vars2) {
-                if let Some(current_level) = state.levels.get_mut(var_name) {
-                    *current_level = 0;
+        }
+        for ty2 in row2.fields.values() {
+            if ty2.has_inference_vars() {
+                row2_has_inference_vars = true;
+            }
+        }
+
+        // Disjoint record detection: two non-empty records with ZERO shared fields and all-concrete
+        // field types are incompatible — no value can satisfy both `[a: Int]` and `[b: Str]` under
+        // unification (BAS width subtyping is handled by is_subtype, not unification).
+        //
+        // Conservative guard: if either row contains inference variables (TypeVars), we cannot
+        // determine incompatibility statically — the variable might be bound to a compatible type.
+        // In that case, fall back to level-zeroing to prevent unsound generalization.
+        if shared_count == 0 && !row1.fields.is_empty() && !row2.fields.is_empty() {
+            if row1_has_inference_vars || row2_has_inference_vars {
+                // Conservative path: cannot prove incompatibility statically.
+                // Lower TypeVars in FTV(row1) ∩ FTV(row2) to level 0 to prevent unsound
+                // generalization of variables constrained by both sides.
+                //
+                // Only variables appearing in BOTH rows are constrained by this cross-row
+                // relationship. Variables unique to one row are independent and can be
+                // generalized freely — zeroing them is unsoundly conservative.
+                // (Kiselyov 2013: level-zeroing should target only actually-constrained vars.)
+                let mut vars1 = HashSet::new();
+                for ty in row1.fields.values() {
+                    ty.collect_type_vars(&mut vars1);
                 }
+                let mut vars2 = HashSet::new();
+                for ty in row2.fields.values() {
+                    ty.collect_type_vars(&mut vars2);
+                }
+                for var_name in vars1.intersection(&vars2) {
+                    if let Some(current_level) = state.levels.get_mut(var_name) {
+                        *current_level = 0;
+                    }
+                }
+            } else {
+                // Both rows have concrete field types and no shared fields: structurally incompatible.
+                return Err(TypeError::type_mismatch(
+                    &Type::Record(row1.clone()),
+                    &Type::Record(row2.clone()),
+                    span,
+                ));
             }
-        } else {
-            // Both rows have concrete field types and no shared fields: structurally incompatible.
-            return Err(TypeError::type_mismatch(
-                &Type::Record(row1.clone()),
-                &Type::Record(row2.clone()),
+        }
+    }
+
+    // Tail unification always executes — whether we took the fast-path or general path above.
+    // Two rows with identical named fields but different tails (e.g., {a: Int, tail: Empty} vs
+    // {a: Int, tail: Uniform{Int}}) are incompatible and must be rejected here.
+    use crate::type_def::RowTail;
+    match (&row1.tail, &row2.tail) {
+        // Both closed — no tail constraint to unify
+        (RowTail::Empty, RowTail::Empty) => {}
+
+        // Both Uniform — unify value types, then key types if both present
+        (RowTail::Uniform { key: k1, value: v1 }, RowTail::Uniform { key: k2, value: v2 }) => {
+            unify(v1, v2, subst, state, span.clone())?;
+            match (k1, k2) {
+                (Some(k1_ty), Some(k2_ty)) => {
+                    unify(k1_ty, k2_ty, subst, state, span.clone())?;
+                }
+                // One has a key constraint, the other does not — key constraint is stricter;
+                // we accept this conservatively (no error) since the key constraint only
+                // adds information, it doesn't conflict. The subtyping rules enforce key
+                // compatibility at use sites.
+                (Some(_), None) | (None, Some(_)) => {}
+                (None, None) => {}
+            }
+        }
+
+        // Closed row unified with Uniform constraint.
+        //
+        // Per T-944/UNIFY-UNIFORM step 2: when V (the Uniform's value type) is an unbound
+        // TypeVar α after applying the substitution, the correct behaviour is to collect all
+        // named-field types from the Empty-tailed row, compute their join via
+        // `Type::normalize_union`, and unify α with that join.  Step 3 covers the concrete-V
+        // case: each named field Ti must satisfy is_subtype(Ti, V').
+        //
+        // Full implementation is deferred to S-843 (the column-constraint annotation parser
+        // that produces Uniform tails for user-written `{_ : T}` syntax is not yet wired up,
+        // so there are no reachable call paths that exercise this branch with a TypeVar V).
+        // For now we continue to error in all cases so that any inadvertently reached path
+        // produces a clear diagnostic rather than silent misbehaviour.
+        //
+        // TODO(S-843): replace these arms with the TypeVar-join / concrete-subtype logic.
+        (RowTail::Empty, RowTail::Uniform { key: _, value: _ })
+        | (RowTail::Uniform { key: _, value: _ }, RowTail::Empty) => {
+            return Err(TypeError::new(
+                "closed row does not satisfy uniform column constraint".to_string(),
                 span,
             ));
         }
@@ -1790,7 +1839,13 @@ fn lower_levels_check_occurs(
             for ty in row.fields.values() {
                 found |= lower_levels_check_occurs(ty, occurs_name, cap_level, state);
             }
-            // BAS: RowTail::Empty — no row var to lower
+            // Lower levels through RowTail::Uniform key and value types
+            if let crate::type_def::RowTail::Uniform { key, value } = &row.tail {
+                if let Some(k) = key {
+                    found |= lower_levels_check_occurs(k, occurs_name, cap_level, state);
+                }
+                found |= lower_levels_check_occurs(value, occurs_name, cap_level, state);
+            }
             found
         }
         Type::Function {
@@ -1803,13 +1858,6 @@ fn lower_levels_check_occurs(
                 found |= lower_levels_check_occurs(p_ty, occurs_name, cap_level, state);
             }
             found |= lower_levels_check_occurs(ret, occurs_name, cap_level, state);
-            found
-        }
-        Type::Seq(elem) => lower_levels_check_occurs(elem, occurs_name, cap_level, state),
-        Type::Map(key, val) => {
-            let mut found = false;
-            found |= lower_levels_check_occurs(key, occurs_name, cap_level, state);
-            found |= lower_levels_check_occurs(val, occurs_name, cap_level, state);
             found
         }
         Type::Union(members) => {
@@ -1857,6 +1905,7 @@ fn lower_levels_check_occurs(
         | Type::Error
         | Type::DirCap
         | Type::NetCap
+        | Type::TyCon(_)
         | Type::Uri
         | Type::Timestamp
         | Type::Duration
@@ -1882,7 +1931,6 @@ fn lower_levels_check_occurs(
             }
             found
         }
-        Type::Handle(cap) => lower_levels_check_occurs(cap, occurs_name, cap_level, state),
     }
 }
 
@@ -1999,12 +2047,12 @@ fn bind_single_type_var_from_compound(
         // C-Var1: concrete is subsumed by an existing non-var union member.
         concrete_members
             .iter()
-            .any(|m| Type::is_subtype(concrete, m))
+            .any(|m| Type::is_subtype(concrete, m, Some(&state.tycon_env)))
     } else {
         // C-Var2: an existing non-var intersection member already implies the concrete target.
         concrete_members
             .iter()
-            .any(|m| Type::is_subtype(m, concrete))
+            .any(|m| Type::is_subtype(m, concrete, Some(&state.tycon_env)))
     };
 
     if already_handled {
@@ -2317,49 +2365,6 @@ pub fn unify(
             unify(r1, r2, subst, state, span)
         }
 
-        (Type::Seq(elem1), Type::Seq(elem2)) => unify(elem1, elem2, subst, state, span),
-
-        (Type::Map(k1, v1), Type::Map(k2, v2)) => {
-            // Map keys must be invariant: Map[Int, Str] ≠ Map[Number, Str]
-            // Apply substitution to resolve TypeVars, then check structural equality.
-            // For TypeVars, unify them; for concrete types, enforce invariance.
-            let k1_resolved = subst.apply(k1);
-            let k2_resolved = subst.apply(k2);
-
-            match (&k1_resolved, &k2_resolved) {
-                // If either is still a TypeVar, unify them
-                (Type::TypeVar(_, _), _) | (_, Type::TypeVar(_, _)) => {
-                    unify(&k1_resolved, &k2_resolved, subst, state, span.clone())?;
-                }
-                // For concrete types, enforce strict invariance (no Int <: Number subsumption)
-                (Type::Int, Type::Number)
-                | (Type::Number, Type::Int)
-                | (Type::Float, Type::Number)
-                | (Type::Number, Type::Float) => {
-                    return Err(TypeError::new(
-                        format!(
-                            "Map key types must be invariant: {} vs {}",
-                            k1_resolved, k2_resolved
-                        ),
-                        span,
-                    ));
-                }
-                // For all other concrete types, check structural equality
-                _ if k1_resolved != k2_resolved => {
-                    return Err(TypeError::new(
-                        format!(
-                            "Map key types must be invariant: {} vs {}",
-                            k1_resolved, k2_resolved
-                        ),
-                        span,
-                    ));
-                }
-                _ => {}
-            }
-            // Values are covariant (unify normally)
-            unify(v1, v2, subst, state, span)
-        }
-
         (Type::Proxy, Type::Proxy) => Ok(()),
 
         // Never unification: Never (⊥) unifies with any type — sound because Never is the
@@ -2389,7 +2394,7 @@ pub fn unify(
         (concrete, Type::Negation(inner))
             if !matches!(concrete, Type::TypeVar(..) | Type::Unknown) =>
         {
-            if Type::is_subtype(concrete, inner) {
+            if Type::is_subtype(concrete, inner, Some(&state.tycon_env)) {
                 Err(TypeError::new(
                     format!(
                         "cannot unify {} with ~{}: intersection is Never (T <: A implies T & ~A = \u{2205})",
@@ -2404,7 +2409,7 @@ pub fn unify(
         (Type::Negation(inner), concrete)
             if !matches!(concrete, Type::TypeVar(..) | Type::Unknown) =>
         {
-            if Type::is_subtype(concrete, inner) {
+            if Type::is_subtype(concrete, inner, Some(&state.tycon_env)) {
                 Err(TypeError::new(
                     format!(
                         "cannot unify ~{} with {}: intersection is Never (T <: A implies T & ~A = \u{2205})",
@@ -2424,8 +2429,20 @@ pub fn unify(
         (Type::NetCap, Type::NetCap) => Ok(()),
         (Type::DatagramHandle, Type::DatagramHandle) => Ok(()),
         (Type::QuicDatagramHandle, Type::QuicDatagramHandle) => Ok(()),
-        // Handle: unify capability rows
-        (Type::Handle(cap_a), Type::Handle(cap_b)) => unify(cap_a, cap_b, subst, state, span),
+        // UNIFY-TYCON: two TyCons unify iff they are the same name (generative nominal identity).
+        // TyCon("Seq") does not unify with TyCon("Map") — distinct named constructors are
+        // distinct types regardless of arity or structure. Name equality is sufficient here
+        // because all TyCon values in the codebase are canonical strings ("Seq", "Map",
+        // "Handle", user-defined names from TyConDef), so pointer equality and name equality
+        // coincide. When scoped TyConEnv is consulted for user-defined types (T-938+), the
+        // name lookup via TyConEnv is the correct identity check (one TyConDef per scope frame).
+        (Type::TyCon(n1), Type::TyCon(n2)) => {
+            if n1 == n2 {
+                Ok(())
+            } else {
+                Err(TypeError::type_mismatch(&a, &b, span))
+            }
+        }
 
         // UNIFY-OPERATOR-TO-OPERATOR: bind higher-level Operator to lower-level Operator.
         // Follows Kiselyov L3 invariant (same as TypeVar-to-TypeVar at lines 1837-1860).
@@ -2499,6 +2516,48 @@ pub fn unify(
             Ok(())
         }
 
+        // UNIFY-MAP: Map[K1, V1] ~ Map[K2, V2] — keys must be invariant, values covariant.
+        // Map is represented as App(App(TyCon("Map"), K), V).
+        // This arm intercepts before the general UNIFY-APP to enforce key invariance.
+        (Type::App(_, _), Type::App(_, _)) if a.as_map().is_some() && b.as_map().is_some() => {
+            let (map_k1, map_v1) = a.as_map().unwrap();
+            let (map_k2, map_v2) = b.as_map().unwrap();
+            let k1_resolved = subst.apply(map_k1);
+            let k2_resolved = subst.apply(map_k2);
+
+            match (&k1_resolved, &k2_resolved) {
+                (Type::TypeVar(_, _), _) | (_, Type::TypeVar(_, _)) => {
+                    unify(&k1_resolved, &k2_resolved, subst, state, span.clone())?;
+                }
+                (Type::Int, Type::Number)
+                | (Type::Number, Type::Int)
+                | (Type::Float, Type::Number)
+                | (Type::Number, Type::Float) => {
+                    return Err(TypeError::new(
+                        format!(
+                            "Map key types must be invariant: {} vs {}",
+                            k1_resolved, k2_resolved
+                        ),
+                        span,
+                    ));
+                }
+                _ if k1_resolved != k2_resolved => {
+                    return Err(TypeError::new(
+                        format!(
+                            "Map key types must be invariant: {} vs {}",
+                            k1_resolved, k2_resolved
+                        ),
+                        span,
+                    ));
+                }
+                _ => {}
+            }
+            // Values are covariant (unify normally)
+            let val1 = map_v1.clone();
+            let val2 = map_v2.clone();
+            unify(&val1, &val2, subst, state, span)
+        }
+
         // UNIFY-APP: decompose App(f₁, a₁) vs App(f₂, a₂).
         // Unify constructors first, then apply resulting substitution and unify arguments.
         (Type::App(f1, a1), Type::App(f2, a2)) => {
@@ -2507,36 +2566,6 @@ pub fn unify(
             // Substitution from constructor unification is already in subst and will be
             // applied by the recursive unify() call (via apply_with_visited at the top).
             unify(a1, a2, subst, state, span)
-        }
-
-        // UNIFY-APP-OPERATOR-SEQ: App(Operator(m), a) ~ Seq(T)
-        // Bind m → Operator("Seq"), unify a ~ T.
-        // This enables HKT map type: when unifying `App(Operator(f), Int)` with `Seq Int`,
-        // bind f to the Seq type constructor and unify element types.
-        // The apply_type normalization (lines 1281-1285) handles App(Operator("Seq"), T) → Seq(T).
-        (Type::App(f, a), Type::Seq(t)) if matches!(f.as_ref(), Type::Operator(_)) => {
-            // Bind the operator variable to Seq constructor
-            unify(
-                f.as_ref(),
-                &Type::Operator("Seq".to_string()),
-                subst,
-                state,
-                span.clone(),
-            )?;
-            // Unify the argument types
-            unify(a.as_ref(), t.as_ref(), subst, state, span)
-        }
-
-        // Symmetric: Seq(T) ~ App(Operator(m), a)
-        (Type::Seq(t), Type::App(f, a)) if matches!(f.as_ref(), Type::Operator(_)) => {
-            unify(
-                f.as_ref(),
-                &Type::Operator("Seq".to_string()),
-                subst,
-                state,
-                span.clone(),
-            )?;
-            unify(t.as_ref(), a.as_ref(), subst, state, span)
         }
 
         // Record unification: delegate to row unification
@@ -2721,7 +2750,9 @@ pub fn unify(
         // the original actual/expected roles are lost after structural decomposition.
         // The substitution is not modified (no variables to bind).
         _ if !a.has_inference_vars() && !b.has_inference_vars() => {
-            if Type::is_subtype(&a, &b) || Type::is_subtype(&b, &a) {
+            if Type::is_subtype(&a, &b, Some(&state.tycon_env))
+                || Type::is_subtype(&b, &a, Some(&state.tycon_env))
+            {
                 Ok(())
             } else {
                 Err(TypeError::type_mismatch(&a, &b, span))

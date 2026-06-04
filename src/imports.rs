@@ -314,7 +314,10 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
         caps.insert("Text".to_string(), Type::Bool);
         env.insert(
             "%stdin".to_string(),
-            Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
+            Type::handle(Type::Record(Row {
+                fields: caps,
+                tail: crate::type_def::RowTail::Empty,
+            })),
         );
     }
     // %stdout is Handle[Writable Text] — use __cap_flag_* format consistent with write-handle's type.
@@ -326,17 +329,22 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
             "__cap_flag_writable".to_string(),
             Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             }),
         );
         caps.insert(
             "__cap_flag_text".to_string(),
             Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             }),
         );
         env.insert(
             "%stdout".to_string(),
-            Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
+            Type::handle(Type::Record(Row {
+                fields: caps,
+                tail: crate::type_def::RowTail::Empty,
+            })),
         );
     }
 
@@ -356,7 +364,10 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
         caps.insert("Text".to_string(), Type::Bool);
         builtins_env.insert(
             "%stdin".to_string(),
-            crate::types::Type::Handle(Box::new(Type::Record(crate::types::Row { fields: caps }))),
+            crate::types::Type::handle(Type::Record(crate::types::Row {
+                fields: caps,
+                tail: crate::type_def::RowTail::Empty,
+            })),
         );
     }
     // %stdout — use __cap_flag_* format consistent with write-handle's type expectation.
@@ -366,19 +377,22 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
             "__cap_flag_writable".to_string(),
             crate::types::Type::Record(crate::types::Row {
                 fields: std::collections::HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             }),
         );
         caps.insert(
             "__cap_flag_text".to_string(),
             crate::types::Type::Record(crate::types::Row {
                 fields: std::collections::HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             }),
         );
         builtins_env.insert(
             "%stdout".to_string(),
-            crate::types::Type::Handle(Box::new(crate::types::Type::Record(crate::types::Row {
+            crate::types::Type::handle(crate::types::Type::Record(crate::types::Row {
                 fields: caps,
-            }))),
+                tail: crate::type_def::RowTail::Empty,
+            })),
         );
     }
     // Inject builtin-* aliases for prelude type-checking only.
@@ -647,9 +661,18 @@ fn erase_type_vars(ty: &crate::types::Type) -> crate::types::Type {
                 .iter()
                 .map(|(k, t)| (k.clone(), erase_type_vars(t)))
                 .collect(),
+            tail: match &row.tail {
+                crate::type_def::RowTail::Empty => crate::type_def::RowTail::Empty,
+                crate::type_def::RowTail::Uniform { key, value } => {
+                    crate::type_def::RowTail::Uniform {
+                        key: key.as_ref().map(|k| Box::new(erase_type_vars(k))),
+                        value: Box::new(erase_type_vars(value)),
+                    }
+                }
+            },
         }),
-        Type::Seq(elem) => Type::Seq(Box::new(erase_type_vars(elem))),
-        Type::Map(k, v) => Type::Map(Box::new(erase_type_vars(k)), Box::new(erase_type_vars(v))),
+        Type::App(f, a) => Type::App(Box::new(erase_type_vars(f)), Box::new(erase_type_vars(a))),
+        Type::TyCon(_) => ty.clone(), // TyCon has no type variables
         Type::Union(members) => {
             Type::normalize_union(members.iter().map(erase_type_vars).collect())
         }
@@ -663,7 +686,6 @@ fn erase_type_vars(ty: &crate::types::Type) -> crate::types::Type {
             }
         }
         Type::Negation(inner) => Type::Negation(Box::new(erase_type_vars(inner))),
-        Type::App(f, a) => Type::App(Box::new(erase_type_vars(f)), Box::new(erase_type_vars(a))),
         // Concrete types: return unchanged
         other => other.clone(),
     }
@@ -1156,7 +1178,7 @@ fn apply_include_type_to_node(
                                     .iter()
                                     .map(|(name, ty)| (name.clone(), ty.clone()))
                                     .collect();
-                                let record_ty = Type::Record(Row { fields });
+                                let record_ty = Type::Record(Row { fields, tail: crate::type_def::RowTail::Empty });
                                 // Store at the call expression's span
                                 let key = (node.span.start.offset, node.span.end.offset);
                                 type_map.insert(key, record_ty);
@@ -1291,7 +1313,10 @@ pub fn build_type_env_with_cap(
         caps.insert("Text".to_string(), Type::Bool);
         env.insert(
             "%stdin".to_string(),
-            Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
+            Type::handle(Type::Record(Row {
+                fields: caps,
+                tail: crate::type_def::RowTail::Empty,
+            })),
         );
     }
     // %stdout — use __cap_flag_* format consistent with write-handle's type expectation.
@@ -1303,17 +1328,22 @@ pub fn build_type_env_with_cap(
             "__cap_flag_writable".to_string(),
             Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             }),
         );
         caps.insert(
             "__cap_flag_text".to_string(),
             Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             }),
         );
         env.insert(
             "%stdout".to_string(),
-            Type::Handle(Box::new(Type::Record(Row { fields: caps }))),
+            Type::handle(Type::Record(Row {
+                fields: caps,
+                tail: crate::type_def::RowTail::Empty,
+            })),
         );
     }
     let mut env = Rc::new(env);
@@ -1548,22 +1578,24 @@ mod tests {
         assert_eq!(env.get("%cwd").unwrap().body, Type::DirCap);
         assert_eq!(env.get("%libdir").unwrap().body, Type::DirCap);
         // %stdin is Handle[Readable Text] (updated to use concrete capability row)
-        if let Type::Handle(inner) = &env.get("%stdin").unwrap().body {
+        let stdin_ty = &env.get("%stdin").unwrap().body;
+        if let Some(inner) = stdin_ty.as_handle() {
             assert!(
-                !matches!(inner.as_ref(), Type::Unknown),
+                !matches!(inner, Type::Unknown),
                 "expected Handle with concrete capability row, got Handle(Unknown)"
             );
         } else {
-            panic!("expected Handle type for %stdin");
+            panic!("expected Handle type for %stdin, got: {}", stdin_ty);
         }
         // %stdout is Handle[Writable Text]
-        if let Type::Handle(inner) = &env.get("%stdout").unwrap().body {
+        let stdout_ty = &env.get("%stdout").unwrap().body;
+        if let Some(inner) = stdout_ty.as_handle() {
             assert!(
-                !matches!(inner.as_ref(), Type::Unknown),
+                !matches!(inner, Type::Unknown),
                 "expected Handle with concrete capability row, got Handle(Unknown)"
             );
         } else {
-            panic!("expected Handle type for %stdout");
+            panic!("expected Handle type for %stdout, got: {}", stdout_ty);
         }
     }
 
@@ -1639,7 +1671,7 @@ mod tests {
 
         // Check the injected type is a Record with the expected fields.
         match injected.unwrap() {
-            Type::Record(Row { fields }) => {
+            Type::Record(Row { fields, .. }) => {
                 assert_eq!(
                     fields.get("foo"),
                     Some(&Type::Int),
@@ -1709,9 +1741,9 @@ mod tests {
         );
 
         // The injected value should be a Record with a "read" field.
-        let record_found = type_map
-            .values()
-            .any(|ty| matches!(ty, Type::Record(Row { fields }) if fields.contains_key("read")));
+        let record_found = type_map.values().any(
+            |ty| matches!(ty, Type::Record(Row { fields, .. }) if fields.contains_key("read")),
+        );
         assert!(
             record_found,
             "expected a Record with 'read' field in type_map; got: {:?}",

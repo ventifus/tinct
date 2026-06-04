@@ -1,7 +1,7 @@
-# Seq annotation: @Seq resolves to Type::Seq(Any) in TypeAssert position and
+# Seq annotation: @Seq resolves to App(TyCon("Seq"), Unknown) in TypeAssert position and
 # in function parameter annotations. [@Seq val] checks that val is a sequence;
 # the value passes through unchanged. Seq@String (bare Annotated form) resolves
-# to Type::Seq(Str) via resolve_annotated — only valid as a standalone expression,
+# to App(TyCon("Seq"), Str) via resolve_annotated — only valid as a standalone expression,
 # not in function parameter position (where the parser accepts bare @Seq only).
 [f: [fn [let xs@Seq] xs]
  seq_assert: [@Seq [seq 1 [seq 2 []]]]

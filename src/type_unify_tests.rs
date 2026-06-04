@@ -33,7 +33,10 @@ fn test_resolve_has_field_depth_overflow_errors() {
     // Create a simple record to test depth overflow
     let mut fields = HashMap::new();
     fields.insert("x".to_string(), Type::Int);
-    let record_ty = Type::Record(Row { fields });
+    let record_ty = Type::Record(Row {
+        fields,
+        tail: crate::type_def::RowTail::Empty,
+    });
 
     // Call with depth exceeding MAX_RESOLVE_HAS_FIELD_DEPTH
     let result = resolve_has_field(
@@ -56,11 +59,17 @@ fn test_resolve_has_field_depth_overflow_errors() {
 fn test_types_are_disjoint_single_field_records() {
     let mut fields1 = HashMap::new();
     fields1.insert("x".to_string(), Type::Int);
-    let rec1 = Type::Record(Row { fields: fields1 });
+    let rec1 = Type::Record(Row {
+        fields: fields1,
+        tail: crate::type_def::RowTail::Empty,
+    });
 
     let mut fields2 = HashMap::new();
     fields2.insert("y".to_string(), Type::Str);
-    let rec2 = Type::Record(Row { fields: fields2 });
+    let rec2 = Type::Record(Row {
+        fields: fields2,
+        tail: crate::type_def::RowTail::Empty,
+    });
 
     assert!(
         Type::types_are_disjoint(&rec1, &rec2),
@@ -73,11 +82,17 @@ fn test_types_are_disjoint_single_field_records() {
 fn test_types_are_not_disjoint_same_key_records() {
     let mut fields1 = HashMap::new();
     fields1.insert("x".to_string(), Type::Int);
-    let rec1 = Type::Record(Row { fields: fields1 });
+    let rec1 = Type::Record(Row {
+        fields: fields1,
+        tail: crate::type_def::RowTail::Empty,
+    });
 
     let mut fields2 = HashMap::new();
     fields2.insert("x".to_string(), Type::Str);
-    let rec2 = Type::Record(Row { fields: fields2 });
+    let rec2 = Type::Record(Row {
+        fields: fields2,
+        tail: crate::type_def::RowTail::Empty,
+    });
 
     assert!(
         !Type::types_are_disjoint(&rec1, &rec2),
@@ -91,12 +106,18 @@ fn test_types_are_not_disjoint_multi_field_records() {
     let mut fields1 = HashMap::new();
     fields1.insert("x".to_string(), Type::Int);
     fields1.insert("a".to_string(), Type::Bool);
-    let rec1 = Type::Record(Row { fields: fields1 });
+    let rec1 = Type::Record(Row {
+        fields: fields1,
+        tail: crate::type_def::RowTail::Empty,
+    });
 
     let mut fields2 = HashMap::new();
     fields2.insert("y".to_string(), Type::Str);
     fields2.insert("b".to_string(), Type::Float);
-    let rec2 = Type::Record(Row { fields: fields2 });
+    let rec2 = Type::Record(Row {
+        fields: fields2,
+        tail: crate::type_def::RowTail::Empty,
+    });
 
     assert!(
         !Type::types_are_disjoint(&rec1, &rec2),
@@ -402,12 +423,12 @@ fn test_is_subtype_concrete_to_any_function() {
     };
 
     assert!(
-        Type::is_subtype(&concrete_fn, &any_function),
+        Type::is_subtype(&concrete_fn, &any_function, None),
         "Concrete function should be subtype of any-function"
     );
 
     assert!(
-        !Type::is_subtype(&any_function, &concrete_fn),
+        !Type::is_subtype(&any_function, &concrete_fn, None),
         "Any-function should NOT be subtype of concrete function"
     );
 }
@@ -426,11 +447,11 @@ fn test_is_subtype_any_function_reflexivity() {
     };
 
     assert!(
-        Type::is_subtype(&any_fn1, &any_fn2),
+        Type::is_subtype(&any_fn1, &any_fn2, None),
         "Any-function should be a subtype of any-function (reflexivity — distinct objects)"
     );
     assert!(
-        Type::is_subtype(&any_fn2, &any_fn1),
+        Type::is_subtype(&any_fn2, &any_fn1, None),
         "Any-function subtyping should be symmetric (both directions)"
     );
 }
@@ -638,7 +659,10 @@ fn test_types_are_disjoint_function_vs_record() {
 
     let mut fields = HashMap::new();
     fields.insert("x".to_string(), Type::Int);
-    let record_ty = Type::Record(Row { fields });
+    let record_ty = Type::Record(Row {
+        fields,
+        tail: crate::type_def::RowTail::Empty,
+    });
 
     assert!(
         Type::types_are_disjoint(&fn_ty, &record_ty),
@@ -658,7 +682,7 @@ fn test_types_are_disjoint_function_vs_seq() {
         variadic: true,
     };
 
-    let seq_ty = Type::Seq(Box::new(Type::Int));
+    let seq_ty = Type::seq(Type::Int);
 
     assert!(
         Type::types_are_disjoint(&fn_ty, &seq_ty),
@@ -678,7 +702,7 @@ fn test_types_are_disjoint_function_vs_map() {
         variadic: false,
     };
 
-    let map_ty = Type::Map(Box::new(Type::Str), Box::new(Type::Int));
+    let map_ty = Type::map(Type::Str, Type::Int);
 
     assert!(
         Type::types_are_disjoint(&fn_ty, &map_ty),
@@ -717,8 +741,8 @@ fn test_types_are_not_disjoint_function_vs_function() {
 #[test]
 fn test_handle_capability_partialeq_limitation() {
     // Create two Handle types with different TypeVar names
-    let handle_a = Type::Handle(Box::new(Type::TypeVar("a".to_string(), 0)));
-    let handle_b = Type::Handle(Box::new(Type::TypeVar("b".to_string(), 0)));
+    let handle_a = Type::handle(Type::TypeVar("a".to_string(), 0));
+    let handle_b = Type::handle(Type::TypeVar("b".to_string(), 0));
 
     // PartialEq will return false (structural inequality)
     assert_ne!(
@@ -784,6 +808,7 @@ fn test_reverse_fd_back_propagates_determining_type() {
     instance_fields.insert("1".to_string(), Type::Str); // pos 1 = Str (determined)
     let instance_type = Type::Record(Row {
         fields: instance_fields,
+        tail: crate::type_def::RowTail::Empty,
     });
     let inst = InstanceDecl {
         class_name: "MySeq".to_string(),
@@ -862,6 +887,7 @@ fn test_reverse_fd_does_not_fire_when_not_injective() {
     instance_fields.insert("1".to_string(), Type::Str);
     let instance_type = Type::Record(Row {
         fields: instance_fields,
+        tail: crate::type_def::RowTail::Empty,
     });
     let inst = InstanceDecl {
         class_name: "MyNonInj".to_string(),

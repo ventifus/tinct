@@ -61,6 +61,7 @@ fn doc_env(input: &str) -> Rc<TypeEnv> {
     let mut table = TypeAnnotationTable::new();
     let empty_pipeline = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     let named_types = HashMap::new();
     let (result_env, _ty, errors) = typecheck_surface_document(
@@ -93,6 +94,7 @@ fn doc_env_with_builtins(input: &str) -> Rc<TypeEnv> {
     let mut table = TypeAnnotationTable::new();
     let empty_pipeline = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     let named_types = HashMap::new();
     let (result_env, _ty, errors) = typecheck_surface_document(
@@ -172,6 +174,7 @@ fn file_env_impl(input: &str, with_builtins: bool) -> Rc<TypeEnv> {
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     for doc_spanned in &program.documents {
         let doc = &doc_spanned.node;
@@ -614,6 +617,7 @@ fn test_dot_access_typevar_generates_constraint_verified() {
     let mut table = TypeAnnotationTable::new();
     let empty_pipeline = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     let named_types = HashMap::new();
 
@@ -1144,7 +1148,7 @@ fn test_check_call_with_scheme_non_function_scheme() {
 
 #[test]
 fn test_builtin_range_returns_seq_int() {
-    // Regression test for type-seq sprint: $builtin-range should return Type::Seq(Int).
+    // Regression test for type-seq sprint: $builtin-range should return App(TyCon("Seq"), Int).
     // build_builtins_type_env() registers builtin-range as Fn(Int, Int) -> Seq(Int).
     // (The user-facing $range wrapper lives in prelude.llt and is not present here.)
     let input = "[result: [call $builtin-range 0 10]]";
@@ -1156,6 +1160,7 @@ fn test_builtin_range_returns_seq_int() {
     let mut table = TypeAnnotationTable::new();
     let empty_pipeline = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     let named_types = HashMap::new();
     let (new_env, _ty, errors) = typecheck_surface_document(
@@ -1179,14 +1184,14 @@ fn test_builtin_range_returns_seq_int() {
 
     assert_eq!(
         result_ty,
-        Type::Seq(Box::new(Type::Int)),
+        Type::seq(Type::Int),
         "range should return Seq(Int), got: {result_ty}"
     );
 }
 
 #[test]
 fn test_builtin_keys_returns_seq_str() {
-    // Regression test for type-seq sprint: $keys should return Type::Seq(Str).
+    // Regression test for type-seq sprint: $keys should return App(TyCon("Seq"), Str).
     // build_builtins_type_env() registers keys as Fn(Record) -> Seq(Str).
     let input = "[d: [a: 1  b: 2]]\n[result: [call $keys $d]]";
     let mut program = crate::parse(input).unwrap().program;
@@ -1198,6 +1203,7 @@ fn test_builtin_keys_returns_seq_str() {
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
 
     // Process both documents
@@ -1232,7 +1238,7 @@ fn test_builtin_keys_returns_seq_str() {
     // or strings (record-style). The type accurately reflects both possibilities.
     assert_eq!(
         result_ty,
-        Type::Seq(Box::new(Type::normalize_union(vec![Type::Int, Type::Str]))),
+        Type::seq(Type::normalize_union(vec![Type::Int, Type::Str])),
         "keys should return Seq(Int | Str), got: {result_ty}"
     );
 }
@@ -1250,6 +1256,7 @@ fn test_builtin_plus_does_not_return_seq() {
     let mut table = TypeAnnotationTable::new();
     let empty_pipeline = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     let named_types = HashMap::new();
     let (new_env, _ty, errors) = typecheck_surface_document(
@@ -1273,7 +1280,7 @@ fn test_builtin_plus_does_not_return_seq() {
 
     // Verify it's NOT a Seq — that's the primary invariant this test guards
     assert!(
-        !matches!(result_ty, Type::Seq(_)),
+        result_ty.as_seq().is_none(),
         "+ should not return a Seq type; got: {result_ty}"
     );
 }
@@ -1282,14 +1289,14 @@ fn test_builtin_plus_does_not_return_seq() {
 
 #[test]
 fn test_seq_annotation_bare() {
-    // Bare @Seq resolves to Type::Seq(Type::Unknown) in resolve_type_name
+    // Bare @Seq resolves to App(TyCon("Seq"), Unknown) in resolve_type_name
     // Test via parameter annotation which uses resolve_annotation
     let ty = infer("[fn [let xs@Seq] $xs]");
     match ty {
         Type::Function { params, .. } => {
             assert_eq!(
                 params[0],
-                (Some("xs".to_string()), Type::Seq(Box::new(Type::Unknown)))
+                (Some("xs".to_string()), Type::seq(Type::Unknown))
             );
         }
         other => panic!("expected Function, got {other}"),
@@ -1306,7 +1313,7 @@ fn test_seq_annotation_with_element_type() {
     // bare `@` at top level is only valid inside TypeAssert brackets `[@...]`.
     // The correct bare form is `Seq@String` (identifier followed by ImmediateAt).
     let ty = infer("Seq@String");
-    assert_eq!(ty, Type::Seq(Box::new(Type::Str)));
+    assert_eq!(ty, Type::seq(Type::Str));
 }
 
 #[test]
@@ -1315,7 +1322,7 @@ fn test_null_annotation_bare() {
     let ty = infer("[fn [let x@Null] $x]");
     match ty {
         Type::Function { params, .. } => match &params[0].1 {
-            Type::Record(Row { fields }) => {
+            Type::Record(Row { fields, .. }) => {
                 assert!(fields.is_empty());
             }
             other => panic!("expected Record(Row::empty), got {other}"),
@@ -1329,7 +1336,7 @@ fn test_null_annotation_in_type_assert() {
     // [@Null []] should succeed (empty dict matches Null)
     let ty = infer("[@Null []]");
     match ty {
-        Type::Record(Row { fields }) => {
+        Type::Record(Row { fields, .. }) => {
             assert!(fields.is_empty());
         }
         other => panic!("expected Record(Row::empty), got {other}"),
@@ -1355,7 +1362,7 @@ fn test_null_return_annotation() {
             );
             // Return type should be Null = empty record
             match *ret {
-                Type::Record(Row { ref fields }) => {
+                Type::Record(Row { ref fields, .. }) => {
                     assert!(
                         fields.is_empty(),
                         "fn@Null return type should have no fields, got {:?}",
@@ -1387,6 +1394,7 @@ fn test_builtin_collect_returns_record_not_seq() {
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
 
     // Process both documents
@@ -1421,7 +1429,7 @@ fn test_builtin_collect_returns_record_not_seq() {
     // which is Seq(T) at the type level (integer-keyed Dict = Seq by tinct convention).
     // builtin-range 0 5 returns Seq(Int), so builtin-collect returns Seq(Int).
     assert!(
-        matches!(result_ty, Type::Seq(_)),
+        result_ty.as_seq().is_some(),
         "collect should return Seq(T), got: {result_ty}"
     );
 }
@@ -2999,7 +3007,7 @@ fn test_data_dict_always_closed() {
 fn test_rest_in_data_dict_ignored() {
     let ty = infer("[a: 1 ...]");
     match ty {
-        Type::Record(Row { fields }) => {
+        Type::Record(Row { fields, .. }) => {
             assert_eq!(fields.len(), 1);
             assert_eq!(fields.get("a"), Some(&Type::IntLiteral(1)));
         }
@@ -4379,7 +4387,7 @@ fn test_variadic_param_type_is_any() {
         Type::Function { params, .. } => {
             assert_eq!(params.len(), 1, "variadic function should have 1 param");
             assert!(
-                matches!(&params[0].1, Type::Seq(_)),
+                params[0].1.as_seq().is_some(),
                 "variadic param should have type Seq(T), got: {:?}",
                 params[0]
             );
@@ -4401,7 +4409,7 @@ fn test_variadic_param_type_is_any() {
             );
             // Third param (variadic) must be Seq(T)
             assert!(
-                matches!(&params[2].1, Type::Seq(_)),
+                params[2].1.as_seq().is_some(),
                 "variadic param 'rest' should have type Seq(T), got: {:?}",
                 params[2]
             );
@@ -4421,7 +4429,7 @@ fn test_variadic_param_env_binding_is_any() {
     match ty {
         Type::Function { ret, .. } => {
             assert!(
-                matches!(ret.as_ref(), Type::Seq(_)),
+                ret.as_ref().as_seq().is_some(),
                 "function returning variadic param should have Seq(T) return type, got: {ret:?}"
             );
         }
@@ -4696,6 +4704,7 @@ fn test_level_restored_after_non_dict_record_error() {
     let named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
 
     // Process first document (should succeed)
@@ -5230,6 +5239,7 @@ fn test_check_call_with_scheme_records_func_span_in_type_map() {
     let named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
 
     // Process document 1 (defines `id`)
@@ -5576,7 +5586,7 @@ fn test_check_call_with_scheme_non_function_error() {
 
 #[test]
 fn test_builtin_seq_generators_return_seq_types() {
-    // Regression test for type-seq sprint: sequence-generating builtins should return Type::Seq.
+    // Regression test for type-seq sprint: sequence-generating builtins should return App(TyCon("Seq"), ...).
     // Covers: $builtin-seq, $builtin-repeat, $builtin-cycle, $builtin-iterate, $builtin-unfold, $builtin-take
     // NOTE: $builtin-seq takes (head, tail) args — it's the primitive Seq cons operation.
     // The user-facing wrappers ($seq, $range, $repeat, $cycle, $iterate, $unfold, $take) live in
@@ -5602,6 +5612,7 @@ fn test_builtin_seq_generators_return_seq_types() {
     let mut table = TypeAnnotationTable::new();
     let empty_pipeline = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     let named_types = HashMap::new();
     let (new_env, _ty, errors) = typecheck_surface_document(
@@ -5619,45 +5630,45 @@ fn test_builtin_seq_generators_return_seq_types() {
 
     // $seq should return Seq(Int) — all args are IntLiterals
     let seq_ty = new_env.get("seq_result").unwrap().body.clone();
-    match seq_ty {
-        Type::Seq(_) => {} // success
-        other => panic!("seq should return Seq, got: {other}"),
-    }
+    assert!(
+        seq_ty.as_seq().is_some(),
+        "seq should return Seq, got: {seq_ty}"
+    );
 
     // $repeat should return Seq(Int)
     let repeat_ty = new_env.get("repeat_result").unwrap().body.clone();
-    match repeat_ty {
-        Type::Seq(_) => {} // success
-        other => panic!("repeat should return Seq, got: {other}"),
-    }
+    assert!(
+        repeat_ty.as_seq().is_some(),
+        "repeat should return Seq, got: {repeat_ty}"
+    );
 
     // $cycle should return Seq
     let cycle_ty = new_env.get("cycle_result").unwrap().body.clone();
-    match cycle_ty {
-        Type::Seq(_) => {} // success
-        other => panic!("cycle should return Seq, got: {other}"),
-    }
+    assert!(
+        cycle_ty.as_seq().is_some(),
+        "cycle should return Seq, got: {cycle_ty}"
+    );
 
     // $iterate should return Seq
     let iterate_ty = new_env.get("iterate_result").unwrap().body.clone();
-    match iterate_ty {
-        Type::Seq(_) => {} // success
-        other => panic!("iterate should return Seq, got: {other}"),
-    }
+    assert!(
+        iterate_ty.as_seq().is_some(),
+        "iterate should return Seq, got: {iterate_ty}"
+    );
 
     // $unfold should return Seq
     let unfold_ty = new_env.get("unfold_result").unwrap().body.clone();
-    match unfold_ty {
-        Type::Seq(_) => {} // success
-        other => panic!("unfold should return Seq, got: {other}"),
-    }
+    assert!(
+        unfold_ty.as_seq().is_some(),
+        "unfold should return Seq, got: {unfold_ty}"
+    );
 
     // $take should return Seq
     let take_ty = new_env.get("take_result").unwrap().body.clone();
-    match take_ty {
-        Type::Seq(_) => {} // success
-        other => panic!("take should return Seq, got: {other}"),
-    }
+    assert!(
+        take_ty.as_seq().is_some(),
+        "take should return Seq, got: {take_ty}"
+    );
 }
 
 // -- merge/append RowVar regression --
@@ -6195,6 +6206,7 @@ fn test_union_nullable_pattern() {
     // Union(Int, Record(Empty)) — nullable integer pattern
     let null_type = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     let union = Type::normalize_union(vec![Type::Int, null_type.clone()]);
     match union {
@@ -6400,6 +6412,7 @@ fn test_narrowing_type_map_hover() {
     let mut table = TypeAnnotationTable::new();
     let empty_pipeline = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     let named_types = HashMap::new();
     let _ = typecheck_surface_document(
@@ -7361,6 +7374,7 @@ fn test_collect_pattern_bindings_dict_field_narrowed() {
             m.insert("ok".into(), Type::Int);
             m
         },
+        tail: crate::type_def::RowTail::Empty,
     });
     let mut out = Vec::new();
     collect_pattern_bindings(
@@ -7388,6 +7402,7 @@ fn test_collect_pattern_bindings_dict_missing_field_falls_back_to_unknown() {
     // Dict pattern with key not present in Record → Unknown fallback
     let scrutinee = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     let mut out = Vec::new();
     collect_pattern_bindings(
@@ -7421,7 +7436,7 @@ fn test_collect_pattern_bindings_wildcard_no_bindings() {
 #[test]
 fn test_collect_pattern_bindings_seq_head_tail() {
     // Seq pattern: head gets element type, tail gets Seq(element type)
-    let scrutinee = Type::Seq(Box::new(Type::Int));
+    let scrutinee = Type::seq(Type::Int);
     let mut out = Vec::new();
     collect_pattern_bindings(
         &Pattern::Seq {
@@ -7437,7 +7452,7 @@ fn test_collect_pattern_bindings_seq_head_tail() {
     assert_eq!(h.1, Type::Int, "head should get element type");
     assert_eq!(
         t.1,
-        Type::Seq(Box::new(Type::Int)),
+        Type::seq(Type::Int),
         "tail should get Seq(element type)"
     );
 }
@@ -7742,10 +7757,7 @@ fn test_check_get_map_returns_value_type() {
     // Seed TypeEnv directly with m : Map[String Int] since there is no Map literal syntax in LLT.
     // Resolved by Indexable MPTC FD: Map instance (K, V) → V.
     let mut base_env = crate::builtins::build_builtins_type_env();
-    base_env.insert(
-        "m".to_string(),
-        Type::Map(Box::new(Type::Str), Box::new(Type::Int)),
-    );
+    base_env.insert("m".to_string(), Type::map(Type::Str, Type::Int));
     let env = Rc::new(base_env);
     let mut state = InferState::new();
     let mut program = crate::parse("[result: [builtin-get \"key\" m]]")
@@ -7755,6 +7767,7 @@ fn test_check_get_map_returns_value_type() {
     let mut table = TypeAnnotationTable::new();
     let empty_pipeline = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     let named_types = HashMap::new();
     let (result_env, _ty, errors) = typecheck_surface_document(
@@ -7782,10 +7795,7 @@ fn test_check_get_optional_map_returns_value_or_null() {
     // Resolved by Indexable MPTC FD: Map instance (K, V) → V | Null.
     // Seed TypeEnv directly with m : Map[String Int].
     let mut base_env = crate::builtins::build_builtins_type_env();
-    base_env.insert(
-        "m".to_string(),
-        Type::Map(Box::new(Type::Str), Box::new(Type::Int)),
-    );
+    base_env.insert("m".to_string(), Type::map(Type::Str, Type::Int));
     let env = Rc::new(base_env);
     let mut state = InferState::new();
     let mut program = crate::parse("[result: [get? \"key\" m]]").unwrap().program;
@@ -7793,6 +7803,7 @@ fn test_check_get_optional_map_returns_value_or_null() {
     let mut table = TypeAnnotationTable::new();
     let empty_pipeline = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     let named_types = HashMap::new();
     let (result_env, _ty, errors) = typecheck_surface_document(
@@ -7809,6 +7820,7 @@ fn test_check_get_optional_map_returns_value_or_null() {
     }
     let null_ty = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     match result_env.get("result").map(|s| &s.body) {
         Some(Type::Union(members)) => {
@@ -7854,6 +7866,7 @@ fn test_check_get_optional_record_known_field_returns_field_type_or_null() {
     );
     let null_ty = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     match env.get("result").map(|s| &s.body) {
         Some(Type::Union(members)) => {
@@ -8013,7 +8026,9 @@ fn test_split_returns_seq_str_type() {
     match &split_scheme.body {
         Type::Function { ret, .. } => {
             assert!(
-                matches!(ret.as_ref(), Type::Seq(inner) if matches!(inner.as_ref(), Type::Str)),
+                ret.as_ref()
+                    .as_seq()
+                    .is_some_and(|elem| matches!(elem, Type::Str)),
                 "split return type should be Seq[Str], got {ret}"
             );
         }
@@ -8047,8 +8062,14 @@ fn test_get_union_distribution() {
     let mut fields_b = HashMap::new();
     fields_b.insert("port".to_string(), Type::Str);
     let union_ty = Type::normalize_union(vec![
-        Type::Record(Row { fields: fields_a }),
-        Type::Record(Row { fields: fields_b }),
+        Type::Record(Row {
+            fields: fields_a,
+            tail: crate::type_def::RowTail::Empty,
+        }),
+        Type::Record(Row {
+            fields: fields_b,
+            tail: crate::type_def::RowTail::Empty,
+        }),
     ]);
     base_env.insert("config".to_string(), union_ty);
     let env = Rc::new(base_env);
@@ -8060,6 +8081,7 @@ fn test_get_union_distribution() {
     let mut table = TypeAnnotationTable::new();
     let empty_pipeline = Type::Record(Row {
         fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
     });
     let named_types = HashMap::new();
     let (result_env, _ty, errors) = typecheck_surface_document(
@@ -8860,7 +8882,10 @@ fn test_do_infer_resolve_monad_from_record_with_ok_field() {
     // Unit test for resolve_monad_from_type: a Record with 'ok' field → "result".
     let mut fields = HashMap::new();
     fields.insert("ok".to_string(), Type::Int);
-    let ty = Type::Record(Row { fields });
+    let ty = Type::Record(Row {
+        fields,
+        tail: crate::type_def::RowTail::Empty,
+    });
     let state = InferState::new();
     let resolved = resolve_monad_from_type(&ty, &state);
     assert_eq!(
@@ -8875,7 +8900,10 @@ fn test_do_infer_resolve_monad_from_record_with_err_field() {
     // Unit test for resolve_monad_from_type: a Record with 'err' field → "result".
     let mut fields = HashMap::new();
     fields.insert("err".to_string(), Type::Str);
-    let ty = Type::Record(Row { fields });
+    let ty = Type::Record(Row {
+        fields,
+        tail: crate::type_def::RowTail::Empty,
+    });
     let state = InferState::new();
     let resolved = resolve_monad_from_type(&ty, &state);
     assert_eq!(
@@ -8898,7 +8926,13 @@ fn test_do_infer_resolve_monad_from_union_with_ok_member() {
     // resolve_monad_from_type on Union([Record{ok: Int}, Str]) → "result" (first match).
     let mut ok_fields = HashMap::new();
     ok_fields.insert("ok".to_string(), Type::Int);
-    let ty = Type::Union(vec![Type::Record(Row { fields: ok_fields }), Type::Str]);
+    let ty = Type::Union(vec![
+        Type::Record(Row {
+            fields: ok_fields,
+            tail: crate::type_def::RowTail::Empty,
+        }),
+        Type::Str,
+    ]);
     let state = InferState::new();
     let resolved = resolve_monad_from_type(&ty, &state);
     assert_eq!(
@@ -9588,6 +9622,7 @@ fn test_prelude_instance_cache_seeds_appendable() {
             fields.insert("x".to_string(), Type::Int);
             fields
         },
+        tail: crate::type_def::RowTail::Empty,
     });
     let inst_env_clone = state.instance_env.clone();
     let found = inst_env_clone

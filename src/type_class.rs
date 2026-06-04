@@ -849,10 +849,8 @@ fn count_unresolved_vars(ty: &Type, subst: &crate::types::Substitution) -> usize
                 _ => 0,
             }
         }
-        Type::Seq(elem) => count_unresolved_vars(elem, subst),
-        Type::Map(key, val) => {
-            count_unresolved_vars(key, subst) + count_unresolved_vars(val, subst)
-        }
+        Type::App(f, a) => count_unresolved_vars(f, subst) + count_unresolved_vars(a, subst),
+        Type::TyCon(_) => 0, // TyCon has no vars
         Type::Record(row) => row
             .fields
             .values()
@@ -878,7 +876,6 @@ fn count_unresolved_vars(ty: &Type, subst: &crate::types::Substitution) -> usize
             .map(|m| count_unresolved_vars(m, subst))
             .sum(),
         Type::Negation(inner) => count_unresolved_vars(inner, subst),
-        Type::App(f, a) => count_unresolved_vars(f, subst) + count_unresolved_vars(a, subst),
         Type::TypeStageApp { fn_name: _, args } => {
             args.iter().map(|a| count_unresolved_vars(a, subst)).sum()
         }
@@ -887,7 +884,6 @@ fn count_unresolved_vars(ty: &Type, subst: &crate::types::Substitution) -> usize
             .values()
             .map(|field_ty| count_unresolved_vars(field_ty, subst))
             .sum(),
-        Type::Handle(cap) => count_unresolved_vars(cap, subst),
         // Concrete types: Int, Float, Str, Bool, Number, Unknown, Top, Error, etc.
         _ => 0,
     }
@@ -916,11 +912,11 @@ mod tests {
     use std::collections::HashMap;
 
     fn make_seq_a() -> Type {
-        Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))
+        Type::seq(Type::TypeVar("a".to_string(), 0))
     }
 
     fn make_seq_int() -> Type {
-        Type::Seq(Box::new(Type::Int))
+        Type::seq(Type::Int)
     }
 
     fn make_appendable_instance(instance_type: Type) -> InstanceDecl {
@@ -984,10 +980,8 @@ mod tests {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
-        let seq_a_inst =
-            make_appendable_instance(Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0))));
-        let seq_b_inst =
-            make_appendable_instance(Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0))));
+        let seq_a_inst = make_appendable_instance(Type::seq(Type::TypeVar("a".to_string(), 0)));
+        let seq_b_inst = make_appendable_instance(Type::seq(Type::TypeVar("b".to_string(), 0)));
 
         env.insert(seq_a_inst).unwrap();
 
@@ -1077,13 +1071,17 @@ mod tests {
             "resolved instance should be [Seq Int] (no TypeVars), got: {}",
             resolved.instance_type
         );
-        match &resolved.instance_type {
-            Type::Seq(elem) => assert!(
-                matches!(elem.as_ref(), Type::Int),
+        if let Some(elem) = resolved.instance_type.as_seq() {
+            assert!(
+                matches!(elem, Type::Int),
                 "element of resolved Seq should be Int, got: {}",
                 elem
-            ),
-            other => panic!("resolved instance type should be Seq[Int], got: {}", other),
+            );
+        } else {
+            panic!(
+                "resolved instance type should be Seq[Int], got: {}",
+                resolved.instance_type
+            );
         }
     }
 
@@ -1095,10 +1093,8 @@ mod tests {
         let mut env = InstanceEnv::new();
 
         // Two equally polymorphic instances — both score 1 for any Seq target.
-        let seq_a_inst =
-            make_appendable_instance(Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0))));
-        let seq_b_inst =
-            make_appendable_instance(Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0))));
+        let seq_a_inst = make_appendable_instance(Type::seq(Type::TypeVar("a".to_string(), 0)));
+        let seq_b_inst = make_appendable_instance(Type::seq(Type::TypeVar("b".to_string(), 0)));
 
         env.insert(seq_a_inst).unwrap();
         env.insert(seq_b_inst).unwrap();
@@ -1153,7 +1149,7 @@ mod tests {
             .unwrap();
 
         // Target is Seq[Str] — does not match Seq[Int].
-        let target = Type::Seq(Box::new(Type::Str));
+        let target = Type::seq(Type::Str);
         let resolved = env
             .resolve_instance("Appendable", &target, &mut state)
             .expect("no match should not yield an error");

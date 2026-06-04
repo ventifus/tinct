@@ -3908,9 +3908,13 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             format!("__cap_flag_{}", flag_name.to_lowercase()),
             Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             }),
         );
-        Type::Record(Row { fields })
+        Type::Record(Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        })
     }
 
     // ── Type aliases ──────────────────────────────────────────────────────────
@@ -3971,7 +3975,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (None, Type::Int),
                 (None, Type::Str),
             ],
-            ret: Box::new(Type::Handle(Box::new(cap_flag("readable")))),
+            ret: Box::new(Type::handle(cap_flag("readable"))),
             variadic: false,
         },
     );
@@ -3987,11 +3991,12 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                     None,
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ), // opts dict: no required fields (BAS width subtyping)
-                (None, Type::Handle(Box::new(cap_flag("readable")))), // handle
+                (None, Type::handle(cap_flag("readable"))), // handle
             ],
-            ret: Box::new(Type::Handle(Box::new(cap_flag("readable")))),
+            ret: Box::new(Type::handle(cap_flag("readable"))),
             variadic: false,
         },
     );
@@ -4001,16 +4006,17 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
     env.insert(
         "builtin-tls-peer-cert".to_string(),
         Type::Function {
-            params: vec![(None, Type::Handle(Box::new(cap_flag("readable"))))],
+            params: vec![(None, Type::handle(cap_flag("readable")))],
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::from([
                     ("subject".to_string(), Type::Str),
                     ("issuer".to_string(), Type::Str),
-                    ("sans".to_string(), Type::Seq(Box::new(Type::Str))),
+                    ("sans".to_string(), Type::seq(Type::Str)),
                     ("not-before".to_string(), Type::Int),
                     ("not-after".to_string(), Type::Int),
                     ("spki-sha256".to_string(), Type::Str),
                 ]),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -4029,6 +4035,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -4048,6 +4055,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                     ("addr".to_string(), Type::Str),
                     ("port".to_string(), Type::Int),
                 ]),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -4065,6 +4073,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                     None,
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ), // opts dict (TLS options; no required fields)
             ],
@@ -4078,7 +4087,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
         "quic-open-stream".to_string(),
         Type::Function {
             params: vec![(None, Type::QuicSession)],
-            ret: Box::new(Type::Handle(Box::new(cap_flag("readable")))),
+            ret: Box::new(Type::handle(cap_flag("readable"))),
             variadic: false,
         },
     );
@@ -4104,6 +4113,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                     None,
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ), // opts dict (reserved; no required fields)
             ],
@@ -4139,6 +4149,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                     None,
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ), // headers dict (any dict; BAS width subtyping)
                 (None, Type::Str), // body: runtime calls require_string — Bytes not accepted
@@ -4165,11 +4176,14 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                         "ok".to_string(),
                         Type::Record(Row {
                             fields: HashMap::from([("latency-ms".to_string(), Type::Int)]),
+                            tail: crate::type_def::RowTail::Empty,
                         }),
                     )]),
+                    tail: crate::type_def::RowTail::Empty,
                 }),
                 Type::Record(Row {
                     fields: HashMap::from([("err".to_string(), Type::Str)]),
+                    tail: crate::type_def::RowTail::Empty,
                 }),
             ])),
             variadic: false,

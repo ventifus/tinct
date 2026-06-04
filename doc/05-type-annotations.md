@@ -629,7 +629,7 @@ Annotation brackets `@[...]` are resolved by evaluating their contents in the ty
 
 @[Seq Int]
 # eval("Seq Int", type_stage_env) → [kind: "seq"  element: [kind: "named"  name: "Int"]]
-# dict_to_type → Type::Seq(Type::Int)
+# dict_to_type → App(TyCon("Seq"), Int)
 === error
 error: @ annotations outside type-assert or param contexts not yet supported
  --> block 27:1:1

@@ -17,6 +17,23 @@ use crate::ast::Span;
 // We need to import it for check_kind_wellformed
 use crate::types::TypeError;
 
+/// Tail of a row type — either closed (no additional fields) or uniform (additional fields
+/// all have the same value type, optionally also constrained to a specific key type).
+///
+/// `Empty` = closed record: `{f1: T1, f2: T2}` — no other fields allowed.
+/// `Uniform { key: None, value: V }` = open record with uniform value type: `{f1: T1, _ : V}`
+///   — any additional field must have value type V.
+/// `Uniform { key: Some(K), value: V }` = typed-key column constraint: `{f1: T1, _@K : V}`
+///   — additional fields' keys must have type K, values type V.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum RowTail {
+    Empty,
+    Uniform {
+        key: Option<Box<Type>>,
+        value: Box<Type>,
+    },
+}
+
 /// Row representation for record types.
 ///
 /// `fields` uses `HashMap` because row field order is semantically irrelevant at the type level —
@@ -24,12 +41,13 @@ use crate::types::TypeError;
 /// deterministic output. Runtime `Value::Dict` keeps `IndexMap` for ordered user-visible
 /// semantics; this HashMap is only at the type-inference layer.
 ///
-/// Under Boolean-Algebraic Subtyping (BAS), all records are closed: openness is expressed via
-/// width subtyping in `is_subtype` (a record with MORE fields satisfies an annotation with FEWER
-/// fields). There are no row-variable tails.
+/// `tail` constrains the non-named portion of the row. `RowTail::Empty` is the default for
+/// all current closed-record constructions. `RowTail::Uniform` is produced when parsing
+/// `{_ : V}` or `{_@K : V}` annotation syntax (column constraints).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
     pub fields: HashMap<String, Type>, // known fields {l₁: τ₁, l₂: τ₂, ...}
+    pub tail: RowTail,
 }
 
 /// Kind for higher-kinded types (Jones 1993)
@@ -95,6 +113,41 @@ impl fmt::Display for Label {
     }
 }
 
+/// Variance annotation for type parameters.
+/// Used in TyConDef to specify how type arguments vary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variance {
+    /// Type parameter appears only in positive positions (e.g., return types)
+    Covariant,
+    /// Type parameter appears only in negative positions (e.g., function arguments)
+    Contravariant,
+    /// Type parameter appears in both positive and negative positions
+    Invariant,
+    /// Type parameter does not appear in the type body (phantom type)
+    Phantom,
+}
+
+/// Type constructor definition.
+/// Stores variance information and constructor tags for user-defined types.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TyConDef {
+    /// Variance for each type parameter
+    pub variance: Vec<Variance>,
+    /// Constructors as (tag, arity) pairs
+    pub constructors: Vec<(String, usize)>,
+    /// Optional builtin type discriminant (e.g., "Seq", "Map")
+    pub builtin_type: Option<String>,
+}
+
+impl TyConDef {
+    pub fn arity(&self) -> usize {
+        self.variance.len()
+    }
+}
+
+/// Type constructor environment mapping type constructor names to their definitions
+pub type TyConEnv = HashMap<String, TyConDef>;
+
 #[derive(Debug, Clone)]
 pub enum Type {
     Int,
@@ -116,8 +169,6 @@ pub enum Type {
         ret: Box<Type>,
         variadic: bool,
     },
-    Seq(Box<Type>),
-    Map(Box<Type>, Box<Type>), // Map[K V] — homogeneous map with key type and value type
     Proxy,
     #[allow(clippy::enum_variant_names)]
     /// Type variable for parametric polymorphism.
@@ -148,11 +199,6 @@ pub enum Type {
     /// Network capability — wraps host allowlist. Injected via CLI --cap-net.
     /// Represents authority to connect to specific network hosts.
     NetCap,
-    /// File/stream handle — wraps Box<dyn BufRead>. Created by `open` or `connect`.
-    /// Represents authority to read/write a specific open resource.
-    /// The inner type is a Row describing capabilities (e.g., Handle[Readable Writable]).
-    /// Type::Unknown as the inner type means "unknown capabilities" (gradual typing).
-    Handle(Box<Type>),
     /// URI — uniform resource identifier with scheme. Represents capability-tagged URLs.
     Uri,
     /// UTC timestamp (nanoseconds since Unix epoch) — created by `parse-timestamp` or `now`.
@@ -197,9 +243,13 @@ pub enum Type {
     /// #Ok & #Err via S-ClsBot) become Never. In annotation syntax: @Never.
     Never,
     /// Type constructor application — `App(f, a)` represents type constructor `f` applied to type `a`.
-    /// Example: `App(Operator("m"), Int)` for a monad of integers.
-    /// When resolved to a builtin (e.g., `f` = `Seq`), normalized to the builtin form `Seq(a)`.
+    /// Example: `App(TyCon("Seq"), Int)` for a sequence of integers.
+    /// Example: `App(App(TyCon("Map"), Str), Int)` for Map[Str, Int] (curried).
     App(Box<Type>, Box<Type>),
+    /// Named type constructor — a concrete type constructor like `Seq`, `Map`, or `Handle`.
+    /// Used as the head of `App` chains: `App(TyCon("Seq"), Int)` = Seq[Int].
+    /// Display: just the name (e.g., `Seq`).
+    TyCon(String),
     /// Type constructor variable — represents a type constructor like `m` in `Monad m`.
     /// Kind: `Operator` (i.e., `* → *`). Used in typeclass constraints and generic functions.
     Operator(String),
@@ -253,8 +303,6 @@ impl PartialEq for Type {
                     && r1 == r2
                     && v1 == v2
             }
-            (Type::Seq(e1), Type::Seq(e2)) => e1 == e2,
-            (Type::Map(k1, v1), Type::Map(k2, v2)) => k1 == k2 && v1 == v2,
             (Type::Proxy, Type::Proxy) => true,
             (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
             (Type::Unknown, Type::Unknown) => true,
@@ -262,21 +310,6 @@ impl PartialEq for Type {
             (Type::Error, Type::Error) => true,
             (Type::DirCap, Type::DirCap) => true,
             (Type::NetCap, Type::NetCap) => true,
-            // Handle: structural equality on the capability row.
-            //
-            // Two Handle types are equal iff their capability rows are structurally
-            // identical (including TypeVar names). PartialEq does not have access to
-            // the active Substitution, so it cannot resolve TypeVar aliases — two
-            // capability rows that differ only in TypeVar names (e.g., TypeVar("a")
-            // vs TypeVar("b")) will compare as unequal even if the vars are unified
-            // in the current substitution context. This is correct PartialEq
-            // semantics: equality is determined by structural identity, not
-            // substitution-aware equivalence. Unification uses `unify()` which
-            // recursively unifies capability rows via substitution; PartialEq is only
-            // used for fast-path identity checks where false negatives are safe
-            // (conservative: two handles that might be equivalent are treated as
-            // distinct rather than silently collapsing).
-            (Type::Handle(cap1), Type::Handle(cap2)) => cap1 == cap2,
             (Type::Uri, Type::Uri) => true,
             (Type::Timestamp, Type::Timestamp) => true,
             (Type::Duration, Type::Duration) => true,
@@ -292,6 +325,7 @@ impl PartialEq for Type {
             (Type::Negation(t1), Type::Negation(t2)) => t1 == t2,
             (Type::Never, Type::Never) => true,
             (Type::App(f1, a1), Type::App(f2, a2)) => f1 == f2 && a1 == a2,
+            (Type::TyCon(n1), Type::TyCon(n2)) => n1 == n2,
             (Type::Operator(name1), Type::Operator(name2)) => name1 == name2,
             (
                 Type::TypeStageApp {
@@ -350,12 +384,12 @@ impl std::hash::Hash for Type {
             | Type::Never => {}
             Type::IntLiteral(v) => v.hash(state),
             Type::StringLiteral(s) => s.hash(state),
-            Type::Handle(cap) => cap.hash(state),
             Type::Record(row) => {
                 // Hash fields in sorted order for deterministic hashing
                 let mut fields: Vec<_> = row.fields.iter().collect();
                 fields.sort_by_key(|(k, _)| *k);
                 fields.hash(state);
+                row.tail.hash(state);
             }
             Type::Function {
                 params,
@@ -369,11 +403,6 @@ impl std::hash::Hash for Type {
                 ret.hash(state);
                 variadic.hash(state);
             }
-            Type::Seq(elem) => elem.hash(state),
-            Type::Map(k, v) => {
-                k.hash(state);
-                v.hash(state);
-            }
             Type::TypeVar(name, _) => name.hash(state), // Ignore level
             Type::Union(members) => members.hash(state),
             Type::Intersection(members) => members.hash(state),
@@ -382,6 +411,7 @@ impl std::hash::Hash for Type {
                 f.hash(state);
                 a.hash(state);
             }
+            Type::TyCon(name) => name.hash(state),
             Type::Operator(name) => name.hash(state),
             Type::TypeStageApp { fn_name, args } => {
                 fn_name.hash(state);
@@ -393,6 +423,7 @@ impl std::hash::Hash for Type {
                 let mut field_vec: Vec<_> = fields.fields.iter().collect();
                 field_vec.sort_by_key(|(k, _)| *k);
                 field_vec.hash(state);
+                fields.tail.hash(state);
             }
         }
     }
@@ -401,6 +432,33 @@ impl std::hash::Hash for Type {
 /// Maximum recursion depth for subtype checking.
 /// Prevents stack overflow on pathological recursive types (defense-in-depth).
 const MAX_SUBTYPE_DEPTH: usize = 256;
+
+/// Extract the root TyCon name and ordered argument list from a curried App chain.
+///
+/// `App(App(TyCon("Map"), K), V)` → `Some(("Map", [&K, &V]))`
+/// `App(TyCon("Seq"), T)`         → `Some(("Seq", [&T]))`
+/// `TyCon("Foo")`                 → `Some(("Foo", []))`  (zero-arity)
+/// Any other form                 → `None`
+///
+/// Arguments are returned in application order (left-to-right): the leftmost parameter of
+/// the original `[type Foo a b]` declaration is `args[0]`, the rightmost is `args[n-1]`.
+fn extract_tycon_spine<'a>(ty: &'a Type) -> Option<(&'a str, Vec<&'a Type>)> {
+    let mut args = Vec::new();
+    let mut cur = ty;
+    loop {
+        match cur {
+            Type::App(f, a) => {
+                args.push(a.as_ref());
+                cur = f;
+            }
+            Type::TyCon(name) => {
+                args.reverse();
+                return Some((name.as_str(), args));
+            }
+            _ => return None,
+        }
+    }
+}
 
 impl Type {
     /// Subtype relation with depth guard (defense-in-depth).
@@ -412,11 +470,20 @@ impl Type {
     /// Post gradual-typing-split (B2): Top is the true supertype (τ <: Top for all τ). Unknown
     /// is NOT in the subtype lattice — Unknown relates to other types via consistency (~), not
     /// subtyping (<:). See is_consistent() for the consistency relation.
-    pub fn is_subtype(sub: &Type, sup: &Type) -> bool {
-        Self::is_subtype_inner(sub, sup, 0)
+    pub fn is_subtype(
+        sub: &Type,
+        sup: &Type,
+        tycon_env: Option<&crate::type_def::TyConEnv>,
+    ) -> bool {
+        Self::is_subtype_inner(sub, sup, tycon_env, 0)
     }
 
-    fn is_subtype_inner(sub: &Type, sup: &Type, depth: usize) -> bool {
+    fn is_subtype_inner(
+        sub: &Type,
+        sup: &Type,
+        tycon_env: Option<&crate::type_def::TyConEnv>,
+        depth: usize,
+    ) -> bool {
         // Depth guard: prevent unbounded recursion on pathological recursive types
         if depth >= MAX_SUBTYPE_DEPTH {
             return false;
@@ -441,20 +508,70 @@ impl Type {
         }
         match (sub, sup) {
             (a, b) if a == b => true,
-            (Type::Seq(sub_elem), Type::Seq(sup_elem)) => {
-                Self::is_subtype_inner(sub_elem, sup_elem, depth + 1)
+            // App(f1, a1) <: App(f2, a2): variance-directed via TyConEnv when available.
+            // TyCon("Seq") App: Seq[A] <: Seq[B] when A <: B (covariant).
+            // TyCon("Map") App: Map[K,V1] <: Map[K,V2] when V1 <: V2 (K invariant).
+            //
+            // Curried multi-parameter types: App(App(TyCon("Map"),K),V) must walk the full
+            // spine to find the root TyCon and look up variance for EACH parameter position.
+            // Falling through to structural recursion would treat every outer-App argument as
+            // covariant regardless of the declared variance — incorrect for invariant params.
+            (Type::App(f1, a1), Type::App(f2, a2)) => {
+                // sub and sup are the original App types — pass them directly to avoid
+                // cloning. The destructured f1/a1/f2/a2 are still used in the fallback below.
+                if let (Some((name1, args1)), Some((name2, args2))) =
+                    (extract_tycon_spine(sub), extract_tycon_spine(sup))
+                {
+                    if name1 == name2 && args1.len() == args2.len() {
+                        // Both are curried applications of the same TyCon.
+                        if let Some(env) = tycon_env {
+                            if let Some(def) = env.get(name1) {
+                                // Check each argument position using its declared variance.
+                                for (i, (sub_arg, sup_arg)) in
+                                    args1.iter().zip(args2.iter()).enumerate()
+                                {
+                                    let var =
+                                        def.variance.get(i).copied().unwrap_or(Variance::Invariant);
+                                    let ok = match var {
+                                        Variance::Covariant => Self::is_subtype_inner(
+                                            sub_arg,
+                                            sup_arg,
+                                            tycon_env,
+                                            depth + 1,
+                                        ),
+                                        Variance::Contravariant => Self::is_subtype_inner(
+                                            sup_arg,
+                                            sub_arg,
+                                            tycon_env,
+                                            depth + 1,
+                                        ),
+                                        Variance::Invariant => sub_arg == sup_arg,
+                                        Variance::Phantom => true,
+                                    };
+                                    if !ok {
+                                        return false;
+                                    }
+                                }
+                                return true;
+                            }
+                        }
+                        // No env or no def: conservative invariant fallback for all positions.
+                        return args1.iter().zip(args2.iter()).all(|(a, b)| a == b);
+                    }
+                }
+                // Different TyCons, or non-TyCon App (e.g., type-function application):
+                // recurse structurally on both components.
+                Self::is_subtype_inner(f1, f2, tycon_env, depth + 1)
+                    && Self::is_subtype_inner(a1, a2, tycon_env, depth + 1)
             }
-            // Map[K V1] <: Map[K V2] when V1 <: V2 (V covariant, K invariant via ==)
-            (Type::Map(k1, v1), Type::Map(k2, v2)) => {
-                k1 == k2 && Self::is_subtype_inner(v1, v2, depth + 1)
-            }
+            (Type::TyCon(n1), Type::TyCon(n2)) => n1 == n2,
             (Type::IntLiteral(_), Type::Int | Type::Number) => true,
             (Type::StringLiteral(_), Type::Str) => true,
             (Type::Int | Type::Float, Type::Number) => true,
             // [UNION-INJ-L] and [UNION-INJ-R]: any member is a subtype of the union
             (sub_ty, Type::Union(sup_members)) => sup_members
                 .iter()
-                .any(|member| Self::is_subtype_inner(sub_ty, member, depth + 1)),
+                .any(|member| Self::is_subtype_inner(sub_ty, member, tycon_env, depth + 1)),
             // [S-RcdTop] (BAS width subtyping): A union of closed single-field records with
             // disjoint field names is equivalent to Top in the BAS lattice.  The union
             // `{x: τ} | {y: π}` cannot be refined further by structural subtyping — together
@@ -471,7 +588,7 @@ impl Type {
             // [UNION-ELIM]: union is a subtype iff ALL members are subtypes
             (Type::Union(sub_members), sup_ty) => sub_members
                 .iter()
-                .all(|member| Self::is_subtype_inner(member, sup_ty, depth + 1)),
+                .all(|member| Self::is_subtype_inner(member, sup_ty, tycon_env, depth + 1)),
             // [S-ClsBot] (nominal disjointness / structural annihilation): An intersection of
             // two or more closed single-field records with DIFFERENT field names is uninhabited
             // — no value can simultaneously be `{x: τ}` (exactly field x) and `{y: π}`
@@ -484,26 +601,22 @@ impl Type {
             // [INTERSECT-INTRO]: intersection is a subtype of any of its members
             (Type::Intersection(sub_members), sup_ty) => sub_members
                 .iter()
-                .any(|member| Self::is_subtype_inner(member, sup_ty, depth + 1)),
+                .any(|member| Self::is_subtype_inner(member, sup_ty, tycon_env, depth + 1)),
             // [INTERSECT-ELIM]: type is a subtype of intersection iff it's a subtype of ALL members
             (sub_ty, Type::Intersection(sup_members)) => sup_members
                 .iter()
-                .all(|member| Self::is_subtype_inner(sub_ty, member, depth + 1)),
+                .all(|member| Self::is_subtype_inner(sub_ty, member, tycon_env, depth + 1)),
             // Negation: A <: ~B iff A and B are disjoint (for now, conservative: only reflexive negation)
             // Full BAS subtyping requires RDNF normalization — this is a placeholder
             (Type::Negation(t1), Type::Negation(t2)) => {
-                Self::is_subtype_inner(t2, t1, depth + 1) // contravariant
+                Self::is_subtype_inner(t2, t1, tycon_env, depth + 1) // contravariant
             }
             // Negation subtyping: T <: ~A iff T and A are disjoint (no values in common).
             // Full BAS uses RDNF normalization to compute T ∩ A = Never, but we use a
             // conservative syntactic disjointness check that catches obvious cases like
             // Int <: ~String (true) and Int <: ~Int (false).
             (sub_ty, Type::Negation(a)) => Type::types_are_disjoint(sub_ty, a),
-            // Handle: covariant in capability row
-            // Handle[Readable Writable] <: Handle[Readable] because more capabilities satisfy fewer
-            (Type::Handle(sub_cap), Type::Handle(sup_cap)) => {
-                Self::is_subtype_inner(sub_cap, sup_cap, depth + 1)
-            }
+            // Note: Handle[cap] is now App(TyCon("Handle"), cap); handled by the App arm above.
             // Capability types: reflexive only (DirCap <: DirCap, etc.)
             // The equality check at the top of the match handles this, but we document it here.
             // All capability types are subtypes of Any (handled by Any short-circuit above).
@@ -518,7 +631,7 @@ impl Type {
                 for (k, sup_ty) in &sup_row.fields {
                     match sub_row.fields.get(k) {
                         Some(sub_ty) => {
-                            if !Self::is_subtype_inner(sub_ty, sup_ty, depth + 1) {
+                            if !Self::is_subtype_inner(sub_ty, sup_ty, tycon_env, depth + 1) {
                                 return false;
                             }
                         }
@@ -531,8 +644,78 @@ impl Type {
                     }
                 }
 
-                // All required fields from sup are present in sub with compatible types.
-                // Tail check: under BAS all tails are Empty; sub may have extra fields (width subtyping).
+                // Tail subtyping rules for RowTail::Uniform:
+                //
+                // [S-ROW-CLOSED-TO-UNIFORM]: {f1:T1, ..., fn:Tn, Empty} <: {Uniform(None, V)}
+                //     when all Ti <: V
+                // [S-UNIFORM-COV]: {Uniform(None, V1)} <: {Uniform(None, V2)}
+                //     when V1 <: V2  (covariant in value)
+                // [S-MIXED-TO-UNIFORM]: {fi:Ti, Uniform(None, V1)} <: {Uniform(None, V2)}
+                //     when Ti <: V2 and V1 <: V2
+                // [S-TYPED-KEY-UNIFORM]: {Uniform(Some(K1), V1)} <: {Uniform(Some(K2), V2)}
+                //     when K1 <: K2 and V1 <: V2
+                // [S-KEYED-TO-UNKEYED]: {Uniform(Some(K), V)} <: {Uniform(None, V)}  always
+                match (&sub_row.tail, &sup_row.tail) {
+                    // sub has Empty tail, sup has Empty tail — allowed (width subtyping above satisfied)
+                    (RowTail::Empty, RowTail::Empty) => {}
+                    // sub is closed/empty, sup has Uniform constraint — all sub fields must satisfy V
+                    // [S-ROW-CLOSED-TO-UNIFORM] and [S-MIXED-TO-UNIFORM]
+                    (
+                        sub_tail,
+                        RowTail::Uniform {
+                            key: sup_key,
+                            value: sup_v,
+                        },
+                    ) => {
+                        // sub's named fields must all be subtypes of sup_v
+                        for sub_field_ty in sub_row.fields.values() {
+                            if !Self::is_subtype_inner(sub_field_ty, sup_v, tycon_env, depth + 1) {
+                                return false;
+                            }
+                        }
+                        // sub's own Uniform value type must also satisfy sup_v
+                        if let RowTail::Uniform {
+                            key: sub_key,
+                            value: sub_v,
+                        } = sub_tail
+                        {
+                            if !Self::is_subtype_inner(sub_v, sup_v, tycon_env, depth + 1) {
+                                return false;
+                            }
+                            // Key compatibility: if sup has a key constraint, sub must have one too
+                            // [S-TYPED-KEY-UNIFORM]: sub key <: sup key
+                            // [S-KEYED-TO-UNKEYED]: if sup has no key constraint, any sub key is fine
+                            if let Some(sup_k) = sup_key {
+                                match sub_key {
+                                    Some(sub_k) => {
+                                        if !Self::is_subtype_inner(
+                                            sub_k,
+                                            sup_k,
+                                            tycon_env,
+                                            depth + 1,
+                                        ) {
+                                            return false;
+                                        }
+                                    }
+                                    None => {
+                                        // sup requires a key type constraint but sub has none — reject
+                                        return false;
+                                    }
+                                }
+                            }
+                            // sup has no key constraint (None) — sub's key constraint is fine regardless
+                        }
+                        // sub is Empty (closed) with a Uniform sup — fine if all fields satisfy V (done above)
+                    }
+                    // sub has Uniform tail but sup is Empty — sub can have extra fields sup doesn't know about
+                    // This is never a subtype: {_: V} might have additional fields beyond what Empty allows.
+                    (RowTail::Uniform { .. }, RowTail::Empty) => {
+                        // A Uniform-tailed sub cannot be proven to be a subtype of a closed sup.
+                        // The Uniform tail means sub may have additional fields; sup (Empty) does not allow them.
+                        return false;
+                    }
+                }
+
                 true
             }
             (
@@ -564,7 +747,7 @@ impl Type {
                     match (&**sub_r, &**sup_r) {
                         (Type::Unknown, Type::Unknown) => return true,
                         _ if sub_r == sup_r => return true,
-                        _ => return Self::is_subtype_inner(sub_r, sup_r, depth + 1),
+                        _ => return Self::is_subtype_inner(sub_r, sup_r, tycon_env, depth + 1),
                     }
                 }
 
@@ -584,15 +767,10 @@ impl Type {
                     && sub_p.len() == sup_p.len()
                     && sub_p.iter().zip(sup_p.iter()).all(
                         |((_sp_name, sp_ty), (_pp_name, pp_ty))| {
-                            Self::is_subtype_inner(pp_ty, sp_ty, depth + 1)
+                            Self::is_subtype_inner(pp_ty, sp_ty, tycon_env, depth + 1)
                         },
                     )
-                    && Self::is_subtype_inner(sub_r, sup_r, depth + 1)
-            }
-            // App and Operator: structural equality for now (full BAS rules in hkt-bas).
-            // App(f1, a1) <: App(f2, a2) requires f1 = f2 and a1 <: a2 (covariant).
-            (Type::App(f1, a1), Type::App(f2, a2)) => {
-                f1 == f2 && Self::is_subtype_inner(a1, a2, depth + 1)
+                    && Self::is_subtype_inner(sub_r, sup_r, tycon_env, depth + 1)
             }
             // Operator variables are treated like TypeVars for subtyping purposes.
             (Type::Operator(m1), Type::Operator(m2)) => m1 == m2,
@@ -617,7 +795,7 @@ impl Type {
                 for (k, sup_ty) in &fields2.fields {
                     match fields1.fields.get(k) {
                         Some(sub_ty) => {
-                            if !Self::is_subtype_inner(sub_ty, sup_ty, depth + 1) {
+                            if !Self::is_subtype_inner(sub_ty, sup_ty, tycon_env, depth + 1) {
                                 return false;
                             }
                         }
@@ -667,11 +845,11 @@ impl Type {
             // Top accepts everything
             (_, Type::Top) => true,
             // Structural recursion — consistent subtyping throughout all composite types.
-            // Every type that can structurally contain Unknown gets its own arm here.
-            (Type::Seq(a), Type::Seq(b)) => Self::is_consistent_subtype(a, b),
-            (Type::Map(k1, v1), Type::Map(k2, v2)) => {
-                Self::is_consistent_subtype(k1, k2) && Self::is_consistent_subtype(v1, v2)
+            // App covers Seq[A] ~<: Seq[B] (TyCon("Seq") head) and Map similarly.
+            (Type::App(f1, a1), Type::App(f2, a2)) => {
+                Self::is_consistent_subtype(f1, f2) && Self::is_consistent_subtype(a1, a2)
             }
+            (Type::TyCon(n1), Type::TyCon(n2)) => n1 == n2,
             (Type::Record(sub_row), Type::Record(sup_row)) => {
                 // Width subtyping: sub must supply every field sup requires.
                 // Field types use consistent subtyping: Unknown field ~<: any annotation.
@@ -738,7 +916,7 @@ impl Type {
             // Remaining cases (NominalVariant, Handle at static level, etc.): fall to is_subtype.
             // Safe because ground_type_of never produces these with Unknown at structural depth
             // (Handle → Unknown, Variant fields → empty row).
-            _ => Self::is_subtype(sub, sup),
+            _ => Self::is_subtype(sub, sup, None),
         }
     }
 
@@ -805,18 +983,6 @@ impl Type {
             (Type::Bool, Type::Record(_)) => true,
             (Type::Bytes, Type::Record(_)) => true,
 
-            // Seq vs primitives
-            (Type::Seq(_), Type::Int | Type::IntLiteral(_)) => true,
-            (Type::Seq(_), Type::Float) => true,
-            (Type::Seq(_), Type::Str | Type::StringLiteral(_)) => true,
-            (Type::Seq(_), Type::Bool) => true,
-            (Type::Seq(_), Type::Bytes) => true,
-            (Type::Int | Type::IntLiteral(_), Type::Seq(_)) => true,
-            (Type::Float, Type::Seq(_)) => true,
-            (Type::Str | Type::StringLiteral(_), Type::Seq(_)) => true,
-            (Type::Bool, Type::Seq(_)) => true,
-            (Type::Bytes, Type::Seq(_)) => true,
-
             // Function vs primitives (for precise false-branch narrowing after fn? guards)
             (Type::Function { .. }, Type::Int | Type::IntLiteral(_)) => true,
             (Type::Function { .. }, Type::Float) => true,
@@ -831,14 +997,12 @@ impl Type {
             (Type::Bool, Type::Function { .. }) => true,
             (Type::Bytes, Type::Function { .. }) => true,
 
-            // Function vs structural types (Record, Seq, Map, NominalVariant)
+            // Function vs structural types (Record, NominalVariant, App)
             (Type::Function { .. }, Type::Record(_)) => true,
-            (Type::Function { .. }, Type::Seq(_)) => true,
-            (Type::Function { .. }, Type::Map(_, _)) => true,
+            (Type::Function { .. }, Type::App(_, _)) => true,
             (Type::Function { .. }, Type::NominalVariant { .. }) => true,
             (Type::Record(_), Type::Function { .. }) => true,
-            (Type::Seq(_), Type::Function { .. }) => true,
-            (Type::Map(_, _), Type::Function { .. }) => true,
+            (Type::App(_, _), Type::Function { .. }) => true,
             (Type::NominalVariant { .. }, Type::Function { .. }) => true,
 
             // NominalVariant vs primitives
@@ -847,15 +1011,13 @@ impl Type {
             (Type::NominalVariant { .. }, Type::Str | Type::StringLiteral(_)) => true,
             (Type::NominalVariant { .. }, Type::Bool) => true,
             (Type::NominalVariant { .. }, Type::Bytes) => true,
-            (Type::NominalVariant { .. }, Type::Seq(_)) => true,
-            (Type::NominalVariant { .. }, Type::Map(_, _)) => true,
+            (Type::NominalVariant { .. }, Type::App(_, _)) => true,
             (Type::Int | Type::IntLiteral(_), Type::NominalVariant { .. }) => true,
             (Type::Float, Type::NominalVariant { .. }) => true,
             (Type::Str | Type::StringLiteral(_), Type::NominalVariant { .. }) => true,
             (Type::Bool, Type::NominalVariant { .. }) => true,
             (Type::Bytes, Type::NominalVariant { .. }) => true,
-            (Type::Seq(_), Type::NominalVariant { .. }) => true,
-            (Type::Map(_, _), Type::NominalVariant { .. }) => true,
+            (Type::App(_, _), Type::NominalVariant { .. }) => true,
 
             // Union: disjoint if ALL members are disjoint from the other type
             (Type::Union(members), t) | (t, Type::Union(members)) => {
@@ -867,12 +1029,16 @@ impl Type {
                 members.iter().any(|m| Type::types_are_disjoint(m, t))
             }
 
-            // Two single-field records with DIFFERENT keys are disjoint (S-RcdTop).
+            // Two single-field CLOSED records with DIFFERENT keys are disjoint (S-RcdTop).
             // {x: T} and {y: U} where x ≠ y have no values in common — no record can
             // satisfy both field requirements. This improves Negation subtyping precision
             // without requiring full RDNF normalization.
+            // Records with Uniform tails are open and do not satisfy S-RcdTop disjointness.
             (Type::Record(row1), Type::Record(row2))
-                if row1.fields.len() == 1 && row2.fields.len() == 1 =>
+                if row1.fields.len() == 1
+                    && row2.fields.len() == 1
+                    && row1.tail == RowTail::Empty
+                    && row2.tail == RowTail::Empty =>
             {
                 let key1 = row1.fields.keys().next().unwrap();
                 let key2 = row2.fields.keys().next().unwrap();
@@ -921,10 +1087,11 @@ impl Type {
         }
         // Structural decomposition
         match (a, b) {
-            (Type::Seq(e1), Type::Seq(e2)) => Type::is_consistent(e1, e2),
-            (Type::Map(k1, v1), Type::Map(k2, v2)) => {
-                Type::is_consistent(k1, k2) && Type::is_consistent(v1, v2)
+            // App covers Seq[A] ~ Seq[B] (TyCon("Seq") head) and Map similarly.
+            (Type::App(f1, a1), Type::App(f2, a2)) => {
+                Type::is_consistent(f1, f2) && Type::is_consistent(a1, a2)
             }
+            (Type::TyCon(n1), Type::TyCon(n2)) => n1 == n2,
             (
                 Type::Function {
                     params: p1,
@@ -954,8 +1121,6 @@ impl Type {
                         .all(|((_n1, ty1), (_n2, ty2))| Type::is_consistent(ty1, ty2))
                     && Type::is_consistent(r1, r2)
             }
-            // Handle: consistent if capability rows are consistent
-            (Type::Handle(cap1), Type::Handle(cap2)) => Type::is_consistent(cap1, cap2),
             (Type::Record(row1), Type::Record(row2)) => {
                 // Shared fields must be consistent
                 for (k, ty1) in &row1.fields {
@@ -966,7 +1131,18 @@ impl Type {
                     }
                 }
                 // Differing fields are OK (width subtyping-like, but symmetric).
-                // Under BAS all tails are Empty; tails are always consistent.
+                // Tails: both Uniform → value types must be consistent.
+                // Empty vs Uniform → consistent (Uniform adds constraint, but ? is open).
+                match (&row1.tail, &row2.tail) {
+                    (RowTail::Empty, RowTail::Empty) => {}
+                    (RowTail::Uniform { value: v1, .. }, RowTail::Uniform { value: v2, .. })
+                        if !Type::is_consistent(v1, v2) =>
+                    {
+                        return false;
+                    }
+                    // One Empty, one Uniform — consistent (Unknown-style open matching)
+                    _ => {}
+                }
                 true
             }
             (Type::Union(members1), Type::Union(members2)) => {
@@ -1081,12 +1257,13 @@ impl Type {
         if members.len() < 2 {
             return None;
         }
-        // Guard: every member must be a single-field record
+        // Guard: every member must be a single-field CLOSED record (RowTail::Empty).
+        // Records with Uniform tails are open and do not satisfy S-RcdTop.
         let single_field_keys: Vec<&str> = members
             .iter()
             .map(|m| {
                 if let Type::Record(row) = m {
-                    if row.fields.len() == 1 {
+                    if row.fields.len() == 1 && row.tail == RowTail::Empty {
                         return row.fields.keys().next().map(|k| k.as_str());
                     }
                 }
@@ -1114,12 +1291,13 @@ impl Type {
         if members.len() < 2 {
             return false;
         }
-        // Guard: every member must be a single-field record
+        // Guard: every member must be a single-field CLOSED record (RowTail::Empty).
+        // Records with Uniform tails are open and do not satisfy S-ClsBot.
         let single_field_keys: Option<Vec<&str>> = members
             .iter()
             .map(|m| {
                 if let Type::Record(row) = m {
-                    if row.fields.len() == 1 {
+                    if row.fields.len() == 1 && row.tail == RowTail::Empty {
                         return row.fields.keys().next().map(|k| k.as_str());
                     }
                 }
@@ -1150,7 +1328,13 @@ impl Type {
                 for ty in row.fields.values() {
                     ty.collect_type_vars(vars);
                 }
-                // Row tail contains no type variables (only RowVar or Empty)
+                // Collect type variables from RowTail::Uniform's key and value types
+                if let RowTail::Uniform { key, value } = &row.tail {
+                    if let Some(k) = key {
+                        k.collect_type_vars(vars);
+                    }
+                    value.collect_type_vars(vars);
+                }
             }
             Type::Function {
                 params,
@@ -1161,11 +1345,6 @@ impl Type {
                     p_ty.collect_type_vars(vars);
                 }
                 ret.collect_type_vars(vars);
-            }
-            Type::Seq(elem) => elem.collect_type_vars(vars),
-            Type::Map(key, val) => {
-                key.collect_type_vars(vars);
-                val.collect_type_vars(vars);
             }
             Type::Union(members) => {
                 for member in members {
@@ -1187,7 +1366,7 @@ impl Type {
                     ty.collect_type_vars(vars);
                 }
             }
-            Type::Handle(cap) => cap.collect_type_vars(vars),
+            Type::TyCon(_) => {} // TyCon has no type variables
             _ => {}
         }
     }
@@ -1197,7 +1376,16 @@ impl Type {
     pub fn has_inference_vars(&self) -> bool {
         match self {
             Type::TypeVar(_, _) => true,
-            Type::Record(row) => row.fields.values().any(|ty| ty.has_inference_vars()),
+            Type::Record(row) => {
+                row.fields.values().any(|ty| ty.has_inference_vars())
+                    || match &row.tail {
+                        RowTail::Empty => false,
+                        RowTail::Uniform { key, value } => {
+                            key.as_ref().is_some_and(|k| k.has_inference_vars())
+                                || value.has_inference_vars()
+                        }
+                    }
+            }
             Type::Function {
                 params,
                 ret,
@@ -1206,12 +1394,11 @@ impl Type {
                 params.iter().any(|(_name, p_ty)| p_ty.has_inference_vars())
                     || ret.has_inference_vars()
             }
-            Type::Seq(elem) => elem.has_inference_vars(),
-            Type::Map(key, val) => key.has_inference_vars() || val.has_inference_vars(),
             Type::Union(members) => members.iter().any(|m| m.has_inference_vars()),
             Type::Intersection(members) => members.iter().any(|m| m.has_inference_vars()),
             Type::Negation(inner) => inner.has_inference_vars(),
             Type::App(f, a) => f.has_inference_vars() || a.has_inference_vars(),
+            Type::TyCon(_) => false, // TyCon is a concrete named constructor, not a variable
             Type::Operator(_) => true, // Operator variables ARE inference variables
             Type::TypeStageApp { fn_name: _, args } => {
                 args.iter().any(|arg| arg.has_inference_vars())
@@ -1219,7 +1406,6 @@ impl Type {
             Type::NominalVariant { tag: _, fields } => {
                 fields.fields.values().any(|ty| ty.has_inference_vars())
             }
-            Type::Handle(cap) => cap.has_inference_vars(),
             Type::Proxy => false,
             _ => false,
         }
@@ -1230,7 +1416,16 @@ impl Type {
     pub fn has_type_stage_app(&self) -> bool {
         match self {
             Type::TypeStageApp { .. } => true,
-            Type::Record(row) => row.fields.values().any(|ty| ty.has_type_stage_app()),
+            Type::Record(row) => {
+                row.fields.values().any(|ty| ty.has_type_stage_app())
+                    || match &row.tail {
+                        RowTail::Empty => false,
+                        RowTail::Uniform { key, value } => {
+                            key.as_ref().is_some_and(|k| k.has_type_stage_app())
+                                || value.has_type_stage_app()
+                        }
+                    }
+            }
             Type::Function {
                 params,
                 ret,
@@ -1239,16 +1434,14 @@ impl Type {
                 params.iter().any(|(_name, p_ty)| p_ty.has_type_stage_app())
                     || ret.has_type_stage_app()
             }
-            Type::Seq(elem) => elem.has_type_stage_app(),
-            Type::Map(key, val) => key.has_type_stage_app() || val.has_type_stage_app(),
             Type::Union(members) => members.iter().any(|m| m.has_type_stage_app()),
             Type::Intersection(members) => members.iter().any(|m| m.has_type_stage_app()),
             Type::Negation(inner) => inner.has_type_stage_app(),
             Type::App(f, a) => f.has_type_stage_app() || a.has_type_stage_app(),
+            Type::TyCon(_) => false,
             Type::NominalVariant { tag: _, fields } => {
                 fields.fields.values().any(|ty| ty.has_type_stage_app())
             }
-            Type::Handle(cap) => cap.has_type_stage_app(),
             _ => false,
         }
     }
@@ -1265,6 +1458,13 @@ impl Type {
                 for ty in row.fields.values() {
                     ty.collect_all_vars(type_vars);
                 }
+                // Collect type variables from RowTail::Uniform's key and value types
+                if let RowTail::Uniform { key, value } = &row.tail {
+                    if let Some(k) = key {
+                        k.collect_all_vars(type_vars);
+                    }
+                    value.collect_all_vars(type_vars);
+                }
             }
             Type::Function {
                 params,
@@ -1275,11 +1475,6 @@ impl Type {
                     p_ty.collect_all_vars(type_vars);
                 }
                 ret.collect_all_vars(type_vars);
-            }
-            Type::Seq(elem) => elem.collect_all_vars(type_vars),
-            Type::Map(key, val) => {
-                key.collect_all_vars(type_vars);
-                val.collect_all_vars(type_vars);
             }
             Type::Union(members) => {
                 for member in members {
@@ -1298,6 +1493,7 @@ impl Type {
                 f.collect_all_vars(type_vars);
                 a.collect_all_vars(type_vars);
             }
+            Type::TyCon(_) => {} // TyCon has no type variables
             Type::Operator(name) => {
                 type_vars.insert(name.clone());
             }
@@ -1311,7 +1507,6 @@ impl Type {
                     ty.collect_all_vars(type_vars);
                 }
             }
-            Type::Handle(cap) => cap.collect_all_vars(type_vars),
             _ => {}
         }
     }
@@ -1339,6 +1534,13 @@ impl Type {
                 for ty in row.fields.values() {
                     found |= ty.collect_all_vars_check_occurs(occurs_name, type_vars);
                 }
+                // Check RowTail::Uniform's key and value types
+                if let RowTail::Uniform { key, value } = &row.tail {
+                    if let Some(k) = key {
+                        found |= k.collect_all_vars_check_occurs(occurs_name, type_vars);
+                    }
+                    found |= value.collect_all_vars_check_occurs(occurs_name, type_vars);
+                }
                 found
             }
             Type::Function {
@@ -1351,13 +1553,6 @@ impl Type {
                     found |= p_ty.collect_all_vars_check_occurs(occurs_name, type_vars);
                 }
                 found |= ret.collect_all_vars_check_occurs(occurs_name, type_vars);
-                found
-            }
-            Type::Seq(elem) => elem.collect_all_vars_check_occurs(occurs_name, type_vars),
-            Type::Map(key, val) => {
-                let mut found = false;
-                found |= key.collect_all_vars_check_occurs(occurs_name, type_vars);
-                found |= val.collect_all_vars_check_occurs(occurs_name, type_vars);
                 found
             }
             Type::Union(members) => {
@@ -1400,7 +1595,7 @@ impl Type {
                 }
                 found
             }
-            Type::Handle(cap) => cap.collect_all_vars_check_occurs(occurs_name, type_vars),
+            Type::TyCon(_) => false, // TyCon has no type variables
             _ => false,
         }
     }
@@ -1419,6 +1614,13 @@ impl Type {
                 for ty in row.fields.values() {
                     ty.collect_all_vars_vec(type_vars);
                 }
+                // Collect type variables from RowTail::Uniform's key and value types
+                if let RowTail::Uniform { key, value } = &row.tail {
+                    if let Some(k) = key {
+                        k.collect_all_vars_vec(type_vars);
+                    }
+                    value.collect_all_vars_vec(type_vars);
+                }
             }
             Type::Function {
                 params,
@@ -1429,11 +1631,6 @@ impl Type {
                     p_ty.collect_all_vars_vec(type_vars);
                 }
                 ret.collect_all_vars_vec(type_vars);
-            }
-            Type::Seq(elem) => elem.collect_all_vars_vec(type_vars),
-            Type::Map(key, val) => {
-                key.collect_all_vars_vec(type_vars);
-                val.collect_all_vars_vec(type_vars);
             }
             Type::Union(members) => {
                 for member in members {
@@ -1465,7 +1662,6 @@ impl Type {
                     ty.collect_all_vars_vec(type_vars);
                 }
             }
-            Type::Handle(cap) => cap.collect_all_vars_vec(type_vars),
             // Exhaustive leaf enumeration — no wildcard to prevent silently missing new compound variants
             Type::Int
             | Type::IntLiteral(_)
@@ -1481,6 +1677,7 @@ impl Type {
             | Type::Error
             | Type::DirCap
             | Type::NetCap
+            | Type::TyCon(_)
             | Type::Uri
             | Type::Timestamp
             | Type::Duration
@@ -1506,6 +1703,13 @@ impl Type {
                 for ty in row.fields.values() {
                     ty.collect_operator_names(operator_names);
                 }
+                // Collect Operator names from RowTail::Uniform key and value types
+                if let RowTail::Uniform { key, value } = &row.tail {
+                    if let Some(k) = key {
+                        k.collect_operator_names(operator_names);
+                    }
+                    value.collect_operator_names(operator_names);
+                }
             }
             Type::Function {
                 params,
@@ -1516,11 +1720,6 @@ impl Type {
                     p_ty.collect_operator_names(operator_names);
                 }
                 ret.collect_operator_names(operator_names);
-            }
-            Type::Seq(elem) => elem.collect_operator_names(operator_names),
-            Type::Map(key, val) => {
-                key.collect_operator_names(operator_names);
-                val.collect_operator_names(operator_names);
             }
             Type::Union(members) | Type::Intersection(members) => {
                 for member in members {
@@ -1544,7 +1743,7 @@ impl Type {
                     ty.collect_operator_names(operator_names);
                 }
             }
-            Type::Handle(cap) => cap.collect_operator_names(operator_names),
+            Type::TyCon(_) => {} // TyCon is a concrete constructor, not an Operator variable
             _ => {}
         }
     }
@@ -1785,7 +1984,9 @@ impl Type {
                 if members.iter().all(|m| !m.has_inference_vars()) && {
                     members.iter().enumerate().any(|(i, a)| {
                         members.iter().enumerate().any(|(j, b)| {
-                            i != j && !matches!(b, Type::Negation(_)) && Type::is_subtype(a, b)
+                            i != j
+                                && !matches!(b, Type::Negation(_))
+                                && Type::is_subtype(a, b, None)
                         })
                     })
                 } =>
@@ -1805,7 +2006,7 @@ impl Type {
                             continue;
                         }
                         // If members[i] <: members[j], remove members[i]
-                        if Type::is_subtype(&members[i], &members[j]) {
+                        if Type::is_subtype(&members[i], &members[j], None) {
                             to_keep[i] = false;
                             break;
                         }
@@ -1860,13 +2061,11 @@ impl Type {
                     .into_iter()
                     .map(|(k, v)| (k, Type::simplify_type(v)))
                     .collect();
-                Type::Record(Row { fields })
+                Type::Record(Row {
+                    fields,
+                    tail: RowTail::Empty,
+                })
             }
-            Type::Seq(elem) => Type::Seq(Box::new(Type::simplify_type(*elem))),
-            Type::Map(k, v) => Type::Map(
-                Box::new(Type::simplify_type(*k)),
-                Box::new(Type::simplify_type(*v)),
-            ),
             Type::Function {
                 params,
                 ret,
@@ -1901,12 +2100,67 @@ impl Type {
                     tag,
                     fields: Row {
                         fields: simplified_fields,
+                        tail: RowTail::Empty,
                     },
                 }
             }
-            Type::Handle(cap) => Type::Handle(Box::new(Type::simplify_type(*cap))),
             _ => ty,
         }
+    }
+
+    /// Construct `Seq[elem]` as `App(TyCon("Seq"), elem)`.
+    pub fn seq(elem: Type) -> Self {
+        Type::App(Box::new(Type::TyCon("Seq".into())), Box::new(elem))
+    }
+
+    /// Construct `Map[k, v]` as `App(App(TyCon("Map"), k), v)` (curried).
+    pub fn map(k: Type, v: Type) -> Self {
+        Type::App(
+            Box::new(Type::App(Box::new(Type::TyCon("Map".into())), Box::new(k))),
+            Box::new(v),
+        )
+    }
+
+    /// Construct `Handle[cap]` as `App(TyCon("Handle"), cap)`.
+    pub fn handle(cap: Type) -> Self {
+        Type::App(Box::new(Type::TyCon("Handle".into())), Box::new(cap))
+    }
+
+    /// Destructure `Seq[elem]` → `Some(elem)` or `None`.
+    pub fn as_seq(&self) -> Option<&Type> {
+        if let Type::App(f, arg) = self {
+            if matches!(f.as_ref(), Type::TyCon(n) if n == "Seq") {
+                return Some(arg);
+            }
+        }
+        None
+    }
+
+    /// Destructure `Map[k, v]` → `Some((k, v))` or `None`.
+    pub fn as_map(&self) -> Option<(&Type, &Type)> {
+        if let Type::App(fv, v) = self {
+            if let Type::App(fk, k) = fv.as_ref() {
+                if matches!(fk.as_ref(), Type::TyCon(n) if n == "Map") {
+                    return Some((k, v));
+                }
+            }
+        }
+        None
+    }
+
+    /// Destructure `Handle[cap]` → `Some(cap)` or `None`.
+    pub fn as_handle(&self) -> Option<&Type> {
+        if let Type::App(f, arg) = self {
+            if matches!(f.as_ref(), Type::TyCon(n) if n == "Handle") {
+                return Some(arg);
+            }
+        }
+        None
+    }
+
+    /// Check if this type is `TyCon(name)`.
+    pub fn is_tycon(&self, name: &str) -> bool {
+        matches!(self, Type::TyCon(n) if n == name)
     }
 }
 
@@ -1923,8 +2177,6 @@ fn type_order(ty: &Type) -> u8 {
         Type::Number => 7,
         Type::Record(_) => 8,
         Type::Function { .. } => 9,
-        Type::Seq(_) => 10,
-        Type::Map(_, _) => 11,
         Type::Proxy => 12,
         Type::TypeVar(_, _) => 13,
         Type::Unknown => 14,
@@ -1932,7 +2184,6 @@ fn type_order(ty: &Type) -> u8 {
         Type::Error => 16,
         Type::DirCap => 17,
         Type::NetCap => 18,
-        Type::Handle(_) => 19,
         Type::Uri => 20,
         Type::Timestamp => 21,
         Type::Duration => 22,
@@ -1948,9 +2199,10 @@ fn type_order(ty: &Type) -> u8 {
         Type::Negation(_) => 32,
         Type::Never => 33,
         Type::App(_, _) => 34,
-        Type::Operator(_) => 35,
-        Type::TypeStageApp { .. } => 36,
-        Type::NominalVariant { .. } => 37,
+        Type::TyCon(_) => 35,
+        Type::Operator(_) => 36,
+        Type::TypeStageApp { .. } => 37,
+        Type::NominalVariant { .. } => 38,
     }
 }
 
@@ -1991,14 +2243,11 @@ pub(crate) fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
                 other => other,
             }
         }
-        // For complex types (Record, Function, Seq, Map, App, Handle), use Display representation
+        // For complex types (Record, Function, App), use Display representation
         // This is not ideal but ensures stability
         (Type::Record(_), Type::Record(_))
         | (Type::Function { .. }, Type::Function { .. })
-        | (Type::Seq(_), Type::Seq(_))
-        | (Type::Map(_, _), Type::Map(_, _))
-        | (Type::App(_, _), Type::App(_, _))
-        | (Type::Handle(_), Type::Handle(_)) => a.to_string().cmp(&b.to_string()),
+        | (Type::App(_, _), Type::App(_, _)) => a.to_string().cmp(&b.to_string()),
         _ => Ordering::Equal,
     }
 }
@@ -2114,11 +2363,6 @@ pub fn check_kind_wellformed(
             }
             Ok(())
         }
-        Type::Seq(elem) => check_kind_wellformed(elem, kind_env, span),
-        Type::Map(key, val) => {
-            check_kind_wellformed(key, kind_env, span.clone())?;
-            check_kind_wellformed(val, kind_env, span)
-        }
         Type::Function { params, ret, .. } => {
             for (_name, param_ty) in params {
                 check_kind_wellformed(param_ty, kind_env, span.clone())?;
@@ -2128,6 +2372,13 @@ pub fn check_kind_wellformed(
         Type::Record(row) => {
             for field_ty in row.fields.values() {
                 check_kind_wellformed(field_ty, kind_env, span.clone())?;
+            }
+            // Also check RowTail::Uniform key and value types for kind well-formedness
+            if let RowTail::Uniform { key, value } = &row.tail {
+                if let Some(k) = key {
+                    check_kind_wellformed(k, kind_env, span.clone())?;
+                }
+                check_kind_wellformed(value, kind_env, span.clone())?;
             }
             Ok(())
         }
@@ -2170,7 +2421,7 @@ pub fn check_kind_wellformed(
             }
             Ok(())
         }
-        Type::Handle(cap) => check_kind_wellformed(cap, kind_env, span),
+        Type::TyCon(_) => Ok(()), // TyCon is always well-kinded (it's a concrete constructor)
         // All other types (Int, Str, Bool, literals, capabilities, etc.) are always well-kinded
         _ => Ok(()),
     }

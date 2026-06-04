@@ -1,0 +1,9 @@
+# TyCon migration regression: verify Seq evaluation works after Type::Seq→App(TyCon("Seq")) migration.
+# S-842 replaced Type::Seq(T) with Type::seq() helper at ~285 match sites.
+# Seq must be collected before length() can be called (length operates on Dict/materialized Seq).
+[
+  xs: [collect [seq 1 [seq 2 [seq 3 []]]]]
+  n: [length xs]
+]
+=== out
+Dict({"xs": Dict({0: Int(1), 1: Int(2), 2: Int(3)}), "n": Int(3)})

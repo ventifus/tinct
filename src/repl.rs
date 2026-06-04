@@ -229,7 +229,7 @@ impl ReplSession {
             doc_map,
             _scheme_map,
             _diagnostics,
-            _state,
+            infer_state,
             final_type_env,
             annotation_table,
         ) = crate::typecheck::typecheck_surface_program_with_env(
@@ -246,6 +246,11 @@ impl ReplSession {
         if program.documents.is_empty() {
             return Err("empty input".to_string());
         }
+        // Wire type-inference products to the eval context.
+        self.ctx.set_boundary_guards(infer_state.boundary_guards);
+        self.ctx
+            .set_do_infer_resolutions(infer_state.do_infer_resolutions);
+        self.ctx.set_tycon_env(infer_state.tycon_env);
         let result_thunk = eval_surface_file_with_input(
             &program,
             Arc::clone(&self.env),

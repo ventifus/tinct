@@ -76,7 +76,10 @@ pub(crate) fn check_dot_access(
             // Build the record type to unify α with (BAS: no RowVar tail)
             let mut fields = HashMap::new();
             fields.insert(field_str.to_string(), beta.clone());
-            let record_ty = Type::Record(Row { fields });
+            let record_ty = Type::Record(Row {
+                fields,
+                tail: crate::type_def::RowTail::Empty,
+            });
 
             // Unify TypeVar(α) with Record({field: β})
             let alpha_ty = Type::TypeVar(alpha.clone(), alpha_level);
@@ -180,7 +183,10 @@ pub(crate) fn check_dot_access_int(
 
             let mut fields = HashMap::new();
             fields.insert(field_name, beta.clone());
-            let record_ty = Type::Record(Row { fields });
+            let record_ty = Type::Record(Row {
+                fields,
+                tail: crate::type_def::RowTail::Empty,
+            });
 
             let alpha_ty = Type::TypeVar(alpha.clone(), *alpha_level);
             let mut subst = std::mem::take(&mut state.subst);
@@ -223,8 +229,8 @@ pub(crate) fn is_concrete_type(ty: &Type) -> bool {
             params.iter().all(|(_, p)| is_concrete_type(p)) && is_concrete_type(ret)
         }
         Type::Record(row) => row.fields.values().all(is_concrete_type),
-        Type::Seq(elem) => is_concrete_type(elem),
-        Type::Map(k, v) => is_concrete_type(k) && is_concrete_type(v),
+        Type::App(f, arg) => is_concrete_type(f) && is_concrete_type(arg),
+        Type::TyCon(_) => true, // TyCon is always concrete
         Type::Union(types) => types.iter().all(is_concrete_type),
         Type::Intersection(types) => types.iter().all(is_concrete_type),
         // Ground types: Int, Float, Str, Bool, Never, Negation, App, TypeStageApp, etc.
@@ -464,10 +470,12 @@ pub(crate) fn check_call_with_scheme(
                     //            Without this, the TypeVar is never unified and Showable constraints
                     //            stay ambiguous, causing spurious T013 warnings.
                     if let Some((_, variadic_param_ty)) = params.last() {
-                        let elem_ty: Option<Type> = match variadic_param_ty {
-                            Type::Seq(elem) => Some(*elem.clone()),
-                            Type::TypeVar(_, _) => Some(variadic_param_ty.clone()),
-                            _ => None,
+                        let elem_ty: Option<Type> = if let Some(elem) = variadic_param_ty.as_seq() {
+                            Some(elem.clone())
+                        } else if matches!(variadic_param_ty, Type::TypeVar(_, _)) {
+                            Some(variadic_param_ty.clone())
+                        } else {
+                            None
                         };
                         if let Some(elem_ty) = elem_ty {
                             for arg_ty in arg_types.iter().skip(non_variadic_param_count) {
@@ -689,6 +697,7 @@ pub(crate) fn check_call_with_scheme(
                 tag: tag.clone(),
                 fields: Row {
                     fields: payload_fields,
+                    tail: crate::type_def::RowTail::Empty,
                 },
             })
         }
@@ -865,13 +874,16 @@ pub(crate) fn check_call(
                                     };
                                     // Subsumption: arg_ty <: param_ty OR consistency if Unknown/Top present.
                                     let sub_passes =
-                                        Type::is_subtype(&arg_ty_resolved, &param_ty_resolved)
-                                            || ((contains_unknown_or_top(&arg_ty_resolved)
-                                                || contains_unknown_or_top(&param_ty_resolved))
-                                                && Type::is_consistent(
-                                                    &arg_ty_resolved,
-                                                    &param_ty_resolved,
-                                                ));
+                                        Type::is_subtype(
+                                            &arg_ty_resolved,
+                                            &param_ty_resolved,
+                                            Some(&state.tycon_env),
+                                        ) || ((contains_unknown_or_top(&arg_ty_resolved)
+                                            || contains_unknown_or_top(&param_ty_resolved))
+                                            && Type::is_consistent(
+                                                &arg_ty_resolved,
+                                                &param_ty_resolved,
+                                            ));
                                     if !sub_passes {
                                         errors.push(TypeError::type_mismatch(
                                             &param_ty_resolved,
@@ -892,7 +904,8 @@ pub(crate) fn check_call(
                 // Use infer+unify instead of check_expr to allow literal widening (IntLiteral → Int).
                 if *variadic && args.len() > non_variadic_param_count {
                     // The last param is the variadic param — extract its Seq element type
-                    if let Some((_, Type::Seq(elem_ty))) = params.last() {
+                    let last_seq_elem = params.last().and_then(|(_, t)| t.as_seq()).cloned();
+                    if let Some(elem_ty) = last_seq_elem {
                         for arg in args.iter().skip(non_variadic_param_count) {
                             match infer_surface_expr(arg, env, state, type_map) {
                                 Ok(arg_ty) => {
@@ -906,7 +919,7 @@ pub(crate) fn check_call(
                                     let mut subst = std::mem::take(&mut state.subst);
                                     if let Err(e) = unify(
                                         &widened_ty,
-                                        elem_ty,
+                                        &elem_ty,
                                         &mut subst,
                                         state,
                                         arg.span.clone(),
@@ -1091,7 +1104,9 @@ pub(crate) fn check_call(
                 // Use infer+unify instead of check_expr to allow literal widening (IntLiteral → Int).
                 if *variadic && args.len() > non_variadic_param_count {
                     // The last param is the variadic param — extract its Seq element type
-                    if let Some((_, Type::Seq(elem_ty))) = inst_params.last() {
+                    let last_inst_seq_elem =
+                        inst_params.last().and_then(|(_, t)| t.as_seq()).cloned();
+                    if let Some(elem_ty) = last_inst_seq_elem {
                         for arg in args.iter().skip(non_variadic_param_count) {
                             match infer_surface_expr(arg, env, state, type_map) {
                                 Ok(arg_ty) => {
@@ -1104,7 +1119,7 @@ pub(crate) fn check_call(
                                     let mut subst = std::mem::take(&mut state.subst);
                                     if let Err(e) = unify(
                                         &widened_ty,
-                                        elem_ty,
+                                        &elem_ty,
                                         &mut subst,
                                         state,
                                         arg.span.clone(),
@@ -1346,6 +1361,7 @@ pub(crate) fn check_call(
                 tag: tag.clone(),
                 fields: Row {
                     fields: payload_fields,
+                    tail: crate::type_def::RowTail::Empty,
                 },
             })
         }

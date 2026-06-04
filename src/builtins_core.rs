@@ -1197,9 +1197,10 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 None,
                 Type::Record(Row {
                     fields: HashMap::new(),
+                    tail: crate::type_def::RowTail::Empty,
                 }),
             )],
-            ret: Box::new(Type::Seq(Box::new(Type::Union(vec![Type::Int, Type::Str])))),
+            ret: Box::new(Type::seq(Type::Union(vec![Type::Int, Type::Str]))),
             variadic: false,
         },
     );
@@ -1213,10 +1214,11 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 Type::Union(vec![
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                     Type::Str,
                     Type::Bytes,
-                    Type::Seq(Box::new(Type::Top)),
+                    Type::seq(Type::Top),
                 ]),
             )],
             ret: Box::new(Type::Int),
@@ -1232,17 +1234,20 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     Some("dict1".to_string()),
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
                 (
                     Some("dict2".to_string()),
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
             ],
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -1256,11 +1261,13 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     Some("dict".to_string()),
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
             ],
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -1388,6 +1395,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top), (None, Type::Top)], // val, cell
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })), // Null = empty record
             variadic: false,
         },
@@ -1417,7 +1425,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str), (None, Type::Str)],
             // split returns an integer-keyed Dict of Strings. Typed as Seq[Str] so
             // that `[get N [split sep s]]` returns Str via Indexable MPTC FD (Seq[T], Int → T).
-            ret: Box::new(Type::Seq(Box::new(Type::Str))),
+            ret: Box::new(Type::seq(Type::Str)),
             variadic: false,
         },
     );
@@ -1512,7 +1520,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "str-chars".to_string(),
         Type::Function {
             params: vec![(None, Type::Str)],
-            ret: Box::new(Type::Seq(Box::new(Type::Str))),
+            ret: Box::new(Type::seq(Type::Str)),
             variadic: false,
         },
     );
@@ -1753,6 +1761,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     None,
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
             ],
@@ -1809,6 +1818,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     None,
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
                 (None, Type::Top),
@@ -1829,6 +1839,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     None,
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
                 (None, Type::Str),
@@ -1843,7 +1854,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-macro-injects".to_string(),
         Type::Function {
             params: vec![(None, Type::Top)],
-            ret: Box::new(Type::Seq(Box::new(Type::Top))),
+            ret: Box::new(Type::seq(Type::Top)),
             variadic: false,
         },
     );
@@ -2034,9 +2045,13 @@ pub fn core_type_env(env: &mut TypeEnv) {
             format!("__cap_flag_{}", flag_name.to_lowercase()),
             Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             }),
         );
-        Type::Record(Row { fields })
+        Type::Record(Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        })
     }
 
     env.insert(
@@ -2046,6 +2061,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Null — Type::Record(Row::Empty), see doc/whatif/null-semantics.md
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2059,6 +2075,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 Type::Str,
                 Type::Record(Row {
                     fields: HashMap::new(),
+                    tail: crate::type_def::RowTail::Empty,
                 }),
             ])),
             variadic: false,
@@ -2072,9 +2089,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![
                 (None, Type::DirCap),
                 (None, Type::Str),
-                (None, Type::Seq(Box::new(Type::Top))),
+                (None, Type::seq(Type::Top)),
             ],
-            ret: Box::new(Type::Handle(Box::new(Type::Unknown))),
+            ret: Box::new(Type::handle(Type::Unknown)),
             variadic: true,
         },
     );
@@ -2082,19 +2099,20 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "string-handle".to_string(),
         Type::Function {
             params: vec![(None, Type::Str)],
-            ret: Box::new(Type::Handle(Box::new(cap_flag("readable")))),
+            ret: Box::new(Type::handle(cap_flag("readable"))),
             variadic: false,
         },
     );
     env.insert(
         "builtin-read-line".to_string(),
         Type::Function {
-            params: vec![(None, Type::Handle(Box::new(cap_flag("readable"))))],
+            params: vec![(None, Type::handle(cap_flag("readable")))],
             // Returns Str on success, [] (null) on EOF
             ret: Box::new(Type::Union(vec![
                 Type::Str,
                 Type::Record(Row {
                     fields: HashMap::new(),
+                    tail: crate::type_def::RowTail::Empty,
                 }),
             ])),
             variadic: false,
@@ -2104,7 +2122,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-read-chunk".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::Handle(Box::new(cap_flag("readable")))),
+                (None, Type::handle(cap_flag("readable"))),
                 (None, Type::Int),
             ],
             // Returns Bytes on success, [] (null) on EOF
@@ -2112,6 +2130,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 Type::Bytes,
                 Type::Record(Row {
                     fields: HashMap::new(),
+                    tail: crate::type_def::RowTail::Empty,
                 }),
             ])),
             variadic: false,
@@ -2120,7 +2139,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
     env.insert(
         "builtin-read-all".to_string(),
         Type::Function {
-            params: vec![(None, Type::Handle(Box::new(cap_flag("readable"))))],
+            params: vec![(None, Type::handle(cap_flag("readable")))],
             // Returns String: reads all bytes to EOF as UTF-8 text
             ret: Box::new(Type::Str),
             variadic: false,
@@ -2141,6 +2160,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2152,6 +2172,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2169,11 +2190,13 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             params: vec![],
                             ret: Box::new(Type::Record(Row {
                                 fields: HashMap::new(),
+                                tail: crate::type_def::RowTail::Empty,
                             })), // Null
                             variadic: false,
                         },
                     ),
                 ]),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2185,6 +2208,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2194,7 +2218,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![
                 // Accepts any handle — cap-data extracts metadata, not I/O operation
-                (None, Type::Handle(Box::new(Type::Unknown))),
+                (None, Type::handle(Type::Unknown)),
                 (None, Type::Str),
             ],
             // Genuinely unknown: cap-data returns the value stored in the Handle's
@@ -2207,10 +2231,10 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "write-handle".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::Handle(Box::new(cap_flag("writable")))),
+                (None, Type::handle(cap_flag("writable"))),
                 (None, Type::normalize_union(vec![Type::Str, Type::Bytes])),
             ],
-            ret: Box::new(Type::Handle(Box::new(cap_flag("writable")))),
+            ret: Box::new(Type::handle(cap_flag("writable"))),
             variadic: false,
         },
     );
@@ -2220,8 +2244,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Use Top so any concrete Handle type satisfies it (is_subtype(Cap, Top) = true).
             // Unknown would fail for handles with explicit capability rows because
             // is_subtype(Cap, Unknown) = false (Unknown is not a supertype in BAS).
-            params: vec![(None, Type::Handle(Box::new(Type::Top)))],
-            ret: Box::new(Type::Handle(Box::new(Type::Top))),
+            params: vec![(None, Type::handle(Type::Top))],
+            ret: Box::new(Type::handle(Type::Top)),
             variadic: false,
         },
     );
@@ -2229,10 +2253,11 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "close".to_string(),
         Type::Function {
             // Accepts any handle regardless of capabilities (close is always valid)
-            params: vec![(None, Type::Handle(Box::new(Type::Unknown)))],
+            params: vec![(None, Type::handle(Type::Unknown))],
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2242,30 +2267,27 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
             // raw-create always creates a write-only handle
-            ret: Box::new(Type::Handle(Box::new(cap_flag("writable")))),
+            ret: Box::new(Type::handle(cap_flag("writable"))),
             variadic: false,
         },
     );
     env.insert(
         "seek".to_string(),
         Type::Function {
-            params: vec![
-                (None, Type::Handle(Box::new(Type::Unknown))),
-                (None, Type::Int),
-            ],
+            params: vec![(None, Type::handle(Type::Unknown)), (None, Type::Int)],
             // Legitimately Unknown: seek preserves input handle's capabilities.
             // Without dependent types (Handle[C] → Handle[C]), Unknown is the closest
             // approximation.
-            ret: Box::new(Type::Handle(Box::new(Type::Unknown))),
+            ret: Box::new(Type::handle(Type::Unknown)),
             variadic: false,
         },
     );
     env.insert(
         "seek-end".to_string(),
         Type::Function {
-            params: vec![(None, Type::Handle(Box::new(Type::Unknown)))],
+            params: vec![(None, Type::handle(Type::Unknown))],
             // Legitimately Unknown: seek-end preserves input handle's capabilities.
-            ret: Box::new(Type::Handle(Box::new(Type::Unknown))),
+            ret: Box::new(Type::handle(Type::Unknown)),
             variadic: false,
         },
     );
@@ -2273,7 +2295,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "position".to_string(),
         Type::Function {
             // Accepts any handle (position query doesn't require specific capabilities)
-            params: vec![(None, Type::Handle(Box::new(Type::Unknown)))],
+            params: vec![(None, Type::handle(Type::Unknown))],
             ret: Box::new(Type::Int),
             variadic: false,
         },
@@ -2282,13 +2304,14 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "list-dir".to_string(),
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
-            ret: Box::new(Type::Seq(Box::new(Type::Record(Row {
+            ret: Box::new(Type::seq(Type::Record(Row {
                 fields: HashMap::from([
                     ("name".to_string(), Type::Str),
                     ("kind".to_string(), Type::Str),
                     ("size".to_string(), Type::Int),
                 ]),
-            })))),
+                tail: crate::type_def::RowTail::Empty,
+            }))),
             variadic: false,
         },
     );
@@ -2302,6 +2325,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     ("kind".to_string(), Type::Str),
                     ("size".to_string(), Type::Int),
                 ]),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2327,6 +2351,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     ("kind".to_string(), Type::Str),
                     ("size".to_string(), Type::Int),
                 ]),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2345,6 +2370,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2358,6 +2384,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2371,6 +2398,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2399,6 +2427,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2412,6 +2441,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2422,7 +2452,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-list-xattrs".to_string(),
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
-            ret: Box::new(Type::Seq(Box::new(Type::Str))),
+            ret: Box::new(Type::seq(Type::Str)),
             variadic: false,
         },
     );
@@ -2433,6 +2463,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2444,6 +2475,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2455,6 +2487,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2466,6 +2499,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2483,10 +2517,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(
                 None,
-                Type::Union(vec![
-                    Type::Str,
-                    Type::Handle(Box::new(cap_flag("readable"))),
-                ]),
+                Type::Union(vec![Type::Str, Type::handle(cap_flag("readable"))]),
             )],
             // Top: JSON parse output can be any JSON value (object, array,
             // string, number, bool, null). A precise type requires schema information.
@@ -2505,9 +2536,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
             body: Type::Function {
                 params: vec![
                     (None, Type::TypeVar("T".to_string(), 0)),
-                    (None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                    (None, Type::seq(Type::TypeVar("T".to_string(), 0))),
                 ],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -2523,7 +2554,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             type_vars: vec!["T".to_string()],
             constraints: vec![],
             body: Type::Function {
-                params: vec![(None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))))],
+                params: vec![(None, Type::seq(Type::TypeVar("T".to_string(), 0)))],
                 ret: Box::new(Type::TypeVar("T".to_string(), 0)),
                 variadic: false,
             },
@@ -2540,8 +2571,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
             type_vars: vec!["T".to_string()],
             constraints: vec![],
             body: Type::Function {
-                params: vec![(None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))))],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                params: vec![(None, Type::seq(Type::TypeVar("T".to_string(), 0)))],
+                ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -2559,8 +2590,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
             type_vars: vec!["T".to_string()],
             constraints: vec![],
             body: Type::Function {
-                params: vec![(None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))))],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                params: vec![(None, Type::seq(Type::TypeVar("T".to_string(), 0)))],
+                ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -2576,6 +2607,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2595,10 +2627,10 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-range".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::Int),                      // start (required)
-                (None, Type::Seq(Box::new(Type::Int))), // variadic rest (optional end)
+                (None, Type::Int),            // start (required)
+                (None, Type::seq(Type::Int)), // variadic rest (optional end)
             ],
-            ret: Box::new(Type::Seq(Box::new(Type::Int))),
+            ret: Box::new(Type::seq(Type::Int)),
             variadic: true,
         },
     );
@@ -2610,7 +2642,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             constraints: vec![],
             body: Type::Function {
                 params: vec![(None, Type::TypeVar("T".to_string(), 0))],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -2626,8 +2658,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
             type_vars: vec!["T".to_string()],
             constraints: vec![],
             body: Type::Function {
-                params: vec![(None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))))],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                params: vec![(None, Type::seq(Type::TypeVar("T".to_string(), 0)))],
+                ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -2654,7 +2686,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     ),
                     (None, Type::TypeVar("T".to_string(), 0)),
                 ],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -2677,7 +2709,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ),
                 (None, Type::Top),
             ],
-            ret: Box::new(Type::Seq(Box::new(Type::Top))),
+            ret: Box::new(Type::seq(Type::Top)),
             variadic: false,
         },
     );
@@ -2740,10 +2772,10 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     ),
                     (
                         Some("xs".to_string()),
-                        Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0))),
+                        Type::seq(Type::TypeVar("a".to_string(), 0)),
                     ),
                 ],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
+                ret: Box::new(Type::seq(Type::TypeVar("a".to_string(), 0))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -2761,9 +2793,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
             body: Type::Function {
                 params: vec![
                     (None, Type::Int),
-                    (None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                    (None, Type::seq(Type::TypeVar("T".to_string(), 0))),
                 ],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -2781,9 +2813,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
             body: Type::Function {
                 params: vec![
                     (None, Type::Int),
-                    (None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                    (None, Type::seq(Type::TypeVar("T".to_string(), 0))),
                 ],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -2801,9 +2833,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
             body: Type::Function {
                 params: vec![
                     (None, Type::Int),
-                    (None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                    (None, Type::seq(Type::TypeVar("T".to_string(), 0))),
                 ],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -2836,7 +2868,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     (Some("init".to_string()), Type::TypeVar("b".to_string(), 0)),
                     (
                         Some("xs".to_string()),
-                        Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0))),
+                        Type::seq(Type::TypeVar("a".to_string(), 0)),
                     ),
                 ],
                 ret: Box::new(Type::TypeVar("b".to_string(), 0)),
@@ -2854,7 +2886,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![
                 (None, Type::Str),
                 // Top: join stringifies any element type via stringify().
-                (None, Type::Seq(Box::new(Type::Top))),
+                (None, Type::seq(Type::Top)),
             ],
             ret: Box::new(Type::Str),
             variadic: false,
@@ -2901,16 +2933,18 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(
                     None,
                     Type::Union(vec![
-                        Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))),
+                        Type::seq(Type::TypeVar("T".to_string(), 0)),
                         Type::Record(Row {
                             fields: HashMap::new(),
+                            tail: crate::type_def::RowTail::Empty,
                         }),
                     ]),
                 )],
                 ret: Box::new(Type::Union(vec![
-                    Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))),
+                    Type::seq(Type::TypeVar("T".to_string(), 0)),
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ])),
                 variadic: false,
@@ -2930,9 +2964,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
             body: Type::Function {
                 params: vec![
                     (None, Type::TypeVar("T".to_string(), 0)),
-                    (None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                    (None, Type::seq(Type::TypeVar("T".to_string(), 0))),
                 ],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -2949,10 +2983,12 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 None,
                 Type::Record(Row {
                     fields: HashMap::new(),
+                    tail: crate::type_def::RowTail::Empty,
                 }),
             )],
             ret: Box::new(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
         },
@@ -2968,8 +3004,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
             type_vars: vec!["T".to_string()],
             constraints: vec![],
             body: Type::Function {
-                params: vec![(None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))))],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0)))),
+                params: vec![(None, Type::seq(Type::TypeVar("T".to_string(), 0)))],
+                ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -3043,6 +3079,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     Type::TypeVar("v".to_string(), 0),
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 ])),
                 variadic: false,
@@ -3066,9 +3103,10 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     Some("xs".to_string()),
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 )],
-                ret: Box::new(Type::Seq(Box::new(Type::Top))),
+                ret: Box::new(Type::seq(Type::Top)),
                 variadic: false,
             },
             label_vars: vec![],
@@ -3088,12 +3126,10 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     Some("xs".to_string()),
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 )],
-                ret: Box::new(Type::Seq(Box::new(Type::normalize_union(vec![
-                    Type::Int,
-                    Type::Str,
-                ])))),
+                ret: Box::new(Type::seq(Type::normalize_union(vec![Type::Int, Type::Str]))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -3113,17 +3149,21 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     Some("xs".to_string()),
                     Type::Record(Row {
                         fields: HashMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
                     }),
                 )],
-                ret: Box::new(Type::Seq(Box::new({
+                ret: Box::new(Type::seq({
                     let mut kv_fields = HashMap::new();
                     kv_fields.insert(
                         "key".to_string(),
                         Type::normalize_union(vec![Type::Int, Type::Str]),
                     );
                     kv_fields.insert("value".to_string(), Type::Top);
-                    Type::Record(Row { fields: kv_fields })
-                }))),
+                    Type::Record(Row {
+                        fields: kv_fields,
+                        tail: crate::type_def::RowTail::Empty,
+                    })
+                })),
                 variadic: false,
             },
             label_vars: vec![],
@@ -3143,7 +3183,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             type_vars: vec!["T".to_string()],
             constraints: vec![],
             body: Type::Function {
-                params: vec![(None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))))],
+                params: vec![(None, Type::seq(Type::TypeVar("T".to_string(), 0)))],
                 ret: Box::new(Type::TypeVar("T".to_string(), 0)),
                 variadic: false,
             },
@@ -3161,7 +3201,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             type_vars: vec!["T".to_string()],
             constraints: vec![],
             body: Type::Function {
-                params: vec![(None, Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))))],
+                params: vec![(None, Type::seq(Type::TypeVar("T".to_string(), 0)))],
                 ret: Box::new(Type::TypeVar("T".to_string(), 0)),
                 variadic: false,
             },
@@ -3297,9 +3337,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             variadic: false,
                         },
                     ),
-                    (None, Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
+                    (None, Type::seq(Type::TypeVar("a".to_string(), 0))),
                 ],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
+                ret: Box::new(Type::seq(Type::TypeVar("b".to_string(), 0))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -3324,9 +3364,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             variadic: false,
                         },
                     ),
-                    (None, Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
+                    (None, Type::seq(Type::TypeVar("a".to_string(), 0))),
                 ],
-                ret: Box::new(Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)))),
+                ret: Box::new(Type::seq(Type::TypeVar("a".to_string(), 0))),
                 variadic: false,
             },
             label_vars: vec![],
@@ -3506,18 +3546,15 @@ pub fn core_type_env(env: &mut TypeEnv) {
 
     // ── Type constructors ─────────────────────────────────────────────────────
     // Map with Unknown K/V is the unparameterized Map type.
-    env.insert(
-        "Map".to_string(),
-        Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)),
-    );
+    env.insert("Map".to_string(), Type::map(Type::Unknown, Type::Unknown));
     // Map[K V] as a parameterized type alias.
     env.insert_type_alias(
         "Map".to_string(),
         TypeAlias {
             params: vec!["k".to_string(), "v".to_string()],
-            body: Type::Map(
-                Box::new(Type::TypeVar("k".to_string(), 0)),
-                Box::new(Type::TypeVar("v".to_string(), 0)),
+            body: Type::map(
+                Type::TypeVar("k".to_string(), 0),
+                Type::TypeVar("v".to_string(), 0),
             ),
         },
     );
@@ -3542,7 +3579,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "Handle".to_string(),
         TypeAlias {
             params: vec![],
-            body: Type::Handle(Box::new(Type::Unknown)),
+            body: Type::handle(Type::Unknown),
         },
     );
 
@@ -3563,13 +3600,17 @@ pub fn core_type_env(env: &mut TypeEnv) {
             format!("__cap_flag_{}", flag_name.to_lowercase()),
             Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             }),
         );
         env.insert_type_alias(
             flag_name.to_string(),
             TypeAlias {
                 params: vec![],
-                body: Type::Record(Row { fields }),
+                body: Type::Record(Row {
+                    fields,
+                    tail: crate::type_def::RowTail::Empty,
+                }),
             },
         );
     }
@@ -3591,13 +3632,17 @@ pub fn core_type_env(env: &mut TypeEnv) {
             format!("__cap_flag_{}", flag_name.to_lowercase()),
             Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             }),
         );
         env.insert_type_alias(
             flag_name.to_string(),
             TypeAlias {
                 params: vec![],
-                body: Type::Record(Row { fields }),
+                body: Type::Record(Row {
+                    fields,
+                    tail: crate::type_def::RowTail::Empty,
+                }),
             },
         );
     }

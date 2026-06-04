@@ -252,7 +252,8 @@ pub(crate) fn type_to_dict(ty: &Type, ctx: &Arc<crate::eval::EvalContext>) -> Op
             dict.insert(Key::String("name".into()), alloc_str("Top", ctx));
             Some(Value::Dict(dict))
         }
-        Type::Seq(elem) => {
+        _ if ty.as_seq().is_some() => {
+            let elem = ty.as_seq().unwrap();
             let elem_dict = type_to_dict(elem, ctx)?;
             let elem_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(elem_dict, origin)));
             let mut dict = IndexMap::new();
@@ -260,7 +261,8 @@ pub(crate) fn type_to_dict(ty: &Type, ctx: &Arc<crate::eval::EvalContext>) -> Op
             dict.insert(Key::String("element".into()), elem_id);
             Some(Value::Dict(dict))
         }
-        Type::Map(k, v) => {
+        _ if ty.as_map().is_some() => {
+            let (k, v) = ty.as_map().unwrap();
             let k_dict = type_to_dict(k, ctx)?;
             let v_dict = type_to_dict(v, ctx)?;
             let k_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(k_dict, origin.clone())));
@@ -271,7 +273,7 @@ pub(crate) fn type_to_dict(ty: &Type, ctx: &Arc<crate::eval::EvalContext>) -> Op
             dict.insert(Key::String("value".into()), v_id);
             Some(Value::Dict(dict))
         }
-        // TypeVar, Error, Function, Record, etc. — not representable as type-dicts
+        // TypeVar, Error, Function, Record, TyCon, etc. — not representable as type-dicts
         _ => None,
     }
 }
@@ -330,7 +332,7 @@ pub(crate) fn dict_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> 
             let elem_thunk = ctx.get_thunk(*elem_id);
             let elem_val = crate::eval::materialize_sync(&elem_thunk, None, ctx).ok()?;
             let elem_ty = dict_to_type(&elem_val, ctx)?;
-            Some(Type::Seq(Box::new(elem_ty)))
+            Some(Type::seq(elem_ty))
         }
         "map" => {
             let k_id = dict.get(&Key::String("key".into()))?;
@@ -339,7 +341,7 @@ pub(crate) fn dict_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> 
             let v_val = crate::eval::materialize_sync(&ctx.get_thunk(*v_id), None, ctx).ok()?;
             let k_ty = dict_to_type(&k_val, ctx)?;
             let v_ty = dict_to_type(&v_val, ctx)?;
-            Some(Type::Map(Box::new(k_ty), Box::new(v_ty)))
+            Some(Type::map(k_ty, v_ty))
         }
         _ => None, // Unknown kind — can't convert
     }
@@ -442,6 +444,17 @@ impl fmt::Display for Type {
                     }
                     write!(f, "{}: {}", key, ty)?;
                 }
+                // Display RowTail::Uniform as `_ : V` or `_@K : V`
+                if let crate::type_def::RowTail::Uniform { key, value } = &row.tail {
+                    if !row.fields.is_empty() {
+                        write!(f, " ")?;
+                    }
+                    if let Some(k) = key {
+                        write!(f, "_@{} : {}", k, value)?;
+                    } else {
+                        write!(f, "_ : {}", value)?;
+                    }
+                }
                 write!(f, "]")
             }
             Type::Function {
@@ -481,8 +494,6 @@ impl fmt::Display for Type {
                 }
                 write!(f, "]")
             }
-            Type::Seq(elem) => write!(f, "Seq[{}]", elem),
-            Type::Map(key, val) => write!(f, "Map[{} {}]", key, val),
             Type::Proxy => write!(f, "Proxy"),
             Type::TypeVar(name, _level) => write!(f, "{}", name),
             Type::Unknown => write!(f, "_"),
@@ -516,13 +527,6 @@ impl fmt::Display for Type {
             }
             Type::DirCap => write!(f, "DirCap"),
             Type::NetCap => write!(f, "NetCap"),
-            Type::Handle(cap) => {
-                if matches!(**cap, Type::Unknown) {
-                    write!(f, "Handle")
-                } else {
-                    write!(f, "Handle[{}]", cap)
-                }
-            }
             Type::Uri => write!(f, "Uri"),
             Type::Timestamp => write!(f, "Timestamp"),
             Type::Duration => write!(f, "Duration"),
@@ -544,7 +548,23 @@ impl fmt::Display for Type {
             }
             Type::Never => write!(f, "Never"),
             Type::NominalVariant { tag, .. } => write!(f, "{}", tag),
-            Type::App(func, arg) => write!(f, "[{} {}]", func, arg),
+            Type::App(func, arg) => {
+                // Pretty-print common builtin type constructors in their familiar syntax
+                if let Some(elem) = self.as_seq() {
+                    return write!(f, "Seq[{}]", elem);
+                }
+                if let Some((k, v)) = self.as_map() {
+                    return write!(f, "Map[{} {}]", k, v);
+                }
+                if let Some(cap) = self.as_handle() {
+                    if matches!(cap, Type::Unknown) {
+                        return write!(f, "Handle");
+                    }
+                    return write!(f, "Handle[{}]", cap);
+                }
+                write!(f, "[{} {}]", func, arg)
+            }
+            Type::TyCon(name) => write!(f, "{}", name),
             Type::Operator(name) => write!(f, "{}", name),
             Type::TypeStageApp { fn_name, args } => {
                 write!(f, "{}(", fn_name)?;
@@ -623,7 +643,7 @@ mod tests {
         let result2 = normalize(&ty, &subst, &mut ctx);
         assert_eq!(result2, Type::Int);
 
-        // Verify cache entry exists
+        // Verify cache entry exists (use concrete Int, not Seq)
         assert!(ctx.cache.contains_key(&Type::Int));
     }
 
@@ -701,17 +721,17 @@ mod tests {
     /// Test: has_type_stage_app() returns true for Seq(TypeStageApp)
     #[test]
     fn test_has_type_stage_app_true_for_seq_containing_type_stage_app() {
-        let ty = Type::Seq(Box::new(Type::TypeStageApp {
+        let ty = Type::seq(Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
-        }));
+        });
         assert!(ty.has_type_stage_app());
     }
 
     /// Test: has_type_stage_app() returns false for Seq(Int)
     #[test]
     fn test_has_type_stage_app_false_for_seq_of_concrete() {
-        let ty = Type::Seq(Box::new(Type::Int));
+        let ty = Type::seq(Type::Int);
         assert!(!ty.has_type_stage_app());
     }
 
@@ -850,14 +870,14 @@ mod tests {
         let mut ctx = NormCtxt::new();
 
         // Normalize a type with inference variables
-        let ty_with_var = Type::Seq(Box::new(Type::TypeVar("a".to_string(), 0)));
+        let ty_with_var = Type::seq(Type::TypeVar("a".to_string(), 0));
         let _result1 = normalize(&ty_with_var, &subst, &mut ctx);
 
         // Cache should NOT contain this type (has inference vars)
         assert!(!ctx.cache.contains_key(&ty_with_var));
 
         // Normalize a ground type
-        let ty_ground = Type::Seq(Box::new(Type::Int));
+        let ty_ground = Type::seq(Type::Int);
         let _result2 = normalize(&ty_ground, &subst, &mut ctx);
 
         // Cache SHOULD contain this type (ground)

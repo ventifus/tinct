@@ -1,0 +1,12 @@
+# Map 2-arg type constructor via kind_env (T-945, Kind::Arrow registration).
+# S-842 pre-registers Map as Kind::Arrow(Type, Operator) in InferState::new(),
+# enabling [@[Map String Int] ...] to resolve via the general kind_env arity=2 path.
+# The function parameter annotation [let m@[Map String Int]] is accepted by the
+# type checker without error. Function is defined but not called — the runtime
+# TypeAssert on m does not fire, so no type mismatch at eval time.
+[
+  process: [fn [let m@[Map String Int]] m]
+  result: 42
+]
+=== out
+Dict({"process": Function(m), "result": Int(42)})

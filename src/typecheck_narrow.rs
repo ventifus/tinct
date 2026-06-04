@@ -102,6 +102,7 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                                 var: var_name.clone(),
                                 ty: Type::Record(Row {
                                     fields: HashMap::new(),
+                                    tail: crate::type_def::RowTail::Empty,
                                 }),
                             }];
                         }
@@ -145,6 +146,7 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                                 var: var_name.clone(),
                                 ty: Type::Record(Row {
                                     fields: HashMap::new(),
+                                    tail: crate::type_def::RowTail::Empty,
                                 }),
                             }];
                         }
@@ -155,7 +157,7 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                             // higher-kinded type parameterization (Seq: * → *)
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::Seq(Box::new(Type::Unknown)),
+                                ty: Type::seq(Type::Unknown),
                             }];
                         }
                     }
@@ -229,9 +231,10 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                                 "Bool" => Some(Type::Bool),
                                 "Dict" => Some(Type::Record(Row {
                                     fields: HashMap::new(),
+                                    tail: crate::type_def::RowTail::Empty,
                                 })),
                                 // HKT: bare Seq type tag narrows to Seq(Unknown) — element type deferred
-                                "Seq" => Some(Type::Seq(Box::new(Type::Unknown))),
+                                "Seq" => Some(Type::seq(Type::Unknown)),
                                 "Number" => Some(Type::Number),
                                 _ => None,
                             };
@@ -287,10 +290,16 @@ pub(crate) fn apply_narrowings(
                     for (k, v) in current_row.fields {
                         fields.insert(k, v);
                     }
-                    Type::Record(Row { fields })
+                    Type::Record(Row {
+                        fields,
+                        tail: crate::type_def::RowTail::Empty,
+                    })
                 } else {
                     // Create a fresh record with just the key constraint
-                    Type::Record(Row { fields })
+                    Type::Record(Row {
+                        fields,
+                        tail: crate::type_def::RowTail::Empty,
+                    })
                 };
 
                 new_env.insert(var.clone(), new_ty);
@@ -426,14 +435,15 @@ pub(crate) fn collect_pattern_bindings(
         }
         Pattern::Seq { head, tail } => {
             // Head is the element type; tail is the remaining Seq.
-            let elem_ty = match scrutinee_ty {
-                Type::Seq(elem) => (**elem).clone(),
+            let elem_ty = if let Some(elem) = scrutinee_ty.as_seq() {
+                elem.clone()
+            } else {
                 // Gradual: scrutinee is not a Seq — element type unknown
-                _ => Type::Unknown,
+                Type::Unknown
             };
             collect_pattern_bindings(&head.node, &elem_ty, out);
             // Tail is always a Seq of the same element type.
-            let tail_ty = Type::Seq(Box::new(elem_ty));
+            let tail_ty = Type::seq(elem_ty.clone());
             collect_pattern_bindings(&tail.node, &tail_ty, out);
         }
         Pattern::Constructor { tag, binding } => {

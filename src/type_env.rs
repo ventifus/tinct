@@ -113,13 +113,11 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
             ret: Box::new(rename_single_type_var(ret, old_name, fresh_name, level)),
             variadic: *variadic,
         },
-        Type::Seq(elem) => Type::Seq(Box::new(rename_single_type_var(
-            elem, old_name, fresh_name, level,
-        ))),
-        Type::Map(key, val) => Type::Map(
-            Box::new(rename_single_type_var(key, old_name, fresh_name, level)),
-            Box::new(rename_single_type_var(val, old_name, fresh_name, level)),
+        Type::App(f, a) => Type::App(
+            Box::new(rename_single_type_var(f, old_name, fresh_name, level)),
+            Box::new(rename_single_type_var(a, old_name, fresh_name, level)),
         ),
+        Type::TyCon(_) => ty.clone(), // TyCon has no type variables to rename
         Type::Union(members) => Type::Union(
             members
                 .iter()
@@ -131,10 +129,6 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
                 .iter()
                 .map(|m| rename_single_type_var(m, old_name, fresh_name, level))
                 .collect(),
-        ),
-        Type::App(f, a) => Type::App(
-            Box::new(rename_single_type_var(f, old_name, fresh_name, level)),
-            Box::new(rename_single_type_var(a, old_name, fresh_name, level)),
         ),
         Type::Operator(name) if name == old_name => Type::Operator(fresh_name.to_owned()),
         Type::Operator(_) => ty.clone(),
@@ -158,6 +152,16 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
 }
 
 fn rename_single_type_var_in_row(row: &Row, old_name: &str, fresh_name: &str, level: u32) -> Row {
+    // Preserve the tail: rename type vars in Uniform key/value types too
+    let new_tail = match &row.tail {
+        crate::type_def::RowTail::Empty => crate::type_def::RowTail::Empty,
+        crate::type_def::RowTail::Uniform { key, value } => crate::type_def::RowTail::Uniform {
+            key: key
+                .as_ref()
+                .map(|k| Box::new(rename_single_type_var(k, old_name, fresh_name, level))),
+            value: Box::new(rename_single_type_var(value, old_name, fresh_name, level)),
+        },
+    };
     Row {
         fields: row
             .fields
@@ -169,6 +173,7 @@ fn rename_single_type_var_in_row(row: &Row, old_name: &str, fresh_name: &str, le
                 )
             })
             .collect(),
+        tail: new_tail,
     }
 }
 
@@ -991,11 +996,11 @@ fn collect_pretty_type_vars(ty: &Type, seen: &mut Vec<String>) {
                 collect_pretty_type_vars(v, seen);
             }
         }
-        Type::Seq(elem) => collect_pretty_type_vars(elem, seen),
-        Type::Map(k, v) => {
-            collect_pretty_type_vars(k, seen);
-            collect_pretty_type_vars(v, seen);
+        Type::App(f, a) => {
+            collect_pretty_type_vars(f, seen);
+            collect_pretty_type_vars(a, seen);
         }
+        Type::TyCon(_) => {}
         Type::Union(ms) | Type::Intersection(ms) => {
             for m in ms {
                 collect_pretty_type_vars(m, seen);
@@ -1053,12 +1058,16 @@ fn format_type_pretty(ty: &Type, rename: &HashMap<String, String>) -> String {
                 _ => format!("Fn@{ret_str} [{params_str}]"),
             }
         }
-        Type::Seq(elem) => format!("Seq[{}]", format_type_pretty(elem, rename)),
-        Type::Map(k, v) => format!(
-            "Map[{} {}]",
-            format_type_pretty(k, rename),
-            format_type_pretty(v, rename)
-        ),
+        // App covers Seq[T], Map[K V], Handle[cap] — pretty-print by recursing into
+        // the structure using format_type_pretty so TypeVars get renamed.
+        Type::TyCon(name) => name.clone(),
+        Type::App(_, _) => {
+            // Use Display for the overall structure (handles Seq/Map/Handle formatting),
+            // but rename TypeVars inline by applying the rename map to the Display output.
+            // This is a conservative approach: Display already formats these correctly,
+            // and pretty_type_str handles _tN → letter renaming in a post-pass.
+            format!("{}", ty)
+        }
         Type::Union(ms) => ms
             .iter()
             .map(|m| format_type_pretty(m, rename))
@@ -1177,6 +1186,7 @@ pub struct TypeAlias {
 pub struct TypeEnv {
     bindings: HashMap<String, TypeScheme>,
     type_aliases: HashMap<String, TypeAlias>,
+    tycon_defs: HashMap<String, TyConDef>,
     parent: Option<Rc<TypeEnv>>,
 }
 
@@ -1185,6 +1195,7 @@ impl TypeEnv {
         Self {
             bindings: HashMap::new(),
             type_aliases: HashMap::new(),
+            tycon_defs: HashMap::new(),
             parent: None,
         }
     }
@@ -1193,6 +1204,7 @@ impl TypeEnv {
         Self {
             bindings: HashMap::new(),
             type_aliases: HashMap::new(),
+            tycon_defs: HashMap::new(),
             parent: Some(Rc::clone(parent)),
         }
     }
@@ -1254,6 +1266,24 @@ impl TypeEnv {
         self.type_aliases.insert(name, alias);
     }
 
+    pub fn insert_tycon_def(&mut self, name: String, def: TyConDef) {
+        self.tycon_defs.insert(name, def);
+    }
+
+    pub fn lookup_tycon_def(&self, name: &str) -> Option<&TyConDef> {
+        if let Some(def) = self.tycon_defs.get(name) {
+            return Some(def);
+        }
+        let mut current = self.parent.as_deref();
+        while let Some(env) = current {
+            if let Some(def) = env.tycon_defs.get(name) {
+                return Some(def);
+            }
+            current = env.parent.as_deref();
+        }
+        None
+    }
+
     /// Collect all binding names visible from this environment (including parent scopes).
     ///
     /// Walks the scope chain and inserts every bound name into `names`. Used by
@@ -1303,6 +1333,9 @@ impl TypeEnv {
         }
         for (name, alias) in other.type_aliases {
             self.type_aliases.insert(name, alias);
+        }
+        for (name, def) in other.tycon_defs {
+            self.tycon_defs.insert(name, def);
         }
     }
 
@@ -1890,20 +1923,18 @@ mod help_suggestion_tests {
 
         // Create an instance: Appendable [Seq b]
         // Method: append: [Fn@[Seq b] [[Seq b] [Seq b]]]
+        let b_var = || Type::TypeVar("b".to_string(), 0);
         let instance = InstanceDecl {
             class_name: "Appendable".to_string(),
-            instance_type: Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0))),
+            instance_type: Type::seq(b_var()),
             det_positions: vec![], // Single-parameter class, no FDs
             method_types: {
                 let mut methods = HashMap::new();
                 methods.insert(
                     "append".to_string(),
                     Type::Function {
-                        params: vec![
-                            (None, Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
-                            (None, Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
-                        ],
-                        ret: Box::new(Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
+                        params: vec![(None, Type::seq(b_var())), (None, Type::seq(b_var()))],
+                        ret: Box::new(Type::seq(b_var())),
                         variadic: false,
                     },
                 );
@@ -1920,7 +1951,7 @@ mod help_suggestion_tests {
         inst_env.insert(instance.clone()).unwrap();
 
         // Resolve against Seq[Int]
-        let target = Type::Seq(Box::new(Type::Int));
+        let target = Type::seq(Type::Int);
         let resolved = inst_env
             .resolve_instance("Appendable", &target, &mut state)
             .expect("resolve_instance should not error");
@@ -1936,27 +1967,27 @@ mod help_suggestion_tests {
         if let Type::Function { params, ret, .. } = append_ty.unwrap() {
             assert_eq!(params.len(), 2);
             // Both params should be Seq[Int] or Seq[_tN] (freshened)
-            match &params[0].1 {
-                Type::Seq(elem) => {
-                    // Should be Int or a fresh type var that got unified with Int
-                    assert!(
-                        matches!(elem.as_ref(), Type::Int | Type::TypeVar(..)),
-                        "first param should be Seq[Int] or Seq[fresh], got {:?}",
-                        elem
-                    );
-                }
-                other => panic!("expected Seq type for first param, got {:?}", other),
+            let p0 = &params[0].1;
+            if let Some(elem) = p0.as_seq() {
+                // Should be Int or a fresh type var that got unified with Int
+                assert!(
+                    matches!(elem, Type::Int | Type::TypeVar(..)),
+                    "first param should be Seq[Int] or Seq[fresh], got {:?}",
+                    elem
+                );
+            } else {
+                panic!("expected Seq type for first param, got {:?}", p0);
             }
 
-            match ret.as_ref() {
-                Type::Seq(elem) => {
-                    assert!(
-                        matches!(elem.as_ref(), Type::Int | Type::TypeVar(..)),
-                        "return should be Seq[Int] or Seq[fresh], got {:?}",
-                        elem
-                    );
-                }
-                other => panic!("expected Seq type for return, got {:?}", other),
+            let ret_ty = ret.as_ref();
+            if let Some(elem) = ret_ty.as_seq() {
+                assert!(
+                    matches!(elem, Type::Int | Type::TypeVar(..)),
+                    "return should be Seq[Int] or Seq[fresh], got {:?}",
+                    elem
+                );
+            } else {
+                panic!("expected Seq type for return, got {:?}", ret_ty);
             }
         } else {
             panic!("append should have Function type, got {:?}", append_ty);

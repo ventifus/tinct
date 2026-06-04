@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::ast::Span;
+use crate::type_def::TyConDef;
 use crate::types::{ClassDecl, ClassEnv, Constraint, InstanceEnv, Kind, Type};
 
 /// Polymorphic type scheme: ∀ type_vars kind_vars. constraints => body
@@ -124,6 +125,11 @@ pub struct InferState {
     /// Used for automatic guard insertion in gradual typing (see doc/feature/gradual-typing.md).
     /// HashMap for O(1) lookup at thunk creation time in eval_core_expr.
     pub boundary_guards: HashMap<Span, Type>,
+    /// Type constructor environment: maps type constructor names to their definitions.
+    /// Populated by the type checker when processing `[type ...]` declarations (T-942).
+    /// Present here so that TyConDef is "used" and to allow type-checking passes to
+    /// propagate TyCon definitions through the inference pipeline.
+    pub tycon_env: HashMap<String, TyConDef>,
     /// Current functional dependency improvement recursion depth.
     /// Prevents infinite loops through the improve_functional_dependency → unify →
     /// check_constraints_on_var → improve_functional_dependency cycle. Incremented when
@@ -361,12 +367,13 @@ impl InferState {
                     let mut fields = HashMap::new();
                     fields.insert(
                         "0".to_string(),
-                        Type::Map(Box::new(map_k_var.clone()), Box::new(map_v_var.clone())),
+                        Type::map(map_k_var.clone(), map_v_var.clone()),
                     );
                     fields.insert("1".to_string(), map_k_var.clone());
                     fields.insert("2".to_string(), map_v_var.clone());
                     fields
                 },
+                tail: crate::type_def::RowTail::Empty,
             }),
             det_positions: vec![0, 1],
             method_types: HashMap::new(),
@@ -381,11 +388,12 @@ impl InferState {
             instance_type: Type::Record(Row {
                 fields: {
                     let mut fields = HashMap::new();
-                    fields.insert("0".to_string(), Type::Seq(Box::new(seq_t_var.clone())));
+                    fields.insert("0".to_string(), Type::seq(seq_t_var.clone()));
                     fields.insert("1".to_string(), Type::Int);
                     fields.insert("2".to_string(), seq_t_var.clone());
                     fields
                 },
+                tail: crate::type_def::RowTail::Empty,
             }),
             det_positions: vec![0, 1],
             method_types: HashMap::new(),
@@ -405,11 +413,12 @@ impl InferState {
             instance_type: Type::Record(Row {
                 fields: {
                     let mut fields = HashMap::new();
-                    fields.insert("0".to_string(), Type::Seq(Box::new(concat_t_var.clone())));
-                    fields.insert("1".to_string(), Type::Seq(Box::new(concat_t_var.clone())));
-                    fields.insert("2".to_string(), Type::Seq(Box::new(concat_t_var.clone())));
+                    fields.insert("0".to_string(), Type::seq(concat_t_var.clone()));
+                    fields.insert("1".to_string(), Type::seq(concat_t_var.clone()));
+                    fields.insert("2".to_string(), Type::seq(concat_t_var.clone()));
                     fields
                 },
+                tail: crate::type_def::RowTail::Empty,
             }),
             det_positions: vec![0, 1],
             method_types: HashMap::new(),
@@ -427,22 +436,26 @@ impl InferState {
                         "0".to_string(),
                         Type::Record(Row {
                             fields: HashMap::new(),
+                            tail: crate::type_def::RowTail::Empty,
                         }),
                     );
                     fields.insert(
                         "1".to_string(),
                         Type::Record(Row {
                             fields: HashMap::new(),
+                            tail: crate::type_def::RowTail::Empty,
                         }),
                     );
                     fields.insert(
                         "2".to_string(),
                         Type::Record(Row {
                             fields: HashMap::new(),
+                            tail: crate::type_def::RowTail::Empty,
                         }),
                     );
                     fields
                 },
+                tail: crate::type_def::RowTail::Empty,
             }),
             det_positions: vec![0, 1],
             method_types: HashMap::new(),
@@ -461,6 +474,7 @@ impl InferState {
                     fields.insert("2".to_string(), Type::Str);
                     fields
                 },
+                tail: crate::type_def::RowTail::Empty,
             }),
             det_positions: vec![0, 1],
             method_types: HashMap::new(),
@@ -479,6 +493,7 @@ impl InferState {
                     fields.insert("2".to_string(), Type::Bytes);
                     fields
                 },
+                tail: crate::type_def::RowTail::Empty,
             }),
             det_positions: vec![0, 1],
             method_types: HashMap::new(),
@@ -520,16 +535,13 @@ impl InferState {
             // expressed via primitive_satisfies_constraint (which only covers leaf types).
             //
             // Showable Seq[T]: any sequence is showable (runtime has str() for all Seq)
-            seed_instance(
-                "Showable",
-                Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))),
-            );
+            seed_instance("Showable", Type::seq(Type::TypeVar("T".to_string(), 0)));
             // Showable Map[K V]: any map is showable
             seed_instance(
                 "Showable",
-                Type::Map(
-                    Box::new(Type::TypeVar("K".to_string(), 0)),
-                    Box::new(Type::TypeVar("V".to_string(), 0)),
+                Type::map(
+                    Type::TypeVar("K".to_string(), 0),
+                    Type::TypeVar("V".to_string(), 0),
                 ),
             );
             // Showable Record: any record is showable (via structural propagation in
@@ -539,18 +551,17 @@ impl InferState {
                 "Showable",
                 Type::Record(Row {
                     fields: HashMap::new(),
+                    tail: crate::type_def::RowTail::Empty,
                 }),
             );
             // Appendable Seq[T]: concatenation of sequences of the same element type
-            seed_instance(
-                "Appendable",
-                Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))),
-            );
+            seed_instance("Appendable", Type::seq(Type::TypeVar("T".to_string(), 0)));
             // Appendable Record: dict merge (any record is appendable via merge semantics)
             seed_instance(
                 "Appendable",
                 Type::Record(Row {
                     fields: HashMap::new(),
+                    tail: crate::type_def::RowTail::Empty,
                 }),
             );
         } // seed_instance closure dropped here, releasing the mutable borrow of instance_env
@@ -580,6 +591,7 @@ impl InferState {
             diagnostics: Vec::new(),
             deferred_equalities: Vec::new(),
             boundary_guards: HashMap::new(),
+            tycon_env: HashMap::new(),
             fd_depth: 0,
             fd_in_progress: std::collections::HashSet::new(),
             instance_resolution_depth: 0,

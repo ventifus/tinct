@@ -73,10 +73,11 @@ pub(crate) fn resolve_type_assert(
                 } else {
                     (state.subst.apply(&default_ty), state.subst.apply(&expected))
                 };
-                let passes = Type::is_subtype(&default_ty, &expected_resolved)
-                    || ((contains_unknown_or_top(&default_ty)
-                        || contains_unknown_or_top(&expected_resolved))
-                        && Type::is_consistent(&default_ty, &expected_resolved));
+                let passes =
+                    Type::is_subtype(&default_ty, &expected_resolved, Some(&state.tycon_env))
+                        || ((contains_unknown_or_top(&default_ty)
+                            || contains_unknown_or_top(&expected_resolved))
+                            && Type::is_consistent(&default_ty, &expected_resolved));
                 if !passes {
                     return Err(vec![TypeError::new(
                         format!(
@@ -143,8 +144,8 @@ pub(crate) fn resolve_type_assert(
 /// - `[@Fn@RetType]` (no param list) → zero-parameter function returning RetType
 ///
 /// If `name == "Seq"`, interprets `$annotation` as the element type:
-/// - `Seq@ElemType` (bare Annotated form) → `Type::Seq(ElemType)`
-/// - `[@Seq expr]` (TypeAssert) → checks `expr` against `Type::Seq(Any)` (element type is Any; `@ElemType` suffix is a parse error in TypeAssert position)
+/// - `Seq@ElemType` (bare Annotated form) → `Type::seq(elem)`
+/// - `[@Seq expr]` (TypeAssert) → checks `expr` against `App(TyCon("Seq"), Any)` (element type is Any; `@ElemType` suffix is a parse error in TypeAssert position)
 ///
 /// Otherwise, resolves `$annotation` as a regular type annotation.
 pub(crate) fn resolve_annotated(
@@ -174,7 +175,7 @@ pub(crate) fn resolve_annotated(
             ann_mapping,
             row_ann_mapping,
         )?;
-        let ty = Type::Seq(Box::new(elem));
+        let ty = Type::seq(elem);
         crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
         Ok(ty)
     } else if name == "Handle" {
@@ -195,7 +196,7 @@ pub(crate) fn resolve_annotated(
             ann_mapping,
             row_ann_mapping,
         )?;
-        Ok(Type::Handle(Box::new(cap_type)))
+        Ok(Type::handle(cap_type))
     } else {
         resolve_annotation(
             &annotation.node,
@@ -1057,7 +1058,7 @@ pub(crate) fn resolve_annotation(
                     // Resolve the inner type
                     let elem_type =
                         resolve_annotation(inner, env, span, state, ann_mapping, row_ann_mapping)?;
-                    Ok(Type::Seq(Box::new(elem_type)))
+                    Ok(Type::seq(elem_type))
                 }
                 "Map" => {
                     // Resolve the inner annotation for key and value types
@@ -1074,10 +1075,7 @@ pub(crate) fn resolve_annotation(
                                 ann_mapping,
                                 row_ann_mapping,
                             )?;
-                            Ok(Type::Map(
-                                Box::new(state.fresh_type_var()),
-                                Box::new(value_type),
-                            ))
+                            Ok(Type::map(state.fresh_type_var(), value_type))
                         }
                         Annotation::PropertyDict(surface_entries) => {
                             // @Map@[key: K value: V] → Map(K, V)
@@ -1114,7 +1112,7 @@ pub(crate) fn resolve_annotation(
                                     ann_mapping,
                                     row_ann_mapping,
                                 )?;
-                                Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)))
+                                Ok(Type::map(key_ty, value_ty))
                             } else {
                                 // No "value:" key — delegate to resolve_type_dict which handles
                                 // positional forms like [Map K V] (though nested inside @Map@).
@@ -1140,10 +1138,7 @@ pub(crate) fn resolve_annotation(
                                 ann_mapping,
                                 row_ann_mapping,
                             )?;
-                            Ok(Type::Map(
-                                Box::new(state.fresh_type_var()),
-                                Box::new(value_type),
-                            ))
+                            Ok(Type::map(state.fresh_type_var(), value_type))
                         }
                     }
                 }
@@ -1181,7 +1176,7 @@ pub(crate) fn resolve_annotation(
                     // Resolve the inner annotation as a capability type and wrap in Handle.
                     let cap_type =
                         resolve_annotation(inner, env, span, state, ann_mapping, row_ann_mapping)?;
-                    Ok(Type::Handle(Box::new(cap_type)))
+                    Ok(Type::handle(cap_type))
                 }
                 _ => {
                     // Unknown parameterized type — could be a type alias or error
@@ -1440,7 +1435,10 @@ fn apply_type_alias_substitution(
                 .iter()
                 .map(|(k, v)| (k.clone(), apply_type_alias_substitution(v, subst, state)))
                 .collect();
-            Type::Record(Row { fields: new_fields })
+            Type::Record(Row {
+                fields: new_fields,
+                tail: crate::type_def::RowTail::Empty,
+            })
         }
         Type::Function {
             params,
@@ -1459,7 +1457,6 @@ fn apply_type_alias_substitution(
             ret: Box::new(apply_type_alias_substitution(ret, subst, state)),
             variadic: *variadic,
         },
-        Type::Seq(elem) => Type::Seq(Box::new(apply_type_alias_substitution(elem, subst, state))),
         Type::Union(members) => Type::Union(
             members
                 .iter()
@@ -1475,11 +1472,11 @@ fn apply_type_alias_substitution(
         Type::Negation(inner) => {
             Type::Negation(Box::new(apply_type_alias_substitution(inner, subst, state)))
         }
-        Type::Map(key, value) => Type::Map(
-            Box::new(apply_type_alias_substitution(key, subst, state)),
-            Box::new(apply_type_alias_substitution(value, subst, state)),
+        Type::App(f, arg) => Type::App(
+            Box::new(apply_type_alias_substitution(f, subst, state)),
+            Box::new(apply_type_alias_substitution(arg, subst, state)),
         ),
-        // All other types are atomic and don't contain substitutable parameters
+        // All other types (including TyCon) are atomic and don't contain substitutable parameters
         _ => ty.clone(),
     }
 }
@@ -1635,32 +1632,35 @@ pub(crate) fn resolve_type_name(
             state.kind_env.insert(fresh.clone(), crate::types::Kind::Label);
             Ok(Type::TypeVar(fresh, state.level))
         }
-        "Seq" => Ok(Type::Seq(Box::new(Type::Unknown))),
+        "Seq" => Ok(Type::seq(Type::Unknown)),
         // Bare @Handle — no capability row argument. Resolves to Handle(Unknown),
         // which is the gradual "any handle" type. This is correct for unannotated
         // handle parameters where the caller doesn't know (or care about) the
         // capability row. Parameterized forms (`h@Handle@DirCap`, `[Handle DirCap]`,
         // `@Handle@DirCap`) resolve through resolve_annotated/resolve_annotation/
         // resolve_type_dict respectively and never reach this bare-name path.
-        "Handle" => Ok(Type::Handle(Box::new(Type::Unknown))),
+        "Handle" => Ok(Type::handle(Type::Unknown)),
         "Null" => Ok(Type::Record(Row {
             fields: HashMap::new(),
+            tail: crate::type_def::RowTail::Empty,
         })),
         "Dict" => {
             // Empty record — represents "any dict" under BAS width subtyping.
             // Any concrete record is a subtype because all required fields (none) are present.
             Ok(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             }))
         }
         "Map" => {
             // Bare @Map → Map[Unknown: Unknown]
-            Ok(Type::Map(Box::new(Type::Unknown), Box::new(Type::Unknown)))
+            Ok(Type::map(Type::Unknown, Type::Unknown))
         }
         "Record" => {
             // Bare @Record → open record (empty fields)
             Ok(Type::Record(Row {
                 fields: HashMap::new(),
+                tail: crate::type_def::RowTail::Empty,
             }))
         }
         "Fn" => {
@@ -1822,7 +1822,10 @@ fn expand_alias_body_guarded(
                     )?,
                 );
             }
-            Ok(Type::Record(Row { fields: new_fields }))
+            Ok(Type::Record(Row {
+                fields: new_fields,
+                tail: crate::type_def::RowTail::Empty,
+            }))
         }
         Type::Function {
             params,
@@ -1865,20 +1868,6 @@ fn expand_alias_body_guarded(
                 variadic: *variadic,
             })
         }
-        Type::Seq(elem) => {
-            let new_elem = Box::new(expand_alias_body_guarded(
-                elem,
-                env,
-                state,
-                ann_mapping,
-                row_ann_mapping,
-                alias_guard,
-                current_alias,
-                depth,
-                span,
-            )?);
-            Ok(Type::Seq(new_elem))
-        }
         Type::Union(members) => {
             let new_members = members
                 .iter()
@@ -1917,9 +1906,9 @@ fn expand_alias_body_guarded(
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Type::Intersection(new_members))
         }
-        Type::Map(key, value) => {
-            let new_key = Box::new(expand_alias_body_guarded(
-                key,
+        Type::App(f, arg) => {
+            let new_f = expand_alias_body_guarded(
+                f,
                 env,
                 state,
                 ann_mapping,
@@ -1928,9 +1917,9 @@ fn expand_alias_body_guarded(
                 current_alias,
                 depth,
                 span.clone(),
-            )?);
-            let new_value = Box::new(expand_alias_body_guarded(
-                value,
+            )?;
+            let new_arg = expand_alias_body_guarded(
+                arg,
                 env,
                 state,
                 ann_mapping,
@@ -1939,11 +1928,10 @@ fn expand_alias_body_guarded(
                 current_alias,
                 depth,
                 span,
-            )?);
-            Ok(Type::Map(new_key, new_value))
+            )?;
+            Ok(Type::App(Box::new(new_f), Box::new(new_arg)))
         }
-        // For all other types (primitives, type vars, etc.), return as-is
-        // Note: Type alias references would be in type expressions, not in the resolved Type itself
+        // For all other types (primitives, type vars, TyCon, etc.), return as-is
         _ => Ok(ty.clone()),
     };
 
@@ -2181,6 +2169,7 @@ fn resolve_type_dict_with_guard(
                         member_fields.insert(k, v);
                         Type::Record(Row {
                             fields: member_fields,
+                            tail: crate::type_def::RowTail::Empty,
                         })
                     })
                     .collect();
@@ -2188,7 +2177,10 @@ fn resolve_type_dict_with_guard(
             }
         }
 
-        let ty = Type::Record(Row { fields });
+        let ty = Type::Record(Row {
+            fields,
+            tail: crate::type_def::RowTail::Empty,
+        });
         crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
         return Ok(ty);
     }
@@ -2236,6 +2228,7 @@ pub(crate) fn resolve_type_expr(
                         tag: name.clone(),
                         fields: Row {
                             fields: HashMap::new(),
+                            tail: crate::type_def::RowTail::Empty,
                         },
                     })
                 }
@@ -2518,7 +2511,10 @@ pub(crate) fn resolve_type_expr(
                         }
                         return Ok(Type::NominalVariant {
                             tag: name.clone(),
-                            fields: Row { fields: fields_map },
+                            fields: Row {
+                                fields: fields_map,
+                                tail: crate::type_def::RowTail::Empty,
+                            },
                         });
                     } else if args.len() == 1 {
                         // Single positional payload: [Some a] → NominalVariant("Some", { "0": a })
@@ -2529,7 +2525,10 @@ pub(crate) fn resolve_type_expr(
                         fields_map.insert("0".to_string(), payload_ty);
                         return Ok(Type::NominalVariant {
                             tag: name.clone(),
-                            fields: Row { fields: fields_map },
+                            fields: Row {
+                                fields: fields_map,
+                                tail: crate::type_def::RowTail::Empty,
+                            },
                         });
                     } else if args.is_empty() {
                         // Unit constructor: [None] → NominalVariant("None", {})
@@ -2537,6 +2536,7 @@ pub(crate) fn resolve_type_expr(
                             tag: name.clone(),
                             fields: Row {
                                 fields: HashMap::new(),
+                                tail: crate::type_def::RowTail::Empty,
                             },
                         });
                     } else {
@@ -2612,7 +2612,7 @@ fn apply_builtin_constructor(name: &str, args: Vec<Type>, span: &Span) -> Result
                     span.clone(),
                 ));
             }
-            Ok(Type::Seq(Box::new(args.into_iter().next().unwrap())))
+            Ok(Type::seq(args.into_iter().next().unwrap()))
         }
         "Map" => {
             if args.len() != 2 {
@@ -2626,14 +2626,11 @@ fn apply_builtin_constructor(name: &str, args: Vec<Type>, span: &Span) -> Result
                 ));
             }
             let mut it = args.into_iter();
-            Ok(Type::Map(
-                Box::new(it.next().unwrap()),
-                Box::new(it.next().unwrap()),
-            ))
+            Ok(Type::map(it.next().unwrap(), it.next().unwrap()))
         }
         "Handle" => match args.len() {
-            1 => Ok(Type::Handle(Box::new(args.into_iter().next().unwrap()))),
-            0 => Ok(Type::Handle(Box::new(Type::Unknown))), // bare [Handle] → gradual
+            1 => Ok(Type::handle(args.into_iter().next().unwrap())),
+            0 => Ok(Type::handle(Type::Unknown)), // bare [Handle] → gradual
             _ => Err(TypeError::new(
                 format!("Handle requires 0 or 1 type argument, got {}", args.len()),
                 span.clone(),
@@ -2886,6 +2883,7 @@ pub(crate) fn resolve_type_dict(
                                     tag: tag.clone(),
                                     fields: Row {
                                         fields: HashMap::new(),
+                                        tail: crate::type_def::RowTail::Empty,
                                     },
                                 });
                             } else if entries.len() == 2 {
@@ -2902,7 +2900,10 @@ pub(crate) fn resolve_type_dict(
                                 fields.insert("0".to_string(), payload_ty);
                                 return Ok(Type::NominalVariant {
                                     tag: tag.clone(),
-                                    fields: Row { fields },
+                                    fields: Row {
+                                        fields,
+                                        tail: crate::type_def::RowTail::Empty,
+                                    },
                                 });
                             }
                             // 3+ all-positional entries: not a constructor with positional payload.
@@ -2946,6 +2947,7 @@ pub(crate) fn resolve_type_dict(
                                 tag: tag.clone(),
                                 fields: Row {
                                     fields: variant_fields,
+                                    tail: crate::type_def::RowTail::Empty,
                                 },
                             });
                         }
@@ -3123,6 +3125,7 @@ pub(crate) fn resolve_type_dict(
                     member_fields.insert(k, v);
                     Type::Record(Row {
                         fields: member_fields,
+                        tail: crate::type_def::RowTail::Empty,
                     })
                 })
                 .collect();
@@ -3130,7 +3133,10 @@ pub(crate) fn resolve_type_dict(
         }
     }
 
-    let ty = Type::Record(Row { fields });
+    let ty = Type::Record(Row {
+        fields,
+        tail: crate::type_def::RowTail::Empty,
+    });
     crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
     Ok(ty)
 }

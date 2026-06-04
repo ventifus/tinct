@@ -340,6 +340,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // 'undefined variable: ℊꜱʏᴍ⧼do-infer⧽N' at eval time. This is expected degraded behavior.
     ctx.set_boundary_guards(infer_state.boundary_guards);
     ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
+    ctx.set_tycon_env(infer_state.tycon_env);
     // Inject `%cwd` and `%libdir` DirCaps (mirrors the CLI run_eval behavior).
     // This allows corpus tests and included files to use cap-qualified includes.
     if !no_fs {
@@ -482,6 +483,7 @@ pub fn eval_source_with_cap_net(
     // 'undefined variable: ℊꜱʏᴍ⧼do-infer⧽N' at eval time. This is expected degraded behavior.
     ctx.set_boundary_guards(infer_state.boundary_guards);
     ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
+    ctx.set_tycon_env(infer_state.tycon_env);
 
     if !no_fs {
         // AMBIENT-OK: injecting %cwd DirCap for corpus tests; CWD was already opened above.
