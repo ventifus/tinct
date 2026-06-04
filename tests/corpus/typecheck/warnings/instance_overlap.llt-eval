@@ -1,0 +1,19 @@
+# W043: structural overlap warning fires when user code re-declares an instance the prelude already defines.
+# The prelude seeds EquatableInt via seed_infer_state_from_prelude_cache. Declaring another
+# Equatable Int instance triggers check_structural_overlap → W043 warning.
+[
+  MyEqInt: [instance Equatable
+    [pattern [Int]]:
+      eq: [fn [let x y] [= x y]]]
+
+  result: true
+]
+
+---
+
+%.result
+=== out
+Bool(true)
+
+=== warn
+overlapping instances for class 'Equatable'

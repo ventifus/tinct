@@ -3,9 +3,9 @@
 # without a live async runtime.
 [finally [fn [let] "cleaned"] [fn [let] [raise "body failed"]]]
 === error
-[E002] undefined variable: do (did you mean the string "do"? Use quotes.) (defined at stdlib/prelude.llt:3204:21-3204:23)
-  --> stdlib/prelude.llt:3204:21-3204:23
+[E002] undefined variable: do (did you mean the string "do"? Use quotes.) (defined at stdlib/prelude.llt:3210:21-3210:23)
+  --> stdlib/prelude.llt:3210:21-3210:23
    |
-  3204 |         [Error e]: [do [with-context [non-cancellable] [cleanup]] [raise e]]]]
+  3210 |         [Error e]: [do [with-context [non-cancellable] [cleanup]] [raise e]]]]
        |                     ^^
   in [finally ...] at 3:1-3:64

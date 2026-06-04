@@ -31,6 +31,3 @@
 ]
 === out
 Dict({"Red": Variant(Red, Null), "Blue": Variant(Blue, Null), "Green": Variant(Green, Null), "unit_constructor": Variant(Red, Null), "tag_of_red": String("Red"), "tag_of_green": String("Green"), "type_of_variant": String("Variant"), "eq_same": Bool(true), "eq_different": Bool(false), "eq_same_green": Bool(true), "str_variant": String("Red"), "selected": Variant(Red, Null), "selected_type": String("Variant")})
-
-=== warn
-type Variant does not satisfy constraint Showable at 25:16-25:25

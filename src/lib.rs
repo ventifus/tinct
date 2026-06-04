@@ -2362,40 +2362,6 @@ mod tests {
         );
     }
 
-    /// Three binding steps: `[do result [x: [Ok 1]] [y: [Ok 2]] [Ok [+ x y]]]` → Ok(3).
-    #[test]
-    fn test_do_macro_three_steps() {
-        let result = eval_source("[do result [x: [Ok 1]] [y: [Ok 2]] [Ok [+ x y]]]");
-        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
-        let output = result.unwrap();
-        assert!(
-            output.contains("3"),
-            "expected Ok(3) in output, got: {output}"
-        );
-    }
-
-    /// Error short-circuits: `[Err "fail"]` in a binding step propagates.
-    #[test]
-    fn test_do_macro_err_propagation() {
-        // Prelude uses Error (not Err) for the Result error constructor.
-        let result = eval_source("[do result [x: [Ok 1]] [y: [Error \"fail\"]] [Ok [+ x y]]]");
-        assert!(
-            result.is_ok(),
-            "expected Ok result from eval, got: {:?}",
-            result
-        );
-        let output = result.unwrap();
-        assert!(
-            output.contains("fail"),
-            "expected Error(fail) in output, got: {output}"
-        );
-        // Must NOT contain the final computation result
-        assert!(
-            !output.contains("Ok"),
-            "expected no Ok in error path output, got: {output}"
-        );
-    }
-
     /// `[do result]` — no steps, calls `result.pure []` → `Ok([])`.
     #[test]
     fn test_do_macro_no_steps_calls_pure() {

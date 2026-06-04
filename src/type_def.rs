@@ -41,9 +41,26 @@ pub enum Kind {
     /// Operator — kind of type constructors (* → *).
     /// Used for type constructor variables like `m` in `Monad m`.
     Operator,
+    /// k₁ → k₂ — kind of multi-argument type constructors.
+    /// Used for builtin type constructors like Map (* → * → *).
+    Arrow(Box<Kind>, Box<Kind>),
     /// Label — kind of type-level string labels used for record field names.
     /// Used for label TypeVars in `HasField` constraints (e.g., `key@"k"`).
     Label,
+}
+
+impl Kind {
+    pub fn arity(&self) -> usize {
+        match self {
+            Kind::Type | Kind::Label => 0,
+            Kind::Operator => 1,
+            Kind::Arrow(_, ret) => 1 + ret.arity(),
+        }
+    }
+
+    pub fn is_operator(&self) -> bool {
+        matches!(self, Kind::Operator | Kind::Arrow(..))
+    }
 }
 
 impl fmt::Display for Kind {
@@ -51,6 +68,7 @@ impl fmt::Display for Kind {
         match self {
             Kind::Type => write!(f, "*"),
             Kind::Operator => write!(f, "* → *"),
+            Kind::Arrow(a, b) => write!(f, "{} → {}", a, b),
             Kind::Label => write!(f, "Label"),
         }
     }
@@ -1985,6 +2003,95 @@ pub(crate) fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
     }
 }
 
+/// Check whether a leaf (non-structural, non-compound) type is a member of a built-in
+/// single-parameter type class.
+///
+/// This is the **single authoritative source of truth** for primitive class membership.
+/// It is used in two places:
+///
+/// 1. `type_unify::satisfies_constraint_inner` — fast-path leaf check for the structural
+///    propagation rules (Record/Union/Intersection/NominalVariant field recursion).
+/// 2. `type_infer::InferState::new()` — pre-seeding `InstanceEnv` with `InstanceDecl` entries
+///    so that `InstanceEnv::resolve_instance` returns the same memberships as this function
+///    for user-code type-checking sessions.
+///
+/// When adding a new type to a class (e.g., `Equatable Bytes`), update ONLY this function.
+/// The pre-seeded `InstanceDecl` entries in `InferState::new()` are built by calling this
+/// function — no second update is required.
+///
+/// **Structural (parametric) types** (`Seq`, `Map`, `Record`, `NominalVariant`) are handled
+/// by structural propagation rules in `satisfies_constraint_inner` (e.g., `Record({f: τ})`
+/// satisfies `Showable` iff every field `τ` satisfies `Showable`). This function handles only
+/// **leaf** (non-compound) primitive types.
+///
+/// **Literal types** (`IntLiteral`, `StringLiteral`) are promoted to their parent types
+/// (`Int`, `Str`) before constraint checking via `promote_literal_for_constrained_var`.
+/// We include them here so that constraint checking on literal-typed expressions works even
+/// when promotion has not yet fired (e.g., inside structural propagation).
+pub fn primitive_satisfies_constraint(ty: &Type, class_name: &str) -> bool {
+    match class_name {
+        // Equatable: types that support structural equality comparison ([= $a $b]).
+        // Record and NominalVariant are Equatable via structural propagation (all fields
+        // must be Equatable) — they are NOT listed here.
+        // Bytes is a primitive Equatable — byte-sequence equality is supported at runtime.
+        "Equatable" => matches!(
+            ty,
+            Type::Int
+                | Type::IntLiteral(_)
+                | Type::Float
+                | Type::Str
+                | Type::StringLiteral(_)
+                | Type::Bool
+                | Type::Number
+                | Type::Bytes
+        ),
+
+        // Comparable: types that support ordering ([< $a $b], [> $a $b], etc.).
+        // Comparable implies Equatable via superclass relationship.
+        "Comparable" => matches!(
+            ty,
+            Type::Int
+                | Type::IntLiteral(_)
+                | Type::Float
+                | Type::Str
+                | Type::StringLiteral(_)
+                | Type::Number
+        ),
+
+        // Numeric: types that support arithmetic ([+ $a $b], [* $a $b], etc.).
+        // Numeric implies Equatable via superclass relationship.
+        "Numeric" => matches!(
+            ty,
+            Type::Int | Type::IntLiteral(_) | Type::Float | Type::Number
+        ),
+
+        // Showable: types that support string conversion ([str $a]).
+        // Structural types (Seq, Map, Record) are Showable but are handled by structural
+        // propagation in satisfies_constraint_inner, not listed here.
+        // Bytes is a primitive Showable — str() on Bytes produces a UTF-8 string at runtime.
+        "Showable" => matches!(
+            ty,
+            Type::Int
+                | Type::IntLiteral(_)
+                | Type::Float
+                | Type::Str
+                | Type::StringLiteral(_)
+                | Type::Bool
+                | Type::Number
+                | Type::Bytes
+        ),
+
+        // Appendable: types that support concatenation/merge ([++ $a $b]).
+        // Seq, Map, and Record are Appendable but are structural — they need InstanceDecl
+        // entries with TypeVar patterns (e.g., Seq[T]) in InferState::new().
+        // Str/StringLiteral are primitive leaf types, listed here.
+        "Appendable" => matches!(ty, Type::Str | Type::StringLiteral(_)),
+
+        // All other classes: not a primitive member, must go through InstanceEnv resolution
+        _ => false,
+    }
+}
+
 /// Check that a type is well-kinded with respect to the kind environment.
 ///
 /// This implements the [KIND-LABEL-ERROR] kinding judgment from doc/whatif/completed/hkt-monads.md:
@@ -2066,5 +2173,191 @@ pub fn check_kind_wellformed(
         Type::Handle(cap) => check_kind_wellformed(cap, kind_env, span),
         // All other types (Int, Str, Bool, literals, capabilities, etc.) are always well-kinded
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Tests for primitive_satisfies_constraint — the single authoritative source of truth
+    // for which primitive types satisfy which type class constraints (T-910).
+
+    // --- Equatable ---
+
+    #[test]
+    fn test_primitive_equatable_int() {
+        assert!(primitive_satisfies_constraint(&Type::Int, "Equatable"));
+    }
+
+    #[test]
+    fn test_primitive_equatable_int_literal() {
+        assert!(primitive_satisfies_constraint(
+            &Type::IntLiteral(42),
+            "Equatable"
+        ));
+    }
+
+    #[test]
+    fn test_primitive_equatable_float() {
+        assert!(primitive_satisfies_constraint(&Type::Float, "Equatable"));
+    }
+
+    #[test]
+    fn test_primitive_equatable_str() {
+        assert!(primitive_satisfies_constraint(&Type::Str, "Equatable"));
+    }
+
+    #[test]
+    fn test_primitive_equatable_string_literal() {
+        assert!(primitive_satisfies_constraint(
+            &Type::StringLiteral("hello".into()),
+            "Equatable"
+        ));
+    }
+
+    #[test]
+    fn test_primitive_equatable_bool() {
+        assert!(primitive_satisfies_constraint(&Type::Bool, "Equatable"));
+    }
+
+    #[test]
+    fn test_primitive_equatable_number() {
+        assert!(primitive_satisfies_constraint(&Type::Number, "Equatable"));
+    }
+
+    #[test]
+    fn test_primitive_equatable_bytes() {
+        // Bytes is a primitive Equatable — byte-sequence equality is supported at runtime.
+        // Regression test: T-910 silently dropped Bytes when migrating from hardcoded arms
+        // to primitive_satisfies_constraint. This confirms the regression is fixed.
+        assert!(primitive_satisfies_constraint(&Type::Bytes, "Equatable"));
+    }
+
+    // --- Comparable ---
+
+    #[test]
+    fn test_primitive_comparable_int() {
+        assert!(primitive_satisfies_constraint(&Type::Int, "Comparable"));
+    }
+
+    #[test]
+    fn test_primitive_comparable_float() {
+        assert!(primitive_satisfies_constraint(&Type::Float, "Comparable"));
+    }
+
+    #[test]
+    fn test_primitive_comparable_str() {
+        assert!(primitive_satisfies_constraint(&Type::Str, "Comparable"));
+    }
+
+    #[test]
+    fn test_primitive_comparable_bool_false() {
+        // Bool is NOT Comparable — no ordering defined for booleans
+        assert!(!primitive_satisfies_constraint(&Type::Bool, "Comparable"));
+    }
+
+    // --- Numeric ---
+
+    #[test]
+    fn test_primitive_numeric_int() {
+        assert!(primitive_satisfies_constraint(&Type::Int, "Numeric"));
+    }
+
+    #[test]
+    fn test_primitive_numeric_float() {
+        assert!(primitive_satisfies_constraint(&Type::Float, "Numeric"));
+    }
+
+    #[test]
+    fn test_primitive_numeric_number() {
+        assert!(primitive_satisfies_constraint(&Type::Number, "Numeric"));
+    }
+
+    #[test]
+    fn test_primitive_numeric_int_literal() {
+        assert!(primitive_satisfies_constraint(
+            &Type::IntLiteral(0),
+            "Numeric"
+        ));
+    }
+
+    #[test]
+    fn test_primitive_numeric_str_false() {
+        assert!(!primitive_satisfies_constraint(&Type::Str, "Numeric"));
+    }
+
+    #[test]
+    fn test_primitive_numeric_bool_false() {
+        assert!(!primitive_satisfies_constraint(&Type::Bool, "Numeric"));
+    }
+
+    // --- Showable ---
+
+    #[test]
+    fn test_primitive_showable_int() {
+        assert!(primitive_satisfies_constraint(&Type::Int, "Showable"));
+    }
+
+    #[test]
+    fn test_primitive_showable_str() {
+        assert!(primitive_satisfies_constraint(&Type::Str, "Showable"));
+    }
+
+    #[test]
+    fn test_primitive_showable_bool() {
+        assert!(primitive_satisfies_constraint(&Type::Bool, "Showable"));
+    }
+
+    #[test]
+    fn test_primitive_showable_float() {
+        assert!(primitive_satisfies_constraint(&Type::Float, "Showable"));
+    }
+
+    #[test]
+    fn test_primitive_showable_bytes() {
+        // Bytes is a primitive Showable — str() on Bytes produces a UTF-8 string at runtime.
+        // Regression test: T-910 silently dropped Bytes when migrating from hardcoded arms
+        // to primitive_satisfies_constraint. This confirms the regression is fixed.
+        assert!(primitive_satisfies_constraint(&Type::Bytes, "Showable"));
+    }
+
+    // --- Appendable ---
+
+    #[test]
+    fn test_primitive_appendable_str() {
+        assert!(primitive_satisfies_constraint(&Type::Str, "Appendable"));
+    }
+
+    #[test]
+    fn test_primitive_appendable_string_literal() {
+        assert!(primitive_satisfies_constraint(
+            &Type::StringLiteral("x".into()),
+            "Appendable"
+        ));
+    }
+
+    #[test]
+    fn test_primitive_appendable_int_false() {
+        assert!(!primitive_satisfies_constraint(&Type::Int, "Appendable"));
+    }
+
+    #[test]
+    fn test_primitive_appendable_bytes_false() {
+        // Bytes is not listed as a primitive Appendable (only Concatable via InstanceEnv)
+        assert!(!primitive_satisfies_constraint(&Type::Bytes, "Appendable"));
+    }
+
+    // --- Unknown class ---
+
+    #[test]
+    fn test_primitive_unknown_class_false() {
+        // Any class not explicitly listed returns false — must go through InstanceEnv
+        assert!(!primitive_satisfies_constraint(&Type::Int, "Joinable"));
+        assert!(!primitive_satisfies_constraint(&Type::Int, "Concatable"));
+        assert!(!primitive_satisfies_constraint(
+            &Type::Int,
+            "NonExistentClass"
+        ));
     }
 }

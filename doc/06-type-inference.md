@@ -15,8 +15,9 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
     | Str                        string  (internal name; user-facing annotations accept `String` as an alias)
     | Bool                       boolean
     | Fn(τ₁...τₙ → τᵣ)          function (n params, return type)
-    | Seq(τ)                     lazy sequence
-    | Record(f₁:τ₁...fₙ:τₙ)      closed record (no row-rest parameter)
+    | TyCon(name)                concrete type constructor name ("Seq", "Tree", "Result", etc.)
+    | App(τ, τ)                  curried type constructor application — left-to-right
+    | Record(f₁:τ₁...fₙ:τₙ, tail)  closed record with optional uniform tail
     | Proxy                      opaque proxy (field access dispatches to handler)
     | α                          type variable
     | Unknown                    gradual typing escape hatch (don't know the type)
@@ -27,18 +28,130 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
     | Never                      bottom type ⊥ (uninhabited, user-expressible via `@Never`)
 ```
 
-*Note:* Under BAS (Boolean-Algebraic Subtyping), all records are closed. Records carry no row-rest parameter. Width subtyping handles record openness via intersection and negation. The Rémy-style row polymorphism notation (`Record(f₁:τ₁...fₙ:τₙ, ρ)` with `ρ ::= Closed | RowVar(r)`) is documented in [Type System Extensions](07-type-extensions.md) Appendix.
+`TyCon(name)` replaces the dedicated collection variants `Seq(τ)`, `Map(K,V)`, and `Handle(τ)`. All named types — builtins and user-declared — are represented uniformly:
+
+```text
+Seq Int     → App(TyCon("Seq"), Int)
+Map Str Int → App(App(TyCon("Map"), Str), Int)   # curried: left-to-right
+Tree a      → App(TyCon("Tree"), TypeVar("a"))
+```
+
+`Type::Operator(String)` remains for type constructor *variables* (class params like `f` in `[class [f@Operator] ...]`); `TyCon` is for concrete *names*.
+
+The `Row` tail field carries `RowTail::Empty` (closed record, current default) or `RowTail::Uniform { key: Option<Box<Type>>, value: Box<Type> }` (column constraint — see §Column Constraints in [Type System Extensions](07-type-extensions.md)).
+
+*Note:* Under BAS (Boolean-Algebraic Subtyping), all records are closed. Records carry no row-rest parameter. Width subtyping handles record openness via intersection and negation. The Rémy-style row polymorphism notation is documented in [Type System Extensions](07-type-extensions.md) Appendix.
 
 **Additional types** (not expressible in annotations, used internally by inference):
 
 | Type | Description |
 |------|-------------|
 | `Bytes` | Binary data |
-| `Map(K, V)` | Homogeneous parameterized map |
 | `Timestamp`, `Duration`, `Timezone` | Datetime types |
 | `DirCap`, `NetCap`, `ClockCap` | Capability types (runtime-only) |
-| `Handle`, `Uri` | I/O resource types (runtime-only) |
+| `Uri` | URI resource type (runtime-only) |
 | `QuicSession`, `Http2Session`, `Http3Session`, `DatagramHandle` | Network session types (runtime-only) |
+
+## TyCon Registry
+
+> **Design target**: This section describes the target state after the user-type-constructors sprint series. The current implementation retains `Type::Seq(Box<Type>)`, `Type::Map(Box<Type>, Box<Type>)`, and `Type::Handle(Box<Type>)` as distinct Type variants. `TyConDef`, `Variance`, and `Type::TyCon` do not yet exist in the codebase.
+
+**`TyConDef`** is stored in a third map on `TypeEnv` alongside bindings and type aliases:
+
+```rust
+pub struct TyConDef {
+    pub variance: Vec<Variance>,            // per-parameter, same order as [let ...] params
+    pub constructors: Vec<(String, usize)>, // (qualified-tag, payload-arity); empty for opaques
+    pub builtin_type: Option<String>,       // "Int", "Str", etc. for builtin-type declarations
+}
+
+pub enum Variance { Covariant, Contravariant, Invariant, Phantom }
+```
+
+`TypeEnv` gains `tycon_defs: HashMap<String, TyConDef>` with `insert_tycon_def` and `lookup_tycon_def` methods (parent-chain walk, same pattern as `lookup_type_alias`). When the type checker processes `Color: [type Red Green Blue]`, it stores both a `TypeAlias` and a `TyConDef` in the current scope frame.
+
+**`InferState` flat accumulator.** `InferState` carries `pub tycon_env: HashMap<String, TyConDef>` as a flat snapshot populated incrementally as each TyCon declaration is processed. This is transferred to `EvalContext` at all infer-state transfer sites via `ctx.set_tycon_env(infer_state.tycon_env)`.
+
+**Type identity.** UNIFY-TYCON unifies `TyCon(n1)` and `TyCon(n2)` iff `n1 == n2` AND both names resolve to the same `TyConDef` in the current scoped `TypeEnv` (pointer identity). Two `Color` types in different scope frames have the same name but different `TyConDef` entries — they are distinct types. The name string is a lookup key, not an identity token.
+
+**Kind registration.** TyCon kind is derived from `TyConDef.variance.len()`:
+
+- 0 parameters → `Kind::Type` (`*`)
+- 1 parameter → `Kind::Operator` (`* → *`)
+- 2+ parameters → `Kind::Arrow` chain (`* → * → *`, etc.)
+
+`InferState.kind_env` tracks TypeVar kinds (`f@Operator` in class params) and is unaffected.
+
+## Annotation Resolution
+
+**`resolve_annotation`** and its helper `resolve_type_dict` receive a `type_params: Option<&HashSet<String>>` argument:
+
+- `Some(params)` — inside a type alias body. Only names in `params` become TypeVars; all other lowercase names are scope references. If a name is not in params and not found in scope, it is a type error.
+- `None` — outside a type alias body (function annotations, constraints, etc.). Existing behavior: lowercase names become TypeVars.
+
+The builtin string-match dispatch (`apply_builtin_constructor`, `is_builtin_type_name`, and the `"Seq"`, `"Map"`, `"Handle"` arms) is replaced by a single general lookup path: look up the name in `TyConEnv`, retrieve arity, collect arguments, produce `App(TyCon(name), args...)` or expand the alias body.
+
+**`{_ : V}` recognition.** When parsing a type dict expression, the `_` key (optionally annotated `_@K`) is recognized as a uniform tail rather than a named field. The recognizer is a single pass: accumulate named fields; if a key is `_` or `_@K`, set `RowTail::Uniform { key: Option<K>, value: V }`. At most one `_` per row type (duplicate → type error).
+
+**Polarity analysis** for transparent alias variance inference: `infer_variance(body: &Type, params: &[String], type_env: &TypeEnv) -> Vec<Variance>` implements Dolan 2017 §4. Walk the body type with a current polarity (`Positive`/`Negative`); classify each TypeVar's occurrences to determine `Covariant`, `Contravariant`, `Invariant`, or `Phantom`. Explicit `@` annotations override inference and are checked for conflicts.
+
+**`annotation_to_variance`** — a closed 4-entry match used when processing `[let a@X]` params:
+
+```rust
+fn annotation_to_variance(name: &str) -> Option<Variance> {
+    match name {
+        "Covariant"     => Some(Variance::Covariant),
+        "Contravariant" => Some(Variance::Contravariant),
+        "Invariant"     => Some(Variance::Invariant),
+        "Phantom"       => Some(Variance::Phantom),
+        _               => None,
+    }
+}
+```
+
+If `annotation_to_variance` returns `None` AND the name is a registered class, the annotation is a typeclass constraint on the type parameter. If neither, it is a type error.
+
+## Unification: UNIFY-TYCON and UNIFY-UNIFORM
+
+**UNIFY-TYCON:** Added to the unification algorithm — `TyCon(n1)` and `TyCon(n2)` unify iff `n1 == n2` AND both names resolve to the same `TyConDef` (pointer identity). No binding.
+
+**UNIFY-APP:** existing — decomposes `App(f1, a1)` and `App(f2, a2)` by unifying constructors then arguments.
+
+**UNIFY-UNIFORM:** Unification of `Row { fields, tail: Empty }` against `Row { fields: {}, tail: Uniform(V) }` applies the current substitution to `V` first, then branches:
+
+1. If `V'` (substitution-applied) is still an unbound TypeVar: compute join of all named field types (`T1 | T2 | ... | Tn`) and unify that TypeVar with the join.
+2. If `V'` is a concrete type: check `is_subtype(Ti, V')` for each named field `Ti` (no new unification).
+
+`unify(Uniform{V1}, Uniform{V2})` → `unify(V1, V2)` (and `unify(K1, K2)` if both keyed).
+`unify(Empty, Uniform{..})` → type error: "closed row does not satisfy uniform constraint".
+
+## Subtyping: Variance-Directed App
+
+**`is_subtype` signature change:** `is_subtype(sub: &Type, sup: &Type, tycon_env: Option<&TyConEnv>) -> bool`.
+
+- `None`: invariant fallback for all `App(TyCon(_), _)` — safe conservative default (never unsound).
+- `Some(&state.tycon_env)`: all type-checker call sites.
+- `Some` from `EvalContext.tycon_env`: runtime call sites.
+
+**Variance-directed subtyping for `App(TyCon(f), a)`:**
+
+- `@Covariant`: `App(f, a) <: App(f, b)` when `a <: b`
+- `@Contravariant`: `App(f, a) <: App(f, b)` when `b <: a`
+- Invariant: only when `a == b`
+- `@Phantom`: always
+
+## Scoped ClassEnv and InstanceEnv
+
+Both `ClassEnv` and `InstanceEnv` are parent-chain scoped, following the same model as `TypeEnv`:
+
+- A `HashMap` per scope frame with a parent pointer
+- Insertions go into the current frame; lookups walk the chain with inner-wins semantics
+- Prelude classes and instances live in the root frame — visible everywhere
+- A class or instance in an inner dict is visible only to that dict's descendants
+
+Local coherence: within a single scope frame, at most one instance per `(Class, Type)` pair. Across scope levels, shadowing is allowed — the innermost instance wins. Two `[instance [Monad Result] ...]` in the same dict is a type error; one in an outer scope and one in an inner scope is valid (inner shadows).
+
+**`[do ...]` monad dispatch** uses the scoped instance environment at typecheck time via `resolve_monad_from_surface(node, type_env)`. This function calls `flatten_dot_access_to_tag` for dot-access-headed calls and `type_env.resolve_constructor_tag(name)` for VarRef-headed calls to obtain the qualified tag, then extracts the TyCon name via `rfind('.')`. Lookup goes through `state.instance_env.lookup_scoped("Monad", tycon_name)` — not the global eval-time registry. The desugared `[do ...]` body embeds `bind_node` and `pure_node` references directly as expressions — no runtime instance lookup.
 
 ## Bidirectional Typing
 
@@ -367,12 +480,38 @@ unify(Fn(p₁...pₙ → r₁), Fn(q₁...qₙ → r₂), S) =
     unify(r₁, r₂, S')                           [U-FN]
     error if |p| ≠ |q|
 
-unify(Seq(τ₁), Seq(τ₂), S) = unify(τ₁, τ₂, S)  [U-SEQ]
+unify(Seq(τ₁), Seq(τ₂), S) = unify(τ₁, τ₂, S)  [U-SEQ]  (legacy; Seq is App(TyCon("Seq"),_) post-migration)
+
+unify(TyCon(n), TyCon(n), S) = S                 [U-TYCON]  (same name AND pointer-identical TyConDef)
+unify(TyCon(n1), TyCon(n2), S) = error           [U-TYCON-NEQ]  if n1 ≠ n2 or different definitions
+
+unify(App(f₁,a₁), App(f₂,a₂), S) =
+    let S' = unify(f₁, f₂, S)
+    unify(a₁, a₂, S')                            [U-APP]
 
 unify(Record(r₁), Record(r₂), S) = unify_rows(r₁, r₂, S)     [U-REC]
 ```
 
-Record unification delegates entirely to row unification — see [Type System Extensions](07-type-extensions.md) §Row-Variable Unification for the full `unify_rows` algorithm.
+Record unification delegates to row unification. The `unify_rows` algorithm handles `RowTail::Uniform` in addition to the existing closed-row case — see [Type System Extensions](07-type-extensions.md) §Column Constraints for the full rules including the substitution-first branching for the TypeVar vs concrete split.
+
+Row tail unification:
+
+```text
+unify_rows(Row{f, Empty}, Row{{}, Uniform{V}}, S):
+    let V' = apply_to_fixpoint(S, V)
+    if V' is unbound TypeVar(α):
+        join = normalize_union(field types of f)
+        S' = unify(α, join, S)                   [U-UNIFORM-VAR]
+    else:
+        for Ti in field types(f): assert is_subtype(Ti, V')
+                                                  [U-UNIFORM-CONCRETE]
+
+unify_rows(Row{{}, Uniform{V1}}, Row{{}, Uniform{V2}}, S):
+    S' = unify(K1, K2, S)  (if both keyed, else skip)
+    unify(V1, V2, S')                             [U-UNIFORM-UNIFORM]
+
+unify_rows(Row{_, Empty}, Row{_, Uniform{..}}, S) = error  "closed row does not satisfy uniform constraint"
+```
 
 Subsumptive fallback for concrete types (no type variables on either side):
 
@@ -428,7 +567,14 @@ Unknown <: τ                                     [S-UNKNOWN-BOT]
 IntLiteral(n) <: Int <: Number                   [S-INT]
 StringLiteral(s) <: Str                          [S-STR]
 Float <: Number                                  [S-FLOAT]
-Seq(τ) <: Seq(σ)  if τ <: σ                      [S-SEQ]
+Seq(τ) <: Seq(σ)  if τ <: σ                      [S-SEQ]  (legacy; use App(TyCon("Seq"),_) post-migration)
+
+App(TyCon(f), a) <: App(TyCon(f), b)
+    where variance(f) = Covariant  if a <: b     [S-APP-COV]
+    where variance(f) = Contravariant  if b <: a [S-APP-CONTRA]
+    where variance(f) = Invariant  if a = b      [S-APP-INV]
+    where variance(f) = Phantom    always         [S-APP-PHANTOM]
+    (when tycon_env = None: treat all as Invariant — conservative, never unsound)
 
 Record(F₁) <: Record(F₂) if:
     ∀(k:σ) ∈ F₂, ∃(k:τ) ∈ F₁ with τ <: σ       (depth subtyping on shared fields)
@@ -513,11 +659,14 @@ impl TypeScheme {
 
 ```rust
 pub struct InferState {
-    pub name_counter: u32,   // monotonic fresh variable name counter
     pub level: u32,          // current binding depth
     pub levels: HashMap<String, u32>,  // var name → current level
-    pub subst: Substitution, // global constraint accumulator for access-chain bindings
+    pub subst: Substitution, // constraint accumulator; child frame per dict (T-926)
 }
+// Note: InferState no longer contains name_counter.
+// The per-frame fresh-var counter lives in Substitution.name_counter (Cell<u32>)
+// so each dict's child substitution frame inherits the parent's current counter
+// value, ensuring globally unique TypeVar names across all frames (T-927, Barendregt).
 ```
 
 `InferState.subst` accumulates type-variable constraints from [DOT-VAR] across the entire inference pass. During letrec inference (Pass 3b), accumulated constraints are merged into the letrec substitution: when both maps bind the same variable, the two bindings are **unified** (Algorithm W substitution composition, Damas & Milner 1982) rather than silently dropped. Colliding bindings are **unified** rather than dropped, maintaining substitution composition soundness. After merging, Pass 3d writes the fully-merged local substitution back into `state.subst` so that subsequent dicts in the same document see the letrec bindings. See the Pass 3b merge algorithm in [DICT-GEN] below for the precise pseudocode.
@@ -713,7 +862,7 @@ Mutually recursive entries constrain each other through unification during Pass 
 | `generalize()` | `fn(u32, Type, &InferState) → TypeScheme` |
 | `unify()` U-VAR | Bind + symmetric level lowering |
 | `unify()` U-ANY + TypeVar | Set ℓ(α) = 0 to prevent generalization |
-| `InferState` | `{ name_counter: u32, level: u32, levels: HashMap<String, u32>, subst: Substitution }` |
+| `InferState` | `{ level: u32, levels: HashMap<String, u32>, subst: Substitution }` (name_counter moved to `Substitution.name_counter: Cell<u32>`, T-927) |
 | `InferState.subst` | Accumulates constraints from [DOT-VAR]; merged into letrec substitution in Pass 3b |
 | `collect_type_vars()` | `fn(&self, &mut HashSet<String>)` — collects type variables, no level |
 | `Type::Display` | Shows `TypeVar` name only (level hidden) |

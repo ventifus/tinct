@@ -5,4 +5,5 @@
 Dict({"f": Function(x), "result": Int(42)})
 
 === warn
-cannot unify Int with
+cannot unify Int with _t3 at 1:23-1:30
+inferred type is Unknown — consider adding a type annotation

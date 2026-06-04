@@ -64,10 +64,6 @@ pub type SchemeMap = HashMap<(usize, usize), TypeScheme>;
 /// Inference state for levels-based let-generalization
 #[derive(Debug, Clone)]
 pub struct InferState {
-    /// Monotonic counter for fresh type/row variable names (_t0, _t1, ...).
-    /// Uses u32 instead of u64 — assumes no single inference run creates >4B type variables.
-    /// (In practice, programs with >1M type variables exhaust memory first via substitution map growth.)
-    pub name_counter: u32,
     pub level: u32,
     pub levels: HashMap<String, u32>,
     /// Global accumulated substitution: collects constraints from access-chain inference
@@ -77,7 +73,13 @@ pub struct InferState {
     pub subst: Substitution,
     /// Accumulated type class constraints on type variables.
     /// Constraints are generated when overloaded builtins are called with type variables.
-    /// During generalization, constraints on generalized variables are included in the TypeScheme.
+    ///
+    /// **Scoping contract**: On the `infer_dict` path, `state.constraints` is cleared via
+    /// `std::mem::take` after each entry's inference. The collected constraints are stored
+    /// per-entry in `typecheck_dict.rs` and passed explicitly to `generalize_with_doc` —
+    /// `generalize_with_doc` does NOT read this field. This field is used by coherence probes
+    /// in `type_class.rs` (which save/restore it around probes) and by `type_unify.rs`
+    /// (constraint transfer during TypeVar→TypeVar binding).
     pub constraints: Vec<Constraint>,
     /// Kind environment: maps TypeVar names to their kinds.
     /// Populated during class method processing (Kind::Operator) and when `key@"k"` annotations
@@ -127,6 +129,13 @@ pub struct InferState {
     /// check_constraints_on_var → improve_functional_dependency cycle. Incremented when
     /// entering improve_functional_dependency, decremented when exiting.
     pub fd_depth: usize,
+    /// Set of TypeVar names currently being processed by FD improvement (either forward or
+    /// reverse direction). When FD improvement tries to bind a determined/determining variable
+    /// that is already in this set, it skips the unification — the variable is already being
+    /// bound in an outer FD improvement call, so re-binding it would be a no-op (idempotent)
+    /// and attempting it causes the mutual-recursion cycle: reverse(t1→t0) → forward(t0→t1)
+    /// → reverse(t1→t0) → … hitting MAX_FD_DEPTH.
+    pub fd_in_progress: std::collections::HashSet<String>,
     /// Instance resolution recursion depth.
     /// Prevents infinite loops through the check_constraints_on_var → resolve_instance →
     /// unify → check_constraints_on_var cycle. Incremented when entering resolve_instance,
@@ -175,16 +184,16 @@ impl InferState {
         let mut class_env = ClassEnv::new();
 
         // Register built-in type classes with their superclass relationships.
-        // Class declarations define the hierarchy (which classes extend which).
-        // Instance resolution happens in two stages:
-        //   1. satisfies_constraint: hardcoded for Numeric, Comparable, Equatable, and Showable
-        //   2. InstanceEnv::resolve_instance: dynamic resolution from prelude.llt instances
+        // Class declarations define the class hierarchy (which classes extend which).
+        // Instance resolution goes through InstanceEnv::resolve_instance for all classes.
+        // Primitive instances (Equatable Int, Comparable Float, etc.) are pre-seeded below
+        // using primitive_satisfies_constraint (type_def.rs) as the single authoritative table.
         //
         // These pre-registrations ensure the class hierarchy is available before prelude.llt
-        // is type-checked. When prelude.llt is loaded, it will register instances (not classes)
-        // which will be used by resolve_instance for constraint checking.
+        // is type-checked. Prelude.llt registers additional instances which are merged via
+        // seed_infer_state_from_prelude_cache after the prelude loads.
 
-        // Equatable: base class (instances defined in prelude.llt)
+        // Equatable: base class (primitive instances pre-seeded below; prelude also declares instances)
         class_env.insert(ClassDecl {
             name: "Equatable".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
@@ -194,7 +203,7 @@ impl InferState {
             resolver_injective: false,
         });
 
-        // Numeric: extends Equatable (hardcoded instance set for Int/Float/Number/IntLiteral)
+        // Numeric: extends Equatable (primitive instances pre-seeded below for Int/Float/Number)
         class_env.insert(ClassDecl {
             name: "Numeric".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
@@ -260,7 +269,7 @@ impl InferState {
             resolver_injective: false,
         });
 
-        // Comparable: extends Equatable (instances defined in prelude.llt)
+        // Comparable: extends Equatable (primitive instances pre-seeded below; prelude also declares instances)
         class_env.insert(ClassDecl {
             name: "Comparable".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
@@ -270,7 +279,7 @@ impl InferState {
             resolver_injective: false,
         });
 
-        // Showable: base class (instances defined in prelude.llt)
+        // Showable: base class (primitive instances pre-seeded below; prelude also declares instances)
         class_env.insert(ClassDecl {
             name: "Showable".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
@@ -280,7 +289,7 @@ impl InferState {
             resolver_injective: false,
         });
 
-        // Mappable: base class (instances defined in prelude.llt)
+        // Mappable: base class (instances defined in prelude.llt; no primitive pre-seeding needed)
         // Kind::Operator for higher-kinded type constructor polymorphism
         class_env.insert(ClassDecl {
             name: "Mappable".to_string(),
@@ -291,7 +300,7 @@ impl InferState {
             resolver_injective: false,
         });
 
-        // Appendable: base class (instances defined in prelude.llt)
+        // Appendable: base class (Str, Seq, Record instances pre-seeded below; prelude also declares instances)
         class_env.insert(ClassDecl {
             name: "Appendable".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
@@ -476,13 +485,92 @@ impl InferState {
         };
         instance_env.insert(concatable_bytes_instance).unwrap();
 
+        // ── Parametric structural class instances ─────────────────────────────────────────────
+        // Pre-seed InstanceEnv with parametric structural instances only. Primitive leaf
+        // instances (Equatable Int, Comparable Float, Showable Str, etc.) are NOT pre-seeded
+        // here — they are handled exclusively by the `primitive_satisfies_constraint` fast path
+        // in `satisfies_constraint_inner` (type_unify.rs), which short-circuits before any
+        // InstanceEnv lookup. Pre-seeding primitives would cause `check_structural_overlap` to
+        // flag conflicts when user code declares instances of the same class for the same types
+        // (e.g., `[instance Equatable [pattern [Int]]]` in corpus tests).
+        //
+        // Parametric structural instances DO need InstanceEnv entries because
+        // `satisfies_constraint_inner` calls `resolve_instance` for compound types like
+        // `Seq[concrete]` when the structural fast path does not apply.
+        //
+        // `InstanceEnv::insert` is idempotent (string-key dedup): re-seeding from
+        // prelude cache via `seed_infer_state_from_prelude_cache` is safe.
+
+        // Scoped block: seed_instance closure borrows instance_env mutably; the block
+        // ensures the closure is dropped before instance_env is moved into Self { ... }.
+        {
+            // Helper: register a simple single-param instance (det_positions empty = single-param).
+            let mut seed_instance = |class: &str, ty: Type| {
+                instance_env
+                    .insert(InstanceDecl {
+                        class_name: class.to_string(),
+                        instance_type: ty,
+                        det_positions: vec![],
+                        method_types: HashMap::new(),
+                    })
+                    .unwrap();
+            };
+
+            // Parametric structural instances: these require TypeVar patterns and cannot be
+            // expressed via primitive_satisfies_constraint (which only covers leaf types).
+            //
+            // Showable Seq[T]: any sequence is showable (runtime has str() for all Seq)
+            seed_instance(
+                "Showable",
+                Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))),
+            );
+            // Showable Map[K V]: any map is showable
+            seed_instance(
+                "Showable",
+                Type::Map(
+                    Box::new(Type::TypeVar("K".to_string(), 0)),
+                    Box::new(Type::TypeVar("V".to_string(), 0)),
+                ),
+            );
+            // Showable Record: any record is showable (via structural propagation in
+            // satisfies_constraint_inner for the fast path; this InstanceDecl covers the
+            // resolve_instance path for compound record types).
+            seed_instance(
+                "Showable",
+                Type::Record(Row {
+                    fields: HashMap::new(),
+                }),
+            );
+            // Appendable Seq[T]: concatenation of sequences of the same element type
+            seed_instance(
+                "Appendable",
+                Type::Seq(Box::new(Type::TypeVar("T".to_string(), 0))),
+            );
+            // Appendable Record: dict merge (any record is appendable via merge semantics)
+            seed_instance(
+                "Appendable",
+                Type::Record(Row {
+                    fields: HashMap::new(),
+                }),
+            );
+        } // seed_instance closure dropped here, releasing the mutable borrow of instance_env
+
+        // Builtin type constructors — pre-registered so resolve_type_dict
+        // uses the general kind_env path instead of string matching.
+        let mut kind_env = HashMap::new();
+        kind_env.insert("Seq".to_string(), Kind::Operator);
+        kind_env.insert(
+            "Map".to_string(),
+            Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Operator)),
+        );
+        kind_env.insert("Handle".to_string(), Kind::Operator);
+
         Self {
-            name_counter: 0,
             level: 0,
             levels: HashMap::new(),
             subst: Substitution::new(),
             constraints: Vec::new(),
-            kind_env: HashMap::new(),
+            kind_env,
             class_env,
             instance_env,
             failed_bindings: HashMap::new(),
@@ -493,6 +581,7 @@ impl InferState {
             deferred_equalities: Vec::new(),
             boundary_guards: HashMap::new(),
             fd_depth: 0,
+            fd_in_progress: std::collections::HashSet::new(),
             instance_resolution_depth: 0,
             in_prelude_load: false,
             do_infer_resolutions: HashMap::new(),
@@ -522,9 +611,15 @@ impl InferState {
     }
 
     /// Create a fresh type variable at the current level and register it in `state.levels`.
+    ///
+    /// The counter lives in `state.subst` (the current substitution frame). Child frames
+    /// (created by `Substitution::child()`) inherit the parent counter value, so TypeVar
+    /// names are globally unique across all active frames (Barendregt convention, T-927).
+    /// Sibling dicts continue from the parent's counter at the time each child was created.
     pub fn fresh_type_var(&mut self) -> Type {
-        let name = format!("_t{}", self.name_counter);
-        self.name_counter = self.name_counter.saturating_add(1);
+        let n = self.subst.name_counter.get();
+        let name = format!("_t{}", n);
+        self.subst.name_counter.set(n.saturating_add(1));
         self.levels.insert(name.clone(), self.level);
         Type::TypeVar(name, self.level)
     }
@@ -534,8 +629,9 @@ impl InferState {
     /// Used for T013 warnings to report "ambiguous type variable 'x'" (hiding the internal
     /// _tN name which is noise for users).
     pub fn fresh_type_var_with_source(&mut self, source_name: impl Into<String>) -> Type {
-        let internal_name = format!("_t{}", self.name_counter);
-        self.name_counter = self.name_counter.saturating_add(1);
+        let n = self.subst.name_counter.get();
+        let internal_name = format!("_t{}", n);
+        self.subst.name_counter.set(n.saturating_add(1));
         self.levels.insert(internal_name.clone(), self.level);
         self.type_var_source_names
             .insert(internal_name.clone(), source_name.into());

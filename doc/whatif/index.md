@@ -13,6 +13,7 @@ Proposals formally accepted into the project. Implementation sprints exist in th
 
 | Proposal | Summary | Accepted |
 |----------|---------|----------|
+| [User-Defined N-Arity Type Constructors](user-type-constructors.md) | `Type::TyCon(String)` + `Type::App`; unified `[type ...]` syntax with `[let ...]` params; variance annotations; nominal ADTs with qualified runtime tags; `RowTail::Uniform` column constraints; `Absent` type; scoped ClassEnv/InstanceEnv with local coherence; per-dict Substitution; `values_equal` canonical merge; `Pattern::TypeAssert`; prelude migration | 2026-06-03 |
 | [Tinct Stream Format — Stdlib-Closed Normal Form](data-streaming.md) | SCN streaming format for tinct-to-tinct pipes; `emit` via `%emit` channel; concurrent output program contract; `-i stream`/`-o stream`; `to-tinct` serializer; eliminates serde_json from profiling | 2026-05-30 |
 
 ---

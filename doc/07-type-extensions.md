@@ -63,6 +63,65 @@ Dict equality is **order-insensitive structural equality** for both Record and M
 
 See `doc/feature/boolean-algebraic-subtyping.md` (canonical post-implementation document) and `doc/whatif/completed/boolean-algebraic-subtyping.md` (archived design) for the complete design, and `doc/whatif/completed/parameterized-dict.md` for the Record/Map split implementation.
 
+## Column Constraints — `RowTail::Uniform`
+
+> **Design target**: This section describes the target state after the row-extensions sprint. The current `Row` struct in `src/type_def.rs` has only `fields: HashMap<String, Type>` with no `tail` field. `RowTail::Uniform` does not yet exist in the codebase.
+
+`RowTail::Uniform` is a deterministic constraint on the tail of a row — not a row variable. It expresses "whatever fields are present, their values have type V." This is distinct from BAS row variables (eliminated); `RowTail::Uniform` is a finite conjunction of field-type constraints that happen to be uniform.
+
+```rust
+pub enum RowTail {
+    Empty,                              // closed record — default for all current Row constructions
+    Uniform {                           // column constraint
+        key: Option<Box<Type>>,         // None = {_ : V}; Some(K) = {_@K : V}
+        value: Box<Type>,               // all present fields have this value type
+    },
+}
+```
+
+All existing `Row { fields }` constructions gain `tail: RowTail::Empty`. The `Uniform` variant is produced only when parsing `{_ : V}` or `{_@K : V}` annotation syntax.
+
+**Syntax in annotation position:**
+
+```tinct
+config@{_ : String}               # all values String
+counts@{_ : Int}                  # all values Int
+mixed@{host: String  _ : Int}     # host is String; all other fields are Int
+data@{_@String : Int}             # String keys, Int values
+```
+
+**User-defined column constraint types:**
+
+```tinct
+Map:     [type [let k@Equatable v]  [_@k : v]]   # typed-key uniform dict
+Headers: [type [_ : String]]                      # all values String
+Counter: [type [_ : Int]]                         # frequency/count dict
+```
+
+**Subtyping rules (validated by Nickel):**
+
+```text
+{f1:T1, ..., fn:Tn, Empty} <: {Uniform(None, V)}
+    when all Ti <: V                              [S-ROW-CLOSED-TO-UNIFORM]
+
+{Uniform(None, V1)} <: {Uniform(None, V2)}
+    when V1 <: V2                                 [S-UNIFORM-COV]  (covariant in value)
+
+{fi:Ti, Uniform(None, V1)} <: {Uniform(None, V2)}
+    when Ti <: V2 and V1 <: V2                   [S-MIXED-TO-UNIFORM]
+
+{Uniform(Some(K1), V1)} <: {Uniform(Some(K2), V2)}
+    when K1 <: K2 and V1 <: V2                   [S-TYPED-KEY-UNIFORM]
+
+{Uniform(Some(K), V)} <: {Uniform(None, V)}      [S-KEYED-TO-UNKEYED]  always
+```
+
+**Unification:** see `unify_rows` rules in [Type Inference](06-type-inference.md) §Unification. The substitution-first branching (apply `S` to `V` before branching on TypeVar vs concrete) is required to correctly handle already-bound TypeVars.
+
+**Runtime:** `[@{_ : V} d]` wraps each field access in a guard thunk. Proxy contracts (Findler & Felleisen 2002) are applied on demand, preserving tinct's lazy evaluation guarantee. Typed-key enforcement (`{_@K : V}`) is compile-time only until T-921 (Key enum generalization) ships.
+
+**`Map K V` as transparent alias.** `Map K V` expands to `{_@K : V}` — checked for `k@Equatable` constraint at compile time. `Map String Int` and `Map Int Int` are distinguished statically; until T-921, runtime does not check key types, only value types.
+
 ## TypeAssert Runtime Validation
 
 Both static and runtime TypeAssert checks are structural. The evaluator validates values against the full resolved `Type`, not a type name string. Record fields are checked lazily via proxy contracts (Findler & Felleisen 2002), preserving tinct's lazy evaluation guarantees.
@@ -118,9 +177,9 @@ v = Function{..} ∨ v = Builtin{..}
 ────────────────────────────────── [VM-FN]
 v ∈ Fn(τ₁...τₙ → τᵣ)
 
-v = Seq{..}
+v = Variant { tag: "Seq.Nil" } ∨ v = Variant { tag: "Seq.Cons", .. }
 ────────────────────────────────── [VM-SEQ]
-v ∈ Seq(τ)
+v ∈ App(TyCon("Seq"), τ)    (tag-only check; element type not validated eagerly)
 
 ────────────────────────────────── [VM-VAR]
 v ∈ α

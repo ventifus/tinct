@@ -737,3 +737,166 @@ fn test_handle_capability_partialeq_limitation() {
         "Handle types with different TypeVar names should unify successfully"
     );
 }
+
+// ============================================================================
+// T-913: Reverse functional dependency (bidirectional FD) inference tests
+// ============================================================================
+
+/// T-913: Reverse FD — binding a determined-position variable fires back-propagation.
+///
+/// Setup:
+///   class MySeq with FD (0) → (1) and resolver_injective = true.
+///   instance MySeq Int Str  (determining = Int at pos 0, determined = Str at pos 1)
+///   constraint: MySeq [t0, t1]
+///
+/// Test: unify t1 (determined) with Str → should back-propagate t0 = Int.
+#[test]
+fn test_reverse_fd_back_propagates_determining_type() {
+    use crate::types::{ClassDecl, InstanceDecl};
+    use std::sync::Arc;
+
+    let mut state = InferState::new();
+
+    // Create a class with FD (pos 0) → (pos 1) and injective resolver.
+    let my_class = Arc::new(ClassDecl {
+        name: "MySeq".to_string(),
+        params: vec![("t".to_string(), Kind::Type), ("s".to_string(), Kind::Type)],
+        superclasses: vec![],
+        determines: vec![(vec![0], vec![1])], // pos 0 determines pos 1
+        resolver: None,
+        resolver_injective: true,
+    });
+
+    // Register the class in class_env.
+    state.class_env.insert(ClassDecl {
+        name: "MySeq".to_string(),
+        params: vec![("t".to_string(), Kind::Type), ("s".to_string(), Kind::Type)],
+        superclasses: vec![],
+        determines: vec![(vec![0], vec![1])],
+        resolver: None,
+        resolver_injective: true,
+    });
+
+    // Register instance: MySeq Int Str
+    // MPTC instances are encoded as Record with numbered fields.
+    let mut instance_fields = HashMap::new();
+    instance_fields.insert("0".to_string(), Type::Int); // pos 0 = Int (determining)
+    instance_fields.insert("1".to_string(), Type::Str); // pos 1 = Str (determined)
+    let instance_type = Type::Record(Row {
+        fields: instance_fields,
+    });
+    let inst = InstanceDecl {
+        class_name: "MySeq".to_string(),
+        instance_type,
+        det_positions: vec![0], // determining position indices
+        method_types: HashMap::new(),
+    };
+    state.instance_env.insert(inst).unwrap();
+
+    // Create type variables t0 (determining, pos 0) and t1 (determined, pos 1).
+    state.levels.insert("t0".to_string(), 0);
+    state.levels.insert("t1".to_string(), 0);
+
+    // Add the constraint: MySeq [t0, t1]
+    state.constraints.push(Constraint::Class {
+        class: my_class,
+        vars: vec!["t0".to_string(), "t1".to_string()],
+        origin_name: None,
+        origin_span: None,
+    });
+
+    // Unify t1 (determined position) with Str.
+    // This should trigger the reverse FD and back-propagate t0 = Int.
+    let mut subst = Substitution::new();
+    let t1 = Type::TypeVar("t1".to_string(), 0);
+    let result = unify(&t1, &Type::Str, &mut subst, &mut state, Span::origin());
+
+    assert!(
+        result.is_ok(),
+        "Unifying determined var with concrete type should succeed: {:?}",
+        result.unwrap_err()
+    );
+
+    // Check that t0 was back-propagated to Int via reverse FD.
+    let t0_bound = state.subst.apply(&Type::TypeVar("t0".to_string(), 0));
+    assert!(
+        matches!(t0_bound, Type::Int),
+        "Reverse FD should have back-propagated t0 = Int, but got: {:?}",
+        t0_bound
+    );
+}
+
+/// T-913: Reverse FD does NOT fire when resolver_injective = false.
+///
+/// Same setup as above but with resolver_injective = false — the determining
+/// variable must NOT be back-propagated when the resolver is not injective.
+#[test]
+fn test_reverse_fd_does_not_fire_when_not_injective() {
+    use crate::types::{ClassDecl, InstanceDecl};
+    use std::sync::Arc;
+
+    let mut state = InferState::new();
+
+    // Class with the same FD but NOT injective.
+    let my_class = Arc::new(ClassDecl {
+        name: "MyNonInj".to_string(),
+        params: vec![("t".to_string(), Kind::Type), ("s".to_string(), Kind::Type)],
+        superclasses: vec![],
+        determines: vec![(vec![0], vec![1])],
+        resolver: None,
+        resolver_injective: false, // NOT injective
+    });
+
+    state.class_env.insert(ClassDecl {
+        name: "MyNonInj".to_string(),
+        params: vec![("t".to_string(), Kind::Type), ("s".to_string(), Kind::Type)],
+        superclasses: vec![],
+        determines: vec![(vec![0], vec![1])],
+        resolver: None,
+        resolver_injective: false,
+    });
+
+    // Register instance: MyNonInj Int Str
+    let mut instance_fields = HashMap::new();
+    instance_fields.insert("0".to_string(), Type::Int);
+    instance_fields.insert("1".to_string(), Type::Str);
+    let instance_type = Type::Record(Row {
+        fields: instance_fields,
+    });
+    let inst = InstanceDecl {
+        class_name: "MyNonInj".to_string(),
+        instance_type,
+        det_positions: vec![0],
+        method_types: HashMap::new(),
+    };
+    state.instance_env.insert(inst).unwrap();
+
+    state.levels.insert("t0".to_string(), 0);
+    state.levels.insert("t1".to_string(), 0);
+
+    state.constraints.push(Constraint::Class {
+        class: my_class,
+        vars: vec!["t0".to_string(), "t1".to_string()],
+        origin_name: None,
+        origin_span: None,
+    });
+
+    // Unify t1 with Str — should NOT back-propagate t0.
+    let mut subst = Substitution::new();
+    let t1 = Type::TypeVar("t1".to_string(), 0);
+    let result = unify(&t1, &Type::Str, &mut subst, &mut state, Span::origin());
+
+    assert!(
+        result.is_ok(),
+        "Unification should succeed: {:?}",
+        result.unwrap_err()
+    );
+
+    // t0 must remain unbound (no reverse FD fired).
+    let t0_bound = state.subst.apply(&Type::TypeVar("t0".to_string(), 0));
+    assert!(
+        matches!(t0_bound, Type::TypeVar(ref n, _) if n == "t0"),
+        "With non-injective resolver, t0 must remain unbound, but got: {:?}",
+        t0_bound
+    );
+}

@@ -573,7 +573,7 @@ These costs are negligible for ordinary use but can accumulate in tight recursiv
 **Hot path allocation patterns:**
 
 - **Environment lookup is O(depth)**: `Environment::get()` walks the parent chain on every variable reference. Deeply nested scopes compound this cost.
-- **IndexMap ~20% slower than HashMap**: Dict operations use `IndexMap` to preserve insertion order (required for dict semantics). Type-level `Substitution.type_map`/`row_map` also use `IndexMap` but could be `HashMap` (order irrelevant).
+- **IndexMap ~20% slower than HashMap**: Dict operations use `IndexMap` to preserve insertion order (required for dict semantics). Type-level `Substitution.type_map` uses `RefCell<HashMap<String, Type>>` (order irrelevant; `RefCell` enables interior mutability through `Arc` in per-dict parent chains introduced by T-926). The `row_map` field was removed with the BAS row-variable elimination.
 - **Thunk boxing cost**: Every value is wrapped in `Arc<Thunk>` (post-runtime-v2). The `Thunk` struct holds a `ThunkInner` with `Mutex<Option<UnevaluatedState>>` (taken on evaluation start) and `tokio::sync::OnceCell<Result<Value, Arc<EvalError>>>` (set exactly once on completion). Lazy evaluation requires this indirection but adds allocation and `Arc` refcounting overhead.
 - **Substitution::apply() is O(type_size)**: Type inference calls `apply()` per unification. Each call allocates a `HashSet<String>` for cycle detection and walks the entire type tree.
 

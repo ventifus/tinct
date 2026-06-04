@@ -344,6 +344,31 @@ pub(crate) fn infer_dict(
     let enclosing_level = state.level;
     state.level += 1;
 
+    // Per-dict substitution frame: create a child frame of the current state.subst so that
+    // TypeVar bindings produced during this dict's SCC inference stay scoped to this dict's level.
+    // The outer frame is preserved via Arc and restored when infer_dict returns.
+    //
+    // Design: `state.subst` is replaced with a child frame whose `creation_level` matches the
+    // new dict level. Bindings for TypeVars at this level route to the child frame;
+    // bindings for lower-level TypeVars route up to the parent frame via bind_at_level.
+    // When inference completes, the parent frame is restored so the caller sees its
+    // accumulated bindings unchanged (plus any parent-level bindings added during this call).
+    //
+    // The `Arc::try_unwrap` at the end attempts to take the outer substitution back without
+    // cloning; if the Arc has been cloned (e.g., shared into a child frame that outlives this
+    // scope), it falls back to cloning the inner value.
+    let outer_subst = Arc::new(std::mem::take(&mut state.subst));
+    state.subst = Substitution::child(&outer_subst, state.level);
+
+    // Per-dict levels map: save the enclosing levels map and start fresh for this dict's TypeVars.
+    // TypeVar names created during this dict's SCC inference (at level state.level) are registered
+    // in state.levels during fresh_type_var(). With per-dict TypeVar name counters (T-927), the
+    // same name (e.g., _t0) may appear at different levels in sibling dicts — sharing the levels
+    // map would cause ambiguous level lookups. Saving/restoring here mirrors the child Substitution
+    // frame pattern from T-926: each dict scope owns its levels entries, and the enclosing dict's
+    // entries are invisible during nested inference, then restored when nesting exits.
+    let saved_levels = std::mem::take(&mut state.levels);
+
     let mut dict_env = TypeEnv::with_parent(env);
     let mut key_entries: Vec<(Option<String>, bool)> = Vec::new();
     let mut auto_index: i64 = 0;
@@ -376,8 +401,9 @@ pub(crate) fn infer_dict(
                 if let SurfaceDeclaration::TypeAlias { params, body } = decl.as_ref() {
                     let mut alias_ann_map: HashMap<String, String> = HashMap::new();
                     for p in params {
-                        let fresh = format!("_t{}", state.name_counter);
-                        state.name_counter = state.name_counter.saturating_add(1);
+                        let n = state.subst.name_counter.get();
+                        let fresh = format!("_t{}", n);
+                        state.subst.name_counter.set(n.saturating_add(1));
                         state.levels.insert(fresh.clone(), state.level);
                         alias_ann_map.insert(p.clone(), fresh.clone());
                     }
@@ -427,9 +453,7 @@ pub(crate) fn infer_dict(
     // Initialize global substitution and field types accumulator.
     // Start with empty local substitution and incrementally merge state.subst entries per SCC.
     // Eliminates O(n) upfront clone of state.subst.type_map (cycle-31 major item).
-    let mut subst = Substitution {
-        type_map: std::cell::RefCell::new(HashMap::new()),
-    };
+    let mut subst = Substitution::new();
     let mut field_types: HashMap<String, Type> = HashMap::new();
     let mut errors = Vec::new();
 
@@ -482,6 +506,13 @@ pub(crate) fn infer_dict(
                     }
                 }
             }
+            // Class/instance method body inference (infer_instance_decl_from_surface) may push
+            // constraints into state.constraints (e.g., Numeric constraints from [+ x 1] in a
+            // method body). These constraints are not associated with any generalizable binding
+            // — the return type of class/instance inference is always Type::Record(Row::empty()),
+            // which has no TypeVars to quantify. Discard them here, exactly as the SCC loop's
+            // mem::take() discards per-entry constraints after each regular entry's inference.
+            state.constraints.clear();
         }
     }
 
@@ -582,10 +613,13 @@ pub(crate) fn infer_dict(
                     state.current_function = Some(name.clone());
                 }
 
-                // Save constraints before inferring this entry's value.
-                // Function constraints (from fn@[constraint: ...] annotations) should be scoped
-                // to the function being inferred, not leak across dict entries.
-                let saved_constraints = std::mem::take(&mut state.constraints);
+                // Save any constraints accumulated before this entry (from outer check_call_with_scheme
+                // tracking, Pass 2 type alias resolution, or Pass 0c class/instance inference).
+                // Those outer constraints must survive across this entry's inference so that any
+                // outer call site's constraints_start index into state.constraints remains valid.
+                // Per-entry constraints are captured by the take() below after inference completes,
+                // then outer constraints are restored.
+                let saved_outer_constraints = std::mem::take(&mut state.constraints);
 
                 // If the value is wrapped in TypeAssert (e.g., `x: [@T expr]`), extract the
                 // asserted type upfront. When inference of the inner expression fails, the
@@ -639,10 +673,10 @@ pub(crate) fn infer_dict(
                     };
 
                 // Constraints generated during this entry's inference are now in state.constraints.
-                // We'll process them during generalization (Pass 4), then discard them.
-                // Restore the saved constraints so parent scope constraints are preserved.
-                let this_entry_constraints =
-                    std::mem::replace(&mut state.constraints, saved_constraints);
+                // Collect them for generalization (Pass 4); restore outer constraints afterward
+                // so that outer call sites' constraints_start indices remain valid.
+                let this_entry_constraints = std::mem::take(&mut state.constraints);
+                state.constraints.extend(saved_outer_constraints);
 
                 // Store this entry's constraints for use during generalization
                 if !this_entry_constraints.is_empty() {
@@ -836,16 +870,17 @@ pub(crate) fn infer_dict(
                     // Value doc takes precedence over key doc
                     let doc = value_doc.or(key_doc);
 
-                    // Skip constraint restore for entries that failed type inference.
+                    // Skip constraints for entries that failed type inference.
                     // Constraints accumulated before the failure (e.g., by resolve_fn_metadata)
-                    // were never discharged by unification, so restoring them would cause
-                    // generalize_with_doc to emit spurious T013 warnings alongside the real
+                    // were never discharged by unification, so passing them to
+                    // generalize_with_doc would cause spurious T013 warnings alongside the real
                     // type error already recorded in state.diagnostics.
                     if state.failed_bindings.contains_key(name) {
                         let mut scheme = generalize_with_doc(
                             enclosing_level,
                             ty,
                             state,
+                            &[],
                             doc,
                             entry.span.clone(),
                         );
@@ -856,18 +891,22 @@ pub(crate) fn infer_dict(
                         continue;
                     }
 
-                    // Restore this entry's constraints before generalization.
-                    // generalize_with_doc will check which constraints apply to the generalized vars.
-                    let saved_constraints = std::mem::replace(
-                        &mut state.constraints,
-                        entry_constraints.get(name).cloned().unwrap_or_default(),
+                    // Pass this entry's constraints explicitly to generalize_with_doc.
+                    // The entry's constraints were collected via mem::take during Pass 3
+                    // and stored in entry_constraints; no save/restore of state.constraints
+                    // is needed here — the local vec's lifetime enforces per-entry scoping.
+                    let entry_cons = entry_constraints
+                        .get(name)
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    let mut scheme = generalize_with_doc(
+                        enclosing_level,
+                        ty,
+                        state,
+                        entry_cons,
+                        doc,
+                        entry.span.clone(),
                     );
-
-                    let mut scheme =
-                        generalize_with_doc(enclosing_level, ty, state, doc, entry.span.clone());
-
-                    // Restore parent scope constraints after generalization
-                    state.constraints = saved_constraints;
 
                     // Attach inner_schemes if this entry's value was a dict literal
                     if let Some(inner) = entry_inner_schemes.get(name) {
@@ -924,13 +963,43 @@ pub(crate) fn infer_dict(
         // Overriding here is safe: the old `field_types[name]` (from the explicit entry) is
         // discarded and replaced by the correct constructor type. The stale TypeVar from Pass 1_i
         // remains in `state.subst` but is unreferenced and harmless.
-        let scheme =
-            generalize_with_doc(enclosing_level, constructor_ty, state, None, span.clone());
+        let scheme = generalize_with_doc(
+            enclosing_level,
+            constructor_ty,
+            state,
+            &[],
+            None,
+            span.clone(),
+        );
         schemes.insert(constructor_name.clone(), scheme);
         // Also add to field_types so the constructor appears in the returned Record type.
         // This ensures the constructor is part of the module's exported type signature.
         field_types.insert(constructor_name.clone(), constructor_ty.clone());
     }
+
+    // Restore the outer substitution frame.
+    // Merge any parent-level bindings that were written into the outer frame (via bind_at_level
+    // routing through the child's parent) back to the restored state.subst. The child frame
+    // itself is discarded — its local bindings were for TypeVars at this dict's level and are
+    // no longer needed after generalization.
+    //
+    // Arc::try_unwrap succeeds (no clone) when the child frame has dropped its Arc::clone of the
+    // outer frame. If somehow the Arc is still shared (which shouldn't happen in the current
+    // single-threaded design), we clone the inner Substitution as a fallback.
+    let restored_outer = Arc::try_unwrap(outer_subst).unwrap_or_else(|arc| (*arc).clone());
+    // Take the current state.subst (the child frame, possibly with parent-level bindings
+    // already merged via bind_at_level). We discard the child frame but preserve anything
+    // written into the parent frame through the Arc.
+    let _child_frame = std::mem::replace(&mut state.subst, restored_outer);
+    // Drop child frame: all its bindings are at this dict's level and have been generalized away.
+    drop(_child_frame);
+
+    // Restore the enclosing levels map. This dict's TypeVar level entries (registered during
+    // fresh_type_var() calls above) are now stale — those TypeVars have been either generalized
+    // (promoted to ∀-quantified variables in TypeSchemes) or resolved by unification. Restoring
+    // saved_levels drops all of this dict's level entries and reinstates the enclosing dict's
+    // entries, exactly mirroring the child Substitution frame restore above.
+    state.levels = saved_levels;
 
     // Restore enclosing level
     state.level = enclosing_level;

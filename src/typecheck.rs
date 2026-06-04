@@ -1,5 +1,5 @@
 //! Type checker: infers types from AST expressions, resolves type aliases,
-//! validates type assertions, and performs Hindley-Milner style type variable
+//! validates type assertions, and performs Hindley-Milner-style type variable
 //! unification for polymorphic function calls.
 
 use std::collections::{HashMap, HashSet};
@@ -965,8 +965,9 @@ fn register_type_aliases(
             let mut alias_ann_map: HashMap<String, String> = HashMap::new();
             // Pre-seed param names so they map to fresh TypeVars.
             for p in &params {
-                let fresh = format!("_t{}", state.name_counter);
-                state.name_counter = state.name_counter.saturating_add(1);
+                let n = state.subst.name_counter.get();
+                let fresh = format!("_t{}", n);
+                state.subst.name_counter.set(n.saturating_add(1));
                 state.levels.insert(fresh.clone(), state.level);
                 alias_ann_map.insert(p.clone(), fresh.clone());
             }
@@ -2192,7 +2193,16 @@ fn infer_instance_decl_from_surface(
         if !state.in_prelude_load {
             let inst_env_snapshot = state.instance_env.clone();
             if let Err(msg) = inst_env_snapshot.check_structural_overlap(&instance_decl, state) {
-                return Err(vec![TypeError::new(msg, span.clone())]);
+                // Structural overlap is advisory (warning), not a blocking error.
+                // User code may deliberately re-declare instances that the prelude defines
+                // (e.g., `[instance Equatable [pattern [Int]]: ...]` in user code); the
+                // InstanceEnv::insert deduplicates by key so no actual duplicate is registered.
+                state.diagnostics.push(crate::error::TypeDiagnostic {
+                    message: msg,
+                    span: span.clone(),
+                    code: "W043",
+                    level: crate::error::DiagnosticLevel::Warn,
+                });
             }
         }
 

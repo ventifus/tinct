@@ -1,72 +1,57 @@
 # What If: Equirecursive Types for tinct
 
-TODO: Handle this case as an example of equirecursive types: The main challenge is that Expr is recursive (Call contains Expr which contains Call).
-
 **State:** Proposal
 
 What would it take to support properly recursive data types — linked lists, trees, and other self-referential structures — in tinct's type system?
 
 ## Current State
 
-Tinct supports recursive type aliases via two-pass registration:
+User-type-constructors gives recursive type aliases a correct foundation. Each alias is stored as a `TyConDef` in the scoped `TypeEnv`; self-references in the body are represented as `Type::App(TyCon("name"), args)` rather than structural expansions. Field access and pattern matching on recursive types return the correct named type at any depth:
 
 ```tinct
-# These parse and register correctly
-List: [type [head: Int  tail: List]]
-Tree: [type [value: Int  left: Tree  right: Tree]]
+List:       [type [or Absent [record head: Int    tail: List]]]
+JsonValue:  [type [or Int Float String Bool Absent [Seq JsonValue] [Map String JsonValue]]]
+ServerConf: [type [host: String  fallbacks: [Seq ServerConf]]]
+
+process: [fn [lst@List] lst.tail.tail.tail.head]  # lst.tail: List — correct at any depth ✓
 ```
 
-The type checker registers all aliases with `Type::Unknown` placeholder bodies in Pass 1, then resolves bodies in Pass 2. Self-references resolve to `Type::Unknown` at the cycle boundary, breaking the recursion structurally.
+Nominal ADTs with constructors (`[type [Cons val: Int tail: IntList] Nil]`) also work correctly at any depth — constructor references break expansion cycles at the nominal boundary.
 
-This makes shallow patterns usable, but the type loses its recursive structure:
+### What Remains Unsolved
+
+Two problems persist that TyCon references alone cannot address.
+
+**Inline recursive type annotations.** A recursive type used at an annotation site without a named alias has no way to express the self-reference. Users must always create a named alias first, even for single-use structural patterns:
 
 ```tinct
-first-element: [fn [lst@List] lst.head]   # OK — accesses head field
-second-element: [fn [lst@List] lst.tail.head]   # OK — one level deep
-deep: [fn [lst@List] lst.tail.tail.tail.head]   # OK up to ~256 levels
-# After depth limit: tail type becomes Unknown, further access untyped
+# Forced to name the type just to annotate one function parameter
+TreeShape: [type [or Absent [record val: Int  left: TreeShape  right: TreeShape]]]
+depth: [fn@Int [tree@TreeShape] ...]
 ```
 
-The alias expansion limit (`MAX_ALIAS_DEPTH = 256`) prevents infinite expansion but produces a structural approximation rather than the true recursive type. `lst.tail` has type `Unknown` after sufficient unrolling, losing all static guarantees.
-
-In `--- stage: type` sections, a recursive type-stage function diverges entirely — the annotation resolver forces lazy thunks while traversing the type dict, causing infinite unrolling until the depth limit fires and produces a type error.
-
-```tinct
---- stage: type
-[
-  # This diverges — self-referential type-stage function
-  List: [fn [a] [or Null [record head: a  tail: [List a]]]]
-]
-```
-
-### Nominal Variants as a Workaround
-
-Nominal variant declarations sidestep the structural recursion problem by breaking cycles at the constructor boundary:
-
-```tinct
-[type IntList [Cons Int IntList] Nil]
-```
-
-`Cons` is a nominal constructor that wraps `Int × IntList`; the type checker handles the recursive reference by its nominal identity rather than structural expansion. This works well for ADTs but requires explicit constructor wrapping and pattern matching everywhere — it cannot express "any record that has a `head:` and a `tail:` field recursively."
+**Structural subtype checking between distinct recursive TyCons.** Checking `A <: B` where both are structural recursive types with the same shape requires comparing expanded bodies. The expanded body of `A` contains `App(TyCon("A"), [])` and the expanded body of `B` contains `App(TyCon("B"), [])`. Without a coinductive visited-pairs algorithm, the type checker must unfold these again — and diverges. This matters when user code defines a type structurally equivalent to a library type and passes one where the other is expected.
 
 ### What's Missing
 
-1. A `Type::Recursive` (μ-type) variant representing a proper fixpoint type, distinct from alias expansion
-2. A `[kind: "recursive" ...]` type dict node for the annotation resolver and `ast-of` schema
-3. Cycle detection in the annotation resolver that produces μ-type nodes instead of hitting the depth limit
-4. Coinductive (bisimulation-based) subtype checking for recursive types under BAS
-5. A `mu` type combinator in the type prelude enabling μ-type annotations
-6. Unfolding rules so the type checker can use a recursive type at any finite depth
+1. `Type::Recursive { var, body }` and `Type::RecVar(String)` variants in `src/type_def.rs` — the internal representation of inline recursive types
+2. `TypeNode` nominal ADT in the prelude covering all type-stage value forms; equirecursive types contribute `Recursive` and `RecVar` constructors
+3. Expansion-stack cycle detection in the annotation resolver — produces `Type::Recursive` when an alias references itself via the expansion stack; handles the `mu` combinator for inline positions
+4. Coinductive subtype checking via visited-pairs bisimulation — prevents divergence when checking structural equivalence between distinct recursive TyCons
+5. `mu: [fn [let f] TypeNode.Recursive body: f]` in the type prelude — inline recursive type constructor
+6. Unfolding rules (`unfold_once`) so the type checker can work with recursive types at any finite depth
 
 ## Why Equirecursive Types Matter for tinct
 
-**Structural config schemas.** A recursive config — `[type ServerConfig [host: String  fallbacks: [Seq ServerConfig]]]` — is a natural pattern in configuration. Today the `fallbacks` field loses its type after two levels of nesting.
+**Inline recursive type annotations.** Named recursive aliases work correctly post-user-type-constructors, but require a module-level name even for one-off annotation sites. The `mu` combinator lets recursive types appear inline — as function parameter annotations, `TypeAssert` expressions, or anywhere a `TypeNode` is expected — without polluting the namespace with a name used only once.
 
-**Type-safe tree traversal.** Functions that walk recursive data structures — JSON-like nested dicts, AST nodes, dependency graphs — can express and check their invariants statically instead of typing fields as `Unknown`.
+**Safe subtype checking between structurally equivalent recursive types.** BAS is structural: two types with the same shape should be subtypes of each other, even if they carry different names. Without a coinductive algorithm, checking `A <: B` between distinct recursive TyCons diverges. The visited-pairs bisimulation ensures this check terminates and gives the correct answer.
 
-**Transparent to users.** Equirecursive types require no explicit `fold`/`unfold` operations. A function that accepts a `List` just accepts a `List`; the type checker handles the recursion transparently. This is the right model for a language that prioritizes ergonomics over ceremony.
+**Transparent to users.** Equirecursive types require no explicit `fold`/`unfold` operations. A function that accepts a `List` just accepts a `List`; the type checker handles the recursion transparently.
 
-**Consistency with structural typing.** Tinct uses BAS, which is structural. Equirecursive types fit naturally because `μa.T[a]` and `T[μa.T[a]]` are structurally equal — there is no "recursive wrapper" that needs a name. This is the approach taken by DOT (Scala's formal foundation), OCaml, and TypeScript.
+**Consistency with BAS.** BAS is structural: `μa.T[a]` and `T[μa.T[a]]` are structurally equal — there is no "recursive wrapper" that needs a name. This is the approach taken by DOT (Scala's formal foundation), OCaml, and TypeScript.
+
+**External structural data.** Data from `from-json` and `from-yaml` arrives as plain structural values and cannot be wrapped in nominal constructors after the fact. For types that must be expressed structurally (because they round-trip through JSON), inline `mu` annotations express the recursive shape without requiring a separately declared nominal type.
 
 ## Design
 
@@ -85,18 +70,18 @@ Type::Recursive {
 Type::RecVar(String)     // "a"
 ```
 
-Example — a linked list of Int:
+Example — a linked list of Int, using the post-user-type-constructors `Type` representation:
 
 ```rust
 Type::Recursive {
     var: "lst",
-    body: Type::Union([
-        Type::Record(Row::Empty),            // Null — the empty list
-        Type::Record({
-            head: Type::Int,
-            tail: Type::RecVar("lst")        // self-reference
-        })
-    ])
+    body: Box::new(Type::Union(vec![
+        Type::App(Box::new(Type::TyCon("Absent".into())), vec![]),
+        Type::Record(Row::Fields({
+            "head": Type::Int,
+            "tail": Type::RecVar("lst".into()),  // self-reference
+        }))
+    ]))
 }
 ```
 
@@ -104,76 +89,131 @@ This is a **finite** representation of an **infinite** unrolling. The type check
 
 ### Annotation Syntax
 
-A new `mu` type combinator in the type prelude enables μ-type annotations:
+A `mu` type combinator in the type prelude enables μ-type annotations. It takes a single function — the body — and passes the self-reference as the function's argument. The self-reference is bound to a named parameter (`self` by convention), making it a real lexically-scoped name with an unambiguous wrapping boundary. The combinator returns a `TypeNode.Recursive` value — a nominal constructor, not a string-keyed dict:
 
 ```tinct
 --- stage: type
 [
-  mu: [fn [var body]
-    [kind: "recursive"  var: var  body: body]]
-  recvar: [fn [name]
-    [kind: "recvar"  name: name]]
+  mu: [fn [let f] TypeNode.Recursive body: f]
 ]
 ---
-# A recursive list of Int
-IntList: [type [mu "lst" [or Null [record head: Int  tail: [recvar "lst"]]]]]
+# A recursive list of Int — named alias (mu not needed; expansion stack handles it)
+IntList: [type [or Absent [record head: Int  tail: IntList]]]
 
-# A recursive JSON-like value
-JsonValue: [type [mu "v" [or
-  Int
-  String
-  Bool
-  Null
-  [Seq [recvar "v"]]
-  [Map String: [recvar "v"]]]]]
+# A recursive JSON-like value — inline mu with named self-reference
+JsonValue: [type [mu [fn [let self] [or Int String Bool Absent [Seq self] [Map String: self]]]]]
 
 # Usage in function annotations
-depth: [fn@Int [tree@[mu "t" [or Null [record value: Int  left: [recvar "t"]  right: [recvar "t"]]]]]]
-  [if [null? tree] 0 [+ 1 [max [depth tree.left] [depth tree.right]]]]
+depth: [fn@Int [tree@[mu [fn [let self] [or Absent [record value: Int  left: self  right: self]]]]]]
+  [if [absent? tree] 0 [+ 1 [max [depth tree.left] [depth tree.right]]]]
 ```
 
-For common patterns, type aliases are the ergonomic form:
+The annotation resolver calls the function with a freshly-generated internal `RecVar` sentinel, builds the body, and wraps it in `Type::Recursive`. The generated name (`μ0`, `μ1`, …) is internal-only — users never write or see it in source. Named `self` (or any identifier) is preferred over `$_` because `$_` desugaring binds at the nearest enclosing argument position, not at the `mu` boundary — giving the wrong wrapping in any body expression that contains nested calls.
+
+For common patterns, named aliases are the ergonomic form. The expansion-stack cycle detector produces `Type::Recursive` automatically without any `mu`:
 
 ```tinct
-IntList:  [type [mu "lst" [or Null [record head: Int   tail: [recvar "lst"]]]]]
-StrList:  [type [mu "lst" [or Null [record head: String tail: [recvar "lst"]]]]]
-JsonVal:  [type [mu "v"   [or Int String Bool Null [Seq [recvar "v"]] [Map String: [recvar "v"]]]]]
-BinTree:  [type [mu "t"   [or Null [record val: Int left: [recvar "t"] right: [recvar "t"]]]]]
+IntList:  [type [or Absent [record head: Int    tail: IntList]]]
+StrList:  [type [or Absent [record head: String  tail: StrList]]]
+JsonVal:  [type [or Int String Bool Absent [Seq JsonVal] [Map String: JsonVal]]]
+BinTree:  [type [or Absent [record val: Int  left: BinTree  right: BinTree]]]
 
-# Use the alias — no mu/recvar noise at the call site
-process: [fn@Null [tree@BinTree] ...]
+# Use the alias — no mu at the call site
+process: [fn@Absent [tree@BinTree] ...]
 ```
 
-### Type Dict Schema Extensions
+### `TypeNode`: The Type-Stage Value Type
 
-Two new `kind:` entries in the canonical type dict schema:
+All type-stage functions return `TypeNode` values — a nominal ADT declared in the prelude. This gives exhaustiveness checking, type-safe dispatch in the annotation resolver, and compile-time errors on typos. Equirecursive types contribute two new constructors: `Recursive` and `RecVar`.
 
 ```tinct
-[kind: "recursive"  var: "a"  body: <type-dict>]   # μa.T[a] — binder
-[kind: "recvar"     name: "a"]                      # reference to enclosing binder's variable
+TypeNode: [type
+  # Primitives
+  [Int]  [Float]  [String]  [Bool]  [Absent]  [Unknown]  [Never]
+  # Structural
+  [Record    fields: [Map String TypeNode]  open: Bool]
+  [Union     types: [Seq TypeNode]]
+  [Intersect types: [Seq TypeNode]]
+  # Constructors — from user-type-constructors
+  [TyCon     name: String]
+  [App       ctor: TypeNode  args: [Seq TypeNode]]
+  # Function
+  [Arrow     params: [Seq TypeNode]  result: TypeNode]
+  # Recursive — this whatif
+  [Recursive body: Fn]
+  # Internal sentinel — produced by the annotation resolver during mu expansion;
+  # not for direct use
+  [RecVar    name: String]]
 ```
 
-These appear in `ast-of` output, annotation resolution results, and anywhere type dicts are used.
+Existing type-stage combinators (`or`, `record`, `arrow`, etc.) are updated to return the corresponding `TypeNode` constructor rather than a `kind:`-keyed dict. The annotation resolver in Rust dispatches on `Value::Variant { tag: "TypeNode.*", ... }` — any unrecognised variant produces "expected TypeNode, got TypeNode.X" rather than silently accepting malformed input.
+
+`RecVar name: String` carries an internally-generated name (`"μ0"`, `"μ1"`, …) — never written in source, produced only by the resolver as the sentinel passed to the `mu` body function.
 
 ### Annotation Resolver: Cycle Detection
 
-The annotation resolver currently expands type aliases iteratively, hitting `MAX_ALIAS_DEPTH` on cycles. With equirecursive support, cycle detection produces μ-type nodes instead:
+The annotation resolver handles recursive types via two paths:
+
+**Named aliases** use an expansion stack. When expanding a `TyConDef` whose name is already in the stack, the resolver emits `Type::RecVar(name)` instead of recursing further. After expansion, if the body contains any `RecVar(name)`, the body is wrapped in `Type::Recursive { var: name, body }`:
 
 ```text
-resolve_type_alias("List", args=[]):
-  if "List" in expansion_stack:
-    return [kind: "recvar"  name: "List"]   # cycle — emit recvar
-  push "List" to expansion_stack
-  body = expand "List" body with expansion_stack
-  pop "List" from expansion_stack
-  if body contains [kind: "recvar"  name: "List"]:
-    return [kind: "recursive"  var: "List"  body: body]   # wrap in mu
+expand_tycon("List", args=[], stack):
+  if "List" in stack:
+    return Type::RecVar("List")          # cycle — emit bound var
+  push "List" to stack
+  body = expand tycon_def body with stack
+  pop "List" from stack
+  if body contains RecVar("List"):
+    return Type::Recursive { var: "List", body }
   return body
 ```
 
-The result is a `[kind: "recursive" ...]` node whenever an alias is truly self-referential, and a plain type dict otherwise. The depth limit remains as a safety net for mutual recursion chains.
+**The `mu` combinator** handles inline annotation positions. When the resolver sees `TypeNode.Recursive body: f`, it generates a fresh internal name, calls `f` with a `TypeNode.RecVar` sentinel, and wraps the result:
 
-The `mu` type combinator in the type prelude produces the same structure explicitly for annotation-position use.
+```text
+resolve_typenode(TypeNode.Recursive body: f, stack):
+  name = fresh_mu_name()                     # "μ0", "μ1", … — internal only
+  sentinel = TypeNode.RecVar name: name
+  body_result = resolve_typenode(call(f, sentinel), stack)
+  return Type::Recursive { var: name, body: body_result }
+
+resolve_typenode(TypeNode.RecVar name: n, stack):
+  return Type::RecVar(n)                     # pass through to Rust representation
+```
+
+The Rust resolver matches on `Value::Variant { tag, payload }` — any tag not in the `TypeNode` ADT produces a clear type error rather than silent failure. The depth limit remains as a safety net. Named aliases never need explicit `mu`; the expansion stack handles them automatically.
+
+### Worked Example: `JsonValue`
+
+JSON data from `from-json` is structurally recursive: an array is a sequence of JSON values; an object is a map from strings to JSON values; the values themselves can be ints, strings, booleans, null, more arrays, or more objects. This cannot be expressed as a nominal ADT — `from-json` produces plain structural values that must be typed as they arrive, without imposing constructor wrappers the data doesn't have.
+
+The named alias form is the natural expression:
+
+```tinct
+JsonValue: [type [or Int Float String Bool Absent [Seq JsonValue] [Map String JsonValue]]]
+```
+
+The annotation resolver detects the `JsonValue` self-reference via the expansion stack and wraps the type in `Type::Recursive` automatically — no explicit `mu` needed. For inline annotation positions, `mu` provides the same type without naming it:
+
+```tinct
+# Inline annotation using mu
+transform: [fn [f@[fn [let x@JsonValue] JsonValue]]
+            [raw@[mu [fn [let self] [or Int Float String Bool Absent [Seq self] [Map String self]]]]]]
+  ...
+
+# A recursive function that counts all numeric values in a JSON tree
+count-numbers: [fn@Int [v@JsonValue]
+  [match v
+    Int:                  1
+    Float:                1
+    [Seq items]:          [sum [map count-numbers items]]
+    [Map String val]:     [sum [map count-numbers [values val]]]
+    _:                    0]]
+```
+
+**Why not a nominal ADT?** `from-json` returns plain structural values — ints, strings, sequences, dicts. There is no tinct constructor wrapping the data, and there should not be: nominal variants do not round-trip through JSON (`[from-json [to-json v]]` must recover the original structure, not wrap it in constructors). Equirecursive structural typing expresses the actual shape.
+
+**Why equirecursive types and not the current workaround?** The current type checker loses the `JsonValue` type after ~4 levels of nesting — `v.0.0.0.key` types as `Unknown`. With `Type::Recursive`, the type checker unfolds on demand to any finite depth, always returning `JsonValue`. `count-numbers` is correctly typed regardless of how deeply nested the input is.
 
 ### Coinductive Subtype Checking
 
@@ -225,47 +265,64 @@ Unifying a recursive type with a non-recursive type unfolds the recursive type o
 
 ### Mutual Recursion
 
-Mutually recursive types (`A` references `B`, `B` references `A`) require simultaneous μ-binders:
+Mutually recursive type aliases — where `A` references `B` and `B` references `A` — require no explicit `mu` from the user. The annotation resolver's expansion stack detects the cycle automatically. Users write plain type aliases:
 
 ```tinct
-# Even and Odd as mutually recursive types
-[class [EvenList a] [type [mu "e" [or Null [record head: a  tail: [OddList a]]]]]]
-[class [OddList a]  [type [mu "o" [or Null [record head: a  tail: [EvenList a]]]]]]
+EvenList: [type [or Absent [record head: Int  tail: OddList]]]
+OddList:  [type [or Absent [record head: Int  tail: EvenList]]]
 ```
 
-For the annotation resolver, mutual recursion is detected when the expansion stack contains two or more names. The resolver produces nested μ-binders with cross-references using `recvar` for both names. The depth limit still applies as a safety net; genuinely mutually recursive types are detected before the limit fires.
+Expansion of `EvenList` proceeds as follows:
+
+1. Push "EvenList" to the expansion stack; begin expanding the body
+2. The body references `OddList` — push "OddList"; begin expanding its body
+3. The body of `OddList` references `EvenList` — "EvenList" is already in the stack → emit `Type::RecVar("EvenList")`
+4. Pop "OddList": its body contains `RecVar("EvenList")` → wrap: `Type::Recursive { var: "EvenList", body: <OddList-body> }`
+5. Pop "EvenList": its body contains the wrapped OddList form → wrap: `Type::Recursive { var: "EvenList", body: <full EvenList body> }`
+
+The result is a nested-μ encoding of the mutually recursive type. For symmetric mutual recursion, the nested encoding and the simultaneous encoding are semantically equivalent (Pierce, TAPL §21.8). The μ binder is anchored to the first name in the stack at the cycle point ("EvenList" in this case); cross-references from `OddList` back to `EvenList` use `RecVar("EvenList")`.
+
+Explicit `mu` in annotation positions (function parameters, `TypeAssert`) can express the same structure directly when no named alias exists — using `[fn [let self] ...]` with `self` as the self-reference. The depth limit still applies as a safety net; the expansion stack detects genuine cycles before the limit fires.
 
 ## What Would Change
 
-### `src/types.rs` — `Type` enum
+### `src/type_def.rs` — `Type` enum
 
-**Current:** No recursive type variant; alias expansion with depth limit.
-**Proposed:** Add `Type::Recursive { var: String, body: Box<Type> }` and `Type::RecVar(String)`. Update all exhaustive `match` arms throughout the codebase (~40 sites based on existing pattern).
+**Current:** `Type::TyCon(String)`, `Type::App(Box<Type>, Vec<Type>)`, and `RowTail::Uniform { key, value }` are present. No recursive type variant.
+**Proposed:** Add `Type::Recursive { var: String, body: Box<Type> }` and `Type::RecVar(String)` alongside the existing variants. Update all exhaustive `match` arms throughout the codebase (~40 sites).
+
+`Type::RecVar` is a **bound** variable with an internal generated name (`"μ0"`, `"μ1"`, …) — distinct from `TypeVar(String, u32)` (a unification variable). `TypeVar` participates in per-dict `Substitution` chains and is resolved by `Substitution::apply()`. `Type::RecVar` never enters the substitution; it is eliminated by `unfold_once()` via a separate capture-avoiding structural traversal that replaces all `RecVar(var)` occurrences in `body` with the full `Recursive` type. These two substitution mechanisms are independent and do not interfere. The generated `RecVar` name is never written in source; at call sites users name the parameter explicitly (`self` by convention) in `[fn [let self] ...]`.
+
+`Type::Recursive` always has kind `Kind::Star`. `Type::RecVar` has kind `Kind::Star` (tinct only supports μ-types at kind `*`; higher-kinded μ-binders are not needed).
+
 **Impact:** Major — touches every type operation (subtype, unify, collect_type_vars, apply_inner, display).
 
 ### `src/typecheck_annot.rs` — Alias expansion and resolver
 
-**Current:** `expand_alias_body_guarded` halts at `MAX_ALIAS_DEPTH` and returns `Type::Unknown`.
-**Proposed:** Add expansion stack tracking; detect cycles and produce `Type::Recursive` nodes; `mu` combinator in type prelude maps to `Type::Recursive`.
-**Impact:** Moderate — alias expansion + `mu`/`recvar` resolver arms.
+**Current:** Type alias resolution goes through `TypeEnv::lookup_tycon_def`, returning a `TyConDef` with its stored body type. Expansion is straightforward — TyCon self-references in the body are `App(TyCon("name"), [])` and are not expanded further.
+**Proposed:** Add a `Vec<String>` expansion stack threaded through all alias expansion calls. When `lookup_tycon_def(name)` is about to expand a body, check first whether `name` is already in the stack — if so, return `Type::RecVar(name)` immediately. After expanding, if the result contains any `RecVar(name)`, wrap in `Type::Recursive { var: name, body }`. Also add a resolver arm for `TypeNode.Recursive body: f` — the `mu` combinator path for inline annotation positions.
+**Impact:** Moderate — expansion stack threading + `mu` resolver arm.
 
 ### `src/type_unify.rs` — `is_subtype` and `unify`
 
-**Current:** No handling of `Type::Recursive`; would hit unreachable arms.
-**Proposed:** Add coinductive `is_subtype_recursive` with visited-pairs set; add unify arms that unfold recursive types.
-**Impact:** Moderate — new algorithm; performance implications for subtype-heavy programs.
+**Current:** Handles `Type::TyCon`/`Type::App` via `UNIFY-TYCON`. No handling of `Type::Recursive` or `Type::RecVar`; would hit unreachable match arms.
+**Proposed:** Add coinductive `is_subtype_recursive` with a visited-pairs set (bisimulation). Add unify arms that unfold recursive types. Unfold order: if either side of `is_subtype` or `unify` is `Type::Recursive`, unfold via `unfold_once()` first, then re-enter — `Type::Recursive` is never directly compared to a `TyCon`. `Type::RecVar` never reaches the unifier; it only appears inside `Recursive` bodies and is eliminated by `unfold_once()`.
+**Impact:** Moderate — new coinductive algorithm; performance cost proportional to mutual recursion depth.
 
-### `src/types.rs` — Type dict schema
+### `src/type_def.rs` — No new user-facing schema
 
-**Current:** No `kind: "recursive"` or `kind: "recvar"` schema entries.
-**Proposed:** Document and handle these two new `kind:` values throughout the type dict mapping code.
-**Impact:** Minor — schema extension; annotation resolver and `ast-of` conversion.
+The internal `Type::Recursive { var, body }` and `Type::RecVar(String)` Rust types have no stable user-facing form — they appear in type error messages and type reflection output with generated names (`μ0`, `μ1`) but are not written in source. The user-facing type-stage value type is `TypeNode` (a tinct nominal ADT in the prelude), not a schema of string-keyed dicts.
+**Impact:** Minor — annotation resolver update to handle `TypeNode.Recursive` dispatch.
 
-### `stdlib/prelude.llt` — `mu` and `recvar` in type prelude
+### `stdlib/prelude.llt` — `TypeNode` ADT and `mu` combinator
 
-**Current:** No recursive type combinators.
-**Proposed:** Add `mu: [fn [var body] [kind: "recursive"  var: var  body: body]]` and `recvar: [fn [name] [kind: "recvar"  name: name]]` to the `--- stage: type` section.
-**Impact:** Minor — two new type-stage functions.
+**Current:** Type-stage functions return plain dicts with `kind:` string discriminators. No `TypeNode` ADT, no `mu` combinator.
+**Proposed:**
+
+1. Declare the `TypeNode` nominal ADT in the `--- stage: type` section of the prelude (shown in full above). All existing type-stage combinators (`or`, `record`, `arrow`, etc.) are updated to return the corresponding `TypeNode` constructor instead of a `kind:`-keyed dict. This migration is atomic — all combinators must switch together.
+2. Add `mu: [fn [let f] TypeNode.Recursive body: f]`. The self-reference is the body's named parameter (`self` by convention); the resolver passes a `TypeNode.RecVar` sentinel internally.
+3. Update the annotation resolver in `src/typecheck_annot.rs` to dispatch on `Value::Variant { tag: "TypeNode.*", ... }` throughout — replacing all `kind:` string checks with exhaustive nominal variant matching.
+**Impact:** Moderate — atomic migration of all type-stage combinators; any partial state diverges.
 
 ### Type checker performance
 
@@ -284,8 +341,8 @@ Once equirecursive types land, `validate_value` in `src/builtins_meta.rs` (~267 
 
 ## Prerequisites
 
-- [`user-type-constructors.md`](user-type-constructors.md) — the `Type::TyCon` + `Type::App` representation and nominal parameterized ADTs are required before this feature. Nominal ADTs (Seq, Tree, Either) eliminate the depth-limit problem for constructor-defined recursive types; this feature handles the remaining case: structural recursive types (JsonValue, Config) that don't use constructors.
-- `type-ann-v2-infra` sprint — establishes the `--- stage: type` environment where `mu` and `recvar` are defined; establishes the type dict schema that `[kind: "recursive" ...]` extends
+- **user-type-constructors** — already accepted and in implementation (S-842–S-851). `Type::TyCon`, `Type::App`, `RowTail::Uniform`, and the scoped `TyConDef` registry are the baseline this feature builds on. Equirecursive types extend the type system with `Type::Recursive` and `Type::RecVar` for the two cases TyCon references alone cannot handle: inline recursive annotations and safe subtype checking between distinct recursive TyCons.
+- `type-ann-v2-infra` sprint — establishes the `--- stage: type` environment and the resolver infrastructure that `TypeNode` and `mu` extend. `TypeNode` must be declared before any type-stage combinator migration can proceed.
 
 ## References
 

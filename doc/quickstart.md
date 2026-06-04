@@ -49,7 +49,7 @@ Tinct has one syntactic form: `[...]`. Whether it's a dict, a function call, or 
   name:    person.name          # → "Alice"
   city:    person.address.city  # chained → "Portland"
   first:   list.0               # integer key → "first"
-  second:  list.0               # list.1 → "second"
+  second:  list.1               # list.1 → "second"
 ]
 ```
 
@@ -112,10 +112,9 @@ For dynamic or computed keys, use `get`:
     [map [fn [let x] [/ x total]] xs]]
 
   # Chained intermediate dicts — each can see the previous.
-  describe: [fn [let n]
+  describe: [fn [let n@Number]
     [sign:  [if [< n 0] "negative" "non-negative"]]
-    [label: [str sign " (" n ")"]]
-    label]
+    [str sign " (" [str n] ")"]]
 
   r1: [normalize [3 1 6]]              # → [0: 0.3  1: 0.1  2: 0.6]
   r2: [describe -42]                   # → "negative (-42)"
@@ -129,10 +128,12 @@ Intermediate dicts are letrec-scoped among themselves but do not appear in the f
 **`begin` / `>>` — forced sequencing for side effects** — when you need to evaluate an expression for its side effect and discard the result:
 
 ```tinct
-[>> [send channel value]   # forced even though result is discarded
-    next-value]            # returned
+[
+  r1: [>> [+ 1 1]     # evaluated for effect (result discarded)
+          "continue"] # returned
 
-[begin [cleanup] [log "done"] result]   # multiple steps; last is returned
+  r2: [begin [+ 1 1] [+ 2 2] "done"]   # multiple steps; last is returned
+]
 ```
 
 `begin` (and its alias `>>`) evaluates each expression eagerly in order and returns the last. Unlike intermediate dict bodies (which are lazy), `begin` is an explicit escape from laziness — use it only when side effects must occur regardless of whether the result is consumed. `>>` mirrors Haskell's monadic sequence operator: "evaluate for effect, discard, continue." `begin` is named after the Scheme `begin` special form.
@@ -143,7 +144,7 @@ Intermediate dicts are letrec-scoped among themselves but do not appear in the f
 [
   nums:    [1 2 3 4 5]
   doubled: [map [* _ 2] nums]          # [fn [_] [* _ 2]]
-  adults:  [filter [>= _.age 18] []]   # [fn [_] [>= _.age 18]]
+  evens:   [filter [fn [let x] [= 0 [mod x 2]]] nums]  # explicit lambda for even numbers
 ]
 ```
 
@@ -226,15 +227,15 @@ The `|` operator threads a value left-to-right through a sequence of functions. 
   # Parameter and return types
   add:    [fn@Number [let x@Number y@Number] [+ x y]]
 
-  # Union type
-  lenient: [fn [let x@[or Int String]] [str x]]
+  # Union return type — fn@[A B] means "returns A or B"
+  zero-or-null: [fn@[Int Null] [let n@Int] n]
 
   # Parameterized type
   first:  [fn@a [let xs@[Seq a]] [head xs]]
 
   # Inline record type
   show:   [fn@String [let p@[name: String  age: Int]]
-            [str p.name " is " p.age]]
+            [str p.name " is " [str p.age]]]
 
   # TypeVar (polymorphic)
   identity: [fn@a [let x@a] x]
@@ -248,14 +249,14 @@ Type declarations and construction:
 
 ```tinct
 [
-  Color: [type Red Green Blue]   # unit constructors are bare uppercase words
+  [type Color [Red] [Green] [Blue]]   # unit constructors in brackets
 
-  color: Color.Red   # access via type name — Color is also a dict of its constructors
+  color: Red   # bare constructor name — Color injects Red, Green, Blue into scope
 
   hex: [match color
-    Color.Red:   "#ff0000"   # unit constructor patterns — just the qualified value
-    Color.Green: "#00ff00"
-    Color.Blue:  "#0000ff"]
+    [Red]:   "#ff0000"   # unit constructor patterns — [Tag]: matches that tag
+    [Green]: "#00ff00"
+    [Blue]:  "#0000ff"]
   # → "#ff0000"
 ]
 ```
@@ -264,13 +265,13 @@ Sum types with payloads use `try` in the standard library:
 
 ```tinct
 [
-  # try returns [Ok value] on success, [Error msg] on failure
+  # try returns Variant(Ok, value) on success, Variant(Error, msg) on failure
   result: [try [fn [] [+ 1 2]]]
 
   # Pattern match on the result
   value: [match result
-    [Result.Ok v]:    v     # → 3
-    [Result.Error _]: 0]
+    [Ok v]:    v     # → 3
+    [Error _]: 0]
 ]
 ```
 
@@ -278,47 +279,47 @@ Sum types with payloads use `try` in the standard library:
 
 ## Nominal Variants
 
-`[type ...]` declares a type and makes its constructors accessible through the type name (dot access). The type name evaluates to a dict containing all its constructors.
+`[type ...]` declares a type and injects its constructors as bindings into the enclosing dict. The type name itself evaluates to a unit variant marking the type declaration.
 
 ```tinct
 [
-  Option: [type [Some value: Int] None]
+  [type Option [Some value: Int] [None]]
 
-  # Unit variant: access via type name
-  nothing: Option.None
+  # Unit variant: bare name
+  nothing: None
 
-  # Payload variant: call via type name
-  something: [Option.Some value: 42]
+  # Payload variant: call constructor with named field
+  something: [Some value: 42]
 
-  # Pattern match — qualified constructor patterns
+  # Pattern match on variants — [Some v] binds v to the payload value
   n: [match something
-        [Option.Some v]: v.value   # v is the payload dict → 42
-        Option.None:     0]
+        [Some v]: v   # v is the payload → 42
+        [None]:   0]
 ]
 ```
 
-**Constructors are accessed via the type name** — the type is both a type annotation and a dict of constructors:
+**Constructors are injected into the enclosing dict scope** — declare the type and use constructors by bare name:
 
 ```tinct
 [
-  Color: [type Red Green Blue]
-  c: Color.Red
-  is-red: [= c Color.Red]   # → true
+  [type Color [Red] [Green] [Blue]]
+  c: Red
+  is-red: [= c Red]   # → true
 ]
 ```
 
-**Named-field variants** — payload is a dict; match and access fields via the bound name:
+**Named-field variants** — the pattern binds the payload value:
 
 ```tinct
 [
-  Geometry: [type [Point x: Float y: Float] Origin]
+  [type Measure [Length r: Float] [Zero]]
 
-  p: [Geometry.Point x: 1.0  y: 2.0]
+  m: [Length r: 2.5]
 
-  desc: [match p
-    [Geometry.Point v]:  [str v.x "," v.y]   # v is the payload dict
-    Geometry.Origin:     "origin"]
-  # → "1.0,2.0"
+  desc: [match m
+    [Length r]: [str "length=" [str r]]   # r is the Float payload → 2.5
+    [Zero]:     "zero"]
+  # → "length=2.5"
 ]
 ```
 
@@ -336,7 +337,7 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
 
   # Structural dict match — destructures named fields into bindings
   url: [match data
-    [host: h  port: p]: [str h ":" p]
+    [host: h  port: p]: [str h ":" [str p]]
     _:                   "unknown"]
   # → "localhost:8080"
 
@@ -355,34 +356,34 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
 ]
 ```
 
-**Constructor patterns** always use the qualified `TypeName.CtorName` form. Unit constructors match as literal values; payload constructors use `[TypeName.CtorName binding]` to bind the payload:
+**Constructor patterns** use the tag name in brackets. Unit constructors match with `[Tag]:` or `[Tag _]:`; payload constructors use `[Tag binding]` to bind the payload:
 
 ```tinct
 [
-  Colors: [type Red Green Blue]
-  color: Colors.Red
+  [type Color [Red] [Green] [Blue]]
+  color: Red
 
-  # Unit constructors — pattern is just the qualified value
+  # Unit constructors — [Tag]: matches that tag
   hex: [match color
-    Colors.Red:   "#ff0000"
-    Colors.Green: "#00ff00"
-    Colors.Blue:  "#0000ff"]
+    [Red]:   "#ff0000"
+    [Green]: "#00ff00"
+    [Blue]:  "#0000ff"]
   # → "#ff0000"
 
-  # Payload constructors — [TypeName.CtorName binding] binds the payload dict
-  Shape: [type [Circle r: Float] [Rect w: Float  h: Float]]
-  s: [Shape.Circle r: 2.0]
+  # Payload constructors — [Tag binding] binds the payload directly
+  [type Shape [Circle r: Int] [Square s: Int]]
+  sh: [Circle r: 5]
 
-  area: [match s
-    [Shape.Circle c]:  [* 3.14159 [* c.r c.r]]
-    [Shape.Rect dims]: [* dims.w dims.h]]
-  # → 12.56636
+  area: [match sh
+    [Circle r]: [* 3 [* r r]]   # r is the Int payload → 3*5*5 = 75
+    [Square s]: [* s s]]
+  # → 75
 ]
 ```
 
 Patterns compose: a constructor pattern's binding can itself be a dict pattern, a literal, another constructor, or a wildcard `_`.
 
-**Why qualified patterns?** Bare names in pattern position are variable captures (`_` or any lowercase name). Qualified names (`TypeName.CtorName`) unambiguously identify a specific constructor of a specific type, making patterns self-documenting and removing any risk of accidental capture.
+**Tag patterns are unambiguous:** uppercase names in pattern position are always constructor patterns. Lowercase names are variable captures. `_` is the wildcard.
 
 ---
 
@@ -393,27 +394,25 @@ Errors propagate automatically through the thunk graph. Unused values never erro
 ```tinct
 [
   # raise — always errors, never returns
-  validated: [fn [let port]
-    [if [and [>= port 1] [<= port 65535]]
+  validated: [fn [let port@Int]
+    [if [and [>= port 1] [<= port 9999]]
       port
-      [raise [str "invalid port: " port]]]]
+      [raise [str "invalid port: " [str port]]]]]
 
-  # try — returns [Ok value] or [Error message]
-  result:  [try [fn [] [+ 1 "oops"]]]
-  # → [Error "type mismatch: ..."]
-
-  # match on the result
+  # try catches runtime errors; returns Ok or Error
   value:   [match [try [fn [] [+ 1 2]]]
-    [Result.Ok v]:    v   # → 3
-    [Result.Error _]: 0]
+    [Ok v]:    v   # → 3
+    [Error _]: 0]
 
   # match on try result for fallback pattern
   safe:    [match [try [fn [] [/ 1 0]]]
-              [Result.Ok v]:    v
-              [Result.Error _]: 0]
+              [Ok v]:    v
+              [Error _]: 0]
   # → 0 (division error caught)
 ]
 ```
+
+`try` catches runtime errors. When the body evaluates successfully, it returns `[Ok value]`. When it raises, it returns `[Error message]`. Note: `try` catches evaluation errors only — to demonstrate a type error caught by `try`, run it at eval time, not typecheck time.
 
 ---
 
@@ -428,9 +427,12 @@ Values are computed only when accessed. This means:
 - `[collect xs]` forces a lazy Seq to completion, producing a concrete integer-keyed Dict — use this to fully realize a sequence
 
 ```tinct
-# 'slow' never evaluates — it's unused in the next expression
-[fast: [+ 1 1]  slow: [raise "never runs"]]
-[used: fast]    # → 2; slow never forced
+# 'slow' never evaluates — it is unused, so the raise never fires
+[
+  fast: [+ 1 1]
+  slow: [raise "never runs"]
+  used: fast    # → 2; slow never forced
+]
 ```
 
 ```tinct

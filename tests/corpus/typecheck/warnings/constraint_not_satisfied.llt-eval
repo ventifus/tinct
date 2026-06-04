@@ -7,4 +7,6 @@
 Dict({"f": Function(x)})
 
 === warn
-ambiguous type variable
+ambiguous type variable '_t1' in constraint Addable: appears in constraint but not in the type — constraint will be silently dropped
+inferred type is Unknown — consider adding a type annotation
+inferred type is Unknown — consider adding a type annotation

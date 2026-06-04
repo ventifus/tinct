@@ -133,14 +133,83 @@ Each arm is a `pattern: body` keyed entry — the pattern is the key, the body i
 | Wildcard | `_` | Matches anything; does not bind |
 | Variable | `x` | Matches anything and binds the value to `x` |
 | Literal | `42`, `"text"`, `true` | Matches exact value |
-| Constructor | `[Ok value]` | Matches nominal variant and binds payload to `value` |
-| Constructor (no binding) | `[Tag]` | Matches any nominal variant with that tag, regardless of payload — equivalent to `[Tag _]`. **Note:** this equivalence is runtime-only; the exhaustiveness checker may emit a false non-exhaustive warning for payload-bearing variants until coverage.rs is updated (see B-252). |
+| Constructor | `[Result.Ok value]` | Matches nominal variant by qualified tag and binds payload |
+| Constructor (no binding) | `Color.Red:` | Matches unit constructor variant, no binding |
+| Constructor (no binding) | `[Tag]` | Matches any nominal variant with that tag, regardless of payload — equivalent to `[Tag _]` |
+| TypeAssert | `[@Int x]` | Matches if value has type `Int`, binds to `x` |
+| TypeAssert (bare) | `Int:` | Primitive type pattern — matches if value has type `Int` |
+
+### Constructor Pattern Qualification
+
+> **Design target**: This section describes the target state after the user-type-constructors sprint series. `flatten_dot_access_to_tag` does not yet exist in `src/ast.rs`. The current parser handles only bare `VarRef` uppercase names as constructor tags.
+
+The parser produces `Pattern::Constructor { tag, binding }`. Tags are assembled as qualified strings by the parser:
+
+- **Dot-access heads** (`[Result.Ok v]`, `Color.Red:`): the parser calls `flatten_dot_access_to_tag` (defined in `src/ast.rs` as `pub(crate)`) to walk the `DotAccess` chain and assemble `"Result.Ok"`, `"Net.Transport.Tcp"`, etc. directly from the AST structure — no type environment access.
+- **Bare uppercase words** (`None:`, `Tcp:`): the parser produces an unqualified tag. The `typecheck_match.rs` elaboration pass resolves the tag to its qualified form via the scrutinee's declared type.
+- **Rebound aliases** (`Ok` in scope as `Result.Ok`): the type checker's elaboration pass follows the binding to get the qualified tag.
+
+The elaboration pass in `typecheck_match.rs` processes every pattern before type checking the arm bodies:
+
+- `Pattern::TypeAssertPending { annotation, inner }` → call `resolve_annotation` → `Pattern::TypeAssert { resolved_type, inner }`
+- `Pattern::Constructor { tag }` where tag resolves to a nominal type constructor → keep as `Pattern::Constructor` with qualified tag
+- `Pattern::Constructor { tag }` where tag resolves to a `builtin-type` TyCon → rewrite to `Pattern::TypeAssert { resolved_type: Type::TyCon(tag), inner: binding }`
+- `Pattern::Constructor { tag }` not found in TyConEnv → type error: "undefined type name or constructor `X` in pattern position"
+
+`Pattern::TypeAssertPending` is a surface-only form produced by the parser for explicit `[@Type x]` annotations. It never reaches the evaluator — the elaboration pass always rewrites it to `Pattern::TypeAssert`.
+
+### Pattern AST Nodes
+
+> **Design target**: This section describes the target state after the user-type-constructors sprint series. `Pattern::TypeAssertPending` and `Pattern::TypeAssert` do not yet exist in the Pattern enum. The current parser handles only bare `VarRef` uppercase names as constructor tags.
+
+```rust
+// Surface form — parser produces this; rewritten during elaboration
+Pattern::TypeAssertPending { annotation: Spanned<Annotation>, inner: Option<Box<Spanned<Pattern>>> }
+
+// Core form — elaboration produces this; evaluator uses this
+Pattern::TypeAssert { resolved_type: Type, inner: Option<Box<Spanned<Pattern>>> }
+
+// Constructor pattern (nominal variant)
+Pattern::Constructor { tag: String, binding: Option<Box<Spanned<Pattern>>> }
+```
+
+`inner: None` = bare type pattern (`Int:`, `Color.Red:`). `inner: Some(pat)` = type-guarded binding (`[@Int x]`).
+
+The evaluator's `match_pattern` arm for `TypeAssert`:
+
+```rust
+Pattern::TypeAssert { resolved_type, inner } => {
+    if !value_matches_type(value, resolved_type) {
+        return None;
+    }
+    match inner {
+        None => Some(env),
+        Some(pat) => match_pattern(pat, value, env, ctx),
+    }
+}
+```
+
+### `values_equal` — Canonical Implementation
+
+Tinct has one canonical `values_equal` function in `src/eval.rs` (async). All equality comparisons go through it:
+
+- `builtin_eq` (`=` operator) — calls `eval::values_equal`
+- `CaseArmExactValueCheck` — calls `eval::values_equal` with `.await`
+- `builtins_meta.rs` enum constraint handler — calls `eval::values_equal` with `.await`
+
+The canonical implementation handles: `(Int, Int)`, `(Float, Float)`, `(Bool, Bool)`, `(String, String)`, `(Variant{payload:None}, Variant{payload:None})` unit-tag equality, `(Variant{tag:t1,payload:Some(p1)}, Variant{tag:t2,payload:Some(p2)})` payload-Variant equality, `(Dict, Dict)` structural equality with cycle detection via `visited: Arc<Mutex<HashSet<(usize, usize)>>>`. Cross-type comparisons return `Ok(false)`.
+
+The invariant: **`[= a b]` returns true if and only if `a: arm` matches `b`**. All equality paths implement the same semantics.
 
 ### Exhaustiveness Checking
 
-Exhaustiveness checking runs **only** for `Type::Union` scrutinees. When the type checker infers that the scrutinee has a union type (e.g., `Result = Ok(T) | Err(E)`), it verifies that all constructors in the union are covered by the match arms.
+Exhaustiveness checking for nominal ADTs uses `TyConDef.constructors: Vec<(String, usize)>`. For any `TyCon(name)` or `App(TyCon(name), _)` scrutinee, look up `name` in `TyConEnv` and enumerate its constructors. Only the qualified tag string and arity are needed — field types are irrelevant to the Maranget (2007) matrix decomposition algorithm.
 
-For non-union scrutinees (e.g., `Int`, `String`, `Record`), exhaustiveness is not checked. If no pattern matches at runtime, a `MatchError` is raised.
+Builtin-type TyCons (`Int`, `Str`, etc.) have empty constructor sets — a match without a wildcard arm produces an incomplete-match warning, same behavior as today.
+
+Exhaustiveness checking runs **only** for `Type::Union` scrutinees and nominal ADT types. When the type checker infers that the scrutinee has a union type (e.g., `Result = Ok(T) | Error(E)`), it verifies that all constructors are covered by the match arms.
+
+For non-union, non-ADT scrutinees (e.g., `Int`, `String`, `Record`), exhaustiveness is not checked. If no pattern matches at runtime, a `MatchError` is raised.
 
 ### Example: Result Unwrapping
 
@@ -172,6 +241,8 @@ error: no match arm satisfied
 - **Type inference:** `infer_match` in `src/typecheck.rs` infers the return type as the union of all arm expression types, narrowed by the scrutinee type
 - **Evaluation:** `eval_materialize.rs` materializes the scrutinee, then evaluates arms in order until a pattern matches
 - **Pattern compilation:** Constructor patterns are compiled to `Pattern::Constructor` AST nodes; the evaluator uses `match_pattern` to test each arm
+- **Elaboration:** `typecheck_match.rs` resolves `Pattern::TypeAssertPending → Pattern::TypeAssert` and qualifies constructor tags before type checking arm bodies
+- **`flatten_dot_access_to_tag`:** defined in `src/ast.rs` as `pub(crate)`; called from `src/parser.rs` (two sites) and `src/typecheck_special.rs` (monad detection)
 
 See `doc/feature/nominal-variants.md` for the nominal variant design and `src/typecheck.rs` for the complete exhaustiveness algorithm.
 

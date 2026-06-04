@@ -8,9 +8,9 @@
    |
   2060 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-join ...] at stdlib/prelude.llt:2544:26-2544:47
+  in [builtin-join ...] at stdlib/prelude.llt:2550:26-2550:47
    |
-  2544 | """] [let sep@String xs] [builtin-join sep xs]]
+  2550 | """] [let sep@String xs] [builtin-join sep xs]]
        |                          ^^^^^^^^^^^^^^^^^^^^^
   in [join ...] at 1:1-1:55
 

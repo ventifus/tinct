@@ -369,6 +369,9 @@ pub(crate) fn check_call_with_scheme(
                 // into state.subst at lines 1475-1480) need to be visible to downstream inference.
                 let mut subst = Substitution {
                     type_map: std::cell::RefCell::new(state.subst.type_map.borrow().clone()),
+                    parent: state.subst.parent.clone(), // preserve parent chain for lookup_in_chain
+                    creation_level: state.subst.creation_level,
+                    name_counter: std::cell::Cell::new(state.subst.name_counter.get()),
                 };
                 // Track consumed param indices to prevent named args from overlapping with positional args.
                 // C-NO-OVERLAP: positional args consume params 0..args.len(). Named args searching
@@ -631,7 +634,7 @@ pub(crate) fn check_call_with_scheme(
             // This loop runs only for Unknown-typed callees — for Type::Function arms, positional args are
             // already inferred exactly once in CALL-POLY (infer_surface_expr at line 934).
             // Running it here unconditionally would cause double-inference for Function calls, mutating
-            // state.name_counter and state.subst a second time in violation of single-pass Algorithm W.
+            // state.subst.name_counter and state.subst a second time in violation of single-pass Algorithm W.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
                 let _ = infer_surface_expr(arg, env, state, type_map);
@@ -1278,8 +1281,9 @@ pub(crate) fn check_call(
             // TypeVar callee — create a fresh TypeVar for the return type to preserve inference.
             // This allows `[f x]` to unify later when `f`'s type becomes known, rather than
             // immediately going gradual with Unknown.
-            let fresh_name = format!("_t{}", state.name_counter);
-            state.name_counter = state.name_counter.saturating_add(1);
+            let n = state.subst.name_counter.get();
+            let fresh_name = format!("_t{}", n);
+            state.subst.name_counter.set(n.saturating_add(1));
             state.levels.insert(fresh_name.clone(), state.level);
             let ret_var = Type::TypeVar(fresh_name, state.level);
             Ok(ret_var)
@@ -1290,7 +1294,7 @@ pub(crate) fn check_call(
             // This loop runs only for Unknown-typed callees — for Type::Function arms, positional args are
             // already inferred exactly once in CALL-MONO (check_expr at line 1011) or CALL-POLY (infer_surface_expr).
             // Running it here unconditionally would cause double-inference for Function calls, mutating
-            // state.name_counter and state.subst a second time in violation of single-pass Algorithm W.
+            // state.subst.name_counter and state.subst a second time in violation of single-pass Algorithm W.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
                 let _ = infer_surface_expr(arg, env, state, type_map);

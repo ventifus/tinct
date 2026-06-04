@@ -50,12 +50,16 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
     // but this wastes at most a few slots and is cheaper than deduplicating first.
     let renaming = Substitution {
         type_map: std::cell::RefCell::new(HashMap::with_capacity(type_vars.len())),
+        parent: None,
+        creation_level: 0,
+        name_counter: std::cell::Cell::new(0),
     };
     for var in type_vars {
         // First-write-wins: skip if this var was already mapped (handles duplicates from the Vec).
         if !renaming.type_map.borrow().contains_key(&var) {
-            let fresh_name = format!("_t{}", state.name_counter);
-            state.name_counter = state.name_counter.saturating_add(1);
+            let n = state.subst.name_counter.get();
+            let fresh_name = format!("_t{}", n);
+            state.subst.name_counter.set(n.saturating_add(1));
             state.levels.insert(fresh_name.clone(), state.level);
 
             // If this var appears as Type::Operator in the original type, preserve the Operator kind
@@ -196,8 +200,9 @@ pub fn instantiate_scheme(
     // avoid building Substitution (HashMap + apply HashSet).
     // Inline rename is allocation-free aside from the string format for the fresh name.
     if scheme.type_vars.len() == 1 && scheme.kind_vars.is_empty() {
-        let fresh_name = format!("_t{}", state.name_counter);
-        state.name_counter = state.name_counter.saturating_add(1);
+        let n = state.subst.name_counter.get();
+        let fresh_name = format!("_t{}", n);
+        state.subst.name_counter.set(n.saturating_add(1));
         state.levels.insert(fresh_name.clone(), level);
         var_renaming.insert(scheme.type_vars[0].clone(), fresh_name.clone());
 
@@ -277,12 +282,16 @@ pub fn instantiate_scheme(
     let total_vars = scheme.type_vars.len() + scheme.kind_vars.len();
     let renaming = Substitution {
         type_map: std::cell::RefCell::new(HashMap::with_capacity(total_vars)),
+        parent: None,
+        creation_level: 0,
+        name_counter: std::cell::Cell::new(0),
     };
 
     // Instantiate regular type variables as Type::TypeVar.
     for var in &scheme.type_vars {
-        let fresh_name = format!("_t{}", state.name_counter);
-        state.name_counter = state.name_counter.saturating_add(1);
+        let n = state.subst.name_counter.get();
+        let fresh_name = format!("_t{}", n);
+        state.subst.name_counter.set(n.saturating_add(1));
         state.levels.insert(fresh_name.clone(), level);
         var_renaming.insert(var.clone(), fresh_name.clone());
         renaming
@@ -301,8 +310,9 @@ pub fn instantiate_scheme(
     // Kind::Label    → Type::TypeVar(fresh_name, level), registered in kind_env as Label.
     // Kind::Type     → Type::TypeVar(fresh_name, level) (same as a regular type_var).
     for (var, kind) in &scheme.kind_vars {
-        let fresh_name = format!("_t{}", state.name_counter);
-        state.name_counter = state.name_counter.saturating_add(1);
+        let n = state.subst.name_counter.get();
+        let fresh_name = format!("_t{}", n);
+        state.subst.name_counter.set(n.saturating_add(1));
         state.levels.insert(fresh_name.clone(), level);
         var_renaming.insert(var.clone(), fresh_name.clone());
 
@@ -318,6 +328,11 @@ pub fn instantiate_scheme(
                 Type::TypeVar(fresh_name.clone(), level)
             }
             Kind::Type => Type::TypeVar(fresh_name.clone(), level),
+            Kind::Arrow(..) => unreachable!(
+                "Arrow kinds are for builtin type constructors only; \
+                 builtins are pre-registered directly in kind_env and \
+                 never appear in TypeScheme.kind_vars"
+            ),
         };
 
         renaming
@@ -420,7 +435,15 @@ pub(crate) fn simplify_constraints(class_env: &ClassEnv, constraints: &mut Vec<C
 /// Diagnostics are pushed to `state.diagnostics`. Uses a synthetic span (0:0) for warnings.
 /// Prefer `generalize_with_doc` when a real span is available.
 pub fn generalize(level: u32, ty: &Type, state: &mut InferState) -> TypeScheme {
-    generalize_with_doc(level, ty, state, None, crate::ast::Span::origin())
+    let constraints_snap = state.constraints.clone();
+    generalize_with_doc(
+        level,
+        ty,
+        state,
+        &constraints_snap,
+        None,
+        crate::ast::Span::origin(),
+    )
 }
 
 /// Emit T013 diagnostics for constraints whose type variables are ambiguous (appear in
@@ -587,17 +610,17 @@ fn emit_ambiguous_constraint_diagnostics(
 /// diagnostic warnings pushed to `state.diagnostics`. The `span` parameter provides
 /// source location for these warnings.
 ///
-/// **Constraint scoping contract**: Callers must manually save and restore `state.constraints`
-/// around generalize calls when constraint scoping is required. This function does NOT manage
-/// constraint scoping itself — it filters constraints by TypeVar membership but does not
-/// preserve or restore the original constraint set. If the caller needs to isolate constraints
-/// for a nested scope (e.g., a let-binding that should not leak constraints to the outer scope),
-/// the caller must use `std::mem::take(&mut state.constraints)` before generalize and restore
-/// afterward. See dict inference passes 1-4 for the canonical pattern.
+/// The `constraints` parameter carries the type class constraints accumulated during inference
+/// of the binding being generalized. Callers on the `infer_dict` path collect these constraints
+/// via `std::mem::take(&mut state.constraints)` after entry inference and pass them explicitly
+/// here — the constraint queue is scoped to each dict entry by the caller, not by this function.
+/// Callers outside the `infer_dict` path (e.g., the `generalize` wrapper) pass
+/// `&state.constraints` directly.
 pub fn generalize_with_doc(
     level: u32,
     ty: &Type,
     state: &mut InferState,
+    constraints: &[Constraint],
     doc: Option<String>,
     span: crate::ast::Span,
 ) -> TypeScheme {
@@ -612,10 +635,10 @@ pub fn generalize_with_doc(
         // Any constraint when there are no TypeVars is ambiguous (constraint variable
         // appears in constraint but not in the type).
         // Guard: skip constraints already discharged (bound to concrete type) during unification.
-        if !state.constraints.is_empty() {
+        if !constraints.is_empty() {
             let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
             emit_ambiguous_constraint_diagnostics(
-                &state.constraints,
+                constraints,
                 &subst_snapshot,
                 &state.type_var_source_names,
                 &mut state.diagnostics,
@@ -655,10 +678,10 @@ pub fn generalize_with_doc(
         // Any constraint on a TypeVar when there are no generalizable TypeVars is ambiguous
         // (the TypeVar appears in the constraint but not in the type).
         // Guard: skip constraints already discharged (bound to concrete type) during unification.
-        if !state.constraints.is_empty() {
+        if !constraints.is_empty() {
             let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
             emit_ambiguous_constraint_diagnostics(
-                &state.constraints,
+                constraints,
                 &subst_snapshot,
                 &state.type_var_source_names,
                 &mut state.diagnostics,
@@ -681,7 +704,7 @@ pub fn generalize_with_doc(
         let generalizable_vars: HashSet<String> = generalizable_type_vars.iter().cloned().collect();
 
         // Snapshot the substitution map so the filter closure can look up TypeVar→TypeVar
-        // bindings without borrowing `state` during `state.constraints.iter()`.
+        // bindings without borrowing `state` during `constraints.iter()`.
         //
         // When a fresh var "_bt0" from `instantiate_scheme` is bound to "_label_0"
         // (the actual label TypeVar from the function param) in `state.subst`, the HasField
@@ -738,7 +761,7 @@ pub fn generalize_with_doc(
         // the raw constraint names "_bt0" would not match generalizable_vars, and would not be
         // correctly renamed by instantiate_scheme at future call sites.
         let mut generalizable_constraints: Vec<Constraint> = Vec::new();
-        for c in &state.constraints {
+        for c in constraints {
             match c {
                 Constraint::Class {
                     class,
@@ -1888,14 +1911,19 @@ mod help_suggestion_tests {
             },
         };
 
-        // Register the instance
-        state.instance_env.insert(instance.clone()).unwrap();
+        // Use a fresh InstanceEnv containing ONLY the test instance.
+        // InferState::new() pre-seeds instance_env with structural instances including
+        // Appendable Seq[T]. Cloning state.instance_env would therefore contain both
+        // Seq[T] and Seq[b], which are equally specific for Seq[Int] and cause an
+        // ambiguity error. An isolated InstanceEnv tests resolve_instance in isolation.
+        let mut inst_env = crate::type_class::InstanceEnv::new();
+        inst_env.insert(instance.clone()).unwrap();
 
         // Resolve against Seq[Int]
         let target = Type::Seq(Box::new(Type::Int));
-        // Clone to avoid borrowing state both mutably and immutably
-        let inst_env = state.instance_env.clone();
-        let resolved = inst_env.resolve_instance("Appendable", &target, &mut state);
+        let resolved = inst_env
+            .resolve_instance("Appendable", &target, &mut state)
+            .expect("resolve_instance should not error");
 
         assert!(resolved.is_some(), "should resolve Appendable for Seq[Int]");
         let resolved = resolved.unwrap();
@@ -2315,7 +2343,6 @@ mod help_suggestion_tests {
         use crate::types::{InferState, Type};
 
         let mut state = InferState::new();
-        let counter_before = state.name_counter;
 
         let scheme = TypeScheme::mono(Type::Int);
 
@@ -2327,8 +2354,9 @@ mod help_suggestion_tests {
             "monomorphic scheme must return body unchanged"
         );
         assert_eq!(
-            state.name_counter, counter_before,
-            "monomorphic instantiation must not increment name_counter"
+            state.subst.name_counter.get(),
+            0,
+            "monomorphic instantiation must not increment name counter"
         );
     }
 }

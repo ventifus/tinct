@@ -973,7 +973,7 @@ pub(crate) fn builtin_ast_of(
         // the peek checks above).  This is necessary for Value::Function, which only exists as a
         // materialized value — there is no way to reconstruct function metadata from the CoreExpr
         // body without evaluating it.  For already-materialized thunks this is a no-op (cached).
-        materialize(&**thunk, Some(&call_span), &ctx).await?;
+        materialize(thunk, Some(&call_span), &ctx).await?;
 
         // Check for Materialized — construct synthetic SurfaceNode for simple literals
         // For complex values, ast-of should be called on unevaluated expressions, but we

@@ -1518,7 +1518,7 @@ fn test_annotation_type_var() {
     // Should be a fresh TypeVar (not literally "a"), at level 0
     matches!(ty, Type::TypeVar(ref s, 0) if s.starts_with("_t"));
     // Counter should have advanced
-    assert_eq!(state.name_counter, 1);
+    assert_eq!(state.subst.name_counter.get(), 1);
 }
 
 #[test]
@@ -1557,7 +1557,7 @@ fn test_resolve_type_name_outside_function_scope() {
     }
 
     // Counter should have advanced twice
-    assert_eq!(state.name_counter, 2);
+    assert_eq!(state.subst.name_counter.get(), 2);
 }
 
 #[test]
@@ -1589,7 +1589,8 @@ fn test_resolve_type_name_outside_function_scope_monotonicity() {
     // inside function scope where mapping reuses the same fresh var. That path is tested
     // by test_annotation_level_monotonicity (within-function scope).
     assert_eq!(
-        state.name_counter, 2,
+        state.subst.name_counter.get(),
+        2,
         "counter must advance once per fresh var"
     );
 }
@@ -7311,10 +7312,10 @@ fn test_scc_dependency_chain() {
     // Use [fn [x@a] $x] so the test detects SCC removal (Unknown would pass vacuously).
     let result = check(
         "[c: [fn [let x@a] $x]\n\
-             b: [fn [let y@b] [$c $y]]\n\
-             a: [fn [let z@c_] [$b $z]]\n\
-             result_int: [$a 42]\n\
-             result_str: [$a \"hello\"]]",
+             b: [fn [let y@b] [call $c $y]]\n\
+             a: [fn [let z@c_] [call $b $z]]\n\
+             result_int: [call $a 42]\n\
+             result_str: [call $a \"hello\"]]",
     );
     assert!(
         result.is_ok(),
@@ -9591,6 +9592,7 @@ fn test_prelude_instance_cache_seeds_appendable() {
     let inst_env_clone = state.instance_env.clone();
     let found = inst_env_clone
         .resolve_instance("Appendable", &target_ty, &mut state)
+        .expect("resolve_instance should not error")
         .is_some();
     assert!(
         found,

@@ -752,11 +752,11 @@ pub(crate) fn patterns_overlap(
     let saved_constraints = state.constraints.clone();
     let saved_kind_env = state.kind_env.clone();
     let saved_deferred = state.deferred_equalities.clone();
-    // Also save subst and name_counter: improve_functional_dependency writes directly to
-    // state.subst (via std::mem::take/replace) rather than through temp_subst, and
-    // resolve_instance may call fresh_type_var() incrementing name_counter.
+    // Also save subst: improve_functional_dependency writes directly to state.subst
+    // (via std::mem::take/replace) rather than through temp_subst, and resolve_instance
+    // may advance name_counter (which now lives in state.subst). Restoring state.subst
+    // restores the name_counter as well.
     let saved_subst = state.subst.clone();
-    let saved_name_counter = state.name_counter;
 
     // Use a temporary substitution so state.subst is also unaffected.
     let mut temp_subst = state.subst.clone();
@@ -771,12 +771,12 @@ pub(crate) fn patterns_overlap(
     });
 
     // Restore all mutated fields.
+    // Restoring state.subst also restores name_counter (it lives in the Substitution).
     state.levels = saved_levels;
     state.constraints = saved_constraints;
     state.kind_env = saved_kind_env;
     state.deferred_equalities = saved_deferred;
     state.subst = saved_subst;
-    state.name_counter = saved_name_counter;
 
     Ok(overlaps)
 }
@@ -813,12 +813,12 @@ pub(crate) fn types_can_unify(
     }
 
     // Save every field that unify() may touch so this probe is side-effect-free.
+    // Restoring state.subst also restores name_counter (it lives in the Substitution).
     let saved_levels = state.levels.clone();
     let saved_constraints = state.constraints.clone();
     let saved_kind_env = state.kind_env.clone();
     let saved_deferred = state.deferred_equalities.clone();
     let saved_subst = state.subst.clone();
-    let saved_name_counter = state.name_counter;
 
     // Use a temporary substitution for the probe.
     // Note: this probe uses a separate temp_subst; constraint checking via
@@ -832,12 +832,12 @@ pub(crate) fn types_can_unify(
         .all(|(ty_a, ty_b)| unify(ty_a, ty_b, &mut temp_subst, state, Span::origin()).is_ok());
 
     // Restore all mutated fields.
+    // Restoring state.subst also restores name_counter (it lives in the Substitution).
     state.levels = saved_levels;
     state.constraints = saved_constraints;
     state.kind_env = saved_kind_env;
     state.deferred_equalities = saved_deferred;
     state.subst = saved_subst;
-    state.name_counter = saved_name_counter;
 
     Ok(can_unify)
 }

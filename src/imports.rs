@@ -37,10 +37,13 @@ thread_local! {
     ///
     /// Populated after prelude.llt is type-checked (in `build_prelude_env_inner`).
     /// Consumed by `seed_infer_state_from_prelude_cache` to propagate prelude-registered
-    /// instances (Equatable, Comparable, Showable, Mappable, Appendable) to user-code
-    /// type-checking sessions. Without this, each fresh `InferState::new()` starts with
-    /// an empty `instance_env`, so constraint checking for those classes always falls through
-    /// to the hardcoded arms in `satisfies_constraint`.
+    /// instances (Mappable, Appendable for higher-level types, and any user-defined prelude
+    /// classes) to user-code type-checking sessions.
+    ///
+    /// Primitive class instances (Equatable, Comparable, Numeric, Showable, Appendable for
+    /// leaf/structural types) are now pre-seeded in `InferState::new()` via
+    /// `primitive_satisfies_constraint` (type_def.rs). Re-seeding from this cache is safe
+    /// because `InstanceEnv::insert` is idempotent.
     static PRELUDE_INSTANCE_CACHE: RefCell<Option<(ClassEnv, InstanceEnv)>> = const { RefCell::new(None) };
 
     /// Thread-local cache of the type-stage evaluation environment.
@@ -399,9 +402,9 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
             // Cache the prelude's class and instance environments.
             // User-code InferState instances are seeded from this cache (via
             // `seed_infer_state_from_prelude_cache`) so that prelude-registered instances
-            // (Equatable, Comparable, Showable, Mappable, Appendable) are visible during
-            // constraint checking. Without this, `check_constraints_on_var` falls through
-            // to the hardcoded arms in `satisfies_constraint` for all non-Numeric classes.
+            // (Mappable, Appendable for higher-level types, user-defined classes) are visible
+            // during constraint checking. Primitive instances (Equatable Int, Numeric Float,
+            // etc.) are pre-seeded in InferState::new() via primitive_satisfies_constraint.
             PRELUDE_INSTANCE_CACHE.with(|cache| {
                 *cache.borrow_mut() = Some((
                     prelude_state.class_env.clone(),
@@ -523,10 +526,15 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
 ///
 /// Called at the start of every user-code type-checking session (in
 /// `typecheck_file_with_types_and_env_and_source_returning_state`). This ensures
-/// that class instances registered by `prelude.llt` (Equatable for Int/Float/Str/Bool,
-/// Comparable for Int/Float/Str, Showable for all, Mappable for Record/Seq, Appendable
-/// for Str/Record/Seq) are available to `check_constraints_on_var` without requiring
-/// hardcoded arms in `satisfies_constraint`.
+/// that class instances registered by `prelude.llt` (Mappable, Appendable, user-defined
+/// classes) are merged into the state so that `check_constraints_on_var` can find them
+/// via `InstanceEnv::resolve_instance`.
+///
+/// **Primitive class instances** (Equatable, Comparable, Numeric, Showable, Appendable for
+/// leaf/structural types) are pre-seeded in `InferState::new()` so they are available even
+/// during prelude self-type-checking (before the cache is populated). Re-seeding them here
+/// is safe because `InstanceEnv::insert` is idempotent (string-key dedup: duplicate entries
+/// are silently discarded).
 ///
 /// This is a no-op when:
 /// - The prelude has not yet been type-checked (cache is empty). This handles the case
@@ -539,30 +547,18 @@ pub fn seed_infer_state_from_prelude_cache(state: &mut InferState) {
             for class_decl in class_env.iter_classes() {
                 state.class_env.insert_if_absent(class_decl.clone());
             }
-            // Merge prelude instances into state (skip overlapping instances silently).
+            // Merge all prelude instances into state.
             //
-            // Skip instances for classes that have hardcoded support in `satisfies_constraint`
-            // (Equatable, Showable, Comparable, Numeric, Indexable). These are handled by the
-            // hardcoded arms without needing dynamic instance resolution. Seeding them would
-            // cause false-positive overlap errors when user code defines classes with the same
-            // name (e.g., a user-defined `Equatable` class would conflict with the prelude's
-            // seeded Equatable instances even though they belong to different class declarations).
+            // InstanceEnv::insert is idempotent: instances already pre-seeded by InferState::new()
+            // (Equatable, Comparable, Numeric, Showable, Appendable for primitives/structural types)
+            // are silently discarded when the same string key is encountered again. This means
+            // prelude-defined instances for the same classes (e.g., EquatableInt from prelude.llt)
+            // are merged without error — they hit the same key and are no-ops.
             //
-            // Only seed instances for dynamically-resolved classes (Appendable, Mappable, and
-            // any user-defined classes in the prelude).
-            const HARDCODED_CONSTRAINT_CLASSES: &[&str] = &[
-                "Equatable",
-                "Showable",
-                "Comparable",
-                "Numeric",
-                "Indexable",
-            ];
+            // Indexable: MPTC class with FD — its instances are pre-seeded in InferState::new()
+            // for Map and Seq. Prelude does not declare additional Indexable instances, so no
+            // conflict arises. Seeding here is safe (idempotent).
             for inst_decl in instance_env.iter_instances() {
-                if HARDCODED_CONSTRAINT_CLASSES.contains(&inst_decl.class_name.as_str()) {
-                    // Skip: handled by satisfies_constraint hardcoded arms.
-                    // Seeding these would cause overlap errors with user-defined same-named classes.
-                    continue;
-                }
                 let _ = state.instance_env.insert(inst_decl.clone());
             }
         }

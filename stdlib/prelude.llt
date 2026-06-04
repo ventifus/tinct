@@ -2172,33 +2172,33 @@ type-of@[doc: "Return the type name of a value as a String"]: builtin-type-of
 ast-of@[doc: "Return the AST representation of an unevaluated expression as an Expression value"]: builtin-ast-of
 
 annotation-of@[doc: "Get the return annotation dict from ast-of result"]:
-  [fn [val] [get "return-ann" [ast-of val]]]
+  [fn [let val] [get "return-ann" [ast-of val]]]
 
 source-of@[doc: "Get the body AST dict from ast-of result. NOTE: only works for unevaluated thunks (macro/quote context), not for fully-evaluated Value::Function — use ast-of directly for functions."]:
-  [fn [val] [get "body" [ast-of val]]]
+  [fn [let val] [get "body" [ast-of val]]]
 
 annotation-value-str@[doc: "Stringify an annotation entry value"]:
-  [fn [v]
+  [fn [let v]
     [if [str? v] v [llt-repr v]]]
 
 annotation-to-str@[doc: "Stringify a full annotation dict to a display string. Null-safe."]:
-  [fn [ann]
+  [fn [let ann]
     [if [null? ann]
       ""
       [match ann.kind
         "simple": ann.value
         "dict":
-          [positional: [filter [fn [e] [null? e.key]] ann.entries]]
+          [positional: [filter [fn [let e] [null? e.key]] ann.entries]]
           [if [not [empty? positional]]
-            [str "[" [join " " [map [fn [e] [annotation-value-str e.value]] positional]] "]"]
-            [ret: [find-first-or [fn [e] [= "return" e.key]] [] ann.entries]
+            [str "[" [join " " [map [fn [let e] [annotation-value-str e.value]] positional]] "]"]
+            [ret: [find-first-or [fn [let e] [= "return" e.key]] [] ann.entries]
               [if [= ret []] "" [annotation-value-str ret.value]]]]
         _: ""]]]
 
 sig-from-ast@[doc: "Build a signature string from an ast-of result"]:
-  [fn [ast]
+  [fn [let ast]
     [ret:    [annotation-to-str [get-or "return-ann" [] ast]]]
-    [params: [join "  " [map [fn [p]
+    [params: [join "  " [map [fn [let p]
                 [if [has? "annotation" p]
                   [str p.name "@" [annotation-to-str p.annotation]]
                   p.name]]
@@ -2207,18 +2207,24 @@ sig-from-ast@[doc: "Build a signature string from an ast-of result"]:
       [str "fn [" params "]"]
       [str "fn@" ret " [" params "]"]]]
 
+describe-fn-impl@[doc: "Internal helper for describe — builds introspection dict from an ast-of result"]:
+  [fn [let val]
+    [ast: [ast-of val]]
+    [ann: [get-or "return-ann" [] ast]]
+    [doc: [if [= ann []] ""
+            [if [= ann.kind "dict"]
+              [d: [find-first-or [fn [let e] [= "doc" e.key]] [] ann.entries]
+                [if [= d []] "" d.value]]
+              ""]]]
+    [doc:        doc
+     return-ann: ann
+     params:     ast.params
+     sig:        [sig-from-ast ast]]]
+
 describe@[doc: "Get introspection dict for a value. For functions: {doc, return-ann, params, sig}. For others: {type}."]:
-  [fn [val]
+  [fn [let val]
     [if [fn? val]
-      [doc:        [ann: [get-or "return-ann" [] [ast-of val]]
-                     [if [= ann []] ""
-                       [if [= ann.kind "dict"]
-                         [d: [find-first-or [fn [e] [= "doc" e.key]] [] ann.entries]
-                           [if [= d []] "" d.value]]
-                         ""]]]
-       return-ann: [get-or "return-ann" [] [ast-of val]]
-       params:     [ast-of val].params
-       sig:        [sig-from-ast [ast-of val]]]
+      [describe-fn-impl val]
       [type: [type-of val]]]]
 
 # Capability operations

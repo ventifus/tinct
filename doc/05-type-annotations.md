@@ -119,14 +119,14 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 Type constructors take type arguments via bracket application:
 
 ```tinct
-xs@[Seq Int]               # Seq of Int
-scores@[Map [String: Int]] # Map from String to Int
-nested@[Seq [Seq Int]]     # Seq of Seq of Int
-pair@[Pair Int String]     # Pair of Int and String (user-defined)
+xs@[Seq Int]            # Seq of Int
+scores@[Map String Int] # Map from String to Int
+nested@[Seq [Seq Int]]  # Seq of Seq of Int
+pair@[Pair Int String]  # Pair of Int and String (user-defined)
 === error
 type errors:
   expected record type, got Seq[Int] at 1:1-1:13
-  expected record type, got Map[_ [String: Int]] at 2:1-2:27
+  expected record type, got Map[String Int] at 2:1-2:24
   expected record type, got Seq[Seq[Int]] at 3:1-3:23
   undefined type: Pair at 4:7-4:11
 
@@ -576,30 +576,41 @@ The type-stage Env is discarded after type-checking; it does not exist at runtim
 
 ### 13. Type Prelude and Type Constructors
 
-The prelude `--- stage: type` section defines all built-in type combinators:
+All types — including builtins — are declared in prelude using the unified `[type ...]` syntax. This makes `TyConEnv` the complete and authoritative registry of all types and their runtime representations.
+
+**Builtin type declarations** in prelude use `[builtin-type "X"]` to associate a type name with its Rust-level discriminant:
 
 ```tinct
 --- stage: type
-[
-  or:     [fn [...types] [kind: "union"  members: types]]
-  each:   [fn [...types] [kind: "inter"  members: types]]
-  record: [fn [...fields] [kind: "record"  fields: fields]]
+Int:    [type [builtin-type "Int"]]     # Value::Int
+Str:    [type [builtin-type "Str"]]     # Value::String
+Bool:   [type [builtin-type "Bool"]]    # Value::Bool
+Float:  [type [builtin-type "Float"]]   # Value::Float
+Bytes:  [type [builtin-type "Bytes"]]   # Value::Bytes
+Dict:   [type [builtin-type "Dict"]]    # Value::Dict
+Fn:     [type [builtin-type "Fn"]]      # Value::Function | Value::Builtin
+Handle: [type [builtin-type "Handle"]]  # Value::Handle
 
-  Seq:    [fn [t]    [kind: "seq"    element: t]]
-  Map:    [fn [k v]  [kind: "map"    key: k  value: v]]
-  Fn:     [fn [ret ...params] [kind: "fn"  return: ret  params: params]]
-
-  # Ground types
-  Int:    [kind: "named"  name: "Int"]
-  String: [kind: "named"  name: "String"]
-  Bool:   [kind: "named"  name: "Bool"]
-  Null:   [kind: "named"  name: "Null"]
-  Any:    [kind: "named"  name: "Any"]
-  Unknown:[kind: "named"  name: "Unknown"]
-]
-=== out
-{}
+Number: [type [or Int Float]]           # transparent alias — union of numeric primitives
 ```
+
+**Nominal and structural type declarations** in prelude:
+
+```tinct
+--- stage: type
+Variance: [type Covariant Contravariant Invariant Phantom]
+Absent:   [type Absent]
+Seq:      [type [let a@Covariant]  Nil  [Cons head: a  tail: [Seq a]]]
+Map:      [type [let k@Equatable v]  [_@k : v]]
+```
+
+`Seq` is a nominal ADT whose constructors are `Seq.Nil` (unit) and `Seq.Cons` (payload with `head` and `tail` fields). `Map K V` is a transparent alias for the uniform column constraint `{_@K : V}` — any dict whose values are all of type `V` and whose keys satisfy `K`. `Absent` is a unit nominal type for expressing first-class absence.
+
+**Name resolution order** in the type environment:
+
+1. `TyConDef` lookup (user-declared and prelude types registered via `[type ...]`)
+2. Type alias table (transparent aliases declared with `[type ...]` with a structural body)
+3. Builtin named types (`Int`, `String`, `Bool`, `Null`, `Any`, `Unknown`) — these map to their `TyConDef` entries after migration
 
 **Name resolution order** in type-stage Env:
 
@@ -650,72 +661,154 @@ error: @ annotations outside type-assert or param contexts not yet supported
 
 ### 15. Type Alias Declarations
 
-`[type ...]` declares a named type alias. The body is evaluated using the full annotation resolver with type-stage Env access.
+`[type ...]` declares a named type alias or nominal ADT. Four rules govern all `[type ...]` forms:
+
+1. **`[let ...]` is the only way to introduce type parameters** — same as `[fn [let x y] body]`. Without `[let ...]`, lowercase names in type bodies resolve from the enclosing scope as existing types; they are not created as new TypeVars.
+2. **Unit constructors are bare uppercase words.** `Red`, `SIGTERM`, `Nil` — no brackets.
+3. **`builtin-type` bodies** mark a type as Rust-backed with a runtime discriminant string.
+4. **Dict-entry form is the binding form.** `Name: [type ...]` — the name is the dict key.
+
+**Five visually distinct forms:**
+
+| Body content | Kind | Nominal? |
+|---|---|---|
+| Structural type expression | transparent alias | no |
+| `[let ...]` + structural body | parameterized transparent alias | no |
+| Uppercase bare words / `[UpperName ...]` forms | nominal ADT | yes |
+| `[let ...]` + constructors | parameterized nominal ADT | yes |
+| `[builtin-type "X"]` | opaque, Rust-backed | yes |
 
 ```tinct
-# Simple alias
+# Transparent aliases
 NullableInt: [type [or Int Null]]
 Name:        [type String]
+Pair:        [type [let a b]  [first: a  second: b]]
 
-# Parameterized alias
-Either:  [type [a b] [or a b]]
-Pair:    [type [a b] [record first: a  second: b]]
-Scores:  [type [Map String: Int]]
+# Nominal ADTs — constructors accessed via dot
+Signal: [type SIGTERM SIGINT SIGHUP]
+Result: [type [let a]  [Ok value: a]  [Error msg: String]]
+Maybe:  [type [let a]  [Some value: a]  None]
+Color:  [type Red Green Blue]
 
-# Use site
-x@NullableInt
-y@[Either Int String]    # a=Int, b=String substituted directly
-=== error
-error: `:` can only appear in dict, call, class, instance, or match forms
- --> block 29:2:12
-  |
-  2 | NullableInt: [type [or Int Null]]
-    |            ^
+# Parameterized with variance annotations
+Tree:   [type [let a@Covariant]  Leaf  [Node value: a  left: [Tree a]  right: [Tree a]]]
+
+# Builtin-type declarations (Rust Value variants)
+Int:    [type [builtin-type "Int"]]
+Handle: [type [let a] [builtin-type "Handle"]]
 ```
+
+**Variance annotations** on type parameters use `name@VarianceName`:
+
+| Annotation | Meaning |
+|---|---|
+| `a@Covariant` | `F a <: F b` when `a <: b` — producer/container position |
+| `a@Contravariant` | `F a <: F b` when `b <: a` — consumer/handler position |
+| `a` (none) | invariant — default; safe for opaque types |
+| `a@Phantom` | `F a <: F b` always — `a` is type-level only, no runtime presence |
+
+For transparent aliases, the compiler infers variance via polarity analysis (Dolan 2017 §4). Explicit annotations serve as checked declarations — a mismatch is a type error.
 
 **Parameterized alias use:** `x@[Either Int String]` substitutes `a=Int`, `b=String` directly — it is a substitution, not instantiation of fresh TypeVars. Using `x@Either` (bare) leaves `a`, `b` as fresh inference variables.
 
-**Nominal variants** use `[type [Tag1 body1] [Tag2 body2] ...]` multi-entry form — these are registered structurally by the type-checker, not evaluated as type-stage expressions.
+**Constructor access and patterns.** A type declaration creates both a type in the type system and a dict value whose fields are the constructors. The only binding created is the type name:
 
 ```tinct
-Result: [type [Ok a] [Err String]]     # nominal ADT — structural registration
-Shape:  [type [circle: [radius: Int]]
-              [rect:   [w: Int  h: Int]]]
-=== error
-error: `:` can only appear in dict, call, class, instance, or match forms
- --> block 30:1:7
-  |
-  1 | Result: [type [Ok a] [Err String]]     # nominal ADT — structural registration
-    |       ^
+Color: [type Red Green Blue]
+# value: Color = {Red: <Color.Red variant>, Green: ..., Blue: ...}
+c: Color.Red          # dot access to the constructor
+Result.Ok             # payload constructor function
+Net.Transport.Tcp     # multi-level
 ```
 
-**Type alias entries are excluded from record fields.** A `[type ...]` entry registers an alias in the type environment but contributes no field to the enclosing record's type. The evaluator returns an empty dict for type alias entries.
+Constructor patterns use the same dot syntax in pattern head position:
 
-**Recursive type aliases** use two-pass registration: all aliases in a dict pre-register with `Type::Unknown` placeholder bodies (Pass 1), then resolve their actual bodies (Pass 2). Self-references resolve to `Type::Unknown` at the cycle boundary, breaking infinite expansion while preserving shallow access (up to MAX_ALIAS_DEPTH = 256 layers).
+```tinct
+[match sig
+  Signal.SIGTERM: [cleanup]
+  Signal.SIGINT:  [interrupt]]
+
+[match xs
+  Seq.Nil:       "empty"
+  [Seq.Cons c]:  c.head]
+
+[match result
+  [Result.Ok v]:    v.value
+  [Result.Error e]: [log e]]
+```
+
+Dot-access in pattern head position is syntactically assembled by the parser via `flatten_dot_access_to_tag` in `src/ast.rs`. Bare uppercase words in constructor patterns are also recognized and rewritten to their qualified form by `typecheck_match.rs`.
+
+**Common prelude aliases** — pure rebinding:
+
+```tinct
+Ok:    Result.Ok
+Error: Result.Error
+Some:  Maybe.Some
+None:  Maybe.None
+```
+
+**Type alias entries are excluded from record fields.** A `[type ...]` entry registers in the type environment but contributes no field to the enclosing record's type.
+
+**Recursive type aliases** use two-pass registration: all aliases in a dict pre-register with `Type::Unknown` placeholder bodies (Pass 1), then resolve actual bodies (Pass 2). Self-references resolve to `Type::Unknown` at the cycle boundary (up to MAX_ALIAS_DEPTH = 256 layers).
 
 ```tinct
 List: [type [head: Int  tail: List]]    # recursive — two-pass resolves self-reference
-=== error
-error: `:` can only appear in dict, call, class, instance, or match forms
- --> block 31:1:5
-  |
-  1 | List: [type [head: Int  tail: List]]    # recursive — two-pass resolves self-reference
-    |     ^
 ```
+
+### 15a. Column Constraints — Uniform Row Types
+
+A **column constraint** declares that all present fields in a dict satisfy a value type constraint, expressed as `{_ : V}` (value type only) or `{_@K : V}` (key type and value type). These appear in annotation position alongside named fields:
+
+```tinct
+config@{_ : String}               # all values String
+counts@{_ : Int}                  # all values Int
+mixed@{host: String  _ : Int}     # host is String; all other fields are Int
+data@{_@String : Int}             # String keys, Int values
+```
+
+`Map K V` in prelude is defined as `[type [let k@Equatable v] [_@k : v]]` — a uniform dict where all values have type `V` and all keys satisfy `K`. So `@[Map String Int]` and `@{_@String : Int}` are equivalent after alias expansion.
+
+**Subtyping rules:**
+
+- `{f1: T1, ..., fn: Tn, tail: Empty} <: {_ : V}` when all `Ti <: V`
+- `{_ : V1} <: {_ : V2}` when `V1 <: V2` (covariant in value type)
+- `{_@K1 : V1} <: {_@K2 : V2}` when `K1 <: K2` and `V1 <: V2`
+- `{_@K : V} <: {_ : V}` always (keyed constraint is a subtype of unkeyed)
+
+**Runtime:** uniform row matching wraps each field access in a guard thunk checked on demand, preserving lazy evaluation.
+
+### 15b. Absent — First-Class Absence
+
+`Absent` is a unit nominal type that separates "not present" from `[]` (empty collection):
+
+```tinct
+Absent: [type Absent]
+absent?: [fn@Bool [let x@Unknown] [match x Absent.Absent: true  _: false]]
+```
+
+`[or Absent T]` is the structural optional type. Pattern matching is the canonical narrowing form:
+
+```tinct
+[match x
+  Absent.Absent:  "missing"
+  _:              "present"]
+```
+
+Builtins that return a missing value (`get?`, `env`, `head`, `get-in?`) return `Absent.Absent` rather than `[]`. Testing with `absent?` or pattern matching on `Absent.Absent` is correct; `null?` checks only for `[]` (empty collection) and is not interchangeable.
 
 ### 16. Type Dict Schema
 
-Type-stage functions return type dicts. The canonical schema:
+The internal type representation uses `Type::TyCon(String)` for concrete type constructor names and `Type::App(Box<Type>, Box<Type>)` for type application. The dedicated collection variants (`Type::Seq`, `Type::Map`, `Type::Handle`) are replaced by the general `TyCon`/`App` mechanism. Type-stage functions return type dicts. The canonical schema:
 
 | `kind:` value | Fields | `Type::*` |
 |---------------|--------|-----------|
-| `"named"` | `name: String` | `Type::Int`, `Type::Str`, `Type::Bool`, `Type::Unknown`, named aliases |
+| `"named"` | `name: String` | `Type::TyCon(name)` — all named types including builtins |
 | `"union"` | `members: [<type-dict> ...]` | `Type::Union(Vec<Type>)` |
 | `"inter"` | `members: [<type-dict> ...]` | `Type::Intersection(Vec<Type>)` |
-| `"seq"` | `element: <type-dict>` | `Type::Seq(Box<Type>)` |
-| `"map"` | `key: <type-dict>  value: <type-dict>` | `Type::Map(Type, Type)` |
+| `"app"` | `constructor: <type-dict>  arg: <type-dict>` | `Type::App(Box<Type>, Box<Type>)` — curried application |
 | `"fn"` | `return: <type-dict>  params: [<type-dict> ...]` | `Type::Function { ret, params }` |
-| `"record"` | `fields: {name: <type-dict> ...}` | `Type::Record(Row)` |
+| `"record"` | `fields: {name: <type-dict> ...}  tail: <tail-dict>` | `Type::Record(Row)` — `tail` is `{kind: "empty"}` or `{kind: "uniform" key: ... value: ...}` |
 | `"recursive"` | `var: String  body: <type-dict>` | `Type::Recursive { var, body }` (μ-types) |
 | `"recvar"` | `name: String` | `Type::RecVar(String)` |
 | `"type-stage-app"` | `fn: String  args: [<type-dict> ...]` | `Type::TypeStageApp { fn_name, args }` |

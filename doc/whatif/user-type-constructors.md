@@ -129,6 +129,7 @@ Both bind names into a local scope. Both allow `@` variance/kind annotations on 
 | `a@Phantom` | `F a <: F b` always — a is type-level only, no runtime presence |
 
 **Variance inference for transparent aliases** (those with a body): the compiler performs polarity analysis (Dolan 2017 §4) — walk the body type expression and classify each TypeVar's occurrences:
+
 - **Covariant**: field types in records, return position of a function type, union/intersection members
 - **Contravariant**: argument types in a function type (`[Fn@R [A B C]]` — A, B, C are contravariant)
 - **Invariant**: appears in both covariant and contravariant positions
@@ -176,6 +177,7 @@ Net.Transport.Tcp        # multi-level
 **Pattern head qualification is syntactic in the parser.** `resolve.rs` only does variable-slot resolution (de Bruijn coordinates) — it has no access to the type environment and cannot look up constructor dicts.
 
 - **Dot-access pattern heads** (`[Result.Ok v]`, `Color.Red:`): the parser assembles the qualified tag string syntactically by walking the DotAccess chain left-recursively. The function `flatten_dot_access_to_tag` is a pure structural walk over `SurfaceExpression` with no logic beyond the AST — it is defined in **`src/ast.rs`** as `pub(crate)`, alongside the types it operates on. Both callers (`src/parser.rs` and `src/typecheck_special.rs`) already import from `src/ast.rs`, so no new `use` lines are needed.
+
   ```rust
   // src/ast.rs
   pub(crate) fn flatten_dot_access_to_tag(expr: &SurfaceExpression) -> Option<String> {
@@ -190,11 +192,13 @@ Net.Transport.Tcp        # multi-level
       }
   }
   ```
+
   The field is `field: DotKey` (not `key`), where `DotKey` is an enum with `Ident(String)` and `Int(i64)` variants. Integer segments return `None` rather than silently producing a malformed tag. `Result.Ok` → `"Result.Ok"`, `Net.Transport.Tcp` → `"Net.Transport.Tcp"`. The parser produces `Pattern::Constructor { tag: "Result.Ok", binding }` directly. Tag validity is checked later by `typecheck_match.rs`.
 
   **Two parser sites** must call `flatten_dot_access_to_tag`:
 
   1. **Call-with-DotAccess-func** (`[Result.Ok v]`) — in `surface_node_to_pattern_with_guard`, the Call arm at `parser.rs:5009` guards `if let SurfaceExpression::VarRef { name, .. } = &func.expr`. The DotAccess case currently falls to the `else` branch at line 5053 ("invalid pattern"). This else branch must be split:
+
      ```rust
      } else if let Some(tag) = flatten_dot_access_to_tag(&func.expr) {
          (Pattern::Constructor { tag, binding: Some(payload_pattern) }, None)
@@ -204,6 +208,7 @@ Net.Transport.Tcp        # multi-level
      ```
 
   2. **Bare DotAccess** (`Color.Red:` — unit constructor, no payload) — a new arm is needed in `surface_node_to_pattern_with_guard` for bare `SurfaceExpression::DotAccess` nodes (not inside a Call):
+
      ```rust
      SurfaceExpression::DotAccess { .. } => {
          match flatten_dot_access_to_tag(&node.expr) {
@@ -410,6 +415,7 @@ The builtin string-match in `resolve_type_dict` is replaced with a single genera
 - Thread-local explicitly rejected: hides a dependency, makes `is_subtype(A, B)` non-deterministic on the same inputs, fragile in async runtimes.
 
 **Variance-directed subtyping for `App(TyCon, _)`:** look up variance from `TyConEnv`:
+
 - `@Covariant`: `App(TyCon(f), a) <: App(TyCon(f), b)` when `a <: b`. BAS join holds: `F a | F b <: F (a | b)`. The split direction (`F (a | b) <: F a | F b`) is NOT derivable and is unsound — verified by the hkt-bas sprint.
 - `@Contravariant`: `App(TyCon(f), a) <: App(TyCon(f), b)` when `b <: a` (flipped).
 - Invariant: `App(TyCon(f), a) <: App(TyCon(f), b)` only when `a == b`.
@@ -455,11 +461,12 @@ Counter:  [type  [_ : Int]]                        # frequency/count dict
 ```
 
 **Subtyping rules (validated by Nickel):**
+
 - `{f1:T1, ..., fn:Tn, tail:Empty} <: {tail:Uniform{key:None, value:V}}` when all Ti <: V
 - `{tail:Uniform{key:None, value:V1}} <: {tail:Uniform{key:None, value:V2}}` when V1 <: V2 (covariant)
 - `{f1:T1, tail:Uniform{key:None, value:V1}} <: {tail:Uniform{key:None, value:V2}}` when T1 <: V2 and V1 <: V2
 - **Typed-key rules:** `{_@K1 : V1} <: {_@K2 : V2}` when `K1 <: K2` (covariant in key — more specific key type is a subtype) and `V1 <: V2`
-- `{_ : V} <: {_@K : V}` always (unkeyed is a subtype of any keyed — the unconstrained key satisfies any key constraint vacuously)
+- `{_@K : V} <: {_ : V}` always (keyed is a subtype of unkeyed — a dict constrained to keys of type K satisfies the unconstrained form, which imposes no key requirement)
 
 **Unification rules — TypeVar vs concrete split:**
 
@@ -526,6 +533,7 @@ config@[host: [or Absent String]  port: Int]   # host may be absent; if present,
 The `VARIANT_TAG_MARKER` mechanism in `src/eval_call.rs` is an erroneous workaround — constructors secretly behaved differently from ordinary functions via a hidden marker. Deleted entirely.
 
 **`variant` builtin revised to two direct modes:**
+
 - `[variant "Tag"]` → `Value::Variant { tag, payload: None }` — unit value
 - `[variant "Tag" payload]` → `Value::Variant { tag, payload: Some(alloc(payload)) }` — with payload
 
@@ -545,6 +553,7 @@ Seq.Cons:   [fn@[Seq a] [let head@a tail@[Seq a]]         # named-field — same
 The function currently calls `extract_surface_adt_ctor_names_from_expr` (returns `Vec<String>`) and always injects `CtorName: [variant "CtorName"]`. This must be redesigned:
 
 1. **Extract the type name from `se.node.key`** — the dict entry key is `Option<Arc<SurfaceNode>>`, not a String. Extract via:
+
    ```rust
    let type_name = match se.node.key.as_ref()?.expr {
        SurfaceExpression::Str(ref s) => s.clone(),
@@ -552,6 +561,7 @@ The function currently calls `extract_surface_adt_ctor_names_from_expr` (returns
        _ => return,  // computed key — not a type declaration, skip
    };
    ```
+
    Both `Str` and `VarRef` are valid key forms for named dict entries (`"Result": ...` and `Result: ...` are both legal). A positional entry (no key) or a computed key (DotAccess, Call, etc.) means this is not a TypeAlias declaration — skip injection.
 2. Inspect the type body to classify each constructor:
    - Bare uppercase `VarRef` → **unit constructor**: inject `"CtorName": [variant "TypeName.CtorName"]`
@@ -628,6 +638,7 @@ Dot-access patterns (`[Result.Ok v]`, `Color.Red:`) → `Pattern::Constructor` w
 ### Kind Registration
 
 Type constructor arity determines the kind:
+
 - 1 parameter → `Kind::Operator` (`* → *`)
 - 2 parameters → `Kind::Arrow(Kind::Type, Kind::Operator)` (`* → * → *`)
 - n parameters → n-deep `Kind::Arrow` chain
@@ -669,14 +680,17 @@ Call sites: the TypeAlias inference pass in `typecheck.rs` passes `Some(&param_n
 **Deleted:** `Type::Seq(Box<Type>)`, `Type::Map(Box<Type>, Box<Type>)`, `Type::Handle(Box<Type>)` — ~300 match arm occurrences total across `type_def.rs`, `type_unify.rs`, `type_normalize.rs`, `typecheck.rs`, `typecheck_annot.rs`, `typecheck_call.rs`, `typecheck_narrow.rs`, `eval.rs`, `eval_materialize.rs`, `imports.rs`, `builtins_core.rs`, `type_env.rs`, `type_class.rs`, `coverage.rs`, and test files.
 
 **Added:**
+
 - `Type::TyCon(String)` — one new arm in every exhaustive `match ty`.
 - `RowTail` enum (created from scratch; does not exist in current codebase):
+
   ```rust
   pub enum RowTail {
       Empty,
       Uniform { key: Option<Box<Type>>, value: Box<Type> },
   }
   ```
+
   `key: None` = `{_ : V}` (value constraint only). `key: Some(K)` = `{_@K : V}` (key and value constrained). `Row` gains `tail: RowTail` field. Every `Row { fields: ... }` construction site adds `tail: RowTail::Empty`. All Row-traversing functions (`is_subtype`, `unify`, `collect_type_vars`, `has_type_vars`, `apply_inner`, `occurs_in`, `Display`) gain `Uniform` handling, including the optional `key` field.
 - `TyConEnv: HashMap<String, TyConDef>` — flat snapshot type, used only in `EvalContext` for runtime lookup. Not stored in `InferState` as a live registry; derived from `TypeEnv` after type checking completes.
 
@@ -693,6 +707,7 @@ Call sites: the TypeAlias inference pass in `typecheck.rs` passes `Some(&param_n
 ### `src/typecheck_annot.rs` — Delete builtin dispatch; add polarity analysis
 
 **Deleted:**
+
 - `fn apply_builtin_constructor(...)` — entire function
 - `fn is_builtin_type_name` — entries "Seq", "Map", "Handle"
 - `resolve_annotation` arms for "Seq" (lines ~168–179), "Handle" (lines ~180–198)
@@ -701,6 +716,7 @@ Call sites: the TypeAlias inference pass in `typecheck.rs` passes `Some(&param_n
 - Bare name resolution `"Seq"` → `Type::Seq(Unknown)`, etc. (lines ~1632–1652)
 
 **Added:**
+
 - Single general lookup path: look up name in type environment → produce `App(TyCon(name), args...)` or expand alias body.
 - **`{_ : V}` recognition algorithm** in `typecheck_annot.rs` (`resolve_type_dict`): when parsing a type dict expression in annotation position, walk its key-value pairs and classify each key. Four sub-cases, all handled by the same annotation-dict walker:
 
@@ -736,6 +752,7 @@ Call sites: the TypeAlias inference pass in `typecheck.rs` passes `Some(&param_n
 ### `src/type_unify.rs` — Add UNIFY-TYCON and uniform-row rules
 
 **Added:**
+
 - `UNIFY-TYCON`: `TyCon(n1)` and `TyCon(n2)` unify iff `n1 == n2` AND both names resolve to the same `TyConDef` in the current scoped `TypeEnv` (pointer identity). See §Unification in the design section for the full rule.
 - Uniform row unification and subtyping (see §Column Constraints for rules).
 
@@ -772,10 +789,12 @@ Call sites: the TypeAlias inference pass in `typecheck.rs` passes `Some(&param_n
 ### `src/ast.rs` and `src/eval.rs` — Pattern AST cleanup
 
 **Deleted:**
+
 - `Pattern::TypeTag` — erroneous fast path for unit constructors.
 - `Pattern::Seq` — erroneous fast path for sequence patterns. Spread pattern `[h ...t]` desugars to `Pattern::Constructor { tag: "Seq.Cons" }` + dict destructuring.
 
 **Added:**
+
 - `Pattern::TypeAssertPending { annotation: Spanned<Annotation>, inner: Option<Box<Spanned<Pattern>>> }` — surface form; parser-only, never reaches the evaluator.
 - `Pattern::TypeAssert { resolved_type: Type, inner: Option<Box<Spanned<Pattern>>> }` — core form; typecheck elaboration produces this from `TypeAssertPending`.
 
@@ -808,10 +827,12 @@ All three must land together before any variance sprint. Complete set of downstr
 ### `src/parser.rs` — Pattern AST changes
 
 Two new pattern variants in `src/ast.rs` (see §Pattern AST for full spec):
+
 - `Pattern::TypeAssertPending { annotation: Spanned<Annotation>, inner }` — surface form; parser produces this
 - `Pattern::TypeAssert { resolved_type: Type, inner }` — core form; typecheck elaboration produces this
 
 **New arm in `surface_node_to_pattern_with_guard` (parser.rs:4843)** for `SurfaceExpression::TypeAssert`:
+
 ```rust
 SurfaceExpression::TypeAssert { annotation, expr } => {
     let inner_pat = surface_node_to_pattern(Arc::clone(expr))?;   // guard-discarding wrapper
@@ -820,6 +841,7 @@ SurfaceExpression::TypeAssert { annotation, expr } => {
 ```
 
 **DotAccess pattern arms** — two new sites in `surface_node_to_pattern_with_guard`:
+
 1. Before the `else { "invalid pattern" }` branch at line 5053, split the Call arm to handle `DotAccess` func heads via `flatten_dot_access_to_tag`
 2. New bare `SurfaceExpression::DotAccess` arm for unit constructor patterns (`Color.Red:`)
 
@@ -828,10 +850,12 @@ See §Constructor Access and Patterns for full specification of `flatten_dot_acc
 **`typecheck_match.rs` elaboration pass** — two kinds of work:
 
 For `Pattern::TypeAssertPending { annotation, inner }`:
+
 - Call `resolve_annotation(&annotation.node, &env, annotation.span, state, ...)` — the full compile-time resolver
 - Produce `Pattern::TypeAssert { resolved_type: resolved_type, inner }`
 
 For `Pattern::Constructor { tag, binding }` (bare uppercase or dot-assembled):
+
 1. Look up `tag` in `TyConEnv` — nominal (has constructors) → keep as `Pattern::Constructor`, qualify via scrutinee type
 2. Look up `tag` in `TyConEnv` — primitive (`builtin_type` set, no constructors) → rewrite to `Pattern::TypeAssert { resolved_type: Type::TyCon(tag.clone()), inner: binding }`
 3. Not found → type error: "undefined type name or constructor `X` in pattern position"
@@ -855,6 +879,7 @@ No hardcoded list. TyConEnv is the single source of truth.
 ### `src/value.rs` — Qualified variant tags
 
 All `Value::Variant` constructions with bare tags change to qualified:
+
 - `builtins_meta.rs:337` — `"Ok"` → `"Result.Ok"`
 - `builtins_meta.rs:355` — `"Error"` → `"Result.Error"`
 - All ADT constructor injection sites in `eval_dict.rs` — prefix tag with type name
@@ -907,6 +932,7 @@ The actual call site for exact-value pattern arms uses the **sync** `builtins_me
 The invariant that must hold: **`[= a b]` returns true if and only if `a: arm` matches `b`**. All three paths must implement the same semantics or this invariant is violated.
 
 **Migration:** `values_equal` in `src/eval.rs` becomes the single canonical implementation. `values_eq_impl` in `src/builtins_math.rs` and `values_equal` in `src/builtins_meta.rs` are **both deleted**. All callers updated:
+
 - `builtin_eq` in `builtins_math.rs` → calls `eval::values_equal`
 - `CaseArmExactValueCheck` → calls `eval::values_equal` (via a new async CEK continuation, replacing the current sync call)
 
@@ -915,6 +941,7 @@ The invariant that must hold: **`[= a b]` returns true if and only if `a: arm` m
 The Dict arm carries forward the existing cycle detection from `values_eq_impl` (`builtins_math.rs:527-535`): a `visited: Arc<Mutex<HashSet<(usize, usize)>>>` parameter threads through recursive calls to detect circular dict references (possible via letrec). Without it, `[= x x]` where `x: [a: x]` diverges.
 
 Arms:
+
 - `(Int, Int)`, `(Float, Float)`, `(Bool, Bool)`, `(String, String)` — existing, unchanged
 - `(Variant { payload: None }, Variant { payload: None })` — existing unit-constructor arm, unchanged
 - `(Variant { tag: t1, payload: Some(p1) }, Variant { tag: t2, payload: Some(p2) })` — **new**: tag check then materialize payloads and recurse
@@ -949,6 +976,7 @@ Arms:
 | `with_base_dir_and_path` | 784 | delegates to `with_base_dir` — no direct change |
 
 **Child constructor pattern** (for `with_base_dir`, `with_cancel_token`, `with_explicit_cancel`, `with_timeout_ms`):
+
 ```rust
 tycon_env: {
     let child_lock = OnceLock::new();
@@ -960,11 +988,13 @@ tycon_env: {
 ```
 
 **`set_tycon_env` implementation:**
+
 ```rust
 pub fn set_tycon_env(&self, env: HashMap<String, TyConDef>) {
     self.tycon_env.set(Arc::new(env)).expect("tycon_env already set — set_tycon_env called twice");
 }
 ```
+
 Panics on double-set because calling `set_tycon_env` twice is a programming error (the type checker should only run once per EvalContext). Child contexts that were pre-populated from a parent never have `set_tycon_env` called on them.
 
 Root constructors initialize to empty `OnceLock::new()`; the TyConEnv is filled by `set_tycon_env` at the transfer sites (see below).
@@ -972,13 +1002,16 @@ Root constructors initialize to empty `OnceLock::new()`; the TyConEnv is filled 
 **Transfer sites:** The `TyConEnv` snapshot is the `infer_state.tycon_env` flat accumulator (populated incrementally during type checking, one entry per TyCon declaration encountered, including prelude). It covers TyCons from all pipeline documents because the type checker processes them sequentially with the accumulator persisting across `---` boundaries. Transferred to `EvalContext` at all infer-state transfer points:
 
 - `src/lib.rs:341-342` — the primary lib.rs path (`eval_source`):
+
   ```rust
   ctx.set_boundary_guards(infer_state.boundary_guards);
   ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
   ctx.set_tycon_env(infer_state.tycon_env);         // ← add this line
   ```
+
 - `src/lib.rs:483-484` — the second lib.rs path (`eval_source_with_cap_net`), same pattern — `set_tycon_env` must be added here too.
 - `src/main.rs:2268-2269` — the CLI path:
+
   ```rust
   eval_ctx.set_boundary_guards(infer_state.boundary_guards);
   eval_ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
@@ -986,6 +1019,7 @@ Root constructors initialize to empty `OnceLock::new()`; the TyConEnv is filled 
   ```
 
 - `src/repl.rs:249` — the REPL path calls `typecheck_surface_program_with_env` which builds `infer_state` (returned as `_state`, currently fully discarded). The REPL is missing all three transfers. Add all three:
+
   ```rust
   repl_ctx.set_boundary_guards(infer_state.boundary_guards);
   repl_ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
@@ -1005,6 +1039,7 @@ When `--no-typecheck` is used, `tycon_env` is never populated — `EvalContext` 
 **`InferState` restructured** to replace globally-accumulated fields with per-dict scoped equivalents:
 
 **Deleted from `InferState`:**
+
 - `subst: Substitution` — replaced by per-dict substitution passed as parameter to each `infer_dict` call
 - `name_counter: u32` — replaced by per-dict local counter (no global uniqueness required)
 - `levels: HashMap<String, u32>` — replaced by per-dict levels map (follows from per-dict names)
@@ -1026,6 +1061,7 @@ pub struct Substitution {
 - When inner dict finishes: extract TypeSchemes (fully generalized); discard inner substitution; bindings to outer-frame TypeVars have already been written to the outer frame directly and persist.
 
 **Constraint queue made explicit:**
+
 - `constraints: Vec<Constraint>` removed from `InferState`
 - Becomes a local `Vec<Constraint>` parameter threaded through `infer_dict` and its callees
 - Removes the manual `std::mem::take`/`replace` save/restore pattern at `typecheck_dict.rs:588`; scoping is now enforced by the type system rather than by convention
@@ -1039,6 +1075,7 @@ pub struct Substitution {
 One coherent sprint rewrites the entire prelude:
 
 **New declarations:**
+
 ```tinct
 --- stage: type
 Variance: [type Covariant Contravariant Invariant Phantom]
@@ -1058,6 +1095,7 @@ absent?: [fn@Bool [let x@Unknown] [match x Absent.Absent: true  _: false]]
 `Seq.Nil` was previously `Value::Dict({})`, so `[null? tail]` returned true at end of sequence. After migration, `Seq.Nil` is `Value::Variant { tag: "Seq.Nil" }` and `null?` returns false. All `[null? tail]`, `[null? [rest xs]]`, and similar end-of-sequence checks in prelude migrate to `[= tail Seq.Nil]`.
 
 **Type declarations migrated to `[let ...]`:**
+
 ```tinct
 Result: [type [let a]  [Ok value: a]  [Error msg: String]]
 Maybe:  [type [let a]  [Some value: a]  None]
@@ -1065,6 +1103,7 @@ Maybe:  [type [let a]  [Some value: a]  None]
 ```
 
 **Common aliases:**
+
 ```tinct
 Ok: Result.Ok   Error: Result.Error   Some: Maybe.Some   None: Maybe.None
 ```
@@ -1074,12 +1113,14 @@ Ok: Result.Ok   Error: Result.Error   Some: Maybe.Some   None: Maybe.None
 **Builtin returns updated:** `get?`, `env`, `head`, `get-in?` return `Absent.Absent` instead of `[]` for missing/absent values. These Rust builtins must emit `Value::Variant { tag: "Absent.Absent", payload: None }` instead of `Value::Dict(empty)`.
 
 **`null?` stays; `absent?` is added.** `null?` checks for `[]` (empty dict, meaning "empty collection"), which is still a valid value. The two predicates are NOT interchangeable:
+
 - `null?` — `[match x []: true  _: false]` — true iff the value is `[]`
 - `absent?` — `[fn@Bool [let x@Unknown] [match x Absent.Absent: true _: false]]` — true iff the value is `Absent.Absent`; `Unknown → Bool`
 
 After the migration, `[get? "missing-key" d]` returns `Absent.Absent`, not `[]`. Code that tests the result with `null?` will silently fail (get false instead of true). All such call sites in prelude must be migrated to `absent?`.
 
 **`null?` migration scope in prelude.llt** — current call sites using `null?` to mean "value is absent":
+
 - `prelude.llt:2860` — `[null? integrity-hash]` checks a value that may be absent; → `[absent? integrity-hash]`
 - All `get?`/`env`/`get-in?`/`head` result checks elsewhere in prelude and stdlib that use `null?` → `absent?` (search: `[null? [get?` and `[null? [env`)
 
@@ -1140,6 +1181,7 @@ No hardcoded strings, no fallback to bare name matching. `[Ok x]` → TypeEnv re
 `[do ...]` desugaring happens in `typecheck_special.rs` during the typecheck pass, where the scoped type environment (`InferState`) is available. Instance lookup must use this scoped environment — NOT the global eval-time `instance_registry` in `EvalContext.state`. The global registry is mutable and unscoped; an instance registered in a local dict would leak globally and could shadow instances in unrelated scopes.
 
 The correct mechanism:
+
 1. `resolve_monad_from_surface` identifies the TyCon (e.g., `"Result"`)
 2. Look up the `Monad Result` instance in **`state`'s current lexically-scoped instance environment** — same scope chain as type aliases and variable bindings
 3. Extract the `bind` and `pure` method references from that instance declaration
@@ -1159,6 +1201,7 @@ let pure_node = instance.pure_expr();
 ```
 
 **`InferState.instance_env` must be made scoped.** The current implementation comment says "Globally registered: coherence requires global uniqueness" — this reflects Haskell's constraint, not tinct's. In tinct:
+
 - There is no separate compilation requiring a globally unique dispatch token
 - Dispatch resolves at elaboration time using the in-scope instance at the definition site (lexical scoping)
 - Functions that capture a method capture a specific closure, not a dispatch token to be resolved later
@@ -1166,6 +1209,7 @@ let pure_node = instance.pure_expr();
 The correct coherence rule for tinct is **local (scope-level) coherence**: within a single scope frame, at most one instance per `(Class, Type)` pair. Across scope levels, shadowing is allowed — the innermost instance wins, exactly like all other bindings. Two `[instance [Monad Result] ...]` in the same dict is a type error (duplicate within one frame); one in an outer scope and one in an inner scope is fine (inner shadows outer).
 
 **Both `InstanceEnv` and `ClassEnv` must become parent-chain scoped**, following the same model as `TypeEnv`:
+
 - A `HashMap` per scope frame with a parent pointer
 - Insertions go into the current frame; lookups walk the chain with inner-wins semantics
 - Prelude classes and instances live in the root frame — visible everywhere
@@ -1174,6 +1218,7 @@ The correct coherence rule for tinct is **local (scope-level) coherence**: withi
 **Class shadowing semantics:** An inner `[class [Eq a] ...]` in a nested scope SHADOWS the outer `Eq` class for all code within that scope — inner wins, same as all other bindings. This is not an error and not silently discarded. Users can locally specialize a class interface (different method signatures, different constraints). Instance resolution and constraint checking within the inner scope use the inner class declaration. Code outside the inner scope continues to use the outer class. Two `[class [Eq a]]` declarations in the SAME scope frame (same dict, two sibling entries) ARE a type error — ambiguous within that scope, same rule as duplicate value bindings.
 
 This eliminates the distinction between "monad dispatch" and "constraint solving" — they're all in the same scoped environment. The "Globally registered: coherence requires global uniqueness" comment in `type_class.rs` reflects Haskell's constraint; it does not apply to tinct. Global coherence is not required when:
+
 - There is no separate compilation (the whole program is checked together)
 - Dispatch resolves at elaboration time using the in-scope instance at the definition site
 - Functions capture their method closures at definition, not at call site
@@ -1213,6 +1258,7 @@ The correct scope for each:
 **Scoping follows the dict model exactly.** An `[instance [Monad MyResult] ...]` declared inside a local dict is visible to that dict's entries and their descendants — not to parent scopes or siblings. Two nested scopes can declare different `Monad MyResult` instances; each `[do ...]` block gets the one in scope at the point of elaboration. This is correct lexical behavior, the same as any other binding.
 
 The prelude declares the Result monad via the normal instance mechanism:
+
 ```tinct
 [instance [Monad Result]
   [bind: [fn [m@[Result a] f@[Fn@[Result b] [a]]]
@@ -1223,6 +1269,7 @@ The prelude declares the Result monad via the normal instance mechanism:
 ```
 
 A user-defined monad works the same way — declare an instance in scope, no naming convention required:
+
 ```tinct
 [instance [Monad MyResult]
   [bind: ...]
@@ -1230,6 +1277,7 @@ A user-defined monad works the same way — declare an instance in scope, no nam
 ```
 
 **`do_infer_resolutions` is eliminated.** When `[do ...]` desugaring produces a complete expression at typecheck time — with `bind_node` and `pure_node` embedded inline as ordinary function calls — there are no sentinel variables (`ℊꜱʏᴍ⧼do-infer⧽N`) in the emitted AST and no runtime side-channel lookup needed. The evaluator sees plain `[bind m [fn [x] body]]` expressions; it does not consult `do_infer_resolutions` at all. This eliminates:
+
 - `InferState.do_infer_resolutions: HashMap<String, String>`
 - `EvalContext.do_infer_resolutions: RwLock<HashMap<String, String>>`
 - The runtime consumer at `eval.rs:1767-1785` and `eval_core.rs:522-529`

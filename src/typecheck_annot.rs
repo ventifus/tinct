@@ -277,8 +277,9 @@ pub(crate) fn resolve_fn_metadata(
                                             ));
                                         }
                                         // Create fresh TypeVar and register in ann_mapping
-                                        let fresh = format!("_t{}", state.name_counter);
-                                        state.name_counter = state.name_counter.saturating_add(1);
+                                        let n = state.subst.name_counter.get();
+                                        let fresh = format!("_t{}", n);
+                                        state.subst.name_counter.set(n.saturating_add(1));
                                         state.levels.insert(fresh.clone(), state.level);
                                         // Register source name for better T013 diagnostics
                                         state
@@ -356,8 +357,9 @@ pub(crate) fn resolve_fn_metadata(
                                         name_span,
                                     ));
                                 }
-                                let fresh = format!("_t{}", state.name_counter);
-                                state.name_counter = state.name_counter.saturating_add(1);
+                                let n = state.subst.name_counter.get();
+                                let fresh = format!("_t{}", n);
+                                state.subst.name_counter.set(n.saturating_add(1));
                                 state.levels.insert(fresh.clone(), state.level);
                                 // Register source name for better T013 diagnostics
                                 state
@@ -506,8 +508,9 @@ pub(crate) fn resolve_fn_metadata(
                                     if let Some(existing_var) = mapping.get(&typevar_name) {
                                         existing_var.clone()
                                     } else {
-                                        let fresh = format!("_t{}", state.name_counter);
-                                        state.name_counter = state.name_counter.saturating_add(1);
+                                        let n = state.subst.name_counter.get();
+                                        let fresh = format!("_t{}", n);
+                                        state.subst.name_counter.set(n.saturating_add(1));
                                         state.levels.insert(fresh.clone(), state.level);
                                         // Register source name for better T013 diagnostics
                                         state
@@ -1278,8 +1281,9 @@ pub(crate) fn resolve_annotation(
                                 if let Some(existing_var) = mapping.get(name.as_str()) {
                                     existing_var.clone()
                                 } else {
-                                    let v = format!("_label_{}", state.name_counter);
-                                    state.name_counter = state.name_counter.saturating_add(1);
+                                    let n = state.subst.name_counter.get();
+                                    let v = format!("_label_{}", n);
+                                    state.subst.name_counter.set(n.saturating_add(1));
                                     state.levels.insert(v.clone(), state.level);
                                     state.kind_env.insert(v.clone(), Kind::Label);
                                     state.type_var_source_names.insert(v.clone(), name.clone());
@@ -1287,8 +1291,9 @@ pub(crate) fn resolve_annotation(
                                     v
                                 }
                             } else {
-                                let v = format!("_label_{}", state.name_counter);
-                                state.name_counter = state.name_counter.saturating_add(1);
+                                let n = state.subst.name_counter.get();
+                                let v = format!("_label_{}", n);
+                                state.subst.name_counter.set(n.saturating_add(1));
                                 state.levels.insert(v.clone(), state.level);
                                 state.kind_env.insert(v.clone(), Kind::Label);
                                 v
@@ -1623,8 +1628,9 @@ pub(crate) fn resolve_type_name(
             // Anonymous Label-kinded TypeVar (parallel to `@Operator` error above).
             // Create a fresh system-generated name like `_label_0`.
             // This is for when the label TypeVar is not referenced elsewhere (e.g., `get`/`get-or`).
-            let fresh = format!("_label_{}", state.name_counter);
-            state.name_counter = state.name_counter.saturating_add(1);
+            let n = state.subst.name_counter.get();
+            let fresh = format!("_label_{}", n);
+            state.subst.name_counter.set(n.saturating_add(1));
             state.levels.insert(fresh.clone(), state.level);
             state.kind_env.insert(fresh.clone(), crate::types::Kind::Label);
             Ok(Type::TypeVar(fresh, state.level))
@@ -1718,8 +1724,9 @@ pub(crate) fn resolve_type_name(
                         Ok(Type::TypeVar(existing_var.clone(), current_level))
                     } else {
                         // First time seeing this annotation: create fresh var and register level
-                        let fresh = format!("_t{}", state.name_counter);
-                        state.name_counter = state.name_counter.saturating_add(1);
+                        let n = state.subst.name_counter.get();
+                        let fresh = format!("_t{}", n);
+                        state.subst.name_counter.set(n.saturating_add(1));
                         state.levels.insert(fresh.clone(), state.level);
                         // Register source name for better T013 diagnostics
                         state.type_var_source_names.insert(fresh.clone(), name.to_string());
@@ -2439,81 +2446,20 @@ pub(crate) fn resolve_type_expr(
 
             // Built-in type constructor application in implied-call position.
             // Check BEFORE parameterized alias lookup so built-in constructors have priority.
+            //
+            // Dispatches through `kind_env` (same as `resolve_type_dict`) to
+            // `apply_builtin_constructor`, ensuring arity rules and error messages stay in sync
+            // across both call paths. This eliminates the parallel string-match that previously
+            // duplicated the Seq/Map/Handle dispatch logic independently of `resolve_type_dict`.
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                match name.as_str() {
-                    "Seq" => {
-                        if args.len() == 1 {
-                            let elem_ty = resolve_type_expr(
-                                &args[0],
-                                env,
-                                state,
-                                ann_mapping,
-                                row_ann_mapping,
-                            )?;
-                            return Ok(Type::Seq(Box::new(elem_ty)));
-                        } else {
-                            return Err(TypeError::new(
-                                "Seq requires 1 type argument",
-                                node.span.clone(),
-                            ));
-                        }
+                if let Some(kind) = state.kind_env.get(name.as_str()).cloned() {
+                    if kind.arity() > 0 && is_builtin_type_name(name) {
+                        let resolved_args: Result<Vec<Type>, _> = args
+                            .iter()
+                            .map(|a| resolve_type_expr(a, env, state, ann_mapping, row_ann_mapping))
+                            .collect();
+                        return apply_builtin_constructor(name, resolved_args?, &node.span);
                     }
-                    "Map" => {
-                        if args.len() == 2 {
-                            let key_ty = resolve_type_expr(
-                                &args[0],
-                                env,
-                                state,
-                                ann_mapping,
-                                row_ann_mapping,
-                            )?;
-                            let value_ty = resolve_type_expr(
-                                &args[1],
-                                env,
-                                state,
-                                ann_mapping,
-                                row_ann_mapping,
-                            )?;
-                            return Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)));
-                        } else {
-                            return Err(TypeError::new(
-                                "Map requires 2 type arguments: [Map KeyType ValueType]",
-                                node.span.clone(),
-                            ));
-                        }
-                    }
-                    "Handle" => {
-                        // [Handle CapType] → Handle(CapType) in implied-call position.
-                        //
-                        // When `[Handle DirCap]` is parsed as an implied call rather than a Dict
-                        // (which happens when the value appears inside an annotation's value slot,
-                        // e.g. `fn@[return: [Handle DirCap]]`), handle it here so it produces
-                        // Handle(DirCap) rather than failing with "alias expects 0 params, got 1".
-                        //
-                        // Examples:
-                        //   [Handle DirCap]  → Handle(DirCap)
-                        //   [Handle NetCap]  → Handle(NetCap)
-                        //   [Handle Unknown] → Handle(Unknown)  (gradual)
-                        if args.len() == 1 {
-                            let cap_ty = resolve_type_expr(
-                                &args[0],
-                                env,
-                                state,
-                                ann_mapping,
-                                row_ann_mapping,
-                            )?;
-                            return Ok(Type::Handle(Box::new(cap_ty)));
-                        } else if args.is_empty() {
-                            // Bare [Handle] in call position — gradual handle
-                            return Ok(Type::Handle(Box::new(Type::Unknown)));
-                        } else {
-                            return Err(TypeError::new(
-                                "Handle requires 0 or 1 type argument (the capability row)",
-                                node.span.clone(),
-                            ));
-                        }
-                    }
-                    _ => {}
                 }
             }
 
@@ -2656,6 +2602,47 @@ pub(crate) fn resolve_type_expr(
     }
 }
 
+/// Construct the `Type::*` for a known builtin type constructor from its type arguments.
+fn apply_builtin_constructor(name: &str, args: Vec<Type>, span: &Span) -> Result<Type, TypeError> {
+    match name {
+        "Seq" => {
+            if args.len() != 1 {
+                return Err(TypeError::new(
+                    format!("Seq requires 1 type argument, got {}", args.len()),
+                    span.clone(),
+                ));
+            }
+            Ok(Type::Seq(Box::new(args.into_iter().next().unwrap())))
+        }
+        "Map" => {
+            if args.len() != 2 {
+                return Err(TypeError::new(
+                    format!(
+                        "Map requires 2 type arguments: [Map KeyType ValueType], got {}. \
+                         Use Any for an unconstrained key type: [Map Any ValueType]",
+                        args.len()
+                    ),
+                    span.clone(),
+                ));
+            }
+            let mut it = args.into_iter();
+            Ok(Type::Map(
+                Box::new(it.next().unwrap()),
+                Box::new(it.next().unwrap()),
+            ))
+        }
+        "Handle" => match args.len() {
+            1 => Ok(Type::Handle(Box::new(args.into_iter().next().unwrap()))),
+            0 => Ok(Type::Handle(Box::new(Type::Unknown))), // bare [Handle] → gradual
+            _ => Err(TypeError::new(
+                format!("Handle requires 0 or 1 type argument, got {}", args.len()),
+                span.clone(),
+            )),
+        },
+        _ => unreachable!("apply_builtin_constructor called with non-builtin: {name}"),
+    }
+}
+
 pub(crate) fn resolve_type_dict(
     entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
@@ -2675,85 +2662,62 @@ pub(crate) fn resolve_type_dict(
         return Ok(fn_type);
     }
 
-    // Built-in type constructor application: [Seq Int], [Map String Int]
-    // Check BEFORE parameterized alias lookup so built-in constructors have priority.
+    // General type constructor application via kind_env.
+    // Handles both builtin constructors (Seq, Map, Handle — pre-registered in InferState::new)
+    // and user-defined Operator-kinded class params (e.g., `m` in `[class [m@Operator] ...]`).
+    // Must run BEFORE the parameterized alias lookup so builtin constructors take priority.
     if !entries.is_empty() {
         if let Some(first) = entries.first() {
             if first.node.key.is_none() {
                 if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
-                    match name.as_str() {
-                        "Seq" => {
-                            if entries.len() == 2 {
-                                let elem_ty = resolve_type_expr(
-                                    &entries[1].node.value,
-                                    env,
-                                    state,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                )?;
-                                return Ok(Type::Seq(Box::new(elem_ty)));
+                    if let Some(kind) = state.kind_env.get(name.as_str()) {
+                        if kind.arity() > 0 {
+                            let args: Result<Vec<Type>, _> = entries[1..]
+                                .iter()
+                                .map(|e| {
+                                    resolve_type_expr(
+                                        &e.node.value,
+                                        env,
+                                        state,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                    )
+                                })
+                                .collect();
+                            let args = args?;
+
+                            if is_builtin_type_name(name) {
+                                // Builtin: each constructor has its own arity rule.
+                                return apply_builtin_constructor(name, args, &span);
                             } else {
-                                return Err(TypeError::new("Seq requires 1 type argument", span));
-                            }
-                        }
-                        "Map" => {
-                            if entries.len() == 3 {
-                                let key_ty = resolve_type_expr(
-                                    &entries[1].node.value,
-                                    env,
-                                    state,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                )?;
-                                let value_ty = resolve_type_expr(
-                                    &entries[2].node.value,
-                                    env,
-                                    state,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                )?;
-                                return Ok(Type::Map(Box::new(key_ty), Box::new(value_ty)));
-                            } else {
-                                return Err(TypeError::new(
-                                    "Map requires 2 type arguments: [Map KeyType ValueType]",
-                                    span,
+                                // User-defined: always Kind::Operator (arity 1).
+                                // Rank-1 restriction: argument cannot itself be a type constructor.
+                                if args.len() != 1 {
+                                    return Err(TypeError::new(
+                                        format!(
+                                            "type constructor `{name}` requires 1 type argument, got {}",
+                                            args.len()
+                                        ),
+                                        span,
+                                    ));
+                                }
+                                let a_type = args.into_iter().next().unwrap();
+                                if let Type::Operator(op_name) = &a_type {
+                                    return Err(TypeError::new(
+                                        format!(
+                                            "kind mismatch: type constructor `{name}` cannot be \
+                                             applied to another type constructor `{op_name}`; \
+                                             use a concrete type instead"
+                                        ),
+                                        span,
+                                    ));
+                                }
+                                return Ok(Type::App(
+                                    Box::new(Type::Operator(name.clone())),
+                                    Box::new(a_type),
                                 ));
                             }
                         }
-                        "Handle" => {
-                            // [Handle CapType] → Handle(CapType)
-                            //
-                            // Parameterized handle type in dict/type-expression position.
-                            // The capability row argument is the second positional entry.
-                            //
-                            // Examples:
-                            //   [Handle DirCap]     → Handle(DirCap)
-                            //   [Handle NetCap]     → Handle(NetCap)
-                            //   [Handle Unknown]    → Handle(Unknown)  (gradual handle)
-                            //   [Handle]            → Handle(Unknown)  (bare — no cap_row)
-                            //
-                            // This mirrors the `@Handle@CapType` subscript form handled in
-                            // `resolve_annotation` and `resolve_annotated`.
-                            if entries.len() == 2 {
-                                let cap_ty = resolve_type_expr(
-                                    &entries[1].node.value,
-                                    env,
-                                    state,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                )?;
-                                return Ok(Type::Handle(Box::new(cap_ty)));
-                            } else if entries.len() == 1 {
-                                // Bare [Handle] — gradual handle accepting any capability.
-                                return Ok(Type::Handle(Box::new(Type::Unknown)));
-                            } else {
-                                return Err(TypeError::new(
-                                    "Handle requires 0 or 1 type argument (the capability row)",
-                                    span,
-                                ));
-                            }
-                        }
-                        _ => {}
                     }
                 }
             }
@@ -2880,38 +2844,6 @@ pub(crate) fn resolve_type_dict(
                     row_ann_mapping,
                 )?;
                 return Ok(Type::Negation(Box::new(inner)));
-            }
-        }
-    }
-
-    // Type constructor application: [f a] where f is Operator-kinded (hkt-kind-inference Task 2)
-    // Must check BEFORE union type path so `[m Int]` where m is Operator-kinded becomes
-    // `Type::App(Operator("m"), Int)`, not `Union(Operator("m"), Int)`.
-    if all_positional && entries.len() == 2 {
-        if let SurfaceExpression::VarRef { name: f_name, .. } = &entries[0].node.value.expr {
-            // Check if f is Operator-kinded in kind_env
-            if let Some(Kind::Operator) = state.kind_env.get(f_name) {
-                let f_type = Type::Operator(f_name.clone());
-                let a_type = resolve_type_expr(
-                    &entries[1].node.value,
-                    env,
-                    state,
-                    ann_mapping,
-                    row_ann_mapping,
-                )?;
-
-                // Rank-1 restriction (hkt-kind-inference Task 3): reject App(Operator, Operator)
-                if let Type::Operator(op_name) = &a_type {
-                    return Err(TypeError::new(
-                        format!(
-                            "kind mismatch: expected `*`, got `* → *` — type constructor `{}` cannot be applied to another type constructor `{}`; use a concrete type instead",
-                            f_name, op_name
-                        ),
-                        span,
-                    ));
-                }
-
-                return Ok(Type::App(Box::new(f_type), Box::new(a_type)));
             }
         }
     }

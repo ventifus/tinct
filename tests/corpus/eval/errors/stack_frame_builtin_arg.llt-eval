@@ -1,12 +1,12 @@
 [+ 1 [head []]]
 === error
-[E034] head on empty collection (defined at stdlib/prelude.llt:2476:15-2476:32)
-  --> stdlib/prelude.llt:2476:15-2476:32
+[E034] head on empty collection (defined at stdlib/prelude.llt:2482:15-2482:32)
+  --> stdlib/prelude.llt:2482:15-2482:32
    |
-  2476 | """] [let xs] [builtin-head xs]]
+  2482 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
-  in [builtin-head ...] at stdlib/prelude.llt:2476:15-2476:32
+  in [builtin-head ...] at stdlib/prelude.llt:2482:15-2482:32
    |
-  2476 | """] [let xs] [builtin-head xs]]
+  2482 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [+ ...] at 1:1-1:16

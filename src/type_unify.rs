@@ -16,18 +16,27 @@ const MAX_CONSTRAINT_DEPTH: usize = 256;
 /// Check if a type satisfies a type class constraint.
 /// Returns true if the type is an instance of the class.
 ///
-/// `Numeric`, `Comparable`, `Equatable`, and `Showable` are handled here via fixed
-/// instance sets for primitives, plus structural propagation for Record types.
-/// All other classes (Mappable, Appendable) are resolved dynamically via
-/// `InstanceEnv::resolve_instance` in `check_constraints_on_var`.
-/// This requires prelude.llt instances to be propagated into the `InferState`
-/// (done by `imports::seed_infer_state_from_prelude_cache`).
+/// This function handles three kinds of constraint satisfaction:
 ///
-/// KNOWN ISSUE (F5): Hardcoded instance sets may diverge from InstanceEnv if prelude
-/// instances are added/modified without updating this function. The correct long-term
-/// solution is to make ALL constraint satisfaction go through InstanceEnv (eliminating
-/// hardcoded sets entirely), but this requires seeding the InstanceEnv before early-stage
-/// operator type inference runs. Deferred to chr-eliminate-hardcoded-instances sprint.
+/// 1. **Gradual/lattice meta-rules**: Unknown satisfies all constraints vacuously; Never
+///    vacuously (uninhabited); Top only satisfies Showable (total function policy).
+///
+/// 2. **Structural propagation**: Record, NominalVariant, Union, and Intersection types
+///    are checked by recursing into their fields/members. A compound type satisfies a
+///    structural class iff all of its components do.
+///
+/// 3. **Primitive leaf membership**: Delegated to `primitive_satisfies_constraint` (defined
+///    in `type_def.rs`). That function is the **single authoritative source** of which
+///    concrete types belong to which classes. `InferState::new()` also calls it to pre-seed
+///    `InstanceEnv` — so primitive membership is defined once and used in both paths.
+///
+/// The separation means: to add a new primitive type to a class, update ONLY
+/// `primitive_satisfies_constraint` in `type_def.rs`. The InstanceEnv pre-seeding in
+/// `InferState::new()` will automatically reflect the change.
+///
+/// Structural types (Seq, Map) that require InstanceDecl patterns with TypeVars
+/// (e.g., `Showable Seq[T]`) are handled via `InstanceEnv::resolve_instance` in
+/// `check_constraints_on_var` — those instances are pre-seeded in `InferState::new()`.
 pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
     satisfies_constraint_inner(ty, class_name, 0)
 }
@@ -76,8 +85,68 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
                     .values()
                     .all(|field_ty| satisfies_constraint_inner(field_ty, class_name, depth + 1));
             }
+            _ => {} // Fall through to primitive check / instance resolution
+        }
+    }
+
+    // [CONSTRAIN-NOMINAL]: C(NominalVariant{tag, fields}) ⊢ satisfied iff C(τ) for all fields.
+    // NominalVariants are structurally Equatable/Showable if all their fields are.
+    // Comparable and Numeric do NOT apply to NominalVariants (they are not ordered scalars).
+    if let Type::NominalVariant { fields, .. } = ty {
+        match class_name {
+            "Equatable" | "Showable" => {
+                if fields.fields.is_empty() {
+                    return true;
+                }
+                return fields
+                    .fields
+                    .values()
+                    .all(|field_ty| satisfies_constraint_inner(field_ty, class_name, depth + 1));
+            }
             _ => {} // Fall through to instance resolution
         }
+    }
+
+    // [CONSTRAIN-CONTAINER]: Seq[T] and Map[K V] are always Showable and Appendable,
+    // regardless of their element types. The runtime str() and ++ operations work for any
+    // collection at the semantic level. This rule is needed to handle structural propagation
+    // through Record fields that contain Seq or Map types:
+    //   Record({f: Seq[Int]}) satisfies Showable
+    //     ← satisfies_constraint_inner(Seq[Int], "Showable", 1)
+    //     ← [CONSTRAIN-CONTAINER]: Seq satisfies Showable → true
+    //   Record({f: Seq[Int]}) satisfies Appendable (via [CONSTRAIN-FIELD] NOT firing, so
+    //   this rule is only for Seq/Map appearing as leaf types under structural propagation.)
+    //
+    // Note: Seq/Map for Comparable/Numeric are NOT satisfied here — those require ordered/arithmetic
+    // semantics that collection types do not have. Seq/Map for Equatable is handled by the
+    // [CONSTRAIN-EQUATABLE-CONTAINER] rule below.
+    if matches!(ty, Type::Seq(_) | Type::Map(_, _)) && class_name == "Showable" {
+        return true;
+    }
+    // Appendable for Seq (any Seq can be appended via concat semantics).
+    // Appendable for Map: maps are not appendable (no Appendable Map instance in prelude).
+    if matches!(ty, Type::Seq(_)) && class_name == "Appendable" {
+        return true;
+    }
+    // Record for Appendable: any record satisfies Appendable (dict merge semantics).
+    if matches!(ty, Type::Record(_)) && class_name == "Appendable" {
+        return true;
+    }
+
+    // [CONSTRAIN-EQUATABLE-CONTAINER]: Seq[T], Map[K V], and Record are structurally
+    // equatable — the runtime equality check works for any sequence, map, or record.
+    // This restores the hardcoded arms that T-910 removed when migrating to dynamic
+    // instance resolution.
+    //
+    // Note: Record is already handled earlier by [CONSTRAIN-FIELD], which recurses into
+    // fields. The Record arm here is therefore dead code but is included for clarity and
+    // to ensure that if the earlier arm is ever removed, Equatable for Record still holds.
+    //
+    // Note: We intentionally do NOT check element types recursively here (unlike
+    // [CONSTRAIN-FIELD] for Record). This matches the pre-T-910 unconditional behavior
+    // and avoids false negatives when Seq/Map element types are TypeVars (unresolved).
+    if class_name == "Equatable" && matches!(ty, Type::Record(_) | Type::Map(_, _) | Type::Seq(_)) {
+        return true;
     }
 
     // [CONSTRAIN-UNION]: C(τ₁ | τ₂) ⊢ satisfied iff C(τ₁) ∧ C(τ₂) (ALL members).
@@ -96,72 +165,12 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
             .all(|member| satisfies_constraint_inner(member, class_name, depth + 1));
     }
 
-    match class_name {
-        // Equatable: base class for equality ([= $a $b]).
-        // Hardcoded because prelude instance declarations for primitives are commented
-        // out (primitives use Rust fallback dispatch). Without this, [= x 42] triggers
-        // "type Int does not satisfy constraint Equatable" in narrowing tests.
-        // Variant added for Group E fix (transport_typed.llt-eval).
-        "Equatable" => matches!(
-            ty,
-            Type::Int
-                | Type::IntLiteral(_)
-                | Type::Float
-                | Type::Str
-                | Type::StringLiteral(_)
-                | Type::Bool
-                | Type::Number
-                | Type::NominalVariant { .. }
-        ),
-        // Showable: base class for string conversion. Hardcoded for primitives that
-        // have built-in str conversion. Combined with structural propagation above,
-        // this means Record([x: Int, y: Str]) satisfies Showable because both Int
-        // and Str satisfy Showable and the constraint propagates through all fields.
-        // Seq, Map, and Record are also showable (they have runtime str conversion).
-        "Showable" => matches!(
-            ty,
-            Type::Int
-                | Type::IntLiteral(_)
-                | Type::Float
-                | Type::Str
-                | Type::StringLiteral(_)
-                | Type::Bool
-                | Type::Number
-                | Type::Seq(_)
-                | Type::Map(_, _)
-                | Type::Record(_)
-        ),
-        // Comparable subsumes Equatable via superclass relationship.
-        // These are kept hardcoded because they are used in the early stages of type
-        // checking (before prelude instances are loaded) and during operator type
-        // inference ([< $a $b], [> $a $b], etc.).
-        "Comparable" => matches!(
-            ty,
-            Type::Int
-                | Type::IntLiteral(_)
-                | Type::Float
-                | Type::Str
-                | Type::StringLiteral(_)
-                | Type::Number
-        ),
-        // Numeric is kept hardcoded: arithmetic operators ([+ $a $b], [* $a $b], etc.)
-        // require Numeric constraint checking during core type inference, before prelude
-        // instances are loaded. Removing this would break basic arithmetic type checking.
-        "Numeric" => matches!(
-            ty,
-            Type::Int | Type::IntLiteral(_) | Type::Float | Type::Number
-        ),
-        // Appendable: hardcoded for Record (dict merge), Seq (concat), and Str (string concat).
-        // These are the three types that satisfy Appendable at runtime. Hardcoded here
-        // so that Appendable constraint checking works before the PRELUDE_INSTANCE_CACHE
-        // is populated and seeded into the user InferState. Also provides a reliable
-        // fallback when the dynamic instance resolution is unavailable.
-        "Appendable" => matches!(
-            ty,
-            Type::Record(_) | Type::Seq(_) | Type::Str | Type::StringLiteral(_)
-        ),
-        _ => false, // All other classes resolved via InstanceEnv::resolve_instance
-    }
+    // Primitive leaf check: delegate to the canonical membership table in type_def.rs.
+    // This is the single source of truth for which concrete primitive types belong to which
+    // classes. InferState::new() pre-seeds InstanceEnv from the same function via
+    // primitive_satisfies_constraint, so InstanceEnv and satisfies_constraint are always
+    // in sync for primitive leaf types.
+    primitive_satisfies_constraint(ty, class_name)
 }
 
 /// Check if a constraint is entailed by a context (set of constraints).
@@ -320,6 +329,7 @@ fn check_constraints_on_var(
             class: String,
             vars: Vec<String>,
             fundeps: Vec<(Vec<usize>, Vec<usize>)>,
+            resolver_injective: bool,
         },
     }
 
@@ -339,6 +349,7 @@ fn check_constraints_on_var(
                     class: class.name.clone(),
                     vars: vars.clone(),
                     fundeps: class.determines.clone(),
+                    resolver_injective: class.resolver_injective,
                 })
             }
             _ => None,
@@ -349,12 +360,16 @@ fn check_constraints_on_var(
         match constraint {
             ApplicableConstraint::SingleParam { class } => {
                 // Single-parameter type class constraint (e.g., Numeric a)
-                // First, check the fixed instance sets (B4 constrained type variables)
+                // First, check via satisfies_constraint (structural meta-rules + primitive
+                // leaf membership from primitive_satisfies_constraint). This is the fast path
+                // that avoids instance resolution for the common case.
                 if satisfies_constraint(concrete_ty, &class) {
                     continue;
                 }
 
-                // If not in fixed instance set, try instance resolution
+                // Fast path returned false: try instance resolution for parametric structural
+                // types (Seq[T], Map[K V]) and user-defined instances. Pre-seeded InstanceDecl
+                // entries in InferState::new() cover the parametric cases.
                 // This enables user-defined instances (future work: dictionary construction)
                 // Clone instance_env to avoid borrowing state both immutably (for the
                 // field access) and mutably (as the unify parameter) at the same time.
@@ -375,39 +390,59 @@ fn check_constraints_on_var(
                 }
                 state.instance_resolution_depth += 1;
                 let inst_env = state.instance_env.clone();
-                let instance_found = inst_env
-                    .resolve_instance(&class, concrete_ty, state)
-                    .is_some();
+                let resolve_result = inst_env.resolve_instance(&class, concrete_ty, state);
                 state.instance_resolution_depth -= 1;
 
-                if instance_found {
-                    // Instance found - constraint satisfied
-                    continue;
+                match resolve_result {
+                    Ok(Some(_)) => {
+                        // Instance found - constraint satisfied
+                        continue;
+                    }
+                    Ok(None) => {
+                        // No instance found - constraint violated
+                        return Err(TypeError::new(
+                            format!("type {} does not satisfy constraint {}", concrete_ty, class),
+                            span.clone(),
+                        ));
+                    }
+                    Err(ambig_msg) => {
+                        // Ambiguous instances — equally specific matches, coherence violation
+                        return Err(TypeError::new(ambig_msg, span.clone()));
+                    }
                 }
-
-                // No instance found - constraint violated
-                return Err(TypeError::new(
-                    format!("type {} does not satisfy constraint {}", concrete_ty, class),
-                    span.clone(),
-                ));
             }
             ApplicableConstraint::MultiParam {
                 class,
                 vars,
                 fundeps,
+                resolver_injective,
             } => {
                 // Multi-parameter type class constraint with functional dependencies.
-                // Check if this variable binding triggers FD improvement.
-                improve_functional_dependency(
+                // Check if this variable binding triggers FD improvement (forward or reverse).
+                //
+                // Mark var_name as in-progress before calling FD improvement. This entry in
+                // fd_in_progress prevents FD improvement from re-binding var_name in an inner
+                // call (idempotency guard). Specifically, when a reverse FD fires for var_name
+                // and propagates a value to a determining variable, the forward FD for that
+                // determining variable would try to re-bind var_name — but the in-progress
+                // guard causes it to skip that re-binding. Without this guard, the cycle
+                // reverse → forward → reverse → … hits MAX_FD_DEPTH (16).
+                let was_inserted = state.fd_in_progress.insert(var_name.to_string());
+                let fd_result = improve_functional_dependency(
                     &class,
                     &vars,
                     &fundeps,
+                    resolver_injective,
                     var_name,
                     concrete_ty,
                     subst,
                     state,
                     span.clone(),
-                )?;
+                );
+                if was_inserted {
+                    state.fd_in_progress.remove(var_name);
+                }
+                fd_result?;
             }
         }
     }
@@ -431,6 +466,7 @@ fn improve_functional_dependency(
     class: &str,
     vars: &[String],
     fundeps: &[(Vec<usize>, Vec<usize>)],
+    resolver_injective: bool,
     bound_var: &str,
     bound_type: &Type,
     subst: &Substitution,
@@ -450,7 +486,15 @@ fn improve_functional_dependency(
     }
     state.fd_depth += 1;
     let result = improve_functional_dependency_inner(
-        class, vars, fundeps, bound_var, bound_type, subst, state, span,
+        class,
+        vars,
+        fundeps,
+        resolver_injective,
+        bound_var,
+        bound_type,
+        subst,
+        state,
+        span,
     );
     state.fd_depth -= 1;
     result
@@ -461,6 +505,7 @@ fn improve_functional_dependency_inner(
     class: &str,
     vars: &[String],
     fundeps: &[(Vec<usize>, Vec<usize>)],
+    resolver_injective: bool,
     bound_var: &str,
     bound_type: &Type,
     subst: &Substitution,
@@ -469,7 +514,7 @@ fn improve_functional_dependency_inner(
 ) -> Result<(), TypeError> {
     // For each functional dependency (determining → determined)
     for (det_positions, ded_positions) in fundeps {
-        // Check if the bound variable is in a determining position
+        // Compute the positions of bound_var in the constraint var list
         let bound_var_positions: Vec<usize> = vars
             .iter()
             .enumerate()
@@ -477,11 +522,96 @@ fn improve_functional_dependency_inner(
             .map(|(i, _)| i)
             .collect();
 
-        if !bound_var_positions
+        let bound_in_determining = bound_var_positions
             .iter()
-            .any(|p| det_positions.contains(p))
-        {
-            // This binding doesn't affect this FD
+            .any(|p| det_positions.contains(p));
+        let bound_in_determined = bound_var_positions
+            .iter()
+            .any(|p| ded_positions.contains(p));
+
+        // ── Reverse FD improvement ────────────────────────────────────────────
+        // When the resolver is injective AND the bound variable is in a determined
+        // position (not a determining position), we can back-propagate:
+        // knowing the output of the resolver tells us what the inputs must be.
+        //
+        // Algorithm:
+        // 1. Collect current types for all determined positions (using bound_type
+        //    for the in-flight binding, subst for already-bound vars).
+        // 2. If all determined positions are ground, scan the InstanceEnv for the
+        //    instance whose determined-position type unifies with the bound types.
+        // 3. Extract the determining-position types from that instance and unify
+        //    them with the determining-position constraint vars.
+        //
+        // This is only attempted when resolver_injective = true because a non-injective
+        // resolver may have multiple inputs mapping to the same output, making the
+        // reverse mapping ambiguous.
+        if resolver_injective && bound_in_determined && !bound_in_determining {
+            // Collect the current types at all determined positions.
+            let mut ded_types = Vec::new();
+            for &pos in ded_positions {
+                if pos >= vars.len() {
+                    continue;
+                }
+                let var = &vars[pos];
+                let ty = if var == bound_var {
+                    subst.apply(bound_type)
+                } else {
+                    subst.apply(&Type::TypeVar(var.clone(), 0))
+                };
+                ded_types.push((pos, var, ty));
+            }
+
+            // Only attempt reverse improvement when all determined positions are ground.
+            let all_ded_ground = ded_types.iter().all(|(_, _, ty)| !ty.has_inference_vars());
+            if all_ded_ground {
+                // Scan InstanceEnv for an instance whose determined-position type
+                // unifies with the ground determined types we have.
+                let instance_env = state.instance_env.clone();
+                if let Some((determining_types, det_pos_list)) = instance_env.reverse_lookup_mptc(
+                    class,
+                    ded_positions,
+                    &ded_types
+                        .iter()
+                        .map(|(_, _, ty)| ty.clone())
+                        .collect::<Vec<_>>(),
+                    state,
+                ) {
+                    // Unify each determining-position variable with the back-propagated type.
+                    //
+                    // Guard: skip variables already being processed by an outer FD improvement
+                    // call (in fd_in_progress). This prevents the mutual-recursion cycle:
+                    //   reverse(t1=Str) → bind(t0=Int) → forward(t0=Int) → bind(t1=Str)
+                    //   → reverse(t1=Str) → … (hits MAX_FD_DEPTH).
+                    // The guard makes the forward FD's re-binding of t1 a no-op: t1 is already
+                    // being bound in the outer check_constraints_on_var("t1", Str, …) call.
+                    for (det_pos, det_ty) in det_pos_list.iter().zip(determining_types.iter()) {
+                        if *det_pos >= vars.len() {
+                            continue;
+                        }
+                        let det_var = &vars[*det_pos];
+                        // Skip if this var is already being processed by an outer FD step.
+                        if state.fd_in_progress.contains(det_var.as_str()) {
+                            continue;
+                        }
+                        let det_type_var = Type::TypeVar(det_var.clone(), 0);
+                        state.fd_in_progress.insert(det_var.clone());
+                        let mut local_subst = std::mem::take(&mut state.subst);
+                        let result =
+                            unify(&det_type_var, det_ty, &mut local_subst, state, span.clone());
+                        state.subst = local_subst;
+                        state.fd_in_progress.remove(det_var.as_str());
+                        result?;
+                    }
+                }
+                // If no instance matches, silently skip — the determined type may be
+                // a type variable that hasn't been fully resolved yet, or no instance
+                // is registered for this determined type (not an error in the reverse direction).
+            }
+        }
+
+        // ── Forward FD improvement ────────────────────────────────────────────
+        if !bound_in_determining {
+            // This binding doesn't affect the forward direction of this FD
             continue;
         }
 
@@ -722,6 +852,18 @@ fn improve_functional_dependency_inner(
                 continue;
             }
             let ded_var = &vars[ded_pos];
+
+            // Guard: skip variables already being processed by an outer FD improvement
+            // call (in fd_in_progress). This prevents the mutual-recursion cycle when
+            // an injective resolver's reverse FD fires from binding the determined variable:
+            //   forward(t0=Int) → bind(t1=Str) → reverse(t1=Str) → bind(t0=Int)
+            //   → forward(t0=Int) → … (hits MAX_FD_DEPTH).
+            // If ded_var is in fd_in_progress, the determined binding was initiated by an
+            // outer FD step and will be completed there — skipping here is idempotent.
+            if state.fd_in_progress.contains(ded_var.as_str()) {
+                continue;
+            }
+
             let ded_type_var = Type::TypeVar(ded_var.clone(), 0);
 
             // F2 FIX: Use state.subst for determined unification.
@@ -735,6 +877,7 @@ fn improve_functional_dependency_inner(
             // to state.subst, which is correct because state.subst is the authoritative store
             // for completed bindings. The caller's `subst` parameter is a view/snapshot used
             // for reading, not writing.
+            state.fd_in_progress.insert(ded_var.clone());
             let mut local_subst = std::mem::take(&mut state.subst);
             let result = unify(
                 &ded_type_var,
@@ -744,47 +887,12 @@ fn improve_functional_dependency_inner(
                 span.clone(),
             );
             state.subst = local_subst;
+            state.fd_in_progress.remove(ded_var.as_str());
             result?;
         }
     }
 
     Ok(())
-}
-
-/// Returns true if a type is provably non-arithmetic — i.e., it cannot possibly be a
-/// numeric type at runtime and therefore cannot satisfy any arithmetic type class instance
-/// (Addable, Subtractable, Multipliable, Divisible).
-///
-/// Conservative: the following types are NOT flagged (they pass the check):
-/// - `Unknown`: gradual typing escape hatch — may be numeric at runtime.
-/// - `TypeVar`: unconstrained polymorphic variable — may unify to a numeric type.
-/// - `Top`: ⊤ is the lattice ceiling; not a concrete value, leave to runtime.
-/// - `Error`: cascade sentinel — the sub-expression already failed; don't double-report.
-/// - `Never`: ⊥ is uninhabited; constraint is vacuously satisfied.
-/// - `Number`, `Int`, `Float`, `IntLiteral`: these ARE arithmetic types.
-///
-/// Everything else (Str, StringLiteral, Bool, Record, Seq, Handle, etc.) is provably
-/// non-arithmetic and returns `true`.
-///
-/// Mirrors `is_definitely_non_numeric` from `typecheck.rs` but lives here so it can
-/// be called from `check_constraints_on_var` during unification (type_unify.rs is a
-/// submodule of types.rs and cannot import from typecheck.rs).
-#[allow(dead_code)]
-fn is_definitely_non_arithmetic(ty: &Type) -> bool {
-    match ty {
-        // These types cannot be proven non-arithmetic — conservative pass
-        Type::Unknown
-        | Type::TypeVar(_, _)
-        | Type::Top
-        | Type::Error
-        | Type::Never
-        | Type::Number
-        | Type::Int
-        | Type::Float
-        | Type::IntLiteral(_) => false,
-        // Everything else is provably non-arithmetic
-        _ => true,
-    }
 }
 
 /// Instance lookup for multi-parameter type classes with functional dependencies.
@@ -1125,9 +1233,35 @@ pub fn resolve_has_field(
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// Per-scope substitution frame with parent-chain lookup.
+///
+/// Each dict inference scope gets its own child frame. TypeVar bindings are routed
+/// to the frame whose `creation_level` matches the TypeVar's creation-time level,
+/// preventing TypeVars from one dict scope from escaping into sibling or ancestor scopes.
+///
+/// The parent chain is traversed by `apply_type` for lookup and by `bind_at_level`
+/// for writes. Interior mutability (`RefCell`) allows writes through `Arc` references.
 pub struct Substitution {
     pub type_map: std::cell::RefCell<HashMap<String, Type>>, // α → τ  (kind: Type)
+    /// Parent frame in the scope chain. `None` for the root substitution.
+    pub parent: Option<Arc<Substitution>>,
+    /// The InferState level at which this substitution frame was created.
+    /// TypeVars whose creation-time level equals this value are bound here.
+    /// TypeVars with a lower level are routed to the parent chain.
+    pub creation_level: u32,
+    /// Per-frame monotonic counter for fresh TypeVar names within this substitution scope.
+    ///
+    /// Lives here (rather than on InferState) so that child substitution frames (T-926/T-927)
+    /// inherit the parent's counter value and continue from it. This ensures globally unique
+    /// TypeVar names across all active frames (Barendregt convention) — sibling dicts do NOT
+    /// reuse names; each continues from where the parent's counter left off.
+    ///
+    /// Using `Cell<u32>` provides interior mutability: `fresh_type_var` can advance the
+    /// counter through a shared reference to the Substitution without requiring the caller
+    /// to hold `&mut Substitution`. The `Clone` implementation copies the current counter
+    /// value, so probe save/restore patterns (which clone+restore the Substitution) correctly
+    /// capture and reset the counter as part of the probe's state rollback.
+    pub name_counter: std::cell::Cell<u32>,
 }
 
 const MAX_APPLY_DEPTH: usize = 256;
@@ -1139,7 +1273,7 @@ const MAX_APPLY_DEPTH: usize = 256;
 pub const MAX_SUBST_SIZE: usize = 50_000;
 
 impl Substitution {
-    /// Create a new empty substitution.
+    /// Create a new root substitution frame (no parent).
     ///
     /// Performance note: `HashMap::new()` creates a map with zero capacity
     /// and performs no heap allocation until the first insert. This is optimal
@@ -1147,17 +1281,76 @@ impl Substitution {
     pub fn new() -> Self {
         Self {
             type_map: std::cell::RefCell::new(HashMap::new()),
+            parent: None,
+            creation_level: 0,
+            name_counter: std::cell::Cell::new(0),
         }
     }
 
-    /// Check if the substitution is empty (no bindings).
-    /// Used to guard against unnecessary allocation in apply() operations.
-    pub fn is_empty(&self) -> bool {
-        self.type_map.borrow().is_empty()
+    /// Create a child substitution frame for a nested dict scope.
+    ///
+    /// TypeVars at `level` are bound in this frame. TypeVars at lower levels
+    /// are routed up the parent chain by `bind_at_level`.
+    ///
+    /// The child's `name_counter` continues from the parent's current value to preserve
+    /// globally unique TypeVar names across all frames in the chain (Barendregt convention).
+    /// This is required for `lookup_in_chain` to be sound: it matches by name, so names
+    /// must be unique across all active frames.
+    pub fn child(parent: &Arc<Substitution>, level: u32) -> Self {
+        Self {
+            type_map: std::cell::RefCell::new(HashMap::new()),
+            parent: Some(Arc::clone(parent)),
+            creation_level: level,
+            name_counter: std::cell::Cell::new(parent.name_counter.get()),
+        }
     }
 
-    /// Check if the substitution has exceeded the maximum allowed size.
-    /// Returns an error if type_map exceeds MAX_SUBST_SIZE.
+    /// Bind a TypeVar to a type in the frame whose `creation_level` matches `var_level`.
+    ///
+    /// If `var_level == self.creation_level`, the binding goes in this frame's `type_map`.
+    /// Otherwise the call is routed to the parent chain. If no frame matches (root reached
+    /// without a level match), the root frame absorbs the binding — this handles TypeVars
+    /// created at a level that no longer has an active frame (e.g., after scope exit).
+    pub fn bind_at_level(&self, name: String, var_level: u32, ty: Type) {
+        if self.creation_level == var_level || self.parent.is_none() {
+            // Bind here: either we match the level, or we're the root and must absorb it.
+            self.type_map.borrow_mut().insert(name, ty);
+        } else if let Some(ref p) = self.parent {
+            p.bind_at_level(name, var_level, ty);
+        }
+    }
+
+    /// Look up a variable name in the local frame first, then in the parent chain.
+    ///
+    /// Returns `Some(bound_type)` from the first frame that has a binding, or `None`
+    /// if no frame in the chain has bound this variable.
+    fn lookup_in_chain(&self, name: &str) -> Option<Type> {
+        // Check local frame first (most recent bindings override parent bindings)
+        if let Some(ty) = self.type_map.borrow().get(name).cloned() {
+            return Some(ty);
+        }
+        // Walk up the parent chain
+        if let Some(ref p) = self.parent {
+            return p.lookup_in_chain(name);
+        }
+        None
+    }
+
+    /// Check if this frame (and its parent chain) is empty (no bindings).
+    /// Used to guard against unnecessary allocation in apply() operations.
+    pub fn is_empty(&self) -> bool {
+        if !self.type_map.borrow().is_empty() {
+            return false;
+        }
+        match &self.parent {
+            Some(p) => p.is_empty(),
+            None => true,
+        }
+    }
+
+    /// Check if the LOCAL frame's type_map has exceeded the maximum allowed size.
+    /// Only counts local entries — parent chain entries are counted when their own
+    /// frame calls check_size. This prevents double-counting shared parent bindings.
     pub(crate) fn check_size(&self, span: Span) -> Result<(), TypeError> {
         let len = self.type_map.borrow().len();
         if len > MAX_SUBST_SIZE {
@@ -1177,6 +1370,8 @@ impl Substitution {
         if self.is_empty() {
             return ty.clone();
         }
+        // Fast path: if no parent, use the existing single-frame logic below.
+        // With a parent chain, apply_type walks the chain for each TypeVar lookup.
         // Fast-path for concrete types: no type variables, so return clone immediately.
         // Avoids allocating visited_types HashSet for the common case.
         match ty {
@@ -1247,8 +1442,10 @@ impl Substitution {
                 if visited_types.contains(name) {
                     return Cow::Borrowed(ty);
                 }
-                // Look up the binding for this TypeVar
-                let bound_opt = self.type_map.borrow().get(name).cloned();
+                // Look up the binding for this TypeVar: check local frame first,
+                // then walk up the parent chain. This is O(depth) per lookup;
+                // path compression below flattens chains after first resolution.
+                let bound_opt = self.lookup_in_chain(name);
                 match bound_opt {
                     Some(bound) => {
                         visited_types.insert(name.clone());
@@ -1260,8 +1457,9 @@ impl Substitution {
                         visited_types.remove(name);
 
                         // PATH COMPRESSION: if the resolved type differs from the immediate binding,
-                        // update the map to point directly to the final result. This collapses chains
-                        // like t0 → t1 → t2 → Int into t0 → Int, t1 → Int after first traversal.
+                        // cache the concrete type in the local frame to avoid repeated parent-chain
+                        // traversal. This collapses chains like t0 → t1 → t2 → Int into
+                        // local[t0 → Int] after first traversal.
                         // Only compress when result is not a TypeVar to avoid premature compression
                         // of still-growing chains.
                         if !matches!(result, Type::TypeVar(..)) && result != bound {
@@ -1366,18 +1564,18 @@ impl Substitution {
                 self.apply_type(cap, depth + 1, visited_types).into_owned(),
             ))),
             Type::Operator(name) => {
-                // Look up Operator variable in substitution map
+                // Look up Operator variable in substitution map (local frame + parent chain)
                 if visited_types.contains(name) {
                     return Cow::Borrowed(ty);
                 }
-                let bound_opt = self.type_map.borrow().get(name).cloned();
+                let bound_opt = self.lookup_in_chain(name);
                 match bound_opt {
                     Some(bound) => {
                         visited_types.insert(name.clone());
                         let result = self.apply_type(&bound, 0, visited_types).into_owned();
                         visited_types.remove(name);
 
-                        // PATH COMPRESSION for Operator chains as well
+                        // PATH COMPRESSION for Operator chains: cache in local frame
                         if result != bound {
                             self.type_map
                                 .borrow_mut()
@@ -1433,6 +1631,48 @@ impl Substitution {
 impl Default for Substitution {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Debug for Substitution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Substitution")
+            .field("type_map", &self.type_map)
+            .field("creation_level", &self.creation_level)
+            .field("has_parent", &self.parent.is_some())
+            .field("name_counter", &self.name_counter.get())
+            .finish()
+    }
+}
+
+/// Clone a substitution frame.
+///
+/// The parent chain is shared via `Arc::clone` (not deep-copied). This is correct:
+/// parent frames are shared across multiple child frames and must not be duplicated.
+/// The local `type_map` is deep-cloned so that the cloned frame has independent bindings.
+impl Clone for Substitution {
+    fn clone(&self) -> Self {
+        Self {
+            type_map: std::cell::RefCell::new(self.type_map.borrow().clone()),
+            parent: self.parent.clone(), // Arc::clone — shared parent chain
+            creation_level: self.creation_level,
+            // Copy the current counter value so that probe save/restore patterns
+            // (which clone+restore the Substitution) correctly reset the counter
+            // along with the rest of the frame's state.
+            name_counter: std::cell::Cell::new(self.name_counter.get()),
+        }
+    }
+}
+
+/// PartialEq compares only `type_map` contents (matching prior semantics).
+///
+/// `parent` and `creation_level` are structural metadata, not semantic state.
+/// Two substitutions are equal if they bind the same variables to the same types
+/// in their local frames, regardless of their position in the scope chain.
+/// This matches the prior derived `PartialEq` behavior (which had no parent field).
+impl PartialEq for Substitution {
+    fn eq(&self, other: &Self) -> bool {
+        *self.type_map.borrow() == *other.type_map.borrow()
     }
 }
 
@@ -1786,10 +2026,8 @@ fn bind_single_type_var_from_compound(
 
     let concrete_promoted = promote_literal_for_constrained_var(var_name, concrete.clone(), state);
     check_constraints_on_var(var_name, &concrete_promoted, subst, state, span.clone())?;
-    subst
-        .type_map
-        .borrow_mut()
-        .insert(var_name.clone(), concrete_promoted);
+    let var_level = state.levels.get(var_name).copied().unwrap_or(0);
+    subst.bind_at_level(var_name.clone(), var_level, concrete_promoted);
     subst.check_size(span)
 }
 
@@ -1893,20 +2131,24 @@ pub fn unify(
 
             // Bind the higher-level variable to the lower-level one.
             // If levels are equal, bind left-to-right for determinism.
+            // bind_at_level routes the binding to the substitution frame whose
+            // creation_level matches the TypeVar's level, keeping per-dict bindings local.
             if level_a >= level_b {
                 // Bind name_a → TypeVar(name_b)
                 transfer_class_constraints(name_a, name_b, state);
-                subst
-                    .type_map
-                    .borrow_mut()
-                    .insert(name_a.clone(), Type::TypeVar(name_b.clone(), level_b));
+                subst.bind_at_level(
+                    name_a.clone(),
+                    level_a,
+                    Type::TypeVar(name_b.clone(), level_b),
+                );
             } else {
                 // Bind name_b → TypeVar(name_a)
                 transfer_class_constraints(name_b, name_a, state);
-                subst
-                    .type_map
-                    .borrow_mut()
-                    .insert(name_b.clone(), Type::TypeVar(name_a.clone(), level_a));
+                subst.bind_at_level(
+                    name_b.clone(),
+                    level_b,
+                    Type::TypeVar(name_a.clone(), level_a),
+                );
             }
             subst.check_size(span)?;
             Ok(())
@@ -1933,18 +2175,19 @@ pub fn unify(
             // constraints from α to β instead of checking. β inherits α's obligations and will be
             // checked when β is bound to a concrete type. HasField constraints are NOT transferred
             // (they reference the dict variable, not the param).
+            // bind_at_level routes the binding to the frame matching the TypeVar's creation level.
             if let Type::TypeVar(beta_name, _) = &b {
                 transfer_class_constraints(name, beta_name, state);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
-                subst.type_map.borrow_mut().insert(name.clone(), b);
+                subst.bind_at_level(name.clone(), alpha_level, b);
             } else if let Type::Operator(beta_name) = &b {
                 transfer_class_constraints(name, beta_name, state);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
-                subst.type_map.borrow_mut().insert(name.clone(), b);
+                subst.bind_at_level(name.clone(), alpha_level, b);
             } else {
                 // Binding α to a concrete type — check constraints normally
                 check_constraints_on_var(name, &b, subst, state, span.clone())?;
-                subst.type_map.borrow_mut().insert(name.clone(), b);
+                subst.bind_at_level(name.clone(), alpha_level, b);
             }
             subst.check_size(span)?;
             Ok(())
@@ -1966,18 +2209,19 @@ pub fn unify(
             // constraints from α to β instead of checking. β inherits α's obligations and will be
             // checked when β is bound to a concrete type. HasField constraints are NOT transferred
             // (they reference the dict variable, not the param).
+            // bind_at_level routes the binding to the frame matching the TypeVar's creation level.
             if let Type::TypeVar(beta_name, _) = &a {
                 transfer_class_constraints(name, beta_name, state);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
-                subst.type_map.borrow_mut().insert(name.clone(), a);
+                subst.bind_at_level(name.clone(), alpha_level, a);
             } else if let Type::Operator(beta_name) = &a {
                 transfer_class_constraints(name, beta_name, state);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
-                subst.type_map.borrow_mut().insert(name.clone(), a);
+                subst.bind_at_level(name.clone(), alpha_level, a);
             } else {
                 // Binding α to a concrete type — check constraints normally
                 check_constraints_on_var(name, &a, subst, state, span.clone())?;
-                subst.type_map.borrow_mut().insert(name.clone(), a);
+                subst.bind_at_level(name.clone(), alpha_level, a);
             }
             subst.check_size(span)?;
             Ok(())
@@ -2194,17 +2438,11 @@ pub fn unify(
             if level_m >= level_n {
                 // Bind m → Operator(n)
                 transfer_class_constraints(m, n, state);
-                subst
-                    .type_map
-                    .borrow_mut()
-                    .insert(m.clone(), Type::Operator(n.clone()));
+                subst.bind_at_level(m.clone(), level_m, Type::Operator(n.clone()));
             } else {
                 // Bind n → Operator(m)
                 transfer_class_constraints(n, m, state);
-                subst
-                    .type_map
-                    .borrow_mut()
-                    .insert(n.clone(), Type::Operator(m.clone()));
+                subst.bind_at_level(n.clone(), level_n, Type::Operator(m.clone()));
             }
             subst.check_size(span)?;
             Ok(())
@@ -2224,13 +2462,14 @@ pub fn unify(
             }
             // CONSTRAINT TRANSFER: when binding m to TypeVar, transfer constraints
             // instead of checking. When binding to a concrete type, check constraints normally.
+            // bind_at_level routes to the frame matching the Operator variable's creation level.
             if let Type::TypeVar(beta_name, _) = &b {
                 transfer_class_constraints(m, beta_name, state);
-                subst.type_map.borrow_mut().insert(m.clone(), b.clone());
+                subst.bind_at_level(m.clone(), alpha_level, b.clone());
             } else {
                 // Binding to concrete type — check constraints
                 check_constraints_on_var(m, &b, subst, state, span.clone())?;
-                subst.type_map.borrow_mut().insert(m.clone(), b.clone());
+                subst.bind_at_level(m.clone(), alpha_level, b.clone());
             }
             subst.check_size(span)?;
             Ok(())
@@ -2247,13 +2486,14 @@ pub fn unify(
             }
             // CONSTRAINT TRANSFER: when binding m to TypeVar, transfer constraints
             // instead of checking. When binding to a concrete type, check constraints normally.
+            // bind_at_level routes to the frame matching the Operator variable's creation level.
             if let Type::TypeVar(beta_name, _) = &a {
                 transfer_class_constraints(m, beta_name, state);
-                subst.type_map.borrow_mut().insert(m.clone(), a.clone());
+                subst.bind_at_level(m.clone(), alpha_level, a.clone());
             } else {
                 // Binding to concrete type — check constraints
                 check_constraints_on_var(m, &a, subst, state, span.clone())?;
-                subst.type_map.borrow_mut().insert(m.clone(), a.clone());
+                subst.bind_at_level(m.clone(), alpha_level, a.clone());
             }
             subst.check_size(span)?;
             Ok(())

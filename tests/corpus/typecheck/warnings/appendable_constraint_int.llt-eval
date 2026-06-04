@@ -9,4 +9,4 @@
 Dict({"f": Function(x)})
 
 === warn
-no instance for Addable Int String
+no instance for Addable Int String at 6:21-6:34

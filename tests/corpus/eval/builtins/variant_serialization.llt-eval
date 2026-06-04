@@ -3,6 +3,3 @@
 [str Red]
 === out
 String("Red")
-
-=== warn
-type Variant does not satisfy constraint Showable at 2:1-2:10
