@@ -137,16 +137,14 @@ Each arm is a `pattern: body` keyed entry — the pattern is the key, the body i
 | Constructor (no binding) | `Color.Red:` | Matches unit constructor variant, no binding |
 | Constructor (no binding) | `[Tag]` | Matches any nominal variant with that tag, regardless of payload — equivalent to `[Tag _]` |
 | TypeAssert | `[@Int x]` | Matches if value has type `Int`, binds to `x` |
-| TypeAssert (bare) | `Int:` | Primitive type pattern — matches if value has type `Int` |
+| TypeAssert (bare) | `Int:` | Primitive type pattern — matches if value has type `Int` *(S-845: currently produces `Pattern::TypeTag`, not `Pattern::TypeAssert`; the elaboration pass rewrite is not yet complete)* |
 
 ### Constructor Pattern Qualification
-
-> **Design target**: This section describes the target state after the user-type-constructors sprint series. `flatten_dot_access_to_tag` does not yet exist in `src/ast.rs`. The current parser handles only bare `VarRef` uppercase names as constructor tags.
 
 The parser produces `Pattern::Constructor { tag, binding }`. Tags are assembled as qualified strings by the parser:
 
 - **Dot-access heads** (`[Result.Ok v]`, `Color.Red:`): the parser calls `flatten_dot_access_to_tag` (defined in `src/ast.rs` as `pub(crate)`) to walk the `DotAccess` chain and assemble `"Result.Ok"`, `"Net.Transport.Tcp"`, etc. directly from the AST structure — no type environment access.
-- **Bare uppercase words** (`None:`, `Tcp:`): the parser produces an unqualified tag. The `typecheck_match.rs` elaboration pass resolves the tag to its qualified form via the scrutinee's declared type.
+- **Bare uppercase words** (`None:`, `Tcp:`): the current parser produces `Pattern::TypeTag` for ALL bare uppercase `VarRef` in pattern position. Builtin-type names (`Int:`, `Str:`, `Bool:`, etc.) match via `value.type_name()` at runtime. For user variant names (`None:`, `Tcp:`), the prelude uses the bracket form `[None]:` which produces `Pattern::Constructor`; the bare word form produces `Pattern::TypeTag("None")` which matches nothing at runtime since no value has `type_name() == "None"`. *(S-845: the elaboration pass will rewrite bare uppercase words to `Pattern::TypeAssert` for builtin-type TyCons and `Pattern::Constructor` for user variants.)*
 - **Rebound aliases** (`Ok` in scope as `Result.Ok`): the type checker's elaboration pass follows the binding to get the qualified tag.
 
 The elaboration pass in `typecheck_match.rs` processes every pattern before type checking the arm bodies:
@@ -159,8 +157,6 @@ The elaboration pass in `typecheck_match.rs` processes every pattern before type
 `Pattern::TypeAssertPending` is a surface-only form produced by the parser for explicit `[@Type x]` annotations. It never reaches the evaluator — the elaboration pass always rewrites it to `Pattern::TypeAssert`.
 
 ### Pattern AST Nodes
-
-> **Design target**: This section describes the target state after the user-type-constructors sprint series. `Pattern::TypeAssertPending` and `Pattern::TypeAssert` do not yet exist in the Pattern enum. The current parser handles only bare `VarRef` uppercase names as constructor tags.
 
 ```rust
 // Surface form — parser produces this; rewritten during elaboration

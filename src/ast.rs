@@ -160,7 +160,16 @@ pub enum Pattern {
     Variable(String),
     /// Literal pattern — int, float, bool, or string literal
     Literal(LiteralPattern),
-    /// Type tag pattern — uppercase bare word like `Int`, `Str`, `Dict`
+    /// Type tag pattern — uppercase bare word like `Int`, `Str`, `Dict`, `Seq`.
+    ///
+    /// Produced by the parser for bare uppercase identifiers in match arm position.
+    /// Matches by comparing the value's runtime type name (via `Value::type_name()`)
+    /// against the tag, with "Str" as an alias for "String".
+    ///
+    /// This pattern is distinct from `Constructor` (which matches `Value::Variant` by tag)
+    /// and from `TypeAssert` (which is the elaborated form of `[@Type expr]` patterns).
+    ///
+    /// Examples: `[match x Int: 1  Str: 2  _: 3]`
     TypeTag(String),
     /// Pin pattern — `$name` matches against existing variable value
     Pin(String),
@@ -183,6 +192,21 @@ pub enum Pattern {
     Constructor {
         tag: String,
         binding: Option<Box<Spanned<Pattern>>>,
+    },
+    /// TypeAssertPending pattern — surface form produced by the parser; rewritten to TypeAssert
+    /// by the elaboration pass in typecheck_match.rs before type checking.
+    ///
+    /// `inner: None` = bare type assertion (currently unused by the parser; reserved for future forms)
+    /// `inner: Some(pat)` = type-guarded binding (`[@Int x]` produces TypeAssertPending with inner=Variable("x"))
+    TypeAssertPending {
+        annotation: Spanned<Annotation>,
+        inner: Option<Box<Spanned<Pattern>>>,
+    },
+    /// TypeAssert pattern — core form used by the evaluator after elaboration.
+    /// Created from TypeAssertPending by the elaboration pass (typecheck phase).
+    TypeAssert {
+        resolved_type: Type,
+        inner: Option<Box<Spanned<Pattern>>>,
     },
     /// Or-pattern — matches if any sub-pattern matches
     /// Both branches must bind the same set of variables
@@ -396,11 +420,11 @@ impl fmt::Display for SurfaceDeclaration {
                     let param_strs: Vec<String> = params
                         .iter()
                         .map(|(name, ann)| match ann {
-                            Some(a) => format!("{name}@{a}"),
+                            Some(a) => format!("{name}@{}", a.node),
                             None => name.clone(),
                         })
                         .collect();
-                    write!(f, "[type [{}] {}]", param_strs.join(" "), body)
+                    write!(f, "[type [let {}] {}]", param_strs.join(" "), body)
                 }
             }
             SurfaceDeclaration::ClassDecl {
@@ -467,6 +491,20 @@ impl fmt::Display for Pattern {
             Pattern::Literal(lit) => write!(f, "{lit}"),
             Pattern::TypeTag(tag) => write!(f, "{tag}"),
             Pattern::Pin(name) => write!(f, "${name}"),
+            Pattern::TypeAssertPending { annotation, inner } => {
+                if let Some(inner) = inner {
+                    write!(f, "[@{} {}]", annotation.node, inner.node)
+                } else {
+                    write!(f, "[@{}]", annotation.node)
+                }
+            }
+            Pattern::TypeAssert { inner, .. } => {
+                if let Some(inner) = inner {
+                    write!(f, "[@<resolved> {}]", inner.node)
+                } else {
+                    write!(f, "[@<resolved>]")
+                }
+            }
             Pattern::Dict { fields, rest } => {
                 write!(f, "[")?;
                 for (i, (key, pat)) in fields.iter().enumerate() {
@@ -725,10 +763,10 @@ pub struct SurfaceMatchArm {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SurfaceDeclaration {
     TypeAlias {
-        /// Type parameter names, each with an optional variance/class annotation name.
-        /// The annotation is the bare name from `@X` in `[let a@X b@Y c]`, e.g. `"Covariant"`.
+        /// Type parameter names, each with an optional variance/class annotation.
+        /// The annotation is the full `Spanned<Annotation>` from `@X` in `[let a@X b@Y c]`.
         /// `None` means no annotation was given (untyped / infer variance from body).
-        params: Vec<(String, Option<String>)>,
+        params: Vec<(String, Option<Spanned<Annotation>>)>,
         body: Arc<SurfaceNode>,
     },
     ClassDecl {

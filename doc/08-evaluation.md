@@ -1611,7 +1611,7 @@ parse → expand_surface_program → desugar → resolve → typecheck → eval
 
 **Namespace protection:** Macros cannot shadow registered Rust builtins — enforced at registration time.
 
-**`gensym`:** Produces names of the form `:prefix:N` (colon prefix is forbidden in bare-word identifiers, making user collision structurally impossible). Names are unique but not stable across evaluation orders. Wrap the returned string with `do-var-node` or `ident` to obtain a `VarRef` AST node.
+**`gensym`:** Produces names of the form `ℊꜱʏᴍ⧼prefix⧽N` (`ℊ` U+210A, `ꜱʏᴍ` small-cap letters, `⧼⧽` U+29FC/29FD angle brackets). These codepoints require deliberate IME input — collision with user-written identifiers is practically impossible. Names are unique but not stable across evaluation orders. Wrap the returned string with `ident` to obtain a `VarRef` AST node.
 
 **`macro-error`:** `[macro-error span-dict message]` terminates expansion with `ErrorKind::MacroError` (E012) at the given span. `[span-of expr]` extracts the source span from any AST node as a dict. Together they enable macros to report precise, call-site-attributed errors.
 
@@ -1624,7 +1624,7 @@ parse → expand_surface_program → desugar → resolve → typecheck → eval
 Tinct's macro hygiene is complete without scope sets. Every name in a macro body is one of two kinds:
 
 - **Pattern-bound from user input** — names bound in the `[let ...]` argument pattern are the user's own names, inherently in user scope. No renaming needed; they hold pieces of the caller's input AST.
-- **Gensym'd** — `[gensym "prefix"]` returns `:prefix:N`, a colon-prefixed name that is syntactically unforgeable (users cannot write colon-prefixed identifiers in source). Collision is structurally impossible.
+- **Gensym'd** — `[gensym "prefix"]` returns `ℊꜱʏᴍ⧼prefix⧽N`, a name built from Unicode codepoints that are practically unguessable in normal input. Collision is structurally impossible.
 
 No third category exists where a macro could accidentally introduce a name that captures user scope. Scope sets (Flatt 2016) address that third category; tinct eliminates it instead by design.
 

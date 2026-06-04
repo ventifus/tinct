@@ -64,15 +64,9 @@ pub(crate) fn wrap_with_nominal_validation(
     ctx: &Arc<EvalContext>,
     pipeline_blame: Option<crate::error::PipelineBlame>,
 ) -> Arc<Thunk> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     // Generate a unique variable name to avoid collisions with user code.
-    // Uses the canonical ℊꜱʏᴍ⧼prefix⧽N convention via make_gensym_name (builtins_meta.rs).
-    // Prefix "nominal-input" is distinct from the user-facing "gensym" prefix so pipeline
-    // validation variables cannot alias user-generated symbols.
-    static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
-    let gensym_id = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let gensym_name = crate::builtins_meta::make_gensym_name("nominal-input", gensym_id);
+    // Scope '𝒩' (U+1D4A9, script N) marks names originating from nominal validation guards.
+    let gensym_name = crate::builtins_meta::gensym_fresh('𝒩', "nominal-input");
 
     // Create a synthetic TypeAssert expression: [@Annotation ℊꜱʏᴍ⧼nominal-input⧽N]
     // If resolved_type is None (untyped contract), use Type::Unknown which accepts all values.
@@ -3068,8 +3062,18 @@ fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(Str
         Pattern::Variable(name) => {
             out.push((name.clone(), pattern.span.clone()));
         }
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::TypeTag(_) | Pattern::Pin(_) => {
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {
             // No variable bindings
+        }
+        Pattern::TypeAssertPending { inner, .. } => {
+            if let Some(inner_pat) = inner {
+                collect_pattern_variable_names(inner_pat, out);
+            }
+        }
+        Pattern::TypeAssert { inner, .. } => {
+            if let Some(inner_pat) = inner {
+                collect_pattern_variable_names(inner_pat, out);
+            }
         }
         Pattern::Dict { fields, .. } => {
             for (_key, field_pattern) in fields {
@@ -3165,41 +3169,55 @@ pub(crate) fn match_pattern<'a>(
                 Ok(Some(child_env))
             }
             Pattern::TypeTag(tag) => {
-                // TypeTag matches if type-of the value equals the tag.
-                // Also matches unit-variant values whose tag equals the pattern tag.
-                // A bare uppercase identifier like `None` in a match arm is parsed as
-                // Pattern::TypeTag("None"). For unit constructors (Value::Variant with
-                // no payload), we check the variant tag directly so that:
-                //   match ma
-                //     [Some a]: ...
-                //     None:     ...    <- TypeTag("None") matches Variant{tag:"None",payload:None}
-                let type_name = value.type_name();
-                // Handle supertypes and aliases:
-                //   Number matches both Int and Float
-                //   Str is an alias for String (type_name returns "String")
-                let matches = if tag == "Number" {
-                    type_name == "Int" || type_name == "Float"
-                } else if tag == "Str" {
-                    type_name == "String"
-                } else if let Value::Variant {
-                    tag: variant_tag,
-                    payload: None,
-                } = value
-                {
-                    // Unit variant: match by tag name, not by type_name() (which returns "Variant")
-                    variant_tag == tag
-                } else if let Value::Expression(node) = value {
-                    // Expression: match by surface tag (e.g., "IntLiteral", "Var", "Call")
-                    // or by the type name "Expression" itself
-                    let surf_tag = crate::surface_fields::surface_expr_tag(&node.expr);
-                    tag == surf_tag || tag == "Expression"
-                } else {
-                    type_name == tag
-                };
+                // TypeTag pattern: match by runtime type name.
+                //
+                // Compares the value's runtime type name against `tag`. The special alias
+                // "Str" matches String values (Value::type_name() returns "String", but the
+                // prelude.llt and other stdlib code uses `Str:` as the pattern for strings).
+                //
+                // This pattern is NOT the same as Constructor (which matches Value::Variant
+                // by nominal tag) — TypeTag matches primitive/structural values by kind.
+                //
+                // TypeTag was removed in T-961 (S-844) but restored here because:
+                // 1. prelude.llt uses Seq:, Dict:, Int:, Str:, Bool:, Float:, Function:,
+                //    Builtin:, Proxy:, Bytes: extensively for type dispatch
+                // 2. The TypeAssert replacement path was not completed (evaluator stub
+                //    doesn't perform actual type checks; prelude not migrated to [@Type x] form)
+                // 3. Removing TypeTag breaks create_stdlib_env_with_arena() → expand_surface_program()
+                //    → build_prelude_env_inner() returns builtins-only env (no prelude exports)
+                // Migration: when TypeAssert evaluator is fully implemented and prelude.llt
+                // is migrated to [@Type x]: form, TypeTag can be removed again.
+                let runtime_name = value.type_name();
+                let matches = runtime_name == tag.as_str()
+                    || (tag.as_str() == "Str" && runtime_name == "String");
                 if matches {
                     Ok(Some(Arc::clone(env)))
                 } else {
                     Ok(None)
+                }
+            }
+            Pattern::TypeAssertPending { annotation, .. } => {
+                // TypeAssertPending must not reach the evaluator —
+                // the elaboration pass in typecheck_match.rs rewrites it to TypeAssert before
+                // evaluation. If it does reach here, the elaboration pass was skipped (S-845).
+                Err(EvalError::unimplemented(
+                    "TypeAssert patterns require the S-845 elaboration pass; \
+                     [@Type binding]: patterns are not yet evaluated"
+                        .to_string(),
+                    annotation.span.clone(),
+                )
+                .into())
+            }
+            Pattern::TypeAssert {
+                resolved_type: _resolved_type,
+                inner,
+            } => {
+                // TypeAssert stub (S-845): `value_matches_type` not yet implemented; pattern
+                // currently always matches. The elaboration pass (typecheck_match.rs) rewrites
+                // TypeAssertPending → TypeAssert; the runtime check will be implemented in S-845.
+                match inner {
+                    None => Ok(Some(Arc::clone(env))),
+                    Some(pat) => match_pattern(&pat.node, value, env, value_span, ctx).await,
                 }
             }
             Pattern::Literal(lit) => {

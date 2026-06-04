@@ -814,7 +814,11 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!("builtin-cell-get", builtin_cell_get),
         builtin!("builtin-cell-set", builtin_cell_set),
         // ── Meta / reflection ─────────────────────────────────────────────────────────
-        builtin!("builtin-gensym", builtin_gensym, [Strictness::Seq]),
+        builtin!(
+            "builtin-gensym",
+            builtin_gensym,
+            [Strictness::Seq, Strictness::Seq]
+        ),
         builtin!("builtin-llt-repr", builtin_llt_repr, [Strictness::Seq]),
         builtin!("builtin-to-tinct", builtin_to_tinct, [Strictness::Seq], 1),
         builtin!("builtin-tag-of", builtin_tag_of, [Strictness::Seq]),

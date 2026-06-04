@@ -1,0 +1,8 @@
+[match x
+    Color.Red: "red"
+    _: "other"]
+=== out
+[match x Color.Red "red" _ "other"]
+
+=== warn
+undefined variable: x at 1:8-1:9

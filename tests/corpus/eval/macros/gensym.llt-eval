@@ -3,3 +3,7 @@
 [and [starts-with? "ℊꜱʏᴍ⧼gensym⧽" a] [not [= a b]]]
 === out
 Bool(true)
+
+=== warn
+arity mismatch: expected 1 argument(s), got 0 (0 positional, 0 named) at 1:5-1:13
+arity mismatch: expected 1 argument(s), got 0 (0 positional, 0 named) at 1:18-1:26

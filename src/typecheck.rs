@@ -939,11 +939,11 @@ fn register_type_aliases(
 
         // Pass 1: Collect alias names and pre-register placeholders
         // Each entry carries (alias_name, params, body_node, declaration_span).
-        // params is Vec<(String, Option<String>)>: (param_name, optional variance/class annotation).
+        // params is Vec<(String, Option<Spanned<Annotation>>)>: (param_name, optional variance/class annotation).
         #[allow(clippy::type_complexity)]
         let mut alias_entries: Vec<(
             String,
-            Vec<(String, Option<String>)>,
+            Vec<(String, Option<crate::ast::Spanned<crate::ast::Annotation>>)>,
             Arc<SurfaceNode>,
             Span,
         )> = Vec::new();
@@ -1044,13 +1044,20 @@ fn register_type_aliases(
                 state.levels.insert(fresh.clone(), state.level);
                 alias_ann_map.insert(p.clone(), fresh.clone());
                 // Process variance annotation if present (T-953).
-                if let Some(ann_name) = ann {
-                    if let Some(v) = typecheck_annot::annotation_to_variance(ann_name) {
-                        declared_variances[idx] = Some(v);
+                // ann is now Option<Spanned<Annotation>> — extract the Simple name for variance lookup.
+                if let Some(ann_spanned) = ann {
+                    let ann_name = match &ann_spanned.node {
+                        crate::ast::Annotation::Simple(name) => Some(name.as_str()),
+                        _ => None,
+                    };
+                    if let Some(name) = ann_name {
+                        if let Some(v) = typecheck_annot::annotation_to_variance(name) {
+                            declared_variances[idx] = Some(v);
+                        }
+                        // If annotation_to_variance returns None: could be a typeclass constraint.
+                        // Class constraint processing is deferred to T-953 Phase B (class lookup).
+                        // For now: if not a variance annotation, leave as None (will become Invariant).
                     }
-                    // If annotation_to_variance returns None: could be a typeclass constraint.
-                    // Class constraint processing is deferred to T-953 Phase B (class lookup).
-                    // For now: if not a variance annotation, leave as None (will become Invariant).
                 }
             }
 
@@ -1683,14 +1690,14 @@ pub(crate) fn infer_surface_expr(
             let scrutinee_ty = state.subst.apply(&scrutinee_ty);
 
             // I-Case3 (BAS match narrowing): maintain a "remaining scrutinee" type that
-            // accumulates negations as Constructor/TypeTag arms are processed.
+            // accumulates negations as Constructor/TypeAssert arms are processed.
             let mut remaining_scrutinee = scrutinee_ty.clone();
             let mut arm_result_types: Vec<Type> = Vec::new();
 
             for arm in arms {
                 // Compute the arm-local scrutinee type from I-Case3.
                 let arm_scrutinee_ty = match &arm.pattern.node {
-                    Pattern::Constructor { tag, .. } | Pattern::TypeTag(tag) => {
+                    Pattern::Constructor { tag, .. } => {
                         // When remaining_scrutinee is already a NominalVariant for this tag,
                         // use it directly — no intersection needed. The intersection (I-Case3)
                         // is only meaningful when narrowing a Union to one constructor.
@@ -1710,6 +1717,16 @@ pub(crate) fn infer_surface_expr(
                             let members = vec![remaining_scrutinee.clone(), tag_ty];
                             Type::normalize_intersection(members)
                         }
+                    }
+                    Pattern::TypeAssertPending { .. } | Pattern::TypeAssert { .. } => {
+                        // Type assertion patterns: treat as wildcard for scrutinee narrowing.
+                        // Full narrowing is deferred to the elaboration pass.
+                        remaining_scrutinee.clone()
+                    }
+                    Pattern::TypeTag(_) => {
+                        // TypeTag patterns (Int:, Str:, etc.) — no scrutinee narrowing yet.
+                        // Full type-dispatch narrowing is a future enhancement.
+                        remaining_scrutinee.clone()
                     }
                     Pattern::Wildcard | Pattern::Variable(_) => remaining_scrutinee.clone(),
                     _ => scrutinee_ty.clone(),
@@ -1746,7 +1763,7 @@ pub(crate) fn infer_surface_expr(
                 // Update remaining_scrutinee for subsequent arms (I-Case3 negation accumulation).
                 if arm.guard.is_none() {
                     match &arm.pattern.node {
-                        Pattern::Constructor { tag, .. } | Pattern::TypeTag(tag) => {
+                        Pattern::Constructor { tag, .. } => {
                             let neg_tag = Type::Negation(Box::new(Type::NominalVariant {
                                 tag: tag.clone(),
                                 fields: crate::type_def::Row {

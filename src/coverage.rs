@@ -325,40 +325,28 @@ impl ConstructorSignature {
 
 /// Convert an AST `Pattern` to a `CoveragePattern` for coverage analysis.
 ///
-/// Type tags map to `Constructor { tag: TypeTag(...), sub_patterns: [] }`.
-/// Dict patterns map to `Constructor { tag: DictKey(key), sub_patterns: [payload_pat] }`.
 /// Constructor patterns map to `Constructor { tag: Variant(tag), ... }`.
-/// Wildcards and variables map to `Wildcard`.
+/// Dict patterns map to `Constructor { tag: DictKey(key), sub_patterns: [payload_pat] }`.
+/// TypeAssertPending and TypeAssert patterns map to `Wildcard` (elaboration-pass concern).
+/// Wildcards, variables, and literals map to `Wildcard` or typed constructors.
 /// Guards are opaque — patterns with guards are treated as wildcards
 /// (Karachalias et al. 2015, §2.4).
 pub fn ast_pattern_to_coverage(pat: &ast::Pattern) -> CoveragePattern {
     match pat {
         ast::Pattern::Wildcard | ast::Pattern::Variable(_) => CoveragePattern::Wildcard,
         ast::Pattern::TypeTag(tag) => {
-            // Normalize tag names to match the names produced by ConstructorSignature::from_union:
-            //   - "Str" → "String" (Type::Str displays as "String")
-            //   - "Number" → Or(Int, Float) (Number is a supertype, not a constructor)
-            let normalized = match tag.as_str() {
-                "Str" => "String".to_string(),
-                "Number" => {
-                    // Number matches both Int and Float — expand to Or-pattern
-                    return CoveragePattern::Or(vec![
-                        CoveragePattern::Constructor {
-                            tag: ConstructorTag::TypeTag("Int".into()),
-                            sub_patterns: vec![],
-                        },
-                        CoveragePattern::Constructor {
-                            tag: ConstructorTag::TypeTag("Float".into()),
-                            sub_patterns: vec![],
-                        },
-                    ]);
-                }
-                _ => tag.clone(),
-            };
+            // TypeTag patterns match by runtime type name (Int, Str, Seq, Dict, etc.).
+            // Map to CoveragePattern::Constructor with ConstructorTag::TypeTag so the
+            // exhaustiveness checker can reason about disjoint type tags.
             CoveragePattern::Constructor {
-                tag: ConstructorTag::TypeTag(normalized),
+                tag: ConstructorTag::TypeTag(tag.clone()),
                 sub_patterns: vec![],
             }
+        }
+        ast::Pattern::TypeAssertPending { .. } | ast::Pattern::TypeAssert { .. } => {
+            // TypeAssert/TypeAssertPending: treat as wildcard for coverage analysis.
+            // Full type-based exhaustiveness is deferred to the elaboration pass.
+            CoveragePattern::Wildcard
         }
         ast::Pattern::Literal(lit) => {
             let tag = match lit {
@@ -1336,16 +1324,31 @@ mod tests {
     }
 
     #[test]
-    fn test_ast_type_tag_to_coverage() {
-        let pat = ast::Pattern::TypeTag("Int".to_string());
+    fn test_ast_type_assert_pending_to_coverage() {
+        use crate::ast::{Annotation, Position, Span, Spanned};
+        let span = Span {
+            start: Position {
+                line: 0,
+                column: 0,
+                offset: 0,
+            },
+            end: Position {
+                line: 0,
+                column: 0,
+                offset: 0,
+            },
+            file: None,
+        };
+        // TypeAssertPending is treated as Wildcard for coverage analysis.
+        let pat = ast::Pattern::TypeAssertPending {
+            annotation: Spanned {
+                node: Annotation::Simple("Int".to_string()),
+                span,
+            },
+            inner: None,
+        };
         let coverage = ast_pattern_to_coverage(&pat);
-        assert_eq!(
-            coverage,
-            CoveragePattern::Constructor {
-                tag: ConstructorTag::TypeTag("Int".to_string()),
-                sub_patterns: vec![],
-            }
-        );
+        assert_eq!(coverage, CoveragePattern::Wildcard);
     }
 
     #[test]
@@ -1435,11 +1438,17 @@ mod tests {
         };
         let pat = ast::Pattern::Or(vec![
             Spanned {
-                node: ast::Pattern::TypeTag("Int".to_string()),
+                node: ast::Pattern::Constructor {
+                    tag: "Int".to_string(),
+                    binding: None,
+                },
                 span: span.clone(),
             },
             Spanned {
-                node: ast::Pattern::TypeTag("Float".to_string()),
+                node: ast::Pattern::Constructor {
+                    tag: "Float".to_string(),
+                    binding: None,
+                },
                 span,
             },
         ]);

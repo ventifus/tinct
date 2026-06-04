@@ -96,6 +96,7 @@ grpc-decode-u32-be: [fn@Int [let bytes@String offset@Int]
             bytes]]]
 
 ]
+]
 
 # ============================================================================
 # Public API

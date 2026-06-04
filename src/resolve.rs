@@ -176,7 +176,7 @@ impl SurfaceResolver {
                     let bound_names = extract_pattern_bindings(&arm.pattern);
 
                     // Only push a scope when the pattern actually binds variables.
-                    // Wildcard (`_`), literals, TypeTag, and Pin patterns bind nothing;
+                    // Wildcard (`_`), literals, and Pin patterns bind nothing;
                     // allocating an empty IndexMap and pushing/popping it is pure overhead.
                     let has_bindings = !bound_names.is_empty();
                     if has_bindings {
@@ -424,7 +424,17 @@ fn collect_pattern_bindings(pattern: &Pattern, out: &mut Vec<String>) {
             // Literal patterns bind no variables
         }
         Pattern::TypeTag(_) => {
-            // Type tag patterns (e.g., `Int`, `Str`) bind no variables
+            // TypeTag patterns (Int:, Str:, Seq:, etc.) bind no variables — type-dispatch only
+        }
+        Pattern::TypeAssertPending { inner, .. } => {
+            if let Some(inner_pat) = inner {
+                collect_pattern_bindings(&inner_pat.node, out);
+            }
+        }
+        Pattern::TypeAssert { inner, .. } => {
+            if let Some(inner_pat) = inner {
+                collect_pattern_bindings(&inner_pat.node, out);
+            }
         }
         Pattern::Pin(_) => {
             // Pin patterns ($name) match against existing variable value, don't bind

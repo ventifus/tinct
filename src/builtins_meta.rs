@@ -56,16 +56,32 @@ use crate::eval_call::{invoke_function, CallContext};
 use crate::eval_materialize::force_dict_tree;
 use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
 
-/// Create a gensym name in the canonical `ℊꜱʏᴍ⧼prefix⧽N` format.
+/// Global counter shared by all gensym call sites. A single counter guarantees
+/// globally unique IDs regardless of which scope character is used.
+static GENSYM_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Produce a fresh gensym name, advancing the global counter.
 ///
-/// The `ℊꜱʏᴍ` prefix (U+210A U+A731 U+028F U+1D0D) and `⧼`/`⧽` brackets (U+29FC/U+29FD)
-/// ensure these names are valid tinct identifiers (parseable in SCN) while being practically
-/// unguessable — collision requires deliberate IME input of these codepoints.
+/// The format is `{scope}ꜱʏᴍ⧼{prefix}⧽{id}`. The scope character encodes provenance:
 ///
-/// Used by both `builtin_gensym` (user-facing) and internal synthetic variable creation
-/// (e.g., `wrap_with_nominal_validation` in `eval.rs`) to ensure consistent naming.
-pub(crate) fn make_gensym_name(prefix: &str, id: u64) -> String {
-    format!("ℊꜱʏᴍ⧼{}⧽{}", prefix, id)
+/// | Scope | Codepoint | Provenance |
+/// |-------|-----------|------------|
+/// | `ℊ`  | U+210A    | user-facing `gensym` via tinct prelude |
+/// | `𝜇`  | U+1D707   | μ-binder RecVar names (equirecursive types) |
+/// | `𝒩`  | U+1D4A9   | nominal-input validation guards (`eval.rs`) |
+/// | `𝒻`  | U+1D4BB   | formatter capture-avoiding renaming (`surface_fmt.rs`) |
+///
+/// All names are practically unguessable — collision requires deliberate IME input.
+/// Use this function at every Rust call site; do not maintain separate local counters.
+pub(crate) fn gensym_fresh(scope: char, prefix: &str) -> String {
+    use std::sync::atomic::Ordering;
+    let id = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed);
+    make_gensym_name_with_scope(scope, prefix, id)
+}
+
+/// Format a gensym name with an explicit scope character and ID.
+pub(crate) fn make_gensym_name_with_scope(scope: char, prefix: &str, id: u64) -> String {
+    format!("{}ꜱʏᴍ⧼{}⧽{}", scope, prefix, id)
 }
 
 /// `materialize`: takes 1 arg, forces it to WHNF and returns it.
@@ -604,15 +620,19 @@ pub(crate) fn builtin_apply(
 /// The `ℊꜱʏᴍ` prefix (U+210A U+A731 U+028F U+1D0D) and `⧼`/`⧽` brackets (U+29FC/U+29FD)
 /// ensure these names are valid tinct identifiers (parseable) while being practically
 /// unguessable — collision requires deliberate IME input of these codepoints.
+/// `builtin-gensym`: the single Rust gensym primitive.
+///
+/// Takes exactly two string arguments: `scope` (a single Unicode character encoding
+/// provenance) and `prefix` (an arbitrary string label). Returns a globally unique
+/// name of the form `{scope}ꜱʏᴍ⧼{prefix}⧽{N}`.
+///
+/// Not called directly in tinct — use the prelude wrappers:
+///   `gensym prefix`            → scope defaults to `ℊ`
+///   `gensym-with-scope scope prefix` → explicit scope
 pub(crate) fn builtin_gensym(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     Box::pin(async move {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        // Global counter for gensym IDs
-        static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
-
         let BuiltinArgs {
             args,
             named,
@@ -620,37 +640,37 @@ pub(crate) fn builtin_gensym(
             ctx: _,
         } = ctx_arg;
 
-        reject_named("gensym", named.as_ref(), call_span.clone())?;
+        reject_named("builtin-gensym", named.as_ref(), call_span.clone())?;
 
-        // Accept 0 or 1 positional arguments
-        let prefix = if args.is_empty() {
-            "gensym".to_string()
-        } else if args.len() == 1 {
-            let prefix_val = args[0]
-                .try_get_materialized()
-                .expect("pre-materialized by pos_strictness[0]=Seq");
-            match prefix_val {
-                Value::String { source, start, end } => source[start..end].to_string(),
-                _ => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "gensym".to_string(),
-                        "String",
-                        prefix_val.type_name(),
-                        call_span,
-                    )
-                    .into());
-                }
-            }
-        } else {
+        if args.len() != 2 {
             return Err(EvalError::user_error(
-                format!("gensym takes 0 or 1 arguments, got {}", args.len()),
+                format!(
+                    "builtin-gensym takes exactly 2 arguments (scope, prefix), got {}",
+                    args.len()
+                ),
                 call_span,
             )
             .into());
+        }
+
+        let get_str = |thunk: &Arc<Thunk>, name: &str, span: &Span| -> EvalResult<String> {
+            match thunk.try_get_materialized().expect("pre-materialized") {
+                Value::String { source, start, end } => Ok(source[start..end].to_string()),
+                v => Err(EvalError::type_mismatch_ctx(
+                    format!("builtin-gensym {name}"),
+                    "String",
+                    v.type_name(),
+                    span.clone(),
+                )
+                .into()),
+            }
         };
 
-        let id = GENSYM_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let name = make_gensym_name(&prefix, id);
+        let scope_str = get_str(&args[0], "scope", &call_span)?;
+        let prefix = get_str(&args[1], "prefix", &call_span)?;
+
+        let scope = scope_str.chars().next().unwrap_or('ℊ');
+        let name = gensym_fresh(scope, &prefix);
         ok_val(string_val(&name), call_span)
     })
 }

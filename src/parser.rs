@@ -702,8 +702,8 @@ enum StackFrame {
     },
     /// Type alias: `[type expr]` or `[type [params] expr]` or `[type T1 T2 ...]`
     TypeAlias {
-        /// Type parameters: (name, optional annotation name from @X in [let a@X b]).
-        params: Vec<(String, Option<String>)>,
+        /// Type parameters: (name, optional full annotation from @X in [let a@X b]).
+        params: Vec<(String, Option<crate::ast::Spanned<crate::ast::Annotation>>)>,
         /// Multiple type expressions for multi-entry union declarations.
         /// Single-entry `[type T]` has exactly one element.
         /// Multi-entry `[type T1 T2 ...]` has 2+ elements.
@@ -4767,7 +4767,7 @@ fn pop_last_value_from_frame(
 /// Pattern syntax (basic implementation):
 /// - `_` → Wildcard
 /// - Bare lowercase identifier → Variable binding
-/// - Bare uppercase identifier → TypeTag (Int, Str, Dict, etc.)
+/// - Bare uppercase identifier → Constructor { tag, binding: None } (unqualified — type checker elaborates)
 /// - Int/Float/Bool/Str literal → Literal pattern
 /// - `[Constructor]` (zero-arg bracket) → Constructor { binding: None } — matches unit variants by tag
 ///
@@ -4805,8 +4805,18 @@ fn collect_pattern_variables(pattern: &Pattern, vars: &mut std::collections::Has
                 collect_pattern_variables(&first.node, vars);
             }
         }
-        Pattern::Wildcard | Pattern::TypeTag(_) | Pattern::Literal(_) | Pattern::Pin(_) => {
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {
             // These don't bind variables
+        }
+        Pattern::TypeAssertPending { inner, .. } => {
+            if let Some(inner_pat) = inner {
+                collect_pattern_variables(&inner_pat.node, vars);
+            }
+        }
+        Pattern::TypeAssert { inner, .. } => {
+            if let Some(inner_pat) = inner {
+                collect_pattern_variables(&inner_pat.node, vars);
+            }
         }
     }
 }
@@ -4907,7 +4917,12 @@ fn surface_node_to_pattern_with_guard(
             } else if name.chars().next().is_some_and(|c| c.is_lowercase()) {
                 Pattern::Variable(name.clone())
             } else if name.chars().next().is_some_and(|c| c.is_uppercase()) {
-                Pattern::TypeTag(name.clone())
+                // Bare uppercase annotated name in pattern position: produce unqualified Constructor.
+                // The type checker's elaboration pass (typecheck_match.rs) qualifies the tag.
+                Pattern::Constructor {
+                    tag: name.clone(),
+                    binding: None,
+                }
             } else {
                 return Err(ParseError {
                     message: format!(
@@ -4933,6 +4948,12 @@ fn surface_node_to_pattern_with_guard(
         SurfaceExpression::VarRef { name, .. }
             if name.chars().next().is_some_and(|c| c.is_uppercase()) =>
         {
+            // Bare uppercase identifier in pattern position: type tag pattern.
+            // Matches against the runtime type name of the scrutinee value (e.g., `Int:` matches
+            // Value::Int, `Str:` matches Value::String, `Seq:` matches Value::Seq).
+            // This is distinct from Constructor patterns (which match Value::Variant by tag)
+            // and is used in the prelude for type predicates like int?, str?, dict?, etc.
+            // Qualified constructor patterns ([Result.Ok v]) use the DotAccess arm below.
             (Pattern::TypeTag(name.clone()), None)
         }
         SurfaceExpression::VarRef { name, .. } => {
@@ -5051,12 +5072,62 @@ fn surface_node_to_pattern_with_guard(
                         });
                     }
                 }
+            } else if let Some(tag) = crate::ast::flatten_dot_access_to_tag(&func.expr) {
+                // T-964: DotAccess in Call-func position — qualified constructor pattern.
+                // [Result.Ok v] → Constructor { tag: "Result.Ok", binding: Some(payload_pat) }
+                // [Result.Ok]   → Constructor { tag: "Result.Ok", binding: None }
+                match args.len() {
+                    1 => {
+                        let payload_pat = surface_node_to_pattern(Arc::clone(&args[0]))?;
+                        (
+                            Pattern::Constructor {
+                                tag,
+                                binding: Some(Box::new(payload_pat)),
+                            },
+                            None,
+                        )
+                    }
+                    0 => (Pattern::Constructor { tag, binding: None }, None),
+                    _ => {
+                        return Err(ParseError {
+                            message:
+                                "invalid pattern: constructor pattern takes at most one payload"
+                                    .to_string(),
+                            span: Some(span),
+                        });
+                    }
+                }
             } else {
                 return Err(ParseError {
                     message: "invalid pattern: expected identifier, literal, dict, or _"
                         .to_string(),
                     span: Some(span),
                 });
+            }
+        }
+        // T-963: TypeAssert ([@Type expr]) in pattern position → TypeAssertPending
+        SurfaceExpression::TypeAssert { annotation, expr } => {
+            let inner_pat = surface_node_to_pattern(Arc::clone(expr))?;
+            (
+                Pattern::TypeAssertPending {
+                    annotation: annotation.clone(),
+                    inner: Some(Box::new(inner_pat)),
+                },
+                None,
+            )
+        }
+        // T-964: Bare DotAccess (Color.Red, Net.Transport.Tcp) in pattern position →
+        // qualified Constructor with no binding (unit constructor pattern)
+        SurfaceExpression::DotAccess { .. } => {
+            match crate::ast::flatten_dot_access_to_tag(&node.expr) {
+                Some(tag) => (Pattern::Constructor { tag, binding: None }, None),
+                None => {
+                    return Err(ParseError {
+                        message: "invalid pattern: numeric index in dot-access constructor tag"
+                            .to_string(),
+                        span: Some(span),
+                    })
+                }
             }
         }
         _ => {
@@ -5255,16 +5326,11 @@ fn push_expr_to_parent(
                                         params.push((name.clone(), None));
                                     }
                                     SurfaceExpression::Annotated { name, annotation } => {
-                                        // Capture the annotation name (e.g., "Covariant" from `a@Covariant`).
-                                        // This is used by the type checker to process variance annotations
-                                        // and typeclass constraints on type parameters (T-953).
-                                        let ann_name = match &annotation.node {
-                                            crate::ast::Annotation::Simple(ann) => {
-                                                Some(ann.clone())
-                                            }
-                                            _ => None, // complex annotations not supported on type params
-                                        };
-                                        params.push((name.clone(), ann_name));
+                                        // Store the full Spanned<Annotation> (e.g., `@Covariant` from `a@Covariant`).
+                                        // The type checker (typecheck.rs) extracts the annotation name via
+                                        // `annotation_to_variance` to determine variance, and may use the full
+                                        // annotation for class constraint processing.
+                                        params.push((name.clone(), Some(annotation.clone())));
                                     }
                                     _ => {}
                                 }
@@ -6364,8 +6430,21 @@ fn stamp_pattern(pat: &mut Pattern, file: &Arc<SourceFile>) {
         Pattern::Wildcard
         | Pattern::Variable(_)
         | Pattern::Literal(_)
-        | Pattern::TypeTag(_)
-        | Pattern::Pin(_) => {}
+        | Pattern::Pin(_)
+        | Pattern::TypeTag(_) => {}
+
+        Pattern::TypeAssertPending { annotation, inner } => {
+            annotation.span.file = Some(Arc::clone(file));
+            if let Some(inner_pat) = inner {
+                stamp_pattern_spanned(inner_pat, file);
+            }
+        }
+
+        Pattern::TypeAssert { inner, .. } => {
+            if let Some(inner_pat) = inner {
+                stamp_pattern_spanned(inner_pat, file);
+            }
+        }
 
         Pattern::Dict { fields, .. } => {
             for (_, sub) in fields {

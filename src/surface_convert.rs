@@ -672,6 +672,7 @@ fn dict_to_pattern(
         }
 
         "type_tag" => {
+            // TypeTag pattern: matches by runtime type name (Int, Str, Seq, Dict, etc.)
             let tag = get_string_field(dict, "tag", path, ctx)?;
             Pattern::TypeTag(tag)
         }
@@ -1376,6 +1377,41 @@ fn pattern_to_thunk_id(
                     span.clone(),
                 ))),
             );
+        }
+        Pattern::TypeAssertPending { annotation, inner } => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("type_assert_pending"),
+                    span.clone(),
+                ))),
+            );
+            dict.insert(
+                Key::String("annotation".into()),
+                annotation_to_thunk_id(&annotation.node, annotation.span.clone(), ctx)?,
+            );
+            if let Some(inner_pat) = inner {
+                dict.insert(
+                    Key::String("inner".into()),
+                    pattern_to_thunk_id(&inner_pat.node, inner_pat.span.clone(), ctx)?,
+                );
+            }
+        }
+        Pattern::TypeAssert { inner, .. } => {
+            // TypeAssert is a post-elaboration form; serialize as a stub.
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("type_assert"),
+                    span.clone(),
+                ))),
+            );
+            if let Some(inner_pat) = inner {
+                dict.insert(
+                    Key::String("inner".into()),
+                    pattern_to_thunk_id(&inner_pat.node, inner_pat.span.clone(), ctx)?,
+                );
+            }
         }
         Pattern::TypeTag(tag) => {
             dict.insert(

@@ -1,0 +1,9 @@
+# S-844 T-964: Bare DotAccess in pattern position produces Pattern::Constructor with qualified tag.
+# Color.Red: → Constructor { tag: "Color.Red", binding: None }
+# Parser accepts this syntax. Runtime tag matching deferred (variant tags currently unqualified).
+# The _ arm catches all values until the elaboration pass qualifies variant tags.
+[match "x"
+    Color.Red: "matched"
+    _:         "other"]
+=== out
+String("other")

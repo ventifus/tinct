@@ -1734,7 +1734,7 @@ Maybe: [type [Some a] None]
 maybe-map@[doc: "Map over Maybe value"]: [fn [let f ma]
   [match ma
     [Some a]: [Some [f a]]
-    None:     None]]
+    [None]:   None]]
 
 # Functor instance for Maybe type
 FunctorMaybe@[doc: "Functor instance for Maybe"]:
@@ -1750,8 +1750,8 @@ ApplicativeMaybe@[doc: "Applicative instance for Maybe"]:
         [match ma
           [Some a]: [match mb
             [Some b]: [Some [f a b]]
-            None:     None]
-          None: None]]]]
+            [None]:   None]
+          [None]: None]]]]
 
 # Monad instance for Maybe type
 MonadMaybe@[doc: "Monad instance for Maybe"]:
@@ -1760,7 +1760,7 @@ MonadMaybe@[doc: "Monad instance for Maybe"]:
       bind: [fn [let ma f]
         [match ma
           [Some a]: [f a]
-          None:     None]]]]
+          [None]:   None]]]]
 
 # Traversable instance for Maybe type
 TraversableMaybe@[doc: "Traversable instance for Maybe"]:
@@ -1769,7 +1769,7 @@ TraversableMaybe@[doc: "Traversable instance for Maybe"]:
       traverse: [fn [let f ma]
         [match ma
           [Some a]: [f.fmap Some [f a]]
-          None:     [f.pure None]]]]]
+          [None]:   [f.pure None]]]]]
 
 # ============================================================================
 # Generic Functions for HKT
@@ -2615,21 +2615,31 @@ Note: Returns a new Dict with elements sorted, keys reindexed from 0. Uses natur
 # ============================================================================
 
 gensym: [fn@[return: String  doc: """
-Generate a unique symbol name.
+Generate a unique symbol name with the standard ℊ scope.
 
 Args:
-  prefix: String? — Optional prefix for the generated name (default: "gensym")
+  prefix: String — Label embedded in the name (default: "gensym")
 
 Examples:
   [gensym]        => "ℊꜱʏᴍ⧼gensym⧽0"
   [gensym "foo"]  => "ℊꜱʏᴍ⧼foo⧽1"
 
-Note: Used by macros to create hygienic bindings. Each call produces a unique identifier.
-The counter is global and monotonically increasing. The ℊꜱʏᴍ prefix (U+210A U+A731 U+028F
-U+1D0D) and ⧼/⧽ brackets (U+29FC/U+29FD) make the output a valid tinct identifier while
-remaining practically unguessable — collision requires deliberate IME input.
-"""] [let ...args]
-  [if [empty? args] [builtin-gensym] [builtin-gensym [head args]]]]
+Scope ℊ (U+210A) marks user-facing gensyms. The counter is global and shared with
+all internal call sites. Each call produces a globally unique identifier.
+"""] [let prefix: "gensym"]
+  [builtin-gensym "ℊ" prefix]]
+
+gensym-with-scope: [fn@[return: String  doc: """
+Generate a unique symbol name with an explicit scope character.
+
+Args:
+  scope:  String — Single Unicode character encoding provenance
+  prefix: String — Label embedded in the name
+
+Scope characters: ℊ user prelude, 𝜇 μ-binders, 𝒩 nominal validation, 𝒻 formatter.
+Used by mu and other type-stage combinators that want distinct provenance markers.
+"""] [let scope@String prefix@String]
+  [builtin-gensym scope prefix]]
 
 macro-injects: [fn@[return: String  doc: """
 Get the inject: default name for a macro.
@@ -2862,8 +2872,8 @@ Skips [Type] stage documents. Returns the final document's result.
     [reduce
       [fn@[return: Dict] [let state doc@Document]
         [match doc.stage
-          Type:    state
-          Runtime: [eval-document-runtime state doc include-dir]]]
+          [Type]:    state
+          [Runtime]: [eval-document-runtime state doc include-dir]]]
       [prev: initial  named: []]
       docs]]]
 
@@ -2944,8 +2954,8 @@ Included files start with % = [] (fresh pipeline input).
   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
   [match [builtin-include-cache-get hash]
     [Cached result]: result
-    Pending:         [error [str "circular include: " path]]
-    Missing:         [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
+    [Pending]:       [error [str "circular include: " path]]
+    [Missing]:       [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
 
 # cli-pipeline: multi-file pipeline for `tinct run file1.llt file2.llt ...`.
 #
@@ -3493,8 +3503,8 @@ do-fold: [fn [let monad-ast steps]
 
 # Desugar the inferred [do] form: emit bind chain with unique sentinel monad.
 # Called when the first arg is NOT a monad (it's a binding step or other expression).
-# All args are steps (passed as a Seq). The type checker detects the sentinel,
-# resolves the monad, and wires it to eval.
+# All args are steps (passed as an integer-keyed Dict). The type checker detects the
+# sentinel, resolves the monad, and wires it to eval.
 # Sentinel name uses gensym for uniqueness: `ℊꜱʏᴍ⧼do-infer⧽0`, `ℊꜱʏᴍ⧼do-infer⧽1`, etc.
 # This avoids span collision in do_infer_resolutions HashMap (all sentinels
 # would share Span::origin() if we used a fixed name).

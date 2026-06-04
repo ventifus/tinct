@@ -177,11 +177,10 @@ pub fn fmt_fn(
         .join(" ");
     let sub_identifiers = extract_identifiers(&substitution_text);
     let mut rename_map: HashMap<String, String> = HashMap::new();
-    let mut gensym_counter: u32 = 0;
     for param in params {
         if sub_identifiers.contains(param.name.as_str()) {
-            let fresh = format!("ℊꜱʏᴍ⧼{}⧽{}", param.name, gensym_counter);
-            gensym_counter += 1;
+            // Scope '𝒻' (U+1D4BB, script f) marks names from formatter capture-avoiding renaming.
+            let fresh = crate::builtins_meta::gensym_fresh('𝒻', &param.name);
             rename_map.insert(param.name.clone(), fresh);
         }
     }
@@ -604,7 +603,17 @@ fn collect_pattern_bindings(pattern: &Pattern, scope: &mut HashSet<String>) {
             }
         }
         // Non-binding patterns
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::TypeTag(_) | Pattern::Pin(_) => {}
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {}
+        Pattern::TypeAssertPending { inner, .. } => {
+            if let Some(inner_pat) = inner {
+                collect_pattern_bindings(&inner_pat.node, scope);
+            }
+        }
+        Pattern::TypeAssert { inner, .. } => {
+            if let Some(inner_pat) = inner {
+                collect_pattern_bindings(&inner_pat.node, scope);
+            }
+        }
     }
 }
 
@@ -816,13 +825,11 @@ fn core_expr_to_tinct(
                 .join(" ");
             let sub_idents = extract_identifiers(&sub_text);
             let mut inner_rename = rename_map.clone();
-            let mut counter: u32 = 0;
             for p in params {
                 if sub_idents.contains(p.node.name.as_str())
                     && !inner_rename.contains_key(&p.node.name)
                 {
-                    let fresh = format!("ℊꜱʏᴍ⧼{}⧽{}", p.node.name, counter);
-                    counter += 1;
+                    let fresh = crate::builtins_meta::gensym_fresh('𝒻', &p.node.name);
                     inner_rename.insert(p.node.name.clone(), fresh);
                 }
             }
@@ -1302,6 +1309,23 @@ fn serialize_pattern(pattern: &Pattern) -> Result<String, String> {
         Pattern::Wildcard => Ok("_".to_string()),
         Pattern::Variable(name) => Ok(name.clone()),
         Pattern::TypeTag(tag) => Ok(tag.clone()),
+        Pattern::TypeAssertPending { annotation, inner } => {
+            if let Some(inner_pat) = inner {
+                let inner_str = serialize_pattern(&inner_pat.node)?;
+                Ok(format!("[@{} {}]", annotation.node, inner_str))
+            } else {
+                Ok(format!("[@{}]", annotation.node))
+            }
+        }
+        Pattern::TypeAssert { inner, .. } => {
+            // TypeAssert is a post-elaboration form; surface_fmt serializes it as a placeholder.
+            if let Some(inner_pat) = inner {
+                let inner_str = serialize_pattern(&inner_pat.node)?;
+                Ok(format!("[@<resolved> {}]", inner_str))
+            } else {
+                Ok("[@<resolved>]".to_string())
+            }
+        }
         Pattern::Pin(name) => Ok(format!("${}", name)),
         Pattern::Literal(lit) => match lit {
             LiteralPattern::Int(n) => Ok(fmt_int(*n)),

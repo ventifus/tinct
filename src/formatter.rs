@@ -879,6 +879,23 @@ impl<'a> Formatter<'a> {
             Pattern::Variable(name) => name.len(),
             Pattern::TypeTag(tag) => tag.len(),
             Pattern::Pin(name) => 1 + name.len(), // $name
+            Pattern::TypeAssertPending { annotation, inner } => {
+                // [@Ann inner] or [@Ann] — 3 for "[@" + "]", annotation width, optional inner
+                let ann_width = format!("{}", annotation.node).len();
+                let inner_width = match inner {
+                    Some(inner_pat) => 1 + self.measure_pattern_width(&inner_pat.node), // " inner"
+                    None => 0,
+                };
+                3 + ann_width + inner_width
+            }
+            Pattern::TypeAssert { inner, .. } => {
+                // Treat as wildcard width estimate for formatting purposes
+                let inner_width = match inner {
+                    Some(inner_pat) => 1 + self.measure_pattern_width(&inner_pat.node),
+                    None => 0,
+                };
+                12 + inner_width // "[@<resolved>]" is 13 chars
+            }
             Pattern::Literal(lit) => match lit {
                 LiteralPattern::Int(n) => n.to_string().len(),
                 LiteralPattern::Float(f) => {
@@ -1308,6 +1325,24 @@ impl<'a> Formatter<'a> {
                 } else {
                     self.output.push_str(tag);
                 }
+            }
+            Pattern::TypeAssertPending { annotation, inner } => {
+                self.output.push_str("[@");
+                self.format_annotation(annotation);
+                if let Some(inner_pat) = inner {
+                    self.output.push(' ');
+                    self.format_pattern(inner_pat);
+                }
+                self.output.push(']');
+            }
+            Pattern::TypeAssert { inner, .. } => {
+                // Post-elaboration form: format as placeholder (not user-visible in normal code)
+                self.output.push_str("[@<resolved>");
+                if let Some(inner_pat) = inner {
+                    self.output.push(' ');
+                    self.format_pattern(inner_pat);
+                }
+                self.output.push(']');
             }
             Pattern::Or(patterns) => {
                 for (i, pat) in patterns.iter().enumerate() {

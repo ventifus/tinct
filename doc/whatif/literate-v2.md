@@ -2,6 +2,10 @@
 
 **State:** Proposal
 
+TODO: Make sure we're covering this case:
+  T-847 was titled "Literate mode migration: run_literate_eval and run_literate_weave through eval-programs + remove JsonVisitor." It was closed with
+   completed_reason: "Deferred — requires literate-v2.md design acceptance first. Tracked as separate task."
+
 What would it take to migrate `tinct literate` from a Rust-heavy implementation into a self-hosted system where block formatters live in tinct, dynamically looked up the same way `-o json` works for `tinct run`?
 
 ## Current State

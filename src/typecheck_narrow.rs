@@ -368,7 +368,8 @@ pub(crate) fn apply_negation_narrowings(
 ///   when scrutinee is Union or Intersection containing the tag; falls back to `Unknown`.
 /// - `Pattern::Or(alts)`: collect from the first alternative only (all alts must bind
 ///   the same variable set by parser invariant).
-/// - `Pattern::Wildcard | Literal | TypeTag | Pin`: no bindings.
+/// - `Pattern::Wildcard | Literal | Pin`: no bindings.
+/// - `Pattern::TypeAssertPending | TypeAssert`: forward inner pattern bindings if present.
 pub(crate) fn collect_pattern_bindings(
     pat: &Pattern,
     scrutinee_ty: &Type,
@@ -378,7 +379,18 @@ pub(crate) fn collect_pattern_bindings(
         Pattern::Variable(name) => {
             out.push((name.clone(), scrutinee_ty.clone()));
         }
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::TypeTag(_) | Pattern::Pin(_) => {}
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {}
+        Pattern::TypeAssertPending { inner, .. } => {
+            if let Some(inner_pat) = inner {
+                // Treat as narrowed to scrutinee type for the inner pattern binding
+                collect_pattern_bindings(&inner_pat.node, scrutinee_ty, out);
+            }
+        }
+        Pattern::TypeAssert { inner, .. } => {
+            if let Some(inner_pat) = inner {
+                collect_pattern_bindings(&inner_pat.node, scrutinee_ty, out);
+            }
+        }
         Pattern::Dict { fields, .. } => {
             for (key, sub_pat) in fields {
                 // Narrow the sub-pattern's scrutinee type using the record field type.

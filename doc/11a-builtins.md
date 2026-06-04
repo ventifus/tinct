@@ -172,7 +172,8 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 
 | Builtin | Type | Description |
 |---------|------|-------------|
-| `gensym` | `[Fn@String [...String]]` | Generate a unique symbol string; optional prefix arg (e.g., `[gensym "tmp"]` → `":tmp:0"`, `[gensym]` → `":gensym:0"`) |
+| `gensym` | `[Fn@String [String "gensym"]]` | Generate a unique symbol with ℊ scope; optional prefix (e.g., `[gensym "tmp"]` → `"ℊꜱʏᴍ⧼tmp⧽0"`, `[gensym]` → `"ℊꜱʏᴍ⧼gensym⧽0"`). Prelude wrapper over `builtin-gensym`. |
+| `gensym-with-scope` | `[Fn@String [String String]]` | Generate a unique symbol with explicit scope char (e.g., `[gensym-with-scope "𝜇" "rec"]` → `"𝜇ꜱʏᴍ⧼rec⧽N"`). Scope chars: ℊ user, 𝜇 μ-binders, 𝒩 nominal, 𝒻 formatter. |
 | `macro-injects` | `[Fn@String [String]]` | Given a macro name, return its `inject:` default binding name if declared, or `null` if not. Reflection primitive for anaphoric macros (e.g., `[macro-injects "aif"]` → `"it"`). |
 | `llt-repr` | `[Fn@String [Any]]` | Convert value to LLT source code representation (inverse of parsing; useful for code generation) |
 | `builtin-ast-of` | `[Fn@Dict [Any]]` | Return the AST dict without forcing the argument. Thunk-aware: inspects thunk state without materializing. Materialized → AST of the value (`Value::Function` → `[type: "fn" ...]`, `Value::Builtin` → `[type: "builtin" ...]`, other → `[type: type-of(val)]`); Unevaluated → AST of the expression via `ast_to_dict_expr` (doc annotations visible); Pending → `[type: "pending"]` descriptor. Public alias: `ast-of` (re-exported from prelude). See `doc/feature/runtime-reflection.md`. |
