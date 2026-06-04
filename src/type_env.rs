@@ -1284,6 +1284,40 @@ impl TypeEnv {
         None
     }
 
+    /// Resolve an unqualified constructor name to its fully qualified tag (T-956).
+    ///
+    /// Searches all TyConDef entries visible in this environment (current frame and parent chain)
+    /// for a constructor whose unqualified name (the part after the last `.`) matches `name`.
+    /// Returns the qualified tag string (e.g., `"Result.Ok"` for `name == "Ok"`) from the
+    /// INNERMOST frame that has a match. Returns `None` if not found in any frame.
+    ///
+    /// Disambiguation: uses inner-wins semantics (same as TypeEnv bindings). If multiple TyCons
+    /// in the same frame have a constructor with the same unqualified name, the first match in
+    /// iteration order is returned (HashMap order; determinism not guaranteed for ambiguous cases).
+    pub fn resolve_constructor_tag(&self, name: &str) -> Option<String> {
+        // Search the current frame first (inner-wins).
+        for (tycon_name, def) in &self.tycon_defs {
+            for (ctor_tag, _arity) in &def.constructors {
+                let unqualified = ctor_tag
+                    .rfind('.')
+                    .map_or(ctor_tag.as_str(), |pos| &ctor_tag[pos + 1..]);
+                if unqualified == name {
+                    let qualified = if ctor_tag.contains('.') {
+                        ctor_tag.clone()
+                    } else {
+                        format!("{}.{}", tycon_name, ctor_tag)
+                    };
+                    return Some(qualified);
+                }
+            }
+        }
+
+        // Walk the parent chain recursively if not found in current frame.
+        self.parent
+            .as_ref()
+            .and_then(|p| p.resolve_constructor_tag(name))
+    }
+
     /// Collect all binding names visible from this environment (including parent scopes).
     ///
     /// Walks the scope chain and inserts every bound name into `names`. Used by

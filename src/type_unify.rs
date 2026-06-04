@@ -1797,13 +1797,13 @@ fn unify_rows(
         // `Type::normalize_union`, and unify α with that join.  Step 3 covers the concrete-V
         // case: each named field Ti must satisfy is_subtype(Ti, V').
         //
-        // Full implementation is deferred to S-843 (the column-constraint annotation parser
-        // that produces Uniform tails for user-written `{_ : T}` syntax is not yet wired up,
-        // so there are no reachable call paths that exercise this branch with a TypeVar V).
-        // For now we continue to error in all cases so that any inadvertently reached path
-        // produces a clear diagnostic rather than silent misbehaviour.
+        // The column-constraint annotation parser is wired up in T-950 (S-843) and produces
+        // `RowTail::Uniform`. However, the UNIFY-UNIFORM join/subtype logic for
+        // empty-vs-uniform row tail pairs is not yet implemented (T-1024). For now we
+        // continue to error in all cases so that any inadvertently reached path produces a
+        // clear diagnostic rather than silent misbehaviour.
         //
-        // TODO(S-843): replace these arms with the TypeVar-join / concrete-subtype logic.
+        // TODO(T-1024): replace these arms with the TypeVar-join / concrete-subtype logic.
         (RowTail::Empty, RowTail::Uniform { key: _, value: _ })
         | (RowTail::Uniform { key: _, value: _ }, RowTail::Empty) => {
             return Err(TypeError::new(

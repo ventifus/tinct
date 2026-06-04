@@ -2,3 +2,6 @@
 [result-or 99 [Error "bad"]]
 === out
 Int(99)
+
+=== warn
+undefined variable: Error at 1:16-1:21

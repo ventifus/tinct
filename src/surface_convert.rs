@@ -1813,9 +1813,9 @@ fn surface_decl_to_thunk_id(
             if !params.is_empty() {
                 let params_thunk_ids: Vec<ThunkId> = params
                     .iter()
-                    .map(|p| {
+                    .map(|(name, _ann)| {
                         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            string_val(p),
+                            string_val(name),
                             span.clone(),
                         )))
                     })

@@ -586,10 +586,9 @@ pub(crate) fn check_do_infer(
     };
 
     // Rule 2b — AST fallback: If type-level resolution failed, try syntactic pattern matching.
-    // This handles nominal constructors like [Ok ...] and [Error ...] whose types
-    // currently infer as Unknown.
+    // This handles nominal constructors like [Result.Ok ...] and [Result.Error ...] (T-956).
     let resolved = if resolved.is_none() && !args.is_empty() {
-        resolve_monad_from_surface(&args[0])
+        resolve_monad_from_surface(&args[0], env.as_ref())
     } else {
         resolved
     };
@@ -689,6 +688,16 @@ pub(crate) fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<
                 None
             }
         }
+        // NominalVariant — recognize Result and Maybe constructors.
+        // When [Ok 42] is typechecked, it produces NominalVariant("Ok", ...).
+        // Map these to the prelude monad dict name for do-inferred Rule 2.
+        // TODO: remove when TyConDef.constructors is populated and type-level resolution
+        // uses the constructor-to-TyCon mapping directly (T-1021).
+        Type::NominalVariant { tag, .. } => match tag.as_str() {
+            "Ok" | "Error" => Some("result".to_string()),
+            "Some" | "None" => Some("maybe".to_string()),
+            _ => None,
+        },
         // Record with ok and/or err fields — structural Result-like type
         Type::Record(row) => {
             if row.fields.contains_key("ok") || row.fields.contains_key("err") {
@@ -717,30 +726,65 @@ pub(crate) fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<
     }
 }
 
-/// AST-level fallback for monad resolution when type inference fails.
+/// AST-level fallback for monad resolution when type inference fails (T-956).
 ///
 /// Syntactic resolution rules:
-///   - `Call { func: VarRef("Ok"), implied: true, .. }` → "result"
-///   - `Call { func: VarRef("Error"), implied: true, .. }` → "result"
+///   - `Call { func: VarRef(name), implied: true, .. }` → extract TyCon from name via type_env
+///   - `Call { func: DotAccess { .. }, implied: true, .. }` → flatten dot-access to qualified tag
 ///
 /// This is a FALLBACK — `resolve_monad_from_type` takes priority. Only used when
 /// type-level inference returns `Unknown` or another non-resolvable type.
 ///
-/// Returns `Some(monad_var_name)` if a known constructor pattern is recognized, `None` otherwise.
-pub(crate) fn resolve_monad_from_surface(node: &Arc<SurfaceNode>) -> Option<String> {
+/// Returns `Some(monad_var_name)` — the lowercase monad dict variable name (e.g., "result")
+/// — if a known constructor pattern is recognized, `None` otherwise.
+pub(crate) fn resolve_monad_from_surface(
+    node: &Arc<SurfaceNode>,
+    type_env: &crate::types::TypeEnv,
+) -> Option<String> {
     match &node.expr {
         SurfaceExpression::Call {
             func,
             implied: true,
             ..
         } => {
-            // Check if func is a VarRef to Ok or Error
-            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if name == "Ok" || name == "Error" {
-                    return Some("result".to_string());
+            // Try to extract the qualified tag from the function expression.
+            let qualified_tag: Option<String> = match &func.expr {
+                SurfaceExpression::VarRef { name, .. } => {
+                    // VarRef-headed call: [Ok ...], [Error ...], etc.
+                    // Look up the name in type_env to get the qualified tag, or use the name as-is.
+                    type_env
+                        .resolve_constructor_tag(name)
+                        .or_else(|| Some(name.clone()))
+                }
+                SurfaceExpression::DotAccess { .. } => {
+                    // DotAccess-headed call: [Result.Ok ...], [Net.Transport.Tcp ...], etc.
+                    crate::ast::flatten_dot_access_to_tag(&func.expr)
+                }
+                _ => None,
+            };
+
+            // Fallback for unqualified Result/Maybe constructors not yet in TyConDef.constructors.
+            // When TyConDef has constructors populated (T-1021), resolve_constructor_tag will
+            // return the qualified tag and this fallback can be removed.
+            if let Some(ref tag) = qualified_tag {
+                match tag.as_str() {
+                    "Ok" | "Error" => return Some("result".to_string()),
+                    "Some" | "None" => return Some("maybe".to_string()),
+                    _ => {}
                 }
             }
-            None
+
+            // Extract the TyCon name from the qualified tag by splitting at the last '.'.
+            // "Result.Ok" → "result" (lowercase), "Ok" (unqualified) → not a qualified tag → None.
+            // Only qualified tags (containing a dot) give us a TyCon name.
+            // Lowercase so that the extracted name matches the monad dict variable name in the
+            // eval env — the prelude uses lowercase variable names (e.g., "result") for monad
+            // dicts, not the uppercase TyCon name (e.g., "Result").
+            let tycon_name = qualified_tag
+                .as_deref()
+                .and_then(|tag| tag.rfind('.').map(|pos| tag[..pos].to_lowercase()));
+
+            tycon_name
         }
         _ => None,
     }

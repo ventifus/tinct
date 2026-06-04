@@ -7,3 +7,6 @@
 [E002] undefined variable: MonadMaybe (defined at 4:2-4:12) (accessed at 4:1-4:52)
   in accessing .bind at 4:2-4:17
   in [<dot-access> ...] at 4:1-4:52
+
+=== warn
+expected record type, got <error> at 4:2-4:17

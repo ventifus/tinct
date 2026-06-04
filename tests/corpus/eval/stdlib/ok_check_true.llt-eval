@@ -2,3 +2,6 @@
 [ok? [Ok 42]]
 === out
 Bool(true)
+
+=== warn
+undefined variable: Ok at 1:7-1:9

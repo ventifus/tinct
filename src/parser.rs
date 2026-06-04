@@ -702,7 +702,8 @@ enum StackFrame {
     },
     /// Type alias: `[type expr]` or `[type [params] expr]` or `[type T1 T2 ...]`
     TypeAlias {
-        params: Vec<String>,
+        /// Type parameters: (name, optional annotation name from @X in [let a@X b]).
+        params: Vec<(String, Option<String>)>,
         /// Multiple type expressions for multi-entry union declarations.
         /// Single-entry `[type T]` has exactly one element.
         /// Multi-entry `[type T1 T2 ...]` has 2+ elements.
@@ -5251,10 +5252,19 @@ fn push_expr_to_parent(
                             for binding in bindings {
                                 match &binding.expr {
                                     SurfaceExpression::VarRef { name, .. } => {
-                                        params.push(name.clone());
+                                        params.push((name.clone(), None));
                                     }
-                                    SurfaceExpression::Annotated { name, .. } => {
-                                        params.push(name.clone());
+                                    SurfaceExpression::Annotated { name, annotation } => {
+                                        // Capture the annotation name (e.g., "Covariant" from `a@Covariant`).
+                                        // This is used by the type checker to process variance annotations
+                                        // and typeclass constraints on type parameters (T-953).
+                                        let ann_name = match &annotation.node {
+                                            crate::ast::Annotation::Simple(ann) => {
+                                                Some(ann.clone())
+                                            }
+                                            _ => None, // complex annotations not supported on type params
+                                        };
+                                        params.push((name.clone(), ann_name));
                                     }
                                     _ => {}
                                 }
@@ -7009,8 +7019,8 @@ mod tests {
             SurfaceItem::Decl(decl) => match &decl.node {
                 SurfaceDeclaration::TypeAlias { params, .. } => {
                     assert_eq!(params.len(), 2, "expected 2 params");
-                    assert_eq!(params[0], "a");
-                    assert_eq!(params[1], "b");
+                    assert_eq!(params[0], ("a".to_string(), None));
+                    assert_eq!(params[1], ("b".to_string(), None));
                 }
                 other => panic!("expected TypeAlias declaration, got {other:?}"),
             },

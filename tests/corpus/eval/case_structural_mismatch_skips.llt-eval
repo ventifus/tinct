@@ -8,5 +8,4 @@
 String("err: failed")
 
 === warn
-unreachable match arm: this pattern is already covered by prior arms at 4:3-4:40
-unreachable match arm: this pattern is already covered by prior arms at 5:3-5:32
+undefined variable: Error at 1:11-1:16

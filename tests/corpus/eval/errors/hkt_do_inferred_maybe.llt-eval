@@ -4,9 +4,6 @@
 # Note: Maybe monad resolution via structural types is not yet supported.
 [do [x: [Some 42]] [Some [+ x 1]]]
 === error
-[E002] undefined variable: ℊꜱʏᴍ⧼do-infer⧽6 (defined at 1:1-1:1) (called at 4:1-4:35)
+[E002] undefined variable: maybe (did you mean the string "maybe"? Use quotes.) (defined at 1:1-1:1) (called at 4:1-4:35)
   in [<dot-access> ...] at 4:1-4:35
   in expansion of `do` at 4:1
-
-=== warn
-cannot infer monad for [do] — add an explicit monad argument (e.g., [do result ...]) at 4:1-4:35

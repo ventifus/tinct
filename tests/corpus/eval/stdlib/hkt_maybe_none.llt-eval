@@ -3,3 +3,6 @@ None
 
 === out
 Variant(None, Null)
+
+=== warn
+undefined variable: None at 1:1-1:5

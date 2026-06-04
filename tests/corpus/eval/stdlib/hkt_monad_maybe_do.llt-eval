@@ -8,3 +8,6 @@
 [E002] undefined variable: MonadMaybe (defined at 4:5-4:15) (called at 4:1-4:46)
   in [<dot-access> ...] at 4:1-4:46
   in expansion of `do` at 4:1
+
+=== warn
+expected record type, got <error> at 1:1-1:1

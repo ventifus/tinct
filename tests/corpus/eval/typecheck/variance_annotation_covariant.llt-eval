@@ -1,0 +1,12 @@
+# S-843 T-958: Variance annotation on type parameter — [let a@Covariant] is parsed and
+# annotation_to_variance produces Variance::Covariant before any class-env check.
+# The type alias has a lowercase body (the param itself) — no unit constructors are
+# extracted, so the TypeDecl entry contributes nothing to the runtime dict.
+# Absence of === warn asserts zero type warnings: annotation_to_variance handles
+# "Covariant" cleanly without falling through to an unknown-annotation warning.
+[
+  Wrapper: [type [let a@Covariant] a]
+  result: 42
+]
+=== out
+Dict({"result": Int(42)})

@@ -5,3 +5,6 @@
 [E002] undefined variable: MonadResult (defined at 1:2-1:13) (accessed at 1:1-1:56)
   in accessing .bind at 1:2-1:18
   in [<dot-access> ...] at 1:1-1:56
+
+=== warn
+expected record type, got <error> at 1:2-1:18

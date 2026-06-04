@@ -1,0 +1,11 @@
+# S-843 T-958: Polarity analysis (T-952) infers variance from the alias body.
+# Box: [type [let a] a] — body is `a` in covariant position (direct occurrence).
+# infer_variance returns [Covariant] for params ["a"].
+# No explicit @Covariant annotation; declared_variances is [None]; inferred wins.
+# Absence of === warn asserts that polarity analysis completes without type warnings.
+[
+  Box: [type [let a] a]
+  result: 42
+]
+=== out
+Dict({"result": Int(42)})

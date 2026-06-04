@@ -13,6 +13,6 @@ success.value
 
 === warn
 syntax error at 5:41 (cannot typecheck error node) at 5:41-5:42
-unknown named argument: function has no parameter named 'value' at 6:23-6:25
+undefined variable: Ok at 6:13-6:15
 undefined variable: Err at 7:13-7:16
 expected record type, got <error> at 9:1-9:14

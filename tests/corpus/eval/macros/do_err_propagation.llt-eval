@@ -5,3 +5,8 @@
   [Ok [+ x y]]]
 === out
 Variant(Error, String("fail"))
+
+=== warn
+undefined variable: Ok at 2:8-2:10
+undefined variable: Error at 3:8-3:13
+undefined variable: Ok at 4:4-4:6

@@ -2,3 +2,6 @@
 [result-or 99 [Ok 42]]
 === out
 Int(42)
+
+=== warn
+undefined variable: Ok at 1:16-1:18

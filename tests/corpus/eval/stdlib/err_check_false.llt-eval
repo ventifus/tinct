@@ -2,3 +2,6 @@
 [error? [Ok 123]]
 === out
 Bool(false)
+
+=== warn
+undefined variable: Ok at 1:10-1:12

@@ -91,7 +91,8 @@ pub struct InferState {
     /// Dict-scoped: class declarations are visible in the dict and children.
     pub class_env: ClassEnv,
     /// Type class instance environment: registry of instance declarations.
-    /// Globally registered: coherence requires global uniqueness.
+    /// Lexically scoped: inner instances shadow outer, frame-local coherence enforced.
+    /// See `InstanceEnv` in `src/type_class.rs`.
     pub instance_env: InstanceEnv,
     /// Names of bindings that failed type inference, mapping to the span of the failed binding.
     /// Used to annotate downstream T002 "undefined variable" errors with a "caused by" note
@@ -183,6 +184,16 @@ pub struct InferState {
     /// the result here. The eval pipeline reads this map to populate TypeAssert.resolved_type,
     /// enabling structural type checking via is_consistent_subtype.
     pub expects_resolved: HashMap<crate::ast::Span, crate::types::Type>,
+    /// Active type parameter scope for TypeAlias body resolution (T-951).
+    ///
+    /// When `Some(params)`: `resolve_type_name` enforces that lowercase names are TypeVars
+    /// ONLY if they are in `params`. Unknown lowercase names are a type error rather than
+    /// silently creating a fresh TypeVar. This implements the "explicit type params" requirement
+    /// from `doc/whatif/user-type-constructors.md` §Unified [type ...] Syntax rule 1.
+    ///
+    /// Set to `Some(param_names)` before resolving a TypeAlias body and cleared immediately after.
+    /// All other inference code leaves this as `None` (no scope enforcement).
+    pub type_params_scope: Option<std::collections::HashSet<String>>,
 }
 
 impl InferState {
@@ -602,6 +613,7 @@ impl InferState {
             registered_nominal_tags: HashMap::new(),
             type_annotation_table: crate::ast::TypeAnnotationTable::new(),
             expects_resolved: HashMap::new(),
+            type_params_scope: None,
         }
     }
 

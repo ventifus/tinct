@@ -6,9 +6,10 @@ use std::sync::Arc;
 
 use super::{infer_surface_expr, resolve_annotation, resolve_type_expr, TypeMap};
 use crate::ast::{Span, Spanned, SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceNode};
+use crate::type_def::{TyConDef, Variance};
 use crate::types::{
-    generalize_with_doc, unify, InferState, Row, Substitution, Type, TypeAlias, TypeEnv, TypeError,
-    TypeScheme,
+    generalize_with_doc, unify, ClassEnv, InferState, InstanceEnv, Row, Substitution, Type,
+    TypeAlias, TypeEnv, TypeError, TypeScheme,
 };
 
 /// Inject NominalVariant constructor function types into `dict_env` for ADT constructor scoping.
@@ -370,6 +371,18 @@ pub(crate) fn infer_dict(
     // entries are invisible during nested inference, then restored when nesting exits.
     let saved_levels = std::mem::take(&mut state.levels);
 
+    // ClassEnv parent-chain scoping (T-954): create a child ClassEnv frame for this dict scope.
+    // Classes declared in this dict's body (via [class ...]) are local to this scope.
+    // Lookups walk the child → parent chain so outer classes remain visible.
+    // We use mem::take to extract the current class_env (replacing state.class_env with a
+    // temporary empty env), then wrap it in Arc and create a child frame.
+    let outer_class_env = Arc::new(std::mem::take(&mut state.class_env));
+    state.class_env = ClassEnv::child(Arc::clone(&outer_class_env));
+
+    // InstanceEnv parent-chain scoping (T-955): same pattern as ClassEnv.
+    let outer_instance_env = Arc::new(std::mem::take(&mut state.instance_env));
+    state.instance_env = InstanceEnv::child(Arc::clone(&outer_instance_env));
+
     let mut dict_env = TypeEnv::with_parent(env);
     let mut key_entries: Vec<(Option<String>, bool)> = Vec::new();
     let mut auto_index: i64 = 0;
@@ -400,26 +413,100 @@ pub(crate) fn infer_dict(
         if *is_alias {
             if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
                 if let SurfaceDeclaration::TypeAlias { params, body } = decl.as_ref() {
+                    // [builtin-type "X"] body recognition (T-957).
+                    // When the type body is a call `[builtin-type "DiscriminantName"]`,
+                    // create a TyConDef with builtin_type discriminant instead of resolving
+                    // it as a normal type expression.
+                    //
+                    // Pattern: SurfaceExpression::Call { func: VarRef("builtin-type"),
+                    //   args: [Str("X")], implied: true }
+                    let builtin_type_discriminant: Option<String> = {
+                        match &body.expr {
+                            SurfaceExpression::Call {
+                                func,
+                                args,
+                                named_args,
+                                implied: true,
+                            } if named_args.is_empty() && args.len() == 1 => {
+                                if let SurfaceExpression::VarRef {
+                                    name: func_name, ..
+                                } = &func.expr
+                                {
+                                    if func_name == "builtin-type" {
+                                        if let SurfaceExpression::Str(discriminant) = &args[0].expr
+                                        {
+                                            Some(discriminant.clone())
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        }
+                    };
+
+                    if let Some(discriminant) = builtin_type_discriminant {
+                        // Register as a builtin-type TyConDef: no constructors, builtin discriminant.
+                        // Variance is Invariant for each param (conservative; inferred from body
+                        // is not applicable for opaque builtins).
+                        if let Some(alias_name) = key_name {
+                            let n_params = params.len();
+                            let tycon_def = TyConDef {
+                                variance: vec![Variance::Invariant; n_params],
+                                constructors: vec![],
+                                builtin_type: Some(discriminant),
+                            };
+                            dict_env.insert_tycon_def(alias_name.clone(), tycon_def.clone());
+                            state.tycon_env.insert(alias_name.clone(), tycon_def);
+                            // Register a zero-param type alias so annotation resolution
+                            // can find the name (e.g., `@Int` → Type::TyCon("Int")).
+                            dict_env.insert_type_alias(
+                                alias_name.clone(),
+                                TypeAlias {
+                                    params: vec![],
+                                    body: Type::TyCon(alias_name.clone()),
+                                },
+                            );
+                        }
+                        continue; // Skip normal body resolution for builtin-type declarations.
+                    }
+
                     let mut alias_ann_map: HashMap<String, String> = HashMap::new();
-                    for p in params {
+                    for (p, _ann) in params {
                         let n = state.subst.name_counter.get();
                         let fresh = format!("_t{}", n);
                         state.subst.name_counter.set(n.saturating_add(1));
                         state.levels.insert(fresh.clone(), state.level);
                         alias_ann_map.insert(p.clone(), fresh.clone());
                     }
-                    if let Ok(alias_ty) = resolve_type_expr(
+                    // Set type_params_scope for T-951: enforce explicit type param scoping
+                    // during TypeAlias body resolution.
+                    let param_names_set: std::collections::HashSet<String> =
+                        params.iter().map(|(n, _)| n.clone()).collect();
+                    state.type_params_scope = Some(param_names_set);
+
+                    let alias_result = resolve_type_expr(
                         body,
                         &Rc::new(dict_env.clone()),
                         state,
                         &mut Some(&mut alias_ann_map),
                         &mut None,
-                    ) {
+                    );
+
+                    // Always clear type_params_scope after resolution.
+                    state.type_params_scope = None;
+
+                    if let Ok(alias_ty) = alias_result {
                         // Register the named alias (keyed entries only)
                         if let Some(name) = key_name {
                             let remapped_params: Vec<String> = params
                                 .iter()
-                                .map(|p| alias_ann_map.get(p).cloned().unwrap())
+                                .map(|(p, _)| alias_ann_map.get(p).cloned().unwrap())
                                 .collect();
                             dict_env.insert_type_alias(
                                 name.clone(),
@@ -1001,6 +1088,45 @@ pub(crate) fn infer_dict(
     // saved_levels drops all of this dict's level entries and reinstates the enclosing dict's
     // entries, exactly mirroring the child Substitution frame restore above.
     state.levels = saved_levels;
+
+    // Restore enclosing ClassEnv and InstanceEnv frames (T-954, T-955).
+    //
+    // T-954/T-955 BUG FIX: classes and instances declared inside this dict's body (via
+    // [class ...] / [instance ...]) were registered into the CHILD frame (state.class_env /
+    // state.instance_env during inference). Simply restoring the outer frame discards them,
+    // preventing prelude-declared classes (MonadResult, FunctorResult, etc.) from appearing
+    // in PRELUDE_INSTANCE_CACHE and thus from being visible in user code.
+    //
+    // Fix: collect locally-declared classes/instances from the child frame and merge them into
+    // the outer frame BEFORE restoring. iter_classes() / iter_instances() iterate only the
+    // current frame (no parent traversal), so this propagates exactly the dict-local declarations
+    // without double-inserting the parent-chain entries already in the outer frame.
+    //
+    // This makes class/instance declarations propagate upward from any dict scope, which matches
+    // the observed semantics: prelude-level class/instance declarations must be visible globally.
+    // If future work requires true local-scoped classes (invisible outside the declaring dict),
+    // a separate mechanism (export list or explicit opt-out) would be needed.
+    {
+        // Collect local child declarations before taking the child env for restoration.
+        let child_classes: Vec<_> = state.class_env.iter_classes().cloned().collect();
+        let child_instances: Vec<_> = state.instance_env.iter_instances().cloned().collect();
+
+        // Recover the outer frame (try_unwrap succeeds if no other Arc clone holds a reference
+        // to the outer env; falls back to clone if the child still holds a parent reference).
+        let mut outer_ce = Arc::try_unwrap(outer_class_env).unwrap_or_else(|arc| (*arc).clone());
+        let mut outer_ie = Arc::try_unwrap(outer_instance_env).unwrap_or_else(|arc| (*arc).clone());
+
+        // Merge child-local declarations into the outer frame.
+        for class_decl in child_classes {
+            outer_ce.insert_if_absent(class_decl);
+        }
+        for inst_decl in child_instances {
+            let _ = outer_ie.insert(inst_decl);
+        }
+
+        state.class_env = outer_ce;
+        state.instance_env = outer_ie;
+    }
 
     // Restore enclosing level
     state.level = enclosing_level;

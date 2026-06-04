@@ -1,0 +1,20 @@
+# S-843 T-958: ClassEnv parent-chain scoping (T-954) regression.
+# A user class declared inside an inner dict scope is visible within that scope.
+# The outer dict only sees its own scope — inner class declarations don't escape.
+# Prelude classes remain accessible via the root parent frame in the parent chain.
+# This test verifies that the class declaration is processed by the type checker
+# without errors and that runtime evaluation still produces the correct output.
+[
+  # User class and instance declared inside a nested dict — scoped to that dict
+  inner: [
+    MyTag: [class [let MyTag a]
+      tag: [Fn@String [a]]]
+    result: [+ 10 5]
+  ]
+]
+
+---
+
+%.inner.result
+=== out
+Int(15)

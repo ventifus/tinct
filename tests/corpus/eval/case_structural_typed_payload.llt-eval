@@ -8,5 +8,4 @@
 Int(100)
 
 === warn
-unreachable match arm: this pattern is already covered by prior arms at 4:3-4:27
-unreachable match arm: this pattern is already covered by prior arms at 5:3-5:26
+undefined variable: Ok at 1:10-1:12

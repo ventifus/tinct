@@ -241,27 +241,37 @@ fn is_subtype_recursive(a: &Type, b: &Type, visited: &mut HashSet<(TypeId, TypeI
 
 ### Unification
 
-During HM unification, `unify(Type::Recursive, Type::Recursive)` unfolds both sides once and continues:
+Both unification cases use **simultaneous opening**: replace the `RecVar` binder with a shared fresh `TypeVar`, then unify the opened bodies. This terminates because the fresh `TypeVar` is a unification variable — not a `Type::Recursive` — so neither arm fires again on the opened bodies.
 
 ```rust
 match (a, b) {
     (Type::Recursive { var: v1, body: b1 },
      Type::Recursive { var: v2, body: b2 }) => {
-        // Unfold both, unify under the coinductive hypothesis
+        // Open both binders with one shared fresh TypeVar.
+        // The fresh var is a unification variable — not Recursive —
+        // so this arm cannot fire again on the opened bodies.
         let fresh = state.fresh_type_var();
         let a_open = substitute(b1, v1, &fresh);
         let b_open = substitute(b2, v2, &fresh);
         unify(a_open, b_open, subst, state)
     }
-    (Type::Recursive { .. }, other) => {
-        let unfolded = unfold_once(a);
-        unify(&unfolded, other, subst, state)
+    (Type::Recursive { var: v1, body: b1 }, other) => {
+        // Treat `other` as μ_fresh.other (trivial recursive type,
+        // binder does not appear in body). Open the real binder
+        // with a fresh TypeVar and unify the opened body with other.
+        // The fresh var replaces RecVar(v1) in b1; other contains
+        // no RecVar — so Recursive arms cannot fire again.
+        let fresh = state.fresh_type_var();
+        let a_open = substitute(b1, v1, &fresh);
+        unify(a_open, other, subst, state)
     }
     ...
 }
 ```
 
-Unifying a recursive type with a non-recursive type unfolds the recursive type once and re-tries. This terminates because each unfold is structurally smaller (the `RecVar` references become the concrete type the variable is unified with, eliminating the recursive reference).
+The symmetric case terminates: both opened bodies contain only `fresh` (a `TypeVar`) at recursive positions — standard Robinson unification applies. The asymmetric case terminates for the same reason: `a_open` replaces `RecVar(v1)` with `fresh`, a `TypeVar`; `other` contains no `RecVar`; the `Recursive` arm cannot re-fire.
+
+`unfold_once` — which replaces `RecVar` with the full `Recursive` type, making the tree **larger** — is used only in subtype checking (where the visited-pairs set prevents divergence), not in unification.
 
 ### Mutual Recursion
 

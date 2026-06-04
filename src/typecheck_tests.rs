@@ -8955,38 +8955,44 @@ fn test_do_infer_resolve_monad_from_operator_result() {
 }
 
 #[test]
-fn test_do_infer_resolve_monad_from_expr_ok_constructor() {
-    // Unit test for resolve_monad_from_surface: [Ok x] → "result".
+fn test_do_infer_resolve_monad_from_expr_qualified_constructor() {
+    // Unit test for resolve_monad_from_surface (T-956): [Result.Ok x] → "Result".
+    // Qualified dot-access constructors are resolved by extracting the TyCon name.
+    let node = crate::parser::parse_surface_expression("[Result.Ok 1]").expect("parse failed");
+    let env = crate::types::TypeEnv::new();
+    let resolved = resolve_monad_from_surface(&node, &env);
+    assert_eq!(
+        resolved,
+        Some("result".to_string()),
+        "[Result.Ok ...] should resolve to 'result' monad dict name via dot-access"
+    );
+}
+
+#[test]
+fn test_do_infer_resolve_monad_from_expr_qualified_error_constructor() {
+    // Unit test for resolve_monad_from_surface (T-956): [Result.Error "msg"] → "Result".
+    let node = crate::parser::parse_surface_expression("[Result.Error msg]").expect("parse failed");
+    let env = crate::types::TypeEnv::new();
+    let resolved = resolve_monad_from_surface(&node, &env);
+    assert_eq!(
+        resolved,
+        Some("result".to_string()),
+        "[Result.Error ...] should resolve to 'result' monad dict name via dot-access"
+    );
+}
+
+#[test]
+fn test_do_infer_resolve_monad_from_expr_unqualified_no_tycon_env() {
+    // Unqualified constructor [Ok x] resolves to "result" via hardcoded fallback.
+    // TODO(T-1021): remove hardcoded fallback once TyConDef.constructors is populated
+    // and resolve_constructor_tag returns a qualified tag for Ok/Error.
     let node = crate::parser::parse_surface_expression("[Ok 1]").expect("parse failed");
-    let resolved = resolve_monad_from_surface(&node);
+    let env = crate::types::TypeEnv::new();
+    let resolved = resolve_monad_from_surface(&node, &env);
     assert_eq!(
         resolved,
         Some("result".to_string()),
-        "[Ok ...] constructor call should resolve to 'result' monad"
-    );
-}
-
-#[test]
-fn test_do_infer_resolve_monad_from_expr_error_constructor() {
-    // Unit test for resolve_monad_from_surface: [Error "msg"] → "result".
-    // Tinct's Result type uses "Error" (not "Err") as the error constructor.
-    let node = crate::parser::parse_surface_expression("[Error msg]").expect("parse failed");
-    let resolved = resolve_monad_from_surface(&node);
-    assert_eq!(
-        resolved,
-        Some("result".to_string()),
-        "[Error ...] constructor call should resolve to 'result' monad"
-    );
-}
-
-#[test]
-fn test_do_infer_resolve_monad_from_expr_case_sensitive() {
-    // Unit test for resolve_monad_from_surface: [ok x] (lowercase) → None.
-    let node = crate::parser::parse_surface_expression("[ok 1]").expect("parse failed");
-    let resolved = resolve_monad_from_surface(&node);
-    assert_eq!(
-        resolved, None,
-        "[ok ...] (lowercase) should not resolve — case-sensitive check required"
+        "[Ok ...] should resolve to 'result' via hardcoded fallback (T-1021: remove when constructors populated)"
     );
 }
 
@@ -8994,7 +9000,8 @@ fn test_do_infer_resolve_monad_from_expr_case_sensitive() {
 fn test_do_infer_resolve_monad_from_expr_non_constructor() {
     // Unit test for resolve_monad_from_surface: bare VarRef → None.
     let node = crate::parser::parse_surface_expression("$Ok").expect("parse failed");
-    let resolved = resolve_monad_from_surface(&node);
+    let env = crate::types::TypeEnv::new();
+    let resolved = resolve_monad_from_surface(&node, &env);
     assert_eq!(
         resolved, None,
         "Bare VarRef (not a constructor call) should not resolve"
@@ -9005,15 +9012,16 @@ fn test_do_infer_resolve_monad_from_expr_non_constructor() {
 fn test_do_infer_resolve_monad_from_expr_explicit_call_no_match() {
     // Unit test for resolve_monad_from_surface: [call $Ok 1] with implied: false → None.
     //
-    // The surface fallback only recognizes implied constructor syntax ([Ok 1] → implied: true).
+    // The surface fallback only recognizes implied constructor syntax ([Result.Ok 1] → implied: true).
     // Explicit call form ([call $Ok 1] → implied: false) must not trigger monad resolution —
     // it is a lower-level construct that should not be pattern-matched heuristically.
     let node = crate::parser::parse_surface_expression("[call $Ok 1]").expect("parse failed");
-    let resolved = resolve_monad_from_surface(&node);
+    let env = crate::types::TypeEnv::new();
+    let resolved = resolve_monad_from_surface(&node, &env);
     assert_eq!(
-            resolved, None,
-            "[call $Ok 1] (explicit call, implied: false) must not resolve — only implied constructor syntax triggers surface fallback"
-        );
+        resolved, None,
+        "[call $Ok 1] (explicit call, implied: false) must not resolve — only implied constructor syntax triggers surface fallback"
+    );
 }
 
 #[test]

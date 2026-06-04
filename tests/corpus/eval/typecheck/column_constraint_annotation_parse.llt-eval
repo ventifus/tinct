@@ -1,0 +1,13 @@
+# S-843 T-958: Column constraint annotation [_ : Int] parsed by resolve_type_dict (T-950).
+# When the key is the wildcard sentinel `_`, resolve_type_dict sets
+# RowTail::Uniform{key: None, value: Int} instead of adding to named fields.
+#
+# The function is defined but not called — tests annotation resolution only.
+# The call site (unify_rows with Empty vs Uniform) is separately deferred.
+# Absence of === warn asserts the annotation resolves cleanly (no unknown-type warning).
+[
+  f: [fn [let x@[_ : Int]] x]
+  result: 42
+]
+=== out
+Dict({"f": Function(x), "result": Int(42)})

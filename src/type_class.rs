@@ -173,37 +173,71 @@ pub struct InstanceDecl {
     pub method_types: HashMap<String, Type>,
 }
 
-/// Class environment: global registry of type class declarations.
+/// Class environment: lexically scoped registry of type class declarations.
+///
+/// Follows the same parent-chain scoping model as `TypeEnv`:
+/// - A `HashMap` per scope frame with a parent pointer
+/// - Insertions go into the current frame; lookups walk the chain (inner wins)
+/// - Prelude classes live in the root frame — visible everywhere
+/// - A class in an inner dict is visible only to that dict's descendants
+///
+/// `iter_classes()` returns only the current frame's entries (used by `imports.rs` seeding).
+/// `get()` walks the full parent chain for lookups.
+///
+/// `parent` uses `Arc` so the parent frame can be shared without cloning when creating children.
+/// `InferState` holds a plain `ClassEnv` (not Arc); on dict entry/exit, `mem::take` and
+/// parent-chain restore are used (see `typecheck_dict.rs`).
 #[derive(Debug, Clone)]
 pub struct ClassEnv {
     classes: HashMap<String, ClassDecl>,
+    parent: Option<std::sync::Arc<ClassEnv>>,
 }
 
 impl ClassEnv {
+    /// Create a new root-level (no parent) ClassEnv.
     pub fn new() -> Self {
         Self {
             classes: HashMap::new(),
+            parent: None,
         }
     }
 
-    /// Look up a class declaration by name.
-    pub fn get(&self, name: &str) -> Option<&ClassDecl> {
-        self.classes.get(name)
+    /// Create a child ClassEnv frame whose parent is `parent`.
+    ///
+    /// Classes declared in the child frame are local and do not affect the parent.
+    /// Lookups walk child → parent chain with inner-wins semantics.
+    pub fn child(parent: std::sync::Arc<ClassEnv>) -> Self {
+        Self {
+            classes: HashMap::new(),
+            parent: Some(parent),
+        }
     }
 
+    /// Look up a class declaration by name, walking the parent chain (inner wins).
+    pub fn get(&self, name: &str) -> Option<&ClassDecl> {
+        if let Some(decl) = self.classes.get(name) {
+            return Some(decl);
+        }
+        self.parent.as_ref().and_then(|p| p.get(name))
+    }
+
+    /// Insert a class declaration into the CURRENT frame.
     pub fn insert(&mut self, class_decl: ClassDecl) {
         self.classes.insert(class_decl.name.clone(), class_decl);
     }
 
-    /// Insert a class declaration only if no class with that name is already registered.
+    /// Insert a class declaration only if no class with that name is already visible
+    /// (checks the full parent chain before inserting into the current frame).
     /// Used when seeding from the prelude cache to avoid overwriting user-defined classes.
     pub fn insert_if_absent(&mut self, class_decl: ClassDecl) {
-        self.classes
-            .entry(class_decl.name.clone())
-            .or_insert(class_decl);
+        if self.get(&class_decl.name).is_none() {
+            self.classes.insert(class_decl.name.clone(), class_decl);
+        }
     }
 
-    /// Iterate over all locally registered class declarations (does not traverse parent chain).
+    /// Iterate over class declarations in the CURRENT frame only (no parent traversal).
+    ///
+    /// Used by `imports.rs` seeding, which only needs to enumerate locally-introduced classes.
     pub fn iter_classes(&self) -> impl Iterator<Item = &ClassDecl> {
         self.classes.values()
     }
@@ -215,26 +249,45 @@ impl Default for ClassEnv {
     }
 }
 
-/// Instance environment: global registry of type class instances.
+/// Instance environment: lexically scoped registry of type class instances.
 ///
-/// Instances are stored with a key of `(class_name, determining_type_strings)` for fast
-/// exact-match lookup, where `determining_type_strings` is the vec of string-formatted types
-/// at the class's determining (LHS of functional dependency) positions. For single-parameter
-/// classes with no functional dependencies the key vec has one element: the string
-/// representation of the sole instance type.
+/// Follows the same parent-chain scoping model as `ClassEnv` and `TypeEnv`:
+/// - Instances are stored with a key of `(class_name, determining_type_strings)` for fast
+///   exact-match lookup in the current frame.
+/// - Insertions go into the current frame; lookups (via `lookup_mptc`) walk the chain.
+/// - Prelude instances live in the root frame — visible everywhere.
+/// - An instance in an inner dict is visible only to that dict's descendants.
 ///
-/// This representation supports both single-parameter and multi-parameter type class (MPTC)
-/// instances with functional dependencies. The `lookup_mptc` query API uses structural
-/// unification to match instances, correctly handling HKT instance heads with type variables.
+/// **Local coherence:** Within a single scope frame, at most one instance per `(Class, Type)`
+/// pair is allowed. Across scope levels, shadowing is allowed — the innermost instance wins.
+/// Two `[instance [Monad Result] ...]` in the same dict is a type error; one in an outer
+/// scope and one in an inner scope is valid (inner shadows).
+///
+/// The comment "Globally registered: coherence requires global uniqueness" no longer applies.
+/// Lexically scoped with frame-local coherence enforced at insertion time.
 #[derive(Debug, Clone)]
 pub struct InstanceEnv {
     instances: HashMap<(String, Vec<String>), InstanceDecl>,
+    parent: Option<std::sync::Arc<InstanceEnv>>,
 }
 
 impl InstanceEnv {
+    /// Create a new root-level (no parent) InstanceEnv.
     pub fn new() -> Self {
         Self {
             instances: HashMap::new(),
+            parent: None,
+        }
+    }
+
+    /// Create a child InstanceEnv frame whose parent is `parent`.
+    ///
+    /// Instances declared in the child frame are local and do not affect the parent.
+    /// Lookups walk child → parent chain with inner-wins semantics.
+    pub fn child(parent: std::sync::Arc<InstanceEnv>) -> Self {
+        Self {
+            instances: HashMap::new(),
+            parent: Some(parent),
         }
     }
 
@@ -497,6 +550,11 @@ impl InstanceEnv {
             }
         }
 
+        // No match in current frame — walk parent chain.
+        if let Some(parent) = &self.parent {
+            return parent.lookup_mptc(class, determining_types, state);
+        }
+
         None
     }
 
@@ -630,6 +688,11 @@ impl InstanceEnv {
             }
         }
 
+        // No match in current frame — walk parent chain.
+        if let Some(parent) = &self.parent {
+            return parent.reverse_lookup_mptc(class, ded_positions, ded_types, state);
+        }
+
         None
     }
 
@@ -641,6 +704,35 @@ impl InstanceEnv {
     /// Return the number of registered instances.
     pub fn instance_count(&self) -> usize {
         self.instances.len()
+    }
+
+    /// Look up an instance by class name and TyCon name, walking the parent chain.
+    ///
+    /// This is a fast, InferState-free lookup for the common case where the instance head is
+    /// a bare `TyCon` (e.g., `[instance [Monad Result] ...]` → `instance_type = TyCon("Result")`).
+    /// Returns the innermost matching instance (most local scope wins).
+    ///
+    /// Available for `[do ...]` desugaring to resolve monad instances without a live
+    /// `InferState`, unlike the full unification-based `lookup_mptc`.
+    /// Currently has no external callers — provided for future use by the do-inference path.
+    ///
+    /// Note: only matches instances whose `instance_type` is a bare `Type::TyCon(n)` —
+    /// parameterized instances (e.g., `Seq[T]`) are not matched by this method.
+    pub fn lookup_scoped(&self, class_name: &str, tycon_name: &str) -> Option<&InstanceDecl> {
+        // Check local frame first — inner scope wins.
+        for ((cname, _), inst) in &self.instances {
+            if cname == class_name {
+                if let Type::TyCon(n) = &inst.instance_type {
+                    if n == tycon_name {
+                        return Some(inst);
+                    }
+                }
+            }
+        }
+        // Walk parent chain if not found in this frame.
+        self.parent
+            .as_ref()
+            .and_then(|p| p.lookup_scoped(class_name, tycon_name))
     }
 
     /// Resolve an instance for the given class and target type using specificity-based selection.
@@ -674,13 +766,24 @@ impl InstanceEnv {
         target_type: &Type,
         state: &mut InferState,
     ) -> Result<Option<InstanceDecl>, String> {
-        // Collect all instances for this class.
+        // Collect all instances for this class from the CURRENT FRAME only.
+        // If no candidates in the current frame, delegate to parent.
+        // This implements inner-wins semantics: the innermost frame with ANY instance
+        // for this class takes precedence over the parent chain entirely.
         let mut candidates: Vec<&InstanceDecl> = Vec::new();
 
         for ((cname, _), inst) in &self.instances {
             if cname == class_name {
                 candidates.push(inst);
             }
+        }
+
+        // If no candidates in the current frame, walk the parent chain.
+        if candidates.is_empty() {
+            if let Some(parent) = &self.parent {
+                return parent.resolve_instance(class_name, target_type, state);
+            }
+            return Ok(None);
         }
 
         // Pass 1: probe each candidate; collect (specificity_score, instance) for all that match.

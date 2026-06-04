@@ -5,3 +5,6 @@
 [E002] undefined variable: FoldableResult (defined at 1:2-1:16) (accessed at 1:1-1:32)
   in accessing .to-seq at 1:2-1:23
   in [<dot-access> ...] at 1:1-1:32
+
+=== warn
+expected record type, got <error> at 1:2-1:23

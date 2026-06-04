@@ -393,7 +393,14 @@ impl fmt::Display for SurfaceDeclaration {
                 if params.is_empty() {
                     write!(f, "[type {}]", body)
                 } else {
-                    write!(f, "[type [{}] {}]", params.join(" "), body)
+                    let param_strs: Vec<String> = params
+                        .iter()
+                        .map(|(name, ann)| match ann {
+                            Some(a) => format!("{name}@{a}"),
+                            None => name.clone(),
+                        })
+                        .collect();
+                    write!(f, "[type [{}] {}]", param_strs.join(" "), body)
                 }
             }
             SurfaceDeclaration::ClassDecl {
@@ -679,6 +686,32 @@ pub struct SurfaceParam {
     pub variadic: bool,
 }
 
+/// Flatten a dot-access chain into a qualified tag string, or return `None` if the
+/// chain contains a non-identifier segment (e.g., a numeric index).
+///
+/// Examples:
+/// - `VarRef("Result")` → `"Result"`
+/// - `DotAccess(VarRef("Result"), "Ok")` → `"Result.Ok"`
+/// - `DotAccess(DotAccess(VarRef("Net"), "Transport"), "Tcp")` → `"Net.Transport.Tcp"`
+/// - `DotAccess(_, Int(0))` → `None` (numeric index)
+///
+/// Used by the parser (constructor patterns) and `typecheck_special.rs` (monad resolution).
+/// Defined in `src/ast.rs` as `pub(crate)` since both callers import from here.
+pub(crate) fn flatten_dot_access_to_tag(expr: &SurfaceExpression) -> Option<String> {
+    match expr {
+        SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+        SurfaceExpression::DotAccess {
+            expr,
+            field: DotKey::Ident(s),
+        } => Some(format!("{}.{}", flatten_dot_access_to_tag(&expr.expr)?, s)),
+        SurfaceExpression::DotAccess {
+            field: DotKey::Int(_),
+            ..
+        } => None, // numeric index in a dot chain is not a constructor name
+        _ => None,
+    }
+}
+
 /// A match arm in a SurfaceExpression::Match.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceMatchArm {
@@ -692,7 +725,10 @@ pub struct SurfaceMatchArm {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SurfaceDeclaration {
     TypeAlias {
-        params: Vec<String>,
+        /// Type parameter names, each with an optional variance/class annotation name.
+        /// The annotation is the bare name from `@X` in `[let a@X b@Y c]`, e.g. `"Covariant"`.
+        /// `None` means no annotation was given (untyped / infer variance from body).
+        params: Vec<(String, Option<String>)>,
         body: Arc<SurfaceNode>,
     },
     ClassDecl {

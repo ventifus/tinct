@@ -2,3 +2,6 @@
 [ok? [Error "failure"]]
 === out
 Bool(false)
+
+=== warn
+undefined variable: Error at 1:7-1:12

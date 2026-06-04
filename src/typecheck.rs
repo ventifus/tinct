@@ -939,7 +939,14 @@ fn register_type_aliases(
 
         // Pass 1: Collect alias names and pre-register placeholders
         // Each entry carries (alias_name, params, body_node, declaration_span).
-        let mut alias_entries: Vec<(String, Vec<String>, Arc<SurfaceNode>, Span)> = Vec::new();
+        // params is Vec<(String, Option<String>)>: (param_name, optional variance/class annotation).
+        #[allow(clippy::type_complexity)]
+        let mut alias_entries: Vec<(
+            String,
+            Vec<(String, Option<String>)>,
+            Arc<SurfaceNode>,
+            Span,
+        )> = Vec::new();
         for entry in entries {
             if let Some(ref key) = entry.node.key {
                 if let SurfaceExpression::Str(name) = &key.expr {
@@ -953,10 +960,12 @@ fn register_type_aliases(
                             ));
                             // Pre-register with placeholder body
                             // Gradual: Pre-register with placeholder during forward-reference resolution
+                            let param_names: Vec<String> =
+                                params.iter().map(|(n, _)| n.clone()).collect();
                             target_env.insert_type_alias(
                                 name.clone(),
                                 TypeAlias {
-                                    params: params.clone(),
+                                    params: param_names,
                                     body: Type::Unknown,
                                 },
                             );
@@ -968,18 +977,81 @@ fn register_type_aliases(
 
         // Pass 2: Resolve actual bodies
         for (name, params, body_node, decl_span) in alias_entries {
+            // [builtin-type "X"] detection (T-957): if the body is a `[builtin-type "X"]` call,
+            // create a TyConDef with the builtin discriminant and skip normal body resolution.
+            let builtin_type_discriminant: Option<String> = {
+                match &body_node.expr {
+                    SurfaceExpression::Call {
+                        func,
+                        args,
+                        named_args,
+                        implied: true,
+                    } if named_args.is_empty() && args.len() == 1 => {
+                        if let SurfaceExpression::VarRef {
+                            name: func_name, ..
+                        } = &func.expr
+                        {
+                            if func_name == "builtin-type" {
+                                if let SurfaceExpression::Str(discriminant) = &args[0].expr {
+                                    Some(discriminant.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            };
+
+            if let Some(discriminant) = builtin_type_discriminant {
+                let n_params = params.len();
+                let tycon_def = TyConDef {
+                    variance: vec![Variance::Invariant; n_params],
+                    constructors: vec![],
+                    builtin_type: Some(discriminant),
+                };
+                target_env.insert_tycon_def(name.clone(), tycon_def.clone());
+                state.tycon_env.insert(name.clone(), tycon_def);
+                // Register a zero-param type alias for annotation resolution.
+                target_env.insert_type_alias(
+                    name.clone(),
+                    TypeAlias {
+                        params: vec![],
+                        body: Type::TyCon(name.clone()),
+                    },
+                );
+                continue; // Skip normal body resolution for builtin-type declarations.
+            }
+
             // Use a fresh per-alias mapping so annotation names within one type
             // alias expression (e.g., `a` in `[Fn@a [a]]`) consistently map to
             // the same fresh TypeVar. Without a mapping, every occurrence of `@a`
             // creates a distinct fresh var, breaking identity-function types.
             let mut alias_ann_map: HashMap<String, String> = HashMap::new();
+            // Per-param declared variance (from @X annotation); None = infer from body.
+            let mut declared_variances: Vec<Option<crate::type_def::Variance>> =
+                vec![None; params.len()];
             // Pre-seed param names so they map to fresh TypeVars.
-            for p in &params {
+            for (idx, (p, ann)) in params.iter().enumerate() {
                 let n = state.subst.name_counter.get();
                 let fresh = format!("_t{}", n);
                 state.subst.name_counter.set(n.saturating_add(1));
                 state.levels.insert(fresh.clone(), state.level);
                 alias_ann_map.insert(p.clone(), fresh.clone());
+                // Process variance annotation if present (T-953).
+                if let Some(ann_name) = ann {
+                    if let Some(v) = typecheck_annot::annotation_to_variance(ann_name) {
+                        declared_variances[idx] = Some(v);
+                    }
+                    // If annotation_to_variance returns None: could be a typeclass constraint.
+                    // Class constraint processing is deferred to T-953 Phase B (class lookup).
+                    // For now: if not a variance annotation, leave as None (will become Invariant).
+                }
             }
 
             // Create a recursion guard for this alias resolution.
@@ -990,7 +1062,12 @@ fn register_type_aliases(
             let mut recursion_guard = HashSet::new();
             recursion_guard.insert(name.clone());
 
-            match resolve_type_expr_with_guard(
+            // Set type_params_scope so that resolve_type_name enforces explicit param scoping
+            // (T-951): inside a TypeAlias body, lowercase names are TypeVars only if declared.
+            let param_names_set: HashSet<String> = params.iter().map(|(n, _)| n.clone()).collect();
+            state.type_params_scope = Some(param_names_set);
+
+            let body_resolve_result = resolve_type_expr_with_guard(
                 &body_node,
                 target_env, // Now resolve in target_env so recursive refs are visible
                 state,
@@ -999,7 +1076,12 @@ fn register_type_aliases(
                 &mut recursion_guard,
                 &name,
                 0,
-            ) {
+            );
+
+            // Always clear type_params_scope after body resolution, regardless of success/failure.
+            state.type_params_scope = None;
+
+            match body_resolve_result {
                 Ok(alias_ty) => {
                     // W042: check each NominalVariant tag name in the resolved body against
                     // the global registry. Two separate [type ...] declarations with the same
@@ -1028,24 +1110,31 @@ fn register_type_aliases(
                     // Use the fresh names assigned to params
                     let remapped_params: Vec<String> = params
                         .iter()
-                        .map(|p| alias_ann_map.get(p).cloned().unwrap())
+                        .map(|(p, _)| alias_ann_map.get(p).cloned().unwrap())
                         .collect();
                     // Update with actual body
                     target_env.insert_type_alias(
                         name.clone(),
                         TypeAlias {
-                            params: remapped_params,
-                            body: alias_ty,
+                            params: remapped_params.clone(),
+                            body: alias_ty.clone(),
                         },
                     );
 
+                    // Polarity analysis (T-952): infer variance for each param from the alias body.
+                    // Then merge with declared variances from @X annotations (declared wins).
+                    // The type_env used for TyCon lookup in nested App nodes.
+                    let inferred_variances =
+                        typecheck_annot::infer_variance(&alias_ty, &remapped_params, target_env);
+                    let final_variances: Vec<Variance> = declared_variances
+                        .iter()
+                        .zip(inferred_variances.iter())
+                        .map(|(decl, inferred)| decl.unwrap_or(*inferred))
+                        .collect();
+
                     // Register TyConDef for TyCon identity checking and variance-directed subtyping.
-                    // Variance annotations are not yet parsed (S-843/S-844), so all parameters
-                    // are conservatively Invariant. Constructors are populated in S-843.
-                    // This ensures is_subtype can look up user-defined types via state.tycon_env
-                    // even before full variance inference is implemented.
                     let tycon_def = TyConDef {
-                        variance: vec![Variance::Invariant; params.len()],
+                        variance: final_variances,
                         constructors: vec![],
                         builtin_type: None,
                     };

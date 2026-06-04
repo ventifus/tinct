@@ -442,7 +442,7 @@ const MAX_SUBTYPE_DEPTH: usize = 256;
 ///
 /// Arguments are returned in application order (left-to-right): the leftmost parameter of
 /// the original `[type Foo a b]` declaration is `args[0]`, the rightmost is `args[n-1]`.
-fn extract_tycon_spine<'a>(ty: &'a Type) -> Option<(&'a str, Vec<&'a Type>)> {
+fn extract_tycon_spine(ty: &Type) -> Option<(&str, Vec<&Type>)> {
     let mut args = Vec::new();
     let mut cur = ty;
     loop {

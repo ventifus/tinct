@@ -6,7 +6,196 @@ use std::sync::Arc;
 
 use super::{check_surface_expr, contains_unknown_or_top, infer_surface_expr, TypeMap};
 use crate::ast::{Annotation, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode};
+use crate::type_def::Variance;
 use crate::types::{Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
+
+/// Convert a variance annotation name to a `Variance` value (T-953).
+///
+/// Used in `[let a@Covariant b@Contravariant c]` type parameter processing:
+/// before checking if the annotation is a typeclass name in ClassEnv, call
+/// this function to handle variance annotations first.
+///
+/// Returns `Some(v)` for known variance names, `None` for everything else
+/// (which is then checked against ClassEnv as a typeclass constraint).
+pub(crate) fn annotation_to_variance(name: &str) -> Option<Variance> {
+    match name {
+        "Covariant" => Some(Variance::Covariant),
+        "Contravariant" => Some(Variance::Contravariant),
+        "Invariant" => Some(Variance::Invariant),
+        "Phantom" => Some(Variance::Phantom),
+        _ => None,
+    }
+}
+
+/// Polarity context for variance analysis (T-952, Dolan 2017 §4).
+#[derive(Clone, Copy)]
+enum Polarity {
+    Positive,
+    Negative,
+}
+
+impl Polarity {
+    fn flip(self) -> Self {
+        match self {
+            Polarity::Positive => Polarity::Negative,
+            Polarity::Negative => Polarity::Positive,
+        }
+    }
+}
+
+/// Infer variance for each type parameter by performing polarity analysis on the alias body.
+///
+/// Implements Dolan 2017 §4 polarity analysis. Walks the body type with a current
+/// polarity context, classifying each TypeVar's occurrences:
+/// - Appears only in positive positions → Covariant
+/// - Appears only in negative positions → Contravariant
+/// - Appears in both → Invariant
+/// - Never appears → Phantom
+///
+/// `params` are the FRESH TypeVar names (e.g., `_t0`, `_t1`) that params were remapped to.
+/// Called after alias body resolution so we operate on real `Type` values.
+pub(crate) fn infer_variance(body: &Type, params: &[String], type_env: &TypeEnv) -> Vec<Variance> {
+    let n = params.len();
+    let mut pos_seen = vec![false; n];
+    let mut neg_seen = vec![false; n];
+
+    walk_polarity(
+        body,
+        Polarity::Positive,
+        params,
+        &mut pos_seen,
+        &mut neg_seen,
+        type_env,
+    );
+
+    pos_seen
+        .iter()
+        .zip(neg_seen.iter())
+        .map(|(&pos, &neg)| match (pos, neg) {
+            (true, false) => Variance::Covariant,
+            (false, true) => Variance::Contravariant,
+            (true, true) => Variance::Invariant,
+            (false, false) => Variance::Phantom,
+        })
+        .collect()
+}
+
+/// Recursive polarity walker for variance inference.
+fn walk_polarity(
+    ty: &Type,
+    pol: Polarity,
+    params: &[String],
+    pos_seen: &mut Vec<bool>,
+    neg_seen: &mut Vec<bool>,
+    type_env: &TypeEnv,
+) {
+    match ty {
+        Type::TypeVar(name, _) => {
+            if let Some(i) = params.iter().position(|p| p == name) {
+                match pol {
+                    Polarity::Positive => pos_seen[i] = true,
+                    Polarity::Negative => neg_seen[i] = true,
+                }
+            }
+        }
+        Type::Record(row) => {
+            // Record fields are in covariant (positive) position.
+            for t in row.fields.values() {
+                walk_polarity(t, pol, params, pos_seen, neg_seen, type_env);
+            }
+        }
+        Type::Function {
+            params: fn_params,
+            ret,
+            ..
+        } => {
+            // Function parameters are contravariant (flip polarity).
+            for (_, pt) in fn_params {
+                walk_polarity(pt, pol.flip(), params, pos_seen, neg_seen, type_env);
+            }
+            // Return type is covariant.
+            walk_polarity(ret, pol, params, pos_seen, neg_seen, type_env);
+        }
+        Type::App(f, arg) => {
+            // Check if f is a TyCon with known variance for the argument.
+            if let Type::TyCon(tcon_name) = f.as_ref() {
+                if let Some(def) = type_env.lookup_tycon_def(tcon_name) {
+                    // Single-argument application: use the first declared variance.
+                    if let Some(var) = def.variance.first() {
+                        let effective_pol = match var {
+                            Variance::Covariant => pol,
+                            Variance::Contravariant => pol.flip(),
+                            Variance::Invariant => {
+                                // Both polarities — invariant in the argument.
+                                walk_polarity(
+                                    arg,
+                                    Polarity::Positive,
+                                    params,
+                                    pos_seen,
+                                    neg_seen,
+                                    type_env,
+                                );
+                                walk_polarity(
+                                    arg,
+                                    Polarity::Negative,
+                                    params,
+                                    pos_seen,
+                                    neg_seen,
+                                    type_env,
+                                );
+                                return;
+                            }
+                            Variance::Phantom => return, // Phantom: argument is not used.
+                        };
+                        walk_polarity(arg, effective_pol, params, pos_seen, neg_seen, type_env);
+                        return;
+                    }
+                }
+            }
+            // Unknown constructor or multi-arg App(App(..)) chain — conservative: treat as invariant.
+            // Walk both f and arg so that TypeVars inside f (e.g., App(App(TyCon("Map"), a), b)
+            // where f = App(TyCon("Map"), a)) are visited and do not register as Phantom.
+            walk_polarity(f, Polarity::Positive, params, pos_seen, neg_seen, type_env);
+            walk_polarity(f, Polarity::Negative, params, pos_seen, neg_seen, type_env);
+            walk_polarity(
+                arg,
+                Polarity::Positive,
+                params,
+                pos_seen,
+                neg_seen,
+                type_env,
+            );
+            walk_polarity(
+                arg,
+                Polarity::Negative,
+                params,
+                pos_seen,
+                neg_seen,
+                type_env,
+            );
+        }
+        Type::Union(members) | Type::Intersection(members) => {
+            // Union/Intersection members preserve the current polarity (join/meet).
+            for m in members {
+                walk_polarity(m, pol, params, pos_seen, neg_seen, type_env);
+            }
+        }
+        Type::Negation(inner) => {
+            // Negation flips polarity.
+            walk_polarity(inner, pol.flip(), params, pos_seen, neg_seen, type_env);
+        }
+        // NominalVariant fields are in covariant position — values stored in a variant
+        // constructor are accessible (read), so they vary covariantly.
+        // This ensures that `a` in `Result[Ok value: a]` is not classified as Phantom.
+        Type::NominalVariant { fields, .. } => {
+            for t in fields.fields.values() {
+                walk_polarity(t, pol, params, pos_seen, neg_seen, type_env);
+            }
+        }
+        // Concrete types (Int, Str, Bool, etc.), TyCon, Unknown, Top, Error — no TypeVar involvement.
+        _ => {}
+    }
+}
 
 pub(crate) fn expand_type_alias(
     inner: &Arc<SurfaceNode>,
@@ -1179,7 +1368,29 @@ pub(crate) fn resolve_annotation(
                     Ok(Type::handle(cap_type))
                 }
                 _ => {
-                    // Unknown parameterized type — could be a type alias or error
+                    // Try TyConDef lookup for user-defined parameterized types (T-949).
+                    // Handles `@Tree@Int` where Tree is a user-defined TyCon with arity 1.
+                    if let Some(def) = env.lookup_tycon_def(name) {
+                        if def.arity() >= 1 {
+                            // Resolve the inner annotation as the first type argument.
+                            let arg = resolve_annotation(
+                                inner,
+                                env,
+                                span,
+                                state,
+                                ann_mapping,
+                                row_ann_mapping,
+                            )?;
+                            return Ok(Type::App(
+                                Box::new(Type::TyCon(name.clone())),
+                                Box::new(arg),
+                            ));
+                        } else if def.arity() == 0 {
+                            // Zero-arity TyCon with annotation — unusual but valid.
+                            return Ok(Type::TyCon(name.clone()));
+                        }
+                    }
+                    // Unknown parameterized type — no TyConDef found
                     Err(TypeError::new(
                         format!("unknown parameterized type: {}", name),
                         span,
@@ -1687,6 +1898,32 @@ pub(crate) fn resolve_type_name(
         }
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
+                // Type parameter scope enforcement (T-951).
+                // When inside a TypeAlias body resolution (state.type_params_scope is Some),
+                // lowercase names are TypeVars ONLY if they appear in the declared params list.
+                // Unknown lowercase names are a type error rather than silently creating a
+                // fresh TypeVar — enforcing the "explicit type params" principle.
+                if let Some(ref params) = state.type_params_scope {
+                    // Check if this name is a declared type param (via ann_mapping which maps
+                    // param name → fresh TypeVar name). If not, check if it's a scope reference
+                    // (a TyConDef or TypeAlias visible in the current env), else error.
+                    let in_params = ann_mapping.as_ref().is_some_and(|m| m.contains_key(name));
+                    if !in_params && !params.contains(name) {
+                        // Name not declared as a type parameter — check if it's a scope reference.
+                        if env.get_type_alias(name).is_none() && env.lookup_tycon_def(name).is_none() {
+                            return Err(TypeError::new(
+                                format!(
+                                    "undefined name '{name}' in type alias body — \
+                                     lowercase names must be declared as type parameters \
+                                     with [let ...] or must refer to a type in scope"
+                                ),
+                                span,
+                            ));
+                        }
+                        // It's a scope reference — fall through to normal resolution.
+                    }
+                }
+
                 // Cross-kind collision check (row→type direction): if the name was already
                 // registered as a row variable (in row_ann_mapping), it cannot also be used
                 // as a type variable. This is the symmetric counterpart to the type→row check
@@ -2437,7 +2674,32 @@ pub(crate) fn resolve_type_expr(
                 }
             }
 
+            // TyConDef-based type constructor application (T-949) in implied-call position.
+            // Primary path for user-defined type constructors in [TyCon Arg1 Arg2 ...] form.
+            // TODO(T-1018): fallback to kind_env below for Seq/Map/Handle until they have TyConDef.
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                if let Some(def) = env.lookup_tycon_def(name) {
+                    let arity = def.arity();
+                    if arity > 0 {
+                        let mut result = Type::TyCon(name.clone());
+                        let arg_count = std::cmp::min(arity, args.len());
+                        for arg_node in args.iter().take(arg_count) {
+                            let arg = resolve_type_expr(
+                                arg_node,
+                                env,
+                                state,
+                                ann_mapping,
+                                row_ann_mapping,
+                            )?;
+                            result = Type::App(Box::new(result), Box::new(arg));
+                        }
+                        return Ok(result);
+                    }
+                }
+            }
+
             // Built-in type constructor application in implied-call position.
+            // TODO(T-1018): TEMPORARY fallback for Seq/Map/Handle (not yet in TyConDef).
             // Check BEFORE parameterized alias lookup so built-in constructors have priority.
             //
             // Dispatches through `kind_env` (same as `resolve_type_dict`) to
@@ -2659,7 +2921,59 @@ pub(crate) fn resolve_type_dict(
         return Ok(fn_type);
     }
 
+    // TyConDef-based type constructor application (T-949).
+    // Primary path for user-defined and builtin type constructors declared in TyConEnv.
+    // Produces left-associative App chains: [Tree Int] → App(TyCon("Tree"), Int).
+    // Must run BEFORE the parameterized alias lookup so TyCon constructors take priority.
+    //
+    // TODO(T-1018): Remove the kind_env fallback below once Seq/Map/Handle have TyConDef entries.
+    if !entries.is_empty() {
+        if let Some(first) = entries.first() {
+            if first.node.key.is_none() {
+                if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
+                    if let Some(def) = env.lookup_tycon_def(name) {
+                        let arity = def.arity();
+                        if arity == 0 && entries.len() == 1 {
+                            // Zero-arity TyCon: bare name with no arguments.
+                            return Ok(Type::TyCon(name.clone()));
+                        } else if arity > 0 {
+                            // Collect `arity` argument types from subsequent positional entries.
+                            if entries.len() < 1 + arity {
+                                return Err(TypeError::new(
+                                    format!(
+                                        "type constructor '{}' requires {} argument(s), got {}",
+                                        name,
+                                        arity,
+                                        entries.len() - 1
+                                    ),
+                                    span,
+                                ));
+                            }
+                            let mut result = Type::TyCon(name.clone());
+                            for entry in entries.iter().take(arity + 1).skip(1) {
+                                let arg = resolve_type_expr(
+                                    &entry.node.value,
+                                    env,
+                                    state,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                )?;
+                                result = Type::App(Box::new(result), Box::new(arg));
+                            }
+                            // If there are extra entries beyond arity, they remain unused.
+                            // (For zero-arity TyCon used as a union member in a multi-entry dict,
+                            // the caller's union-detection path handles the full dict.)
+                            return Ok(result);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // General type constructor application via kind_env.
+    // TODO(T-1018): This is a TEMPORARY fallback for Seq, Map, Handle which are not yet in
+    // TyConDef. Remove this block once Seq/Map/Handle have TyConDef entries in prelude.
     // Handles both builtin constructors (Seq, Map, Handle — pre-registered in InferState::new)
     // and user-defined Operator-kinded class params (e.g., `m` in `[class [m@Operator] ...]`).
     // Must run BEFORE the parameterized alias lookup so builtin constructors take priority.
@@ -3039,6 +3353,10 @@ pub(crate) fn resolve_type_dict(
 
     let mut fields: HashMap<String, Type> = HashMap::new();
     let mut has_rest = false; // tracks if `...` is present (BAS: openness via width subtyping)
+                              // Column constraint: `{_ : V}` or `{_@K : V}` annotation syntax (T-950).
+                              // At most one `_` per row type; duplicate produces a type error.
+    let mut uniform_tail: Option<crate::type_def::RowTail> = None;
+
     for entry in entries {
         if let SurfaceExpression::Rest(_name) = &entry.node.value.expr {
             // BAS: `...` annotations express user intent for openness; under BAS width
@@ -3046,6 +3364,51 @@ pub(crate) fn resolve_type_dict(
             has_rest = true;
             continue;
         }
+
+        // Column constraint sentinel: key is `_` (bare wildcard) or `_@K` (typed wildcard).
+        // Recognized in key position: SurfaceExpression::VarRef { name: "_" } or
+        // SurfaceExpression::Annotated { name: "_", annotation: K }.
+        let is_wildcard_key = match &entry.node.key {
+            Some(k) => match &k.expr {
+                SurfaceExpression::VarRef { name, .. } if name == "_" => true,
+                SurfaceExpression::Annotated { name, .. } if name == "_" => true,
+                _ => false,
+            },
+            None => false,
+        };
+
+        if is_wildcard_key {
+            if uniform_tail.is_some() {
+                return Err(TypeError::new(
+                    "duplicate uniform-field sentinel `_` in row type annotation — at most one `_` allowed per row",
+                    entry.span.clone(),
+                ));
+            }
+            let value_ty =
+                resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
+            // Check for typed-key form `_@K` vs plain `_`
+            let key_ty = match entry.node.key.as_ref().map(|k| &k.expr) {
+                Some(SurfaceExpression::Annotated { annotation, .. }) => {
+                    // `_@K`: resolve K as the key type constraint.
+                    let key_t = resolve_annotation(
+                        &annotation.node,
+                        env,
+                        annotation.span.clone(),
+                        state,
+                        ann_mapping,
+                        row_ann_mapping,
+                    )?;
+                    Some(Box::new(key_t))
+                }
+                _ => None, // plain `_`: no key type constraint
+            };
+            uniform_tail = Some(crate::type_def::RowTail::Uniform {
+                key: key_ty,
+                value: Box::new(value_ty),
+            });
+            continue;
+        }
+
         let key = match &entry.node.key {
             Some(k) => match &k.expr {
                 SurfaceExpression::Str(s) => s.clone(),
@@ -3067,31 +3430,23 @@ pub(crate) fn resolve_type_dict(
         fields.insert(key, ty);
     }
 
+    // When a `{_ : V}` column constraint is present (T-950), skip the intersection-splitting
+    // path and produce a single Record with the Uniform tail. Named fields and uniform tail
+    // coexist: `{x: Int, _ : Str}` → `Record { fields: {x: Int}, tail: Uniform(None, Str) }`.
+    let effective_tail = uniform_tail.unwrap_or(crate::type_def::RowTail::Empty);
+
     // Multi-field record annotation → intersection of closed single-field records.
     //
     // `@[x: Int  y: String]` → `Intersection([{x: Int}, {y: String}])`
     //
-    // Under BAS open semantics (Step 1 of RowVar removal), each member is a CLOSED record
-    // (RowTail::Empty). Openness is expressed via conjunction elimination in is_subtype:
-    // `{x:1, y:"hello"} <: {x:Int}` succeeds because width subtyping allows extra fields
-    // in the sub-record (BAS Step 2 of is_subtype). No RowVar needed for openness.
-    //
-    // Single-field annotations (`@[name: String]`) fall through to line ~1494 with
-    // tail = Empty (no `...` written). Under BAS, `{name: "Alice", age: 30} <: {name: Str}`
-    // now succeeds via width subtyping, so single-field annotations are open by default.
-    //
-    // Annotations with a rest entry (`@[x: Int ...]`) bypass this path.
-    // Under BAS, `...` is accepted as annotation syntax but produces the same closed
-    // Record — BAS width subtyping handles openness structurally. No RowVar tail exists.
+    // Only applies when there is no uniform tail — a `{_ : V}` annotation anchors all
+    // named fields to a single Record (not split), so the intersection path is skipped.
     //
     // SHARED TYPE VARIABLE GUARD: If any TypeVar name appears in more than one field,
     // fall back to the closed Record. Splitting into single-field members would cause
     // each member to independently bind the shared TypeVar to a different concrete value
     // during unification, producing spurious "cannot unify X with Y" errors.
-    // Example: `[type [a] [first: a  second: a]]` — both fields share `a`; if split into
-    // `{first: a}` and `{second: a}`, unifying with `{first: 1, second: 2}` first binds
-    // `a = 1` then tries to unify `a` (= 1) with 2 → error.
-    if fields.len() >= 2 && !has_rest {
+    if fields.len() >= 2 && !has_rest && matches!(effective_tail, crate::type_def::RowTail::Empty) {
         // Check for shared TypeVar names across field types
         let mut all_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut has_shared = false;
@@ -3116,11 +3471,6 @@ pub(crate) fn resolve_type_dict(
                     // Under BAS open semantics, structural annotations are open by default
                     // via conjunction elimination — a RowVar is no longer needed to express
                     // openness. Each single-field member uses a closed (Empty) row tail.
-                    // Width subtyping in is_subtype (BAS Step 2) allows closed records with
-                    // extra fields to satisfy these closed single-field members:
-                    //   {name: "Alice", age: 30} <: {name: String} (closed)
-                    // because {name: String} is structurally "has at least name: String"
-                    // under BAS conjunction-elimination semantics.
                     let mut member_fields = HashMap::new();
                     member_fields.insert(k, v);
                     Type::Record(Row {
@@ -3135,7 +3485,7 @@ pub(crate) fn resolve_type_dict(
 
     let ty = Type::Record(Row {
         fields,
-        tail: crate::type_def::RowTail::Empty,
+        tail: effective_tail,
     });
     crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
     Ok(ty)

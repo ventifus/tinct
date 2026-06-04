@@ -8,3 +8,8 @@
   [Ok [+ x y]]]
 === out
 Variant(Ok, Int(3))
+
+=== warn
+undefined variable: Ok at 5:8-5:10
+undefined variable: Ok at 6:8-6:10
+undefined variable: Ok at 7:4-7:6

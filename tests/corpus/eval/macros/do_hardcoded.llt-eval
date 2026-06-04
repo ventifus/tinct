@@ -3,3 +3,6 @@
 [do result [Ok 99]]
 === out
 Variant(Ok, Int(99))
+
+=== warn
+undefined variable: Ok at 2:13-2:15
