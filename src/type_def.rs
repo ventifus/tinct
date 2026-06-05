@@ -2405,6 +2405,17 @@ pub fn check_kind_wellformed(
                     span,
                 ));
             }
+            // Bare Kind::Arrow in a type position is also kind-incorrect.
+            // Arrow kinds are for higher-order type constructors that must be fully applied.
+            if matches!(kind_env.get(name.as_str()), Some(Kind::Arrow(_, _))) {
+                return Err(TypeError::new(
+                    format!(
+                        "kind mismatch: {} has a higher-order kind but appears in a type (kind *) position",
+                        name
+                    ),
+                    span,
+                ));
+            }
             // If the name is not in kind_env, let it pass (freshly introduced Operator
             // that hasn't been kind-registered yet, or will be registered later)
             Ok(())
@@ -2523,6 +2534,113 @@ mod tests {
     #[test]
     fn test_primitive_numeric_number() {
         assert!(primitive_satisfies_constraint(&Type::Number, "Numeric"));
+    }
+
+    // ============================================================================
+    // T-999: Kind::Arrow unit tests (type-system-health-s841-followup sprint)
+    // ============================================================================
+
+    #[test]
+    fn test_kind_arrow_arity_two() {
+        // Map has kind * → (* → *), i.e., Kind::Arrow(Kind::Type, Kind::Operator).
+        // arity = 1 + arity(Kind::Operator) = 1 + 1 = 2.
+        let map_kind = Kind::Arrow(
+            Box::new(Kind::Type),
+            Box::new(Kind::Operator), // * → *
+        );
+        assert_eq!(map_kind.arity(), 2, "Map (* → (* → *)) should have arity 2");
+    }
+
+    #[test]
+    fn test_kind_arrow_arity_triple() {
+        // Hypothetical 3-arg constructor: * → * → (* → *)
+        // arity = 1 + arity(* → (* → *)) = 1 + (1 + arity(* → *)) = 1 + (1 + 1) = 3
+        let triple_kind = Kind::Arrow(
+            Box::new(Kind::Type),
+            Box::new(Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Operator))),
+        );
+        assert_eq!(
+            triple_kind.arity(),
+            3,
+            "* → * → (* → *) should have arity 3"
+        );
+    }
+
+    #[test]
+    fn test_kind_type_arity_zero() {
+        assert_eq!(Kind::Type.arity(), 0, "Kind::Type should have arity 0");
+    }
+
+    #[test]
+    fn test_kind_label_arity_zero() {
+        assert_eq!(Kind::Label.arity(), 0, "Kind::Label should have arity 0");
+    }
+
+    #[test]
+    fn test_kind_operator_arity_one() {
+        assert_eq!(
+            Kind::Operator.arity(),
+            1,
+            "Kind::Operator should have arity 1"
+        );
+    }
+
+    #[test]
+    fn test_kind_arrow_is_operator_true() {
+        let map_kind = Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Operator));
+        assert!(
+            map_kind.is_operator(),
+            "Kind::Arrow should be considered an operator"
+        );
+    }
+
+    #[test]
+    fn test_kind_operator_is_operator_true() {
+        assert!(
+            Kind::Operator.is_operator(),
+            "Kind::Operator should return true for is_operator()"
+        );
+    }
+
+    #[test]
+    fn test_kind_type_is_operator_false() {
+        assert!(
+            !Kind::Type.is_operator(),
+            "Kind::Type should return false for is_operator()"
+        );
+    }
+
+    #[test]
+    fn test_kind_label_is_operator_false() {
+        assert!(
+            !Kind::Label.is_operator(),
+            "Kind::Label should return false for is_operator()"
+        );
+    }
+
+    #[test]
+    fn test_kind_arrow_display() {
+        let map_kind = Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Operator));
+        assert_eq!(
+            format!("{}", map_kind),
+            "* → * → *",
+            "Kind::Arrow Display should format correctly"
+        );
+    }
+
+    #[test]
+    fn test_kind_type_display() {
+        assert_eq!(format!("{}", Kind::Type), "*");
+    }
+
+    #[test]
+    fn test_kind_operator_display() {
+        assert_eq!(format!("{}", Kind::Operator), "* → *");
+    }
+
+    #[test]
+    fn test_kind_label_display() {
+        assert_eq!(format!("{}", Kind::Label), "Label");
     }
 
     #[test]

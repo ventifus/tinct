@@ -1,0 +1,19 @@
+# T-1000: Map constructor type annotation (type-system-health-s841-followup)
+# Verifies that [Map String Int] works as a type annotation on a dict-entry key.
+# Map is a Kind::Arrow (arity 2) builtin type constructor registered in kind_env.
+# The annotation is accepted by the type checker; at runtime the key resolves to
+# the bare name "cache" (Annotated keys strip the annotation).
+[
+  # Annotate a variable with Map String Int — the annotation is type-checker only.
+  # At runtime this is just a dict entry with key "cache".
+  cache@[Map String Int]: [name: 1  age: 42  city: 3]
+
+  # get takes (key, collection): get "age" cache
+  result: [get "age" cache]
+]
+
+---
+
+%.result
+=== out
+Int(42)

@@ -1,0 +1,25 @@
+# T-997: Reverse functional dependency resolution (type-system-health-s841-followup)
+# Verifies that a class with FD (src) → (dst) and injective: true parses and
+# typechecks without error.
+#
+# The injective: true flag enables reverse-FD back-propagation at the type stage.
+# This test verifies the class declaration (with determines, resolver, injective)
+# is accepted by the type checker.
+#
+# NOTE: Runtime dispatch of user-defined class methods is not yet wired up.
+# End-to-end reverse FD (call-site inference of src from known dst) is a future milestone.
+[
+  # Coercible class with FD: src determines dst (injective resolver)
+  Coercible: [class [let Coercible src dst]
+    [determines: [[[src] dst]]  resolver: CoercibleResolver  injective: true]
+    coerce: [Fn@dst [src]]]
+
+  # Prove the class declaration was accepted: return a simple value
+  result: 42
+]
+
+---
+
+%.result
+=== out
+Int(42)

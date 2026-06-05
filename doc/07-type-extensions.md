@@ -122,6 +122,57 @@ Counter: [type [_ : Int]]                         # frequency/count dict
 
 **`Map K V` as transparent alias.** `Map K V` expands to `{_@K : V}` — checked for `k@Equatable` constraint at compile time. `Map String Int` and `Map Int Int` are distinguished statically; until T-921, runtime does not check key types, only value types.
 
+## User-Defined Type Constructors
+
+User-defined type constructors add two `TypeNode` constructors, a unified `TyConDef` store, variance annotations, and nominal ADTs. These are the structural type system changes introduced by the user-type-constructors feature.
+
+### TypeNode.TypeConstructor and TypeNode.TypeApplication
+
+**`TypeNode.TypeConstructor { name: String }`** has two roles depending on normalization state:
+
+- **Transient (pre-normalization)**: a bare type name encountered in a type-stage expression (e.g., looking up `Color` in the type-stage env). These are always eliminated by `expand_all_tycon_apps` before the type checker sees the result.
+- **Leaf identity (post-normalization)**: a qualified constructor name containing `.` (e.g., `"Color.Red"`, `"Direction.North"`). These remain after normalization as the nominal identity markers of specific ADT constructors. `TypeConstructor "Color.Red" <: TypeConstructor "Direction.Red"` is false because the names differ — nominal identity is preserved through qualified names, not through type opacity.
+
+**`TypeNode.TypeApplication { ctor: TypeNode  args: [Seq TypeNode] }`** is always transient. It exists during type-stage computation to represent an unapplied type constructor plus its arguments, but is always eliminated by `expand_all_tycon_apps` before the type checker sees the result. After normalization, the type checker works only with: primitives, Record, Union, Intersect, Arrow, Recursive, RecursiveRef, TypeVar, and qualified TypeConstructor leaves.
+
+Builtin-opaque types (`Seq`, `Map`, `Handle`) are an exception: `expand_named` returns `TypeNode.TypeApplication(TypeConstructor(name), args)` for these without structural expansion, so `App(TyCon("Seq"), Int)` etc. remain in the type checker after normalization. The type checker's App arm handles them via UNIFY-TYCON (variance-directed comparison by TypeConstructor name).
+
+### Variance Annotations
+
+Type parameters declared in `[let ...]` carry variance annotations via `name@VarianceName`:
+
+| Annotation | Variance | Subtyping rule |
+|---|---|---|
+| `a@Covariant` | Covariant | `F a <: F b` when `a <: b` |
+| `a@Contravariant` | Contravariant | `F a <: F b` when `b <: a` |
+| `a` (none) | Invariant | `F a <: F b` only when `a = b` |
+| `a@Phantom` | Phantom | `F a <: F b` always |
+
+Variance is inferred for transparent aliases via polarity analysis (Dolan 2017 §4) and stored in `TyConDef.variance: Vec<Variance>`. Explicit annotations serve as checked declarations — the inferred variance is compared against the declared variance and a type error is raised on conflict. TyCon kind is derived from `TyConDef.variance.len()` — no separate kind registry is needed.
+
+`annotation_to_variance` maps variance names to `Rust Variance` variants in a closed 4-entry table (`"Covariant"`, `"Contravariant"`, `"Invariant"`, `"Phantom"`). The `Variance: [type Covariant Contravariant Invariant Phantom]` prelude declaration exists for reflection (`[describe Variance]` works) but does not power the dispatch.
+
+### Nominal ADTs
+
+A `[type ...]` declaration with uppercase constructor names creates a nominal ADT. The type declaration creates both:
+
+1. A type registered in `TyConDef` with `constructors: Vec<(String, usize)>` — qualified tag and payload arity.
+2. A dict value whose fields are the constructors (accessed via dot: `Color.Red`, `Result.Ok`).
+
+Constructor tags are qualified: `"Color.Red"`, `"Result.Ok"`, `"Seq.Cons"`. Nominal identity is preserved through qualified names — two types sharing a bare constructor name (e.g., `Result.Ok` and `Validated.Ok`) are always distinguishable at runtime. `Value::Variant { tag: "Result.Ok" }` not `"Ok"`.
+
+**`expand_named` for nominal ADTs** synthesizes `body` as `TypeNode.Union [TypeNode.TypeConstructor "Color.Red"  TypeNode.TypeConstructor "Color.Green" ...]` at declaration time. `TypeConstructor "Color.Red" <: TypeConstructor "Direction.Red"` is false by name inequality — nominal identity is preserved through constructor names, not through keeping `App(TyCon("Color"))` opaque.
+
+**Exhaustiveness checking** uses `TyConDef.constructors` — the arity-only `Vec<(String, usize)>` is exactly the right level of detail for Maranget (2007) matrix decomposition. Field types are irrelevant to coverage; they matter only for type-checking bindings within pattern arms.
+
+**Pattern qualification.** Dot-access pattern heads (`[Result.Ok v]`, `Color.Red:`) are syntactically assembled by the parser via `flatten_dot_access_to_tag` in `src/ast.rs`. Bare uppercase names in patterns are validated and rewritten to qualified form by `typecheck_match.rs`.
+
+### Absent — First-Class Absence
+
+`Absent: [type Absent]` is a unit nominal type declared in prelude. `Absent.Absent` (a zero-payload variant) represents "this thing is not present." This separates absence from `[]` (empty collection). Builtins that return a missing value (`get?`, `env`) return `Absent.Absent`. Pattern matching is the canonical narrowing form; `absent?` is a type-erasing `Unknown → Bool` predicate (same category as `null?`).
+
+`[or Absent T]` is the structural optional type. `null?` and `absent?` are not interchangeable — `null?` checks for `[]`, `absent?` checks for `Absent.Absent`.
+
 ## TypeAssert Runtime Validation
 
 Both static and runtime TypeAssert checks are structural. The evaluator validates values against the full resolved `Type`, not a type name string. Record fields are checked lazily via proxy contracts (Findler & Felleisen 2002), preserving tinct's lazy evaluation guarantees.
@@ -461,6 +512,127 @@ Builtins that return materialized values wrap them in `Thunk::new_materialized()
 **Type inference is unchanged** — return types are determined by unifying the call signature during type checking, not by inspecting returned thunk contents. This change is a runtime optimization only.
 
 **Performance trade-off:** Inherently materializing builtins (~60% of the 28 current builtins: arithmetic, string ops, comparisons) pay two extra heap allocations per call (Thunk + Rc wrapper) to wrap their `Value` result. For lazy-capable builtins (`$if`, `$merge`, `$map`, `$update`), this eliminates the eager materialization boundary. Net benefit when lazy operations dominate. If profiling shows the overhead is significant, a dual-signature approach (`EagerBuiltinFn` vs `LazyBuiltinFn`) could be considered.
+
+## Equirecursive Types
+
+Tinct supports equirecursive types — recursive type expressions that are compared structurally, without explicit `fold`/`unfold` operations. The type checker unfolds `TypeNode.Recursive` on demand during subtype checking; functions accept recursive types transparently.
+
+### TypeNode Constructors for Recursive Types
+
+Two `TypeNode` constructors represent equirecursive types:
+
+**`TypeNode.Recursive { var: String  body: TypeNode }`** — a recursive type `μvar.body`. `var` is a globally unique gensym binder name (e.g. `"𝜇ꜱʏᴍ⧼lst⧽42"`), generated at construction time. `body` is a concrete TypeNode with `RecursiveRef(var)` at each recursive position — there is no deferred function stored, only a concrete TypeNode value. The var name is the sigma key used by S-Assum during subtype checking.
+
+```tinct
+# TypeNode.Recursive representing μlst.(Absent | {head: Int, tail: μlst})
+TypeNode.Recursive {
+  var:  "𝜇ꜱʏᴍ⧼lst⧽42"
+  body: TypeNode.Union types: [
+    TypeNode.Absent
+    TypeNode.Record fields: {
+      "head": TypeNode.Int
+      "tail": TypeNode.RecursiveRef name: "𝜇ꜱʏᴍ⧼lst⧽42"
+    }  open: false
+  ]
+}
+```
+
+**`TypeNode.RecursiveRef { name: String }`** — a back-reference inside a Recursive body. `name` matches the `.var` of the enclosing `Recursive`. `RecursiveRef` is a leaf: it has no `@Child` fields, so `typenode_map_children` passes it through unchanged and `Substitution::apply` leaves it untouched. It never appears outside a Recursive body in a well-formed type.
+
+**`TypeNode.TypeVar { name: String  level: Int }`** — the leaf TypeNode constructor for inference variables. TypeVar is a TypeNode constructor, not a separate Rust variant; `walk_type` finds TypeVar nodes automatically via `TypeNode.children`. `name` is the fresh variable name (e.g. `"_t42"`); `level` is the Kiselyov creation-time level. See [Type Inference](06-type-inference.md) §CheckerType for the full specification.
+
+### The `mu` Combinator
+
+`mu` is a type-stage function in the prelude. It generates a fresh binder var, calls the body function eagerly with a `RecursiveRef` sentinel, and wraps the result in `TypeNode.Recursive`. No deferred `Fn` is stored:
+
+```tinct
+--- stage: type
+[
+  mu: [fn [let f]
+    [let var  [gensym-with-scope "𝜇" "rec"]]       # → "𝜇ꜱʏᴍ⧼rec⧽N"
+    [let body [f TypeNode.RecursiveRef name: var]]  # eager call: stores TypeNode, not Fn
+    TypeNode.Recursive var: var  body: body]
+]
+```
+
+Users can call `mu` inline wherever a TypeNode is expected:
+
+```tinct
+# Inline recursive type annotation
+depth: [fn@Int [tree@[mu [fn [let self]
+    [or Absent [record value: Int  left: self  right: self]]]]]]
+  [if [absent? tree] 0 [+ 1 [max [depth tree.left] [depth tree.right]]]]
+
+# Named alias — identical semantics, no explicit mu needed
+BinTree: [type [or Absent [record value: Int  left: BinTree  right: BinTree]]]
+```
+
+Named aliases are the ergonomic form for repeated use. Named `self` (not `$_`) is used as the body parameter — `$_` desugaring binds at the nearest enclosing argument position, not at the `mu` boundary.
+
+### Named Aliases and `expand_named`
+
+Named recursive type aliases do not require explicit `mu`. The annotation resolver detects self-references via the expansion stack and wraps the body in `TypeNode.Recursive` automatically.
+
+**`expand_named` algorithm:**
+
+```text
+expand_named(name, args, stack, env):
+  decl = TypeEnv::lookup_type_decl(name)
+  if decl is None: error(UndefinedType(name))
+  if args.len() != decl.params.len(): error(ArityMismatch)
+
+  # Early exit for zero-param types with no transient TypeConstructor references
+  if decl.params.is_empty() and not body_contains_tycon_ref(decl.body):
+    return CheckerType(Arc::clone(&decl.body))
+
+  # Builtin-opaque types (Seq, Map, Handle) stay as App leaves
+  if decl.is_builtin_opaque:
+    return apply_args(TypeNode.TypeConstructor name: name, args)
+
+  # Expansion stack cycle detection via Arc::ptr_eq
+  tycon_arc = TypeEnv::lookup_tycon_def(name)
+  if let Some(pre_name) = stack.get_pre_assigned_name_by_ptr(&tycon_arc):
+    return TypeNode.RecursiveRef name: pre_name    # back-reference to cycle origin
+
+  # Pre-assign binder name BEFORE expanding (needed for nested self-references)
+  fresh_var = gensym_fresh('𝜇', name)             # e.g. "𝜇ꜱʏᴍ⧼IntList⧽42"
+  stack.push(tycon_ptr, fresh_var)
+
+  # Substitute type args, expand all TypeApplication/TypeConstructor references
+  body_substituted = substitute_typenode(decl.body, zip(decl.params, args))
+  expanded = expand_all_tycon_apps(body_substituted, stack, env)
+  stack.pop()
+
+  # Contractiveness check — rejects μa.a, μa.(a|Int), etc.
+  if contains_recvar(expanded, fresh_var):
+    if not is_contractive(expanded, fresh_var):
+      error(TypeError(NonContractive))
+    return TypeNode.Recursive { var: fresh_var, body: expanded }
+  return expanded                                  # non-recursive alias: return body directly
+```
+
+Only the cycle-origin alias is wrapped in `TypeNode.Recursive`. For mutually recursive aliases (`EvenList` / `OddList`), the first alias encountered is the cycle origin; the second alias's body is inlined into the first's Recursive node.
+
+**Normalization invariant.** All named types are expanded at annotation resolution time. No `TypeNode.TypeApplication` or bare `TypeNode.TypeConstructor` reaches the type checker. The type checker works only with: primitives, Record, Union, Intersect, Arrow, Recursive, RecursiveRef, TypeVar, and qualified TypeConstructor leaves.
+
+### TypeVar as Leaf TypeNode Constructor
+
+`TypeNode.TypeVar` participates in generic TypeNode traversal alongside all other constructors. Pure-traversal walkers use `walk_type` with predicates on the TypeNode variant tag — no explicit match arms needed:
+
+- **`collect_type_vars`**: `walk_type` + `typenode_tag(t) == "TypeNode.TypeVar"` predicate. No explicit TypeVar arm; TypeVar nodes are found automatically because they are TypeNode values with `TypeNode.children` returning `[]` (leaf).
+- **`has_inference_vars`**: same pattern — `walk_type` + TypeVar tag predicate.
+- **`check_kind_wellformed`**: pure `walk_type`, no predicate on TypeVar specifically.
+
+The walkers that require explicit Rust arms (semantically special cases only):
+
+| Walker | Arms needed | Reason |
+|--------|-------------|--------|
+| `is_subtype_inner` | TypeVar, Recursive | TypeVar: gradual typing (TypeVar relates to everything, treated as Unknown); Recursive: S-Assum + S-Exp |
+| `unify` | TypeVar, Recursive | TypeVar: bind via occurs check + subst; Recursive: 5-arm opening (see §Unification for Recursive Types in doc/06) |
+| `Substitution::apply` | TypeVar only | One explicit arm: subst lookup by name; if unbound, return unchanged. All other TypeNode constructors — including Recursive, RecursiveRef, Union, Record, Arrow — are handled by `typenode_map_children` with a recursive apply call |
+| `PartialEq` | Recursive only | Structural equality: same `.var` name AND same `body` TypeNode. This is sufficient given globally unique gensym `.var` names — two `Recursive` nodes with the same `.var` must be the same binder. TypeVar uses structural equality on `name` (level ignored per Kiselyov — levels are stored in `state.levels`, not in the equality relation) |
+
+`collect_type_vars` reads level from `state.levels[name]`, not from the TypeNode `level` field. `state.levels` is the authoritative current level (updated by level lowering). DICT-GEN generalization checks `state.levels[name] > enclosing_level`.
 
 ---
 

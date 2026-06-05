@@ -1,6 +1,6 @@
 # What If: Equirecursive Types for tinct
 
-**State:** Proposal
+**State:** Accepted — 2026-06-05
 
 What would it take to support properly recursive data types — linked lists, trees, and other self-referential structures — in tinct's type system?
 
@@ -34,10 +34,10 @@ depth: [fn@Int [tree@TreeShape] ...]
 
 ### What's Missing
 
-1. `CheckerType` — replaces the `Type` Rust enum; wraps either a `TypeNode` tinct value or a `TypeVar` inference variable; `TypeVar` is the sole Rust-internal type artifact
+1. `CheckerType = Node(Value)` — replaces the `Type` Rust enum; a thin wrapper around any TypeNode tinct value; `TypeVar` is `TypeNode.TypeVar name: String  level: Int` — a first-class TypeNode constructor, not a separate Rust variant
 2. `TypeNode` nominal ADT with `Recursive { var: String  body: TypeNode }` and `RecursiveRef { name: String }` — equirecursive types' contribution to the primary type representation; body is a concrete TypeNode with `RecursiveRef(var)` at recursive positions, not a function
 3. General `@[...]` annotation syntax — attachable to top-level bindings, type alias declarations, constructor names in `[type ...]`, record field type declarations, `[class ...]` / `[instance ...]` / `[macro ...]` / `[let ...]` positions; uniform `IndexMap<String, Value>` storage; `Value::Annotated` wrapper for non-function values; `TyConDef.annotation` for type-level positions; `annotation-of` Rust builtin working across all sites
-4. `TypeNode.children`, `TypeNode.map-children`, and `TypeNode.as-type` protocol functions on the TypeNode dict — derived generically from `@Child` field annotations and constructor-level `as-type:`/`guarding:` annotations; no per-constructor implementations; requires `variant` Rust builtin for generic reconstruction
+4. `TypeNode.children`, `TypeNode.map-children`, and `TypeNode.as-type` protocol functions on the TypeNode dict — derived generically from `@Child` field annotations and constructor-level `as-type:`/`guarding:` annotations; no per-constructor implementations; requires `variant` Rust builtin for generic reconstruction; requires `object-map` in prelude (`[fn [let m f] [map-kv [fn [let k v] [pair k [f k v]]] m]]`)
 5. `eval_type_stage_expr` in the annotation resolver — evaluates type-stage annotations as ordinary tinct code; expansion-stack cycle detection for named aliases; `TypeNodeResolve.as-type` normalization
 6. Coinductive subtype checking (S-Exp + S-Assum, sigma threaded through all BAS arms) — prevents divergence when checking structural equivalence between distinct recursive TypeNodes
 7. `mu: [fn [let f] TypeNode.Recursive var: [gensym-with-scope "𝜇" "rec"]  body: f]` — inline recursive type constructor; self-generates its binder var via gensym
@@ -109,35 +109,26 @@ Config: [type [record
 
 ### Representation: Rational Trees
 
-A recursive type is represented as a **rational tree** — a finite graph with potentially cyclic edges. In tinct's `Type::*` representation:
+A recursive type is represented as a **rational tree** — a finite graph with potentially cyclic edges. In tinct, recursive types are `TypeNode.Recursive` values — tinct nominal ADT values, not Rust enum variants:
 
-```rust
-// New variant — the μ-binder
-Type::Recursive {
-    var: String,         // "a" — the recursion variable
-    body: Box<Type>,     // T[a] — the body, may reference RecVar(var)
-}
+```tinct
+# A recursive type is a TypeNode.Recursive value:
+# TypeNode.Recursive { var: "𝜇ꜱʏᴍ⧼lst⧽42", body: <TypeNode body with RecursiveRef> }
 
-// New variant — a reference to the enclosing μ-binder's variable
-Type::RecVar(String)     // "a"
-```
-
-Example — a linked list of Int, using the post-user-type-constructors `Type` representation:
-
-```rust
-Type::Recursive {
-    var: "lst",
-    body: Box::new(Type::Union(vec![
-        Type::App(Box::new(Type::TyCon("Absent".into())), vec![]),
-        Type::Record(Row::Fields({
-            "head": Type::Int,
-            "tail": Type::RecVar("lst".into()),  // self-reference
-        }))
-    ]))
+# The body is a concrete TypeNode with RecursiveRef nodes at recursive positions:
+TypeNode.Recursive {
+  var:  "𝜇ꜱʏᴍ⧼lst⧽42"
+  body: TypeNode.Union types: [
+    TypeNode.Absent
+    TypeNode.Record fields: {
+      "head": TypeNode.Int
+      "tail": TypeNode.RecursiveRef name: "𝜇ꜱʏᴍ⧼lst⧽42"  # self-reference
+    }  open: false
+  ]
 }
 ```
 
-This is a **finite** representation of an **infinite** unrolling. The type checker unfolds `Type::Recursive` on demand during subtype checking, using a visited-pairs set to detect when unfolding has returned to a previously seen configuration.
+This is a **finite** representation of an **infinite** unrolling. The type checker unfolds `TypeNode.Recursive` on demand during subtype checking via `unfold_once`, using S-Assum sigma to detect when unfolding has returned to a previously-seen configuration.
 
 ### Type-Stage Evaluation
 
@@ -213,9 +204,9 @@ process: [fn@Absent [tree@BinTree] ...]
 
 ### `TypeNode`: The Primary Type Representation
 
-`TypeNode` is not merely a type-stage value format — it is the type system's primary representation. The type checker works directly on `TypeNode` values; there is no separate `Type` Rust enum to convert into. The only inference artifact that does not correspond to a `TypeNode` constructor is `TypeVar` — a unification variable created by the Rust type checker during inference, with no type-stage meaning.
+`TypeNode` is the type system's primary representation. The type checker works directly on `TypeNode` values. `CheckerType` is simply `Node(Value)` — a thin wrapper with no separate variant for inference variables. TypeVar IS a TypeNode constructor (`TypeNode.TypeVar`), making it findable by `walk_type` and handled uniformly with all other TypeNode forms.
 
-Equirecursive types contribute `Recursive` and `RecursiveRef`. `Recursive` carries a `var` field — a globally unique gensym name generated at construction time by the `mu` combinator (via `gensym`) or by the expansion-stack resolver. This var is the sigma key used by S-Assum during subtype checking.
+Equirecursive types contribute `Recursive`, `RecursiveRef`, and (foundationally) `TypeVar`. `Recursive` carries a `var` field — a globally unique gensym name generated at construction time by the `mu` combinator (via `gensym`) or by the expansion-stack resolver. This var is the sigma key used by S-Assum during subtype checking.
 
 Each TypeNode constructor carries `as-type` and `guarding` in its constructor-level `@[...]` annotation. The traversal protocol (`children`, `map-children`) is derived automatically from field-level `@Child` annotations — no per-constructor implementation needed. `@Child` marks fields whose declared type contains TypeNode children; the traversal role is inferred from the field type (`TypeNode` → One, `[Seq TypeNode]` → Seq, `[Map K TypeNode]` → MapValues). Fields without `@Child` are non-children and pass through unchanged.
 
@@ -252,7 +243,12 @@ TypeNode: [type
     body@Child:  TypeNode]               # @Child on TypeNode → One
   # Internal sentinel — leaf; always a leaf
   [RecursiveRef@[as-type: [fn [let r] r]  guarding: false]
-    name: String]]                        # no @Child → leaf
+    name: String]                         # no @Child → leaf
+  # Inference variable — leaf; name and level are not TypeNode children
+  # TypeVar IS a TypeNode constructor — findable by walk_type, handled uniformly
+  [TypeVar@[as-type: [fn [let t] t]  guarding: false]
+    name:  String                         # e.g. "_t42"
+    level: Int]]                          # Kiselyov creation-time level
 
 # Protocol functions derived generically from @Child field annotations.
 TypeNode: [merge TypeNode [
@@ -283,7 +279,24 @@ TypeNode: [merge TypeNode [
     [if [has? ann as-type] [[get ann as-type] t] t]]]]
 ```
 
-**Helper functions** (`child-fields`, `child-role`, `child-field?`, `object-map`) are defined in the type-stage prelude and use `annotation-of` to read `@Child` annotations from the TyConDef's field annotation map (stored in `TypeNode.Record.field_annotations` per the General Annotation Syntax section above). `variant` is a Rust builtin that creates a `Value::Variant` with a given tag string and payload dict — enabling generic reconstruction without enumerating constructors.
+**`TypeNode-ctor t`** — returns the constructor function for a TypeNode value: `[get TypeNode [last [str-split "." [tag-of t]]]]`. This is the same expression already used inline in `children`, `as-type`, and `map-children`; it can be defined as a helper or inlined everywhere.
+
+**Constructor annotation dict** — `annotation-of(TypeNode-ctor t)` returns the constructor's complete annotation dict. This includes constructor-level keys (`as-type:`, `guarding:`) AND a `field-annotations:` key mapping each field name to its annotation dict. The `field-annotations:` entry is populated at desugar time when `@Child` field annotations are processed — the desugar pass reads the field's declared type and stores `{ "role": "Seq" }` (or `"One"` or `"MapValues"`) in `FnAnnotation.extra["field-annotations"]["field-name"]`. Example for `TypeNode.Union`:
+```
+annotation-of(TypeNode.Union) → {
+  as-type:           <fn>,
+  guarding:          false,
+  field-annotations: { "types": { "role": "Seq" } }
+  # "open" has no @Child → not present in field-annotations
+}
+```
+
+**Helper functions** (`child-fields`, `child-role`, `child-field?`) use this unified annotation dict:
+```tinct
+child-fields:  [fn [let ctor] [keys [annotation-of ctor | .field-annotations]]]
+child-role:    [fn [let ctor field] [[annotation-of ctor | .field-annotations | field] .role]]
+child-field?:  [fn [let ctor field] [has? [annotation-of ctor | .field-annotations] field]]
+``` (stored in `TypeNode.Record.field_annotations` per the General Annotation Syntax section above). `variant` is a Rust builtin that creates a `Value::Variant` with a given tag string and payload dict — enabling generic reconstruction without enumerating constructors.
 
 **Role inference from field type**: the `child-role` function inspects the declared field type (from the TyConDef field annotation) to determine whether the child role is `One` (field type is `TypeNode`), `Seq` (field type is `[Seq TypeNode]`), or `MapValues` (field type is `[Map K TypeNode]`).
 
@@ -336,21 +349,30 @@ fn has_inference_vars(node: &Value, env: &TypeStageEnv) -> bool {
 }
 ```
 
-**Uniform representation.** `TypeNode.Recursive { var, body: TypeNode }` has `children` returning `[Seq body]` — the body IS a traversable TypeNode child. `walk_type` enters the body, finds TypeVars inside, enabling correct `collect_type_vars` and `Substitution::apply`. `TypeNode.RecursiveRef` leaves yield `[]` children — traversal stops cleanly without infinite loops.
+**Uniform representation.** `TypeNode.Recursive { var, body: TypeNode }` has `body@Child` — `walk_type` enters the body and naturally finds `TypeNode.TypeVar` nodes via traversal. `TypeNode.RecursiveRef` and `TypeNode.TypeVar` are leaves (`[]` children). All TypeNode forms including TypeVar are found by `walk_type` automatically.
+
+`unfold_once(Recursive { var, body })` uses `typenode_map_children(body, |c| if is_recvar(c, var) { Recursive.clone() } else { unfold_once_inner(c, var, Recursive) })` — a predicate check, not an exhaustive TypeNode enumeration. `contains_recvar(body, name)` and `body_contains_tycon_ref(body)` similarly use `walk_type` with predicates. None of these require explicit TypeNode arm enumeration.
 
 All existing type-stage combinators (`or`, `record`, `arrow`, `seq`, `map`, etc.) return the corresponding `TypeNode` constructor. Migration from `kind:`-keyed dicts is atomic — partial migration leaves the type checker in an inconsistent state.
 
-**Which walkers need explicit Rust arms:**
+**Which walkers need explicit Rust arms** — significantly reduced now that TypeVar is a TypeNode constructor:
 
-| Walker | Explicit arm needed? | Reason |
-|--------|----------------------|--------|
-| `collect_type_vars` | No | Pure traversal via `walk_type` + `TypeNode.children` |
-| `has_inference_vars` | No | Pure traversal via `walk_type` + `TypeNode.children` |
-| `check_kind_wellformed` | No | Pure traversal via `walk_type` + `TypeNode.children` |
-| `is_subtype_inner` | Yes | S-Exp unfolding is semantically special |
-| `unify` | Yes | Simultaneous opening is semantically special |
-| `Substitution::apply` | Yes | RecursiveRef passes through; TypeVar is looked up |
-| `PartialEq` | Yes | Alpha-equivalence for binder names |
+| Walker | Explicit arm? | Arms needed | Reason |
+|--------|---------------|-------------|--------|
+| `collect_type_vars` | No | — | `walk_type` + `typenode_tag(t) == "TypeNode.TypeVar"` predicate |
+| `has_inference_vars` | No | — | Same |
+| `check_kind_wellformed` | No | — | Pure `walk_type` |
+| `unfold_once` | No | — | `typenode_map_children` + RecursiveRef name predicate |
+| `contains_recvar` | No | — | `walk_type` + RecursiveRef name predicate |
+| `body_contains_tycon_ref` | No | — | `walk_type` + bare TypeConstructor tag predicate |
+| `is_subtype_inner` | Yes (2) | TypeVar, Recursive | TypeVar: gradual typing / subst lookup; Recursive: S-Assum + S-Exp |
+| `unify` | Yes (2) | TypeVar, Recursive | TypeVar: bind + occurs check; Recursive: 3 opening arms |
+| `Substitution::apply` | Yes (1) | TypeVar only | Subst lookup — all others handled by `typenode_map_children` |
+| `PartialEq` | Yes (1) | Recursive only | Structural equality: same `.var` name + same `body` (sufficient given globally unique gensym `.var` names) |
+
+**`collect_type_vars` reads level from `state.levels[name]`**, not from `payload["level"]`. The payload carries the creation-time level (fixed at `fresh_type_var()` call time); `state.levels` is the authoritative mutable current level (updated by level lowering). DICT-GEN generalization checks `state.levels[name] > enclosing_level` — always use `state.levels`, never the payload.
+
+`RecursiveRef` does not need explicit arms anywhere: `Substitution::apply` passes it through unchanged via `typenode_map_children` (no @Child fields); it should not reach `is_subtype_inner` or `unify` directly (only appears inside Recursive bodies, unfolded by S-Exp).
 
 ### Extensibility
 
@@ -396,11 +418,13 @@ expand_named(name, args, stack, env):
   if args.len() != decl.params.len(): error(ArityMismatch(name, ...))
 
   # Step 2b: Early exit for zero-param types with no TypeConstructor references in body.
+  # body_contains_tycon_ref: walk_type over body; returns true iff any node has
+  # typenode_tag == "TypeNode.TypeConstructor" AND name.contains('.') == false.
+  # (Bare = transient = unexpanded reference. Qualified leaves are already normalized.)
   # No gensym, no stack push, no expand_all_tycon_apps needed — Arc::clone of body suffices.
   # Covers @Int, @Float, @Bool, @Absent, @Unknown, @Never and simple zero-param aliases.
-  # A zero-param body with no TypeConstructor references cannot cycle and is already normalized.
   if decl.params.is_empty() and not body_contains_tycon_ref(decl.body):
-    return CheckerType::Node(Arc::clone(&decl.body))
+    return CheckerType(Arc::clone(&decl.body))
 
   # Step 3: Builtin-opaque types stay as App leaves — no structural expansion
   if decl.is_builtin_opaque:
@@ -548,7 +572,7 @@ The named alias form is the natural expression:
 JsonValue: [type [or Int Float String Bool Absent [Seq JsonValue] [Map String JsonValue]]]
 ```
 
-The annotation resolver detects the `JsonValue` self-reference via the expansion stack and wraps the type in `Type::Recursive` automatically — no explicit `mu` needed. For inline annotation positions, `mu` provides the same type without naming it:
+The annotation resolver detects the `JsonValue` self-reference via the expansion stack and wraps the type in `TypeNode.Recursive` automatically — no explicit `mu` needed. For inline annotation positions, `mu` provides the same type without naming it:
 
 ```tinct
 # Inline annotation using mu
@@ -568,13 +592,13 @@ count-numbers: [fn@Int [v@JsonValue]
 
 **Why not a nominal ADT?** `from-json` returns plain structural values — ints, strings, sequences, dicts. There is no tinct constructor wrapping the data, and there should not be: nominal variants do not round-trip through JSON (`[from-json [to-json v]]` must recover the original structure, not wrap it in constructors). Equirecursive structural typing expresses the actual shape.
 
-**Why equirecursive types and not the current workaround?** The current type checker loses the `JsonValue` type after ~4 levels of nesting — `v.0.0.0.key` types as `Unknown`. With `Type::Recursive`, the type checker unfolds on demand to any finite depth, always returning `JsonValue`. `count-numbers` is correctly typed regardless of how deeply nested the input is.
+**Why equirecursive types and not the current workaround?** The current type checker loses the `JsonValue` type after ~4 levels of nesting — `v.0.0.0.key` types as `Unknown`. With `TypeNode.Recursive`, the type checker unfolds on demand to any finite depth, always returning `JsonValue`. `count-numbers` is correctly typed regardless of how deeply nested the input is.
 
 ### Coinductive Subtype Checking
 
 #### Globally Unique RecursiveRef Names
 
-Every `Type::Recursive` node carries a globally unique `.var` name, regardless of how it was produced:
+Every `TypeNode.Recursive` value carries a globally unique `.var` name, regardless of how it was produced:
 
 - **`mu` combinator**: calls `[gensym-with-scope "𝜇" "rec"]` in tinct — the prelude wrapper over `builtin-gensym`. Produces `"𝜇ꜱʏᴍ⧼rec⧽N"` via the single global counter shared across all gensym call sites.
 - **Named-alias expansion stack**: calls `gensym_fresh('𝜇', alias_name)` in Rust — `builtins_meta::gensym_fresh`, same global counter. Produces `"𝜇ꜱʏᴍ⧼EvenList⧽N"`. The alias name is embedded as the tag; error messages display `μEvenList.T`.
@@ -588,7 +612,7 @@ The bisimulation uses the **S-Exp + S-Assum** framework, which is proven sound f
 Two rules govern recursive types within the standard `is_subtype_inner`:
 
 - **S-Assum**: at the start of every call, if `(a.var, b.var)` ∈ Σ, return `true` immediately (coinductive hypothesis). Add the pair to Σ before proceeding.
-- **S-Exp**: if `a` is `Type::Recursive`, unfold it once and continue — Σ already contains the original pair.
+- **S-Exp**: if `a` is `TypeNode.Recursive`, unfold it once and continue — Σ already contains the original pair.
 
 **Two-level design.** Sigma is allocated once per top-level subtype check and threaded through every recursive call. It is never recreated within `is_subtype_inner`. The Rust type system enforces this structurally — `sigma: &mut HashSet<...>` is a required parameter, so any recursive call that omits it fails to compile.
 
@@ -636,51 +660,61 @@ The comment "Record, App, Arrow, ... — same pattern" is the full specification
 
 **Sigma key**: `(a.var, b.var)` — a `(String, String)` pair of binder names. O(1), thread-safe, globally unique (no false positives from shadowed aliases or mu-counter collisions).
 
-**`unfold_once`**: replace `Type::Recursive { var, body }` with `body[RecursiveRef(var) ↦ self]` — substituting all `RecursiveRef` occurrences with the full recursive type. After substitution, the `Recursive` node at each recursive position carries the same `.var` name as the original binder. When `is_subtype_inner` encounters those positions, S-Assum fires immediately — the hypothesis `(v1, v2)` is already in Σ.
+**`unfold_once`**: replace `TypeNode.Recursive { var, body }` with `body[RecursiveRef(var) ↦ self]` — substituting all `RecursiveRef` occurrences with the full recursive type. After substitution, the `Recursive` node at each recursive position carries the same `.var` name as the original binder. When `is_subtype_inner` encounters those positions, S-Assum fires immediately — the hypothesis `(v1, v2)` is already in Σ.
 
 **Why S-Exp + S-Assum is necessary for BAS**: the naive "distribute over union first" approach fails because the hypothesis established for `(μa.T[a], A ∨ B)` is keyed on that exact pair. After distribution, sub-checks for `(μa.T[a], A)` and `(μa.T[a], B)` have different keys — the hypothesis is unavailable. S-Assum fires at the start of every call and is available inside all BAS decomposition rules, preventing this failure.
 
 ### Unification
 
-Three match arms cover all cases involving `Recursive` types. The match ordering is significant: the symmetric arm must fire before the asymmetric arms.
+Five match arms cover all cases involving `Recursive` and `TypeVar` types. **Match ordering is critical**: TypeVar binding arms must come BEFORE the asymmetric Recursive opening arms. Without this, `unify(Recursive, TypeVar)` would hit Arm 4, open the Recursive, and bind the TypeVar to the opened body — losing the recursive structure. With the correct ordering, Arm 3 fires and binds the TypeVar to the full Recursive type.
 
 ```rust
 match (a, b) {
     // Arm 1 (symmetric): both are Recursive — open with ONE shared fresh TypeVar.
-    // Shared fresh ensures both bodies are opened against the same unknown,
-    // producing the most general unifier directly. One fresh var, one substitution
-    // pass each — more efficient and cleaner than sequential opening.
-    (CheckerType::Node(TypeNode.Recursive { var: v1, body: b1 }),
-     CheckerType::Node(TypeNode.Recursive { var: v2, body: b2 })) => {
+    (CheckerType(TypeNode.Recursive { var: v1, body: b1 }),
+     CheckerType(TypeNode.Recursive { var: v2, body: b2 })) => {
         let fresh = state.fresh_type_var();
         let a_open = substitute(b1, v1, &fresh);
         let b_open = substitute(b2, v2, &fresh);
         unify(a_open, b_open, subst, state)
     }
 
-    // Arm 2 (asymmetric left): left is Recursive, right is not.
-    // Open the left binder with a fresh TypeVar; right is passed through unchanged.
-    (CheckerType::Node(TypeNode.Recursive { var: v1, body: b1 }), other) => {
+    // Arm 2 (TypeVar left): bind TypeVar to the right side.
+    // Must come BEFORE the asymmetric Recursive arms — otherwise
+    // (Recursive, TypeVar) would be handled by Arm 4 incorrectly.
+    (CheckerType(TypeNode.TypeVar { name, .. }), b) => {
+        occurs_check(name, &b)?;
+        subst.bind(name, b);
+        Ok(())
+    }
+
+    // Arm 3 (TypeVar right): bind TypeVar to the left side.
+    (a, CheckerType(TypeNode.TypeVar { name, .. })) => {
+        occurs_check(name, &a)?;
+        subst.bind(name, a);
+        Ok(())
+    }
+
+    // Arm 4 (asymmetric left): left is Recursive, right is concrete (not TypeVar, not Recursive).
+    (CheckerType(TypeNode.Recursive { var: v1, body: b1 }), other) => {
         let fresh = state.fresh_type_var();
         let a_open = substitute(b1, v1, &fresh);
         unify(a_open, other, subst, state)
     }
 
-    // Arm 3 (asymmetric right): right is Recursive, left is not.
-    // Mirror of Arm 2. Required for when structural descent produces
-    // (concrete_type, Recursive) pairs — e.g., unify(Record{x:fresh}, Recursive{v3,b3}).
-    (other, CheckerType::Node(TypeNode.Recursive { var: v2, body: b2 })) => {
+    // Arm 5 (asymmetric right): right is Recursive, left is concrete.
+    (other, CheckerType(TypeNode.Recursive { var: v2, body: b2 })) => {
         let fresh = state.fresh_type_var();
         let b_open = substitute(b2, v2, &fresh);
         unify(other, b_open, subst, state)
     }
 
-    // Structural cases for non-Recursive types...
+    // Structural cases for concrete non-Recursive, non-TypeVar types...
     ...
 }
 ```
 
-**Termination argument.** All three arms terminate for the same reason: `substitute(body, var, &fresh)` replaces `RecursiveRef(var)` nodes with `CheckerType::Var(fresh)` — a TypeVar, not a Recursive node. After opening, the former recursive positions hold TypeVars. When `unify` descends and encounters `fresh` paired against a `Recursive` on the other side, it matches the **TypeVar arm** (`(Var, _)`), which binds `fresh → Recursive` and terminates immediately. The Recursive arms (1, 2, 3) cannot re-fire on the opened side because TypeVar ≠ Recursive.
+**Termination argument.** Arms 2 and 3 (TypeVar binding) terminate immediately — one substitution entry added, no recursive call. Arms 4 and 5 (Recursive opening) terminate because `substitute(body, var, &fresh)` replaces `RecursiveRef(var)` with `TypeNode.TypeVar { name: fresh }`. After opening, the former recursive positions hold TypeVars. When unification descends and encounters `fresh` paired against any type, Arm 2 or 3 fires and binds — no further Recursive arm fires on that side. Structural induction on the non-Recursive sides handles all remaining sub-checks.
 
 **Why `other` may contain `Recursive` sub-terms without causing divergence.** The claim "`other` contains no RecursiveRef — Recursive arms cannot re-fire" was imprecise. `other` CAN contain `TypeNode.Recursive` nodes as sub-terms (e.g., `Union([Recursive { v3, b3 }, Int])`). When structural descent reaches such a node, one of Arms 2 or 3 fires — but for a DIFFERENT binder (v3, not v1). This binder is opened with a new fresh TypeVar, and the same argument applies recursively. Termination follows by structural induction: each arm firing eliminates one Recursive node from the top of one side, and substitution with TypeVar does not re-introduce Recursive at the top.
 
@@ -703,7 +737,7 @@ Each entry pushed to the stack is pre-assigned a fresh name via `fresh_rec_var_w
 2. The body references `OddList` — push `(arc_OddList, "𝜇ꜱʏᴍ⧼OddList⧽43")`; begin expanding OddList's body
 3. OddList's body references `EvenList` — `arc_EvenList` is already in stack (via `Arc::ptr_eq`) → emit `TypeNode.RecursiveRef("𝜇ꜱʏᴍ⧼EvenList⧽42")`
 4. Pop `OddList`: expanded body = `Absent | {head: Int, tail: RecursiveRef("𝜇ꜱʏᴍ⧼EvenList⧽42")}`. Does the body contain `RecursiveRef("𝜇ꜱʏᴍ⧼OddList⧽43")`? **No** — OddList is not the cycle origin. Return the body **as-is**, without wrapping.
-5. Pop `EvenList`: expanded body = `Absent | {head: Int, tail: (Absent | {head: Int, tail: RecursiveRef("𝜇ꜱʏᴍ⧼EvenList⧽42")})}`. Does the body contain `RecursiveRef("𝜇ꜱʏᴍ⧼EvenList⧽42")`? **Yes** — EvenList is the cycle origin. Wrap: `Type::Recursive { var: "𝜇ꜱʏᴍ⧼EvenList⧽42", body: <full body> }`.
+5. Pop `EvenList`: expanded body = `Absent | {head: Int, tail: (Absent | {head: Int, tail: RecursiveRef("𝜇ꜱʏᴍ⧼EvenList⧽42")})}`. Does the body contain `RecursiveRef("𝜇ꜱʏᴍ⧼EvenList⧽42")`? **Yes** — EvenList is the cycle origin. Wrap: `TypeNode.Recursive { var: "𝜇ꜱʏᴍ⧼EvenList⧽42", body: <full body> }`.
 
 The wrapping rule: **wrap `Recursive` only when popping the stack entry whose fresh name appears in the expanded body.** Intermediate entries whose fresh names do not appear pass through their bodies unchanged.
 
@@ -743,20 +777,17 @@ Explicit `mu` in annotation positions uses `[fn [let self] ...]` with `self` as 
 
 **Current:** The type checker operates on a `Type` Rust enum. `TypeNode` (tinct Value) is a separate format converted from `Type` during annotation resolution.
 
-**Proposed:** Introduce `CheckerType` — the type checker's working type is either a TypeNode value or a TypeVar inference variable:
+**Proposed:** `CheckerType` is simply `Node(Value)` — a thin wrapper with no separate variant:
 
 ```rust
-enum CheckerType {
-    Node(Value),      // a TypeNode tinct value (Union, Record, Recursive, RecursiveRef, TypeApplication, …)
-    Var(String, u32), // TypeVar — sole inference artifact; name + Kiselyov level
-}
+struct CheckerType(Value);   // every type is a TypeNode Value, including TypeVar
 ```
 
-The `Type` Rust enum is eliminated. `Substitution` maps `String → CheckerType`. All type checker operations (`is_subtype_inner`, `unify`, `collect_type_vars`, etc.) take `CheckerType` arguments. For `CheckerType::Node(v)`, pattern match on the TypeNode variant tag. For `CheckerType::Var`, apply existing TypeVar logic unchanged.
+The `Type` Rust enum is eliminated. `Substitution` maps TypeVar name `String → CheckerType`. All type checker operations take `CheckerType` (= `Node(Value)`) arguments — pattern match on the TypeNode variant tag using `typenode_tag(&value)`. All type forms, including `TypeVar`, are TypeNode values.
 
-`TypeNode.Recursive { var, body }` and `TypeNode.RecursiveRef { name }` are `CheckerType::Node` values. `var` carries a gensym name generated at `mu` call time (in tinct) or at expansion-stack wrap time (in Rust). Pure-traversal walkers use `walk_type` dispatching through `TypeNodeChildren` — no exhaustive match. Only `is_subtype_inner`, `unify`, `Substitution::apply`, and `PartialEq` have explicit arms.
+`TypeVar` has `name: String` (e.g. `"_t42"`) and `level: Int` (Kiselyov creation-time level). `state.levels` maps TypeVar name → level (unchanged). `fresh_type_var()` creates `Value::Variant { tag: "TypeNode.TypeVar", payload: { name: "_t42", level: current_level } }`. Substitution lookup: `subst.type_map.get(typevar_name)`.
 
-`TypeVar` is the sole type not representable as a TypeNode constructor. All other type forms that previously lived in the `Type` enum — `TypeConstructor`, `TypeApplication`, `Union`, `Record`, `Recursive`, `RecursiveRef`, etc. — are now TypeNode values.
+Pure-traversal walkers use `walk_type` dispatching through `TypeNode.children` — no exhaustive match, and TypeVars are found automatically since they are TypeNode Values. Only `is_subtype_inner`, `unify`, `Substitution::apply`, and `PartialEq` have explicit Rust arms — and fewer than before (see §Self-Hosted Type Traversal).
 
 **Impact:** Major — replaces `Type` enum with `CheckerType`. The actual migration scope is substantially larger than the ~40 match sites in `type_def.rs` and `type_unify.rs`. Full scope includes: `TypeScheme` (holds `Type` in its body field), `TypeEnv.bindings` (maps names to `TypeScheme`), `InferState.subst` (`Substitution` maps `String → Type`), builtin type signature registration in `builtins_core.rs` (~50 sites), `value_matches_type` in `eval_materialize.rs`, the LSP `TypeMap = HashMap<(usize,usize), Type>` public API, and all type normalisation functions in `type_normalize.rs`. Estimate: 150–200 affected sites across 10+ files. Migration must be incremental: introduce `CheckerType` alongside `Type`, migrate one subsystem at a time (annotation resolver → unifier → inference engine → builtins → LSP), retire `Type` last. Pure walkers simplified via `walk_type` once migration is complete.
 
@@ -828,7 +859,7 @@ where `TypeNode.TypeConstructor "a"` is a param token (unqualified, no '.') subs
 
 1. **`expand_named(name, args, stack) -> CheckerType`**: Unified lookup via `env.lookup_tycon_def(name)` which returns `Arc<TyConDef>`. All named types — primitives, structural aliases, nominal ADTs — are registered as `Arc<TyConDef>` entries; there is no separate name-list fast path. The expansion stack is `IndexSet<(Arc<TyConDef>, String)>` — cycle detection uses `Arc::ptr_eq` on the stored Arc handles, giving stable identity across nested scope lookups. Wraps in `TypeNode.Recursive` only at the cycle-origin level. See §Annotation Resolver for the complete algorithm.
 
-2. **`expand_all_tycon_apps(node, stack) -> CheckerType`**: Recursively eliminates transient `TypeNode.TypeApplication`/bare `TypeNode.TypeConstructor` by calling `expand_named`. Uses Rust-level TypeNode tag matching — NOT `eval_type_stage_value` (hot path; per-node tinct evaluation overhead is unacceptable here).
+2. **`expand_all_tycon_apps(node, stack) -> CheckerType`**: Recursively eliminates transient `TypeNode.TypeApplication`/bare `TypeNode.TypeConstructor` by calling `expand_named`. The TypeApplication and TypeConstructor arms use Rust-level tag matching (the frequent hot cases). The `_:` fallthrough uses `typenode_map_children` — a pre-cached tinct function resolved once at init, not `eval_type_stage_value` on a raw AST expression per node. New TypeNode constructors are handled by the fallthrough automatically.
 
 3. **`eval_type_stage_expr(expr, env) -> CheckerType`**: Evaluates expression annotations via `materialize_sync`. Result goes through `TypeNode.as-type` normalization + `expand_all_tycon_apps`.
 
@@ -845,7 +876,7 @@ All `TypeNode.Recursive` `.var` names are globally unique (`𝜇ꜱʏᴍ⧼...�
 
 Add unification arms using simultaneous opening (§Unification). `TypeNode.RecursiveRef` never reaches the unifier directly — only appears inside a Recursive body during S-Exp unfolding, resolved by the sigma context.
 
-`Substitution::apply` for `CheckerType::Node(v)`: recurse into TypeNode children using **Rust-level TypeNode tag matching** (NOT `eval_type_stage_value` — `apply` is called in the unification hot path where per-node tinct evaluation overhead is unacceptable). `TypeNode.RecursiveRef` nodes pass through unchanged (their `𝜇ꜱʏᴍ` gensym names are never in `subst.type_map`). For `CheckerType::Var(name, level)`: apply existing TypeVar substitution logic.
+`Substitution::apply`: one explicit arm for `TypeNode.TypeVar` (subst lookup by name; if unbound, return unchanged). All other TypeNode constructors — including Recursive, RecursiveRef, Union, Record, Arrow — are handled by `typenode_map_children(node, |c| apply(c, subst))`. RecursiveRef passes through correctly because it has no @Child fields. Recursive body is substituted correctly because `body@Child` causes `typenode_map_children` to apply `apply` to it. No additional explicit arms needed.
 
 `TypeNode.Recursive` and `TypeNode.RecursiveRef` appear in type error messages using the alias name embedded in the gensym tag (e.g., `μEvenList.T`). Never written in source.
 
@@ -894,7 +925,7 @@ Once equirecursive types land, `validate_value` in `src/builtins_meta.rs` (~267 
 
 ## Prerequisites
 
-- **user-type-constructors** — already accepted and in implementation (S-842–S-851). `Type::TyCon`, `Type::App`, `RowTail::Uniform`, and the scoped `TyConDef` registry are the baseline this feature builds on. Equirecursive types extend the type system with `Type::Recursive` and `Type::RecVar` for the two cases TypeConstructor references alone cannot handle: inline recursive annotations and safe subtype checking between distinct recursive TypeConstructors.
+- **user-type-constructors** — already accepted and in implementation (S-842–S-851). `TypeConstructor`, `TypeApplication`, `RowTail::Uniform`, and the scoped `TyConDef` registry (as TypeNode values / `Arc<TyConDef>`) are the baseline this feature builds on. Equirecursive types add `TypeNode.Recursive` and `TypeNode.RecursiveRef` — the two TypeNode constructors that cannot be expressed without equirecursive support — plus the coinductive subtype checking algorithm (S-Exp + S-Assum) and the `mu` combinator.
 All other infrastructure required by this proposal — annotation system, TypeNode ADT, TyConDef merge, CheckerType migration, eval_type_stage_expr, etc. — is fully specified in the §Design and §What Would Change sections above. It is part of this proposal's implementation, not a prerequisite.
 
 ## References

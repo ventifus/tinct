@@ -757,43 +757,6 @@ fn typecheck_surface_document(
 /// (empty named-section map, empty `{}`-record pipeline type).
 ///
 /// Results are written into `type_map` (NodeId → Type). Errors are returned as
-/// `Err(Vec<TypeError>)`; advisory errors (expects:/output_type) are silently
-/// discarded here — this entry point is intended for callers that only need
-/// type-error diagnostics, not pipeline-type threading.
-///
-/// - Walks `SurfaceItem::Expr` via `infer_surface_expr` (native SurfaceNode walk)
-/// - Walks `SurfaceItem::Decl` for `TypeAlias`, `ClassDecl`, `InstanceDecl`
-///   Pass 0c pre-scan via `SurfaceExpression::Decl` is already handled by `typecheck_surface_document`.
-#[allow(dead_code)]
-pub(crate) fn typecheck_surface_document_native(
-    doc: &SurfaceDocument,
-    state: &mut InferState,
-    type_map: &mut TypeAnnotationTable,
-    env: &TypeEnv,
-) -> Result<(), Vec<TypeError>> {
-    let parent_env = Rc::new(env.clone());
-    let pipeline_type = Type::Record(Row {
-        fields: HashMap::new(),
-        tail: crate::type_def::RowTail::Empty,
-    });
-    let named_types = HashMap::new();
-
-    let (_env, _ty, errors) = typecheck_surface_document(
-        doc,
-        &parent_env,
-        state,
-        type_map,
-        &mut None, // no span TypeMap for this entry point
-        &pipeline_type,
-        &named_types,
-    );
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
-    }
-}
-
 /// Extract documentation strings from parameter and function annotations.
 ///
 /// Walks the AST looking for `doc:` properties in `@[...]` annotations.
@@ -922,7 +885,7 @@ fn collect_nominal_tags(ty: &Type) -> Vec<String> {
 /// - `Result: [type [Ok a] [Error String]]` → `[("Result.Ok", 1), ("Result.Error", 1)]`
 /// - `Maybe: [type [Some a] [None]]` → `[("Maybe.Some", 1), ("Maybe.None", 0)]`
 /// - `Absent: [type Absent]` → `[("Absent.Absent", 0)]`
-fn extract_constructors_from_type(ty: &Type, type_name: &str) -> Vec<(String, usize)> {
+pub(crate) fn extract_constructors_from_type(ty: &Type, type_name: &str) -> Vec<(String, usize)> {
     match ty {
         Type::NominalVariant { tag, fields } => {
             let qualified_tag = format!("{}.{}", type_name, tag);
@@ -1118,7 +1081,7 @@ fn register_type_aliases(
                                     prev_span.start.line, prev_span.start.column,
                                 ),
                                 span: decl_span.clone(),
-                                code: "W042",
+                                code: typecheck_diag::W042_DUPLICATE_NOMINAL_TAG,
                                 level: crate::error::DiagnosticLevel::Warn,
                             });
                         } else {
@@ -1161,11 +1124,20 @@ fn register_type_aliases(
                     // Register TyConDef for TyCon identity checking and variance-directed subtyping.
                     let tycon_def = TyConDef {
                         variance: final_variances,
-                        constructors,
+                        constructors: constructors.clone(),
                         builtin_type: None,
                     };
                     target_env.insert_tycon_def(name.clone(), tycon_def.clone());
                     state.tycon_env.insert(name.clone(), tycon_def);
+
+                    // B-340: Register each constructor name as a binding in the type environment.
+                    // Constructors are injected at desugar time (inject_adt_constructors_expr) but
+                    // the type checker doesn't see them, causing "undefined variable" warnings.
+                    // For now, bind each constructor to Unknown to suppress the warnings; proper
+                    // constructor typing (Fn@ResultType [FieldTypes...]) is future work.
+                    for (qualified_tag, _arity) in &constructors {
+                        target_env.insert(qualified_tag.clone(), Type::Unknown);
+                    }
                 }
                 Err(e) => errors.push(e),
             }
@@ -1946,9 +1918,13 @@ pub(crate) fn infer_surface_expr(
                 Type::Union(members) => {
                     coverage::ConstructorSignature::from_union(members, &state.tycon_env)
                 }
-                Type::NominalVariant { tag, fields } => Some(
-                    coverage::ConstructorSignature::from_nominal_variant(tag, fields),
-                ),
+                Type::NominalVariant { tag, fields } => {
+                    Some(coverage::ConstructorSignature::from_nominal_variant(
+                        tag,
+                        fields,
+                        &state.tycon_env,
+                    ))
+                }
                 Type::Bool => Some(coverage::ConstructorSignature {
                     constructors: vec![
                         (coverage::ConstructorTag::LiteralBool(true), 0),
@@ -2534,7 +2510,7 @@ fn infer_instance_decl_from_surface(
                 state.diagnostics.push(crate::error::TypeDiagnostic {
                     message: msg,
                     span: span.clone(),
-                    code: "W043",
+                    code: typecheck_diag::W043_INSTANCE_OVERLAP,
                     level: crate::error::DiagnosticLevel::Warn,
                 });
             }

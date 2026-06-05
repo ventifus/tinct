@@ -2677,7 +2677,8 @@ pub(crate) fn resolve_type_expr(
 
             // TyConDef-based type constructor application (T-949) in implied-call position.
             // Primary path for user-defined type constructors in [TyCon Arg1 Arg2 ...] form.
-            // TODO(T-1018): fallback to kind_env below for Seq/Map/Handle until they have TyConDef.
+            // Primary path: look up via TyConDef (covers user-defined types and builtin TyCons
+            // registered in T-1018: Seq, Map, Handle). Falls through to kind_env for unregistered names.
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 if let Some(def) = env.lookup_tycon_def(name) {
                     let arity = def.arity();
@@ -2700,13 +2701,13 @@ pub(crate) fn resolve_type_expr(
             }
 
             // Built-in type constructor application in implied-call position.
-            // TODO(T-1018): TEMPORARY fallback for Seq/Map/Handle (not yet in TyConDef).
-            // Check BEFORE parameterized alias lookup so built-in constructors have priority.
+            // Checked BEFORE parameterized alias lookup so builtin constructors have priority.
             //
             // Dispatches through `kind_env` (same as `resolve_type_dict`) to
             // `apply_builtin_constructor`, ensuring arity rules and error messages stay in sync
-            // across both call paths. This eliminates the parallel string-match that previously
-            // duplicated the Seq/Map/Handle dispatch logic independently of `resolve_type_dict`.
+            // across both call paths. This is the permanent dispatch path for Seq, Map, and
+            // Handle — these builtins are registered in `kind_env` but resolve through
+            // `apply_builtin_constructor` rather than through `tycon_env`.
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 if let Some(kind) = state.kind_env.get(name.as_str()).cloned() {
                     if kind.arity() > 0 && is_builtin_type_name(name) {
@@ -2927,7 +2928,8 @@ pub(crate) fn resolve_type_dict(
     // Produces left-associative App chains: [Tree Int] → App(TyCon("Tree"), Int).
     // Must run BEFORE the parameterized alias lookup so TyCon constructors take priority.
     //
-    // TODO(T-1018): Remove the kind_env fallback below once Seq/Map/Handle have TyConDef entries.
+    // kind_env fallback: handles any builtin TyCons not covered by TyConDef (e.g., future additions).
+    // Seq/Map/Handle are registered in TyConDef as of T-1018, but kind_env remains as a safety net.
     if !entries.is_empty() {
         if let Some(first) = entries.first() {
             if first.node.key.is_none() {
@@ -2972,11 +2974,9 @@ pub(crate) fn resolve_type_dict(
         }
     }
 
-    // General type constructor application via kind_env.
-    // TODO(T-1018): This is a TEMPORARY fallback for Seq, Map, Handle which are not yet in
-    // TyConDef. Remove this block once Seq/Map/Handle have TyConDef entries in prelude.
-    // Handles both builtin constructors (Seq, Map, Handle — pre-registered in InferState::new)
-    // and user-defined Operator-kinded class params (e.g., `m` in `[class [m@Operator] ...]`).
+    // General type constructor application via kind_env — the permanent dispatch path for
+    // builtin constructors (Seq, Map, Handle — pre-registered in InferState::new) and for
+    // user-defined Operator-kinded class params (e.g., `m` in `[class [m@Operator] ...]`).
     // Must run BEFORE the parameterized alias lookup so builtin constructors take priority.
     if !entries.is_empty() {
         if let Some(first) = entries.first() {

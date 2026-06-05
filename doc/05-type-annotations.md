@@ -29,6 +29,51 @@ Two forms:
 
 Strings containing `@` must be quoted: `"email@example.com"`.
 
+### 1a. General Annotation Syntax
+
+`@[...]` annotations (property dicts) attach to every significant grammar position, not only function parameters and return types. This enables uniform metadata — documentation, schema constraints, traversal roles, and user-defined fields — at every declaration point.
+
+**Grammar positions where `@[...]` is valid:**
+
+```tinct
+# Top-level bindings (function or non-function)
+my-fn@[doc: "..."  version: "1.0"  deprecated: false]: [fn ...]
+Pi@[doc: "mathematical constant"]: 3.14159
+
+# Type alias declarations
+JsonValue@[doc: "..."  schema-id: "json-value"]: [type [or Int Float ...]]
+
+# Constructor names in [type ...] declarations
+TypeNode: [type
+  [Union@[children: [fn [let u] u.types]  as-type: [fn [let u] u]  guarding: false]
+    types: [Seq TypeNode]]
+  ...]
+
+# Record/dict field type declarations
+Config: [type [record
+  host@[required: true  doc: "hostname"]:         String
+  port@[default: 8080   doc: "port number"]:       Int
+  timeout@[default: 30  doc: "seconds"]:           Int]]
+
+# [class ...], [instance ...], [macro ...], [let ...] declarations
+[class@[doc: "structural children of a TypeNode"] [TypeNodeChildren t]
+  [fn@[Seq TypeNode] [children [let _@t]]]]
+
+[macro@[doc: "..."  inject: it: default-expr] my-macro [let pattern] body]
+
+[let x@[doc: "intermediate result"] [+ a b]]
+```
+
+**Storage model.** All annotations are stored as `IndexMap<String, Value>` — a uniform open dict. There are three storage sites:
+
+- **`Value::Function` values**: `FnAnnotation.extra: IndexMap<String, Value>` alongside existing `doc`, `return_type`, and params fields. All annotation fields — well-known and custom — are stored here uniformly; `annotation-of` reads `extra` as the canonical annotation dict.
+- **All other values** (`Value::String`, `Value::Int`, `Value::Dict`, etc.): `Value::Annotated { inner: Arc<Thunk>, annotation: Value }` wraps any non-function value with its annotation dict. All other Value operations unwrap `Annotated` transparently.
+- **Type-level positions** (type alias declarations, record field type annotations): `TyConDef.annotation: IndexMap<String, Value>` for type-level positions. Record field type annotations are stored in `TypeNode.Record.field_annotations`.
+
+**`annotation-of` is a Rust builtin** that reads from all three storage sites uniformly, returning the annotation dict or an empty dict when no annotation is present. It is available at both runtime and in the type-stage evaluator.
+
+**No fixed or privileged fields.** The distinction between well-known keys (`doc:`, `as-type:`, `guarding:`, `@Child`) and user-defined keys is purely a matter of which code reads which keys — there is no architectural distinction. Any code can read any key via `annotation-of`.
+
 ### 2. Simple Type Annotations
 
 `x@Type` declares the compile-time type of parameter `x`. If the annotation is a bare name, it is a type reference (uppercase = concrete, lowercase = TypeVar). If it is a bracket expression, it is resolved as a type-stage expression.
@@ -72,7 +117,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 - Uppercase first letter: concrete types (`Int`, `String`, `Bool`, `Null`, `Top`)
 - Lowercase first letter: type variables (`a`, `b`, `k`, `v`)
-- `String` / `Str`: `String` is the user-facing annotation name; `Str` is the internal `Type::Str` variant. Use `String` in annotations; `Str` appears in error messages.
+- `String` / `Str`: `String` is the user-facing annotation name; `Str` is the internal name used in error messages (the corresponding TypeNode is `TypeNode.String`). Use `String` in annotations.
 - `Null`: the empty record `[]` — closed record with no fields. Use `fn@Null` for functions returning no meaningful value.
 - `Top`: universal supertype (`⊤`) — every type is a subtype of `Top`. Accepts any value in the subtyping sense.
 - `Unknown`: gradual type (`?`) — any type is consistent with `Unknown` for gradual typing, but it does NOT imply "accepts any value" in the subtyping sense. Unconstrained inference positions resolve to `Unknown`.
@@ -208,7 +253,7 @@ error: unmatched closing bracket
     |                                                          ^
 ```
 
-`or` is a type-stage function in the prelude. It produces `[kind: "union" members: [...]]` → `Type::Union(Vec<Type>)`. Union members are normalized: deduplicated, sorted, and flattened (nested unions collapse).
+`or` is a type-stage function in the prelude. It produces `TypeNode.Union { types: [...] }`. Union members are normalized: deduplicated, sorted, and flattened (nested unions collapse).
 
 **Intersection — `each` type-stage combinator:**
 
@@ -223,7 +268,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
     |           ^
 ```
 
-`each` produces `[kind: "inter" members: [...]]` → `Type::Intersection(Vec<Type>)`. In `constraint:` position, each member becomes a separate `Constraint::Class`. In annotation position, it produces `Type::Intersection`.
+`each` produces `TypeNode.Intersect { types: [...] }`. In `constraint:` position, each member becomes a separate `Constraint::Class`. In annotation position, it produces a `TypeNode.Intersect` value.
 
 **BAS annotation call-form — `@[[all A B]]` and `@[[without A]]`:**
 
@@ -234,9 +279,9 @@ x@[[all Comparable Showable]]    # intersection: Comparable ∩ Showable
 x@[[without String]]             # negation: ~String (any type except String)
 ```
 
-`@[[all T1 T2 ...]]` — the inner `[all T1 T2]` parses as `Expr::Call { func: VarRef("all"), args: [T1, T2, ...], implied: true }`. The annotation resolver dispatches on the `all` head and produces `Type::normalize_intersection([T1, T2, ...])`.
+`@[[all T1 T2 ...]]` — the inner `[all T1 T2]` parses as `Expr::Call { func: VarRef("all"), args: [T1, T2, ...], implied: true }`. `eval_type_stage_expr` evaluates `all` as an ordinary type-stage function, producing `TypeNode.Intersect { types: [T1, T2, ...] }` (normalized: deduplicated, sorted, flattened).
 
-`@[[without T]]` — the inner `[without T]` likewise parses as a Call with head `without`, producing `Type::Negation(T)`.
+`@[[without T]]` — the inner `[without T]` likewise parses as a Call with head `without`, producing a negation TypeNode value.
 
 The double-bracket form is equivalent to the single-bracket form using `each` or a negation-combinator:
 
@@ -423,7 +468,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
     |           ^
 ```
 
-**Routing:** constraint values are type-stage expressions. `Comparable` resolves to `[kind: "named" name: "Comparable"]` → `Constraint::Class("Comparable", α)`. `[each Comparable Showable]` resolves to `[kind: "inter" members: [...]]` → two separate `Constraint::Class` entries.
+**Routing:** constraint values are type-stage expressions. `Comparable` resolves to `TypeNode.TypeConstructor { name: "Comparable" }` → `Constraint::Class("Comparable", α)`. `[each Comparable Showable]` resolves to `TypeNode.Intersect { types: [...] }` → two separate `Constraint::Class` entries.
 
 **Interaction with inference.** Explicit constraints compose with inferred constraints. If `constraint: [a: Comparable]` is declared and the body also uses `a` in an `Equatable` context, both register; constraint simplification removes `Equatable a` since `Comparable` entails it via the superclass relation.
 
@@ -572,7 +617,7 @@ The type-stage Env is discarded after type-checking; it does not exist at runtim
 
 **Available builtins in type-stage:** `builtin-get`, `get?`, `keys`, `length`, `=`, `if`, `match`. The higher-level `get` (which is a program-stage wrapper) is not available — use `builtin-get` instead.
 
-**Recursive type-stage functions are not supported.** The lazy evaluator defers self-calls as thunks; the annotation resolver forces thunks during traversal, causing infinite unrolling until the 256-layer depth limit fires. Use type aliases for recursive structures.
+**Recursive type-stage functions are not supported.** The lazy evaluator defers self-calls as thunks; the annotation resolver forces thunks during traversal, causing infinite unrolling. For recursive type structures, use named aliases (the expansion stack detects self-references automatically and produces `TypeNode.Recursive`) or the `mu` combinator for inline annotations.
 
 ### 13. Type Prelude and Type Constructors
 
@@ -608,35 +653,31 @@ Map:      [type [let k@Equatable v]  [_@k : v]]
 
 **Name resolution order** in the type environment:
 
-1. `TyConDef` lookup (user-declared and prelude types registered via `[type ...]`)
-2. Type alias table (transparent aliases declared with `[type ...]` with a structural body)
-3. Builtin named types (`Int`, `String`, `Bool`, `Null`, `Any`, `Unknown`) — these map to their `TyConDef` entries after migration
+All named types — primitive builtins, structural aliases, and nominal ADTs — are registered as `Arc<TyConDef>` entries in a single unified store (`HashMap<String, Arc<TyConDef>>`). There is no separate type-alias table. `expand_named` performs a single lookup; all names go through the same path. Primitive TypeNode constructors (`Int`, `Float`, `Bool`, `Absent`, etc.) are registered as `TyConDef` entries with `params: []` and a pre-interned `TypeNode` body value.
 
 **Name resolution order** in type-stage Env:
 
-1. Type-stage bindings (`or`, `each`, user-defined)
-2. Type alias table (aliases declared with `[type ...]`)
-3. Primitive named types (`Int`, `String`, `Bool`, `Null`, `Any`, `Unknown`)
+1. Type-stage bindings (`or`, `each`, `mu`, user-defined combinators)
+2. Prelude `TypeNode` ADT constructors (`TypeNode.Int`, `TypeNode.Union`, etc.)
+3. All named types registered as `Arc<TyConDef>` (primitives and user-declared)
 
 ### 14. Annotation Resolution
 
-Annotation brackets `@[...]` are resolved by evaluating their contents in the type-stage Env, then converting the resulting type dict to a `Type::*` via `dict_to_type()`.
+Annotation brackets `@[...]` are resolved by evaluating their contents in the type-stage Env via `eval_type_stage_expr`, then normalizing the result through `TypeNode.as-type` and `expand_all_tycon_apps`. The resolver produces fully normalized `CheckerType` values — no `TypeNode.TypeApplication` or bare `TypeNode.TypeConstructor` references remain after resolution. The type checker receives only concrete forms: primitives, Record, Union, Intersect, Arrow, Recursive, RecursiveRef, TypeVar, and qualified TypeConstructor leaves.
 
-```tinct
-@[or Int Null]
-# eval("or Int Null", type_stage_env) → [kind: "union"  members: [Int-dict  Null-dict]]
-# dict_to_type → Type::Union([Type::Int, Type::Record(Empty)])
+```text
+# Named annotation path (@Int, @ListA, @Color, @Maybe Int):
+expand_named(name, args, expansion_stack)
+  → TypeNode value (normalized, may be TypeNode.Recursive for self-referential aliases)
 
-@[Seq Int]
-# eval("Seq Int", type_stage_env) → [kind: "seq"  element: [kind: "named"  name: "Int"]]
-# dict_to_type → App(TyCon("Seq"), Int)
-=== error
-error: @ annotations outside type-assert or param contexts not yet supported
- --> block 27:1:1
-  |
-  1 | @[or Int Null]
-    | ^
+# Expression annotation path (@[or Int Null], @[mu [fn [let self] ...]], @[user-fn args]):
+eval_type_stage_expr(expr, type_stage_env)          # evaluate as ordinary tinct code
+  → typenode_normalize(result, env.as_type_fn)       # TypeNode.as-type dispatch
+  → expand_all_tycon_apps(normalized, expansion_stack) # eliminate TypeApplication/bare TypeConstructor
+  → CheckerType (fully normalized TypeNode value)
 ```
+
+Type-stage expressions **actually execute**: users define type-stage functions in `--- stage: type` sections and the resolver calls them. There are no hardcoded special cases for `or`, `record`, `arrow`, or `mu` in the resolver — all are ordinary type-stage functions returning `TypeNode` values.
 
 **Disambiguation of bracket annotation contents:**
 
@@ -648,7 +689,7 @@ error: @ annotations outside type-assert or param contexts not yet supported
 
 ```tinct
 @[or: Int  port: Int]    # Record schema: fields "or" and "port"
-@[or Int Null]           # Union type: Int | Null
+@[or Int Null]           # Union type: Int | Null → TypeNode.Union [TypeNode.Int  TypeNode.Absent]
 === error
 error: @ annotations outside type-assert or param contexts not yet supported
  --> block 28:1:1
@@ -745,10 +786,10 @@ Pattern position requires qualified forms: `[Result.Ok v]:`, `[Maybe.None]:`, et
 
 **Type alias entries are excluded from record fields.** A `[type ...]` entry registers in the type environment but contributes no field to the enclosing record's type.
 
-**Recursive type aliases** use two-pass registration: all aliases in a dict pre-register with `Type::Unknown` placeholder bodies (Pass 1), then resolve actual bodies (Pass 2). Self-references resolve to `Type::Unknown` at the cycle boundary (up to MAX_ALIAS_DEPTH = 256 layers).
+**Recursive type aliases** are resolved via the expansion stack. All aliases in a dict pre-register as `Arc<TyConDef>` entries (Pass 1); the resolver then expands each alias body on demand (Pass 2). When a self-reference is encountered during expansion, `Arc::ptr_eq` detects the cycle, and a `TypeNode.RecursiveRef` sentinel is emitted — the result is wrapped in `TypeNode.Recursive` at the cycle-origin level. No `Type::Unknown` placeholder is used; the result is a proper μ-type. See §TypeNode: The Primary Type Representation for the full expansion algorithm.
 
 ```tinct
-List: [type [head: Int  tail: List]]    # recursive — two-pass resolves self-reference
+List: [type [head: Int  tail: List]]    # recursive — expansion stack emits TypeNode.Recursive automatically
 ```
 
 ### 15a. Column Constraints — Uniform Row Types
@@ -792,25 +833,88 @@ absent?: [fn@Bool [let x@Unknown] [match x Absent.Absent: true  _: false]]
 
 Builtins that return a missing value (`get?`, `env`) return `Absent.Absent` rather than `[]`. Testing with `absent?` or pattern matching on `Absent.Absent` is correct; `null?` checks only for `[]` (empty collection) and is not interchangeable. Note: `head` raises [E034] on `Seq.Nil` rather than returning `Absent.Absent`. `get-in?` is not yet implemented; use nested `get?` calls in the interim (tracked for implementation).
 
-### 16. Type Dict Schema
+### 16. TypeNode: The Primary Type Representation
 
-The internal type representation uses `Type::TyCon(String)` for concrete type constructor names and `Type::App(Box<Type>, Box<Type>)` for type application. The dedicated collection variants (`Type::Seq`, `Type::Map`, `Type::Handle`) are replaced by the general `TyCon`/`App` mechanism. Type-stage functions return type dicts. The canonical schema:
+`TypeNode` is the type system's primary representation. The type checker works directly on `TypeNode` values. `CheckerType` is `Node(Value)` — a thin wrapper; every type, including inference variables, is a TypeNode tinct value. There is no separate `Type` Rust enum reaching the type checker.
 
-| `kind:` value | Fields | `Type::*` |
-|---------------|--------|-----------|
-| `"named"` | `name: String` | `Type::TyCon(name)` — all named types including builtins |
-| `"union"` | `members: [<type-dict> ...]` | `Type::Union(Vec<Type>)` |
-| `"inter"` | `members: [<type-dict> ...]` | `Type::Intersection(Vec<Type>)` |
-| `"app"` | `constructor: <type-dict>  arg: <type-dict>` | `Type::App(Box<Type>, Box<Type>)` — curried application |
-| `"fn"` | `return: <type-dict>  params: [<type-dict> ...]` | `Type::Function { ret, params }` |
-| `"record"` | `fields: {name: <type-dict> ...}  tail: <tail-dict>` | `Type::Record(Row)` — `tail` is `{kind: "empty"}` or `{kind: "uniform" key: ... value: ...}` |
-| `"recursive"` | `var: String  body: <type-dict>` | `Type::Recursive { var, body }` (μ-types) |
-| `"recvar"` | `name: String` | `Type::RecVar(String)` |
-| `"type-stage-app"` | `fn: String  args: [<type-dict> ...]` | `Type::TypeStageApp { fn_name, args }` |
+**TypeVar is a TypeNode constructor.** `TypeNode.TypeVar { name: String  level: Int }` is a first-class TypeNode form. `walk_type` finds TypeVars automatically via `TypeNode.children`; only four walkers (`is_subtype_inner`, `unify`, `Substitution::apply`, `PartialEq`) require explicit Rust arms for TypeVar.
 
-**Bare uppercase rule:** Unconstrained type positions use `Unknown`. Exception: `Fn` params use `Any` to express variadic-Any calling convention (any callable that accepts any argument types).
+**TypeNode constructors** (all declared in the prelude `--- stage: type` section):
 
-`dict_to_type()` errors on unknown `kind:` values or missing required fields — never silently produces `Unknown` for malformed dicts.
+| Constructor | Fields | Role |
+|-------------|--------|------|
+| `TypeNode.Int`, `.Float`, `.String`, `.Bool`, `.Absent`, `.Unknown`, `.Never` | — | Primitive leaf |
+| `TypeNode.Record` | `fields@Child: [Map String TypeNode]`, `open: Bool` | Structural record |
+| `TypeNode.Union` | `types@Child: [Seq TypeNode]` | Union (BAS ∨) |
+| `TypeNode.Intersect` | `types@Child: [Seq TypeNode]` | Intersection (BAS ∧) |
+| `TypeNode.Arrow` | `params@Child: [Seq TypeNode]`, `result@Child: TypeNode` | Function type |
+| `TypeNode.TypeConstructor` | `name: String` | Transient (bare name) or leaf identity (qualified, e.g. `"Color.Red"`) |
+| `TypeNode.TypeApplication` | `ctor@Child: TypeNode`, `args@Child: [Seq TypeNode]` | Always transient — eliminated by normalization |
+| `TypeNode.Recursive` | `var: String`, `body@Child: TypeNode` | μ-type (equirecursive) |
+| `TypeNode.RecursiveRef` | `name: String` | Self-reference sentinel inside a Recursive body |
+| `TypeNode.TypeVar` | `name: String`, `level: Int` | Inference variable (Kiselyov 2013 creation-time level) |
+
+`TypeNode.TypeApplication` and bare (unqualified) `TypeNode.TypeConstructor` are transient — they exist during type-stage computation but are always eliminated by `expand_all_tycon_apps` before the type checker sees the result. After normalization, the type checker works only with the non-transient forms.
+
+**`TypeNode-ctor t`** returns the constructor function for a TypeNode value: `[get TypeNode [last [str-split "." [tag-of t]]]]`. This expression appears inline in the traversal protocol functions.
+
+**The `@Child` field annotation** marks a field in a `[type ...]` declaration as containing TypeNode children. The traversal role is inferred from the declared field type:
+
+| Declared field type | Traversal role | Effect in `map-children` |
+|--------------------|---------------|--------------------------|
+| `TypeNode` | One | Apply `f` to the single value |
+| `[Seq TypeNode]` | Seq | Apply `f` to each element |
+| `[Map K TypeNode]` | MapValues | Apply `f` to each map value, preserve keys |
+
+Fields without `@Child` are non-children and pass through unchanged. The `@Child` annotation is stored in `TyConDef.field_annotations` at desugar time.
+
+**`TypeNode.children` and `TypeNode.map-children`** are derived generically from `@Child` field annotations — no per-constructor implementation is required:
+
+```tinct
+# children: collect all @Child fields into a flat Seq
+TypeNode.children: [fn [let t]
+  [flat-map [child-fields [TypeNode-ctor t]] [fn [let field]
+    [let val [get t field]]
+    [match [child-role [TypeNode-ctor t] field]
+      One:       [Seq val]
+      Seq:       val
+      MapValues: [values val]]]]]
+
+# map-children: apply f to each @Child field, reconstruct same-shaped variant
+TypeNode.map-children: [fn [let f t]
+  [variant [tag-of t]
+    [object-map [fields [TypeNode-ctor t]] [fn [let field val]
+      [if [child-field? [TypeNode-ctor t] field]
+        [match [child-role [TypeNode-ctor t] field]
+          One:       [f val]
+          Seq:       [map f val]
+          MapValues: [map-values f val]]
+        val]]]]]
+
+# as-type: normalize user-defined constructors to existing forms
+TypeNode.as-type: [fn [let t]
+  [let ann [annotation-of [TypeNode-ctor t]]]
+  [if [has? ann as-type] [[get ann as-type] t] t]]
+```
+
+Helper functions (`child-fields`, `child-role`, `child-field?`) read the unified annotation dict produced from `@Child` processing.
+
+**Adding a new TypeNode constructor** requires: (1) declare it with `@[as-type: fn  guarding: Bool]` on the constructor name and `@Child` on TypeNode-typed fields; (2) add explicit arms only to `is_subtype_inner`, `unify`, `Substitution::apply`, and `PartialEq` for the new constructor's semantics. All traversal walkers (`walk_type`, `collect_type_vars`, `has_inference_vars`, etc.) pick up the new constructor automatically via `TypeNode.children` — no Rust changes needed.
+
+**Inline recursive types via `mu`.** The `mu` prelude combinator creates `TypeNode.Recursive` values inline without a named alias:
+
+```tinct
+# Named alias form (expansion stack handles the self-reference automatically)
+IntList: [type [or Absent [record head: Int  tail: IntList]]]
+
+# Inline mu form — equivalent, no alias needed
+depth: [fn@Int [tree@[mu [fn [let self] [or Absent [record value: Int  left: self  right: self]]]]]]
+  [if [absent? tree] 0 [+ 1 [max [depth tree.left] [depth tree.right]]]]
+```
+
+`mu` generates the binder var via `gensym-with-scope`, calls the body function eagerly, and stores the concrete TypeNode result — no deferred function is stored in `Recursive.body`. Contractiveness is checked at construction time: `μa.a` and `μa.(a | Int)` are rejected with `TypeError(NonContractive)`.
+
+**Coalgebraic subtype checking (S-Exp + S-Assum).** `is_subtype_inner` threads a `sigma: &mut HashSet<(String, String)>` through all arms. When both sides are `TypeNode.Recursive`, the pair `(a.var, b.var)` is inserted into sigma (S-Assum) before proceeding. S-Exp unfolds a `Recursive` via `unfold_once` — substituting all `RecursiveRef(var)` occurrences with the full `Recursive` node — and re-enters. Sigma prevents divergence: when the same pair appears again, the hypothesis fires immediately and returns `true`. This approach is proven sound for BAS (Chau & Parreaux 2026).
 
 ---
 
@@ -944,19 +1048,19 @@ Handle[Writable Appendable Binary]  # Binary file handle, append mode
 
 Capability tags registered in TypeEnv: `Readable`, `Writable`, `Appendable`, `Binary`, `Seekable`, `Stream`, `Tls`, `Text`, `Exclusive`, `Sync`, `NoFollow`.
 
-Subtyping is covariant in the capability row: `Handle[Readable Writable] <: Handle[Readable]` (more capabilities satisfy fewer). `Type::Unknown` as the inner type represents unknown capabilities (gradual typing fallback).
+Subtyping is covariant in the capability row: `Handle[Readable Writable] <: Handle[Readable]` (more capabilities satisfy fewer). `TypeNode.Unknown` as the inner type represents unknown capabilities (gradual typing fallback).
 
 The `%cwd`, `%libdir`, and `%stdin` capability variables are injected into the TypeEnv automatically; they do not need `caps:` declarations.
 
 ### 21. Recursive Type Aliases
 
-Type aliases support self-reference via two-pass registration. All aliases in a dict pre-register with `Type::Unknown` placeholder bodies (Pass 1), then resolve actual bodies (Pass 2). Self-references resolve to `Type::Unknown` at the cycle boundary.
+Recursive type aliases are resolved via the expansion stack. All aliases in a dict pre-register as `Arc<TyConDef>` entries (Pass 1). During body expansion (Pass 2), `expand_named` uses `Arc::ptr_eq` to detect self-references in the expansion stack: when a self-reference is encountered, `TypeNode.RecursiveRef` is emitted for that position, and the result is wrapped in `TypeNode.Recursive` at the cycle-origin level. No placeholder body is used at the cycle boundary — the result is a proper equirecursive μ-type.
 
 ```tinct
 List: [type [head: Int  tail: List]]
 Tree: [type [value: Int  left: Tree  right: Tree]]
 
-# Mutually recursive — must be in the same dict
+# Mutually recursive — must be in the same dict; expansion stack handles the cycle
 A: [type [b_field: B]]
 B: [type [a_field: A]]
 === error
@@ -967,19 +1071,19 @@ error: `:` can only appear in dict, call, class, instance, or match forms
     |     ^
 ```
 
-**Depth limit.** Alias expansion is bounded at 256 layers (`MAX_ALIAS_DEPTH`). Exceeding this limit produces: `recursive type alias 'Name' exceeds maximum unfolding depth (256)`.
+**Mutually recursive aliases.** `expand_named` handles mutual recursion by pre-assigning fresh binder names to all entries on the expansion stack before expanding. Only the alias at the cycle origin is wrapped in `TypeNode.Recursive`; intermediate aliases inline their bodies into the result. The wrapping rule: wrap `TypeNode.Recursive` only when popping the stack entry whose fresh name appears in the expanded body.
 
-**Semantics: equi-recursive, not iso-recursive.** Aliases are transparent — they unfold automatically during type checking. There is no explicit `fold`/`unfold` syntax.
+**Semantics: equirecursive, not isorecursive.** Aliases are transparent — they unfold automatically during type checking via S-Exp. There is no explicit `fold`/`unfold` syntax. `TypeNode.Recursive` and its unfolded form are equal by the coinductive S-Assum rule.
 
 ### 22. Gradual Typing Boundaries
 
-**`Type::Unknown` disables static typing for every expression it touches.** Because consistency (`~`) is non-transitive and symmetric, `Unknown` propagates silently: `Int ~ Unknown` and `Unknown ~ Str`, so an `Int` can flow into a `Str` context through an `Unknown` intermediary without a type error.
+**`TypeNode.Unknown` disables static typing for every expression it touches.** Because consistency (`~`) is non-transitive and symmetric, `Unknown` propagates silently: `Int ~ Unknown` and `Unknown ~ Str`, so an `Int` can flow into a `Str` context through an `Unknown` intermediary without a type error.
 
 **Unknown is a last resort** for values whose type is genuinely opaque at compile time (e.g., untyped `include` files, FFI boundaries with no schema, builtin returns that cannot be precisely typed). Misuse makes the type checker useless.
 
 **Boundary leakage: Unknown-typed bindings at document boundaries.**
 
-When a top-level binding in a document has `Type::Unknown`, it propagates across document boundaries via `include`:
+When a top-level binding in a document has type `Unknown`, it propagates across document boundaries via `include`:
 
 ```tinct
 --- file: lib.llt
@@ -990,7 +1094,7 @@ untyped-value: [from-json "[1,2,3]"]  # Type: Unknown (no annotation)
 result: [+ untyped-value 10]          # Type error silently bypassed
 ```
 
-The value `untyped-value` has `Type::Unknown` because `from-json` returns `Unknown` when no annotation is provided. When `main.llt` includes `lib.llt`, the `Unknown` type leaks across the boundary. The expression `[+ untyped-value 10]` should fail (adding a Seq to an Int), but the `Unknown` type makes the checker pass it.
+The value `untyped-value` has type `Unknown` because `from-json` returns `Unknown` when no annotation is provided. When `main.llt` includes `lib.llt`, the `Unknown` type leaks across the boundary. The expression `[+ untyped-value 10]` should fail (adding a Seq to an Int), but the `Unknown` type makes the checker pass it.
 
 **Mitigation strategies:**
 
@@ -1006,9 +1110,9 @@ The value `untyped-value` has `Type::Unknown` because `from-json` returns `Unkno
    values: [@[Seq Any] [from-json "[1,2,3]"]]  # Runtime check + static refinement
    ```
 
-3. **Audit Unknown sources** — search for `Type::Unknown` in builtin signatures (`src/type_env.rs`) and stdlib code. Replace with precise types (unions, TypeVars, `Top`) wherever possible.
+3. **Audit Unknown sources** — search for `TypeNode.Unknown` in builtin type signatures and stdlib code. Replace with precise types (unions, TypeVars, `Top`) wherever possible.
 
-**Lint opportunity (future work):** Emit a T002 advisory when a top-level binding in a document (not a letrec dict entry) has `Type::Unknown` and is not wrapped in a TypeAssert or annotated explicitly. This would catch leakage at the source.
+**Lint opportunity (future work):** Emit a T002 advisory when a top-level binding in a document (not a letrec dict entry) has type `Unknown` and is not wrapped in a TypeAssert or annotated explicitly. This would catch leakage at the source.
 
 ### 23. Literal Types
 
@@ -1084,8 +1188,8 @@ Mixed-stage routing for annotation brackets in general:
 
 | Annotation form | Stage | Destination |
 |-----------------|-------|-------------|
-| `x@Int` | Type | `Type::Int` via `resolve_type_name` |
-| `x@[or Int Null]` | Type-stage eval | `Type::Union` via type-stage Env |
+| `x@Int` | Type | `CheckerType::Node(TypeNode.Int)` via `expand_named` |
+| `x@[or Int Null]` | Type-stage eval | `CheckerType::Node(TypeNode.Union [...])` via `eval_type_stage_expr` |
 | `x@[type: Int  default: 0]` | Split | `type:` → type-stage, `default:` → runtime |
 | `fn@[bind: [a]  return: a  constraint: ...]` | Split | Per step table above |
 | `[@Int expr]` | Type + runtime | Type assertion at materialization |
@@ -1096,7 +1200,7 @@ Mixed-stage routing for annotation brackets in general:
 
 Tinct uses Hindley-Milner inference with row polymorphism and levels-based let-generalization (Kiselyov 2013).
 
-**TypeVar levels.** Each TypeVar carries an integer level (`TypeVar(String, u32)`) representing the nesting depth of its binding scope. Let-generalization generalizes TypeVars whose level exceeds the current enclosing level — preventing TypeVars from escaping their scope.
+**TypeVar levels.** Each TypeVar carries an integer level (the `level` field of `TypeNode.TypeVar { name: String  level: Int }`) representing the nesting depth of its binding scope. `state.levels` maps TypeVar name to its authoritative current level (updated by level lowering); the payload `level` field holds the creation-time level. Let-generalization uses `state.levels[name] > enclosing_level` — always use `state.levels`, never the payload field. TypeVars whose level exceeds the current enclosing level are generalized into the polymorphic scheme — preventing TypeVars from escaping their scope.
 
 **Dict letrec inference.** Dict entries form a letrec scope. The type checker runs five passes:
 
@@ -1116,14 +1220,16 @@ See [Type Inference](06-type-inference.md) for the full let-generalization algor
 
 ### 27. Reflection and `ast-of`
 
-`ast-of` on an annotated expression returns the resolved type as a type dict (via `type_to_dict()`) alongside the expression's AST structure:
+`ast-of` on an annotated expression returns the resolved type as a `TypeNode` value alongside the expression's AST structure. The TypeNode value is the normalized `CheckerType` produced by the annotation resolver — the same value the type checker uses directly.
 
 ```tinct
 ast-of: [fn@a  min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]] [xs@[Seq a]] ...]]
-# → [kind: "fn"
-#    return: [kind: "named" name: "a"]
-#    params: [[kind: "seq" element: [kind: "named" name: "a"]]]
-#    constraints: [[class: "Comparable" var: "a"]]]
+# → TypeNode.Arrow {
+#     params: [TypeNode.TypeApplication { ctor: TypeNode.TypeConstructor "Seq"
+#                                         args: [TypeNode.TypeVar { name: "_t0" level: 1 }] }]
+#     result: TypeNode.TypeVar { name: "_t0" level: 1 }
+#   }
+#   constraints: [{ class: "Comparable" var: "_t0" }]
 === error
 error: `:` can only appear in dict, call, class, instance, or match forms
  --> block 39:1:7
@@ -1134,16 +1240,17 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 `ast-of` on a default: value returns the unevaluated AST expression dict — not the evaluated default value. This enables tooling to inspect the source expression of defaults without forcing evaluation.
 
-The type dict schema used by `ast-of` matches the §16 Type Dict Schema exactly — `type_to_dict()` and `dict_to_type()` are inverse operations for all `Type::*` variants.
-
 ---
 
 ## Reference
 
-- **Kiselyov, O. (2013).** "Efficient and Insightful Generalization." — [levels-based let-generalization; TypeVar level assignment]
+- **Kiselyov, O. (2013).** "Efficient and Insightful Generalization." — [levels-based let-generalization; TypeVar level assignment; `state.levels` is authoritative current level, payload carries creation-time level]
 - **Robinson, J.A. (1965).** "A Machine-Oriented Logic Based on the Resolution Principle." *JACM*, 12(1), 23–41. — [unification; substitution idempotence]
 - **Gaster, B.R. & Jones, M.P. (1996).** "A Polymorphic Type System for Extensible Records and Variants." — [named parameters in calling convention; names not part of principal type]
-- **Amadio, R.M. & Cardelli, L. (1993).** "Subtyping Recursive Types." *ACM TOPLAS*, 15(4). — [equi-recursive type equality; depth guard for decidability]
+- **Amadio, R.M. & Cardelli, L. (1993).** "Subtyping Recursive Types." *ACM TOPLAS*, 15(4), 575–631. — [foundational coinductive subtype algorithm; S-Assum/S-Hyp rules; equirecursive type equality]
+- **Chau, T. & Parreaux, L. (2026).** "Boolean-Algebraic Subtyping with Equirecursive Types." §3.3.1. — [S-Exp + S-Assum framework proven sound for BAS union/intersection/negation; sigma threading through all arms]
+- **Pierce, B.C. (2002).** *Types and Programming Languages.* MIT Press. §21 "Recursive Types." — [equirecursive vs isorecursive; rational tree representation; simultaneous-opening for recursive type unification]
+- **Huet, G. (1976).** *Résolution d'Équations dans des Langages d'Ordre 1, 2, ..., ω.* Ph.D. thesis, Université Paris VII. — [rational tree unification; finite representation of infinite cyclic types]
 - **Jones, M.P. (1995).** *Qualified Types: Theory and Practice.* Cambridge. — [constraint schemes; processing order]
 - **Jones, M.P. (2000).** "Type Classes with Functional Dependencies." *ESOP 2000*. — [fundep improvement; MPTC constraint propagation]
 

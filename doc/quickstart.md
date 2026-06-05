@@ -66,8 +66,11 @@ For dynamic or computed keys, use `get`:
   nested:  [get-in person ["address" "city"]]
   safe:    [get-or "missing" "default" person]  # → "default"
   exists:  [has? "name" person]   # → true
+  maybe:   [get? "missing" person]              # → Absent.Absent (not [])
 ]
 ```
+
+`get?`, `head`, and `env` return `Absent.Absent` (not `[]`) when a value is not present. Use `[absent? x]` to test for it — distinct from `null?` which tests for the empty dict `[]`.
 
 ---
 
@@ -249,14 +252,14 @@ Type declarations and construction:
 
 ```tinct
 [
-  [type Color [Red] [Green] [Blue]]   # unit constructors in brackets
+  Color: [type Red Green Blue]   # dict-entry form; unit constructors are bare uppercase words
 
-  color: Red   # bare constructor name — Color injects Red, Green, Blue into scope
+  color: Color.Red   # access via dot notation on the type dict
 
   hex: [match color
-    [Red]:   "#ff0000"   # unit constructor patterns — [Tag]: matches that tag
-    [Green]: "#00ff00"
-    [Blue]:  "#0000ff"]
+    Color.Red:   "#ff0000"   # unit constructor patterns — qualified name, no brackets
+    Color.Green: "#00ff00"
+    Color.Blue:  "#0000ff"]
   # → "#ff0000"
 ]
 ```
@@ -279,46 +282,46 @@ Sum types with payloads use `try` in the standard library:
 
 ## Nominal Variants
 
-`[type ...]` declares a type and injects its constructors as bindings into the enclosing dict. The type name itself evaluates to a unit variant marking the type declaration.
+`Name: [type ...]` declares a type and injects its constructors as bindings into the enclosing dict. Unit constructors are bare uppercase words; payload constructors are bracketed (`[CtorName field: Type ...]`). Constructors are also accessible via dot notation on the type name.
 
 ```tinct
 [
-  [type Option [Some value: Int] [None]]
+  Option: [type [let a]  [Some value: a]  None]   # parameterized; None is a bare unit constructor
 
-  # Unit variant: bare name
-  nothing: None
+  # Constructors are injected into scope with qualified tags; also accessible via dot
+  nothing: Option.None
 
-  # Payload variant: call constructor with named field
+  # Payload variant: call constructor (injected into scope from the type declaration)
   something: [Some value: 42]
 
-  # Pattern match on variants — [Some v] binds v to the payload value
+  # Pattern match — [Tag binding] binds the payload DICT; access named fields with dot
   n: [match something
-        [Some v]: v   # v is the payload → 42
-        [None]:   0]
+        [Some p]: p.value   # p is the payload dict → p.value = 42
+        None:     0]        # unit constructor: bare name, no brackets
 ]
 ```
 
-**Constructors are injected into the enclosing dict scope** — declare the type and use constructors by bare name:
+**Constructors are injected into the enclosing dict scope** with qualified tags (`Color.Red`, not `Red`). Access them via dot notation or directly by their injected name — both refer to the same value:
 
 ```tinct
 [
-  [type Color [Red] [Green] [Blue]]
-  c: Red
-  is-red: [= c Red]   # → true
+  Color: [type Red Green Blue]
+  c: Color.Red
+  is-red: [= c Color.Red]   # → true
 ]
 ```
 
-**Named-field variants** — the pattern binds the payload value:
+**Named-field variants** — the pattern binds the payload dict; access fields with dot:
 
 ```tinct
 [
-  [type Measure [Length r: Float] [Zero]]
+  Measure: [type [Length r: Float] Zero]
 
   m: [Length r: 2.5]
 
   desc: [match m
-    [Length r]: [str "length=" [str r]]   # r is the Float payload → 2.5
-    [Zero]:     "zero"]
+    [Length p]: [str "length=" [str p.r]]   # p is the payload dict; p.r is the Float → 2.5
+    Zero:       "zero"]                     # unit constructor: bare name, no brackets
   # → "length=2.5"
 ]
 ```
@@ -356,27 +359,27 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
 ]
 ```
 
-**Constructor patterns** use the tag name in brackets. Unit constructors match with `[Tag]:` or `[Tag _]:`; payload constructors use `[Tag binding]` to bind the payload:
+**Constructor patterns** — unit constructors match with `Tag:` (bare) or `TypeName.Tag:`; payload constructors use `[Tag binding]` or `[TypeName.Tag binding]` to bind the payload dict:
 
 ```tinct
 [
-  [type Color [Red] [Green] [Blue]]
-  color: Red
+  Color: [type Red Green Blue]
+  color: Color.Red
 
-  # Unit constructors — [Tag]: matches that tag
+  # Unit constructors — bare name or qualified dot notation, no brackets
   hex: [match color
-    [Red]:   "#ff0000"
-    [Green]: "#00ff00"
-    [Blue]:  "#0000ff"]
+    Color.Red:   "#ff0000"
+    Color.Green: "#00ff00"
+    Color.Blue:  "#0000ff"]
   # → "#ff0000"
 
-  # Payload constructors — [Tag binding] binds the payload directly
-  [type Shape [Circle r: Int] [Square s: Int]]
+  # Payload constructors — [Tag binding] binds the payload dict; access fields with dot
+  Shape: [type [Circle r: Int] [Square s: Int]]
   sh: [Circle r: 5]
 
   area: [match sh
-    [Circle r]: [* 3 [* r r]]   # r is the Int payload → 3*5*5 = 75
-    [Square s]: [* s s]]
+    [Circle p]: [* 3 [* p.r p.r]]   # p is the payload dict; p.r is the Int → 3*5*5 = 75
+    [Square p]: [* p.s p.s]]
   # → 75
 ]
 ```
@@ -458,7 +461,7 @@ These functions are always available — no `include` needed.
 
 **Logic:** `if`, `when`, `unless`, `and`, `or`, `not`, `=`, `<`, `>`, `<=`, `>=`
 
-**Types:** `int?`, `str?`, `dict?`, `fn?`, `seq?`, `null?`, `bool?`, `float?`, `bytes?`, `num?`
+**Types:** `int?`, `str?`, `dict?`, `fn?`, `seq?`, `null?`, `absent?`, `bool?`, `float?`, `bytes?`, `num?`
 
 **Math:** `+`, `-`, `*`, `/`, `mod`, `floor`, `round`, `min`, `max`, `abs`
 

@@ -4,6 +4,36 @@ This chapter formally specifies tinct's type inference algorithm. The notation u
 
 For the user-facing annotation syntax (`@`, type assertions, type expressions), see [Type Annotations](05-type-annotations.md). For TypeAssert runtime validation, row-variable unification, and the type system extension roadmap, see [Type System Extensions](07-type-extensions.md).
 
+## CheckerType
+
+`CheckerType` is the type checker's primary type representation. It is a thin wrapper around any TypeNode tinct value:
+
+```rust
+struct CheckerType(Value);   // every type is a TypeNode Value, including TypeVar
+```
+
+There is no separate `Type` Rust enum. All type forms — including inference variables — are `TypeNode` values. The type checker pattern-matches on the TypeNode variant tag using `typenode_tag(&value)` rather than on Rust enum variants.
+
+**TypeVar is a TypeNode constructor.** `TypeNode.TypeVar { name: String  level: Int }` is a first-class TypeNode constructor, not a special Rust variant. `name` is the fresh variable name (e.g. `"_t42"`); `level` is the Kiselyov creation-time level. This means `TypeVar` nodes are found by `walk_type` automatically and handled uniformly with all other TypeNode forms. `state.levels` maps TypeVar name → current (possibly lowered) level; `state.levels` is authoritative. The `level` field embedded in the TypeNode payload is the creation-time level (fixed at `fresh_type_var()` call time) and is used only as the initial value when registering in `state.levels`.
+
+**TypeNode constructors available to the type checker** (complete set after normalization, see [Type System Extensions](07-type-extensions.md) §Equirecursive Types):
+
+| Constructor | Fields | Notes |
+|-------------|--------|-------|
+| `TypeNode.Int`, `Float`, `Str`, `Bool`, `Absent`, `Unknown`, `Never` | — | leaf primitives |
+| `TypeNode.Record` | `fields: Map String TypeNode  open: Bool` | record type |
+| `TypeNode.Union` | `types: Seq TypeNode` | union A \| B |
+| `TypeNode.Intersect` | `types: Seq TypeNode` | intersection A & B |
+| `TypeNode.Arrow` | `params: Seq TypeNode  result: TypeNode` | function type |
+| `TypeNode.TypeConstructor` | `name: String` | qualified leaf (contains `.`) |
+| `TypeNode.Recursive` | `var: String  body: TypeNode` | equirecursive type |
+| `TypeNode.RecursiveRef` | `name: String` | back-reference inside Recursive body |
+| `TypeNode.TypeVar` | `name: String  level: Int` | inference variable |
+
+`TypeNode.TypeApplication` and bare `TypeNode.TypeConstructor` (without `.`) are transient — they exist during type-stage computation but are always eliminated by normalization before the type checker receives the result.
+
+`Substitution` maps TypeVar name `String → CheckerType`. All type checker operations take `CheckerType` arguments. `fresh_type_var()` creates `Value::Variant { tag: "TypeNode.TypeVar", payload: { name: "_tN", level: current_level } }`. Substitution lookup: `subst.type_map.get(typevar_name)`.
+
 ## Type Grammar
 
 ```text
@@ -19,13 +49,15 @@ For the user-facing annotation syntax (`@`, type assertions, type expressions), 
     | App(τ, τ)                  curried type constructor application — left-to-right
     | Record(f₁:τ₁...fₙ:τₙ, tail)  closed record with optional uniform tail
     | Proxy                      opaque proxy (field access dispatches to handler)
-    | α                          type variable
+    | α                          type variable  (TypeNode.TypeVar { name, level } in the CheckerType representation)
     | Unknown                    gradual typing escape hatch (don't know the type)
     | Top                        universal supertype ⊤ (supertype of everything)
     | Union(τ₁...τₙ)             union type A | B (user-expressible via `@[A B]`)
     | Intersection(τ₁...τₙ)      intersection type A & B (user-expressible via `@[[all A B]]`)
     | Negation(τ)                negation type ~A (user-expressible via `@[[without A]]`)
     | Never                      bottom type ⊥ (uninhabited, user-expressible via `@Never`)
+    | Recursive(var, τ)          equirecursive type μvar.τ  (TypeNode.Recursive)
+    | RecursiveRef(name)         back-reference inside a Recursive body  (TypeNode.RecursiveRef)
 ```
 
 `TyCon(name)` replaces the dedicated collection variants `Seq(τ)`, `Map(K,V)`, and `Handle(τ)`. All named types — builtins and user-declared — are represented uniformly:
@@ -54,23 +86,42 @@ The `Row` tail field carries `RowTail::Empty` (closed record, current default) o
 
 ## TyCon Registry
 
-> **Implemented in S-842**: `TyConDef`, `Variance`, `TyConEnv` are now defined in `src/type_def.rs`. `Type::TyCon(String)` and `Type::App(Box<Type>, Box<Type>)` have replaced `Type::Seq`, `Type::Map`, and `Type::Handle`. The `kind_env` + `tycon_env` dual-registration approach is in place.
-
-**`TyConDef`** is stored in a third map on `TypeEnv` alongside bindings and type aliases:
+**`TyConDef`** is the unified type declaration store. All named types — primitives, structural aliases, and nominal ADTs — are stored as `Arc<TyConDef>` entries in a single map. The old `TypeAlias` struct and `type_aliases` map are eliminated; `tycon_defs: HashMap<String, Arc<TyConDef>>` is the sole registry. `Arc<TyConDef>` provides stable pointer identity (used by `expand_named` for cycle detection via `Arc::ptr_eq`) and thread-safe sharing across parallel type-checking workers.
 
 ```rust
 pub struct TyConDef {
-    pub variance: Vec<Variance>,            // per-parameter, same order as [let ...] params
-    pub constructors: Vec<(String, usize)>, // (qualified-tag, payload-arity); empty for opaques
-    pub builtin_type: Option<String>,       // "Int", "Str", etc. for builtin-type declarations
+    /// Declared type parameter names (e.g., ["a", "k", "v"]).
+    /// In `body`, parameters appear as TypeNode.TypeConstructor(param_name) tokens — NOT TypeVars.
+    pub params: Vec<String>,
+
+    /// Parametric TypeNode body. For nominal ADTs: TypeNode.Union of qualified TypeConstructor leaves.
+    /// For structural aliases: TypeNode value with param tokens at parameter positions.
+    /// For builtin-opaque types: TypeNode.TypeConstructor(name) (leaf).
+    /// INVARIANT: body contains no inference TypeVars.
+    pub body: Value,   // TypeNode tinct Value
+
+    /// Constructors for nominal ADTs: (qualified_tag, payload_arity).
+    /// e.g., [("Color.Red", 0), ("Color.Green", 0)].
+    /// Empty for structural aliases and builtin-opaque types.
+    pub constructors: Vec<(String, usize)>,
+
+    /// Variance per type parameter, in declaration order.
+    pub variance: Vec<Variance>,
+
+    /// Builtin-type discriminant (e.g., "Seq", "Map", "Int").
+    /// When Some, expand_named returns TypeNode.TypeApplication without structural expansion.
+    pub builtin_type: Option<String>,
+
+    /// Annotation dict from the type declaration site (e.g., @[doc: "..."] on a type alias).
+    pub annotation: IndexMap<String, Value>,
 }
 
 pub enum Variance { Covariant, Contravariant, Invariant, Phantom }
 ```
 
-`TypeEnv` gains `tycon_defs: HashMap<String, TyConDef>` with `insert_tycon_def` and `lookup_tycon_def` methods (parent-chain walk, same pattern as `lookup_type_alias`). When the type checker processes `Color: [type Red Green Blue]`, it stores both a `TypeAlias` and a `TyConDef` in the current scope frame.
+`TypeEnv` carries `tycon_defs: HashMap<String, Arc<TyConDef>>` with `insert_tycon_def(name, Arc<TyConDef>)` and `lookup_tycon_def(name)` methods (parent-chain walk). When the type checker processes `Color: [type Red Green Blue]`, it stores one `Arc<TyConDef>` entry — no separate TypeAlias. Primitive TypeNode constructors (`Int`, `Float`, `Bool`, `Absent`, etc.) are registered as `TyConDef` entries with `params: []`, a pre-interned `TypeNode` body value, and `builtin_type: Some("Int")` etc.
 
-**`InferState` flat accumulator.** `InferState` carries `pub tycon_env: HashMap<String, TyConDef>` as a flat snapshot populated incrementally as each TyCon declaration is processed. This is transferred to `EvalContext` at all infer-state transfer sites via `ctx.set_tycon_env(infer_state.tycon_env)`.
+**`InferState` flat accumulator.** `InferState` carries `pub tycon_env: HashMap<String, Arc<TyConDef>>` as a flat snapshot populated incrementally as each TyCon declaration is processed. This is transferred to `EvalContext` at all infer-state transfer sites via `ctx.set_tycon_env(infer_state.tycon_env)`. `EvalContext.tycon_env` is a `OnceLock<Arc<TyConEnv>>` — populated exactly once, never mutated afterward.
 
 **Type identity.** UNIFY-TYCON unifies `TyCon(n1)` and `TyCon(n2)` iff `n1 == n2` AND both names resolve to the same `TyConDef` in the current scoped `TypeEnv` (pointer identity). Two `Color` types in different scope frames have the same name but different `TyConDef` entries — they are distinct types. The name string is a lookup key, not an identity token.
 
@@ -440,7 +491,7 @@ When name = "Fn": interpret as function type constructor.
 
 **`@Fn` vs `Fn@T` parameter annotation behavior:** Bare `@Fn` in a parameter annotation position (e.g., `f@Fn`) resolves to `Type::Unknown` via `resolve_type_name` — any value is accepted at type-check time and at any `[@Fn expr]` TypeAssert site. No callability check is performed by TypeAssert; `Type::Unknown` matches all values unconditionally, including non-callables. Callability is enforced only when the parameter is actually invoked as a function, which raises a `NotAFunction` error at the call site. `Fn@ReturnType` in a function return annotation position resolves to `Type::Function` with the specified return type via `resolve_fn_type`, which recursively resolves the return annotation and parameter types. This distinction arises from the annotation resolution dispatch: `@Fn` alone has no type parameters, so it cannot construct a `Type::Function` (which requires both params and ret); `Fn@ReturnType [ParamTypes]` has the necessary structure for full function type resolution.
 
-**Seq types:** `Seq(τ)` exists in the type grammar and is handled by unification and subtyping. Sequence constructors (`$seq`, `$range`, etc.) infer as `Seq(τ)` — see [Type System Extensions](07-type-extensions.md) §Precision.
+**Seq types:** Sequences are represented as `App(TyCon("Seq"), τ)` in the type grammar. Sequence constructors (`$seq`, `$range`, etc.) infer as `App(TyCon("Seq"), τ)` — see [Type System Extensions](07-type-extensions.md) §Precision.
 
 ## Unification: unify(τ₁, τ₂, S) → S'
 
@@ -556,6 +607,108 @@ unify(TypeStageApp("F", args), TypeVar(α))             # TypeVar binding:
 
 The FD elaboration case (`c ~ TypeStageApp("AddResult", [a, b])`) uses [U-TSA-VAR] — `c` is the mediating TypeVar and is never stuck against a non-TypeVar.
 
+## Unification for Recursive Types
+
+Unifying `TypeNode.Recursive` and `TypeNode.TypeVar` types requires five match arms in a precise ordering. **Match ordering is critical**: TypeVar binding arms come before the asymmetric Recursive opening arms. Without this ordering, `unify(Recursive, TypeVar)` would hit the asymmetric arm, open the Recursive, and bind the TypeVar to the opened body — losing the recursive structure.
+
+### The Five Arms
+
+```rust
+match (a, b) {
+    // Arm 1 (symmetric): both are Recursive — open with ONE shared fresh TypeVar.
+    // Shared var produces a direct result: no extra indirection in error messages.
+    (TypeNode.Recursive { var: v1, body: b1 },
+     TypeNode.Recursive { var: v2, body: b2 }) => {
+        let fresh = state.fresh_type_var();
+        let a_open = substitute(b1, v1, &fresh);
+        let b_open = substitute(b2, v2, &fresh);
+        unify(a_open, b_open, subst, state)
+    }
+
+    // Arm 2 (TypeVar left): bind TypeVar to the right side.
+    // Must come BEFORE the asymmetric Recursive arms.
+    (TypeNode.TypeVar { name, .. }, b) => {
+        occurs_check(name, &b)?;
+        subst.bind(name, b);
+        Ok(())
+    }
+
+    // Arm 3 (TypeVar right): bind TypeVar to the left side.
+    (a, TypeNode.TypeVar { name, .. }) => {
+        occurs_check(name, &a)?;
+        subst.bind(name, a);
+        Ok(())
+    }
+
+    // Arm 4 (asymmetric left): left is Recursive, right is concrete (not TypeVar, not Recursive).
+    (TypeNode.Recursive { var: v1, body: b1 }, other) => {
+        let fresh = state.fresh_type_var();
+        let a_open = substitute(b1, v1, &fresh);
+        unify(a_open, other, subst, state)
+    }
+
+    // Arm 5 (asymmetric right): right is Recursive, left is concrete.
+    (other, TypeNode.Recursive { var: v2, body: b2 }) => {
+        let fresh = state.fresh_type_var();
+        let b_open = substitute(b2, v2, &fresh);
+        unify(other, b_open, subst, state)
+    }
+
+    // Structural cases for concrete non-Recursive, non-TypeVar types...
+}
+```
+
+### Ordering Rationale
+
+Arms 2 and 3 (TypeVar binding) must appear before Arms 4 and 5 (asymmetric Recursive opening). The key case: `unify(Recursive, TypeVar)`. With the correct ordering, Arm 2 or 3 fires and binds the TypeVar to the full Recursive type. With the wrong ordering, Arm 4 fires, opens the Recursive, and the TypeVar is bound to the opened body — the recursive structure is lost.
+
+### Termination
+
+- **Arms 2 and 3** terminate immediately — one substitution entry added, no recursive call.
+- **Arms 4 and 5** replace `RecursiveRef(var)` with `TypeNode.TypeVar { name: fresh }` via `substitute`. After opening, the former recursive positions hold TypeVars. When descent encounters `fresh` paired against any type, Arm 2 or 3 fires. No further Recursive arm fires on that side. Termination follows by structural induction on the non-Recursive sides.
+- **Arm 1** (symmetric): the shared fresh TypeVar is substituted into both opened bodies. When descent reaches the TypeVar in either body, Arm 2 or 3 fires immediately.
+
+`unfold_once` — which replaces `RecursiveRef` with the full `Recursive` type, making the tree larger — is used only in subtype checking (where S-Assum prevents divergence), not in unification.
+
+## Contractiveness
+
+A recursive type `TypeNode.Recursive { var, body }` is **contractive** iff every path in `body` from the root to an occurrence of `RecursiveRef(var)` passes through at least one guarding constructor. Guarding constructors are those whose `@[guarding: true]` annotation is set: `TypeNode.Record`, `TypeNode.Arrow`, `TypeNode.TypeApplication`. Non-guarding constructors — `TypeNode.Union`, `TypeNode.Intersect` — are logical combinators that do not structurally interpose between the binder and its reference.
+
+### The `is_contractive` Check
+
+```text
+is_contractive(node, var):
+  # Case 1: direct self-reference — non-contractive
+  if node is TypeNode.RecursiveRef { name } and name == var:
+    return false
+
+  # Case 2: guarding constructor — any RecursiveRef(var) under this node is safely guarded.
+  # Reads from the constructor's @[guarding: Bool] annotation.
+  if annotation_of(TypeNode_constructor_for(node)).guarding:
+    return true
+
+  # Case 3: non-guarding (Union, Intersect) — recurse into children.
+  return all(TypeNode.children(node), c → is_contractive(c, var))
+```
+
+### Construction-Time Rejection
+
+The contractiveness check runs at construction time in two places:
+
+1. **In `mu`**: after `[let body [f TypeNode.RecursiveRef name: var]]`, before constructing `TypeNode.Recursive`. If `not(is_contractive(body, var))`, emit `TypeError(NonContractive)` pointing at the `mu` call site.
+2. **In `expand_named`**: after expanding the alias body, before wrapping in `TypeNode.Recursive`. If `not(is_contractive(expanded, fresh_var))`, emit `TypeError(NonContractive)`.
+
+Non-contractive types are rejected at construction rather than at use sites. This gives a clear diagnostic at the point of definition and eliminates the need for `▷` ("later") modality tracking inside `is_subtype_inner`. The tradeoff is explicit: non-contractive types like `μa.a` (the fixed point of the identity function) are ill-formed and rejected, not valid types that subtype nothing.
+
+**Why construction-time, not checker-time `▷` modality.** The checker-time alternative — `▷` tracking through every BAS arm — would allow non-contractive types to be constructed but would require additional state per arm and would produce confusing errors at use sites rather than definition sites. Given that non-contractive types have no practical use in tinct (they are semantically ⊥), construction-time rejection is strictly better for users. The flat `HashSet` for sigma (without `▷`) is sound precisely because all `TypeNode.Recursive` values reaching `is_subtype_inner` are contractive by construction — contractiveness guarantees that S-Exp unfolding always reaches a guarding constructor before sigma keys match again (Chau & Parreaux 2026).
+
+**Examples:**
+
+- `[mu [fn [let self] self]]` → body is `RecursiveRef(var)` → non-contractive → error ✓
+- `[mu [fn [let self] [or self Int]]]` → body is `Union([RecursiveRef, Int])` → Union is non-guarding → non-contractive → error ✓
+- `[mu [fn [let self] [record head: Int  tail: self]]]` → body is `Record(...)` → guarding → contractive → accepted ✓
+- `[mu [fn [let self] [or Absent [record head: Int  tail: self]]]]` → `Union([Absent, Record(...)])` → contractive in both branches → accepted ✓
+
 ## Subtyping: τ <: σ
 
 Subtyping is a pure predicate (no substitution mutation). Used for TypeAssert validation and return type checking.
@@ -590,6 +743,82 @@ Fn(p₁...pₙ→r₁) <: Fn(q₁...qₙ→r₂) if:
 ```
 
 **Note on Unknown and Top:** `Unknown` relates to other types via consistency (~), not subtyping (<:) — see `is_consistent()`. `Top` is the true universal supertype with `τ <: Top` for all `τ`. `Unknown` and `Top` are distinct: `Unknown` is the gradual typing escape hatch (consistent with all types), while `Top` is the genuine lattice top (a supertype of all types without special consistency rules). See `doc/whatif/completed/gradual-typing.md`.
+
+## Coinductive Subtyping: S-Exp + S-Assum
+
+Subtyping for equirecursive types uses the **S-Exp + S-Assum** framework (Chau & Parreaux 2026; Amadio & Cardelli 1993), which extends BAS with a bisimulation to prevent divergence when comparing structurally equivalent recursive types.
+
+### Two-Level Design
+
+Sigma (`Σ`) is a `HashSet<(String, String)>` of visited binder-name pairs. It is allocated once per top-level subtype check and threaded through every recursive call. The Rust type system enforces sigma threading structurally — `sigma: &mut HashSet<(String, String)>` is a required parameter of `is_subtype_inner`, so any recursive call that omits it fails to compile.
+
+```rust
+/// Public entry point — allocates sigma once for the entire check.
+pub fn is_subtype(a: CheckerType, b: CheckerType) -> bool {
+    let mut sigma = HashSet::new();
+    is_subtype_inner(a, b, &mut sigma)
+}
+
+/// Recursive worker — sigma is passed to EVERY recursive call.
+/// No arm allocates a new sigma.
+fn is_subtype_inner(a: CheckerType, b: CheckerType,
+                    sigma: &mut HashSet<(String, String)>) -> bool {
+    ...
+}
+```
+
+### S-Assum and S-Exp Rules
+
+Two rules govern recursive types. They fire in order at the top of every `is_subtype_inner` call:
+
+**S-Assum** — coinductive hypothesis. When both sides are `TypeNode.Recursive`, check and insert the pair before proceeding:
+
+```text
+(a.var, b.var) ∈ Σ
+────────────────────────────────────── [S-ASSUM]
+Recursive(a.var, _) <: Recursive(b.var, _)  (return true immediately)
+```
+
+If the pair is not yet in Σ, insert `(a.var, b.var)` into Σ and continue.
+
+**S-Exp** — structural unfolding. When one side is `TypeNode.Recursive`, unfold it once and re-enter `is_subtype_inner`. Sigma already contains the pair when S-Exp fires (inserted by S-Assum), so when the unfolded body's recursive positions are reached, S-Assum terminates the check immediately:
+
+```text
+unfold_once(Recursive(var, body)) = body[RecursiveRef(var) ↦ Recursive(var, body)]
+```
+
+```text
+a = Recursive(_, _),   sigma ← sigma ∪ {(a.var, b.var)}
+──────────────────────────────────────────────────────── [S-EXP-L]
+a <: b  iff  unfold_once(a) <: b  (sigma threaded)
+
+b = Recursive(_, _),   sigma ← sigma ∪ {(a.var, b.var)}
+──────────────────────────────────────────────────────── [S-EXP-R]
+a <: b  iff  a <: unfold_once(b)  (sigma threaded)
+```
+
+The sigma key is `(a.var, b.var)` — a `(String, String)` pair of globally unique gensym binder names, giving O(1) lookup with no false positives from shadowed alias names.
+
+### Sigma Threading Through All BAS Arms
+
+Sigma is passed to every recursive call in every BAS arm. This is the load-bearing invariant: without it, a coinductive hypothesis established for `(μa.T[a], A ∨ B)` would be unavailable inside the distribution sub-checks for `(μa.T[a], A)` and `(μa.T[a], B)`. Representative arms:
+
+```rust
+// Union / intersection: sigma passed to every sub-check
+(_, TypeNode.Union { types }) =>
+    types.iter().any(|t| is_subtype_inner(a.clone(), t.clone(), sigma)),
+(TypeNode.Union { types }, _) =>
+    types.iter().all(|t| is_subtype_inner(t.clone(), b.clone(), sigma)),
+
+// Record field checks, Arrow param/return, App variance — same pattern:
+// every recursive call passes sigma
+```
+
+The invariant — sigma is always passed, never recreated — is what Chau & Parreaux (2026) prove sound for BAS with equirecursive types.
+
+### Why S-Exp + S-Assum for BAS
+
+The naive "distribute over union before unfolding" approach fails because the hypothesis established for `(μa.T[a], A ∨ B)` is keyed on that exact pair. After distribution, sub-checks for `(μa.T[a], A)` and `(μa.T[a], B)` have different keys — the hypothesis is unavailable. S-Assum fires at the start of every call and is available inside all BAS decomposition rules, preventing this failure.
 
 ## Instantiation
 
@@ -849,7 +1078,7 @@ Mutually recursive entries constrain each other through unification during Pass 
 |-----------|--------------|
 | `Type::TypeVar` | `TypeVar(String, u32)` — manual `PartialEq` (name only, level ignored for equality) |
 | `TypeEnv.bindings` | `HashMap<String, TypeScheme>` |
-| `TypeEnv.type_aliases` | `HashMap<String, Type>` — aliases stay monomorphic |
+| `TypeEnv.tycon_defs` | `HashMap<String, Arc<TyConDef>>` — unified type declaration store; replaces old `type_aliases` |
 | `TypeEnv::get()` | Returns `&TypeScheme` |
 | `TypeEnv::insert_scheme()` | `fn(name, TypeScheme)` |
 | `infer_expr` VAR case | `instantiate_scheme(env.get(name)?, ...)` |
@@ -864,7 +1093,7 @@ Mutually recursive entries constrain each other through unification during Pass 
 | `unify()` U-ANY + TypeVar | Set ℓ(α) = 0 to prevent generalization |
 | `InferState` | `{ level: u32, levels: HashMap<String, u32>, subst: Substitution }` (name_counter moved to `Substitution.name_counter: Cell<u32>`, T-927) |
 | `InferState.subst` | Accumulates constraints from [DOT-VAR]; merged into letrec substitution in Pass 3b |
-| `collect_type_vars()` | `fn(&self, &mut HashSet<String>)` — collects type variables, no level |
+| `collect_type_vars()` | Uses `walk_type` + TypeVar tag predicate — no explicit TypeVar match arm; TypeVar nodes are found automatically since they are TypeNode values. Reads level from `state.levels[name]` (not the TypeNode `level` payload field). |
 | `Type::Display` | Shows `TypeVar` name only (level hidden) |
 
 Polymorphic builtin signatures (e.g., `map: ∀a b. Fn(Fn(a → b) × Seq(a) → Seq(b))`) are expressed via type schemes — see [Type System Extensions](07-type-extensions.md).
@@ -1083,7 +1312,7 @@ inner(f) = ∀α₁...αₙ[C₁...Cₙ]. τ_f
 Γ ⊢ d.f : τ'
 ```
 
-This applies only when `d` resolves to a visible dict literal (VarRef to a dict-binding in scope). For opaque function parameters, cross-file imports via opaque types, or non-VarRef expressions, the bare `Type::Record` field type is used — no polymorphic instantiation. This mirrors ML's structure/signature distinction: visible literals carry full polymorphic schemes; opaque dict parameters expose only their declared interface (Wells 1999).
+This applies only when `d` resolves to a visible dict literal (VarRef to a dict-binding in scope). For opaque function parameters, cross-file imports via opaque types, or non-VarRef expressions, the bare record field type from the TypeNode is used — no polymorphic instantiation. This mirrors ML's structure/signature distinction: visible literals carry full polymorphic schemes; opaque dict parameters expose only their declared interface (Wells 1999).
 
 **References:** Wadler, P. & Blott, S. (1989). "How to make ad-hoc polymorphism less ad hoc." Jones, M.P. (1995). *Qualified types: Theory and practice.* Jones, M.P. (2000). "Type classes with functional dependencies." Sulzmann, M. et al. (2007). "Understanding FDs via CHR." Garcia, R. et al. (2016). "Abstracting gradual typing." Castagna, G. & Lanvin, V. (2017). "Gradual typing with union and intersection types."
 
@@ -1372,7 +1601,7 @@ UNIFY-APP:
 
 **Implementation:** `src/type_unify.rs` — `unify()` UNIFY-OPERATOR and UNIFY-APP arms. UNIFY-OPERATOR binds Operator variables in `subst.type_map` with occurs check (`m ∉ ftv(T)`). UNIFY-APP delegates to recursive `unify()` calls, relying on substitution application at the top of `unify()` to thread bindings from constructor unification into argument unification.
 
-**Normalization:** After unification resolves an `Operator` variable, `apply_type` substitutes it with the bound type and recurses into the App structure. `App(TyCon("Seq"), T)` remains as-is — there is no dedicated `Type::Seq` variant; `Seq` is represented uniformly as `App(TyCon("Seq"), T)` (see `apply_type()` in `src/type_unify.rs` and `Type::seq()` constructor helper in `src/type_def.rs`).
+**Normalization:** After unification resolves an `Operator` variable, the substitution is applied to the App structure recursively. `App(TyCon("Seq"), T)` remains as a TypeNode — `Seq` is represented uniformly as `App(TyCon("Seq"), T)` without a dedicated special case. See `apply_type()` in `src/type_unify.rs` for the implementation.
 
 ### Constraint Generation
 

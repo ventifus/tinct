@@ -4170,7 +4170,7 @@ mod tests {
         let diag = TypeDiagnostic {
             message: "inferred Unknown type".to_string(),
             span: span.clone(),
-            code: "T999",
+            code: "T999", // test-only sentinel — not a real production diagnostic code
             level: DiagnosticLevel::Warn,
         };
 

@@ -899,11 +899,6 @@ impl TypeAnnotationTable {
         self.node_types.insert(id, ty);
     }
 
-    /// Drain only node_types. Prefer `drain_into` to also drain pattern_types.
-    pub fn drain(&mut self) -> std::collections::hash_map::Drain<'_, NodeId, Type> {
-        self.node_types.drain()
-    }
-
     /// Look up the resolved type for a `TypeAssertPending` pattern by its annotation span.
     pub fn get_pattern(&self, span: &Span) -> Option<&Type> {
         self.pattern_types.get(span)

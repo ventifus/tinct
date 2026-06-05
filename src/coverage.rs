@@ -157,6 +157,38 @@ impl fmt::Display for CoveragePattern {
 // Constructor signature — the complete set of constructors for a type
 // ---------------------------------------------------------------------------
 
+/// Qualify an unqualified nominal variant tag by looking up its parent TyCon in `tycon_env`.
+///
+/// `NominalVariant.tag` stores only the unqualified constructor name (e.g., `"Ok"`).
+/// Pattern elaboration qualifies constructor tags to `"TyConName.Tag"` (e.g., `"Result.Ok"`).
+/// Coverage checking must use the same qualified form so that signature tags and pattern
+/// tags are comparable. This function uses `tycon_name` (the HashMap key) to build the
+/// qualified form — rather than extracting it from the constructor list — so that within
+/// a single matching entry the qualification is deterministic.
+///
+/// **Limitation:** If two TyCons both declare a constructor with the same unqualified name
+/// (e.g., `Result.Ok` and `MyResult.Ok`), `find_map` over a `HashMap` returns one
+/// arbitrarily. This is acceptable for now because such name collisions are unusual and
+/// coverage is advisory (warnings, not errors).
+///
+/// Falls back to the unqualified `tag` if no matching TyCon is found (builtin or external type).
+fn qualify_nominal_tag(tag: &str, tycon_env: &TyConEnv) -> String {
+    tycon_env
+        .iter()
+        .find_map(|(tycon_name, def)| {
+            if def
+                .constructors
+                .iter()
+                .any(|(q, _)| q == &format!("{}.{}", tycon_name, tag))
+            {
+                Some(format!("{}.{}", tycon_name, tag))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| tag.to_string())
+}
+
 /// The complete constructor set for a type — used to determine when a match
 /// is exhaustive. Maps each constructor tag to its arity (number of sub-patterns).
 #[derive(Debug, Clone)]
@@ -251,14 +283,19 @@ impl ConstructorSignature {
                     // To fix properly: extend Pattern::Constructor with per-field bindings,
                     // update the parser to support [Point x y] multi-field patterns, and
                     // update ast_pattern_to_coverage to produce fields.len() sub-patterns.
+                    //
+                    // B-341: NominalVariant.tag is unqualified (e.g., "Ok" not "Result.Ok").
+                    // Look up the parent TyCon in tycon_env to find the qualified constructor name.
+                    // If not found, fall back to the unqualified tag (builtin or external type).
+                    let qualified_tag = qualify_nominal_tag(tag, tycon_env);
                     let arity = if fields.fields.is_empty() { 0 } else { 1 };
-                    constructors.push((ConstructorTag::Variant(tag.clone()), arity));
+                    constructors.push((ConstructorTag::Variant(qualified_tag), arity));
                 }
                 // General TyCon / App(TyCon, _) handling: replaces the hardcoded Seq arm.
                 // Look up the type constructor name in tycon_env:
                 //   - Builtin TyCon (builtin_type is Some, e.g. "Seq", "Map"): emit TypeTag.
                 //   - User-defined TyCon with declared constructors: emit Variant for each.
-                //   - User-defined TyCon with no constructors yet (pending T-1003): skip.
+                //   - User-defined TyCon with no constructors (open type or nested dict type, see B-344): skip.
                 //   - Unknown TyCon (not in tycon_env): skip (open type, unrepresentable).
                 member
                     if matches!(member, Type::TyCon(_))
@@ -289,7 +326,7 @@ impl ConstructorSignature {
                             constructors.push((ConstructorTag::TypeTag(tag_name.to_string()), 0));
                         }
                         Some(_) => {
-                            // TyCon found but constructors not yet populated (pending T-1003)
+                            // TyCon found but constructors empty (open type or nested dict type, see B-344)
                             // and no builtin_type — cannot enumerate; treat as unrepresentable.
                             skipped_any = true;
                         }
@@ -344,12 +381,21 @@ impl ConstructorSignature {
     /// Create a signature from a bare NominalVariant (not wrapped in Union).
     /// Extracts a single constructor from the NominalVariant's tag and fields.
     /// Used when coverage checking a match on a bare variant type.
-    pub fn from_nominal_variant(tag: &str, fields: &crate::type_def::Row) -> Self {
+    ///
+    /// `tycon_env` is used to qualify the tag (e.g., `"Ok"` → `"Result.Ok"`) so it matches
+    /// the elaborated pattern tags produced by `elaborate_pattern`. This mirrors the B-341
+    /// fix applied to `from_union`'s NominalVariant arm.
+    pub fn from_nominal_variant(
+        tag: &str,
+        fields: &crate::type_def::Row,
+        tycon_env: &TyConEnv,
+    ) -> Self {
         // Arity matches the pattern side: 0 for unit variants, 1 for payload variants.
         // See KNOWN ISSUE in from_union for why this is clamped to 0/1 rather than
         // fields.len() — Pattern::Constructor has a single binding, not per-field.
         let arity = if fields.fields.is_empty() { 0 } else { 1 };
-        let constructors = vec![(ConstructorTag::Variant(tag.to_string()), arity)];
+        let qualified_tag = qualify_nominal_tag(tag, tycon_env);
+        let constructors = vec![(ConstructorTag::Variant(qualified_tag), arity)];
         ConstructorSignature { constructors }
     }
 
@@ -1295,14 +1341,14 @@ mod tests {
 
     #[test]
     fn test_nominal_variant_coverage() {
-        // Option: Some(_) | None
+        // Maybe: Maybe.Some(_) | Maybe.None
         let sig = sig(&[
-            (ConstructorTag::Variant("Some".into()), 1),
-            (ConstructorTag::Variant("None".into()), 0),
+            (ConstructorTag::Variant("Maybe.Some".into()), 1),
+            (ConstructorTag::Variant("Maybe.None".into()), 0),
         ]);
         let patterns = vec![
-            con(ConstructorTag::Variant("Some".into()), vec![wc()]),
-            con(ConstructorTag::Variant("None".into()), vec![]),
+            con(ConstructorTag::Variant("Maybe.Some".into()), vec![wc()]),
+            con(ConstructorTag::Variant("Maybe.None".into()), vec![]),
         ];
         let guards = vec![false, false];
         let result = check_coverage(&patterns, &sig, &guards);
@@ -1312,17 +1358,20 @@ mod tests {
     #[test]
     fn test_nominal_variant_missing() {
         let sig = sig(&[
-            (ConstructorTag::Variant("Some".into()), 1),
-            (ConstructorTag::Variant("None".into()), 0),
+            (ConstructorTag::Variant("Maybe.Some".into()), 1),
+            (ConstructorTag::Variant("Maybe.None".into()), 0),
         ]);
-        let patterns = vec![con(ConstructorTag::Variant("Some".into()), vec![wc()])];
+        let patterns = vec![con(
+            ConstructorTag::Variant("Maybe.Some".into()),
+            vec![wc()],
+        )];
         let guards = vec![false];
         let result = check_coverage(&patterns, &sig, &guards);
         assert!(!result.exhaustive);
         assert_eq!(result.uncovered.len(), 1);
         assert_eq!(
             result.uncovered[0],
-            con(ConstructorTag::Variant("None".into()), vec![])
+            con(ConstructorTag::Variant("Maybe.None".into()), vec![])
         );
     }
 
@@ -1645,56 +1694,56 @@ mod tests {
 
     // ===== normalize_constructor_arities tests =====
 
-    // Sig helper: Option-like Union (Some=arity-1, None=arity-0)
+    // Sig helper: Maybe-like Union (Maybe.Some=arity-1, Maybe.None=arity-0)
     fn option_variant_sig() -> ConstructorSignature {
         sig(&[
-            (ConstructorTag::Variant("Some".into()), 1),
-            (ConstructorTag::Variant("None".into()), 0),
+            (ConstructorTag::Variant("Maybe.Some".into()), 1),
+            (ConstructorTag::Variant("Maybe.None".into()), 0),
         ])
     }
 
     #[test]
     fn test_normalize_bare_tag_payload_variant_emits_wildcard() {
-        // binding:None on a payload variant (arity 1): bare [Some]: with sub_patterns=[]
+        // binding:None on a payload variant (arity 1): bare [Maybe.Some]: with sub_patterns=[]
         // normalize_constructor_arities must expand it to sub_patterns=[Wildcard],
-        // matching like [Some _]:
+        // matching like [Maybe.Some _]:
         let sig = option_variant_sig();
-        let bare_some = con(ConstructorTag::Variant("Some".into()), vec![]);
+        let bare_some = con(ConstructorTag::Variant("Maybe.Some".into()), vec![]);
         let normalized = normalize_constructor_arities(&bare_some, &sig);
         assert_eq!(
             normalized,
-            con(ConstructorTag::Variant("Some".into()), vec![wc()]),
-            "bare-tag [Some]: on arity-1 variant must normalize to [Some _]:"
+            con(ConstructorTag::Variant("Maybe.Some".into()), vec![wc()]),
+            "bare-tag [Maybe.Some]: on arity-1 variant must normalize to [Maybe.Some _]:"
         );
     }
 
     #[test]
     fn test_normalize_bare_tag_unit_variant_emits_empty() {
-        // binding:None on a unit variant (arity 0): bare [None]: with sub_patterns=[]
+        // binding:None on a unit variant (arity 0): bare [Maybe.None]: with sub_patterns=[]
         // normalize_constructor_arities must keep sub_patterns=[] (unit — no payload slot)
         let sig = option_variant_sig();
-        let bare_none = con(ConstructorTag::Variant("None".into()), vec![]);
+        let bare_none = con(ConstructorTag::Variant("Maybe.None".into()), vec![]);
         let normalized = normalize_constructor_arities(&bare_none, &sig);
         assert_eq!(
             normalized,
-            con(ConstructorTag::Variant("None".into()), vec![]),
-            "bare-tag [None]: on arity-0 variant must normalize to [] sub-patterns"
+            con(ConstructorTag::Variant("Maybe.None".into()), vec![]),
+            "bare-tag [Maybe.None]: on arity-0 variant must normalize to [] sub-patterns"
         );
     }
 
     #[test]
     fn test_normalize_binding_some_on_unit_variant_emits_dead_pattern() {
-        // binding:Some on a unit variant (arity 0): [None n]: with sub_patterns=[Wildcard]
-        // normalize_constructor_arities must convert to a __dead_None__ tag so specialize
+        // binding:Some on a unit variant (arity 0): [Maybe.None n]: with sub_patterns=[Wildcard]
+        // normalize_constructor_arities must convert to a __dead_Maybe.None__ tag so specialize
         // always drops this row — the pattern can never match (unit variants have no payload).
         let sig = option_variant_sig();
-        let payload_none = con(ConstructorTag::Variant("None".into()), vec![wc()]);
+        let payload_none = con(ConstructorTag::Variant("Maybe.None".into()), vec![wc()]);
         let normalized = normalize_constructor_arities(&payload_none, &sig);
         match &normalized {
             CoveragePattern::Constructor { tag, .. } => {
                 assert_eq!(
                     *tag,
-                    ConstructorTag::Variant("__dead_None__".into()),
+                    ConstructorTag::Variant("__dead_Maybe.None__".into()),
                     "binding on unit variant must produce a __dead__ synthetic tag"
                 );
             }

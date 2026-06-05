@@ -8251,7 +8251,9 @@ fn test_scan_type_quality_detects_unknown() {
 
     // Should have diagnostics for Unknown
     assert!(!diagnostics.is_empty(), "Expected diagnostics for Unknown");
-    assert!(diagnostics.iter().all(|d| d.code == "T010"));
+    assert!(diagnostics
+        .iter()
+        .all(|d| d.code == super::typecheck_diag::T010_INFERRED_UNKNOWN));
     assert!(diagnostics
         .iter()
         .all(|d| d.level == crate::error::DiagnosticLevel::Warn));
@@ -8304,7 +8306,9 @@ fn test_scan_type_quality_explicit_unknown_annotation() {
         "Expected diagnostics for explicit Unknown"
     );
     assert!(
-        diagnostics.iter().any(|d| d.code == "T011"),
+        diagnostics
+            .iter()
+            .any(|d| d.code == super::typecheck_diag::T011_EXPLICIT_UNKNOWN),
         "Expected T011 diagnostic for explicit Unknown, got: {:?}",
         diagnostics
     );
@@ -8338,7 +8342,9 @@ fn test_scan_type_quality_typeassert_unknown() {
         "Expected diagnostics for explicit Unknown"
     );
     assert!(
-        diagnostics.iter().any(|d| d.code == "T011"),
+        diagnostics
+            .iter()
+            .any(|d| d.code == super::typecheck_diag::T011_EXPLICIT_UNKNOWN),
         "Expected T011 diagnostic for explicit Unknown in TypeAssert, got: {:?}",
         diagnostics
     );
@@ -8373,7 +8379,9 @@ fn test_scan_type_quality_overbroad_number_annotation() {
         !diagnostics.is_empty(),
         "Expected diagnostics for over-broad annotation"
     );
-    let t012_diag = diagnostics.iter().find(|d| d.code == "T012");
+    let t012_diag = diagnostics
+        .iter()
+        .find(|d| d.code == super::typecheck_diag::T012_OVERBROAD_ANNOTATION);
     assert!(
         t012_diag.is_some(),
         "Expected T012 diagnostic for over-broad annotation, got: {:?}",
@@ -8405,7 +8413,9 @@ fn test_scan_type_quality_no_overbroad_for_matching_type() {
         errors
     );
     assert!(
-        !diagnostics.iter().any(|d| d.code == "T012"),
+        !diagnostics
+            .iter()
+            .any(|d| d.code == super::typecheck_diag::T012_OVERBROAD_ANNOTATION),
         "Did not expect T012 diagnostic for matching annotation, got: {:?}",
         diagnostics
     );
@@ -8584,7 +8594,10 @@ fn test_constraint_dropped_when_typevar_not_in_return_type() {
 
     // Verify that a diagnostic warning was emitted for the ambiguous constraint
     // Filter for T013 (ambiguous constraint) diagnostics specifically
-    let ambiguous_warnings: Vec<_> = diagnostics.iter().filter(|d| d.code == "T013").collect();
+    let ambiguous_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == super::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT)
+        .collect();
     assert_eq!(
         ambiguous_warnings.len(),
         1,
@@ -8626,7 +8639,10 @@ fn test_no_false_positive_warning_for_discharged_constraints() {
     );
 
     // Filter out non-T013 diagnostics (e.g., over-broad annotation hints, inferred Unknown)
-    let ambiguous_warnings: Vec<_> = diagnostics.iter().filter(|d| d.code == "T013").collect();
+    let ambiguous_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == super::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT)
+        .collect();
 
     assert!(
             ambiguous_warnings.is_empty(),

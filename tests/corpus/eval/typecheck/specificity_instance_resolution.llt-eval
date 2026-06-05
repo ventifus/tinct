@@ -1,0 +1,25 @@
+# T-998: Specificity-based instance resolution (type-system-health-s841-followup)
+# Verifies that a user-defined multi-param type class with FD is accepted by
+# the type checker.
+#
+# Specificity-based instance resolution (concrete > polymorphic) is a type-checker
+# concern. When multiple instances match, the more specific one should win.
+#
+# NOTE: Runtime dispatch of user-defined class methods is not yet wired up.
+# Instance registration and specificity-based selection are future milestones.
+[
+  # Define a two-param class with FD (a, b) → b
+  # This class models addition where the result type is determined by the operand types.
+  MyAddable: [class [let MyAddable a b]
+    [determines: [[[a b] b]]]
+    add: [Fn@b [a b]]]
+
+  # Prove the class declaration was accepted: use prelude + for Int addition
+  result: [+ 10 32]
+]
+
+---
+
+%.result
+=== out
+Int(42)

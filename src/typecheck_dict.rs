@@ -515,6 +515,14 @@ pub(crate) fn infer_dict(
                                     body: alias_ty.clone(),
                                 },
                             );
+
+                            // NOTE: tycon_env is NOT populated here for nested dict type
+                            // declarations. Populating it causes cascading coverage warnings
+                            // because entry_key_name returns positional indices ("0", "1")
+                            // for unkeyed type declarations (e.g., [type Color Red Green Blue]).
+                            // The coverage.rs qualify_nominal_tag only works for types
+                            // registered at the TOP level via register_type_aliases in
+                            // typecheck.rs. See B-344 for the tracked fix.
                         }
 
                         // ADT constructor scoping: inject each NominalVariant constructor from the

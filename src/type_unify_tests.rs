@@ -926,3 +926,274 @@ fn test_reverse_fd_does_not_fire_when_not_injective() {
         t0_bound
     );
 }
+
+// ============================================================================
+// T-994: Level semantics unit tests (type-system-health-s841-followup sprint)
+// ============================================================================
+
+/// Child substitution frame inherits name_counter from parent.
+#[test]
+fn test_substitution_child_inherits_name_counter() {
+    use std::sync::Arc;
+
+    let parent = Arc::new(Substitution::new());
+
+    // Simulate parent counter being advanced (e.g., through fresh_type_var calls).
+    parent.name_counter.set(5);
+
+    let child = Substitution::child(&parent, 1);
+
+    // Child should inherit the parent's counter value (5).
+    assert_eq!(
+        child.name_counter.get(),
+        5,
+        "Child substitution should inherit parent's name_counter value"
+    );
+}
+
+/// bind_at_level routes to the correct frame based on creation_level.
+#[test]
+fn test_bind_at_level_routes_to_correct_frame() {
+    use std::sync::Arc;
+
+    let root = Arc::new(Substitution::new()); // creation_level = 0
+    let child_level1 = Arc::new(Substitution::child(&root, 1));
+    let grandchild_level2 = Arc::new(Substitution::child(&child_level1, 2));
+
+    // Bind a variable created at level 1 through the grandchild frame.
+    // It should route to child_level1 (creation_level = 1).
+    grandchild_level2.bind_at_level("var_at_level1".to_string(), 1, Type::Int);
+
+    // Verify the binding landed in child_level1.
+    assert_eq!(
+        child_level1.type_map.borrow().get("var_at_level1").cloned(),
+        Some(Type::Int),
+        "Binding with var_level=1 should land in child_level1 frame"
+    );
+
+    // Verify it did NOT land in grandchild or root.
+    assert!(
+        grandchild_level2
+            .type_map
+            .borrow()
+            .get("var_at_level1")
+            .is_none(),
+        "Binding should not be in grandchild frame"
+    );
+    assert!(
+        root.type_map.borrow().get("var_at_level1").is_none(),
+        "Binding should not be in root frame"
+    );
+}
+
+/// bind_at_level absorbs binding in root if no frame matches the level.
+#[test]
+fn test_bind_at_level_absorbs_in_root_if_no_match() {
+    use std::sync::Arc;
+
+    let root = Arc::new(Substitution::new()); // creation_level = 0
+    let child = Arc::new(Substitution::child(&root, 1)); // creation_level = 1
+
+    // Bind a variable with level 99 (no matching frame).
+    // The root (parent.is_none()) should absorb it.
+    child.bind_at_level("orphan_var".to_string(), 99, Type::Str);
+
+    // Verify it landed in the root frame.
+    assert_eq!(
+        root.type_map.borrow().get("orphan_var").cloned(),
+        Some(Type::Str),
+        "Orphan binding (no matching level) should be absorbed by root"
+    );
+
+    // Verify it's NOT in the child frame.
+    assert!(
+        child.type_map.borrow().get("orphan_var").is_none(),
+        "Orphan binding should not be in child frame"
+    );
+}
+
+/// lookup_in_chain traverses through parent frames, finding bindings in ancestors.
+#[test]
+fn test_lookup_in_chain_traverses_parents() {
+    use std::sync::Arc;
+
+    let root = Arc::new(Substitution::new());
+    let child = Arc::new(Substitution::child(&root, 1));
+    let grandchild = Arc::new(Substitution::child(&child, 2));
+
+    // Bind variables at different levels.
+    root.type_map
+        .borrow_mut()
+        .insert("root_var".to_string(), Type::Int);
+    child
+        .type_map
+        .borrow_mut()
+        .insert("child_var".to_string(), Type::Str);
+    grandchild
+        .type_map
+        .borrow_mut()
+        .insert("grandchild_var".to_string(), Type::Bool);
+
+    // Lookup from grandchild: should find all three variables.
+    assert_eq!(
+        grandchild.lookup_in_chain("grandchild_var"),
+        Some(Type::Bool),
+        "Lookup should find local binding"
+    );
+    assert_eq!(
+        grandchild.lookup_in_chain("child_var"),
+        Some(Type::Str),
+        "Lookup should find parent binding"
+    );
+    assert_eq!(
+        grandchild.lookup_in_chain("root_var"),
+        Some(Type::Int),
+        "Lookup should find grandparent binding"
+    );
+    assert_eq!(
+        grandchild.lookup_in_chain("nonexistent"),
+        None,
+        "Lookup should return None for missing variable"
+    );
+}
+
+/// Levels save/restore pattern (mem::take + restore).
+/// This tests that the pattern correctly captures and restores state.subst.
+#[test]
+fn test_levels_save_restore_pattern() {
+    let mut state = InferState::new();
+
+    // Bind some variables in the initial substitution.
+    state
+        .subst
+        .type_map
+        .borrow_mut()
+        .insert("original_var".to_string(), Type::Int);
+
+    // Simulate a local unification path that takes state.subst.
+    let local_subst = std::mem::take(&mut state.subst);
+
+    // Add a binding to the local substitution.
+    local_subst
+        .type_map
+        .borrow_mut()
+        .insert("local_var".to_string(), Type::Str);
+
+    // Restore the substitution back to state.subst.
+    state.subst = local_subst;
+
+    // Verify both bindings are present after restore.
+    assert_eq!(
+        state.subst.type_map.borrow().get("original_var").cloned(),
+        Some(Type::Int),
+        "Original binding should be preserved"
+    );
+    assert_eq!(
+        state.subst.type_map.borrow().get("local_var").cloned(),
+        Some(Type::Str),
+        "Local binding should be present after restore"
+    );
+}
+
+// ============================================================================
+// T-996: fd_in_progress cycle guard unit test
+// ============================================================================
+
+/// fd_in_progress prevents infinite mutual recursion in FD improvement.
+///
+/// Setup: Class with bidirectional FD (0) → (1) AND (1) → (0) (injective).
+/// Without the fd_in_progress guard, binding t0 triggers:
+///   forward(t0) → reverse(t1) → forward(t0) → … (infinite loop).
+/// With the guard, the second forward(t0) attempt is skipped because t0 is already in progress.
+#[test]
+fn test_fd_in_progress_terminates_mutual_recursion() {
+    use crate::types::{ClassDecl, InstanceDecl};
+    use std::sync::Arc;
+
+    let mut state = InferState::new();
+
+    // Create a class with mutual FDs: (0) → (1) AND (1) → (0).
+    let my_class = Arc::new(ClassDecl {
+        name: "BiDir".to_string(),
+        params: vec![("a".to_string(), Kind::Type), ("b".to_string(), Kind::Type)],
+        superclasses: vec![],
+        determines: vec![
+            (vec![0], vec![1]), // a determines b
+            (vec![1], vec![0]), // b determines a (mutual)
+        ],
+        resolver: None,
+        resolver_injective: true, // Both directions are injective
+    });
+
+    state.class_env.insert(ClassDecl {
+        name: "BiDir".to_string(),
+        params: vec![("a".to_string(), Kind::Type), ("b".to_string(), Kind::Type)],
+        superclasses: vec![],
+        determines: vec![(vec![0], vec![1]), (vec![1], vec![0])],
+        resolver: None,
+        resolver_injective: true,
+    });
+
+    // Register instance: BiDir Int Str
+    let mut instance_fields = HashMap::new();
+    instance_fields.insert("0".to_string(), Type::Int);
+    instance_fields.insert("1".to_string(), Type::Str);
+    let instance_type = Type::Record(Row {
+        fields: instance_fields,
+        tail: crate::type_def::RowTail::Empty,
+    });
+    let inst = InstanceDecl {
+        class_name: "BiDir".to_string(),
+        instance_type,
+        det_positions: vec![0, 1], // Both positions are determining
+        method_types: HashMap::new(),
+    };
+    state.instance_env.insert(inst).unwrap();
+
+    // Create type variables.
+    state.levels.insert("t0".to_string(), 0);
+    state.levels.insert("t1".to_string(), 0);
+
+    // Add the constraint.
+    state.constraints.push(Constraint::Class {
+        class: my_class,
+        vars: vec!["t0".to_string(), "t1".to_string()],
+        origin_name: None,
+        origin_span: None,
+    });
+
+    // Unify t0 with Int. This should:
+    // 1. Forward FD: t0=Int → t1=Str
+    // 2. Reverse FD: t1=Str → attempt to bind t0 (but t0 is in fd_in_progress, so skip)
+    // Result: terminates successfully without infinite loop.
+    let mut subst = Substitution::new();
+    let t0 = Type::TypeVar("t0".to_string(), 0);
+    let result = unify(&t0, &Type::Int, &mut subst, &mut state, Span::origin());
+
+    assert!(
+        result.is_ok(),
+        "Mutual FD should terminate with fd_in_progress guard: {:?}",
+        result.unwrap_err()
+    );
+
+    // Verify both variables were bound correctly.
+    let t0_bound = state.subst.apply(&Type::TypeVar("t0".to_string(), 0));
+    let t1_bound = state.subst.apply(&Type::TypeVar("t1".to_string(), 0));
+
+    assert!(
+        matches!(t0_bound, Type::Int),
+        "t0 should be bound to Int, got: {:?}",
+        t0_bound
+    );
+    assert!(
+        matches!(t1_bound, Type::Str),
+        "t1 should be bound to Str via FD, got: {:?}",
+        t1_bound
+    );
+
+    // Verify fd_in_progress is cleared after unification completes.
+    assert!(
+        state.fd_in_progress.is_empty(),
+        "fd_in_progress should be empty after unification completes"
+    );
+}

@@ -13,6 +13,7 @@ Proposals formally accepted into the project. Implementation sprints exist in th
 
 | Proposal | Summary | Accepted |
 |----------|---------|----------|
+| [Equirecursive Types](equirecursive-types.md) | `TypeNode.Recursive`/`RecursiveRef`/`TypeVar` as TypeNode constructors; `CheckerType = Node(Value)` primary type representation; S-Exp + S-Assum coinductive subtyping (Chau & Parreaux 2026); general `@[...]` annotation syntax; `@Child` field annotations with derived `children`/`map-children`; `mu` combinator; contractiveness check; TyConDef/TypeAlias merge; `expand_named` always-expand normalization; `gensym-with-scope` | 2026-06-05 |
 | [User-Defined N-Arity Type Constructors](user-type-constructors.md) | `Type::TyCon(String)` + `Type::App`; unified `[type ...]` syntax with `[let ...]` params; variance annotations; nominal ADTs with qualified runtime tags; `RowTail::Uniform` column constraints; `Absent` type; scoped ClassEnv/InstanceEnv with local coherence; per-dict Substitution; `values_equal` canonical merge; `Pattern::TypeAssert`; prelude migration | 2026-06-03 |
 | [Tinct Stream Format — Stdlib-Closed Normal Form](data-streaming.md) | SCN streaming format for tinct-to-tinct pipes; `emit` via `%emit` channel; concurrent output program contract; `-i stream`/`-o stream`; `to-tinct` serializer; eliminates serde_json from profiling | 2026-05-30 |
 

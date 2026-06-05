@@ -804,10 +804,14 @@ impl InstanceEnv {
             // and state.subst.name_counter (via instantiate_at_level). Failed candidates must not leak
             // levels/constraints/kind_env/deferred, but the name_counter must be preserved at its peak
             // value (not rolled back) to prevent _tN name reuse across candidates.
+            //
+            // B-325: Also save state.subst because FD-improvement bindings during the probe must not
+            // survive if the probe ultimately fails (e.g., unify succeeds but FD constraints fail).
             let saved_levels = state.levels.clone();
             let saved_constraints = state.constraints.clone();
             let saved_kind_env = state.kind_env.clone();
             let saved_deferred = state.deferred_equalities.clone();
+            let saved_subst = state.subst.clone();
             let saved_counter = state.subst.name_counter.get();
 
             // Freshen the instance type to prevent variable leakage across resolution attempts.
@@ -831,6 +835,7 @@ impl InstanceEnv {
             state.constraints = saved_constraints;
             state.kind_env = saved_kind_env;
             state.deferred_equalities = saved_deferred;
+            state.subst = saved_subst;
             state
                 .subst
                 .name_counter
@@ -884,6 +889,7 @@ impl InstanceEnv {
         let saved_constraints = state.constraints.clone();
         let saved_kind_env = state.kind_env.clone();
         let saved_deferred = state.deferred_equalities.clone();
+        let saved_subst = state.subst.clone();
         let saved_counter = state.subst.name_counter.get();
 
         let freshened_instance_type = instantiate_at_level(&winner.instance_type, state);
@@ -914,6 +920,7 @@ impl InstanceEnv {
         state.constraints = saved_constraints;
         state.kind_env = saved_kind_env;
         state.deferred_equalities = saved_deferred;
+        state.subst = saved_subst;
         state
             .subst
             .name_counter
@@ -943,6 +950,15 @@ impl Default for InstanceEnv {
 ///
 /// Used by `resolve_instance` to select the most specific matching instance —
 /// the one with the fewest unresolved TypeVars after unification.
+///
+/// Note: The `subst` argument is only meaningful when scoring the freshened instance
+/// head after unification (Pass 1, line 844). When scoring the ORIGINAL instance head
+/// (as is done in resolve_instance), `subst` contains only bindings for freshened
+/// variable names like `_t7`, while the original head contains universally quantified
+/// names like `a`. Because `a` is not bound in `subst`, applying `subst` returns a
+/// TypeVar unchanged, so every original-head TypeVar is counted — giving the total
+/// number of declared type parameters in the instance, which is the correct specificity
+/// measure (e.g., `[Seq a]` scores 1, `[Seq Int]` scores 0).
 fn count_unresolved_vars(ty: &Type, subst: &crate::types::Substitution) -> usize {
     match ty {
         Type::TypeVar(name, level) => {

@@ -138,9 +138,9 @@ pub(crate) fn elaborate_pattern(
                     });
                 }
             }
-            // Case c: not found in TyConEnv (or found with empty constructors and no
-            // builtin_type — transitional state while T-1003 in S-852 is pending).
-            // Leave the pattern UNCHANGED; errors are reported elsewhere.
+            // Case c: not found in TyConEnv, or found with empty constructors and no
+            // builtin_type — this is an open type or a non-nominal user type.
+            // Leave the pattern UNCHANGED; the evaluator handles it at runtime.
             let elaborated_inner = elaborate_binding(binding, env, state)?;
             Ok(Pattern::Constructor {
                 tag: tag.clone(),
@@ -313,7 +313,7 @@ pub(crate) fn typecheck_case_arm(
                                                      to match without binding"
                                                 ),
                                                 span: binding.span.clone(),
-                                                code: "T019",
+                                                code: super::typecheck_diag::T019_MATCH_GUARD_FAILURE,
                                                 level: crate::error::DiagnosticLevel::Warn,
                                             });
                                         }
@@ -336,7 +336,7 @@ pub(crate) fn typecheck_case_arm(
                                          no variable with this name is in scope — the arm will never match"
                                     ),
                                     span: binding.span.clone(),
-                                    code: "T018",
+                                    code: super::typecheck_diag::T018_MATCH_PATTERN_MISMATCH,
                                     level: crate::error::DiagnosticLevel::Warn,
                                 });
                                 Type::Unknown
@@ -387,7 +387,7 @@ pub(crate) fn typecheck_case_arm(
                                         ann_ty, scrutinee_ty
                                     ),
                                     span: binding.span.clone(),
-                                    code: "T020",
+                                    code: super::typecheck_diag::T020_MATCH_EXHAUSTIVENESS,
                                     level: crate::error::DiagnosticLevel::Warn,
                                 });
                             }
@@ -470,7 +470,7 @@ pub(crate) fn typecheck_case_arm(
                         pattern_ty, scrutinee_ty
                     ),
                     span: pattern.span.clone(),
-                    code: "T020",
+                    code: super::typecheck_diag::T020_MATCH_EXHAUSTIVENESS,
                     level: crate::error::DiagnosticLevel::Warn,
                 });
             }

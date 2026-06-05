@@ -5,6 +5,48 @@
 
 use std::collections::{HashMap, HashSet};
 
+// ============================================================================
+// TypeDiagnostic Code Catalog
+// ============================================================================
+//
+// All valid TypeDiagnostic codes are declared here as const &'static str.
+// Use these constants when creating TypeDiagnostic instances to prevent typos.
+//
+// Legend:
+//   T0xx = Type quality diagnostics (Unknown, overbroad annotations)
+//   T1xx = Constraint/unification ambiguities
+//   T2xx = Pattern matching issues
+//   W0xx = Warnings (non-error conditions)
+
+/// T010: Inferred type is Unknown — consider adding a type annotation (Warn)
+pub const T010_INFERRED_UNKNOWN: &str = "T010";
+
+/// T011: Explicit @Unknown annotation — type is not statically known (Info)
+pub const T011_EXPLICIT_UNKNOWN: &str = "T011";
+
+/// T012: Over-broad annotation — inferred type is more specific than declared (Info)
+pub const T012_OVERBROAD_ANNOTATION: &str = "T012";
+
+/// T013: Ambiguous constraint — multiple instances match, cannot resolve (Warn)
+pub const T013_AMBIGUOUS_CONSTRAINT: &str = "T013";
+
+/// T018: Match pattern type mismatch (context-dependent level)
+pub const T018_MATCH_PATTERN_MISMATCH: &str = "T018";
+
+/// T019: Match pattern guard failure (context-dependent level)
+pub const T019_MATCH_GUARD_FAILURE: &str = "T019";
+
+/// T020: Match pattern exhaustiveness issue (context-dependent level)
+pub const T020_MATCH_EXHAUSTIVENESS: &str = "T020";
+
+/// W042: Duplicate nominal variant tags in type definition (Warn)
+pub const W042_DUPLICATE_NOMINAL_TAG: &str = "W042";
+
+/// W043: Structural instance overlap — instance declarations overlap (Warn)
+pub const W043_INSTANCE_OVERLAP: &str = "W043";
+
+// ============================================================================
+
 use super::TypeMap;
 use crate::ast::{
     Annotation, Span, SurfaceDeclaration, SurfaceExpression, SurfaceItem, SurfaceNode,
@@ -195,7 +237,7 @@ pub(crate) fn stq_walk_node_overbroad(
                         let ann_str = format!("{}", ann.node);
                         diagnostics.push(TypeDiagnostic {
                             level: DiagnosticLevel::Info,
-                            code: "T012",
+                            code: T012_OVERBROAD_ANNOTATION,
                             message: format!(
                                 "annotation @{} is over-broad — inferred type is {}; consider using @{}",
                                 ann_str, type_str, type_str
@@ -470,7 +512,7 @@ pub(crate) fn scan_explicit_unknown_t011(
                 if stq_is_unknown_annotation(&annotation.node) {
                     diagnostics.push(TypeDiagnostic {
                         level: DiagnosticLevel::Info,
-                        code: "T011",
+                        code: T011_EXPLICIT_UNKNOWN,
                         message: "explicit @Unknown annotation — type is not statically known"
                             .to_string(),
                         span: node.span.clone(),
@@ -485,7 +527,7 @@ pub(crate) fn scan_explicit_unknown_t011(
                     if stq_is_unknown_annotation(&ann.node) {
                         diagnostics.push(TypeDiagnostic {
                             level: DiagnosticLevel::Info,
-                            code: "T011",
+                            code: T011_EXPLICIT_UNKNOWN,
                             message: "explicit @Unknown annotation — type is not statically known"
                                 .to_string(),
                             span: node.span.clone(),
@@ -650,13 +692,13 @@ pub(crate) fn scan_type_quality(
             let (level, code, message) = if is_explicit {
                 (
                     DiagnosticLevel::Info,
-                    "T011",
+                    T011_EXPLICIT_UNKNOWN,
                     "explicit @Unknown annotation — type is not statically known".to_string(),
                 )
             } else {
                 (
                     DiagnosticLevel::Warn,
-                    "T010",
+                    T010_INFERRED_UNKNOWN,
                     "inferred type is Unknown — consider adding a type annotation".to_string(),
                 )
             };

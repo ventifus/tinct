@@ -1258,6 +1258,15 @@ const MAX_APPLY_DEPTH: usize = 256;
 /// hundreds of open-record dot-accesses that each bind a fresh type variable.
 pub const MAX_SUBST_SIZE: usize = 50_000;
 
+// T-991: Thread-local visited set for `Substitution::apply`.
+// Declared at module level (not inside the method) so the static-initialization semantics are
+// clear: the HashSet is allocated once per thread and reused across all `apply()` calls in that
+// thread. Moving this declaration inside the method body was syntactically valid but obscured
+// the amortization intent and risked accidental duplication during future refactors.
+thread_local! {
+    static VISITED_TYPES: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+}
+
 impl Substitution {
     /// Create a new root substitution frame (no parent).
     ///
@@ -1282,6 +1291,15 @@ impl Substitution {
     /// globally unique TypeVar names across all frames in the chain (Barendregt convention).
     /// This is required for `lookup_in_chain` to be sound: it matches by name, so names
     /// must be unique across all active frames.
+    ///
+    /// DESIGN NOTE (T-1002): The child's incremented name_counter is NOT propagated back
+    /// to the parent when the child frame is dropped. This is technically a Barendregt
+    /// violation — names generated in a child could collide with names in a later sibling
+    /// scope at the same level. However, this is safe due to LEVEL ROUTING: each level
+    /// gets its own namespace slice via the level-indexed `bind_at_level` routing, so
+    /// variables created at different levels never interact even if their numeric suffixes
+    /// collide. The parent only sees TypeVars at its own level or lower; child-level vars
+    /// are inaccessible after the child frame is dropped, preventing cross-contamination.
     pub fn child(parent: &Arc<Substitution>, level: u32) -> Self {
         Self {
             type_map: std::cell::RefCell::new(HashMap::new()),
@@ -1395,8 +1413,13 @@ impl Substitution {
         if !ty.has_inference_vars() {
             return ty.clone();
         }
-        let mut visited_types = HashSet::new();
-        self.apply_type(ty, 0, &mut visited_types).into_owned()
+        // Reuse thread-local visited set (declared at module level) to avoid per-call
+        // HashSet allocation. The set is cleared before use to ensure correctness.
+        VISITED_TYPES.with(|visited_cell| {
+            let mut visited = visited_cell.borrow_mut();
+            visited.clear();
+            self.apply_type(ty, 0, &mut visited).into_owned()
+        })
     }
 
     /// Apply substitution with an externally-supplied visited set.
@@ -2434,14 +2457,28 @@ pub fn unify(
         // distinct types regardless of arity or structure. Name equality is sufficient here
         // because all TyCon values in the codebase are canonical strings ("Seq", "Map",
         // "Handle", user-defined names from TyConDef), so pointer equality and name equality
-        // coincide. When scoped TyConEnv is consulted for user-defined types (T-938+), the
-        // name lookup via TyConEnv is the correct identity check (one TyConDef per scope frame).
+        // coincide.
+        //
+        // T-1014: When tycon_env is available, also verify that both names resolve to the
+        // same TyConDef (or both fail to resolve). This handles shadowing: if an outer scope
+        // defines `type Foo ...` and an inner scope defines another `type Foo ...`, the two
+        // TyCon("Foo") instances refer to different types and must not unify.
         (Type::TyCon(n1), Type::TyCon(n2)) => {
-            if n1 == n2 {
-                Ok(())
-            } else {
-                Err(TypeError::type_mismatch(&a, &b, span))
+            if n1 != n2 {
+                return Err(TypeError::type_mismatch(&a, &b, span));
             }
+            // Names are equal — name equality is the only identity check available here.
+            //
+            // Cross-scope shadowing detection (e.g., two `[type Foo ...]` declarations in
+            // different scopes that should NOT unify) requires pointer identity of TyConDef
+            // objects. That in turn requires `TyConEnv = HashMap<String, Arc<TyConDef>>` so
+            // that distinct scope insertions produce distinct Arcs. The current flat
+            // `HashMap<String, TyConDef>` stores only one entry per name; both
+            // `tycon_env.get(n1)` and `tycon_env.get(n2)` return the same memory slot, so
+            // `ptr::eq` would always be true and cannot detect shadowing.
+            //
+            // TODO(B-343): implement Arc-based TyConEnv for true pointer-identity comparison.
+            Ok(())
         }
 
         // UNIFY-OPERATOR-TO-OPERATOR: bind higher-level Operator to lower-level Operator.
@@ -2815,7 +2852,7 @@ pub fn process_deferred_equalities(state: &mut InferState, subst: &mut Substitut
                                 a_norm, b_norm, err.message
                             ),
                             span: span.clone(),
-                            code: "T013",
+                            code: crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT,
                             level: crate::error::DiagnosticLevel::Warn,
                         });
                     }

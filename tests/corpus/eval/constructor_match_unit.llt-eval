@@ -3,9 +3,9 @@
 # Scrutinee Green has Variant tag "Color.Green" — tag equality holds, arm matches.
 # The evaluator's match_pattern checks tag != variant_tag, so "Color.Green" == "Color.Green" → match.
 #
-# Note: the "non-exhaustive match: missing coverage for Green" warning below is expected to
-# disappear when T-1003 lands (which populates TyConDef.constructors, allowing coverage
-# analysis to recognize qualified patterns as covering constructors).
+# Note: no non-exhaustive warning for this case — Color type uses TypeTag patterns (bare uppercase
+# like Color.Red:) which the coverage checker doesn't enumerate. B-344 tracks the remaining gap
+# where qualified Constructor patterns in nested dicts aren't recognized as covering.
 [
   Color: [type Red Green Blue]
   result: [match Green

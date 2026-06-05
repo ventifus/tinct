@@ -317,7 +317,9 @@ impl InferState {
             resolver_injective: false,
         });
 
-        // Appendable: base class (Str, Seq, Record instances pre-seeded below; prelude also declares instances)
+        // Appendable: base class. Seq instance pre-seeded below.
+        // Str handled via primitive_satisfies_constraint; Record via fast-path in satisfies_constraint_inner.
+        // Prelude declares additional Appendable instances.
         class_env.insert(ClassDecl {
             name: "Appendable".to_string(),
             params: vec![("a".to_string(), Kind::Type)],
@@ -567,14 +569,6 @@ impl InferState {
             );
             // Appendable Seq[T]: concatenation of sequences of the same element type
             seed_instance("Appendable", Type::seq(Type::TypeVar("T".to_string(), 0)));
-            // Appendable Record: dict merge (any record is appendable via merge semantics)
-            seed_instance(
-                "Appendable",
-                Type::Record(Row {
-                    fields: HashMap::new(),
-                    tail: crate::type_def::RowTail::Empty,
-                }),
-            );
         } // seed_instance closure dropped here, releasing the mutable borrow of instance_env
 
         // Builtin type constructors — pre-registered so resolve_type_dict
@@ -586,6 +580,37 @@ impl InferState {
             Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Operator)),
         );
         kind_env.insert("Handle".to_string(), Kind::Operator);
+
+        // T-1018: Register builtin TyCons in tycon_env with their variance annotations.
+        // This allows is_subtype to apply variance-directed subtyping for builtins.
+        let mut tycon_env = HashMap::new();
+        tycon_env.insert(
+            "Seq".to_string(),
+            crate::type_def::TyConDef {
+                variance: vec![crate::type_def::Variance::Covariant],
+                constructors: vec![],
+                builtin_type: Some("Seq".to_string()),
+            },
+        );
+        tycon_env.insert(
+            "Map".to_string(),
+            crate::type_def::TyConDef {
+                variance: vec![
+                    crate::type_def::Variance::Invariant,
+                    crate::type_def::Variance::Covariant,
+                ],
+                constructors: vec![],
+                builtin_type: Some("Map".to_string()),
+            },
+        );
+        tycon_env.insert(
+            "Handle".to_string(),
+            crate::type_def::TyConDef {
+                variance: vec![crate::type_def::Variance::Covariant],
+                constructors: vec![],
+                builtin_type: Some("Handle".to_string()),
+            },
+        );
 
         Self {
             level: 0,
@@ -602,7 +627,7 @@ impl InferState {
             diagnostics: Vec::new(),
             deferred_equalities: Vec::new(),
             boundary_guards: HashMap::new(),
-            tycon_env: HashMap::new(),
+            tycon_env,
             fd_depth: 0,
             fd_in_progress: std::collections::HashSet::new(),
             instance_resolution_depth: 0,
