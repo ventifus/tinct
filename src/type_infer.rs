@@ -130,7 +130,7 @@ pub struct InferState {
     /// Populated by the type checker when processing `[type ...]` declarations (T-942).
     /// Present here so that TyConDef is "used" and to allow type-checking passes to
     /// propagate TyCon definitions through the inference pipeline.
-    pub tycon_env: HashMap<String, TyConDef>,
+    pub tycon_env: HashMap<String, Arc<TyConDef>>,
     /// Current functional dependency improvement recursion depth.
     /// Prevents infinite loops through the improve_functional_dependency → unify →
     /// check_constraints_on_var → improve_functional_dependency cycle. Incremented when
@@ -586,33 +586,34 @@ impl InferState {
 
         // T-1018: Register builtin TyCons in tycon_env with their variance annotations.
         // This allows is_subtype to apply variance-directed subtyping for builtins.
+        // Arc::new wraps each TyConDef so pointer identity is preserved for UNIFY-TYCON (B-343).
         let mut tycon_env = HashMap::new();
         tycon_env.insert(
             "Seq".to_string(),
-            crate::type_def::TyConDef {
+            Arc::new(crate::type_def::TyConDef {
                 variance: vec![crate::type_def::Variance::Covariant],
                 constructors: vec![],
                 builtin_type: Some("Seq".to_string()),
-            },
+            }),
         );
         tycon_env.insert(
             "Map".to_string(),
-            crate::type_def::TyConDef {
+            Arc::new(crate::type_def::TyConDef {
                 variance: vec![
                     crate::type_def::Variance::Invariant,
                     crate::type_def::Variance::Covariant,
                 ],
                 constructors: vec![],
                 builtin_type: Some("Map".to_string()),
-            },
+            }),
         );
         tycon_env.insert(
             "Handle".to_string(),
-            crate::type_def::TyConDef {
+            Arc::new(crate::type_def::TyConDef {
                 variance: vec![crate::type_def::Variance::Covariant],
                 constructors: vec![],
                 builtin_type: Some("Handle".to_string()),
-            },
+            }),
         );
 
         Self {

@@ -2453,6 +2453,7 @@ replace@[doc: "Replace all occurrences of pattern with replacement in input"]: b
 band@[doc: "Bitwise AND of two Ints"]: builtin-band
 bor@[doc: "Bitwise OR of two Ints"]: builtin-bor
 bxor@[doc: "Bitwise XOR of two Ints"]: builtin-bxor
+bnot@[doc: "Bitwise NOT of an Int (two's complement: ~n = -(n+1))"]: [fn [let n@Int] [- -1 n]]
 shl@[doc: "Left shift: value shl bits"]: builtin-shl
 shr@[doc: "Logical right shift (zero-fill): value shr bits"]: builtin-shr
 

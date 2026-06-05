@@ -1174,13 +1174,36 @@ fn tvar_display_name(idx: usize) -> String {
 /// When instantiated (e.g., `[Pair Int String]`), build substitution
 /// `{a -> Int, b -> String}` and apply to body.
 ///
-/// TODO(T-1035): Add `constraints: Vec<Constraint>` field to store class constraints
-/// on type parameters (e.g., `[type [a@Equatable] ...]`). Constraints must be checked
-/// during instantiation to ensure type arguments satisfy the required type classes.
+/// `constraints` stores type class constraints on type parameters declared with `@ClassName`
+/// annotations (e.g., `[type [a@Equatable] ...]` → `constraints: [Equatable a]`).
+/// These are checked at instantiation time when a type alias is applied to concrete arguments,
+/// ensuring that type arguments satisfy the required type classes (T-1084).
+///
+/// For most type aliases (no class-constrained params), `constraints` is empty — construction
+/// sites that do not yet populate constraints should pass `vec![]` explicitly or use
+/// `TypeAlias::new(params, body)` which defaults to no constraints.
 #[derive(Debug, Clone)]
 pub struct TypeAlias {
     pub params: Vec<String>,
     pub body: Type,
+    /// Class constraints on type parameters, populated when params carry `@ClassName` annotations.
+    /// Empty for unconstrained aliases. Used during alias instantiation to verify type arguments
+    /// satisfy declared class requirements (T-1084).
+    pub constraints: Vec<Constraint>,
+}
+
+impl TypeAlias {
+    /// Construct a TypeAlias with no class constraints.
+    ///
+    /// Use this for all existing construction sites where params have no `@ClassName` annotations.
+    /// For constrained aliases (params with `@ClassName`), populate `constraints` directly.
+    pub fn new(params: Vec<String>, body: Type) -> Self {
+        Self {
+            params,
+            body,
+            constraints: vec![],
+        }
+    }
 }
 
 // ClassDecl, InstanceDecl, ClassEnv, InstanceEnv moved to type_class.rs (chr-module-split)
@@ -1190,7 +1213,7 @@ pub struct TypeAlias {
 pub struct TypeEnv {
     bindings: HashMap<String, TypeScheme>,
     type_aliases: HashMap<String, TypeAlias>,
-    tycon_defs: HashMap<String, TyConDef>,
+    tycon_defs: HashMap<String, Arc<TyConDef>>,
     parent: Option<Rc<TypeEnv>>,
 }
 
@@ -1270,11 +1293,20 @@ impl TypeEnv {
         self.type_aliases.insert(name, alias);
     }
 
-    pub fn insert_tycon_def(&mut self, name: String, def: TyConDef) {
+    /// Insert a type constructor definition.
+    ///
+    /// Takes `Arc<TyConDef>` so that pointer identity is preserved when the same Arc flows
+    /// from this TypeEnv into `InferState.tycon_env`. `Arc::ptr_eq` in UNIFY-TYCON can then
+    /// detect cross-scope shadowing (B-343).
+    pub fn insert_tycon_def(&mut self, name: String, def: Arc<TyConDef>) {
         self.tycon_defs.insert(name, def);
     }
 
-    pub fn lookup_tycon_def(&self, name: &str) -> Option<&TyConDef> {
+    /// Look up a type constructor definition by name, walking the parent chain.
+    ///
+    /// Returns a reference to the `Arc<TyConDef>`, not a plain reference to `TyConDef`,
+    /// so callers can clone the Arc to preserve pointer identity for `Arc::ptr_eq` checks.
+    pub fn lookup_tycon_def(&self, name: &str) -> Option<&Arc<TyConDef>> {
         if let Some(def) = self.tycon_defs.get(name) {
             return Some(def);
         }
@@ -1333,13 +1365,16 @@ impl TypeEnv {
     /// Used by the REPL to seed `InferState.tycon_env` with type constructor definitions
     /// accumulated across previous REPL turns, so that `[type ...]` declarations from
     /// one turn are visible to the type checker in subsequent turns (B-345).
-    pub fn collect_all_tycon_defs(&self, defs: &mut HashMap<String, TyConDef>) {
+    ///
+    /// Arc clones are cheap — the Arc is cloned, not the TyConDef. Pointer identity is preserved
+    /// so `Arc::ptr_eq` in UNIFY-TYCON can detect cross-scope shadowing (B-343).
+    pub fn collect_all_tycon_defs(&self, defs: &mut HashMap<String, Arc<TyConDef>>) {
         // Walk parent chain first, then overlay current frame — inner-scope wins.
         if let Some(ref parent) = self.parent {
             parent.collect_all_tycon_defs(defs);
         }
         for (name, def) in &self.tycon_defs {
-            defs.insert(name.clone(), def.clone());
+            defs.insert(name.clone(), Arc::clone(def));
         }
     }
 

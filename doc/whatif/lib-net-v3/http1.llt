@@ -6,8 +6,7 @@
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
-  # TODO: verify get? exists in prelude (get-or with null default)
-  # TODO: verify str-slice exists in prelude
+  # Verified: get?=✓ (core builtin, returns Absent on missing key), str-slice=✓ (builtin-str-slice)
 
   # Reject strings containing CR or LF — prevents CRLF injection in HTTP headers.
   validate-no-crlf: [fn [let s@String ctx@String]

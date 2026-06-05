@@ -1703,11 +1703,12 @@ impl PartialEq for Substitution {
 /// Fields unique to one row are ignored — BAS width subtyping handles openness
 /// via is_subtype (a record with MORE fields satisfies an annotation with FEWER fields).
 ///
-/// Tail unification rules (T-939):
+/// Tail unification rules (T-939/T-1007/T-1024/B-327):
 ///   (Empty, Empty)           — no-op (both closed, field unification above is sufficient)
-///   (Empty, Uniform{V, ..})  — error: closed row does not satisfy uniform column constraint
-///   (Uniform{V, ..}, Empty)  — error: uniform row cannot be unified with closed row
-///   (Uniform{V1, k1}, Uniform{V2, k2}) — unify value types V1 ~ V2; unify key types if both present
+///   (Empty, Uniform{V, ..})  — UNIFY-UNIFORM step 2/3: TypeVar join or concrete subtype check
+///   (Uniform{V, ..}, Empty)  — UNIFY-UNIFORM step 2/3: symmetric case
+///   (Uniform{V1, k1}, Uniform{V2, k2}) — unify V1 ~ V2; key types if both present (B-327);
+///                               then validate named fields against unified V (T-1007 steps 2-3)
 fn unify_rows(
     row1: &Row,
     row2: &Row,
@@ -1796,43 +1797,122 @@ fn unify_rows(
         // Both closed — no tail constraint to unify
         (RowTail::Empty, RowTail::Empty) => {}
 
-        // Both Uniform — unify value types, then key types if both present
+        // Both Uniform — unify value types, key types, then validate named fields
+        // (T-1007/UNIFY-UNIFORM steps 1-3).
         (RowTail::Uniform { key: k1, value: v1 }, RowTail::Uniform { key: k2, value: v2 }) => {
             unify(v1, v2, subst, state, span.clone())?;
-            match (k1, k2) {
-                (Some(k1_ty), Some(k2_ty)) => {
-                    unify(k1_ty, k2_ty, subst, state, span.clone())?;
+
+            // B-327: Unify key type constraints when both sides specify them.
+            // When only one side specifies a key type (asymmetric), the unconstrained
+            // side is implicitly compatible with any key type (Unknown semantics) and
+            // no error is emitted — the keyed side's constraint is preserved in its row.
+            if let (Some(k1_ty), Some(k2_ty)) = (k1, k2) {
+                unify(k1_ty, k2_ty, subst, state, span.clone())?;
+            }
+
+            // UNIFY-UNIFORM steps 2-3: after unifying the value types, apply the
+            // substitution to fixpoint and validate all named fields from both rows.
+            //
+            // After unify(v1, v2), v1 and v2 are the same type (one may be bound to the
+            // other). Apply substitution to v1 to get the resolved value type.
+            let v_fixed = subst.apply(v1);
+
+            // Collect named field types from both rows.
+            let all_fields: Vec<Type> = row1
+                .fields
+                .values()
+                .chain(row2.fields.values())
+                .cloned()
+                .collect();
+
+            if !all_fields.is_empty() {
+                if let Type::TypeVar(alpha, _) = &v_fixed {
+                    // Step 2: V is still an unbound TypeVar α — compute join of all named
+                    // field types and unify α with that join.
+                    let join = Type::normalize_union(all_fields);
+                    unify(
+                        &Type::TypeVar(alpha.clone(), 0),
+                        &join,
+                        subst,
+                        state,
+                        span.clone(),
+                    )?;
+                } else if !v_fixed.has_inference_vars() {
+                    // Step 3: V is concrete — each named field Ti must be a subtype of V.
+                    for field_ty in &all_fields {
+                        let field_fixed = subst.apply(field_ty);
+                        if !Type::is_subtype(&field_fixed, &v_fixed, Some(&state.tycon_env)) {
+                            return Err(TypeError::new(
+                                format!(
+                                    "field type {field_fixed} does not conform to Uniform constraint {v_fixed}"
+                                ),
+                                span.clone(),
+                            ));
+                        }
+                    }
                 }
-                // One has a key constraint, the other does not — key constraint is stricter;
-                // we accept this conservatively (no error) since the key constraint only
-                // adds information, it doesn't conflict. The subtyping rules enforce key
-                // compatibility at use sites.
-                (Some(_), None) | (None, Some(_)) => {}
-                (None, None) => {}
+                // If v_fixed has inference vars but is not a bare TypeVar (e.g., a partially
+                // resolved union), defer validation — unification of the contained vars will
+                // eventually make it concrete or a TypeVar, and the field check will occur
+                // at the next unification call that resolves this tail.
             }
         }
 
-        // Closed row unified with Uniform constraint.
+        // Closed row unified with Uniform constraint (T-1024/UNIFY-UNIFORM step 2).
         //
-        // Per T-944/UNIFY-UNIFORM step 2: when V (the Uniform's value type) is an unbound
-        // TypeVar α after applying the substitution, the correct behaviour is to collect all
-        // named-field types from the Empty-tailed row, compute their join via
-        // `Type::normalize_union`, and unify α with that join.  Step 3 covers the concrete-V
-        // case: each named field Ti must satisfy is_subtype(Ti, V').
+        // When a closed (Empty-tailed) row is unified with a Uniform-tailed row:
+        // - Apply substitution to the Uniform value type V to get V'.
+        // - If V' is an unbound TypeVar α: compute the join of all named field types
+        //   from BOTH rows and unify α with that join.
+        // - If V' is concrete: each named field Ti from BOTH rows must satisfy
+        //   is_subtype(Ti, V') — else emit a type error.
         //
-        // The column-constraint annotation parser is wired up in T-950 (S-843) and produces
-        // `RowTail::Uniform`. However, the UNIFY-UNIFORM join/subtype logic for
-        // empty-vs-uniform row tail pairs is not yet implemented (T-1024). For now we
-        // continue to error in all cases so that any inadvertently reached path produces a
-        // clear diagnostic rather than silent misbehaviour.
-        //
-        // TODO(T-1024): replace these arms with the TypeVar-join / concrete-subtype logic.
-        (RowTail::Empty, RowTail::Uniform { key: _, value: _ })
-        | (RowTail::Uniform { key: _, value: _ }, RowTail::Empty) => {
-            return Err(TypeError::new(
-                "closed row does not satisfy uniform column constraint".to_string(),
-                span,
-            ));
+        // Both rows' named fields are checked: the Empty-tailed row contributes its
+        // named fields (all must conform), and so does the Uniform-tailed row (its own
+        // named fields must also conform to its own constraint V). This mirrors the
+        // Uniform+Uniform case which correctly chains both rows' fields.
+        (RowTail::Empty, RowTail::Uniform { value, .. })
+        | (RowTail::Uniform { value, .. }, RowTail::Empty) => {
+            let v_fixed = subst.apply(value);
+
+            // Collect named field types from both rows (T-1024: both rows contribute).
+            let field_types: Vec<Type> = row1
+                .fields
+                .values()
+                .chain(row2.fields.values())
+                .cloned()
+                .collect();
+
+            if field_types.is_empty() {
+                // Neither row has any named fields — compatible with any Uniform.
+                return Ok(());
+            }
+
+            if let Type::TypeVar(alpha, _) = &v_fixed {
+                // V is an unbound TypeVar α: compute join of all named field types and unify.
+                let join = Type::normalize_union(field_types);
+                unify(
+                    &Type::TypeVar(alpha.clone(), 0),
+                    &join,
+                    subst,
+                    state,
+                    span.clone(),
+                )?;
+            } else if !v_fixed.has_inference_vars() {
+                // V is concrete: each named field Ti must be a subtype of V.
+                for field_ty in &field_types {
+                    let field_fixed = subst.apply(field_ty);
+                    if !Type::is_subtype(&field_fixed, &v_fixed, Some(&state.tycon_env)) {
+                        return Err(TypeError::new(
+                            format!(
+                                "field type {field_fixed} does not conform to Uniform constraint {v_fixed}"
+                            ),
+                            span.clone(),
+                        ));
+                    }
+                }
+            }
+            // Partially resolved V (has inference vars but not a bare TypeVar): defer.
         }
     }
 
@@ -2459,33 +2539,52 @@ pub fn unify(
         (Type::NetCap, Type::NetCap) => Ok(()),
         (Type::DatagramHandle, Type::DatagramHandle) => Ok(()),
         (Type::QuicDatagramHandle, Type::QuicDatagramHandle) => Ok(()),
-        // UNIFY-TYCON: two TyCons unify iff they are the same name (generative nominal identity).
+        // UNIFY-TYCON: two TyCons unify iff they refer to the same type constructor definition.
         // TyCon("Seq") does not unify with TyCon("Map") — distinct named constructors are
-        // distinct types regardless of arity or structure. Name equality is sufficient here
-        // because all TyCon values in the codebase are canonical strings ("Seq", "Map",
-        // "Handle", user-defined names from TyConDef), so pointer equality and name equality
-        // coincide.
+        // distinct types regardless of arity or structure.
         //
-        // T-1014: When tycon_env is available, also verify that both names resolve to the
-        // same TyConDef (or both fail to resolve). This handles shadowing: if an outer scope
-        // defines `type Foo ...` and an inner scope defines another `type Foo ...`, the two
-        // TyCon("Foo") instances refer to different types and must not unify.
+        // Name equality is checked first. When names match, Arc::ptr_eq checks pointer identity:
+        // if two `[type Foo ...]` declarations in different scopes both registered under "Foo",
+        // they produce distinct Arc<TyConDef> values. If the current tycon_env has already been
+        // overwritten by a shadowing declaration (inner scope wins), both lookups return the same
+        // Arc — so they correctly unify. If the two TyCons came from different module contexts
+        // with disjoint tycon_envs, Arc::ptr_eq correctly rejects the unification.
+        //
+        // NOTE: `Type::TyCon` carries only a name string. A flat tycon_env (single entry per name)
+        // means that two lookups for the same name always return the same Arc in the current env,
+        // so Arc::ptr_eq is always true for name-equal TyCons in a single type-checking pass.
+        // The ptr_eq check becomes meaningful in future work where TyCon carries Arc identity
+        // directly (e.g., `Type::TyCon(Arc<TyConDef>)`), eliminating name-based lookup ambiguity.
         (Type::TyCon(n1), Type::TyCon(n2)) => {
             if n1 != n2 {
                 return Err(TypeError::type_mismatch(&a, &b, span));
             }
-            // Names are equal — name equality is the only identity check available here.
-            //
-            // Cross-scope shadowing detection (e.g., two `[type Foo ...]` declarations in
-            // different scopes that should NOT unify) requires pointer identity of TyConDef
-            // objects. That in turn requires `TyConEnv = HashMap<String, Arc<TyConDef>>` so
-            // that distinct scope insertions produce distinct Arcs. The current flat
-            // `HashMap<String, TyConDef>` stores only one entry per name; both
-            // `tycon_env.get(n1)` and `tycon_env.get(n2)` return the same memory slot, so
-            // `ptr::eq` would always be true and cannot detect shadowing.
-            //
-            // TODO(B-343): implement Arc-based TyConEnv for true pointer-identity comparison.
-            Ok(())
+            // Names are equal. Verify Arc identity. NOTE: In the current architecture,
+            // Type::TyCon carries a name string, so both lookups (n1 == n2) access the same
+            // HashMap slot and always return the same Arc — the error branch below is currently
+            // dead code. It becomes meaningful when Type::TyCon is changed to carry Arc<TyConDef>
+            // directly (future migration), at which point two same-name TyCons from different
+            // scope registrations (i.e., distinct TypeEnv frames once TyConEnv is threaded via
+            // TypeEnv's parent chain) could have distinct Arcs. The check is scaffolding for
+            // that migration (B-343 groundwork).
+            let def1 = state.tycon_env.get(n1.as_str());
+            let def2 = state.tycon_env.get(n2.as_str());
+            match (def1, def2) {
+                (Some(d1), Some(d2)) if !Arc::ptr_eq(d1, d2) => {
+                    // Same name but different TyConDef objects — cross-scope shadowing.
+                    Err(TypeError::new(
+                        format!(
+                            "type constructor '{n1}' refers to two distinct definitions \
+                             (cross-scope shadowing): cannot unify"
+                        ),
+                        span,
+                    ))
+                }
+                _ => {
+                    // Both None (unknown TyCon), or same Arc (same definition) — unify.
+                    Ok(())
+                }
+            }
         }
 
         // UNIFY-OPERATOR-TO-OPERATOR: bind higher-level Operator to lower-level Operator.

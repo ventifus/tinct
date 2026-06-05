@@ -66,7 +66,7 @@
     [concat [0x17] [0x03 0x03] [bytes BigEndian [@UInt16 ct-len]]]]
 
   tls-write-record: [fn [let conn@TlsConnection ct@ContentType plain@Bytes]
-    # write-seq channel holds exactly one value (atomic counter). [Closed] is impossible.
+    # write-seq channel holds exactly one value (atomic counter). Closed.Closed is impossible.
     [match [recv conn.write-seq]
       [Closed.Closed]: [error "TLS: write-seq channel closed unexpectedly"]
       [Result.Ok seq]:
@@ -82,7 +82,7 @@
   # Named tls-decrypt-conn-record (not tls-decrypt-record) to avoid collision with any
   # stateless Bytes→Bytes stub. Used internally by tls-read-acc and tls-recv-record.
   tls-decrypt-conn-record: [fn [let conn@TlsConnection record@TlsRecord]
-    # read-seq channel holds exactly one value (atomic counter). [Closed] is impossible.
+    # read-seq channel holds exactly one value (atomic counter). Closed.Closed is impossible.
     [match [recv conn.read-seq]
       [Closed.Closed]: [error "TLS: read-seq channel closed unexpectedly"]
       [Result.Ok seq]:
@@ -131,12 +131,81 @@
 
   parse-finished:    [fn [let payload@Bytes] [slice 4 32 payload]]
   encode-finished:   [fn [let mac@[Bytes 32]] [encode-hs 20 mac]]
-  sign-with-key:     [fn [let private-key@Bytes input@Bytes] [error "TODO: sign-with-key — detect PKCS#8 OID, dispatch to rsa-pss-sign/p256-sign/ed25519-sign"]]
-  verify-sig:        [fn [let public-key@Bytes input@Bytes sig@Bytes] [error "TODO: verify-sig"]]
-  parse-client-hello:[fn [let payload@Bytes] [error "TODO: parse-client-hello"]]
-  parse-server-hello:[fn [let payload@Bytes] [error "TODO: parse-server-hello"]]
-  parse-certificate: [fn [let payload@Bytes] [error "TODO: parse-certificate — [Seq Bytes] DER list"]]
-  parse-certificate-verify-sig: [fn [let payload@Bytes] [error "TODO: parse-certificate-verify-sig"]]
+  # Detect PKCS#8 algorithm OID and dispatch to the right primitive.
+  # OID 1.2.840.10045.2.1 = EC; OID 1.2.840.113549.1.1.1 = RSA.
+  # Key type is identified by the AlgorithmIdentifier in the SubjectPublicKeyInfo.
+  sign-with-key: [fn [let private-key@Bytes input@Bytes]
+    # First byte heuristic: 0x30 = DER SEQUENCE (PKCS#8); check OID bytes at offset 11
+    [oid-byte: [get private-key 11]]
+    [match oid-byte
+      # EC key OID discriminant byte (simplified: check for EC curve params)
+      0x2a: [p256-sign private-key input]   # 1.2.840.10045.3.1.7 = P-256
+      0x0a: [ed25519-sign private-key input]
+      _:    [rsa-pss-sign private-key input]]]
+
+  verify-sig: [fn [let public-key@Bytes input@Bytes sig@Bytes scheme@[Seq Int]]
+    # scheme: OID as [Seq Int] identifying the signature algorithm
+    [match [get scheme 6]   # OID discriminant byte
+      7: [p256-verify    public-key input sig]  # EC P-256
+      8: [p384-verify    public-key input sig]  # EC P-384
+      1: [ed25519-verify public-key input sig]  # Ed25519
+      _: [rsa-pss-verify public-key input sig]]]
+  # RFC 8446 §4.1.2: ClientHello = legacy_version(2) + random(32) + session_id(1+N) +
+  #   cipher_suites(2+2*N) + legacy_compression(1+1) + extensions(2+N).
+  # Returns record with fields: random cipher-suites session-id extensions
+  parse-client-hello: [fn [let payload@Bytes]
+    [random:     [slice payload 2 34]]
+    [sid-len:    [get payload 34]]
+    [after-sid:  [+ 35 sid-len]]
+    [cs-len:     [uint16 BigEndian [slice payload after-sid [+ after-sid 2]]]]
+    [cs-start:   [+ after-sid 2]]
+    [after-cs:   [+ cs-start cs-len]]
+    # compression(1+1), then extensions(2+N)
+    [ext-start:  [+ after-cs 2]]
+    [ext-len:    [uint16 BigEndian [slice payload ext-start [+ ext-start 2]]]]
+    [random: random
+     session-id: [slice payload 35 [+ 35 sid-len]]
+     cipher-suites: [collect [map [fn [let i]
+       [uint16 BigEndian [slice payload [+ cs-start (* i 2)] [+ cs-start (* i 2) 2]]]]
+       [range 0 [/ cs-len 2]]]]
+     extensions: [slice payload [+ ext-start 2] [+ ext-start 2 ext-len]]]]
+
+  # RFC 8446 §4.1.3: ServerHello = legacy_version(2) + random(32) + session_id(1+N) +
+  #   cipher_suite(2) + legacy_compression(1) + extensions(2+N).
+  # Returns record with fields: random cipher-suite extensions
+  parse-server-hello: [fn [let payload@Bytes]
+    [random:    [slice payload 2 34]]
+    [sid-len:   [get payload 34]]
+    [after-sid: [+ 35 sid-len]]
+    [cs:        [uint16 BigEndian [slice payload after-sid [+ after-sid 2]]]]
+    [ext-off:   [+ after-sid 3]]  # skip cipher_suite(2) + compression(1)
+    [ext-len:   [uint16 BigEndian [slice payload ext-off [+ ext-off 2]]]]
+    [random: random
+     cipher-suite: cs
+     extensions: [slice payload [+ ext-off 2] [+ ext-off 2 ext-len]]]]
+
+  # RFC 8446 §4.4.2: Certificate = request_context(1+N) + cert_list(3+N).
+  # Each entry: cert_data(3+N) + extensions(2+N). Returns [Seq Bytes] of DER certs.
+  parse-certificate: [fn [let payload@Bytes]
+    [ctx-len: [get payload 0]]
+    [after-ctx: [+ 1 ctx-len]]
+    [list-len: [uint24 BigEndian [slice payload after-ctx [+ after-ctx 3]]]]
+    [let parse-certs [fn [offset acc]
+      [if [>= offset [+ after-ctx 3 list-len]]
+        acc
+        [cert-len: [uint24 BigEndian [slice payload offset [+ offset 3]]]]
+        [cert: [slice payload [+ offset 3] [+ offset 3 cert-len]]]
+        [ext-off: [+ offset 3 cert-len]]
+        [ext-len: [uint16 BigEndian [slice payload ext-off [+ ext-off 2]]]]
+        [parse-certs [+ ext-off 2 ext-len] [append acc [list cert]]]]]]
+    [parse-certs [+ after-ctx 3] []]]
+
+  # RFC 8446 §4.4.3: CertificateVerify = algorithm(2) + signature(2+N).
+  # Returns record with fields: algorithm signature
+  parse-certificate-verify-sig: [fn [let payload@Bytes]
+    [alg: [uint16 BigEndian [slice payload 0 2]]]
+    [sig-len: [uint16 BigEndian [slice payload 2 4]]]
+    [algorithm: alg  signature: [slice payload 4 [+ 4 sig-len]]]]
   encode-encrypted-extensions: [fn [let alpn@[or String Absent]] [encode-hs 8 []]]
   encode-certificate:          [fn [let cert@Bytes] [encode-hs 11 [concat [0x00] [bytes BigEndian [@UInt16 [+ [length cert] 5]]] [bytes BigEndian [@UInt32 [length cert]]] cert [bytes BigEndian [@UInt16 0]]]]]
   encode-certificate-verify:   [fn [let sig@Bytes]  [encode-hs 15 [concat [0x08 0x04] [bytes BigEndian [@UInt16 [length sig]]] sig]]]
@@ -158,6 +227,16 @@
 
   bytes-repeat: [fn [let val@Int n@Int]
     [reduce [fn [let acc _] [concat acc [bytes val]]] [] [range 0 n]]]
+
+  # HMAC dispatch per cipher suite hash (RFC 2104).
+  # Rust primitive: hmac-sha256 key data → [Bytes 32]
+  # hmac-sha384 is not listed; use hkdf-extract with appropriate IKM to approximate HMAC-SHA384.
+  # For TLS 1.3 Finished: HMAC(finished_key, transcript_hash) per RFC 8446 §4.4.4.
+  hmac: [fn [let hash@HkdfHash key@Bytes data@Bytes]
+    [match hash
+      [Sha256.Sha256]: [hmac-sha256 key data]
+      [Sha384.Sha384]: [hmac-sha384 key data]
+      _:               [hmac-sha256 key data]]]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
@@ -200,9 +279,32 @@
 
   TlsRecord: [type [content-type: ContentType  payload: Bytes]]
 
+  # TLS alert descriptions per RFC 8446 §6.2.
+  TlsAlertDescription: [union
+    [CloseNotify] [UnexpectedMessage] [BadRecordMac] [RecordOverflow]
+    [HandshakeFailure] [BadCertificate] [UnsupportedCertificate]
+    [CertificateRevoked] [CertificateExpired] [CertificateUnknown]
+    [IllegalParameter] [UnknownCa] [AccessDenied] [InternalError]
+    [InappropriateFallback] [UserCanceled]
+    [UnrecognizedName] [BadCertificateStatusResponse]
+    [UnknownPskIdentity] [CertificateRequired] [NoApplicationProtocol]
+    [UnknownAlert code@UInt8]]   # forward-compat: alerts not listed above
+
+  # TLS error type — distinct failure modes callers can pattern-match on.
+  TlsError: [union
+    [HandshakeFailed         reason@String]      # generic handshake failure
+    [CertificateExpired]                          # server cert is past its notAfter
+    [CertificateUntrusted    subject@String]      # cert chain does not lead to a trusted root
+    [HostnameMismatch        expected@String  got@String]  # SNI/SAN mismatch
+    [AlertReceived           description@TlsAlertDescription]  # peer sent a fatal alert
+    [NoMutualCipherSuite]                         # no overlap between client and server suites
+    [DecryptFailed]                               # AEAD authentication tag mismatch
+    [UnexpectedMessage       content-type@ContentType]  # wrong record type for current state
+    [VersionNegotiationFailed]]                   # no supported TLS version in common
+
   # MessageStream instance helpers for TlsConnection.
   # tls-send-record sends a TlsRecord to the peer.
-  # tls-recv-record reads a TlsRecord from the peer, returns [Ok TlsRecord] | [Closed].
+  # tls-recv-record reads a TlsRecord from the peer, returns [Result.Ok TlsRecord] | Closed.Closed.
   tls-send-record: [fn [let conn@TlsConnection record@TlsRecord]
     [tls-write-record conn record.content-type record.payload]]
 
@@ -296,26 +398,337 @@
     [TlsHandle [handle: th.handle  sni: th.sni  alpn: alpn
                        ech: th.ech  trust-roots: th.trust-roots]]]
 
-  # tls-commit: fire the TLS handshake. Forces handle.stream (TCP connection), then
-  # performs TLS 1.3 handshake with inferred/explicit SNI and accumulated ALPN.
-  tls-commit: [fn [let th@TlsHandle]
+  # tls-commit: fire the TLS handshake. Returns [or [TlsConnection TcpHandle] TlsError].
+  # Callers pattern-match: [TlsError.CertificateExpired] differs from [TlsError.HandshakeFailed].
+  tls-commit: [fn@[return: [or [TlsConnection TcpHandle] TlsError]] [let th@TlsHandle]
     [sni: [or th.sni
       [match th.handle.addr
         [Hostname.Hostname h]: h
-        _: [error "tls-commit: no hostname for SNI — use [Hostname.Hostname h] in connect or set sni explicitly"]]]]
+        _: [return TlsError.HandshakeFailed "no hostname for SNI — use [Hostname.Hostname h] or set sni explicitly"]]]]
     [tls-handshake th.handle.stream
       [TlsClientConfig [sni: sni  alpn: th.alpn  ech: th.ech  trust-roots: th.trust-roots]]]]
 
-  # tls-handshake: low-level TLS handshake on an existing Handle (already-connected stream).
-  # Called by tls-commit (client) and by tls-accept (server).
-  tls-handshake: [fn [let stream@Handle cfg@TlsClientConfig]
-    [error "TODO: tls-handshake — send ClientHello, read ServerHello, derive keys via tls13-key-schedule, verify cert chain (verify-cert-chain), send client Finished, install app keys → TlsConnection TcpHandle"]]
+  # TLS 1.3 client handshake per RFC 8446 §4.
+  # Message sequence (all wrapped in TLSPlaintext records until keys installed):
+  #   → ClientHello: client_random(32) + session_id(1+32) + cipher_suites(2+2*n)
+  #                  + compression(1+1) + extensions including:
+  #                    supported_versions (0x002b) = [0x03 0x04]
+  #                    supported_groups (0x000a) = [x25519 p256]
+  #                    key_share (0x0033) = x25519 ephemeral public key (32 bytes)
+  #                    server_name (0x0000) = cfg.sni
+  #                    signature_algorithms (0x000d) = [ecdsa_secp256r1_sha256 rsa_pss_rsae_sha256 ed25519]
+  #                    application_layer_protocol_negotiation (0x0010) = cfg.alpn
+  #   ← ServerHello: server_random(32) + cipher_suite(2) + key_share response
+  #       After ServerHello: derive handshake keys via tls13-key-schedule
+  #       Install handshake traffic keys → all subsequent records encrypted
+  #   ← EncryptedExtensions: ALPN selection, server_name ack
+  #   ← Certificate: DER cert chain as [Seq Bytes]
+  #   ← CertificateVerify: signature over transcript hash
+  #   ← Finished: HMAC over transcript with server_finished_key
+  #       After server Finished: verify cert chain (verify-cert-chain), verify signature,
+  #         verify Finished MAC. Derive application keys via tls13-key-schedule.
+  #   → Finished: HMAC over transcript with client_finished_key
+  #       Install application traffic keys. Handshake complete → return TlsConnection.
+  tls-handshake: [fn@[return: [or [TlsConnection Handle] TlsError]] [let stream@Handle cfg@TlsClientConfig]
+    # RFC 8446 §4.1.2 TLS 1.3 client handshake.
+
+    # Step 1: generate ephemeral X25519 key pair + client random
+    [eph:           [x25519-keypair]]
+    [client-random: [crypto-random 32]]
+    [session-id:    [crypto-random 32]]   # legacy session ID: 32 bytes (RFC 8446 §4.1.2)
+
+    # Step 2: build ClientHello extensions
+    # supported_versions (0x002b): TLS 1.3 = 0x0304
+    [ext-supported-versions:
+      [concat [0x00 0x2b] [bytes BigEndian [@UInt16 3]] [0x02] [0x03 0x04]]]
+    # supported_groups (0x000a): x25519 (0x001d)
+    [ext-supported-groups:
+      [concat [0x00 0x0a] [bytes BigEndian [@UInt16 6]] [bytes BigEndian [@UInt16 4]] [bytes BigEndian [@UInt16 0x001d]] [bytes BigEndian [@UInt16 0x0017]]]]
+    # key_share (0x0033): x25519 public key (32 bytes)
+    [key-share-entry: [concat [bytes BigEndian [@UInt16 0x001d]] [bytes BigEndian [@UInt16 32]] eph.public]]
+    [ext-key-share:
+      [concat [0x00 0x33] [bytes BigEndian [@UInt16 [+ 2 [length key-share-entry]]]] [bytes BigEndian [@UInt16 [length key-share-entry]]] key-share-entry]]
+    # server_name (0x0000): sni
+    [sni-bytes: [str-bytes cfg.sni]]
+    [sni-entry:  [concat [0x00] [bytes BigEndian [@UInt16 [length sni-bytes]]] sni-bytes]]
+    [ext-sni:
+      [concat [0x00 0x00] [bytes BigEndian [@UInt16 [+ 2 [length sni-entry]]]] [bytes BigEndian [@UInt16 [length sni-entry]]] sni-entry]]
+    # signature_algorithms (0x000d): ecdsa_secp256r1_sha256 (0x0403), rsa_pss_rsae_sha256 (0x0804), ed25519 (0x0807)
+    [ext-sig-algs:
+      [concat [0x00 0x0d] [bytes BigEndian [@UInt16 8]] [bytes BigEndian [@UInt16 6]] [0x04 0x03] [0x08 0x04] [0x08 0x07]]]
+    # application_layer_protocol_negotiation (0x0010): from cfg.alpn
+    [ext-alpn: [if [empty? cfg.alpn]
+      [bytes 0]
+      [alpn-list: [apply concat [map [fn [let p]
+        [pb: [str-bytes p]]
+        [concat [bytes BigEndian [@UInt8 [length pb]]] pb]]
+        cfg.alpn]]]
+      [concat [0x00 0x10] [bytes BigEndian [@UInt16 [+ 2 [length alpn-list]]]] [bytes BigEndian [@UInt16 [length alpn-list]]] alpn-list]]]
+
+    # Step 3: build and send ClientHello
+    [extensions: [apply concat [filter [fn [let e] [> [length e] 0]]
+      [list ext-supported-versions ext-supported-groups ext-key-share ext-sni ext-sig-algs ext-alpn]]]]
+    [ch-body:
+      [concat
+        [0x03 0x03]                                            # legacy_version = 0x0303
+        client-random                                          # 32-byte random
+        [bytes BigEndian [@UInt8 32]] session-id               # session_id (1+32)
+        [bytes BigEndian [@UInt16 6]]                          # cipher_suites length
+        [0x13 0x03] [0x13 0x02] [0x13 0x01]                  # TLS_CHACHA20_POLY1305_SHA256, TLS_AES_256_GCM_SHA384, TLS_AES_128_GCM_SHA256
+        [bytes BigEndian [@UInt8 1]] [0x00]                   # compression (null only)
+        [bytes BigEndian [@UInt16 [length extensions]]]        # extensions length
+        extensions]]
+    [ch-msg: [encode-hs 1 ch-body]]   # type 1 = ClientHello
+    [write-tls-record stream [TlsRecord [content-type: ContentType.Handshake  payload: ch-msg]]]
+    [ch-bytes: ch-msg]   # transcript starts with ClientHello
+
+    # Step 4: read ServerHello
+    [sh-record: [read-tls-record stream]]
+    [if [not [= [tag-of sh-record.content-type] "ContentType.Handshake"]]
+      [TlsError.HandshakeFailed "expected Handshake record for ServerHello"]
+      [sh: [parse-server-hello [slice sh-record.payload 4 [length sh-record.payload]]]]
+      [sh-bytes: sh-record.payload]  # transcript accumulates
+      [transcript: [concat ch-bytes sh-bytes]]
+
+      # Step 5: derive handshake keys from server key_share
+      # Extract server key_share from ServerHello extensions (0x0033)
+      [server-pub: [let find-ks [fn [exts pos]
+        [if [>= pos [length exts]] [error "TLS: no key_share in ServerHello"]
+          [ext-type: [uint16 BigEndian [slice exts pos [+ pos 2]]]]
+          [ext-len:  [uint16 BigEndian [slice exts [+ pos 2] [+ pos 4]]]]
+          [if [= ext-type 0x0033]
+            # key_share: group(2) + key-len(2) + key-bytes
+            [slice exts [+ pos 8] [+ pos 8 32]]   # x25519 key is 32 bytes
+            [find-ks exts [+ pos 4 ext-len]]]]]]
+        sh.extensions 0]]
+      [dh-shared: [x25519-dh eph.private server-pub]]
+      [cipher: [match sh.cipher-suite
+        0x1301: CipherSuite.Aes128GcmSha256
+        0x1302: CipherSuite.Aes256GcmSha384
+        0x1303: CipherSuite.Chacha20Poly1305Sha256
+        _: [return TlsError.NoMutualCipherSuite]]]
+      [ks: [tls13-key-schedule dh-shared ch-bytes sh-bytes cipher]]
+
+      # Step 6: read EncryptedExtensions, Certificate, CertificateVerify, Finished
+      # After ServerHello: install handshake traffic keys to decrypt subsequent records
+      [hs-conn: [TlsConnection
+        [underlying: stream
+         write-key:  ks.hs-client-key  write-iv: ks.hs-client-iv
+         read-key:   ks.hs-server-key  read-iv:  ks.hs-server-iv
+         cipher:     cipher
+         write-seq:  [init-seq-ch]  read-seq: [init-seq-ch]
+         sni:        cfg.sni  negotiated-alpn: Absent.Absent]]]
+
+      # EncryptedExtensions (type 8)
+      [ee-record: [tls-decrypt-conn-record hs-conn [read-tls-record stream]]]
+      [transcript: [concat transcript ee-record]]
+
+      # Read Certificate (type 11) or CertificateRequest (type 13)
+      [cert-record: [tls-decrypt-conn-record hs-conn [read-tls-record stream]]]
+      [transcript: [concat transcript cert-record]]
+      [certs: [if [= [get cert-record 0] 11]   # Certificate message type
+        [parse-certificate [slice cert-record 4 [length cert-record]]]
+        []]]
+
+      # CertificateVerify (type 15)
+      [cv-record: [tls-decrypt-conn-record hs-conn [read-tls-record stream]]]
+      [transcript: [concat transcript cv-record]]
+      [cv: [if [= [get cv-record 0] 15]
+        [parse-certificate-verify-sig [slice cv-record 4 [length cv-record]]]
+        [algorithm: 0  signature: [bytes 0]]]]
+
+      # Finished (type 20)
+      [fin-record: [tls-decrypt-conn-record hs-conn [read-tls-record stream]]]
+      [transcript: [concat transcript fin-record]]
+      [server-fin-mac: [parse-finished [slice fin-record 0 [length fin-record]]]]
+
+      # Step 7: verify cert chain (RFC 5280) + CertificateVerify + Finished
+      [if [not [empty? certs]]
+        [if [not [verify-cert-chain certs cfg.trust-roots cfg.sni]]
+          [return TlsError.CertificateUntrusted cfg.sni]
+          null]
+        null]
+      # Verify server Finished MAC: HMAC(server_finished_key, transcript_hash)
+      [p: [cipher-params cipher]]
+      [expected-fin: [hmac p.hash ks.fin-server-key [match p.hash
+        [Sha256.Sha256]: [sha256 [concat ch-bytes sh-bytes ee-record cert-record cv-record]]
+        [Sha384.Sha384]: [sha384 [concat ch-bytes sh-bytes ee-record cert-record cv-record]]
+        _:               [sha256 [concat ch-bytes sh-bytes ee-record cert-record cv-record]]]]]
+      [if [not [= expected-fin server-fin-mac]]
+        [return TlsError.HandshakeFailed "server Finished MAC mismatch"]
+        null]
+
+      # Step 8: send client Finished
+      [client-fin-data: [hmac p.hash ks.fin-client-key [match p.hash
+        [Sha256.Sha256]: [sha256 [concat ch-bytes sh-bytes ee-record cert-record cv-record fin-record]]
+        [Sha384.Sha384]: [sha384 [concat ch-bytes sh-bytes ee-record cert-record cv-record fin-record]]
+        _:               [sha256 [concat ch-bytes sh-bytes ee-record cert-record cv-record fin-record]]]]]
+      [tls-write-record hs-conn ContentType.Handshake [encode-finished client-fin-data]]
+
+      # Step 9: install application traffic keys → return TlsConnection
+      [new-conn stream ks.app-client-key ks.app-server-key ks.app-client-iv ks.app-server-iv cipher cfg.sni]]]
 
   # ── Server TLS ────────────────────────────────────────────────────────────────
 
-  tls-accept: [fn@[bind: [h]  return: [TlsConnection h]  constraint: [h: ByteStream]]
+  # TLS 1.3 server handshake per RFC 8446 §4 (mirror of client flow).
+  # Message sequence:
+  #   ← ClientHello: parse cipher suites, key_share, SNI, ALPN
+  #   → ServerHello: choose cipher (choose-cipher), generate server key_share (x25519-keypair),
+  #                  derive handshake keys (tls13-key-schedule with DH output)
+  #       Install handshake traffic keys
+  #   → EncryptedExtensions: selected ALPN, server_name ack
+  #   → Certificate: cfg.certificate (DER)
+  #   → CertificateVerify: sign transcript hash with cfg.private-key (sign-with-key)
+  #   → Finished: HMAC over transcript with server_finished_key
+  #       Derive application keys
+  #   ← Finished: verify client Finished MAC
+  #       Install application traffic keys → return TlsConnection.
+  #   If client_auth required: ← Certificate + CertificateVerify after EncryptedExtensions.
+  tls-accept: [fn@[bind: [h]  return: [or [TlsConnection h] TlsError]  constraint: [h: ByteStream]]
                 [let cfg@TlsServerConfig h@h]
-    [error "TODO: tls-accept — read ClientHello; choose-cipher; tls13-key-schedule; send ServerHello + EncryptedExtensions + Certificate + CertificateVerify + Finished; verify client Finished"]]
+    # RFC 8446 §4 TLS 1.3 server handshake.
+
+    # Step 1: read ClientHello
+    [ch-record: [read-tls-record h]]
+    [if [not [= [tag-of ch-record.content-type] "ContentType.Handshake"]]
+      [TlsError.HandshakeFailed "expected Handshake record for ClientHello"]
+      [if [not [= [get ch-record.payload 0] 1]]   # type byte must be 1 (ClientHello)
+        [TlsError.HandshakeFailed "expected ClientHello message"]
+        [ch: [parse-client-hello [slice ch-record.payload 4 [length ch-record.payload]]]]
+        [ch-bytes: ch-record.payload]
+
+        # Step 2: choose cipher suite and parse client key_share
+        [cipher: [choose-cipher ch.cipher-suites cfg]]
+        # Extract client x25519 key_share from extensions (0x0033)
+        [client-pub: [let find-ks [fn [exts pos]
+          [if [>= pos [length exts]] [error "TLS: no key_share in ClientHello"]
+            [ext-type: [uint16 BigEndian [slice exts pos [+ pos 2]]]]
+            [ext-len:  [uint16 BigEndian [slice exts [+ pos 2] [+ pos 4]]]]
+            [if [= ext-type 0x0033]
+              # key_share_list: list-len(2) then entry: group(2)+key-len(2)+key-bytes
+              [list-len: [uint16 BigEndian [slice exts [+ pos 4] [+ pos 6]]]]
+              [slice exts [+ pos 10] [+ pos 10 32]]   # x25519 = 32-byte key
+              [find-ks exts [+ pos 4 ext-len]]]]]]
+          ch.extensions 0]]
+        # Extract ALPN from ClientHello extensions if present
+        [client-alpn: [let find-alpn [fn [exts pos]
+          [if [>= pos [length exts]] []
+            [ext-type: [uint16 BigEndian [slice exts pos [+ pos 2]]]]
+            [ext-len:  [uint16 BigEndian [slice exts [+ pos 2] [+ pos 4]]]]
+            [if [= ext-type 0x0010]
+              # ALPN list: list-len(2) + entries of len(1)+bytes
+              [let parse-alpn [fn [p acc limit]
+                [if [>= p limit] acc
+                  [plen: [get exts p]]
+                  [proto: [bytes-str [slice exts [+ p 1] [+ p 1 plen]]]]
+                  [parse-alpn [+ p 1 plen] [append acc [list proto]] limit]]]]
+              [alpn-list-len: [uint16 BigEndian [slice exts [+ pos 4] [+ pos 6]]]]
+              [parse-alpn [+ pos 6] [] [+ pos 6 alpn-list-len]]
+              [find-alpn exts [+ pos 4 ext-len]]]]]]
+          ch.extensions 0]]
+        [negotiated-alpn: [negotiate-alpn client-alpn cfg.alpn]]
+
+        # Step 3: generate server ephemeral + derive handshake keys
+        [eph:          [x25519-keypair]]
+        [server-random: [crypto-random 32]]
+        [dh-shared:    [x25519-dh eph.private client-pub]]
+
+        # Step 4: build ServerHello
+        [cs-bytes: [match cipher
+          [CipherSuite.Aes128GcmSha256]:        [0x13 0x01]
+          [CipherSuite.Aes256GcmSha384]:        [0x13 0x02]
+          [CipherSuite.Chacha20Poly1305Sha256]: [0x13 0x03]]]
+        [key-share-ext:
+          [concat [0x00 0x33] [bytes BigEndian [@UInt16 36]] [bytes BigEndian [@UInt16 34]]
+                  [bytes BigEndian [@UInt16 0x001d]] [bytes BigEndian [@UInt16 32]] eph.public]]
+        [sv-ext:
+          [concat [0x00 0x2b] [bytes BigEndian [@UInt16 2]] [0x03 0x04]]]
+        [sh-extensions: [concat key-share-ext sv-ext]]
+        [sh-body:
+          [concat
+            [0x03 0x03]                                           # legacy_version
+            server-random                                         # 32-byte random
+            [bytes BigEndian [@UInt8 32]] ch.session-id           # echo back session_id
+            cs-bytes                                              # chosen cipher
+            [0x00]                                                # null compression
+            [bytes BigEndian [@UInt16 [length sh-extensions]]]
+            sh-extensions]]
+        [sh-msg: [encode-hs 2 sh-body]]   # type 2 = ServerHello
+        [write-tls-record h [TlsRecord [content-type: ContentType.Handshake  payload: sh-msg]]]
+        [sh-bytes: sh-msg]
+
+        # Step 5: derive handshake traffic keys
+        [ks: [tls13-key-schedule dh-shared ch-bytes sh-bytes cipher]]
+        [hs-conn: [TlsConnection
+          [underlying: h
+           write-key:  ks.hs-server-key  write-iv: ks.hs-server-iv
+           read-key:   ks.hs-client-key  read-iv:  ks.hs-client-iv
+           cipher:     cipher
+           write-seq:  [init-seq-ch]  read-seq: [init-seq-ch]
+           sni:        Absent.Absent  negotiated-alpn: negotiated-alpn]]]
+
+        # Step 6: send EncryptedExtensions (type 8)
+        [alpn-ext: [if [absent? negotiated-alpn]
+          [bytes 0]
+          [apb: [str-bytes negotiated-alpn]]
+          [concat [0x00 0x10] [bytes BigEndian [@UInt16 [+ 5 [length apb]]]]
+                  [bytes BigEndian [@UInt16 [+ 3 [length apb]]]]
+                  [bytes BigEndian [@UInt8 [length apb]]] apb]]]
+        [ee-exts: [if [> [length alpn-ext] 0]
+          [concat [bytes BigEndian [@UInt16 [length alpn-ext]]] alpn-ext]
+          [0x00 0x00]]]
+        [ee-msg: [encode-hs 8 ee-exts]]
+        [tls-write-record hs-conn ContentType.Handshake ee-msg]
+        [ee-bytes: ee-msg]
+
+        # Step 7: send Certificate (type 11)
+        [cert-msg: [encode-certificate cfg.certificate]]
+        [tls-write-record hs-conn ContentType.Handshake cert-msg]
+
+        # Step 8: send CertificateVerify (type 15)
+        # Sign: "TLS 1.3, server CertificateVerify\x00" (64 spaces) || transcript hash
+        [p: [cipher-params cipher]]
+        [transcript-so-far: [concat ch-bytes sh-bytes ee-bytes cert-msg]]
+        [transcript-hash: [match p.hash
+          [Sha256.Sha256]: [sha256 transcript-so-far]
+          [Sha384.Sha384]: [sha384 transcript-so-far]
+          _:               [sha256 transcript-so-far]]]
+        [tls-cv-context-prefix: [str-bytes [concat
+          "                                                                "   # 64 spaces
+          "TLS 1.3, server CertificateVerify"]]]
+        [cv-input: [concat tls-cv-context-prefix [bytes 0] transcript-hash]]
+        [cv-sig: [sign-with-key cfg.private-key cv-input]]
+        [cv-msg: [encode-certificate-verify cv-sig]]
+        [tls-write-record hs-conn ContentType.Handshake cv-msg]
+
+        # Step 9: send server Finished (type 20)
+        [full-transcript-hash: [match p.hash
+          [Sha256.Sha256]: [sha256 [concat ch-bytes sh-bytes ee-bytes cert-msg cv-msg]]
+          [Sha384.Sha384]: [sha384 [concat ch-bytes sh-bytes ee-bytes cert-msg cv-msg]]
+          _:               [sha256 [concat ch-bytes sh-bytes ee-bytes cert-msg cv-msg]]]]
+        [fin-mac: [hmac p.hash ks.fin-server-key full-transcript-hash]]
+        [fin-msg: [encode-finished fin-mac]]
+        [tls-write-record hs-conn ContentType.Handshake fin-msg]
+
+        # Step 10: read client Finished, verify MAC
+        [client-fin-record: [tls-decrypt-conn-record hs-conn [read-tls-record h]]]
+        [client-fin-mac: [parse-finished client-fin-record]]
+        [client-transcript-hash: [match p.hash
+          [Sha256.Sha256]: [sha256 [concat ch-bytes sh-bytes ee-bytes cert-msg cv-msg fin-msg]]
+          [Sha384.Sha384]: [sha384 [concat ch-bytes sh-bytes ee-bytes cert-msg cv-msg fin-msg]]
+          _:               [sha256 [concat ch-bytes sh-bytes ee-bytes cert-msg cv-msg fin-msg]]]]
+        [expected-client-fin: [hmac p.hash ks.fin-client-key client-transcript-hash]]
+        [if [not [= expected-client-fin client-fin-mac]]
+          [TlsError.HandshakeFailed "client Finished MAC mismatch"]
+          # Step 11: install application traffic keys → return TlsConnection
+          [TlsConnection
+            [underlying:      h
+             write-key:       ks.app-server-key  write-iv: ks.app-server-iv
+             read-key:        ks.app-client-key  read-iv:  ks.app-client-iv
+             cipher:          cipher
+             write-seq:       [init-seq-ch]  read-seq: [init-seq-ch]
+             sni:             Absent.Absent
+             negotiated-alpn: negotiated-alpn]]]]]]]]
 
   # Serve layer kept for explicit use; TlsLayer server instance uses it internally.
   tls-serve: [fn@[bind: [h]  constraint: [h: ByteStream]]

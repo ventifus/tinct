@@ -1,18 +1,16 @@
 # What If: Network Serve and Connect Layers (lib-net-v3)
 
-TODO: make sure we have robust error reporting and handling capabilities. Specific nominal Error types matching TLS errors / DNS errors / etc?
-
 **State:** Draft — 2026-05-21
 
 **Depends on:** [`runtime-v2.md`](runtime-v2.md) ✓ complete — `task`/`await`/`channel`/`recv`/`send`/`select-once`/`loop-select`, `Arc`-based thunks, async Tokio runtime. All async utilities are in `stdlib/prelude.llt` (merged from the now-deleted `stdlib/async.llt`). All concurrency primitives are used here without redefinition. `tcp-connect` is the only Rust primitive here — `tls`, `quic`, `h2`, `h3`, and `connect` are tinct stdlib functions defined in this whatif.
 
-**Depends on:** [`builtin-privacy.md`](builtin-privacy.md) ✓ complete — `--- uses: ["net"]` headers, `builtin_module("net")` registry, `eval-programs`, `eval-program`, `module` and related bootstrap machinery are all in place. Net stdlib files declare `--- uses: ["net"]` to access their Rust builtins. `select-once` returns `[Ok v]` | `[Closed]` (B-192); `loop-select` is pure tinct. `recv` also returns `[Ok v]` | `[Closed]` for uniform channel semantics.
+**Depends on:** [`builtin-privacy.md`](builtin-privacy.md) ✓ complete — `--- uses: ["net"]` headers, `builtin_module("net")` registry, `eval-programs`, `eval-program`, `module` and related bootstrap machinery are all in place. Net stdlib files declare `--- uses: ["net"]` to access their Rust builtins. `select-once` returns `[Result.Ok v]` | `Closed.Closed` (B-192); `loop-select` is pure tinct. `recv` also returns `[Result.Ok v]` | `Closed.Closed` for uniform channel semantics.
 
 **Uri/Url:** `Uri` is currently an opaque Rust object. Making it a tinct-native data structure is confirmed scope for this whatif — the `builtin_uri` function already returns a `Value::Dict` of URI components rather than a `Value::Uri`, so the decomposition is implemented; what remains is formalising the type in `stdlib/net.llt`.
 
 **Extends:** [`completed/lib-tls.md`](completed/lib-tls.md), [`completed/lib-net-v2.md`](completed/lib-net-v2.md) — replaces the opaque-Rust-type model for TLS, HTTP/2, HTTP/3, QUIC, WebSocket, WireGuard, and Noise with tinct stdlib implementations; adds the compositional serve/connect layer model; introduces `[Bytes N]` fixed-size byte types and a `cap-std::Pool`-backed `NetCap`.
 
-**Open question for this whatif to answer:** Binary integer serialization semantics for `stdlib/numeric.llt`'s `to-bytes`. Protocol encoding (DNS packet fields, TLS record headers, HTTP/2 frame lengths) requires converting integers to fixed-width big-endian bytes. This whatif must specify: the `to-bytes: Int × Int → Bytes` primitive (value + byte-width, big-endian, two's complement), its interaction with `[Bytes N]` fixed-size types, and where it lives (`stdlib/numeric.llt` or `stdlib/encoding.llt`).
+**Resolved:** Binary integer serialization uses `[bytes ByteOrder value]` where the type of `value` determines the output width (`UInt8`→`[Bytes 1]`, `UInt16`→`[Bytes 2]`, `UInt24`→`[Bytes 3]`, `UInt32`→`[Bytes 4]`, `UInt64`→`[Bytes 8]`). ByteOrder is always explicit — no endianness-ambiguous byte creation is possible. Decoding uses `uint16`/`uint32`/`uint64` with the same explicit byte order. `ByteLabel` and `to-bytes` are not needed. See §Fixed-Size Bytes: `[Bytes N]`.
 
 ---
 
@@ -29,7 +27,7 @@ Every function in this API places the **subject** — the thing being transforme
 The consequence: any pipeline stage works directly with `|` and composes via partial application:
 
 ```tinct
-[connect %net Tcp [HostPort [Hostname "api.example.com"] 443]]
+[connect %net Tcp [host-port [hostname "api.example.com"] 443]]
   | tls                      # pending TLS, sni inferred from hostname
   | h2                       # fires TLS with alpn: ["h2"], then H2 handshake
   | [http-request "GET" "/data"]
@@ -57,16 +55,16 @@ Three API levels, all built from the same components:
 **Level 2 — Connection reuse or protocol selection.** Explicit transport + request:
 
 ```tinct
-[c:    [connect %nc Http [HostPort [Hostname "api.example.com"] 443]]
+[c:    [connect %nc Http [host-port [hostname "api.example.com"] 443]]
  resp: [http-request c "GET" "/data"  user-agent: "tinct/0.1"]]
 ```
 
 **Level 3 — Raw composition.** Full pipeline control for custom stacks:
 
 ```tinct
-[[connect %nc Tcp [HostPort [Hostname "api.example.com"] 443]] | tls | h2 | [http-request req]]
-[[connect %nc Tcp [HostPort [Hostname "redis.internal"]  6379]] | [codec RedisCodec]]
-[[connect %nc Udp [HostPort [Hostname "vpn.example.com"] 51820]] | [wireguard cfg]]
+[[connect %nc Tcp [host-port [hostname "api.example.com"] 443]] | tls | h2 | [http-request req]]
+[[connect %nc Tcp [host-port [hostname "redis.internal"] 6379]] | [codec RedisCodec]]
+[[connect %nc Udp [host-port [hostname "vpn.example.com"] 51820]] | [wireguard cfg]]
 ```
 
 `fetch` is not a special case — it uses `connect Http` which wires `connect Tcp | tls | h2` (or `quic | h3` if SVCB indicates). No hidden implementations. Users who define a new `Transport` instance and `Protocol` instance get Level 1 for free.
@@ -87,10 +85,10 @@ Protocol layer functions are **bidirectional**: the same verb dispatches to clie
 
 ```tinct
 # Client: starts from connect
-[connect %net Tcp [HostPort [Hostname "api.example.com"] 443]]
+[connect %net Tcp [host-port [hostname "api.example.com"] 443]]
   | tls | h2 | [send req]                    # TcpHandle → TlsHandle → Http2Connection
 
-[connect %net Udp [HostPort [Hostname "api.example.com"] 443]]
+[connect %net Udp [host-port [hostname "api.example.com"] 443]]
   | quic | h3 | [send req]                   # ConnectedUdp → QuicHandle → Http3Connection
 
 # Server: starts from a listener
@@ -105,25 +103,54 @@ Protocol layer functions are **bidirectional**: the same verb dispatches to clie
 
 ```tinct
 # HTTPS/2 — sni and alpn inferred by tls/h2 layers
-[connect %net Tcp [HostPort [Hostname "api.example.com"] 443]]
+[connect %net Tcp [host-port [hostname "api.example.com"] 443]]
   | tls | h2 | [http-request req]
 
 # HTTP/3 — quic creates QuicHandle; h3 adds alpn: ["h3"] before firing
-[connect %net Udp [HostPort [Hostname "api.example.com"] 443]]
+[connect %net Udp [host-port [hostname "api.example.com"] 443]]
   | quic | h3 | [http-request req]
 
 # DNS over TLS — tls fires with no alpn, dns-framed-send writes bytes
-[connect %net Tcp [HostPort [Hostname "dns.cloudflare.com"] 853]]
+[connect %net Tcp [host-port [hostname "dns.cloudflare.com"] 853]]
   | tls | [dns-framed-send query]
 
 # WireGuard VPN — noise-based, no TLS layer
-[connect %net Udp [HostPort [Hostname "vpn.example.com"] 51820]]
+[connect %net Udp [host-port [hostname "vpn.example.com"] 51820]]
   | [wireguard cfg]
 ```
 
 `connect` is polymorphic on protocol via the `Transport` typeclass — `Tcp` produces a `Handle` (`ByteStream`); `Udp` produces a `ConnectedUdp` (`Datagram`). For `[Hostname h]`, Happy Eyeballs applies universally: parallel A+AAAA with 50ms IPv6 head start, interleaved addresses, then Tcp races connections (250ms stagger) while Udp picks the first.
 
 A "layer violation" — a protocol that skips or reorders traditional stack layers — is expressed through its input and output types. `quic` expects a `Datagram`; it does not compose with a `Handle` (`ByteStream`). `tls-serve` expects `Channel@ByteStream`; it does not compose with `Channel@QuicConnection` (QUIC carries integrated TLS). No special cases: the type system is the rule.
+
+---
+
+## Error Philosophy
+
+Network operations fail in predictable, distinguishable ways. `try` in tinct is for exceptional and unexpected failures; expected protocol failure modes return typed discriminated unions that callers can pattern-match directly. This is the Rust/Haskell model: one typed error union per subsystem, no string matching.
+
+```tinct
+[match [dns-resolve cap host DnsQtype.A]
+  [Result.Ok addrs]:           [happy-connect cap port addrs]
+  [DnsError.NXDomain name]:    [error [str "no such host: " name]]
+  [DnsError.Timeout]:          [retry-with-tcp cap host]
+  [DnsError.Refused]:          [error "nameserver refused query"]
+  [DnsError.ServerFailure]:    [try-next-nameserver cap host]]
+```
+
+Each subsystem defines its own error type; callers handle only the failures relevant to their context and let others propagate. The error types:
+
+| Error type | Defined in | Covers |
+|---|---|---|
+| `DnsError` | `dns.llt` | NXDomain, ServerFailure, Refused, Timeout, Truncated, NotImplemented, DecodeFailed |
+| `TlsError` | `tls13.llt` | HandshakeFailed, CertificateExpired/Untrusted/HostnameMismatch, AlertReceived, DecryptFailed, NoMutualCipherSuite |
+| `TlsAlertDescription` | `tls13.llt` | All RFC 8446 §6.2 alert codes as named variants |
+| `NetError` | `net.llt` | ConnectionRefused, ConnectionTimeout, NetworkUnreachable, NoAddressesResolved, AllConnectionsFailed |
+| `HttpError` | `http.llt` | StatusError (4xx/5xx), ProtocolError, TooManyRedirects, InvalidResponse |
+| `WsError` | `websocket.llt` | ConnectionClosed, ProtocolViolation, MessageTooLarge, MaskingViolation |
+| `QuicError` | `quic.llt` | ProtocolViolation, StreamReset, ConnectionClose, StatelessReset, VersionNegotiationFailed, FlowControlViolation |
+
+`WsFrame.Close` is NOT an error — it is a graceful peer-initiated closure and is returned as a normal `WsFrame` value. `WsError.ConnectionClosed` covers abrupt TCP disconnection.
 
 ---
 
@@ -134,7 +161,7 @@ Two typeclasses partition the connection lifecycle. Together they make every pro
 ```tinct
 # Transport: how to connect. p determines the connection type c.
 [class [Transport p] determines: [p → c]
-  connect: [Fn@c [NetCap Address Port p]]]
+  connect: [Fn@c [NetCap p HostPort]]]
 
 # Protocol: how to exchange. fetch dispatches by protocol type.
 [class [Protocol p req resp]
@@ -161,24 +188,24 @@ Two typeclasses partition the connection lifecycle. Together they make every pro
 
 ```tinct
 # DNS over TLS — user-defined
-DoT: [type [server: Address  port: Port]]
+DoT: [type [server: Host  port: Port]]
 
 [instance [Transport DoT] determines: [DoT → TlsHandle]
   connect: [fn [let cap@NetCap _@DoT ep@HostPort]
-    [TlsHandle [handle: [connect cap Tcp ep]  sni: null  alpn: []  ech: []  trust-roots: SystemRoots]]]]
+    [TlsHandle [handle: [connect cap Tcp ep]  sni: Absent.Absent  alpn: []  ech: []  trust-roots: SystemRoots]]]]
 
 [instance [Protocol DoT DnsQuery DnsResponse]
   fetch: [fn [let cap@NetCap proto@DoT req@DnsQuery]
-    [th: [connect cap DoT [HostPort proto.server proto.port]]]
+    [th: [connect cap DoT [host-port proto.server proto.port]]]
     [tls-commit th | [dns-framed-send req]]]]
 
 # One definition — three call sites work:
-cloudflare-dot: [DoT [server: [Hostname "dns.cloudflare.com"]  port: 853]]
+cloudflare-dot: [DoT [server: [hostname "dns.cloudflare.com"]  port: 853]]
 
 [fetch %nc cloudflare-dot [dns-query "IN" "A" "example.com"]]                              # Level 1
-[c: [connect %nc DoT [HostPort [Hostname "dns.cloudflare.com"] 853]]                       # Level 2
+[c: [connect %nc DoT [host-port [hostname "dns.cloudflare.com"] 853]]                       # Level 2
  [dns-framed-send [tls-commit c] query]]
-[[connect %nc Tcp [HostPort [Hostname "dns.cloudflare.com"] 853]] | tls | [dns-framed-send q]] # Level 3
+[[connect %nc Tcp [host-port [hostname "dns.cloudflare.com"] 853]] | tls | [dns-framed-send q]] # Level 3
 ```
 
 The same pattern works for any protocol: gRPC (HTTP/2 with ALPN `"h2"`), MQTT, custom binary protocols over TLS. Implement `Transport` + `Protocol`; the rest of the stack composes automatically.
@@ -191,15 +218,15 @@ The same pattern works for any protocol: gRPC (HTTP/2 with ALPN `"h2"`), MQTT, c
 
 ```tinct
 Handle:           # opaque Rust — any ByteStream (TCP, file, pipe); base ByteStream instance
-TcpHandle:  [type [addr: Address  port: Port  stream: Handle]]
+TcpHandle:  [type [addr: Host  port: Port  stream: Handle]]
 FileHandle: [type [path: String   mode: Symbol  file:   Handle]]
 ```
 
 `connect Tcp HostPort` returns `TcpHandle`. `addr` is always visible — `tls` reads it to infer SNI from `[Hostname h]` without the hostname ever being lost. All handle types in the stack carry their construction parameters:
 
 ```tinct
-TcpHandle:    [type [addr: Address  port: Port  stream: Handle]]          # connect Tcp HostPort
-TlsHandle:    [type [handle: TcpHandle  sni: [or String Null]
+TcpHandle:    [type [addr: Host  port: Port  stream: Handle]]               # connect Tcp → HostPort
+TlsHandle:    [type [handle: TcpHandle  sni: [or String Absent]
                      alpn: [Seq String]  ech: Bytes
                      trust-roots: [or [Seq Bytes] Symbol]]]               # | tls
 TlsConnection:[type [h] [underlying: h  cipher: CipherSuite  ...]]        # tls-commit (inside h2)
@@ -220,7 +247,7 @@ h3:          QuicHandle→Http3Connection     (with-alpn ["h3"] + quic-commit)
 **SNI is never specified twice.** `tls-commit` reads `handle.addr` → extracts `[Hostname h]` → SNI. Explicit override available when connecting to a direct IP with certificate validation.
 
 ```tinct
-[connect %net Tcp [HostPort [Hostname "api.example.com"] 443]]   # TcpHandle
+[connect %net Tcp [host-port [hostname "api.example.com"] 443]]   # TcpHandle
   | tls      # TlsHandle — sni open (inferred from addr.addr on commit), alpn open
   | h2       # with-alpn ["h2"] + tls-commit + H2 preface → Http2Connection
   | [http-request "GET" "/data"]
@@ -348,7 +375,7 @@ A bidirectional typed-message interface. You write a typed value and the impleme
 [class [MessageStream s t]
   # FD: s determines t (each MessageStream type has exactly one message type)
   send: [Fn [s@s t] Null]        # serialize t → underlying transport
-  recv: [Fn [s@s] [or [Ok t] [Closed]]]]  # deserialize → one complete t, or Closed on EOF
+  recv: [Fn [s@s] [or [Result.Ok t] Closed.Closed]]]  # deserialize → one complete t, or Closed on EOF
 
 # rebind works on any MessageStream handle — swaps the routing implementation
 rebind: [fn [let ms new-impl]
@@ -366,7 +393,7 @@ The method names are `send` and `recv` — the same names used everywhere for ch
 ```tinct
 [instance [MessageStream [Channel t] t]
   send: builtin-send
-  recv: builtin-recv]   # returns [Ok v] | [Closed] (B-192)
+  recv: builtin-recv]   # returns [Result.Ok v] | Closed.Closed (B-192)
 ```
 
 Protocol connections that carry typed messages implement `MessageStream` for their message type:
@@ -387,7 +414,7 @@ WebSocketConnection: [type [underlying: Handle  server-side: Bool]]
   recv: ws-recv-frame]   # reads from underlying, strips WS framing + mask, returns frame
 ```
 
-`ws-serve` produces `Channel@WebSocketConnection`; the application calls `recv wsconn` to get `[Ok WsFrame]` or `[Closed]`, and calls `send wsconn reply`. gRPC bidirectional substreams, MQTT connections, and custom application protocols all implement `MessageStream T` for their respective message types.
+`ws-serve` produces `Channel@WebSocketConnection`; the application calls `recv wsconn` to get `[Result.Ok WsFrame]` or `Closed.Closed`, and calls `send wsconn reply`. gRPC bidirectional substreams, MQTT connections, and custom application protocols all implement `MessageStream T` for their respective message types.
 
 ### `%emit` as a `MessageStream` — the protocol stack model applied to CLI I/O
 
@@ -470,15 +497,15 @@ All callers that have already captured `syslog` and are calling `[send syslog ev
 
 [task [let step [fn []
   [match [recv event-ch]
-    [Closed]: []
-    [Ok e]:   [[send log e] [step]]]]]
+    [Closed.Closed]: []
+    [Result.Ok e]:   [[send log e] [step]]]]]
   [step]]
 
 # Rotation task — triggered by size limit or schedule
 [task [let step [fn []
   [match [recv rotation-trigger]
-    [Closed]: []
-    [Ok _]:
+    [Closed.Closed]: []
+    [Result.Ok _]:
       [new-file: [open log-cap [next-log-filename] Writable]]
       [rebind log [file-codec new-file]]
       [step]]]]
@@ -660,8 +687,8 @@ channel-map: [fn@[bind: [element result]] [let f@[Fn [element] result]]
     [task
       [let step [fn []
         [match [recv in-ch]
-          [Closed]: []
-          [Ok x]:   [[task [send out [f x]]] [step]]]]]
+          [Closed.Closed]: []
+          [Result.Ok x]:   [[task [send out [f x]]] [step]]]]]
       [step]]
     out]]
 
@@ -674,13 +701,13 @@ channel-flat-map: [fn@[bind: [element item]] [let f@[Fn [element [Channel item]]
     [task
       [let step [fn []
         [match [recv in-ch]
-          [Closed]: []
-          [Ok x]:   [[task [f x out]] [step]]]]]
+          [Closed.Closed]: []
+          [Result.Ok x]:   [[task [f x out]] [step]]]]]
       [step]]
     out]]
 ```
 
-Both loops are fire-and-forget tasks that terminate in two ways: (1) **natural termination** — the input channel closes (`[Closed]` from `recv`), the `step` function returns `[]`, and the task ends; (2) **external shutdown** — context cancellation via `cancel-task`/`exit`/`drain` raises a cancellation exception that propagates out of the task. `recv` returns `[Ok v]` | `[Closed]` (B-192); cancellation is a separate exception path. For infinite server accept loops (e.g., `[tcp-listen cap port]`), the channel never closes — shutdown happens via context cancellation only.
+Both loops are fire-and-forget tasks that terminate in two ways: (1) **natural termination** — the input channel closes (`Closed.Closed` from `recv`), the `step` function returns `[]`, and the task ends; (2) **external shutdown** — context cancellation via `cancel-task`/`exit`/`drain` raises a cancellation exception that propagates out of the task. `recv` returns `[Result.Ok v]` | `Closed.Closed` (B-192); cancellation is a separate exception path. For infinite server accept loops (e.g., `[tcp-listen cap port]`), the channel never closes — shutdown happens via context cancellation only.
 
 The inner tasks (`[task [send out [f x]]]`) are also fire-and-forget and are **not** cancelled when the outer loop exits — they run to completion or until they error. This is correct: aborting a half-completed TLS handshake would leave the client in a broken state. For clean server shutdown that waits for in-flight handshakes to complete, call `drain` from `stdlib/prelude.llt` at the top level before `exit`.
 
@@ -744,21 +771,21 @@ Client-side layers are named after their protocol. `connect` is always the botto
 
 ```tinct
 # Tcp path: TcpHandle → TlsHandle → Http2Connection
-[connect %net Tcp [HostPort [Hostname "api.example.com"] 443]]
+[connect %net Tcp [host-port [hostname "api.example.com"] 443]]
   | tls   # TlsHandle — sni inferred from addr, ALPN open
   | h2    # with-alpn ["h2"] + tls-commit + H2 preface → Http2Connection
 
 # Udp path: ConnectedUdp → QuicHandle → Http3Connection
-[connect %net Udp [HostPort [Hostname "api.example.com"] 443]]
+[connect %net Udp [host-port [hostname "api.example.com"] 443]]
   | quic  # QuicHandle — sni inferred from peer addr, ALPN open
   | h3    # with-alpn ["h3"] + quic-commit + H3 setup → Http3Connection
 
 # WireGuard (Noise-based — wireguard fires immediately on ConnectedUdp)
-[connect %net Udp [HostPort [Hostname "vpn.example.com"] 51820]]
+[connect %net Udp [host-port [hostname "vpn.example.com"] 51820]]
   | [wireguard cfg]   # Noise IKpsk2 handshake → WireguardConnection
 
 # DoT (DNS over TLS — tls-commit fires when dns-framed-send writes first byte)
-[connect %net Tcp [HostPort [Hostname "dns.cloudflare.com"] 853]]
+[connect %net Tcp [host-port [hostname "dns.cloudflare.com"] 853]]
   | tls | [dns-framed-send query]
 ```
 
@@ -768,13 +795,13 @@ For 1:N multiplexing — HTTP/2 and HTTP/3 — stream multiplexing is managed in
 
 ```tinct
 # Connection reuse: two concurrent requests on one H2 connection
-c:      [[connect %nc [Hostname "api.example.com"] Tcp 443] | tls | h2]
+c:      [[connect %nc Tcp [host-port [hostname "api.example.com"] 443]] | tls | h2]
 r1:     [http-request c "GET" "/api/users"]
 r2:     [http-request c "GET" "/api/posts"]
 [u p]:  [await-all r1 r2]
 
 # Or via Http transport (SVCB-aware, picks H3 or H2 automatically)
-c:      [connect %nc Http [HostPort [Hostname "api.example.com"] 443]]
+c:      [connect %nc Http [host-port [hostname "api.example.com"] 443]]
 resp:   [http-request c "GET" "/data"  accept: "application/json"]
 ```
 
@@ -856,12 +883,12 @@ dns-udp-resolver: [fn [let cap addr@SocketAddress]
 dns-tls-resolver: [fn [let cap addr@SocketAddress sni@String]
   [fn [let q] [task
     # tcp-connect gives a raw Handle; wrap in TcpHandle for tls, set sni explicitly
-    [th: [TcpHandle [addr: [Ipv4 addr.addr]  port: addr.port  stream: [tcp-connect cap addr]]]]
+    [th: [TcpHandle [addr: IpAddress.Ipv4 addr.addr  port: addr.port  stream: [tcp-connect cap addr]]]]
     [conn: [tls-commit [TlsHandle [handle: th  sni: sni  alpn: []  ech: []  trust-roots: SystemRoots]]]]
     [dns-framed-send conn q]]]]
 
 dns-https-resolver: [fn [let cap addr@SocketAddress sni@String path@String]
-  [ep: [HostPort [Ipv4 addr.addr] addr.port]]
+  [ep: [host-port IpAddress.Ipv4 addr.addr  addr.port]]
   [client: [h3-client [[connect cap Udp ep] | [quic-with-sni sni]]]]
   [fn [let q] [task [dns-https-send client q path]]]]
 
@@ -869,8 +896,8 @@ dns-https-resolver: [fn [let cap addr@SocketAddress sni@String path@String]
 dns-server-loop: [fn [let query-ch]
   [let step [fn []
     [match [recv query-ch]
-      [Closed]: []
-      [Ok q]:   [[task [q.respond [dns-lookup q.name q.type]]] [step]]]]]
+      [Closed.Closed]: []
+      [Result.Ok q]:   [[task [q.respond [dns-lookup q.name q.type]]] [step]]]]]
   [step]]
 
 # Plug in any transport
@@ -901,8 +928,8 @@ H3 used as byte transport — not HTTP. Each QUIC substream carries raw ICMP ech
   serve-icmp-stream: [fn@Null [let stream@QuicStream]
     [let step [fn []
       [match [read-icmp stream]
-        [Closed]: []
-        [Ok pkt]:
+        [Closed.Closed]: []
+        [Result.Ok pkt]:
           [match pkt
             [EchoRequest [id: id  seq: seq  data: data]]:
               [send-icmp stream [EchoReply id seq data]]
@@ -953,8 +980,8 @@ This grant lets the program bind on localhost:8080 and do nothing else with the 
 ]
 [let step [fn []
   [match [recv requests]
-    [Closed]: []
-    [Ok req]: [[task [req.respond [handler req]]] [step]]]]]
+    [Closed.Closed]: []
+    [Result.Ok req]: [[task [req.respond [handler req]]] [step]]]]]
 [step]
 ```
 
@@ -980,8 +1007,8 @@ tinct run --cap-net listen@b=0.0.0.0:443 --cap-fs certs@r=./certs server.llt
 ]
 [let step [fn []
   [match [recv requests]
-    [Closed]: []
-    [Ok req]: [[task [req.respond [handler req]]] [step]]]]]
+    [Closed.Closed]: []
+    [Result.Ok req]: [[task [req.respond [handler req]]] [step]]]]]
 [step]
 ```
 
@@ -1090,10 +1117,10 @@ http-protocol-race: [fn [let cap@NetCap host@String port@Int
       [i: e.0  addr: e.1]
       [task
         [recv [timer-channel %clock [millis (* i 250)]]]
-        [ep: [HostPort addr port]]
+        [ep: [host-port addr port]]
         [match [try [[connect cap Udp ep] | [quic-with-sni-ech host ech] | h3]]
-          [Ok h]:  [try [send result-ch h]]
-          [Err _]: null]]]
+          [Result.Ok h]:    [try [send result-ch h]]
+          [Result.Error _]: null]]]
       [entries addrs]]]
     []]]
 
@@ -1102,10 +1129,10 @@ http-protocol-race: [fn [let cap@NetCap host@String port@Int
       [i: e.0  addr: e.1]
       [task
         [recv [timer-channel %clock [millis (+ [if h3? 250 0] (* i 250))]]]
-        [ep: [HostPort addr port]]
+        [ep: [host-port addr port]]
         [match [try [[connect cap Tcp ep] | [tls-with-sni-ech host ech] | h2]]
-          [Ok h]:  [try [send result-ch h]]
-          [Err _]: null]]]
+          [Result.Ok h]:    [try [send result-ch h]]
+          [Result.Error _]: null]]]
       [entries addrs]]]
     []]]
 
@@ -1197,6 +1224,7 @@ All operate on `Bytes` and `[Bytes N]`. All are Rust for one reason: timing-sens
 | `sha512` | `[Fn [data@Bytes] [Bytes 64]]` | SHA-512 | Constant-time |
 | `blake2s` | `[Fn [data@Bytes] [Bytes 32]]` | BLAKE2s unkeyed | Constant-time; WireGuard hashing |
 | `blake2s-mac` | `[Fn [key@[Bytes 32]  data@Bytes] [Bytes 32]]` | BLAKE2s keyed MAC | Constant-time; WireGuard in place of HMAC |
+| `aes-ecb-encrypt` | `[Fn [key@[Bytes 16] block@[Bytes 16]] [Bytes 16]]` | AES-ECB single block encrypt | Required for QUIC header protection (RFC 9001 §5.4); NOT for bulk data — ECB is not an AEAD |
 | `hmac-sha256` | `[Fn [key@Bytes  data@Bytes] [Bytes 32]]` | HMAC-SHA-256 | Constant-time |
 | `hkdf-extract` | `[Fn [hash@HkdfHash  salt@Bytes  input-key-material@Bytes] Bytes]` | HKDF-Extract (hash: `[Sha256]` `[Sha384]` `[Sha512]` `[Blake2s]`) | Constant-time; output size = hash output size (32 for Sha256/Blake2s, 48 for Sha384, 64 for Sha512) |
 | `hkdf-expand` | `[Fn [hash@HkdfHash  pseudorandom-key@Bytes  info@Bytes  len@Int] Bytes]` | HKDF-Expand | Constant-time; output length is runtime `len` — returns `Bytes`, annotate `@[Bytes N]` at call site |
@@ -1647,15 +1675,15 @@ dns-try-names: [fn [let cap@NetCap config@DnsConfig names@[Seq String] type@Symb
     [let [name ...rest]]:
       [match [try [dns-query-with-retry cap config.nameservers name type
                                        config.attempts config.rotate]]
-        [Ok addrs]: addrs
-        [Err _]:    [dns-try-names cap config rest type]]]]
+        [Result.Ok addrs]:    addrs
+        [Result.Error _]:     [dns-try-names cap config rest type]]]]
 
 ns-to-resolver: [fn [let cap@NetCap ns@Nameserver]
   [match ns
-    [let [UdpNameserver  addr]]:          [dns-udp-resolver  cap addr]
-    [let [DotNameserver  addr sni]]:      [dns-tls-resolver  cap addr sni]
-    [let [DohNameserver  addr sni path]]: [dns-https-resolver cap addr sni path]
-    [let [DoqNameserver  addr sni]]:      [dns-quic-resolver  cap addr sni]]]
+    [nameserver.UdpNameserver addr]:               [dns-udp-resolver  cap addr]
+    [nameserver.DotNameserver addr: addr sni: sni]: [dns-tls-resolver  cap addr sni]
+    [nameserver.DohNameserver addr: addr sni: sni path: path]: [dns-https-resolver cap addr sni path]
+    [nameserver.DoqNameserver addr: addr sni: sni]: [dns-quic-resolver  cap addr sni]]]
 ```
 
 **Cargo:** `resolv-conf` crate parses the full `/etc/resolv.conf` — `nameserver`, `search`, `domain`, `options` (ndots, timeout, attempts, rotate, no-aaaa, edns0, use-vc), `sortlist`. All fields map directly to `DnsConfig` fields. Thin addition — no DNS implementation dependency since DNS runs in tinct.

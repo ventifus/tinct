@@ -293,6 +293,39 @@ fn extract_bindings_fallback_from_node(
 /// (desugar → resolve → typecheck), and extracts all top-level binding
 /// types into a new `TypeEnv`. Returns the environment even if type errors occur
 /// (best-effort approach).
+///
+/// ## B-324: Stack overflow on cold-start thread
+///
+/// When called on a cold-start thread (no thread-local cache hits for either
+/// `STDLIB_RESULT_CACHE` or `PRELUDE_CACHE`), the stack usage is:
+///
+/// 1. `create_stdlib_env_with_arena()` — runtime prelude evaluation via `eval_program` →
+///    `create_stdlib_env_inner` → multi-phase bootstrap (parse + eval `prelude.llt`).
+///    The eval path uses a heap-based CEK machine / Action stack, so direct eval recursion
+///    is NOT the overflow cause here.
+///
+/// 2. `build_prelude_env_inner()` (THIS FUNCTION) — type-checks prelude.llt via
+///    `typecheck_surface_program_with_env`. The type checker calls `infer_dict` for the prelude's
+///    top-level dict, which calls `infer_dict` recursively for nested dict bodies (class/instance
+///    declarations and their method dicts). Each recursive `infer_dict` call adds a new Rust stack
+///    frame. The prelude has O(n) nested dict scopes (where n ≈ 30–50 for all class/instance decls),
+///    contributing significant stack depth.
+///
+/// 3. Additionally, `unify` → `apply` substitution chains can be deep when the prelude's
+///    complex type annotations (e.g., `@[return: a]` on `and-then`) interact with the
+///    per-dict Substitution frame chain (T-926). Each `apply` call walks the substitution parent
+///    chain, potentially re-traversing the full prelude's type environment.
+///
+/// **Root cause**: the combination of (2) and (3) running on the same cold-start thread
+/// exhausts 64 MB of stack. The existing corpus test infrastructure avoids this because
+/// both caches are warm from earlier test execution in the same OS thread.
+///
+/// **Fix candidates**:
+/// - Increase RUST_MIN_STACK for test threads that call `eval_source` directly (workaround)
+/// - Make `infer_dict` iterative instead of recursive (eliminates cause 2)
+/// - Flatten the Substitution frame chain in `apply` (eliminates cause 3)
+/// - Pre-cache the prelude type env in a global OnceLock instead of thread-local storage,
+///   eliminating repeated cold-start on test threads
 fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // Start with an empty TypeEnv.
     // The user-facing TypeEnv should contain ONLY what the prelude explicitly exports,

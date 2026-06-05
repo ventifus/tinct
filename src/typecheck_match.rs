@@ -33,20 +33,23 @@ use super::{resolve_annotation, resolve_fn_metadata};
 /// - `Constructor { tag, binding }`: looks up `tag` in `state.tycon_env`.
 ///   - Builtin-type TyConDef (`def.builtin_type.is_some()`): rewrites to
 ///     `TypeAssert { resolved_type: TyCon(tag), inner: binding }` so match uses `value_matches_type`.
-///   - Nominal TyConDef (`!def.constructors.is_empty()`): qualifies `tag` via
-///     `env.resolve_constructor_tag` if unqualified, keeps `Pattern::Constructor`.
+///   - Nominal TyConDef (`!def.constructors.is_empty()`): if `tag` is unqualified (no `.`),
+///     emits T018 warning "unqualified constructor pattern tag — use qualified form" and still
+///     auto-qualifies for backwards compatibility. If already qualified, uses tag as-is.
 ///   - Not found / empty constructors: leaves pattern UNCHANGED (graceful fallback for T-1003).
 /// - `Dict { fields, .. }`: elaborates each field sub-pattern.
 /// - `Seq { head, tail }`: elaborates both sub-patterns.
 /// - `TypeAssert { inner, .. }`: already resolved — recurse into inner if present.
 /// - All other patterns (`Variable`, `Wildcard`, `Literal`, `Pin`, `TypeTag`): pass through.
 ///
-/// Each recursive call carries the span of the sub-pattern being elaborated; for
-/// `TypeAssertPending`, the annotation's own span is used as the error location.
+/// `span` is the source span of the outermost pattern being elaborated, used for diagnostics.
+/// For recursive sub-patterns, each Spanned wrapper carries its own span.
+/// For `TypeAssertPending`, the annotation's own span is used as the error location.
 pub(crate) fn elaborate_pattern(
     pat: &Pattern,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
+    span: &Span,
 ) -> Result<Pattern, Vec<TypeError>> {
     match pat {
         Pattern::TypeAssertPending { annotation, inner } => {
@@ -66,7 +69,12 @@ pub(crate) fn elaborate_pattern(
                 .as_ref()
                 .map(
                     |boxed_spanned| -> Result<Box<Spanned<Pattern>>, Vec<TypeError>> {
-                        let elaborated = elaborate_pattern(&boxed_spanned.node, env, state)?;
+                        let elaborated = elaborate_pattern(
+                            &boxed_spanned.node,
+                            env,
+                            state,
+                            &boxed_spanned.span,
+                        )?;
                         Ok(Box::new(Spanned::new(
                             elaborated,
                             boxed_spanned.span.clone(),
@@ -85,7 +93,8 @@ pub(crate) fn elaborate_pattern(
             let elaborated_branches = branches
                 .iter()
                 .map(|spanned_pat| {
-                    let elaborated = elaborate_pattern(&spanned_pat.node, env, state)?;
+                    let elaborated =
+                        elaborate_pattern(&spanned_pat.node, env, state, &spanned_pat.span)?;
                     Ok(Spanned::new(elaborated, spanned_pat.span.clone()))
                 })
                 .collect::<Result<Vec<_>, Vec<TypeError>>>()?;
@@ -97,12 +106,18 @@ pub(crate) fn elaborate_pattern(
             let elaborate_binding =
                 |binding: &Option<Box<Spanned<Pattern>>>,
                  env: &Rc<TypeEnv>,
-                 state: &mut InferState|
+                 state: &mut InferState,
+                 _span: &Span|
                  -> Result<Option<Box<Spanned<Pattern>>>, Vec<TypeError>> {
                     binding
                         .as_ref()
                         .map(|boxed_spanned| {
-                            let elaborated = elaborate_pattern(&boxed_spanned.node, env, state)?;
+                            let elaborated = elaborate_pattern(
+                                &boxed_spanned.node,
+                                env,
+                                state,
+                                &boxed_spanned.span,
+                            )?;
                             Ok(Box::new(Spanned::new(
                                 elaborated,
                                 boxed_spanned.span.clone(),
@@ -116,22 +131,36 @@ pub(crate) fn elaborate_pattern(
                 if def.builtin_type.is_some() {
                     // Case b: builtin-type TyConDef (e.g., Int:, Str:, Bool: used as patterns).
                     // Rewrite to TypeAssert so the pattern-matching logic can use value_matches_type.
-                    let elaborated_inner = elaborate_binding(binding, env, state)?;
+                    let elaborated_inner = elaborate_binding(binding, env, state, span)?;
                     return Ok(Pattern::TypeAssert {
                         resolved_type: Type::TyCon(tag.clone()),
                         inner: elaborated_inner,
                     });
                 }
                 if !def.constructors.is_empty() {
-                    // Case a: nominal user-defined type — keep as Constructor but qualify the tag
-                    // if it is unqualified (no '.') and the TypeEnv has a resolution for it.
+                    // Case a: nominal user-defined type.
+                    // If the tag is unqualified (no '.'), emit a T018 warning: bare constructor
+                    // pattern tags silently misbehave at runtime because the evaluator matches
+                    // against qualified runtime variant tags. Auto-qualify for backwards
+                    // compatibility, but warn the user to migrate to qualified form.
+                    // T-1085: future work will make this a hard error once corpus is migrated.
                     let qualified_tag = if !tag.contains('.') {
-                        env.resolve_constructor_tag(tag)
-                            .unwrap_or_else(|| tag.clone())
+                        let qualified = env
+                            .resolve_constructor_tag(tag)
+                            .unwrap_or_else(|| tag.clone());
+                        state.diagnostics.push(crate::error::TypeDiagnostic {
+                            message: format!(
+                                "unqualified constructor pattern tag '{tag}' — use qualified form '{qualified}'"
+                            ),
+                            span: span.clone(),
+                            code: super::typecheck_diag::T018_MATCH_PATTERN_MISMATCH,
+                            level: crate::error::DiagnosticLevel::Warn,
+                        });
+                        qualified
                     } else {
                         tag.clone()
                     };
-                    let elaborated_inner = elaborate_binding(binding, env, state)?;
+                    let elaborated_inner = elaborate_binding(binding, env, state, span)?;
                     return Ok(Pattern::Constructor {
                         tag: qualified_tag,
                         binding: elaborated_inner,
@@ -140,8 +169,11 @@ pub(crate) fn elaborate_pattern(
             }
             // Case c: not found in TyConEnv, or found with empty constructors and no
             // builtin_type — this is an open type or a non-nominal user type.
-            // Leave the pattern UNCHANGED; the evaluator handles it at runtime.
-            let elaborated_inner = elaborate_binding(binding, env, state)?;
+            // Leave the pattern UNCHANGED; note: at runtime, the evaluator will compare
+            // the unqualified tag against qualified runtime variant tags (e.g., "Ok" vs
+            // "Result.Ok"), which will NOT match. T018 warning helps users migrate to
+            // qualified forms — see T-1085/T-1109 for the roadmap to a hard error.
+            let elaborated_inner = elaborate_binding(binding, env, state, span)?;
             Ok(Pattern::Constructor {
                 tag: tag.clone(),
                 binding: elaborated_inner,
@@ -152,7 +184,8 @@ pub(crate) fn elaborate_pattern(
             let elaborated_fields = fields
                 .iter()
                 .map(|(key, spanned_pat)| {
-                    let elaborated = elaborate_pattern(&spanned_pat.node, env, state)?;
+                    let elaborated =
+                        elaborate_pattern(&spanned_pat.node, env, state, &spanned_pat.span)?;
                     Ok((
                         key.clone(),
                         Spanned::new(elaborated, spanned_pat.span.clone()),
@@ -166,8 +199,8 @@ pub(crate) fn elaborate_pattern(
         }
 
         Pattern::Seq { head, tail } => {
-            let elaborated_head = elaborate_pattern(&head.node, env, state)?;
-            let elaborated_tail = elaborate_pattern(&tail.node, env, state)?;
+            let elaborated_head = elaborate_pattern(&head.node, env, state, &head.span)?;
+            let elaborated_tail = elaborate_pattern(&tail.node, env, state, &tail.span)?;
             Ok(Pattern::Seq {
                 head: Box::new(Spanned::new(elaborated_head, head.span.clone())),
                 tail: Box::new(Spanned::new(elaborated_tail, tail.span.clone())),
@@ -183,7 +216,12 @@ pub(crate) fn elaborate_pattern(
                 .as_ref()
                 .map(
                     |boxed_spanned| -> Result<Box<Spanned<Pattern>>, Vec<TypeError>> {
-                        let elaborated = elaborate_pattern(&boxed_spanned.node, env, state)?;
+                        let elaborated = elaborate_pattern(
+                            &boxed_spanned.node,
+                            env,
+                            state,
+                            &boxed_spanned.span,
+                        )?;
                         Ok(Box::new(Spanned::new(
                             elaborated,
                             boxed_spanned.span.clone(),

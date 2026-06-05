@@ -15,6 +15,3 @@
 ]
 === out
 Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null), "result": String("green")})
-
-=== warn
-non-exhaustive match: missing coverage for Green at 10:11-13:25

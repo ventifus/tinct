@@ -1805,6 +1805,18 @@ pub(crate) fn resolve_type_name_with_guard(
 /// NominalVariant constructor even though it starts with an uppercase letter.
 /// Used in `resolve_type_dict` and VarRef handling to distinguish `Int`, `Float`, etc.
 /// from user-defined ADT constructor names like `Ok`, `None`, `Circle`.
+/// Also guards against treating builtin names as positional ADT type tags in the
+/// single-entry positional path of resolve_type_dict.
+///
+/// NOTE (T-1087): The original plan was to delete this function once resolve_type_dict was
+/// refactored to use TyConDef lookup first. `apply_builtin_constructor` (the other deletion
+/// target) has already been removed — its logic was absorbed into the TyConDef-first path
+/// at lines 2702–2724. However, `is_builtin_type_name` is still needed at two call sites
+/// (nominal constructor disambiguation in resolve_type_dict and VarRef handling) to prevent
+/// builtin type names from being parsed as ADT constructor names. Removing this guard requires
+/// replacing it with a dynamic check (e.g., `env.lookup_tycon_def(name).is_some()` for registered
+/// types, plus `resolve_type_name` fallback for unregistered builtins). That refactor is
+/// deferred to a future sprint as it requires careful coordination with `resolve_type_dict`.
 fn is_builtin_type_name(name: &str) -> bool {
     matches!(
         name,
@@ -2722,27 +2734,6 @@ pub(crate) fn resolve_type_expr(
                 }
             }
 
-            // Built-in type constructor application in implied-call position.
-            // Checked BEFORE parameterized alias lookup so builtin constructors have priority.
-            //
-            // FIXME(T-1021): This is a fallback path. Seq/Map/Handle are registered in tycon_env
-            // as of T-1018, so they should be caught by the TyConDef path above (lines 2687-2705).
-            // This fallback exists for two reasons:
-            // (1) resolve_type_dict still uses apply_builtin_constructor directly (no TyConDef check).
-            // (2) Conservative defense against tycon_env registration failure.
-            // This can be deleted once resolve_type_dict is refactored to use TyConDef lookup first.
-            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if let Some(kind) = state.kind_env.get(name.as_str()).cloned() {
-                    if kind.arity() > 0 && is_builtin_type_name(name) {
-                        let resolved_args: Result<Vec<Type>, _> = args
-                            .iter()
-                            .map(|a| resolve_type_expr(a, env, state, ann_mapping, row_ann_mapping))
-                            .collect();
-                        return apply_builtin_constructor(name, resolved_args?, &node.span);
-                    }
-                }
-            }
-
             // Check if this is a parameterized type alias application: [AliasName Arg1 Arg2]
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 if let Some(alias) = env.get_type_alias(name) {
@@ -2889,44 +2880,6 @@ pub(crate) fn resolve_type_expr(
     }
 }
 
-/// Construct the `Type::*` for a known builtin type constructor from its type arguments.
-fn apply_builtin_constructor(name: &str, args: Vec<Type>, span: &Span) -> Result<Type, TypeError> {
-    match name {
-        "Seq" => {
-            if args.len() != 1 {
-                return Err(TypeError::new(
-                    format!("Seq requires 1 type argument, got {}", args.len()),
-                    span.clone(),
-                ));
-            }
-            Ok(Type::seq(args.into_iter().next().unwrap()))
-        }
-        "Map" => {
-            if args.len() != 2 {
-                return Err(TypeError::new(
-                    format!(
-                        "Map requires 2 type arguments: [Map KeyType ValueType], got {}. \
-                         Use Any for an unconstrained key type: [Map Any ValueType]",
-                        args.len()
-                    ),
-                    span.clone(),
-                ));
-            }
-            let mut it = args.into_iter();
-            Ok(Type::map(it.next().unwrap(), it.next().unwrap()))
-        }
-        "Handle" => match args.len() {
-            1 => Ok(Type::handle(args.into_iter().next().unwrap())),
-            0 => Ok(Type::handle(Type::Unknown)), // bare [Handle] → gradual
-            _ => Err(TypeError::new(
-                format!("Handle requires 0 or 1 type argument, got {}", args.len()),
-                span.clone(),
-            )),
-        },
-        _ => unreachable!("apply_builtin_constructor called with non-builtin: {name}"),
-    }
-}
-
 pub(crate) fn resolve_type_dict(
     entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
@@ -2998,9 +2951,10 @@ pub(crate) fn resolve_type_dict(
     }
 
     // General type constructor application via kind_env — the permanent dispatch path for
-    // builtin constructors (Seq, Map, Handle — pre-registered in InferState::new) and for
     // user-defined Operator-kinded class params (e.g., `m` in `[class [m@Operator] ...]`).
-    // Must run BEFORE the parameterized alias lookup so builtin constructors take priority.
+    // Seq/Map/Handle are registered in TyConDef (T-1018) and caught by the TyConDef path above;
+    // they never reach this code path. Must run BEFORE the parameterized alias lookup so
+    // Operator-kinded class params take priority over parameterized type aliases.
     if !entries.is_empty() {
         if let Some(first) = entries.first() {
             if first.node.key.is_none() {
@@ -3021,37 +2975,34 @@ pub(crate) fn resolve_type_dict(
                                 .collect();
                             let args = args?;
 
-                            if is_builtin_type_name(name) {
-                                // Builtin: each constructor has its own arity rule.
-                                return apply_builtin_constructor(name, args, &span);
-                            } else {
-                                // User-defined: always Kind::Operator (arity 1).
-                                // Rank-1 restriction: argument cannot itself be a type constructor.
-                                if args.len() != 1 {
-                                    return Err(TypeError::new(
-                                        format!(
-                                            "type constructor `{name}` requires 1 type argument, got {}",
-                                            args.len()
-                                        ),
-                                        span,
-                                    ));
-                                }
-                                let a_type = args.into_iter().next().unwrap();
-                                if let Type::Operator(op_name) = &a_type {
-                                    return Err(TypeError::new(
-                                        format!(
-                                            "kind mismatch: type constructor `{name}` cannot be \
-                                             applied to another type constructor `{op_name}`; \
-                                             use a concrete type instead"
-                                        ),
-                                        span,
-                                    ));
-                                }
-                                return Ok(Type::App(
-                                    Box::new(Type::Operator(name.clone())),
-                                    Box::new(a_type),
+                            // User-defined: always Kind::Operator (arity 1).
+                            // Rank-1 restriction: argument cannot itself be a type constructor.
+                            // Note: Seq/Map/Handle are caught by the TyConDef path above and
+                            // never reach here (T-1021/T-1018).
+                            if args.len() != 1 {
+                                return Err(TypeError::new(
+                                    format!(
+                                        "type constructor `{name}` requires 1 type argument, got {}",
+                                        args.len()
+                                    ),
+                                    span,
                                 ));
                             }
+                            let a_type = args.into_iter().next().unwrap();
+                            if let Type::Operator(op_name) = &a_type {
+                                return Err(TypeError::new(
+                                    format!(
+                                        "kind mismatch: type constructor `{name}` cannot be \
+                                         applied to another type constructor `{op_name}`; \
+                                         use a concrete type instead"
+                                    ),
+                                    span,
+                                ));
+                            }
+                            return Ok(Type::App(
+                                Box::new(Type::Operator(name.clone())),
+                                Box::new(a_type),
+                            ));
                         }
                     }
                 }

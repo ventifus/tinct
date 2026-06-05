@@ -86,7 +86,7 @@ The `Row` tail field carries `RowTail::Empty` (closed record, current default) o
 
 ## TyCon Registry
 
-**`TyConDef`** is the unified type declaration store. All named types — builtins, structural aliases, and nominal ADTs — are registered in `tycon_defs: HashMap<String, TyConDef>` (current implementation). The eventual design uses `Arc<TyConDef>` for pointer-identity-based cross-scope rejection (B-343); the current plain `TyConDef` value uses name equality only. The old `TypeAlias` struct and `type_aliases` map are eliminated.
+**`TyConDef`** is the unified type constructor store. All named type constructors — builtins, structural aliases, and nominal ADTs — are registered in `tycon_defs: HashMap<String, Arc<TyConDef>>` (B-343 implemented in S-856) alongside the existing `TypeAlias` map. `TypeAlias` continues to hold param/body/constraints for alias expansion; `TyConDef` adds variance and constructor metadata for subtyping and coverage.
 
 ```rust
 pub struct TyConDef {
@@ -110,7 +110,7 @@ pub struct TyConDef {
 pub enum Variance { Covariant, Contravariant, Invariant, Phantom }
 ```
 
-`TypeEnv` carries `tycon_defs: HashMap<String, TyConDef>` with `insert_tycon_def(name, TyConDef)` and `lookup_tycon_def(name)` methods (parent-chain walk). When the type checker processes `Color: [type Red Green Blue]`, it stores one `TyConDef` entry — no separate TypeAlias.
+`TypeEnv` carries `tycon_defs: HashMap<String, Arc<TyConDef>>` with `insert_tycon_def(name, Arc<TyConDef>)` and `lookup_tycon_def(name)` methods (parent-chain walk). When the type checker processes `Color: [type Red Green Blue]`, it stores both a `TypeAlias` entry (for alias expansion) and a `TyConDef` entry (for variance and constructor metadata).
 
 **Two population sites:**
 
@@ -118,9 +118,9 @@ pub enum Variance { Covariant, Contravariant, Invariant, Phantom }
 
 2. **`InferState::new()` in `src/type_infer.rs`** — seeds builtin TyCons in `tycon_env` at inference-state creation time, before any user code is processed. Currently seeds: `Seq` (1 param, Covariant), `Map` (2 params, [Invariant, Covariant]), `Handle` (1 param, Covariant). All three have `builtin_type: Some(name)` set. This enables `is_subtype` to apply variance-directed subtyping for builtin parameterized types.
 
-**`InferState` flat accumulator.** `InferState` carries `pub tycon_env: HashMap<String, TyConDef>` as a flat snapshot populated incrementally as each TyCon declaration is processed. This is transferred to `EvalContext` at all infer-state transfer sites via `ctx.set_tycon_env(infer_state.tycon_env)`. `EvalContext.tycon_env` is a `OnceLock<Arc<TyConEnv>>` — populated exactly once, never mutated afterward.
+**`InferState` flat accumulator.** `InferState` carries `pub tycon_env: HashMap<String, Arc<TyConDef>>` as a flat snapshot populated incrementally as each TyCon declaration is processed. This is transferred to `EvalContext` at all infer-state transfer sites via `ctx.set_tycon_env(infer_state.tycon_env)`. `EvalContext.tycon_env` is a `OnceLock<Arc<TyConEnv>>` — populated exactly once, never mutated afterward.
 
-**Type identity.** UNIFY-TYCON currently unifies `TyCon(n1)` and `TyCon(n2)` iff `n1 == n2` (name equality). The intended identity model — two `Color` types in different scope frames have the same name but different `TyConDef` instances and should NOT unify — requires `Arc<TyConDef>` pointer equality across the scoped TypeEnv chain. This is tracked as B-343 and deferred. Until B-343 lands, name equality is the operative identity check; cross-scope shadowing of TyCon names is not yet rejected.
+**Type identity.** UNIFY-TYCON currently unifies `TyCon(n1)` and `TyCon(n2)` iff `n1 == n2` (name equality). `TyConEnv` uses `Arc<TyConDef>` (migrated in B-343, S-856) so that pointer-identity-based cross-scope rejection is structurally possible. However, because UNIFY-TYCON is only reached when `n1 == n2`, both lookups hit the same HashMap slot and return the same Arc — `Arc::ptr_eq` is scaffolding for the future `TypeEnv`-threaded TyCon lookup, tracked as T-1112. Until then, name equality is the operative identity check.
 
 **Kind registration.** TyCon kind is derived from `TyConDef.variance.len()`:
 
@@ -137,7 +137,7 @@ pub enum Variance { Covariant, Contravariant, Invariant, Phantom }
 - `Some(params)` — inside a type alias body. Only names in `params` become TypeVars; all other lowercase names are scope references. If a name is not in params and not found in scope, it is a type error.
 - `None` — outside a type alias body (function annotations, constraints, etc.). Existing behavior: lowercase names become TypeVars.
 
-The builtin string-match dispatch (`apply_builtin_constructor`, `is_builtin_type_name`, and the `"Seq"`, `"Map"`, `"Handle"` arms) is replaced by a single general lookup path: look up the name in `TyConEnv`, retrieve arity, collect arguments, produce `App(TyCon(name), args...)` or expand the alias body.
+`apply_builtin_constructor` has been deleted; `is_builtin_type_name` remains at two call sites pending T-1113. The general lookup path — look up the name in `TyConEnv`, retrieve arity, collect arguments, produce `App(TyCon(name), args...)` or expand the alias body — is implemented.
 
 **`{_ : V}` recognition (implemented in S-843).** When parsing a type dict expression in `resolve_type_dict` (`src/typecheck_annot.rs`), the `_` key (optionally annotated `_@K`) is recognized as a uniform tail rather than a named field. The recognizer is a single pass: accumulate named fields; when a key is `_` (plain) or an annotated `_@K` form, set `RowTail::Uniform { key: None, value: V }` or `RowTail::Uniform { key: Some(K), value: V }` respectively. At most one `_` per row type — a duplicate raises "duplicate uniform-field sentinel `_` in row type annotation".
 
@@ -161,14 +161,14 @@ If `annotation_to_variance` returns `None` AND the name is a registered class, t
 
 ## Unification: UNIFY-TYCON and UNIFY-UNIFORM
 
-**UNIFY-TYCON:** `TyCon(n1)` and `TyCon(n2)` unify iff `n1 == n2`. Currently name-equality only; pointer-identity comparison (via `Arc<TyConDef>`) is deferred to B-343. No binding is produced — UNIFY-TYCON is a pure equality check with no substitution side-effects.
+**UNIFY-TYCON:** `TyCon(n1)` and `TyCon(n2)` unify iff `n1 == n2`. Name-equality is the operative check; `Arc::ptr_eq` is also called as scaffolding (B-343 implemented in S-856), but is currently always true since both lookups hit the same HashMap slot when `n1 == n2`. Pointer-identity-based cross-scope rejection becomes meaningful after the T-1112 migration to `Type::TyCon(Arc<TyConDef>)`. No binding is produced — UNIFY-TYCON is a pure equality check with no substitution side-effects.
 
 **UNIFY-APP:** Decomposes `App(f1, a1)` and `App(f2, a2)` by first unifying constructors (`f1 ~ f2`, which dispatches to UNIFY-TYCON for `TyCon` heads), then unifying arguments (`a1 ~ a2`).
 
 **UNIFY-UNIFORM:** Two row tail cases are handled:
 
 - `unify(Uniform{K1?, V1}, Uniform{K2?, V2})` → `unify(V1, V2)` (and `unify(K1, K2)` if both keyed). **Implemented.**
-- `unify(Empty, Uniform{K?, V})` or symmetric: currently produces a "closed row does not satisfy uniform column constraint" type error. The specified branching — apply substitution to `V` first, then either (a) if `V'` is an unbound TypeVar, unify with the join of named field types `T1 | T2 | ... | Tn`, or (b) if `V'` is concrete, check `is_subtype(Ti, V')` for each named field — is **deferred to T-1024**. The error is conservative (never unsound; produces false negatives only).
+- `unify(Empty, Uniform{K?, V})` or symmetric: **implemented (T-1024, S-856)**. Apply substitution to `V` to get `V'`, then collect named field types from both rows; (a) if `V'` is an unbound TypeVar α, unify α with the join (`T1 | T2 | ... | Tn`) of all named fields from both rows; (b) if `V'` is concrete, check `is_subtype(Ti, V')` for each named field from both rows; (c) if `V'` has inference vars but is not a bare TypeVar, defer. If neither row has named fields the case succeeds immediately (any Uniform is compatible with no named fields).
 
 ## Subtyping: Variance-Directed App
 
@@ -178,14 +178,14 @@ If `annotation_to_variance` returns `None` AND the name is a registered class, t
 - `Some(&state.tycon_env)`: all type-checker call sites.
 - `Some` from `EvalContext.tycon_env`: runtime call sites.
 
-**Variance-directed subtyping for `App(TyCon(f), a)` — infrastructure complete, B-343 pending:**
+**Variance-directed subtyping for `App(TyCon(f), a)` — implemented:**
 
 - `@Covariant`: `App(f, a) <: App(f, b)` when `a <: b`
 - `@Contravariant`: `App(f, a) <: App(f, b)` when `b <: a`
 - Invariant (default): only when `a = b`
 - `@Phantom`: always
 
-The variance lookup uses `TyCon` name string to find `TyConDef.variance[i]` in `tycon_env`. For user-declared types, `tycon_env` is populated by `register_type_aliases`; for builtins, by `InferState::new()`. Cross-scope TyCon identity (two `Color` types in different scope frames should not unify even with identical names) requires `Arc<TyConDef>` pointer equality — tracked as B-343. Until B-343 lands, name-equality is used and cross-scope rejection is not enforced.
+The variance lookup uses `TyCon` name string to find `TyConDef.variance[i]` in `tycon_env`. For user-declared types, `tycon_env` is populated by `register_type_aliases`; for builtins, by `InferState::new()`. `TyConEnv` uses `Arc<TyConDef>` (B-343 implemented in S-856), so cross-scope TyCon identity via `Arc::ptr_eq` is structurally in place. Cross-scope rejection becomes operative after the T-1112 migration to `Type::TyCon(Arc<TyConDef>)` — until then, name-equality is the operative identity check.
 
 ## Scoped ClassEnv and InstanceEnv
 
@@ -1074,7 +1074,7 @@ Mutually recursive entries constrain each other through unification during Pass 
 |-----------|--------------|
 | `Type::TypeVar` | `TypeVar(String, u32)` — manual `PartialEq` (name only, level ignored for equality) |
 | `TypeEnv.bindings` | `HashMap<String, TypeScheme>` |
-| `TypeEnv.tycon_defs` | `HashMap<String, TyConDef>` — unified type declaration store; replaces old `type_aliases`. (Future: `Arc<TyConDef>` for pointer-identity after B-343.) |
+| `TypeEnv.tycon_defs` | `HashMap<String, Arc<TyConDef>>` — unified type declaration store; replaces old `type_aliases`. `Arc` wrapping enables pointer-identity checks in UNIFY-TYCON (B-343, implemented in S-856). |
 | `TypeEnv::get()` | Returns `&TypeScheme` |
 | `TypeEnv::insert_scheme()` | `fn(name, TypeScheme)` |
 | `infer_expr` VAR case | `instantiate_scheme(env.get(name)?, ...)` |

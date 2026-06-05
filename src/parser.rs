@@ -4928,6 +4928,12 @@ fn surface_node_to_pattern_with_guard(
                 // (SurfaceExpression::Annotated with lowercase name → TypeAssertPending; uppercase →
                 // Constructor with guard). The type checker's elaboration pass qualifies the tag for
                 // nominal ADT matching via typecheck_match.rs::elaborate_pattern.
+                //
+                // T-1085: This bare uppercase annotated path produces Pattern::Constructor with an
+                // unqualified tag. The type checker (elaborate_pattern in typecheck_match.rs) will
+                // auto-qualify the tag and emit a T018 warning directing the user to use the qualified
+                // dot-access form (e.g., `Color.Red@[is: pred]:` instead of `Red@[is: pred]:`).
+                // Future work: make this a hard parser error once all corpus patterns are migrated.
                 Pattern::Constructor {
                     tag: name.clone(),
                     binding: None,

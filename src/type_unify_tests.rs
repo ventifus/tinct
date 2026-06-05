@@ -1341,25 +1341,54 @@ fn test_unify_tycon_vs_empty_name_err() {
 }
 
 /// T-1020j: UNIFY-UNIFORM — two Uniform tails with the same value type should not error
-/// when unified in isolated row unification (same concrete V, Empty vs Uniform step).
+/// when unified and all named fields conform to the Uniform value type (T-1007/T-1024).
 ///
-/// Note: The current implementation at UNIFY-UNIFORM step 2/3 is stubbed with a TODO(T-1024)
-/// that always returns an error for Empty vs Uniform pairs. This test documents the EXPECTED
-/// future behavior (both Uniform same value type → compatible) but currently verifies that
-/// two identical Uniform-tailed rows do NOT fail when unified against each other (Uniform
-/// vs Uniform with identical value type).
+/// After T-1024 implementation: the Uniform constraint applies to ALL entries (named and
+/// unnamed). `{x: Int, _: Int}` unified with itself should succeed (Int <: Int).
+/// But `{x: Int, _: Str}` is a contradiction (Int does not conform to Str) and should fail.
 #[test]
 fn test_unify_uniform_same_value_type_records_ok() {
     let mut state = InferState::new();
     let mut subst = Substitution::new();
     let span = Span::origin();
 
-    // Two open records with the same uniform value type and same named fields.
-    // {x: Int, _ : Str} ~ {x: Int, _ : Str}
+    // Consistent: named field type matches Uniform value type.
+    // {x: Int, _ : Int} ~ {x: Int, _ : Int} — should unify successfully.
     let mut fields = HashMap::new();
     fields.insert("x".to_string(), Type::Int);
     let row = crate::type_def::Row {
         fields: fields.clone(),
+        tail: crate::type_def::RowTail::Uniform {
+            key: None,
+            value: Box::new(Type::Int),
+        },
+    };
+    let rec1 = Type::Record(row.clone());
+    let rec2 = Type::Record(row);
+
+    let result = unify(&rec1, &rec2, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_ok(),
+        "Identical Uniform-tailed records with consistent named fields should unify: {:?}",
+        result.unwrap_err()
+    );
+}
+
+/// T-1020j2: UNIFY-UNIFORM — named field type must conform to Uniform value type (T-1007 step 3).
+/// `{x: Int, _: Str}` is a contradiction: x is Int but the Uniform constraint requires Str.
+#[test]
+fn test_unify_uniform_inconsistent_named_field_type_errors() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // Inconsistent: named field type does NOT match Uniform value type.
+    // {x: Int, _ : Str} ~ {x: Int, _ : Str} — should fail (Int does not conform to Str).
+    let mut fields = HashMap::new();
+    fields.insert("x".to_string(), Type::Int);
+    let row = crate::type_def::Row {
+        fields,
         tail: crate::type_def::RowTail::Uniform {
             key: None,
             value: Box::new(Type::Str),
@@ -1371,9 +1400,13 @@ fn test_unify_uniform_same_value_type_records_ok() {
     let result = unify(&rec1, &rec2, &mut subst, &mut state, span);
 
     assert!(
-        result.is_ok(),
-        "Identical Uniform-tailed records should unify: {:?}",
-        result.unwrap_err()
+        result.is_err(),
+        "Uniform-tailed record with non-conforming named field should fail unification"
+    );
+    let err_msg = result.unwrap_err().message;
+    assert!(
+        err_msg.contains("does not conform to Uniform constraint"),
+        "Expected Uniform constraint violation, got: {err_msg}"
     );
 }
 

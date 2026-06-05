@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::sync::Arc;
 
 use crate::ast::Span;
 
@@ -145,8 +146,13 @@ impl TyConDef {
     }
 }
 
-/// Type constructor environment mapping type constructor names to their definitions
-pub type TyConEnv = HashMap<String, TyConDef>;
+/// Type constructor environment mapping type constructor names to their definitions.
+///
+/// Values are `Arc<TyConDef>` so that distinct scope insertions of the same name produce
+/// distinct Arcs. `Arc::ptr_eq` in UNIFY-TYCON can then detect shadowing: if two TyCon("Foo")
+/// types came from different `[type Foo ...]` declarations in different scopes, their Arcs
+/// will differ even though the name string is equal. (B-343)
+pub type TyConEnv = HashMap<String, Arc<TyConDef>>;
 
 #[derive(Debug, Clone)]
 pub enum Type {

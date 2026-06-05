@@ -4,14 +4,14 @@
 [let pairs [each-kv d]]
 [length [from-entries [collect pairs]]]
 === error
-[E010] collect: expected Seq, got Dict (defined at stdlib/prelude.llt:2531:32-2531:34) (called at stdlib/prelude.llt:2531:15-2531:35)
-  --> stdlib/prelude.llt:2531:32-2531:34
+[E010] collect: expected Seq, got Dict (defined at stdlib/prelude.llt:2532:32-2532:34) (called at stdlib/prelude.llt:2532:15-2532:35)
+  --> stdlib/prelude.llt:2532:32-2532:34
    |
-  2531 | """] [let xs] [builtin-collect xs]]
+  2532 | """] [let xs] [builtin-collect xs]]
        |                                ^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2531:15-2531:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2532:15-2532:35
    |
-  2531 | """] [let xs] [builtin-collect xs]]
+  2532 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in materialized at stdlib/prelude.llt:1009:18-1009:36
    |

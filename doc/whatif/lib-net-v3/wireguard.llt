@@ -119,21 +119,227 @@
   #   6. Frame Response with wg-frame-response (sender-index, receiver-index, mac1, mac2).
   #   7. Write the framed Response back to h.
   #   8. Derive data-plane tx-key/rx-key from the Noise session.
+  # WireGuard handshake responder per WireGuard §5.
+  # Message 1 (Initiation, 148 bytes):
+  #   type(4)=1  sender-index(4)  unencrypted-ephemeral(32)
+  #   encrypted-static(32+16)  encrypted-timestamp(12+16)  mac1(16)  mac2(16)
+  # Message 2 (Response, 92 bytes):
+  #   type(4)=2  sender-index(4)  receiver-index(4)  unencrypted-ephemeral(32)
+  #   encrypted-nothing(0+16)  mac1(16)  mac2(16)
+  # After handshake: data messages use ChaCha20-Poly1305 with tx-nonce counter.
+  # Algorithm uses the Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s pattern:
+  #   Init state: h = hash("WireGuard v1 zx2c4 Jason@zx2c4.com") + 32-byte construction hash
+  #   Parse msg1: validate mac1, run IKpsk2 initiator receive, validate timestamp
+  #   Send msg2: run IKpsk2 responder send
+  #   Derive tx-key/rx-key from noise-split
   wireguard-accept: [fn@[bind: [h]  return: [WireguardConnection h]  constraint: [h: ByteStream]]
                       [let cfg@WireguardConfig h@h]
-    [error "TODO: wireguard-accept — WireGuard Initiation framing differs from Noise framing; cannot delegate to noise-accept. See comment above for full step sequence."]]
+    # WireGuard §5.4.2: Noise_IKpsk2 responder with WireGuard-specific framing.
+    # Protocol name hash: blake2s("Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s") truncated/padded to 32 bytes.
+    # Construction identifier: blake2s("Noise Protocol Name") — WireGuard uses blake2s throughout.
+    [wg-construction: [blake2s [str-bytes "Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s"]]]
+    # h = blake2s(construction || identifier) per WireGuard §5 (initial chaining key)
+    [wg-identifier: [blake2s [str-bytes "WireGuard v1 zx2c4 Jason@zx2c4.com"]]]
+    [ck: [blake2s [concat wg-construction wg-identifier]]]
+    [h:  [blake2s [concat ck [str-bytes "WireGuard v1 zx2c4 Jason@zx2c4.com"]]]]
+    # Mix responder public key into h
+    [h: [blake2s [concat h cfg.public-key]]]
+    # Read Initiation message (148 bytes): type(4) sender-index(4) e(32) encrypted-s(48) encrypted-timestamp(28) mac1(16) mac2(16)
+    [msg1: [read-bytes h 148]]
+    [msg1-type:     [uint32 BigEndian [slice msg1 0 4]]]
+    [if [not [= msg1-type 1]] [error "WireGuard: expected Initiation message (type 1)"] null]
+    [sender-idx:    [uint32 BigEndian [slice msg1 4 8]]]
+    [re-pub:        [slice msg1 8 40]]           # unencrypted-ephemeral (32 bytes)
+    [enc-static:    [slice msg1 40 88]]          # encrypted-static (32 + 16 AEAD tag)
+    [enc-timestamp: [slice msg1 88 116]]         # encrypted-timestamp (12 + 16 AEAD tag)
+    # mac1/mac2: last 32 bytes (16 each) — validate mac1
+    [mac1-key: [blake2s [concat [str-bytes wg-label-mac1] cfg.public-key]]]
+    [expected-mac1: [wg-mac mac1-key [slice msg1 0 116]]]
+    [if [not [= expected-mac1 [slice msg1 116 132]]] [error "WireGuard: invalid mac1"] null]
+    # IKpsk2 responder state machine
+    # Step 1: mix initiator ephemeral into ck, h
+    [ck-h1:  [hkdf-extract [Blake2s] ck re-pub]]
+    [both1:  [hkdf-expand  [Blake2s] ck-h1 [] 64]]
+    [ck:     [slice both1 0  32]]
+    [k-temp: [slice both1 32 64]]
+    [h: [blake2s [concat h re-pub]]]
+    # Step 2: DH(responder-static, initiator-ephemeral) → mix into ck
+    [dh-s-re: [x25519-dh cfg.private-key re-pub]]
+    [ck-h2:  [hkdf-extract [Blake2s] ck dh-s-re]]
+    [both2:  [hkdf-expand  [Blake2s] ck-h2 [] 64]]
+    [ck:     [slice both2 0  32]]
+    [k-es:   [slice both2 32 64]]
+    # Step 3: decrypt initiator static key
+    [nonce0: [concat [0 0 0 0] [bytes LittleEndian [@UInt64 0]]]]
+    [rs-plain: [match [chacha20-poly1305-open k-es nonce0 enc-static h]
+      [Result.Ok p]:    p
+      [Result.Error _]: [error "WireGuard: failed to decrypt initiator static key"]]]
+    [h: [blake2s [concat h enc-static]]]
+    [rs: rs-plain]   # initiator's static public key (32 bytes)
+    # Step 4: DH(responder-static, initiator-static) → mix into ck
+    [dh-s-rs: [x25519-dh cfg.private-key rs]]
+    [ck-h3:  [hkdf-extract [Blake2s] ck dh-s-rs]]
+    [both3:  [hkdf-expand  [Blake2s] ck-h3 [] 64]]
+    [ck:     [slice both3 0  32]]
+    [k-ss:   [slice both3 32 64]]
+    # Step 5: PSK injection (IKpsk2) — mix preshared-key into ck and k
+    [ck-h4:  [hkdf-extract [Blake2s] ck cfg.preshared-key]]
+    [all4:   [hkdf-expand  [Blake2s] ck-h4 [] 96]]
+    [ck:     [slice all4 0  32]]
+    [psk-h:  [slice all4 32 64]]
+    [k-psk:  [slice all4 64 96]]
+    [h: [blake2s [concat h psk-h]]]
+    # Step 6: decrypt timestamp (validates message freshness)
+    [nonce1: [concat [0 0 0 0] [bytes LittleEndian [@UInt64 1]]]]
+    [_: [match [chacha20-poly1305-open k-psk nonce1 enc-timestamp h]
+      [Result.Ok _]:    null
+      [Result.Error _]: [error "WireGuard: failed to decrypt timestamp"]]]
+    [h: [blake2s [concat h enc-timestamp]]]
+    # Build Response message (92 bytes): type(4)=2 sender-index(4) receiver-index(4) e(32) encrypted-nothing(16) mac1(16) mac2(16)
+    [my-sender-idx: [uint32 BigEndian [crypto-random 4]]]
+    [eph-resp: [x25519-keypair]]
+    # Mix responder ephemeral into ck, h
+    [h: [blake2s [concat h eph-resp.public]]]
+    [ck-h5: [hkdf-extract [Blake2s] ck eph-resp.public]]
+    [both5: [hkdf-expand  [Blake2s] ck-h5 [] 64]]
+    [ck:    [slice both5 0  32]]
+    # DH(responder-ephemeral, initiator-ephemeral) = ee
+    [dh-re-ie: [x25519-dh eph-resp.private re-pub]]
+    [ck-h6: [hkdf-extract [Blake2s] ck dh-re-ie]]
+    [both6: [hkdf-expand  [Blake2s] ck-h6 [] 64]]
+    [ck:    [slice both6 0  32]]
+    # DH(responder-ephemeral, initiator-static) = se
+    [dh-re-is: [x25519-dh eph-resp.private rs]]
+    [ck-h7: [hkdf-extract [Blake2s] ck dh-re-is]]
+    [both7: [hkdf-expand  [Blake2s] ck-h7 [] 64]]
+    [ck:    [slice both7 0  32]]
+    [k-resp: [slice both7 32 64]]
+    # Encrypt empty payload for Response "encrypted-nothing" field (16-byte AEAD tag)
+    [nonce2: [concat [0 0 0 0] [bytes LittleEndian [@UInt64 0]]]]
+    [enc-nothing: [chacha20-poly1305-seal k-resp nonce2 [] h]]
+    [h: [blake2s [concat h enc-nothing]]]
+    # Build message 2 body (before mac1/mac2)
+    [msg2-body: [concat
+      [bytes BigEndian [@UInt32 2]]
+      [bytes BigEndian [@UInt32 my-sender-idx]]
+      [bytes BigEndian [@UInt32 sender-idx]]
+      eph-resp.public
+      enc-nothing]]
+    # mac1 over msg2-body, keyed with hash("mac1----" || initiator-static)
+    [mac1-key2: [blake2s [concat [str-bytes wg-label-mac1] rs]]]
+    [mac1-resp: [wg-mac mac1-key2 msg2-body]]
+    [msg2: [concat msg2-body mac1-resp [bytes-zero 16]]]
+    [write-bytes h msg2]
+    # Derive data-plane session keys from final ck via HKDF
+    [all-final: [hkdf-expand [Blake2s] ck [] 64]]
+    [rx-key: [slice all-final 0  32]]   # initiator-to-responder (we receive)
+    [tx-key: [slice all-final 32 64]]   # responder-to-initiator (we send)
+    [tx-nonce-ch: [init-nonce-ch]]
+    [WireguardConnection underlying: h  tx-key: tx-key  rx-key: rx-key  tx-nonce: tx-nonce-ch]]
 
   # wireguard — initiator side (client).
   # Same constraint as wireguard-accept: cannot delegate to noise-layer directly.
   # Full implementation: read server's WireGuard-framed Response, strip framing,
   # run Noise_IKpsk2 initiator state machine, derive data-plane keys.
+  # WireGuard handshake initiator (mirror of wireguard-accept).
+  # Sends Initiation message (148 bytes), receives Response message (92 bytes).
+  # Same IKpsk2 Noise pattern but in initiator role; uses wg-frame-initiation helper.
   wireguard: [fn@[bind: [h]  return: [WireguardConnection h]  constraint: [h: ByteStream]]
                      [let cfg@WireguardConfig h@h]
-    [error "TODO: wireguard — WireGuard Response framing differs from Noise framing; cannot delegate to noise-layer. See wireguard-accept comment for step sequence (mirrored for initiator)."]]
+    # WireGuard §5.4.2: Noise_IKpsk2 initiator with WireGuard-specific framing.
+    # Initialize state identically to wireguard-accept but in initiator role.
+    [wg-construction: [blake2s [str-bytes "Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s"]]]
+    [wg-identifier: [blake2s [str-bytes "WireGuard v1 zx2c4 Jason@zx2c4.com"]]]
+    [ck: [blake2s [concat wg-construction wg-identifier]]]
+    [h:  [blake2s [concat ck [str-bytes "WireGuard v1 zx2c4 Jason@zx2c4.com"]]]]
+    # Mix responder (peer) public key into h
+    [h: [blake2s [concat h cfg.peer-key]]]
+    # Generate ephemeral key pair and sender index
+    [eph: [x25519-keypair]]
+    [sender-index: [uint32 BigEndian [crypto-random 4]]]
+    # Mix initiator ephemeral into ck, h
+    [h: [blake2s [concat h eph.public]]]
+    [ck-h1: [hkdf-extract [Blake2s] ck eph.public]]
+    [both1: [hkdf-expand  [Blake2s] ck-h1 [] 64]]
+    [ck:    [slice both1 0  32]]
+    # DH(initiator-ephemeral, responder-static) = es
+    [dh-ie-rs: [x25519-dh eph.private cfg.peer-key]]
+    [ck-h2: [hkdf-extract [Blake2s] ck dh-ie-rs]]
+    [both2: [hkdf-expand  [Blake2s] ck-h2 [] 64]]
+    [ck:    [slice both2 0  32]]
+    [k-es:  [slice both2 32 64]]
+    # Encrypt initiator static key
+    [nonce0: [concat [0 0 0 0] [bytes LittleEndian [@UInt64 0]]]]
+    [enc-static: [chacha20-poly1305-seal k-es nonce0 cfg.public-key h]]
+    [h: [blake2s [concat h enc-static]]]
+    # DH(initiator-static, responder-static) = ss
+    [dh-is-rs: [x25519-dh cfg.private-key cfg.peer-key]]
+    [ck-h3: [hkdf-extract [Blake2s] ck dh-is-rs]]
+    [both3: [hkdf-expand  [Blake2s] ck-h3 [] 64]]
+    [ck:    [slice both3 0  32]]
+    [k-ss:  [slice both3 32 64]]
+    # PSK injection (IKpsk2)
+    [ck-h4: [hkdf-extract [Blake2s] ck cfg.preshared-key]]
+    [all4:  [hkdf-expand  [Blake2s] ck-h4 [] 96]]
+    [ck:    [slice all4 0  32]]
+    [psk-h: [slice all4 32 64]]
+    [k-psk: [slice all4 64 96]]
+    [h: [blake2s [concat h psk-h]]]
+    # Encrypt timestamp (TAI64N, 12 bytes)
+    [ts: [wg-timestamp]]
+    [nonce1: [concat [0 0 0 0] [bytes LittleEndian [@UInt64 1]]]]
+    [enc-timestamp: [chacha20-poly1305-seal k-psk nonce1 ts h]]
+    [h: [blake2s [concat h enc-timestamp]]]
+    # Build Initiation message body (116 bytes before mac1/mac2)
+    [msg1-body: [concat
+      [bytes BigEndian [@UInt32 1]]
+      [bytes BigEndian [@UInt32 sender-index]]
+      eph.public
+      enc-static
+      enc-timestamp]]
+    # mac1 over msg1-body (116 bytes), keyed with hash("mac1----" || responder-static)
+    [mac1-key: [blake2s [concat [str-bytes wg-label-mac1] cfg.peer-key]]]
+    [mac1: [wg-mac mac1-key msg1-body]]
+    [msg1: [concat msg1-body mac1 [bytes-zero 16]]]
+    [write-bytes h msg1]
+    # Read Response message (92 bytes): type(4)=2 sender-index(4) receiver-index(4) e(32) enc-nothing(16) mac1(16) mac2(16)
+    [resp: [read-bytes h 92]]
+    [resp-type: [uint32 BigEndian [slice resp 0 4]]]
+    [if [not [= resp-type 2]] [error "WireGuard: expected Response message (type 2)"] null]
+    [re-pub: [slice resp 12 44]]   # unencrypted-ephemeral (bytes 12-44)
+    [enc-nothing: [slice resp 44 60]]   # encrypted-nothing (0 + 16 AEAD tag)
+    # Process responder ephemeral into ck, h
+    [h: [blake2s [concat h re-pub]]]
+    [ck-h5: [hkdf-extract [Blake2s] ck re-pub]]
+    [both5: [hkdf-expand  [Blake2s] ck-h5 [] 64]]
+    [ck:    [slice both5 0  32]]
+    # DH(initiator-ephemeral, responder-ephemeral) = ee
+    [dh-ie-re: [x25519-dh eph.private re-pub]]
+    [ck-h6: [hkdf-extract [Blake2s] ck dh-ie-re]]
+    [both6: [hkdf-expand  [Blake2s] ck-h6 [] 64]]
+    [ck:    [slice both6 0  32]]
+    # DH(initiator-static, responder-ephemeral) = se
+    [dh-is-re: [x25519-dh cfg.private-key re-pub]]
+    [ck-h7: [hkdf-extract [Blake2s] ck dh-is-re]]
+    [both7: [hkdf-expand  [Blake2s] ck-h7 [] 64]]
+    [ck:    [slice both7 0  32]]
+    [k-resp: [slice both7 32 64]]
+    # Decrypt enc-nothing to authenticate Response
+    [nonce2: [concat [0 0 0 0] [bytes LittleEndian [@UInt64 0]]]]
+    [_: [match [chacha20-poly1305-open k-resp nonce2 enc-nothing h]
+      [Result.Ok _]:    null
+      [Result.Error _]: [error "WireGuard: failed to authenticate Response message"]]]
+    [h: [blake2s [concat h enc-nothing]]]
+    # Derive data-plane session keys from final ck
+    [all-final: [hkdf-expand [Blake2s] ck [] 64]]
+    [tx-key: [slice all-final 0  32]]   # initiator-to-responder (we send)
+    [rx-key: [slice all-final 32 64]]   # responder-to-initiator (we receive)
+    [tx-nonce-ch: [init-nonce-ch]]
+    [WireguardConnection underlying: h  tx-key: tx-key  rx-key: rx-key  tx-nonce: tx-nonce-ch]]
 
   wg-write-bytes: [fn [let conn@WireguardConnection data@Bytes]
     # tx-nonce channel holds exactly one value (atomic counter via channel).
-    # recv returns [Ok n]; [Closed] is impossible for an internal nonce channel.
+    # recv returns [Result.Ok n]; Closed.Closed is impossible for an internal nonce channel.
     [match [recv conn.tx-nonce]
       [Closed.Closed]:  [error "WireGuard: nonce channel closed unexpectedly"]
       [Result.Ok nonce]:
@@ -167,7 +373,7 @@
 [instance@[bind: [h]  constraint: [h: ByteStream]]
     [WireguardLayer h [WireguardConnection h]]
   wireguard: [fn [let cfg@WireguardConfig h@h]
-    [error "TODO: wireguard — see wireguard-accept for full step sequence"]]]
+    [wireguard h cfg]]]   # delegates to wireguard function (initiator, defined above)
 
 # Channel of connections (server pipeline)
 [instance@[bind: [h]  constraint: [h: ByteStream]]

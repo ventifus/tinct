@@ -999,10 +999,7 @@ fn register_type_aliases(
                                 params.iter().map(|(n, _)| n.clone()).collect();
                             target_env.insert_type_alias(
                                 name.clone(),
-                                TypeAlias {
-                                    params: param_names,
-                                    body: Type::Unknown,
-                                },
+                                TypeAlias::new(param_names, Type::Unknown),
                             );
                         }
                     }
@@ -1045,20 +1042,17 @@ fn register_type_aliases(
 
             if let Some(discriminant) = builtin_type_discriminant {
                 let n_params = params.len();
-                let tycon_def = TyConDef {
+                let tycon_def = Arc::new(TyConDef {
                     variance: vec![Variance::Invariant; n_params],
                     constructors: vec![],
                     builtin_type: Some(discriminant),
-                };
-                target_env.insert_tycon_def(name.clone(), tycon_def.clone());
+                });
+                target_env.insert_tycon_def(name.clone(), Arc::clone(&tycon_def));
                 state.tycon_env.insert(name.clone(), tycon_def);
                 // Register a zero-param type alias for annotation resolution.
                 target_env.insert_type_alias(
                     name.clone(),
-                    TypeAlias {
-                        params: vec![],
-                        body: Type::TyCon(name.clone()),
-                    },
+                    TypeAlias::new(vec![], Type::TyCon(name.clone())),
                 );
                 continue; // Skip normal body resolution for builtin-type declarations.
             }
@@ -1091,7 +1085,7 @@ fn register_type_aliases(
                         } else {
                             // Not a variance annotation — check if it's a class constraint.
                             if state.class_env.get(name).is_some() {
-                                // TODO(T-1035): record class constraint on this type param — requires TypeAlias.constraints field
+                                // TODO(T-1101): populate TypeAlias.constraints from @ClassName annotation (TypeAlias.constraints field added by T-1084; enforcement in T-1101)
                             } else {
                                 // Unknown annotation — error
                                 let err_msg = format!(
@@ -1173,10 +1167,7 @@ fn register_type_aliases(
                     // Update with actual body
                     target_env.insert_type_alias(
                         name.clone(),
-                        TypeAlias {
-                            params: remapped_params.clone(),
-                            body: alias_ty.clone(),
-                        },
+                        TypeAlias::new(remapped_params.clone(), alias_ty.clone()),
                     );
 
                     // Polarity analysis (T-952): infer variance for each param from the alias body.
@@ -1198,12 +1189,15 @@ fn register_type_aliases(
                     let constructors = extract_constructors_from_type(&alias_ty, &name);
 
                     // Register TyConDef for TyCon identity checking and variance-directed subtyping.
-                    let tycon_def = TyConDef {
+                    // Arc::new preserves pointer identity so UNIFY-TYCON can detect cross-scope
+                    // shadowing via Arc::ptr_eq when two [type Foo ...] decls exist in different
+                    // scopes (B-343).
+                    let tycon_def = Arc::new(TyConDef {
                         variance: final_variances,
                         constructors: constructors.clone(),
                         builtin_type: None,
-                    };
-                    target_env.insert_tycon_def(name.clone(), tycon_def.clone());
+                    });
+                    target_env.insert_tycon_def(name.clone(), Arc::clone(&tycon_def));
                     state.tycon_env.insert(name.clone(), tycon_def);
 
                     // T-1048: Register each constructor name with a precise type.
@@ -1955,7 +1949,8 @@ pub(crate) fn infer_surface_expr(
                 // Elaboration pass: resolve TypeAssertPending → TypeAssert before collecting
                 // pattern bindings. This ensures collect_pattern_bindings sees resolved_type
                 // (not the raw annotation) when computing variable types for arm body checking.
-                let elaborated_pat = elaborate_pattern(&arm.pattern.node, env, state)?;
+                let elaborated_pat =
+                    elaborate_pattern(&arm.pattern.node, env, state, &arm.pattern.span)?;
 
                 // Persist elaboration: record annotation-span → resolved type in the
                 // TypeAnnotationTable so lower.rs can convert TypeAssertPending → TypeAssert

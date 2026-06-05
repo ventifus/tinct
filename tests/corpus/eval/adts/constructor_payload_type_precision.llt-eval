@@ -22,3 +22,6 @@
 ]
 === out
 Dict({"MyOk": Function(payload), "MyErr": Function(payload), "unwrap-ok": Function(r), "result": Int(42)})
+
+=== warn
+non-exhaustive match: missing coverage for [Result2.MyErr _], [Result2.MyOk _] at 14:5-17:6

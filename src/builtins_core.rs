@@ -3554,37 +3554,22 @@ pub fn core_type_env(env: &mut TypeEnv) {
     // Map[K V] as a parameterized type alias.
     env.insert_type_alias(
         "Map".to_string(),
-        TypeAlias {
-            params: vec!["k".to_string(), "v".to_string()],
-            body: Type::map(
+        TypeAlias::new(
+            vec!["k".to_string(), "v".to_string()],
+            Type::map(
                 Type::TypeVar("k".to_string(), 0),
                 Type::TypeVar("v".to_string(), 0),
             ),
-        },
+        ),
     );
 
     // ── Capability and handle type aliases ────────────────────────────────────
     // Register as type aliases so @DirCap, @NetCap, @Handle are valid in user annotations.
-    env.insert_type_alias(
-        "DirCap".to_string(),
-        TypeAlias {
-            params: vec![],
-            body: Type::DirCap,
-        },
-    );
-    env.insert_type_alias(
-        "NetCap".to_string(),
-        TypeAlias {
-            params: vec![],
-            body: Type::NetCap,
-        },
-    );
+    env.insert_type_alias("DirCap".to_string(), TypeAlias::new(vec![], Type::DirCap));
+    env.insert_type_alias("NetCap".to_string(), TypeAlias::new(vec![], Type::NetCap));
     env.insert_type_alias(
         "Handle".to_string(),
-        TypeAlias {
-            params: vec![],
-            body: Type::handle(Type::Unknown),
-        },
+        TypeAlias::new(vec![], Type::handle(Type::Unknown)),
     );
 
     // ── DirCap capability flags ───────────────────────────────────────────────
@@ -3609,13 +3594,13 @@ pub fn core_type_env(env: &mut TypeEnv) {
         );
         env.insert_type_alias(
             flag_name.to_string(),
-            TypeAlias {
-                params: vec![],
-                body: Type::Record(Row {
+            TypeAlias::new(
+                vec![],
+                Type::Record(Row {
                     fields,
                     tail: crate::type_def::RowTail::Empty,
                 }),
-            },
+            ),
         );
     }
 
@@ -3641,13 +3626,13 @@ pub fn core_type_env(env: &mut TypeEnv) {
         );
         env.insert_type_alias(
             flag_name.to_string(),
-            TypeAlias {
-                params: vec![],
-                body: Type::Record(Row {
+            TypeAlias::new(
+                vec![],
+                Type::Record(Row {
                     fields,
                     tail: crate::type_def::RowTail::Empty,
                 }),
-            },
+            ),
         );
     }
 
@@ -3656,9 +3641,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
     // Used as the algorithm argument to hash and SPKI pin functions.
     env.insert_type_alias(
         "HashAlgorithm".to_string(),
-        TypeAlias {
-            params: vec![],
-            body: Type::normalize_union(vec![
+        TypeAlias::new(
+            vec![],
+            Type::normalize_union(vec![
                 Type::StringLiteral("Sha256".to_string()),
                 Type::StringLiteral("Sha384".to_string()),
                 Type::StringLiteral("Sha512".to_string()),
@@ -3667,7 +3652,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 Type::StringLiteral("Sha3-512".to_string()),
                 Type::StringLiteral("Blake3".to_string()),
             ]),
-        },
+        ),
     );
 
     // ── builtin-* aliases for core operators ─────────────────────────────────

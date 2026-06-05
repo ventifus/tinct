@@ -61,8 +61,8 @@
     [task
       [let step [fn []
         [match [recv source]
-          [Closed]: []
-          [Ok v]:   [[send out [encode c v]] [step]]]]]
+          [Closed.Closed]: []
+          [Result.Ok v]:   [[send out [encode c v]] [step]]]]]
       [step]]
     out]
 
@@ -72,8 +72,8 @@
     [task
       [let step [fn []
         [match [recv source]
-          [Closed]: []
-          [Ok v]:   [[write-bytes s v] [step]]]]]
+          [Closed.Closed]: []
+          [Result.Ok v]:   [[write-bytes s v] [step]]]]]
       [step]]]
 
   # ── MessageStream constructors ────────────────────────────────────────────────

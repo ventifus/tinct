@@ -8,12 +8,12 @@
 
 [instance [MessageStream WebSocketConnection WsFrame]
   send: ws-send-frame    # encodes as WS frame, applies mask (client), writes to underlying
-  recv: ws-recv-frame]   # reads from underlying, strips WS framing + mask, returns [Ok WsFrame] | [Closed]
+  recv: ws-recv-frame]   # reads from underlying, strips WS framing + mask, returns [Result.Ok WsFrame] | Closed.Closed
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
-  # TODO: verify get? exists in prelude
+  # Verified: get?=✓ (core builtin)
   bytes-xor-mask: [fn [let data@Bytes key@Bytes]
     [collect [map [fn [let e] [bxor e.1 [get key [mod e.0 4]]]] [entries data]]]]
 
@@ -36,7 +36,25 @@
       [WsFrame.Ping   b]:            [opcode: 9   payload: b]
       [WsFrame.Pong   b]:            [opcode: 10  payload: b]]]
 
-  base64-encode: [fn [let data@Bytes] [error "TODO: base64-encode — RFC 4648 §4"]]
+  # RFC 4648 §4 Base64 encoding. Used for Sec-WebSocket-Accept: sha1(key + guid) | base64.
+  base64-encode: [fn [let data@Bytes]
+    [alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"]
+    [len: [length data]]
+    [pad: [mod [- [* 3 [/ [+ len 2] 3]] len] 3]]   # bytes of zero-padding needed
+    [padded: [concat data [slice [0 0 0] 0 pad]]]    # zero-pad to multiple of 3
+    [n-groups: [/ [length padded] 3]]
+    [chars: [apply str [flat-map [fn [let i]
+      [b0: [get padded [* i 3]]  b1: [get padded [+ [* i 3] 1]]  b2: [get padded [+ [* i 3] 2]]]
+      [n: [+ [shl b0 16] [shl b1 8] b2]]
+      [list
+        [str-char [get alphabet [shr [band n 0xFC0000] 18]]]
+        [str-char [get alphabet [shr [band n 0x03F000] 12]]]
+        [str-char [get alphabet [shr [band n 0x000FC0]  6]]]
+        [str-char [get alphabet      [band n 0x00003F]    ]]]]
+     [range 0 n-groups]]]]
+    # Replace trailing chars with = padding per RFC 4648 §4
+    [let replace-end [fn [s n] [str [slice-str s 0 [- [length s] n]] [str-repeat "=" n]]]]
+    [match pad 0: chars  1: [replace-end chars 1]  _: [replace-end chars 2]]]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
@@ -52,6 +70,13 @@
   WebSocketConnection: [type
     [underlying:  Handle
      server-side: Bool]]
+
+  # WebSocket error type — distinct from normal Close frame (WsFrame.Close = graceful peer closure).
+  WsError: [union
+    [ConnectionClosed]                           # underlying TCP connection closed without WS Close frame
+    [ProtocolViolation  reason@String]            # RFC 6455 protocol error (bad opcode, reserved bits, etc.)
+    [MessageTooLarge    size@Int  limit@Int]      # payload exceeds implementation limit
+    [MaskingViolation]]                           # client sent unmasked / server sent masked frame
 
   ws-accept: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
     [ws-accept-request h [parse-request h [fn [let _] null]]]]
@@ -82,17 +107,17 @@
       [] host]
     [WebSocketConnection [underlying: h  server-side: false]]]
 
-  ws-recv-frame: [fn [let conn@WebSocketConnection]
-    # Returns [Ok WsFrame] | [Closed]. EOF from underlying → [Closed].
+  ws-recv-frame: [fn@[return: [or WsFrame WsError]] [let conn@WebSocketConnection]
+    # Returns WsFrame on success, WsError on failure. WsFrame.Close = graceful peer close.
     [match [try [read-bytes conn.underlying 1]]
-      [Result.Error _]: Closed.Closed
+      [Result.Error _]: WsError.ConnectionClosed
       [Result.Ok b0-bytes]:
         [h:    conn.underlying]
         [b0:   [get b0-bytes 0]]
         [b1:   [get [read-bytes h 1] 0]]
-        [opcode: [bit-and b0 0x0F]]
-        [masked: [= [bit-and b1 0x80] 0x80]]
-        [len1:   [bit-and b1 0x7F]]
+        [opcode: [band b0 0x0F]]
+        [masked: [= [band b1 0x80] 0x80]]
+        [len1:   [band b1 0x7F]]
         # RFC 6455 §5.1: server MUST reject unmasked client frames; client MUST reject masked server frames.
         [if [and conn.server-side [not masked]] [error "WebSocket: client frame must be masked (RFC 6455 §5.1)"] null]
         [if [and [not conn.server-side] masked] [error "WebSocket: server frame must not be masked (RFC 6455 §5.1)"] null]
@@ -103,8 +128,8 @@
         [mask-key: [if masked [read-bytes h 4] []]]
         [raw:      [read-bytes h payload-len]]
         [payload:  [if masked [bytes-xor-mask raw mask-key] raw]]
-        [if [not [= [bit-and b0 0x80] 0x80]] [error "WebSocket: fragmented frames not supported"] null]
-        [Result.Ok [int->ws-frame opcode payload]]]]
+        [if [not [= [band b0 0x80] 0x80]] WsError.ProtocolViolation "fragmented frames not supported" null]
+        [int->ws-frame opcode payload]]]]
 
   ws-send-frame: [fn [let conn@WebSocketConnection frame@WsFrame]
     [h:       conn.underlying]
@@ -115,11 +140,11 @@
     [len:     [length payload]]
     [mask-bit: [if client 0x80 0x00]]
     [len-bytes: [if [<= len 125]
-      [bytes [bit-or len mask-bit]]
-      [concat [bytes [bit-or 126 mask-bit]] [bytes [/ len 256]] [bytes [mod len 256]]]]]
+      [bytes [bor len mask-bit]]
+      [concat [bytes [bor 126 mask-bit]] [bytes [/ len 256]] [bytes [mod len 256]]]]]
     [mask-key:       [if client [crypto-random 4] []]]
     [masked-payload: [if client [bytes-xor-mask payload mask-key] payload]]
-    [write-bytes h [concat [bytes [bit-or 0x80 opcode]] len-bytes mask-key masked-payload]]]
+    [write-bytes h [concat [bytes [bor 0x80 opcode]] len-bytes mask-key masked-payload]]]
 
   # Serve layer: promote each incoming Handle to a WebSocketConnection.
   ws-serve: [_ | [channel-map ws-accept]]

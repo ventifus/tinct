@@ -62,6 +62,12 @@
        encode: [fn [let b] [encode c b]]
        decode: [fn [let b] [decode c b]]]]]
 
+  # Hardcoded codec registry — temporary pending R-12 (open nominal ADTs / typeclass instance
+  # enumeration). Once [instance [CompressionCodec X] ...] declarations can be enumerated
+  # at runtime, this becomes:
+  #   [first [filter [fn [let c] [= [codec-name c] lower]] CompressionCodec.instances]]
+  # Users adding custom codecs currently pass them via the `registry` argument to
+  # codec-for-encoding; with R-12 they would just declare an instance and it would be found.
   builtin-codec-for-name: [fn [let lower@String]
     [match lower
       "gzip":     [to-compressed-codec GzipCodec]

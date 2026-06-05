@@ -7872,15 +7872,16 @@ mod tests {
     fn test_value_matches_type_tycon_builtin_int() {
         // TyCon with builtin_type "Int" discriminant matches Value::Int.
         use crate::type_def::{TyConDef, TyConEnv};
+        use std::sync::Arc;
         let ctx = test_ctx();
         let mut env = TyConEnv::new();
         env.insert(
             "MyInt".to_string(),
-            TyConDef {
+            Arc::new(TyConDef {
                 variance: vec![],
                 constructors: vec![],
                 builtin_type: Some("Int".to_string()),
-            },
+            }),
         );
         ctx.set_tycon_env(env);
         let tycon = Type::TyCon("MyInt".to_string());
@@ -7893,15 +7894,16 @@ mod tests {
     fn test_value_matches_type_tycon_builtin_dict() {
         // TyCon with builtin_type "Dict" matches Value::Dict.
         use crate::type_def::{TyConDef, TyConEnv};
+        use std::sync::Arc;
         let ctx = test_ctx();
         let mut env = TyConEnv::new();
         env.insert(
             "MyDict".to_string(),
-            TyConDef {
+            Arc::new(TyConDef {
                 variance: vec![],
                 constructors: vec![],
                 builtin_type: Some("Dict".to_string()),
-            },
+            }),
         );
         ctx.set_tycon_env(env);
         let tycon = Type::TyCon("MyDict".to_string());
@@ -7920,15 +7922,16 @@ mod tests {
     fn test_value_matches_type_tycon_nominal() {
         // Nominal TyCon (has constructors) matches Value::Variant with matching tag prefix.
         use crate::type_def::{TyConDef, TyConEnv};
+        use std::sync::Arc;
         let ctx = test_ctx();
         let mut env = TyConEnv::new();
         env.insert(
             "Color".to_string(),
-            TyConDef {
+            Arc::new(TyConDef {
                 variance: vec![],
                 constructors: vec![("Color.Red".to_string(), 0), ("Color.Green".to_string(), 0)],
                 builtin_type: None,
-            },
+            }),
         );
         ctx.set_tycon_env(env);
         let tycon = Type::TyCon("Color".to_string());
@@ -7953,15 +7956,16 @@ mod tests {
         // Type::App(TyCon(name), arg) extracts the root TyCon name and applies TyConDef dispatch.
         // Type args are ignored at the value level (type erasure).
         use crate::type_def::{TyConDef, TyConEnv};
+        use std::sync::Arc;
         let ctx = test_ctx();
         let mut env = TyConEnv::new();
         env.insert(
             "MySeq".to_string(),
-            TyConDef {
+            Arc::new(TyConDef {
                 variance: vec![],
                 constructors: vec![],
                 builtin_type: Some("Str".to_string()),
-            },
+            }),
         );
         ctx.set_tycon_env(env);
         // App(TyCon("MySeq"), Int) — type arg Int is ignored; dispatch on "Str" discriminant.

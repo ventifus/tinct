@@ -456,21 +456,18 @@ pub(crate) fn infer_dict(
                         // is not applicable for opaque builtins).
                         if let Some(alias_name) = key_name {
                             let n_params = params.len();
-                            let tycon_def = TyConDef {
+                            let tycon_def = Arc::new(TyConDef {
                                 variance: vec![Variance::Invariant; n_params],
                                 constructors: vec![],
                                 builtin_type: Some(discriminant),
-                            };
-                            dict_env.insert_tycon_def(alias_name.clone(), tycon_def.clone());
+                            });
+                            dict_env.insert_tycon_def(alias_name.clone(), Arc::clone(&tycon_def));
                             state.tycon_env.insert(alias_name.clone(), tycon_def);
                             // Register a zero-param type alias so annotation resolution
                             // can find the name (e.g., `@Int` → Type::TyCon("Int")).
                             dict_env.insert_type_alias(
                                 alias_name.clone(),
-                                TypeAlias {
-                                    params: vec![],
-                                    body: Type::TyCon(alias_name.clone()),
-                                },
+                                TypeAlias::new(vec![], Type::TyCon(alias_name.clone())),
                             );
                         }
                         continue; // Skip normal body resolution for builtin-type declarations.
@@ -502,7 +499,8 @@ pub(crate) fn infer_dict(
                     state.type_params_scope = None;
 
                     if let Ok(alias_ty) = alias_result {
-                        // Register the named alias (keyed entries only)
+                        // Register the named alias (keyed entries only, or positional TypeAlias
+                        // entries with a proper identifier name from B-344 fix).
                         if let Some(name) = key_name {
                             let remapped_params: Vec<String> = params
                                 .iter()
@@ -510,19 +508,33 @@ pub(crate) fn infer_dict(
                                 .collect();
                             dict_env.insert_type_alias(
                                 name.clone(),
-                                TypeAlias {
-                                    params: remapped_params,
-                                    body: alias_ty.clone(),
-                                },
+                                TypeAlias::new(remapped_params.clone(), alias_ty.clone()),
                             );
 
-                            // NOTE: tycon_env is NOT populated here for nested dict type
-                            // declarations. Populating it causes cascading coverage warnings
-                            // because entry_key_name returns positional indices ("0", "1")
-                            // for unkeyed type declarations (e.g., [type Color Red Green Blue]).
-                            // The coverage.rs qualify_nominal_tag only works for types
-                            // registered at the TOP level via register_type_aliases in
-                            // typecheck.rs. See B-344 for the tracked fix.
+                            // B-344: Register in tycon_env when key_name is a valid type identifier
+                            // (starts with alphabetic — indicates a proper type name extracted by the
+                            // B-344 fix in entry_key_name, not an auto-index like "0" or "1").
+                            // This enables tycon_env-based lookup for nested type declarations
+                            // such as `[type Color Red Green Blue]` inside a dict.
+                            let is_identifier =
+                                name.chars().next().is_some_and(|c| c.is_alphabetic());
+                            if is_identifier {
+                                // Infer variance from the resolved alias body.
+                                let inferred_variances = super::typecheck_annot::infer_variance(
+                                    &alias_ty,
+                                    &remapped_params,
+                                    &dict_env,
+                                );
+                                let constructors =
+                                    super::extract_constructors_from_type(&alias_ty, name);
+                                let tycon_def = Arc::new(TyConDef {
+                                    variance: inferred_variances,
+                                    constructors,
+                                    builtin_type: None,
+                                });
+                                dict_env.insert_tycon_def(name.clone(), Arc::clone(&tycon_def));
+                                state.tycon_env.insert(name.clone(), tycon_def);
+                            }
                         }
 
                         // ADT constructor scoping: inject each NominalVariant constructor from the
@@ -1115,27 +1127,44 @@ pub(crate) fn infer_dict(
     // If future work requires true local-scoped classes (invisible outside the declaring dict),
     // a separate mechanism (export list or explicit opt-out) would be needed.
     //
-    // TODO(B-330): This merge-back breaks lexical scoping for user code. The correct fix is
-    // to distinguish between prelude-stage declarations (which must propagate) and user-code
-    // declarations (which should be scoped). Requires either stage-aware propagation or
-    // explicit export lists.
+    // B-346 FIX: Gate merge-back on `state.in_prelude_load`.
+    //
+    // The unconditional merge-back (B-330/B-346 root cause) propagated ALL child-frame
+    // class/instance declarations into the outer frame. This was necessary for prelude loading
+    // (MonadResult, FunctorResult, etc. must be globally visible) but incorrect for user code
+    // (a class declared inside a nested dict should NOT escape into the outer scope).
+    //
+    // FIX: only merge-back when `state.in_prelude_load == true`. During prelude loading, all
+    // class/instance declarations must propagate so they end up in PRELUDE_INSTANCE_CACHE and
+    // become globally visible. During user-code type-checking (in_prelude_load == false), child
+    // declarations stay scoped — they do not propagate to the enclosing frame.
+    //
+    // Limitation: this is a coarse gate — it propagates ALL declarations during prelude loading,
+    // not just the ones that explicitly need global scope. A finer-grained solution would add
+    // `prelude_origin: bool` to ClassDecl/InstanceDecl and filter by that flag regardless of
+    // loading phase. That approach requires updating ~40 struct construction sites and is tracked
+    // as future refinement work in T-1110.
     {
-        // Collect local child declarations before taking the child env for restoration.
-        let child_classes: Vec<_> = state.class_env.iter_classes().cloned().collect();
-        let child_instances: Vec<_> = state.instance_env.iter_instances().cloned().collect();
-
         // Recover the outer frame (try_unwrap succeeds if no other Arc clone holds a reference
         // to the outer env; falls back to clone if the child still holds a parent reference).
         let mut outer_ce = Arc::try_unwrap(outer_class_env).unwrap_or_else(|arc| (*arc).clone());
         let mut outer_ie = Arc::try_unwrap(outer_instance_env).unwrap_or_else(|arc| (*arc).clone());
 
-        // Merge child-local declarations into the outer frame.
-        for class_decl in child_classes {
-            outer_ce.insert_if_absent(class_decl);
+        if state.in_prelude_load {
+            // Prelude loading: propagate all child-local declarations to the outer frame.
+            // This is required for prelude-declared classes/instances to become globally visible
+            // (they must reach PRELUDE_INSTANCE_CACHE via the seeding path in imports.rs).
+            let child_classes: Vec<_> = state.class_env.iter_classes().cloned().collect();
+            let child_instances: Vec<_> = state.instance_env.iter_instances().cloned().collect();
+
+            for class_decl in child_classes {
+                outer_ce.insert_if_absent(class_decl);
+            }
+            for inst_decl in child_instances {
+                let _ = outer_ie.insert(inst_decl);
+            }
         }
-        for inst_decl in child_instances {
-            let _ = outer_ie.insert(inst_decl);
-        }
+        // Else: user-code type-checking — discard child-local declarations (lexical scoping).
 
         state.class_env = outer_ce;
         state.instance_env = outer_ie;
@@ -1180,6 +1209,36 @@ pub(crate) fn entry_key_name(
             },
         },
         None => {
+            // B-344: For unkeyed TypeAlias entries, extract the type name from the alias body
+            // rather than using a positional index. For `[type Color Red Green Blue]`, the
+            // parser wraps all type expressions in a Dict body, where the first positional
+            // entry is the type name "Color". Using the auto-index ("0", "1") as the key
+            // caused tycon_env registration to fail (type registered as "0" instead of "Color").
+            if let SurfaceExpression::Decl(decl) = &entry.value.expr {
+                if let SurfaceDeclaration::TypeAlias { body, .. } = decl.as_ref() {
+                    // Multi-variant form: body is a Dict with first entry = VarRef(type_name).
+                    if let SurfaceExpression::Dict(body_entries) = &body.expr {
+                        if let Some(first) = body_entries.first() {
+                            if first.node.key.is_none() {
+                                if let SurfaceExpression::VarRef { name, .. } =
+                                    &first.node.value.expr
+                                {
+                                    if crate::eval::is_constructor_name(name) {
+                                        // Do NOT advance auto_index — this entry is keyed by name.
+                                        return Some(name.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Single-entry form: body is a bare VarRef (e.g., `[type Foo]`).
+                    if let SurfaceExpression::VarRef { name, .. } = &body.expr {
+                        if crate::eval::is_constructor_name(name) {
+                            return Some(name.clone());
+                        }
+                    }
+                }
+            }
             let name = auto_index.to_string();
             *auto_index += 1;
             Some(name)

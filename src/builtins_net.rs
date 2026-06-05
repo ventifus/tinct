@@ -3967,47 +3967,26 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
 
     env.insert_type_alias(
         "QuicSession".to_string(),
-        TypeAlias {
-            params: vec![],
-            body: Type::QuicSession,
-        },
+        TypeAlias::new(vec![], Type::QuicSession),
     );
     env.insert_type_alias(
         "Http2Session".to_string(),
-        TypeAlias {
-            params: vec![],
-            body: Type::Http2Session,
-        },
+        TypeAlias::new(vec![], Type::Http2Session),
     );
     env.insert_type_alias(
         "Http3Session".to_string(),
-        TypeAlias {
-            params: vec![],
-            body: Type::Http3Session,
-        },
+        TypeAlias::new(vec![], Type::Http3Session),
     );
     env.insert_type_alias(
         "QuicDatagramHandle".to_string(),
-        TypeAlias {
-            params: vec![],
-            body: Type::QuicDatagramHandle,
-        },
+        TypeAlias::new(vec![], Type::QuicDatagramHandle),
     );
     env.insert_type_alias(
         "DatagramHandle".to_string(),
-        TypeAlias {
-            params: vec![],
-            body: Type::DatagramHandle,
-        },
+        TypeAlias::new(vec![], Type::DatagramHandle),
     );
     // Url — type alias for Uri (url/urn builtins also return Uri)
-    env.insert_type_alias(
-        "Url".to_string(),
-        TypeAlias {
-            params: vec![],
-            body: Type::Uri,
-        },
-    );
+    env.insert_type_alias("Url".to_string(), TypeAlias::new(vec![], Type::Uri));
 
     // ── connect: NetCap → String → Int → String → Handle[Readable Writable Binary Stream] ──
     // Takes (cap, host, port, transport-tag). Returns a bidirectional stream handle.

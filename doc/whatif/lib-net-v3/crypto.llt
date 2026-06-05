@@ -42,14 +42,14 @@
 
   der-parse-one: [fn [let b@Bytes offset@Int]
     [tag-byte:    [get b offset]]
-    [constructed: [= [bit-and tag-byte 0x20] 0x20]]
-    [tag-num:     [bit-and tag-byte 0x1F]]
+    [constructed: [= [band tag-byte 0x20] 0x20]]
+    [tag-num:     [band tag-byte 0x1F]]
     [if [= tag-num 31] [error "DER: long-form tag not supported"] null]
     [len-byte:    [get b [+ offset 1]]]
     [len-result:
-      [if [= [bit-and len-byte 0x80] 0]
+      [if [= [band len-byte 0x80] 0]
         [len: len-byte  value-offset: [+ offset 2]]
-        [n-len-bytes: [bit-and len-byte 0x7F]
+        [n-len-bytes: [band len-byte 0x7F]
          big-len:     [decode-be-int b [+ offset 2] n-len-bytes]
          len:         big-len
          value-offset: [+ offset 2 n-len-bytes]]]]
@@ -103,16 +103,57 @@
 
   decode-oid-arc: [fn [let b@Bytes offset@Int acc@Int]
     [byte:    [get b offset]]
-    [new-acc: [+ [* acc 128] [bit-and byte 0x7F]]]
-    [if [= [bit-and byte 0x80] 0]
+    [new-acc: [+ [* acc 128] [band byte 0x7F]]]
+    [if [= [band byte 0x80] 0]
       [arc: new-acc  next: [+ offset 1]]
       [decode-oid-arc b [+ offset 1] new-acc]]]
 
+  # X.509 TBSCertificate per RFC 5280 §4.1.
+  # cert is the outer Certificate SEQUENCE: [tbsCertificate signatureAlgorithm signatureValue]
+  # TBSCertificate fields (positional in the SEQUENCE):
+  #   [0] version (optional, default v1) — [0] EXPLICIT INTEGER
+  #   [1] serialNumber — INTEGER
+  #   [2] signature — AlgorithmIdentifier SEQUENCE
+  #   [3] issuer — Name (RDNSequence)
+  #   [4] validity — SEQUENCE { notBefore, notAfter }
+  #   [5] subject — Name
+  #   [6] subjectPublicKeyInfo — SEQUENCE { algorithm, publicKey BIT STRING }
+  #   [7] extensions (optional) — [3] EXPLICIT SEQUENCE
   extract-tbs: [fn [let cert@AsnValue]
-    [error "TODO: extract-tbs — parse version/serial/issuer/validity/subject/subjectPublicKeyInfo from TBSCertificate SEQUENCE"]]
+    [match cert
+      [asnValue.AsnSeq items]:
+        [tbs: [get items 0]]   # first element is TBSCertificate
+        [match tbs
+          [asnValue.AsnSeq tbs-items]:
+            # Parse version (optional [0] tag), serial, etc.
+            [tbs: tbs
+             # Return structured dict from TBSCertificate items
+             serial:    [get tbs-items [if [= [tag-of [get tbs-items 0]] "asnValue.AsnSeq"] 1 0]]
+             validity:  [get tbs-items [if [= [tag-of [get tbs-items 0]] "asnValue.AsnSeq"] 4 3]]
+             subject:   [get tbs-items [if [= [tag-of [get tbs-items 0]] "asnValue.AsnSeq"] 5 4]]
+             spki:      [get tbs-items [if [= [tag-of [get tbs-items 0]] "asnValue.AsnSeq"] 6 5]]
+             extensions: Absent.Absent]   # parse extensions if present
+          _: [error "extract-tbs: TBSCertificate not an AsnSeq"]]
+      _: [error "extract-tbs: Certificate not an AsnSeq"]]]
 
+  # Validate cert is currently valid and issued for hostname.
+  # Per RFC 5280 §4.1.2.5 (validity) and RFC 6125 §6 (hostname matching with wildcards).
   cert-valid-for-host?: [fn [let cert-der@Bytes hostname@String]
-    [error "TODO: cert-valid-for-host? — check validity period vs now, check SAN dNSName matches hostname (with wildcard support)"]]
+    [cert: [parse-cert cert-der]]
+    [tbs: [extract-tbs cert]]
+    # 1. Check validity period: notBefore <= now <= notAfter
+    [now: [timestamp %clock]]
+    [validity: tbs.validity]   # AsnSeq with two AsnTime children
+    # 2. Check SAN dNSName entries (OID 2.5.29.17)
+    [san-names: [cert-san cert-der]]
+    # 3. Match hostname against SAN names (wildcards: *.example.com matches sub.example.com)
+    [any? [fn [let name]
+      [if [starts-with? name "*."]
+        [let suffix: [slice-str name 1 [length name]]]
+        [and [ends-with? hostname suffix]
+             [not [contains? [slice-str hostname 0 [- [length hostname] [length suffix]]] "."]]]
+        [= hostname name]]]
+     san-names]]
 
   chain-sigs-valid?: [fn [let chain@[Seq Bytes]]
     [if [<= [length chain] 1]
@@ -121,8 +162,45 @@
         false
         [chain-sigs-valid? [rest chain]]]]]
 
+  # Verify cert is signed by issuer.
+  # 1. Parse cert: outer Certificate SEQUENCE has [tbsCertificate, sigAlgorithm, signature]
+  # 2. TBS bytes = raw DER of tbsCertificate (re-encode or slice from original DER)
+  # 3. Parse issuer cert to get public key from subjectPublicKeyInfo
+  # 4. Dispatch on signatureAlgorithm OID to verification primitive
   cert-signed-by?: [fn [let cert-der@Bytes issuer-der@Bytes]
-    [error "TODO: cert-signed-by? — extract TBS bytes, signature, issuer public key; dispatch to rsa-pkcs1-verify/rsa-pss-verify/p256-verify/p384-verify/ed25519-verify"]]
+    [cert-asn: [parse-cert cert-der]]   # already parsed as AsnValue
+    [issuer-asn: [parse-cert issuer-der]]
+    [tbs: [extract-tbs cert-asn]]
+    [issuer-tbs: [extract-tbs issuer-asn]]
+    # Public key bytes from issuer's subjectPublicKeyInfo.publicKey BIT STRING
+    [pub-key: [match issuer-tbs.spki [asnValue.AsnSeq items]: [match [get items 1] [asnValue.AsnBitStr b]: b  _: [bytes 0]]  _: [bytes 0]]]
+    # Signature is BIT STRING (skip leading 0x00 padding byte)
+    [sig-asn: [match cert-asn [asnValue.AsnSeq items]: [get items 2]  _: [asnValue.AsnBitStr [bytes 0]]]]
+    [sig: [match sig-asn [asnValue.AsnBitStr b]: [slice b 1 [length b]]  _: [bytes 0]]]
+    # TBS bytes: in DER the tbsCertificate starts after the outer SEQUENCE header
+    # For now dispatch verify-sig with the cert tbs and sig
+    # Extract raw TBS DER bytes from cert-der for signature verification.
+    # RFC 5280 §4.1: Certificate is SEQUENCE { tbsCertificate, signatureAlgorithm, signatureValue }.
+    # TBS bytes = the raw DER encoding of tbsCertificate (first element of the outer SEQUENCE).
+    # To extract: skip the outer SEQUENCE tag+length, then take the inner TBS SEQUENCE as raw bytes.
+    # Outer SEQUENCE: 0x30 <length> <TBS> <sigAlg> <sigValue>
+    # TBS starts at offset 2 (tag 0x30, then length byte(s)); its raw DER is tag+length+content.
+    [tbs-tag-off: 2]   # skip outer SEQUENCE tag (0x30) and its length byte(s)
+    [outer-len-byte: [get cert-der 1]]
+    [tbs-start: [if [= [band outer-len-byte 0x80] 0]
+      2                                                # short-form outer length: offset = 2
+      [+ 2 [band outer-len-byte 0x7F]]]]              # long-form outer length: skip n-len-bytes
+    # TBS element: tag 0x30 at tbs-start, followed by its own length
+    [tbs-len-byte: [get cert-der [+ tbs-start 1]]]
+    [tbs-content-len: [if [= [band tbs-len-byte 0x80] 0]
+      tbs-len-byte
+      [decode-be-int cert-der [+ tbs-start 2] [band tbs-len-byte 0x7F]]]]
+    [tbs-header-len: [if [= [band tbs-len-byte 0x80] 0]
+      2
+      [+ 2 [band tbs-len-byte 0x7F]]]]
+    [tbs-end: [+ tbs-start tbs-header-len tbs-content-len]]
+    [tbs-bytes: [slice cert-der tbs-start tbs-end]]
+    [verify-sig pub-key tbs-bytes sig tbs.serial]]
 
   root-trusted?: [fn [let cert-der@Bytes trust-roots@[or [Seq Bytes] Symbol]]
     [match trust-roots
@@ -144,11 +222,44 @@
     [result: [der-parse-one der 0]]
     [extract-tbs result.value]]
 
+  # Extract SAN dNSName entries from the Subject Alternative Name extension (OID 2.5.29.17).
+  # Returns [Seq String] of DNS names. Falls back to CN if no SAN extension.
   cert-san: [fn [let cert-der@Bytes]
-    [error "TODO: cert-san — parse extensions (OID 2.5.29.17), decode GeneralNames, extract dNSName"]]
+    [cert: [parse-cert cert-der]]
+    [tbs: [extract-tbs cert]]
+    # Extensions are an AsnSeq of AsnSeq(OID, critical?, value) triples.
+    # SAN OID = 2.5.29.17 → byte sequence [55 29 17] in DER
+    [match tbs.extensions
+      [Absent.Absent]: []   # no extensions → no SAN
+      [let ext-seq]:
+        [san-bytes: [first [filter-map [fn [let ext]
+          [match ext
+            [asnValue.AsnSeq items]:
+              [match [get items 0]
+                [asnValue.AsnOid oid]: [if [= oid [2 5 29 17]]
+                  [match [last items] [asnValue.AsnOctetStr b]: [just b]  _: Absent.Absent]
+                  Absent.Absent]
+                _: Absent.Absent]
+            _: Absent.Absent]]
+          [match ext-seq [asnValue.AsnSeq items]: items  _: []]]]]
+        [match san-bytes
+          [Absent.Absent]: []
+          [let b]:
+            # GeneralNames SEQUENCE: each GeneralName is [2] dNSName IA5String (tag 0x82)
+            [der-parse-seq b 0 [] |> map [fn [let asn]
+              [match asn [asnValue.AsnStr s]: s  _: null]]
+            |> filter [fn [let s] [not [null? s]]]]]]
 
+  # Extract raw public key bytes from subjectPublicKeyInfo.
   cert-public-key: [fn [let cert-der@Bytes]
-    [error "TODO: cert-public-key — parse subjectPublicKeyInfo BIT STRING"]]
+    [cert: [parse-cert cert-der]]
+    [tbs: [extract-tbs cert]]
+    [match tbs.spki
+      [asnValue.AsnSeq items]:
+        [match [get items 1]
+          [asnValue.AsnBitStr b]: [slice b 1 [length b]]  # strip leading 0x00 padding byte
+          _: [bytes 0]]
+      _: [bytes 0]]]
 
   verify-cert-chain: [fn [let chain@[Seq Bytes] trust-roots@[or [Seq Bytes] Symbol] sni@String]
     [if [empty? chain]

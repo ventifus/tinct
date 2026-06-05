@@ -74,12 +74,23 @@
      trust-ad:       Bool
      single-request: Bool
      sortlist:       [Seq String]]]
+
+  # DNS error type — distinct failure modes callers can pattern-match on.
+  dnsError: [union
+    [NXDomain    name@String]    # NXDOMAIN: name definitively does not exist
+    [ServerFailure]              # SERVFAIL: retry with a different nameserver
+    [Refused]                    # REFUSED: server policy rejected the query
+    [Timeout]                    # no response within configured time limit
+    [Truncated]                  # response truncated (UDP); retry over TCP/TLS
+    [NotImplemented]             # NOTIMP: server does not support this query type
+    [DecodeFailed  reason@String]]  # wire format decode error (malformed response)
 ]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
-  # TODO: verify random-id exists in prelude; str-chars verified (builtin-str-chars); get? unverified
+  # Verified: str-chars=✓ (builtin-str-chars), get?=✓ (core builtin)
+  # random-id: not in prelude; use [uint16 BigEndian [crypto-random 2]] — [Bytes 2] → UInt16
 
   encode-dns-name: [fn [let name@String]
     [labels: [filter [fn [let s] [not [= s ""]]]
@@ -109,17 +120,18 @@
   dns-try-servers: [fn [let cap@NetCap servers@[Seq nameserver]
                          name@String qtype@dnsQtype remaining@Int timeout@Duration]
     [if [= remaining 0]
-      [error [str "DNS: no more attempts for " name]]
+      dnsError.ServerFailure
       [match servers
-        []: [error [str "DNS: all nameservers exhausted for " name]]
+        []: dnsError.ServerFailure
         [let [ns ...rest]]:
           [resolver: [ns-to-resolver cap ns]]
           [match [try [await [timeout timeout [resolver
-                  dnsQuery.dnsQuery id: [random-id]  name: name
+                  dnsQuery.dnsQuery id: [uint16 BigEndian [crypto-random 2]]  name: name
                                     qtype: qtype  recursive: true  respond: null]]]]
             [Result.Ok resp]:
               [match resp.rcode
                 [dnsRcode.ServFail]: [dns-try-servers cap rest name qtype [- remaining 1] timeout]
+                [dnsRcode.NotImpl]:  dnsError.NotImplemented
                 _:                   resp]
             [Result.Error _]: [dns-try-servers cap rest name qtype [- remaining 1] timeout]]]]]
 
@@ -142,13 +154,15 @@
   dns-try-names: [fn [let cap@NetCap config@dnsConfig names@[Seq String] qtype@dnsQtype
                        cname-depth@[type: Int  default: 0]]
     [match names
-      []: [error "DNS: all candidates exhausted"]
+      []: dnsError.ServerFailure
       [let [name ...rest]]:
         [match [try [dns-query-with-retry cap config.nameservers name qtype
                                          config.attempts config.rotate config.timeout]]
           [Result.Ok resp]:
             [match resp.rcode
               [dnsRcode.NXDomain]: [dns-try-names cap config rest qtype cname-depth]
+              [dnsRcode.Refused]:  dnsError.Refused
+              [dnsRcode.NotImpl]:  dnsError.NotImplemented
               _:                   [records->addrs resp.answers qtype cap cname-depth]]
           [Result.Error _]: [dns-try-names cap config rest qtype cname-depth]]]]
 
@@ -179,8 +193,8 @@
     [if [not [= resp.status 200]]
       [error [str "DoH: HTTP " resp.status]]
       [match [decode-dns-wire resp.body]
-        [Ok r]:  r
-        [Err e]: [error [str "DoH decode: " e]]]]]
+        [Result.Ok r]:    r
+        [Result.Error e]: [error [str "DoH decode: " e]]]]]
 
   encode-rr: [fn [let r@dnsRecord]
     [match r
@@ -207,6 +221,7 @@
   DnsQtype:    dnsQtype
   DnsRecord:   dnsRecord
   DnsRcode:    dnsRcode
+  DnsError:    dnsError
   DnsQuery:    dnsQuery
   DnsResponse: dnsResponse
   Nameserver:  nameserver
@@ -222,8 +237,175 @@
       [bytes BigEndian [@UInt16 [qtype->int q.qtype]]]
       [bytes BigEndian [@UInt16 1]]]]
 
-  decode-dns-wire: [fn [let b@Bytes]
-    [error "TODO: decode-dns-wire — RFC 1035 §4 TLV decoder with pointer compression"]]
+  # RFC 1035 §4 DNS wire format decoder.
+  # Algorithm:
+  #   1. Parse header (12 bytes): id(2) flags(2) qdcount(2) ancount(2) nscount(2) arcount(2)
+  #      - rcode = flags & 0x000F → dnsRcode
+  #      - qr = flags >> 15 & 1 (1 = response)
+  #      - truncated = flags >> 9 & 1
+  #   2. Skip question section (qdcount entries): parse each as name+qtype(2)+qclass(2)
+  #      Name parsing: series of length-prefixed labels ending in 0x00; pointer = 0xC0 byte
+  #   3. Parse answers (ancount), authority (nscount), additional (arcount) sections:
+  #      Each RR: name + type(2) + class(2) + ttl(4) + rdlength(2) + rdata(rdlength)
+  #      Dispatch on type to build dnsRecord variants
+  #   4. Name pointer compression (RFC 1035 §4.1.4): 0xC0XX = pointer to offset XX in message
+  #      Name parsing must thread the full message buffer for pointer resolution
+  #   Returns dnsResponse or dnsError.DecodeFailed if malformed.
+  # RFC 1035 §4.1.4: parse a domain name at offset in b, returning name string and next offset.
+  # Pointer compression: byte 0xC0 = pointer; next byte gives offset in message.
+  # Label: length byte + that many ASCII chars; 0x00 = root (end).
+  # ptr-depth: follow at most 5 pointers to prevent infinite loops.
+  parse-dns-name: [fn [let b@Bytes offset@Int ptr-depth@Int]
+    [if [= ptr-depth 0]
+      [name: ""  next: offset]   # pointer loop guard — return empty
+      [if [>= offset [length b]]
+        [name: ""  next: offset]
+        [len-byte: [get b offset]]
+        [if [= len-byte 0]
+          # End of name (root label)
+          [name: ""  next: [+ offset 1]]
+          [if [= [band len-byte 0xC0] 0xC0]
+            # Pointer: next byte gives offset (RFC 1035 §4.1.4)
+            [ptr-offset: [bor [shl [band len-byte 0x3F] 8] [get b [+ offset 1]]]]
+            [target: [parse-dns-name b ptr-offset [- ptr-depth 1]]]
+            # next advances past the 2-byte pointer; pointer target's next is discarded
+            [name: target.name  next: [+ offset 2]]
+            # Regular label
+            [label-end: [+ offset 1 len-byte]]
+            [label:     [bytes-str [slice b [+ offset 1] label-end]]]
+            [rest:      [parse-dns-name b label-end ptr-depth]]
+            [name: [if [= rest.name ""] label [str label "." rest.name]]
+             next: rest.next]]]]]]
+
+  # RFC 1035 §4.1.3: parse RDATA for a given type, returning a dnsRecord.
+  # b: full message (for name decompression); offset: start of RDATA; rdlength: length.
+  parse-dns-rdata: [fn [let b@Bytes offset@Int rdlength@Int qtype@Int ttl@Int]
+    [data-end: [+ offset rdlength]]
+    [match qtype
+      1:  # A record — 4-byte IPv4 address
+        [dnsRecord.ARecord  addr: [slice b offset data-end]  ttl: ttl]
+      28: # AAAA record — 16-byte IPv6 address
+        [dnsRecord.AAAARecord  addr: [slice b offset data-end]  ttl: ttl]
+      5:  # CNAME — compressed name
+        [name-res: [parse-dns-name b offset 5]]
+        [dnsRecord.CNameRecord  name: name-res.name  ttl: ttl]
+      15: # MX — preference(2) + name
+        [pref: [uint16 BigEndian [slice b offset [+ offset 2]]]]
+        [name-res: [parse-dns-name b [+ offset 2] 5]]
+        [dnsRecord.MxRecord  pref: pref  name: name-res.name  ttl: ttl]
+      2:  # NS — compressed name
+        [name-res: [parse-dns-name b offset 5]]
+        [dnsRecord.NsRecord  name: name-res.name  ttl: ttl]
+      16: # TXT — series of length-prefixed strings
+        [let parse-txt [fn [pos acc]
+          [if [>= pos data-end]
+            acc
+            [slen: [get b pos]]
+            [s:    [slice b [+ pos 1] [+ pos 1 slen]]]
+            [parse-txt [+ pos 1 slen] [append acc [list s]]]]]]
+        [dnsRecord.TxtRecord  strings: [parse-txt offset []]  ttl: ttl]
+      12: # PTR — compressed name
+        [name-res: [parse-dns-name b offset 5]]
+        [dnsRecord.PtrRecord  name: name-res.name  ttl: ttl]
+      33: # SRV — priority(2) weight(2) port(2) target
+        [prio: [uint16 BigEndian [slice b offset [+ offset 2]]]]
+        [wt:   [uint16 BigEndian [slice b [+ offset 2] [+ offset 4]]]]
+        [port: [uint16 BigEndian [slice b [+ offset 4] [+ offset 6]]]]
+        [name-res: [parse-dns-name b [+ offset 6] 5]]
+        [dnsRecord.SrvRecord  prio: prio  weight: wt  port: port  target: name-res.name  ttl: ttl]
+      6:  # SOA — mname rname serial refresh retry expire minimum
+        [mname-res: [parse-dns-name b offset 5]]
+        [rname-res: [parse-dns-name b mname-res.next 5]]
+        [p: rname-res.next]
+        [serial:  [uint32 BigEndian [slice b p          [+ p 4]]]]
+        [refresh: [uint32 BigEndian [slice b [+ p 4]    [+ p 8]]]]
+        [retry:   [uint32 BigEndian [slice b [+ p 8]    [+ p 12]]]]
+        [expire:  [uint32 BigEndian [slice b [+ p 12]   [+ p 16]]]]
+        [minimum: [uint32 BigEndian [slice b [+ p 16]   [+ p 20]]]]
+        [dnsRecord.SoaRecord  mname: mname-res.name  rname: rname-res.name
+                              serial: serial  refresh: refresh  retry: retry
+                              expire: expire  minimum: minimum  ttl: ttl]
+      65: # HTTPS (RFC 9460) — priority(2) target-name + SvcParams
+        [prio: [uint16 BigEndian [slice b offset [+ offset 2]]]]
+        [target-res: [parse-dns-name b [+ offset 2] 5]]
+        # Parse SvcParams: each is key(2)+value-len(2)+value-bytes
+        [let parse-svcparams [fn [pos params]
+          [if [>= pos data-end]
+            params
+            [key:     [uint16 BigEndian [slice b pos [+ pos 2]]]]
+            [vlen:    [uint16 BigEndian [slice b [+ pos 2] [+ pos 4]]]]
+            [vdata:   [slice b [+ pos 4] [+ pos 4 vlen]]]
+            [new-params: [match key
+              0:  [merge params {mandatory: [collect [map [fn [let i] [uint16 BigEndian [slice vdata [* i 2] [+ [* i 2] 2]]]] [range 0 [/ vlen 2]]]]}]
+              1:  # alpn: comma-separated protocol strings
+                  [let parse-alpn [fn [p acc]
+                    [if [>= p vlen] acc
+                      [alen: [get vdata p]]
+                      [proto: [bytes-str [slice vdata [+ p 1] [+ p 1 alen]]]]
+                      [parse-alpn [+ p 1 alen] [append acc [list proto]]]]]]
+                  [merge params {alpn: [parse-alpn 0 []]}]
+              3:  [merge params {port: [uint16 BigEndian vdata]}]
+              5:  [merge params {ech: vdata}]
+              _:  params]]
+            [parse-svcparams [+ pos 4 vlen] new-params]]]]
+        [raw-params: [parse-svcparams target-res.next {}]]
+        [params: [svcParams
+          alpn:            [or [get? raw-params alpn] Absent.Absent]
+          no-default-alpn: false
+          port:            [or [get? raw-params port] Absent.Absent]
+          ipv4-hint:       Absent.Absent
+          ipv6-hint:       Absent.Absent
+          ech:             [or [get? raw-params ech] Absent.Absent]
+          mandatory:       [or [get? raw-params mandatory] Absent.Absent]
+          other:           {}]]
+        [dnsRecord.HttpsRecord  prio: prio  target: target-res.name  params: params  ttl: ttl]
+      _:  # Unknown record type
+        [dnsRecord.UnknownRecord  qtype: qtype  data: [slice b offset data-end]  ttl: ttl]]]
+
+  # Parse N resource records starting at offset in b. Returns [records: [Seq dnsRecord] next: Int].
+  parse-rrs: [fn [let b@Bytes offset@Int n@Int acc@[Seq dnsRecord]]
+    [if [= n 0]
+      [records: acc  next: offset]
+      [name-res: [parse-dns-name b offset 5]]
+      [p:        name-res.next]
+      [rtype:    [uint16 BigEndian [slice b p          [+ p 2]]]]
+      [rclass:   [uint16 BigEndian [slice b [+ p 2]    [+ p 4]]]]
+      [ttl:      [uint32 BigEndian [slice b [+ p 4]    [+ p 8]]]]
+      [rdlen:    [uint16 BigEndian [slice b [+ p 8]    [+ p 10]]]]
+      [rdata-off: [+ p 10]]
+      [rr:       [parse-dns-rdata b rdata-off rdlen rtype ttl]]
+      [parse-rrs b [+ rdata-off rdlen] [- n 1] [append acc [list rr]]]]]
+
+  decode-dns-wire: [fn@[return: [or dnsResponse dnsError]] [let b@Bytes]
+    [if [< [length b] 12]
+      [dnsError.DecodeFailed "response too short"]
+      [id:        [uint16 BigEndian [slice b 0 2]]
+       flags:     [uint16 BigEndian [slice b 2 4]]
+       qdcount:   [uint16 BigEndian [slice b 4 6]]
+       ancount:   [uint16 BigEndian [slice b 6 8]]
+       nscount:   [uint16 BigEndian [slice b 8 10]]
+       arcount:   [uint16 BigEndian [slice b 10 12]]
+       rcode-int: [band flags 0x000F]
+       truncated: [= [band [shr flags 9] 1] 1]]
+      [rcode: [int->rcode rcode-int]]
+      # §4.1.2: Skip question section — each question is: name + qtype(2) + qclass(2)
+      [let skip-questions [fn [offset n]
+        [if [= n 0]
+          offset
+          [name-res: [parse-dns-name b offset 5]]
+          [skip-questions [+ name-res.next 4] [- n 1]]]]]
+      [after-q: [skip-questions 12 qdcount]]
+      # §4.1.3: Parse answer, authority, additional sections
+      [an-result: [parse-rrs b after-q ancount []]]
+      [ns-result: [parse-rrs b an-result.next nscount []]]
+      [ar-result: [parse-rrs b ns-result.next arcount []]]
+      [dnsResponse.dnsResponse
+        id:         id
+        rcode:      rcode
+        answers:    an-result.records
+        authority:  ns-result.records
+        additional: ar-result.records
+        truncated:  truncated]]]]
 
   encode-dns-response: [fn [let resp@DnsResponse]
     [rcode-int: [match resp.rcode
@@ -231,7 +413,7 @@
       [dnsRcode.NXDomain]: 3 [dnsRcode.NotImpl]: 4  [dnsRcode.Refused]: 5  _: 2]]
     [concat
       [bytes BigEndian [@UInt16 resp.id]]
-      [bytes BigEndian [@UInt16 [bit-or 0x8080 rcode-int]]]
+      [bytes BigEndian [@UInt16 [bor 0x8080 rcode-int]]]
       [bytes BigEndian [@UInt16 0]]
       [bytes BigEndian [@UInt16 [length resp.answers]]]
       [bytes BigEndian [@UInt16 [length resp.authority]]]
@@ -309,11 +491,11 @@
       [let ip@IpAddress]: [list ip]]]
 
   # dns-resolve: resolve a hostname to IPs for a specific query type.
-  # The -ip suffix was defensive — DNS inherently resolves to IPs.
-  dns-resolve: [fn [let cap@NetCap host@String qtype@DnsQtype]
+  # Returns [or [Seq IpAddress] DnsError] — callers pattern-match on the result.
+  dns-resolve: [fn@[return: [or [Seq IpAddress] DnsError]] [let cap@NetCap host@String qtype@DnsQtype]
     [config: %dns]
     [if [empty? config.nameservers]
-      [error "DNS disabled"]
+      dnsError.ServerFailure
       [dns-try-names cap config [candidate-names host config.search config.ndots] qtype]]]
 
   dns-server-loop: [fn [let query-ch@[Channel DnsQuery]
@@ -345,11 +527,12 @@
   # resolve-address: exported so callers can resolve without connecting.
   resolve-address: resolve-address
 
-  # dns-resolve-host: qualify the qtype arg with the camelCase type name.
-  dns-resolve-host: [fn [let cap@NetCap host@String]
+  # dns-resolve-host: resolve to IPv4 addresses (A records).
+  # Returns [or [Seq IpAddress] DnsError].
+  dns-resolve-host: [fn@[return: [or [Seq IpAddress] DnsError]] [let cap@NetCap host@String]
     [config: %dns]
     [if [empty? config.nameservers]
-      [error "DNS disabled — use --nameservers or --no-dns"]
+      dnsError.ServerFailure
       [dns-try-names cap config [candidate-names host config.search config.ndots] dnsQtype.A]]]
 ]
 

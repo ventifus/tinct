@@ -14,4 +14,4 @@
   result: 42
 ]
 === out
-non-exhaustive match: missing coverage for [MyTag _]
+non-exhaustive match: missing coverage for [MyTag.MyTag _]

@@ -19,9 +19,9 @@
    |
   2090 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
        |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
-  in filter-seq pred at stdlib/prelude.llt:2507:29-2507:30
+  in filter-seq pred at stdlib/prelude.llt:2508:29-2508:30
    |
-  2507 | """] [let h t] [builtin-seq h t]]
+  2508 | """] [let h t] [builtin-seq h t]]
        |                             ^
   in call $filter at stdlib/prelude.llt:2090:72-2090:96
    |
@@ -31,8 +31,8 @@
    |
   2093 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2531:15-2531:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2532:15-2532:35
    |
-  2531 | """] [let xs] [builtin-collect xs]]
+  2532 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in [collect ...] at 2:1-5:55

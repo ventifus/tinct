@@ -23,3 +23,6 @@
 
 === out
 Dict({"use-dir": Function(h), "use-net": Function(h), "passthru-dir": Function(h), "always-true": Bool(true)})
+
+=== warn
+type alias 'Handle' expects 0 type parameter(s), got 1 at 18:30-18:45

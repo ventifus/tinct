@@ -20,7 +20,7 @@
 [class [let MessageStream s t]
   # FD: s determines t (each MessageStream type has exactly one message type)
   send: [Fn@Null [s t]]
-  recv: [Fn@[or [Ok t] [Closed]] [s]]]
+  recv: [Fn@[or [Result.Ok t] Closed.Closed] [s]]]
 
 [class [let Codec c input output]
   encode: [Fn@output [c input]]
@@ -69,7 +69,7 @@
 
 [instance@[bind: [t]] [MessageStream [Channel t] t]
   send: builtin-send
-  recv: builtin-recv]   # returns [Ok v] | [Closed] (B-192)
+  recv: builtin-recv]   # returns [Result.Ok v] | Closed.Closed (B-192)
 
 [instance [Listener TcpListener]
   accept: tcp-accept]
@@ -103,19 +103,20 @@
 
 [
   # Race connections to addrs with 250ms stagger. First success wins; rest cancelled.
-  happy-connect: [fn [let cap@NetCap port@Int addrs@[Seq IpAddress]]
+  # Returns [or Handle NetError] — all attempts failed → NetError.AllConnectionsFailed.
+  happy-connect: [fn@[return: [or Handle NetError]] [let cap@NetCap port@Int addrs@[Seq IpAddress] host@Host]
     [result-ch:  [channel 1]
      attempt-ms: 250]
     [tasks: [collect [map [fn [let e]
       [i: e.0  addr: e.1]
       [task
         [recv [timer-channel %clock [millis (* i attempt-ms)]]]
-        [match [try [tcp-connect cap [addr: addr  port: [@Port port]]]]
+        [match [try [tcp-connect cap {addr: addr  port: [@Port port]}]]
           [Result.Ok  h]: [try [send result-ch h]]
           [Result.Error _]: null]]]
       [entries addrs]]]]
     [match [recv result-ch]
-      [Closed.Closed]: [error "happy-connect: all connection attempts failed"]
+      [Closed.Closed]: NetError.AllConnectionsFailed host: host  attempted: [length addrs]
       [Result.Ok h]:
         [par-map [fn [let t] [cancel-task t]] tasks]
         h]]
@@ -181,6 +182,14 @@
   # 24-bit unsigned integer — used for HTTP/2 frame lengths (RFC 7540 §4.1).
   UInt24: [type Int@[is: [between 0 16777215]  repr: u32]]
 
+  # Network/transport error type — callers distinguish connection failure modes.
+  NetError: [union
+    [ConnectionRefused     addr@SocketAddress]   # TCP RST or ICMP port unreachable
+    [ConnectionTimeout     addr@SocketAddress]   # no SYN-ACK within timeout
+    [NetworkUnreachable    addr@SocketAddress]   # ICMP network unreachable
+    [NoAddressesResolved   host@Host]            # DNS returned no usable addresses
+    [AllConnectionsFailed  host@Host  attempted@Int]]  # Happy Eyeballs: every attempt refused/timed out
+
   # Convenience BindTarget constructors.
   bind-ip:        [fn [let addr@SocketAddress]    BindTarget.IpBind addr]
   bind-interface: [fn [let name@String port@Port] BindTarget.InterfaceBind name port]
@@ -245,8 +254,9 @@
   # Resolution: Happy Eyeballs for all [Hostname h] — parallel A+AAAA, 50ms IPv6 head start,
   # interleaved addresses. Tcp races connections (250ms stagger, first success wins).
   # Udp picks the first from the interleaved list (no connection to race).
+  # Transport.connect returns [or c NetError] — callers pattern-match on connection failures.
   [class [Transport p] determines: [p → c]
-    connect: [Fn@c [NetCap p HostPort]]]
+    connect: [Fn@[or c NetError] [NetCap p HostPort]]]
 
   [type [Tcp]]
   [type [Udp]]
@@ -281,8 +291,8 @@
   ip-is-link-local?: [fn [let addr@IpAddress]
     [match addr
       [IpAddress.Ipv4     b]:   [and [= [get b 0] 169] [= [get b 1] 254]]
-      [IpAddress.Ipv6     b]:   [= [bit-and [uint16 BigEndian [slice b 0 2]] 0xFFC0] 0xFE80]
-      [IpAddress.Ipv6Zone b _]: [= [bit-and [uint16 BigEndian [slice b 0 2]] 0xFFC0] 0xFE80]]]
+      [IpAddress.Ipv6     b]:   [= [band [uint16 BigEndian [slice b 0 2]] 0xFFC0] 0xFE80]
+      [IpAddress.Ipv6Zone b _]: [= [band [uint16 BigEndian [slice b 0 2]] 0xFFC0] 0xFE80]]]
 
   Url: [type
     [scheme:   String
@@ -292,9 +302,34 @@
      query:    [or String Null]
      fragment: [or String Null]]]
 
-  parse-url: [fn [let s@String] [error "TODO: parse-url"]]
-  url-encode: [fn [let s@String] [error "TODO: url-encode"]]
-  url-decode: [fn [let s@String] [error "TODO: url-decode"]]
+  parse-url: url   # delegates to the url builtin from url-type sprint (RFC 3986 §3 hierarchical URL)
+
+  # Percent-encode a string per RFC 3986 §2.1. Unreserved chars pass through; all others → %XX.
+  url-encode: [fn [let s@String]
+    [unreserved?: [fn [let c@String]
+      [or [and [>= c "A"] [<= c "Z"]]
+          [and [>= c "a"] [<= c "z"]]
+          [and [>= c "0"] [<= c "9"]]
+          [or [= c "-"] [= c "_"] [= c "."] [= c "~"]]]]]
+    [apply str [flat-map [fn [let c]
+      [if [unreserved? c]
+        [list c]
+        [let b: [str-bytes c]]
+        [map [fn [let byte] [str "%" [hex-byte byte]]] [range 0 [length b]]]]]
+     [str-chars s]]]]
+
+  # Percent-decode a string per RFC 3986 §2.1. %XX sequences → decoded bytes → UTF-8 string.
+  url-decode: [fn [let s@String]
+    [chars: [str-chars s]]
+    [let step [fn [i acc]
+      [if [>= i [length chars]]
+        [bytes-str [apply bytes acc]]
+        [c: [get chars i]]
+        [if [= c "%"]
+          [hex: [str [get chars [+ i 1]] [get chars [+ i 2]]]]
+          [step [+ i 3] [append acc [list [hex-str->byte hex]]]]
+          [step [+ i 1] [append acc [str-bytes c]]]]]]]
+    [step 0 []]]]
 
   parse-query: [fn [let q@String]
     [if [null? q]

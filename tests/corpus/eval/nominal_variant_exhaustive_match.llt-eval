@@ -25,3 +25,6 @@
 [E013] no instance for Multipliable (Dict, Dict) (defined at 19:22-19:29) (called at 19:17-19:30)
   in [* ...] at 19:22-19:29
   in [* ...] at 19:17-19:30
+
+=== warn
+non-exhaustive match: missing coverage for [Shape.Circle _] at 18:9-21:4

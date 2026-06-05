@@ -378,8 +378,8 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
   sh: [Circle r: 5]
 
   area: [match sh
-    [Circle p]: [* 3 [* p.r p.r]]   # p is the payload dict; p.r is the Int → 3*5*5 = 75
-    [Square p]: [* p.s p.s]]
+    [Shape.Circle p]: [* 3 [* p.r p.r]]   # p is the payload dict; p.r is the Int → 3*5*5 = 75
+    [Shape.Square p]: [* p.s p.s]]
   # → 75
 ]
 ```

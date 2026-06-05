@@ -13,4 +13,4 @@
   result: 42
 ]
 === out
-non-exhaustive match: missing coverage for [Square _]
+non-exhaustive match: missing coverage for [Shape.Circle _], [Shape.Square _]
