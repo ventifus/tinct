@@ -8,8 +8,8 @@
 ]
 int-str.first
 === error
-[E010] type mismatch: expected Function or Builtin, got Variant (defined at 6:12-6:45) (called at 4:1-7:2)
-  in [Pair ...] at 6:12-6:45
+[E020] arity mismatch: expected 1 argument, got 2 (defined at 1:1-1:1)
+  in materialized at 4:1-7:2
 
 === warn
 type alias 'Pair' expects 2 type parameter(s), got 0 at 5:25-5:51

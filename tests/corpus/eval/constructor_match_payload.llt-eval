@@ -1,0 +1,14 @@
+# T-977: Named-field constructor match test (B-337 regression).
+# [Ok value: 42] fails E020 — named-arg calling convention issue.
+# Fix tracked in B-337 (blocked on S-850).
+[
+  Result: [type [Ok value: a] [Error msg: Str]]
+  matched: [match [Ok value: 42]
+    [Result.Ok v]:    v.value
+    [Result.Error _]: 0]
+]
+=== error
+[E020] arity mismatch: expected 1 argument, got 2 (defined at 1:1-1:1)
+
+=== warn
+undefined variable: Ok at 5:20-5:22

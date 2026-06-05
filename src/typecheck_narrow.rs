@@ -381,15 +381,26 @@ pub(crate) fn collect_pattern_bindings(
         }
         Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {}
         Pattern::TypeAssertPending { inner, .. } => {
+            // Safety fallback for non-elaborated patterns. In normal typecheck flow,
+            // elaborate_pattern always runs before collect_pattern_bindings, so this arm is
+            // unreachable. It exists to prevent a crash if called on an unelaborated pattern
+            // from a non-standard call site.
             if let Some(inner_pat) = inner {
                 // Treat as narrowed to scrutinee type for the inner pattern binding
                 collect_pattern_bindings(&inner_pat.node, scrutinee_ty, out);
             }
         }
-        Pattern::TypeAssert { inner, .. } => {
+        Pattern::TypeAssert {
+            resolved_type,
+            inner,
+        } => {
             if let Some(inner_pat) = inner {
-                collect_pattern_bindings(&inner_pat.node, scrutinee_ty, out);
+                // The annotation has been resolved: bind inner variable to the resolved type,
+                // not the scrutinee type. This is the point of TypeAssert — to narrow the
+                // binding to the asserted type (e.g. `[@Int x]` gives x: Int, not x: scrutinee).
+                collect_pattern_bindings(&inner_pat.node, resolved_type, out);
             }
+            // If inner is None: bare type check with no binding — nothing to push.
         }
         Pattern::Dict { fields, .. } => {
             for (key, sub_pat) in fields {

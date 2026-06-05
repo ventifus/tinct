@@ -1,0 +1,7 @@
+# [@Int x] does NOT match a String scrutinee — falls through to the wildcard arm.
+# Fix 1 (S-845 review): value_matches_type(String, TyCon("Int")) returns false.
+[match "hello"
+  [@Int x]: x
+  _: "not-int"]
+=== out
+String("not-int")

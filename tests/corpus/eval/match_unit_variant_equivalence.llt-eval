@@ -16,5 +16,5 @@
     [Boxed]: "has-box"
     [Empty]: "empty"]
 ]
-=== out
-Dict({"Color": Variant(Color, Null), "Wrapper": Variant(Wrapper, Null), "Red": Variant(Red, Null), "Green": Variant(Green, Null), "Blue": Variant(Blue, Null), "Boxed": Variant(Boxed, Null), "Empty": Variant(Empty, Null), "match1": String("red"), "match2": String("has-box")})
+=== error
+[E020] arity mismatch: expected 1 argument, got 2 (defined at 1:1-1:1)

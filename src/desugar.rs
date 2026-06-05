@@ -40,21 +40,38 @@ pub fn desugar_surface_program(program: &mut SurfaceProgram) {
     }
 }
 
-/// Inject field constructor bindings into dicts that contain `[type ...]` declarations.
+/// Inject constructor bindings into dicts that contain `[type ...]` declarations.
 ///
-/// For each dict containing a `SurfaceExpression::Decl(TypeAlias)` entry, extracts the
-/// field constructor names (Call forms like `[Ok a]`, `[Error String]`) from the TypeAlias
-/// body and injects synthetic `CtorName: [variant "CtorName"]` entries at the BEGINNING of
-/// the dict. This runs BEFORE `resolve_surface_program`, so the resolver correctly assigns
-/// de Bruijn slots to the constructor names — making `[Ok value]` and `[Error msg]` resolvable
-/// by slot.
+/// For each dict entry whose value is a `SurfaceExpression::Decl(TypeAlias)`, this pass
+/// inspects the TypeAlias body, classifies each constructor, and injects synthetic dict
+/// entries BEFORE the TypeAlias entry. The injected entries use the **unqualified** constructor
+/// name as the dict key (so `Circle` is accessible as `dict.Circle`), but the variant tag
+/// stored inside is **qualified** as `"TypeName.CtorName"` for disambiguation in pattern
+/// matching (T-974).
 ///
-/// Unit constructors (bare uppercase names like `Tcp`, `None`) are NOT injected here —
-/// they are handled at evaluation time by `eval_dict_core` via `CoreExpr::TypeDecl` (B-296).
+/// Constructor classification:
+/// - Bare uppercase `VarRef { name }` in the body → unit constructor.
+///   Injects `"CtorName": [variant "TypeName.CtorName"]`.
+/// - `Call { func: VarRef(UpperName), named_args: [...], ... }` with non-empty named_args →
+///   named-field constructor. Injects a variadic `fn` wrapper:
+///   `"CtorName": [fn [...payload] [variant "TypeName.CtorName" payload]]`.
+///   The variadic `...payload` param collects all named args into a Dict (via B-277 extension
+///   to bind_args_thunks). Users call constructors with named args:
+///   `[Ctor field: val]` → `Variant { tag: "TypeName.CtorName", payload: {field: val} }`.
+/// - `Call { func: VarRef(UpperName), args: [...], named_args: [] }` (positional-only args
+///   or zero args) → unit constructor. The positional args are type-variable annotations
+///   in the type body, not runtime field names. Injects as a unit variant.
+///
+/// Type name extraction: `se.node.key` must be `SurfaceExpression::Str(s)` or
+/// `SurfaceExpression::VarRef { name }`. Computed keys and absent keys are handled
+/// gracefully: computed keys (e.g., `[fn [] "k"]`) are skipped (no injection for that
+/// entry); absent keys (positional type declarations) use unqualified tags (no prefix).
+///
+/// This runs BEFORE `resolve_surface_program`, so the resolver correctly assigns de Bruijn
+/// slots to the injected constructor names.
 ///
 /// The TypeAlias Decl entry itself is preserved so the type checker can still register it.
-/// At runtime, the Decl entry lowers to `CoreExpr::Placeholder` and is skipped via the
-/// `lower.rs` Dict arm (which already handles `SurfaceExpression::Decl` → skip).
+/// At runtime, the Decl entry lowers to `CoreExpr::Placeholder` and is skipped by lower.rs.
 pub fn inject_adt_constructors_surface_program(program: &mut SurfaceProgram) {
     for doc_spanned in &mut program.documents {
         inject_adt_constructors_document(&mut doc_spanned.node);
@@ -89,10 +106,9 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
             let syn_span = Span::origin();
             let mut new_entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
             let mut has_injection = false;
-            // Track already-injected field constructor names to prevent duplicates when two
-            // types in the same dict share a field constructor name (e.g., `Error` in both
-            // `Result` and some other type). Without deduplication, the second injection
-            // would cause E030 "duplicate key" at runtime.
+            // Track already-injected constructor names to prevent duplicates when two
+            // types in the same dict share a constructor name. Without deduplication,
+            // the second injection would cause E030 "duplicate key" at runtime.
             let mut injected_names: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
 
@@ -100,48 +116,59 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
                 // Check if this entry's value is a TypeAlias Decl
                 if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
                     if let SurfaceDeclaration::TypeAlias { body, .. } = decl.as_ref() {
-                        let ctor_names = extract_surface_adt_ctor_names_from_expr(&body.expr);
-                        if !ctor_names.is_empty() {
-                            has_injection = true;
-                            // Inject synthetic entries: CtorName: [variant "CtorName"]
-                            for ctor_name in ctor_names {
-                                if !injected_names.insert(ctor_name.clone()) {
-                                    // Already injected by a prior type in this same dict — skip.
-                                    continue;
+                        // Extract type name from the dict entry key for tag qualification.
+                        // Only Str and VarRef keys give us a stable type name.
+                        // Computed keys are skipped (no injection for that entry).
+                        // Absent keys (positional type declarations) use unqualified tags.
+                        let type_name: Option<String> = match &se.node.key {
+                            Some(key_node) => match &key_node.expr {
+                                SurfaceExpression::Str(s) => Some(s.clone()),
+                                SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                                _ => {
+                                    // Computed key — skip injection for this entry entirely.
+                                    // (Proceed to add the original entry below.)
+                                    None
                                 }
-                                let key_node = Arc::new(SurfaceNode {
-                                    expr: SurfaceExpression::Str(ctor_name.clone()),
-                                    span: syn_span.clone(),
-                                });
-                                // Build [variant "CtorName"] as a Call expression
-                                let variant_fn = Arc::new(SurfaceNode {
-                                    expr: SurfaceExpression::VarRef {
-                                        name: "variant".to_string(),
-                                        escaped: false,
-                                    },
-                                    span: syn_span.clone(),
-                                });
-                                let tag_arg = Arc::new(SurfaceNode {
-                                    expr: SurfaceExpression::Str(ctor_name),
-                                    span: syn_span.clone(),
-                                });
-                                let call_expr = SurfaceExpression::Call {
-                                    func: Arc::clone(&variant_fn),
-                                    args: vec![Arc::clone(&tag_arg)],
-                                    named_args: vec![],
-                                    implied: false,
-                                };
-                                let value_node = Arc::new(SurfaceNode {
-                                    expr: call_expr,
-                                    span: syn_span.clone(),
-                                });
-                                new_entries.push(Spanned::new(
-                                    SurfaceEntry {
-                                        key: Some(key_node),
-                                        value: value_node,
-                                    },
-                                    syn_span.clone(),
-                                ));
+                            },
+                            None => {
+                                // Positional type declaration — no type name available.
+                                // Use unqualified tags (preserves backward compatibility).
+                                None
+                            }
+                        };
+
+                        // If key is computed (Some key_node but not Str/VarRef), we determined
+                        // type_name = None above and we fall through to add the original entry.
+                        // For Str/VarRef keys AND absent keys we still inject constructors.
+                        let skip_injection = se.node.key.is_some() && type_name.is_none();
+
+                        if !skip_injection {
+                            let ctors = extract_surface_adt_ctors_from_expr(&body.expr);
+                            if !ctors.is_empty() {
+                                has_injection = true;
+                                for ctor in ctors {
+                                    if !injected_names.insert(ctor.name.clone()) {
+                                        // Already injected by a prior type in this dict — skip.
+                                        continue;
+                                    }
+                                    let qualified_tag = match &type_name {
+                                        Some(tn) => format!("{}.{}", tn, ctor.name),
+                                        None => ctor.name.clone(),
+                                    };
+                                    let key_node = Arc::new(SurfaceNode {
+                                        expr: SurfaceExpression::Str(ctor.name.clone()),
+                                        span: syn_span.clone(),
+                                    });
+                                    let value_node =
+                                        build_constructor_value(&ctor, &qualified_tag, &syn_span);
+                                    new_entries.push(Spanned::new(
+                                        SurfaceEntry {
+                                            key: Some(key_node),
+                                            value: value_node,
+                                        },
+                                        syn_span.clone(),
+                                    ));
+                                }
                             }
                         }
                     }
@@ -315,25 +342,70 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
     }
 }
 
-/// Extract field (payload-bearing) ADT constructor names from a surface TypeAlias body expression.
-///
-/// A TypeAlias body that is `[Shape [Circle r: Int] [Square s: Int]]` (all-positional Dict)
-/// has each positional entry as a union member. Only Call entries whose func is an uppercase
-/// VarRef are extracted — these are field constructors like `[Ok a]` or `[Error String]`.
-///
-/// Unit constructors (bare uppercase VarRef entries like `Tcp`, `None`) are intentionally
-/// NOT extracted here. They are handled at evaluation time via `CoreExpr::TypeDecl` injection
-/// in `eval_dict_core` (B-296). The desugar pass is no longer responsible for unit constructors.
-fn extract_surface_adt_ctor_names_from_expr(body: &SurfaceExpression) -> Vec<String> {
-    let mut names = Vec::new();
+/// A constructor extracted from a TypeAlias body expression.
+#[derive(Debug)]
+struct AliasConstructor {
+    /// Unqualified constructor name (e.g., `"Circle"`, `"Ok"`, `"None"`).
+    name: String,
+    /// Named field names, in order, for named-field constructors.
+    /// Empty for unit constructors (bare VarRef, zero-arg Call, or positional-arg Call).
+    fields: Vec<String>,
+}
 
-    fn try_extract_surface(expr: &SurfaceExpression, names: &mut Vec<String>) {
-        if let SurfaceExpression::Call { func, .. } = expr {
-            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if crate::eval::is_constructor_name(name) {
-                    names.push(name.clone());
+/// Extract all ADT constructors from a TypeAlias body expression.
+///
+/// Recognises two constructor forms:
+///
+/// 1. **Unit constructor** (no runtime fields):
+///    - Bare uppercase `VarRef { name }` — e.g., `None`, `Red`, `Tcp`
+///    - `Call { func: VarRef(UpperName), args: [...], named_args: [] }` — e.g., `[Ok a]`,
+///      `[Some]`. Positional args are type-variable annotations and carry no runtime field
+///      names, so these produce unit constructors.
+///
+/// 2. **Named-field constructor** (has runtime fields):
+///    - `Call { func: VarRef(UpperName), named_args: [(name, _), ...] }` with at least one
+///      named arg — e.g., `[Circle r: Int]`, `[Ok value: a]`. The field names (not types)
+///      become field names recorded in `AliasConstructor.fields` for the variadic fn generator.
+///
+/// Entries with named dict keys (i.e., `se.node.key.is_some()`) are skipped — those are
+/// record-body entries like `{value: Int next: Node}`, not constructor entries.
+fn extract_surface_adt_ctors_from_expr(body: &SurfaceExpression) -> Vec<AliasConstructor> {
+    let mut ctors = Vec::new();
+
+    fn try_extract(expr: &SurfaceExpression, ctors: &mut Vec<AliasConstructor>) {
+        match expr {
+            // Bare uppercase VarRef → unit constructor
+            SurfaceExpression::VarRef { name, .. } if crate::eval::is_constructor_name(name) => {
+                ctors.push(AliasConstructor {
+                    name: name.clone(),
+                    fields: Vec::new(),
+                });
+            }
+            // Call with uppercase func → unit or named-field constructor
+            SurfaceExpression::Call {
+                func, named_args, ..
+            } => {
+                if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                    if crate::eval::is_constructor_name(name) {
+                        if named_args.is_empty() {
+                            // Positional-only or zero-arg call → unit constructor
+                            ctors.push(AliasConstructor {
+                                name: name.clone(),
+                                fields: Vec::new(),
+                            });
+                        } else {
+                            // Named args → named-field constructor
+                            let fields: Vec<String> =
+                                named_args.iter().map(|na| na.node.name.clone()).collect();
+                            ctors.push(AliasConstructor {
+                                name: name.clone(),
+                                fields,
+                            });
+                        }
+                    }
                 }
             }
+            _ => {}
         }
     }
 
@@ -341,16 +413,123 @@ fn extract_surface_adt_ctor_names_from_expr(body: &SurfaceExpression) -> Vec<Str
         SurfaceExpression::Dict(entries) => {
             for entry in entries {
                 if entry.node.key.is_none() {
-                    try_extract_surface(&entry.node.value.expr, &mut names);
+                    // Positional entry in [type ...] body — may be a constructor
+                    try_extract(&entry.node.value.expr, &mut ctors);
                 }
+                // Named-key entries are record-body type annotations, not constructors — skip.
             }
         }
         other => {
-            try_extract_surface(other, &mut names);
+            // Single-entry type body (no dict wrapper)
+            try_extract(other, &mut ctors);
         }
     }
 
-    names
+    ctors
+}
+
+/// Build the SurfaceExpression value for an injected constructor entry.
+///
+/// - Unit constructor (`ctor.fields` is empty): `[variant "TypeName.CtorName"]`
+/// - Named-field constructor (`ctor.fields` non-empty):
+///   `[fn [...payload] [variant "TypeName.CtorName" payload]]`
+///   A variadic `...payload` param collects all named args into a dict at runtime
+///   (via bind_args_thunks B-277 / C-NAMED-VALID amended for variadics).
+///   Callers use named args: `[Ctor field1: val1 field2: val2]`.
+///
+///   Note: per-field positional params would cause letrec self-reference in the payload
+///   dict body, because dict keys shadow outer scope bindings with the same name.
+///   The variadic form avoids this by collecting named args BEFORE building any inner dict.
+fn build_constructor_value(
+    ctor: &AliasConstructor,
+    qualified_tag: &str,
+    syn_span: &Span,
+) -> Arc<SurfaceNode> {
+    let variant_fn = Arc::new(SurfaceNode {
+        expr: SurfaceExpression::VarRef {
+            name: "variant".to_string(),
+            escaped: false,
+        },
+        span: syn_span.clone(),
+    });
+    let tag_arg = Arc::new(SurfaceNode {
+        expr: SurfaceExpression::Str(qualified_tag.to_string()),
+        span: syn_span.clone(),
+    });
+
+    if ctor.fields.is_empty() {
+        // Unit constructor: [variant "TypeName.CtorName"]
+        Arc::new(SurfaceNode {
+            expr: SurfaceExpression::Call {
+                func: variant_fn,
+                args: vec![tag_arg],
+                named_args: vec![],
+                implied: false,
+            },
+            span: syn_span.clone(),
+        })
+    } else {
+        // Named-field constructor: variadic fn that collects named args into a payload dict.
+        //
+        // Calling convention: the variadic `...payload` param collects all named args (e.g.,
+        // `field1: val1 field2: val2`) into a single Dict at runtime, via the B-277 extension
+        // to bind_args_thunks (C-NAMED-VALID amended: unmatched named args flow into variadic).
+        //
+        // Why variadic instead of per-field positional params:
+        // Using `[fn [field1 field2 ...] [variant "Tag" [field1: field1 field2: field2 ...]]]`
+        // causes a letrec self-reference. The inner payload dict `[field1: field1 ...]` enters
+        // a letrec scope that shadows the fn params with the SAME names. The resolver assigns
+        // level=0 (inner dict scope) to the VarRef references, making each dict value reference
+        // ITS OWN entry rather than the fn param → cycle error at runtime.
+        //
+        // The variadic form avoids this: `payload` is collected by bind_args_thunks into a
+        // materialized Dict BEFORE any inner dict is constructed in the body. The body
+        // `[variant "Tag" payload]` simply references the already-bound `payload` param.
+        //
+        // Generates: [fn [...payload] [variant "TypeName.CtorName" payload]]
+        // Callers use: `[Ctor field1: val1 field2: val2]`
+
+        // Build [variant "TypeName.CtorName" payload] — body references the variadic param
+        let payload_ref = Arc::new(SurfaceNode {
+            expr: SurfaceExpression::VarRef {
+                name: "payload".to_string(),
+                escaped: false,
+            },
+            span: syn_span.clone(),
+        });
+
+        // Build [variant "TypeName.CtorName" payload]
+        let variant_call = Arc::new(SurfaceNode {
+            expr: SurfaceExpression::Call {
+                func: variant_fn,
+                args: vec![tag_arg, payload_ref],
+                named_args: vec![],
+                implied: false,
+            },
+            span: syn_span.clone(),
+        });
+
+        // Build fn params: [...payload] — single variadic param collecting all named args
+        let params: Vec<Spanned<SurfaceParam>> = vec![Spanned::new(
+            SurfaceParam {
+                name: "payload".to_string(),
+                annotation: None,
+                variadic: true,
+            },
+            syn_span.clone(),
+        )];
+
+        // Build [fn [...payload] [variant "TypeName.CtorName" payload]]
+        Arc::new(SurfaceNode {
+            expr: SurfaceExpression::Fn {
+                return_ann: None,
+                params,
+                body: variant_call,
+                desugared: true, // Synthetic: suppress $_ auto-lambda wrapping
+            },
+            span: syn_span.clone(),
+        })
+    }
 }
 
 /// Desugar a single SurfaceDocument (all expression items).

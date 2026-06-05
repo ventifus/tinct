@@ -152,9 +152,11 @@ The elaboration pass in `typecheck_match.rs` processes every pattern before type
 - `Pattern::TypeAssertPending { annotation, inner }` → call `resolve_annotation` → `Pattern::TypeAssert { resolved_type, inner }`
 - `Pattern::Constructor { tag }` where tag resolves to a nominal type constructor → keep as `Pattern::Constructor` with qualified tag
 - `Pattern::Constructor { tag }` where tag resolves to a `builtin-type` TyCon → rewrite to `Pattern::TypeAssert { resolved_type: Type::TyCon(tag), inner: binding }`
-- `Pattern::Constructor { tag }` not found in TyConEnv → type error: "undefined type name or constructor `X` in pattern position"
+- `Pattern::Constructor { tag }` not found in TyConEnv → pattern left UNCHANGED (graceful fallback while T-1003/S-852 is pending); future: type error once tycon_env is populated
 
-`Pattern::TypeAssertPending` is a surface-only form produced by the parser for explicit `[@Type x]` annotations. It never reaches the evaluator — the elaboration pass always rewrites it to `Pattern::TypeAssert`.
+The elaborated pattern is used locally within `infer_match` for `collect_pattern_bindings`; the stored match arm pattern remains `TypeAssertPending` for the evaluator, which uses its own runtime resolution path.
+
+`Pattern::TypeAssertPending` is a surface-only form produced by the parser for explicit `[@Type x]` annotations. The typecheck elaboration pass rewrites it to `Pattern::TypeAssert` for `collect_pattern_bindings`, but the evaluator also performs its own minimal runtime resolution from `TypeAssertPending` for known primitive type names. The `Pattern::TypeAssert` arm in the evaluator handles fully-resolved types once the elaboration bridge is complete (S-850+).
 
 ### Pattern AST Nodes
 
@@ -172,6 +174,10 @@ Pattern::Constructor { tag: String, binding: Option<Box<Spanned<Pattern>>> }
 `inner: None` = bare type pattern (`Int:`, `Color.Red:`). `inner: Some(pat)` = type-guarded binding (`[@Int x]`).
 
 The evaluator's `match_pattern` arm for `TypeAssert`:
+
+> (S-850+: currently unreachable from normal eval pipeline — TypeAssertPending runtime handler at
+> eval.rs is the operative path. The TypeAssert arm exists for the future state when elaboration
+> results are persisted through to the evaluator.)
 
 ```rust
 Pattern::TypeAssert { resolved_type, inner } => {
@@ -193,7 +199,7 @@ Tinct has one canonical `values_equal` function in `src/eval.rs` (async). All eq
 - `CaseArmExactValueCheck` — calls `eval::values_equal` with `.await`
 - `builtins_meta.rs` enum constraint handler — calls `eval::values_equal` with `.await`
 
-The canonical implementation handles: `(Int, Int)`, `(Float, Float)`, `(Bool, Bool)`, `(String, String)`, `(Variant{payload:None}, Variant{payload:None})` unit-tag equality, `(Variant{tag:t1,payload:Some(p1)}, Variant{tag:t2,payload:Some(p2)})` payload-Variant equality, `(Dict, Dict)` structural equality with cycle detection via `visited: Arc<Mutex<HashSet<(usize, usize)>>>`. Cross-type comparisons return `Ok(false)`.
+The canonical implementation handles: `(Int, Int)`, `(Float, Float)`, `(Bool, Bool)`, `(String, String)`, `(Variant{payload:None}, Variant{payload:None})` unit-tag equality, `(Variant{tag:t1,payload:Some(p1)}, Variant{tag:t2,payload:Some(p2)})` payload-Variant equality, `(Dict, Dict)` structural equality with cycle detection via `materialize`'s InProgress sentinel (Launchbury 1993 blackholing). Cross-type comparisons return `Ok(false)`.
 
 The invariant: **`[= a b]` returns true if and only if `a: arm` matches `b`**. All equality paths implement the same semantics.
 
@@ -237,7 +243,7 @@ error: no match arm satisfied
 - **Type inference:** `infer_match` in `src/typecheck.rs` infers the return type as the union of all arm expression types, narrowed by the scrutinee type
 - **Evaluation:** `eval_materialize.rs` materializes the scrutinee, then evaluates arms in order until a pattern matches
 - **Pattern compilation:** Constructor patterns are compiled to `Pattern::Constructor` AST nodes; the evaluator uses `match_pattern` to test each arm
-- **Elaboration:** `typecheck_match.rs` resolves `Pattern::TypeAssertPending → Pattern::TypeAssert` and qualifies constructor tags before type checking arm bodies
+- **Elaboration:** `typecheck_match.rs` resolves `Pattern::TypeAssertPending → Pattern::TypeAssert` and qualifies constructor tags before type checking arm bodies. The elaborated pattern is used locally within `infer_match` for `collect_pattern_bindings`; the stored match arm pattern remains `TypeAssertPending` for the evaluator, which uses its own runtime resolution path.
 - **`flatten_dot_access_to_tag`:** defined in `src/ast.rs` as `pub(crate)`; called from `src/parser.rs` (two sites) and `src/typecheck_special.rs` (monad detection)
 
 See `doc/feature/nominal-variants.md` for the nominal variant design and `src/typecheck.rs` for the complete exhaustiveness algorithm.

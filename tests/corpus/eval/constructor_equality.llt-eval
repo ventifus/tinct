@@ -1,0 +1,10 @@
+# T-977: Constructor equality — same qualified tag compares equal, different tags compare unequal.
+# values_equal on Variant{payload: None} compares tag strings directly.
+# Red == Red is true; Red == Green is false.
+[Color: [type Red Green Blue]]
+[eq-same: [= Red Red]  eq-diff: [= Red Green]]
+=== out
+Dict({"eq-same": Bool(true), "eq-diff": Bool(false)})
+
+=== warn
+cannot unify nominal variants with different tags: Red and Green at 4:33-4:46

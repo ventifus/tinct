@@ -1,7 +1,7 @@
 # to-tinct: serialize a variant (unary constructor)
 [to-tinct [Ok 42]]
 === out
-String("[Ok 42]")
+String("[Result.Ok 42]")
 
 === warn
 undefined variable: Ok at 1:12-1:14

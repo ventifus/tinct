@@ -6,4 +6,4 @@
 
 [do result]
 === out
-Variant(Ok, Dict({}))
+Variant(Result.Ok, Dict({}))

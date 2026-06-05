@@ -294,7 +294,6 @@ fn collect_free_vars(
         | CoreExpr::Float(_)
         | CoreExpr::Bool(_)
         | CoreExpr::Str(_)
-        | CoreExpr::TypeDecl { .. }
         | CoreExpr::Placeholder
         | CoreExpr::Error(_)
         | CoreExpr::Rest(_) => {}
@@ -569,7 +568,6 @@ fn collect_free_vars_in_quote(
         | CoreExpr::FreeVar(_)
         | CoreExpr::Annotated { .. }
         | CoreExpr::Rest(_)
-        | CoreExpr::TypeDecl { .. }
         | CoreExpr::Placeholder
         | CoreExpr::Error(_) => {}
     }
@@ -637,8 +635,7 @@ fn core_expr_to_tinct(
         CoreExpr::Bool(b) => Ok(fmt_bool(*b).to_string()),
         CoreExpr::Str(s) => Ok(fmt_string(s)),
 
-        // TypeDecl, Placeholder, and Error — emit as opaque marker strings
-        CoreExpr::TypeDecl { .. } => Ok("[type ...]".to_string()),
+        // Placeholder and Error — emit as opaque marker strings
         CoreExpr::Placeholder => Ok("_".to_string()),
         CoreExpr::Error(_) => Err("cannot serialize CoreExpr::Error to tinct".to_string()),
 
@@ -1052,7 +1049,6 @@ fn core_expr_to_tinct_raw(
         CoreExpr::Float(f) => fmt_float(*f),
         CoreExpr::Bool(b) => Ok(fmt_bool(*b).to_string()),
         CoreExpr::Str(s) => Ok(fmt_string(s)),
-        CoreExpr::TypeDecl { .. } => Ok("[type ...]".to_string()),
         CoreExpr::Placeholder => Ok("_".to_string()),
         CoreExpr::Error(_) => Err("cannot serialize CoreExpr::Error".to_string()),
         CoreExpr::Rest(name) => match name {

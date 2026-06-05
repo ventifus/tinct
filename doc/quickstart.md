@@ -288,7 +288,7 @@ Sum types with payloads use `try` in the standard library:
   # Unit variant: bare name
   nothing: None
 
-  # Payload variant: call constructor with named field
+  # Payload variant: call constructor with named field (B-337: named-field calling coming soon)
   something: [Some value: 42]
 
   # Pattern match on variants — [Some v] binds v to the payload value
@@ -309,6 +309,9 @@ Sum types with payloads use `try` in the standard library:
 ```
 
 **Named-field variants** — the pattern binds the payload value:
+
+> Note: Named-field constructor calling (e.g., `[Some value: 42]`) is tracked in B-337 — coming in a
+> future release. The examples below show the intended syntax; the match pattern form already works.
 
 ```tinct
 [

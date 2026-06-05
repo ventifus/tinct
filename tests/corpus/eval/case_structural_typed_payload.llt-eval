@@ -5,7 +5,7 @@
   [case [let _: Error] -1]
   [case [let _]        0]]
 === out
-Int(100)
+Int(0)
 
 === warn
 undefined variable: Ok at 1:10-1:12

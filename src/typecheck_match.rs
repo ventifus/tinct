@@ -11,13 +11,201 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use super::{check_surface_expr, infer_surface_expr, TypeMap};
-use crate::ast::{Annotation, Param, Span, Spanned, SurfaceExpression, SurfaceNode};
+use crate::ast::{Annotation, Param, Pattern, Span, Spanned, SurfaceExpression, SurfaceNode};
 use crate::types::{instantiate_scheme, unify, InferState, Type, TypeEnv, TypeError};
 
 // resolve_annotation and resolve_fn_metadata come from typecheck_annot via the
 // `use typecheck_annot::*` glob in typecheck.rs; they are re-exported into super's
 // namespace, so we pull them through super here.
 use super::{resolve_annotation, resolve_fn_metadata};
+
+/// Elaboration pass: resolve `Pattern::TypeAssertPending → Pattern::TypeAssert` for all
+/// patterns in a match arm BEFORE type-checking the arm body.
+///
+/// This pass must run before `collect_pattern_bindings` so that `TypeAssert { resolved_type }`
+/// is available — `TypeAssertPending` carries only the annotation surface form and cannot
+/// provide a concrete `Type` for variable binding.
+///
+/// The function recursively walks all pattern positions:
+/// - `TypeAssertPending { annotation, inner }`: calls `resolve_annotation` to produce a
+///   concrete `Type`, then rewrites to `TypeAssert { resolved_type, inner }`.
+/// - `Or(branches)`: elaborates each branch independently.
+/// - `Constructor { tag, binding }`: looks up `tag` in `state.tycon_env`.
+///   - Builtin-type TyConDef (`def.builtin_type.is_some()`): rewrites to
+///     `TypeAssert { resolved_type: TyCon(tag), inner: binding }` so match uses `value_matches_type`.
+///   - Nominal TyConDef (`!def.constructors.is_empty()`): qualifies `tag` via
+///     `env.resolve_constructor_tag` if unqualified, keeps `Pattern::Constructor`.
+///   - Not found / empty constructors: leaves pattern UNCHANGED (graceful fallback for T-1003).
+/// - `Dict { fields, .. }`: elaborates each field sub-pattern.
+/// - `Seq { head, tail }`: elaborates both sub-patterns.
+/// - `TypeAssert { inner, .. }`: already resolved — recurse into inner if present.
+/// - All other patterns (`Variable`, `Wildcard`, `Literal`, `Pin`, `TypeTag`): pass through.
+///
+/// Each recursive call carries the span of the sub-pattern being elaborated; for
+/// `TypeAssertPending`, the annotation's own span is used as the error location.
+pub(crate) fn elaborate_pattern(
+    pat: &Pattern,
+    env: &Rc<TypeEnv>,
+    state: &mut InferState,
+) -> Result<Pattern, Vec<TypeError>> {
+    match pat {
+        Pattern::TypeAssertPending { annotation, inner } => {
+            // Resolve the annotation to a concrete Type.
+            let resolved_type = resolve_annotation(
+                &annotation.node,
+                env,
+                annotation.span.clone(),
+                state,
+                &mut None,
+                &mut None,
+            )
+            .map_err(|e| vec![e])?;
+
+            // Recursively elaborate the inner sub-pattern if present.
+            let elaborated_inner = inner
+                .as_ref()
+                .map(
+                    |boxed_spanned| -> Result<Box<Spanned<Pattern>>, Vec<TypeError>> {
+                        let elaborated = elaborate_pattern(&boxed_spanned.node, env, state)?;
+                        Ok(Box::new(Spanned::new(
+                            elaborated,
+                            boxed_spanned.span.clone(),
+                        )))
+                    },
+                )
+                .transpose()?;
+
+            Ok(Pattern::TypeAssert {
+                resolved_type,
+                inner: elaborated_inner,
+            })
+        }
+
+        Pattern::Or(branches) => {
+            let elaborated_branches = branches
+                .iter()
+                .map(|spanned_pat| {
+                    let elaborated = elaborate_pattern(&spanned_pat.node, env, state)?;
+                    Ok(Spanned::new(elaborated, spanned_pat.span.clone()))
+                })
+                .collect::<Result<Vec<_>, Vec<TypeError>>>()?;
+            Ok(Pattern::Or(elaborated_branches))
+        }
+
+        Pattern::Constructor { tag, binding } => {
+            // Helper: recursively elaborate the optional payload binding.
+            let elaborate_binding =
+                |binding: &Option<Box<Spanned<Pattern>>>,
+                 env: &Rc<TypeEnv>,
+                 state: &mut InferState|
+                 -> Result<Option<Box<Spanned<Pattern>>>, Vec<TypeError>> {
+                    binding
+                        .as_ref()
+                        .map(|boxed_spanned| {
+                            let elaborated = elaborate_pattern(&boxed_spanned.node, env, state)?;
+                            Ok(Box::new(Spanned::new(
+                                elaborated,
+                                boxed_spanned.span.clone(),
+                            )))
+                        })
+                        .transpose()
+                };
+
+            let tycon_lookup = state.tycon_env.get(tag.as_str()).cloned();
+            if let Some(ref def) = tycon_lookup {
+                if def.builtin_type.is_some() {
+                    // Case b: builtin-type TyConDef (e.g., Int:, Str:, Bool: used as patterns).
+                    // Rewrite to TypeAssert so the pattern-matching logic can use value_matches_type.
+                    let elaborated_inner = elaborate_binding(binding, env, state)?;
+                    return Ok(Pattern::TypeAssert {
+                        resolved_type: Type::TyCon(tag.clone()),
+                        inner: elaborated_inner,
+                    });
+                }
+                if !def.constructors.is_empty() {
+                    // Case a: nominal user-defined type — keep as Constructor but qualify the tag
+                    // if it is unqualified (no '.') and the TypeEnv has a resolution for it.
+                    let qualified_tag = if !tag.contains('.') {
+                        env.resolve_constructor_tag(tag)
+                            .unwrap_or_else(|| tag.clone())
+                    } else {
+                        tag.clone()
+                    };
+                    let elaborated_inner = elaborate_binding(binding, env, state)?;
+                    return Ok(Pattern::Constructor {
+                        tag: qualified_tag,
+                        binding: elaborated_inner,
+                    });
+                }
+            }
+            // Case c: not found in TyConEnv (or found with empty constructors and no
+            // builtin_type — transitional state while T-1003 in S-852 is pending).
+            // Leave the pattern UNCHANGED; errors are reported elsewhere.
+            let elaborated_inner = elaborate_binding(binding, env, state)?;
+            Ok(Pattern::Constructor {
+                tag: tag.clone(),
+                binding: elaborated_inner,
+            })
+        }
+
+        Pattern::Dict { fields, rest } => {
+            let elaborated_fields = fields
+                .iter()
+                .map(|(key, spanned_pat)| {
+                    let elaborated = elaborate_pattern(&spanned_pat.node, env, state)?;
+                    Ok((
+                        key.clone(),
+                        Spanned::new(elaborated, spanned_pat.span.clone()),
+                    ))
+                })
+                .collect::<Result<Vec<_>, Vec<TypeError>>>()?;
+            Ok(Pattern::Dict {
+                fields: elaborated_fields,
+                rest: *rest,
+            })
+        }
+
+        Pattern::Seq { head, tail } => {
+            let elaborated_head = elaborate_pattern(&head.node, env, state)?;
+            let elaborated_tail = elaborate_pattern(&tail.node, env, state)?;
+            Ok(Pattern::Seq {
+                head: Box::new(Spanned::new(elaborated_head, head.span.clone())),
+                tail: Box::new(Spanned::new(elaborated_tail, tail.span.clone())),
+            })
+        }
+
+        Pattern::TypeAssert {
+            resolved_type,
+            inner,
+        } => {
+            // Already elaborated — recurse into inner sub-pattern if present.
+            let elaborated_inner = inner
+                .as_ref()
+                .map(
+                    |boxed_spanned| -> Result<Box<Spanned<Pattern>>, Vec<TypeError>> {
+                        let elaborated = elaborate_pattern(&boxed_spanned.node, env, state)?;
+                        Ok(Box::new(Spanned::new(
+                            elaborated,
+                            boxed_spanned.span.clone(),
+                        )))
+                    },
+                )
+                .transpose()?;
+            Ok(Pattern::TypeAssert {
+                resolved_type: resolved_type.clone(),
+                inner: elaborated_inner,
+            })
+        }
+
+        // Pass-through patterns: Variable, Wildcard, Literal, Pin, TypeTag carry no
+        // sub-patterns and require no annotation resolution.
+        Pattern::Variable(_)
+        | Pattern::Wildcard
+        | Pattern::Literal(_)
+        | Pattern::Pin(_)
+        | Pattern::TypeTag(_) => Ok(pat.clone()),
+    }
+}
 
 /// Type-check a case arm: pattern + body.
 ///

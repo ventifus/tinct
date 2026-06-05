@@ -15,7 +15,7 @@ use crate::value::{Environment, Key, Thunk, ThunkId, Value};
 // eval.rs imports invoke_function/CallContext from this module, while
 // this module imports eval/EvalContext from eval.rs. Neither module's
 // initialization depends on the other.
-use crate::eval::{materialize, EvalContext};
+use crate::eval::EvalContext;
 use crate::eval_core::eval_core_expr;
 
 const DEFAULT_ANNOTATION_KEY: &str = "default";
@@ -133,71 +133,7 @@ pub struct CallContext<'a> {
 /// Binds positional and named args to function params (respecting defaults and
 /// variadics), then wraps the body as an unevaluated thunk. This is the shared
 /// call path for both `eval_call` and `builtin_apply`.
-///
-/// Special case: variant constructors (marked by VARIANT_TAG_MARKER in closure env)
-/// wrap their single argument in a Value::Variant instead of normal function invocation.
 pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
-    // Marker for variant constructor functions (defined in eval.rs)
-    const VARIANT_TAG_MARKER: &str = "__variant_tag__";
-
-    // Check if this is a variant constructor
-    // Clone the thunk before releasing the lock — holding a RwLockReadGuard across an await
-    // point is unsound when using tokio::task::LocalSet with its cooperative scheduling model.
-    let variant_tag_thunk = ctx
-        .closure_env
-        .read()
-        .unwrap()
-        .get(VARIANT_TAG_MARKER)
-        .map(|t| Arc::clone(&t));
-    if let Some(tag_thunk) = variant_tag_thunk {
-        // Validate: variant constructors take exactly one positional argument, no named args
-        if ctx.positional.len() != 1 {
-            return Err(
-                EvalError::arity_mismatch(1, ctx.positional.len(), ctx.call_span.clone()).into(),
-            );
-        }
-
-        if ctx.named.is_some_and(|n| !n.is_empty()) {
-            return Err(EvalError::named_arg_rejected(
-                "variant constructor".to_string(),
-                ctx.call_span.clone(),
-            )
-            .into());
-        }
-
-        // Extract the tag from the marker
-        let tag_value = materialize(&tag_thunk, Some(&ctx.call_span.clone()), ctx.ctx).await?;
-        let tag = match tag_value {
-            Value::String {
-                ref source,
-                start,
-                end,
-            } => source[start..end].to_string(),
-            _ => {
-                return Err(EvalError::internal(
-                    "variant constructor tag must be a string".to_string(),
-                    ctx.call_span.clone(),
-                )
-                .into());
-            }
-        };
-
-        // Store the payload thunk in arena (keeps it lazy)
-        let payload_id = ctx.ctx.alloc_thunk(Arc::clone(&ctx.positional[0]));
-
-        // Create the variant value
-        let variant = Value::Variant {
-            tag,
-            payload: Some(payload_id),
-        };
-
-        return Ok(Arc::new(Thunk::new_materialized(
-            variant,
-            ctx.call_span.clone(),
-        )));
-    }
-
-    // Normal function invocation
     let call_env = bind_args_thunks(
         ctx.params,
         ctx.positional,

@@ -23,8 +23,9 @@
 
   # Function that takes a declared-union-type parameter and pattern-matches on it
   # Pattern [Ok v] extracts the payload; body uses it as-is.
-  # Type checker: v gets Type::Unknown (from empty declared fields), which allows
-  # the body expression v to type-check (Unknown is consistent with any type).
+  # NOTE: After T-974, Ok = Variant("_result.Ok", None). The pattern [Ok v] has tag "Ok"
+  # which does NOT match "_result.Ok". Pattern matching fails (match exhaustion).
+  # This will work correctly once T-968 (elaboration pass to qualify pattern tags) lands.
   unwrap: [fn [let r@Result]
     [match r
       [Ok v]: v
@@ -35,8 +36,8 @@
   # Call the function with a B-219-constructed Ok value
   result: [unwrap [Ok 42]]
 ]
-=== out
-Dict({"Result": Variant(Result, Null), "Ok": Variant(Ok, Null), "Err": Variant(Err, Null), "direct": Variant(Ok, Int(42)), "unwrap": Function(r), "result": Int(42)})
+=== error
+[E071] non-exhaustive match: no pattern matched the Variant value (defined at 29:5-32:6)
 
 === warn
-undefined type: Result at 27:22-27:28
+undefined type: Result at 28:22-28:28

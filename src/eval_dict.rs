@@ -79,11 +79,10 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
 /// - Non-literal values become CoreExpr thunks in `dict_env` (UnevaluatedState::CoreExpr)
 ///   — no CoreExpr→Expr round-trip for dict values.
 ///
-/// **B-296 constructor injection**: Unit constructors from `CoreExpr::TypeDecl` entries
-/// are injected directly into `dict_env` as materialized Variant thunks. Field constructors
-/// (`[Ok a]`, `[Error String]`) are still injected by the desugar pass as
-/// `Ctor: [variant "CtorName"]` entries. T-902 removed unit constructors from the desugar
-/// pass, so there is no double-injection and no deduplication is needed.
+/// **Constructor injection**: All constructors (unit and named-field) are injected by the
+/// desugar pass (`inject_adt_constructors_expr`) as ordinary `SurfaceExpression` entries
+/// before lowering. No runtime pre-scan is needed — there are no `CoreExpr::TypeDecl`
+/// entries in the lowered AST.
 pub(crate) async fn eval_dict_core(
     entries: &[Spanned<CoreEntry>],
     parent_env: &Arc<RwLock<Environment>>,
@@ -125,48 +124,7 @@ pub(crate) async fn eval_dict_core(
     // collect first and write after.
     let mut letrec_slots: Vec<(u32, ThunkId)> = Vec::new();
 
-    // B-296: Pre-scan for TypeDecl entries and inject unit constructors.
-    // This matches the desugar-pass behavior where constructors are inserted at the
-    // BEGINNING of the dict (before other entries). We inject into both dict_map
-    // (as dict fields) and dict_env (as letrec bindings).
-    //
-    // Unit constructors are handled exclusively here (T-902 removed them from the
-    // desugar pass). Field constructors ([Ok a], [Error String]) continue to be
-    // injected by the desugar pass as `Ctor: [variant "CtorName"]` entries.
-    if let Some(d_env) = dict_env.as_ref() {
-        for entry in entries {
-            if let CoreExpr::TypeDecl { unit_constructors } = &entry.node.value.node {
-                for ctor_name in unit_constructors {
-                    // Create materialized Variant thunk with no payload
-                    let variant_thunk = Arc::new(Thunk::new_materialized(
-                        Value::Variant {
-                            tag: ctor_name.clone(),
-                            payload: None,
-                        },
-                        entry.span.clone(),
-                    ));
-                    let thunk_id = ctx.alloc_thunk(Arc::clone(&variant_thunk));
-
-                    // Insert into dict_map as a field entry (at current position)
-                    dict_map.insert(Key::String(Rc::from(ctor_name.as_str())), thunk_id);
-
-                    // Insert into dict_env so sibling entries can reference it
-                    d_env
-                        .write()
-                        .unwrap()
-                        .insert(ctor_name.clone(), Arc::clone(&variant_thunk));
-                }
-            }
-        }
-    }
-
     for entry in entries {
-        // B-296: Skip TypeDecl entries — they don't become dict fields, only inject constructors.
-        // The constructors were already injected in the pre-scan above.
-        if matches!(&entry.node.value.node, CoreExpr::TypeDecl { .. }) {
-            continue;
-        }
-
         // Determine if this entry has a static key (CoreExpr::Str or CoreExpr::Annotated).
         // Must match resolve.rs Resolver::walk_expr Dict arm exactly — use the shared predicate.
         let is_static_key = entry

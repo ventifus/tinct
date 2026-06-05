@@ -1732,8 +1732,13 @@ pub(crate) fn infer_surface_expr(
                     _ => scrutinee_ty.clone(),
                 };
 
+                // Elaboration pass: resolve TypeAssertPending → TypeAssert before collecting
+                // pattern bindings. This ensures collect_pattern_bindings sees resolved_type
+                // (not the raw annotation) when computing variable types for arm body checking.
+                let elaborated_pat = elaborate_pattern(&arm.pattern.node, env, state)?;
+
                 let mut pat_bindings: Vec<(String, Type)> = Vec::new();
-                collect_pattern_bindings(&arm.pattern.node, &arm_scrutinee_ty, &mut pat_bindings);
+                collect_pattern_bindings(&elaborated_pat, &arm_scrutinee_ty, &mut pat_bindings);
                 let arm_env = if pat_bindings.is_empty() {
                     env.clone()
                 } else {
@@ -1786,7 +1791,9 @@ pub(crate) fn infer_surface_expr(
 
             // Exhaustiveness checking (Maranget 2007).
             let sig = match &scrutinee_ty {
-                Type::Union(members) => coverage::ConstructorSignature::from_union(members),
+                Type::Union(members) => {
+                    coverage::ConstructorSignature::from_union(members, &state.tycon_env)
+                }
                 Type::NominalVariant { tag, fields } => Some(
                     coverage::ConstructorSignature::from_nominal_variant(tag, fields),
                 ),
@@ -1796,6 +1803,42 @@ pub(crate) fn infer_surface_expr(
                         (coverage::ConstructorTag::LiteralBool(false), 0),
                     ],
                 }),
+                // User-defined type constructors: look up TyConDef.constructors in tycon_env.
+                // Handles both bare TyCon(name) scrutinees and App(TyCon(name), arg) forms
+                // (e.g., `Seq[Int]` or a user-defined parameterized type).
+                // TyConDef.constructors is empty until T-1003 populates it; in that case
+                // we return None so coverage checking is skipped (no false non-exhaustiveness).
+                ty @ Type::TyCon(_) | ty @ Type::App(_, _) => {
+                    // Extract the root TyCon name from TyCon(name) or App(TyCon(name), _).
+                    let tycon_name = match ty {
+                        Type::TyCon(n) => Some(n.as_str()),
+                        Type::App(f, _) => match f.as_ref() {
+                            Type::TyCon(n) => Some(n.as_str()),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    match tycon_name.and_then(|name| state.tycon_env.get(name)) {
+                        Some(def) if !def.constructors.is_empty() => {
+                            // Constructors are known — build a sig so coverage can be checked.
+                            // Arity clamped to 0/1 (Pattern::Constructor has one binding slot).
+                            let ctors = def
+                                .constructors
+                                .iter()
+                                .map(|(tag, arity)| {
+                                    let clamped = if *arity == 0 { 0 } else { 1 };
+                                    (coverage::ConstructorTag::Variant(tag.clone()), clamped)
+                                })
+                                .collect();
+                            Some(coverage::ConstructorSignature {
+                                constructors: ctors,
+                            })
+                        }
+                        // Constructors not yet populated (pending T-1003) or TyCon not found —
+                        // skip coverage checking to avoid false non-exhaustiveness warnings.
+                        _ => None,
+                    }
+                }
                 _ => None,
             };
 
@@ -1805,7 +1848,11 @@ pub(crate) fn infer_surface_expr(
                     .map(|arm| coverage::ast_pattern_to_coverage(&arm.pattern.node))
                     .collect();
                 let has_guards: Vec<bool> = arms.iter().map(|arm| arm.guard.is_some()).collect();
-                let result = coverage::check_coverage(&coverage_patterns, &sig, &has_guards);
+                let result = coverage::check_coverage(
+                    &coverage_patterns,
+                    &sig,
+                    &has_guards,
+                );
                 let mut match_errors: Vec<TypeError> = Vec::new();
 
                 if !result.exhaustive {

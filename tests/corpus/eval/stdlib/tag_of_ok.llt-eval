@@ -1,7 +1,7 @@
 # tag-of: extract tag name from Ok variant
 [tag-of [Ok 42]]
 === out
-String("Ok")
+String("Result.Ok")
 
 === warn
 undefined variable: Ok at 1:10-1:12

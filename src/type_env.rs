@@ -1295,6 +1295,11 @@ impl TypeEnv {
     /// in the same frame have a constructor with the same unqualified name, the first match in
     /// iteration order is returned (HashMap order; determinism not guaranteed for ambiguous cases).
     pub fn resolve_constructor_tag(&self, name: &str) -> Option<String> {
+        // Already qualified — no lookup needed.
+        if name.contains('.') {
+            return Some(name.to_string());
+        }
+
         // Search the current frame first (inner-wins).
         for (tycon_name, def) in &self.tycon_defs {
             for (ctor_tag, _arity) in &def.constructors {

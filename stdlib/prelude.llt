@@ -2812,7 +2812,15 @@ Example:
 # See doc/whatif/include-decomposition.md for full design rationale.
 
 # IncludeCacheEntry runtime variant constructors.
-# Also declared in the type-stage section for the type namespace.
+# Also declared in the type-stage section (line ~76) for the type namespace.
+#
+# Two declarations exist intentionally:
+#   Type-stage declaration (--- stage: type): uses unqualified tag semantics at the type level —
+#     the type checker sees bare "Missing", "Pending", "Cached" constructor names.
+#   Runtime declaration (here): injects constructors with qualified tags (T-974) so that
+#     inject_adt_constructors_expr produces "IncludeCacheEntry.Missing" etc. in the runtime env.
+#   Rust builtins (builtin-include-cache-get/put) return unqualified tags and rely on
+#     strip_prefix logic (analogous to builtins_io.rs:238) for the round-trip.
 IncludeCacheEntry: [type Missing Pending [Cached Any]]
 # Constructors Missing, Pending, Cached are automatically exported by the type checker
 # (B-296 fix) — no explicit re-exports needed.

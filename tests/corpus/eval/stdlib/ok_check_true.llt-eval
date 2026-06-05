@@ -1,7 +1,14 @@
 # ok?: check if Result is Ok - true case
 [ok? [Ok 42]]
-=== out
-Bool(true)
+=== error
+[E071] non-exhaustive match: no pattern matched the Variant value (defined at stdlib/prelude.llt:1549:5-1551:26)
+  --> stdlib/prelude.llt:1549:5-1551:26
+   |
+  1549 |     [match r
+  1550 |         [Ok _]: true
+  1551 |         [Error _]: false]]
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [ok? ...] at 1:1-1:14
 
 === warn
 undefined variable: Ok at 1:7-1:9

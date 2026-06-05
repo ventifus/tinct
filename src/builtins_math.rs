@@ -19,11 +19,8 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 
-use crate::ast::Span;
 use crate::builtins::{check_float_result, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
-use crate::eval::{materialize_sync as materialize, EvalContext};
-use crate::value::Key;
 use crate::value::{BuiltinArgs, Thunk, Value};
 
 /// Maximum safe integer for Int→Float promotion (2^53).
@@ -235,9 +232,13 @@ pub(crate) fn builtin_div_float(
 }
 
 /// `=`: Equality comparison.
-/// Works on Int, Float, String, Bool. Cross-type Int/Float comparison
-/// promotes Int to Float. Dict/Function/Builtin are never equal (returns false,
-/// not an error).
+///
+/// Delegates all structural equality logic to the canonical `eval::values_equal`,
+/// which handles Int, Float, String, Bool, Variant (with/without payload), Dict,
+/// Seq. Cross-type combinations return false (no Int/Float promotion in equality).
+///
+/// Cycle detection for Dict/Seq is provided by `materialize`'s InProgress sentinel.
+///
 /// Inherently materializing: must inspect values to determine equality.
 pub(crate) fn builtin_eq(
     ctx_arg: BuiltinArgs,
@@ -254,11 +255,12 @@ pub(crate) fn builtin_eq(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        // Fast paths for built-in types are handled directly. Non-Int/Float/String/Bool/Variant/Dict
-        // types fall through to Equatable instance dispatch.
-        // NOTE: Int/Float/String/Bool fast paths MUST come before dispatch. This prevents
-        // infinite recursion: EquatableInt.eq calls [builtin-eq a b] → hits (Int,Int) fast path
-        // → returns immediately without dispatch. Safe.
+        // Both args are pre-materialized by force_count/pos_strictness.
+        // NOTE: The canonical values_equal handles all types. Fast paths for
+        // Int/Float/String/Bool return immediately without async overhead.
+        // Cross-type comparisons (e.g. Int vs Float) return false — no implicit promotion.
+        // This prevents infinite recursion when EquatableInt.eq calls [builtin-eq a b]:
+        // values_equal dispatches on the value type directly, not through typeclass dispatch.
         let left = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
@@ -266,218 +268,8 @@ pub(crate) fn builtin_eq(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        // Helper to compute structural equality (used for Dict/Variant arms below).
-        // Sync helper: uses materialize (= materialize_sync) throughout. No async.
-        fn values_eq_impl(
-            left: &Value,
-            right: &Value,
-            ctx: &Arc<EvalContext>,
-            call_span: Span,
-            visited: &mut std::collections::HashSet<(usize, usize)>,
-        ) -> EvalResult<bool> {
-            use crate::builtins::require_dict;
-
-            match (left, right) {
-                (Value::Int(a), Value::Int(b)) => Ok(a == b),
-                (Value::Float(a), Value::Float(b)) => Ok(a == b),
-                (
-                    Value::String {
-                        source: source_a,
-                        start: start_a,
-                        end: end_a,
-                    },
-                    Value::String {
-                        source: source_b,
-                        start: start_b,
-                        end: end_b,
-                    },
-                ) => Ok(source_a[*start_a..*end_a] == source_b[*start_b..*end_b]),
-                (Value::Bool(a), Value::Bool(b)) => Ok(a == b),
-                // Cross-type: Int/Float promotion
-                (Value::Int(a), Value::Float(b)) => {
-                    check_int_to_float_precision(*a, call_span)?;
-                    Ok((*a as f64) == *b)
-                }
-                (Value::Float(a), Value::Int(b)) => {
-                    check_int_to_float_precision(*b, call_span)?;
-                    Ok(*a == (*b as f64))
-                }
-                // Variant: equal if tags match and payloads match (recursive comparison)
-                (
-                    Value::Variant {
-                        tag: tag_a,
-                        payload: payload_a,
-                    },
-                    Value::Variant {
-                        tag: tag_b,
-                        payload: payload_b,
-                    },
-                ) => {
-                    if tag_a != tag_b {
-                        return Ok(false);
-                    }
-                    match (payload_a, payload_b) {
-                        (None, None) => Ok(true),
-                        (Some(p1_id), Some(p2_id)) => {
-                            let p1_thunk = ctx.get_thunk(*p1_id);
-                            let p2_thunk = ctx.get_thunk(*p2_id);
-                            let p1_val = materialize(&p1_thunk, Some(&call_span), ctx)?;
-                            let p2_val = materialize(&p2_thunk, Some(&call_span), ctx)?;
-                            // Recurse with visited set threaded through
-                            values_eq_impl(&p1_val, &p2_val, ctx, call_span, visited)
-                        }
-                        _ => Ok(false),
-                    }
-                }
-                // Dict: structural equality with cycle detection
-                (Value::Dict(_), Value::Dict(_)) | (Value::Overlay(..), Value::Overlay(..)) => {
-                    // Get the dicts (flattening Overlay if necessary)
-                    let left_map =
-                        require_dict("=", left.clone(), call_span.clone(), ctx, call_span.clone())?;
-                    let right_map = require_dict(
-                        "=",
-                        right.clone(),
-                        call_span.clone(),
-                        ctx,
-                        call_span.clone(),
-                    )?;
-
-                    // Check pointer identity cycle detection
-                    let left_ptr = left as *const Value as usize;
-                    let right_ptr = right as *const Value as usize;
-                    let pair = (left_ptr, right_ptr);
-                    if visited.contains(&pair) {
-                        // Already visiting this pair - treat as equal (structural coinduction)
-                        return Ok(true);
-                    }
-                    visited.insert(pair);
-
-                    // Compare keys (order-insensitive)
-                    if left_map.len() != right_map.len() {
-                        visited.remove(&pair);
-                        return Ok(false);
-                    }
-
-                    // Extract and sort keys for canonical comparison
-                    let mut left_keys: Vec<_> = left_map.keys().collect();
-                    let mut right_keys: Vec<_> = right_map.keys().collect();
-                    let key_cmp = |a: &&Key, b: &&Key| match (a, b) {
-                        (Key::Int(x), Key::Int(y)) => x.cmp(y),
-                        (Key::String(x), Key::String(y)) => x.cmp(y),
-                        (Key::Int(_), Key::String(_)) => std::cmp::Ordering::Less,
-                        (Key::String(_), Key::Int(_)) => std::cmp::Ordering::Greater,
-                    };
-                    left_keys.sort_by(key_cmp);
-                    right_keys.sort_by(key_cmp);
-
-                    if left_keys != right_keys {
-                        visited.remove(&pair);
-                        return Ok(false);
-                    }
-
-                    // Compare values for each key - RECURSIVELY with SAME visited set
-                    for key in left_keys {
-                        let left_val_id = left_map.get(key).unwrap();
-                        let right_val_id = right_map.get(key).unwrap();
-
-                        let left_thunk = ctx.get_thunk(*left_val_id);
-                        let right_thunk = ctx.get_thunk(*right_val_id);
-
-                        let left_val = materialize(&left_thunk, Some(&call_span), ctx)?;
-                        let right_val = materialize(&right_thunk, Some(&call_span), ctx)?;
-
-                        // Recurse with visited set threaded through
-                        if !values_eq_impl(&left_val, &right_val, ctx, call_span.clone(), visited)?
-                        {
-                            visited.remove(&pair);
-                            return Ok(false);
-                        }
-                    }
-
-                    visited.remove(&pair);
-                    Ok(true)
-                }
-                // Function, Builtin, or cross-type incompatibility
-                _ => Ok(false),
-            }
-        }
-
-        let result = match (&left, &right) {
-            (Value::Int(a), Value::Int(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => a == b,
-            (
-                Value::String {
-                    source: source_a,
-                    start: start_a,
-                    end: end_a,
-                },
-                Value::String {
-                    source: source_b,
-                    start: start_b,
-                    end: end_b,
-                },
-            ) => source_a[*start_a..*end_a] == source_b[*start_b..*end_b],
-            (Value::Bool(a), Value::Bool(b)) => a == b,
-            // Cross-type: Int/Float promotion via `as f64` cast.
-            // Precision guard: integers with |n| > 2^53 trigger an error, suggesting
-            // explicit [float n] cast. This prevents non-transitive equality bugs
-            // (doc/11-stdlib.md §Equality P3).
-            (Value::Int(a), Value::Float(b)) => {
-                check_int_to_float_precision(*a, args[0].span.clone())?;
-                (*a as f64) == *b
-            }
-            (Value::Float(a), Value::Int(b)) => {
-                check_int_to_float_precision(*b, args[1].span.clone())?;
-                *a == (*b as f64)
-            }
-            // Variant: equal if tags match and payloads match (recursive comparison)
-            (
-                Value::Variant {
-                    tag: tag_a,
-                    payload: payload_a,
-                },
-                Value::Variant {
-                    tag: tag_b,
-                    payload: payload_b,
-                },
-            ) => {
-                if tag_a != tag_b {
-                    false
-                } else {
-                    match (payload_a, payload_b) {
-                        (None, None) => true,
-                        (Some(p1_id), Some(p2_id)) => {
-                            // Resolve ThunkIds to Arc<Thunk> via arena
-                            let p1_thunk = ctx.get_thunk(*p1_id);
-                            let p2_thunk = ctx.get_thunk(*p2_id);
-                            // Recurse by calling builtin_eq — inside async block so .await is valid
-                            let recursive_args = vec![Arc::clone(&p1_thunk), Arc::clone(&p2_thunk)];
-                            let result_thunk = builtin_eq(BuiltinArgs {
-                                args: recursive_args,
-                                named: None,
-                                call_span: call_span.clone(),
-                                ctx: Arc::clone(&ctx),
-                            })
-                            .await?;
-                            let result_val = materialize(&result_thunk, Some(&call_span), &ctx)?;
-                            match result_val {
-                                Value::Bool(b) => b,
-                                _ => unreachable!("builtin_eq always returns Bool"),
-                            }
-                        }
-                        _ => false, // One has payload, other doesn't
-                    }
-                }
-            }
-            // Dict: structural equality (order-insensitive key comparison, recursive value comparison)
-            (Value::Dict(_), Value::Dict(_)) | (Value::Overlay(..), Value::Overlay(..)) => {
-                let mut visited = std::collections::HashSet::new();
-                values_eq_impl(&left, &right, &ctx, call_span.clone(), &mut visited)?
-            }
-            // For types not handled above, no Equatable instance is registered —
-            // heterogeneous/unknown types are not equal.
-            _ => false,
-        };
+        let result =
+            crate::eval::values_equal(left, right, call_span.clone(), Arc::clone(&ctx)).await?;
         ok_val(Value::Bool(result), call_span)
     })
 }
@@ -1269,6 +1061,7 @@ pub(crate) fn builtin_float(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::Span;
     use crate::error::ErrorKind;
     use crate::test_util::test_span;
     use crate::value::Environment;

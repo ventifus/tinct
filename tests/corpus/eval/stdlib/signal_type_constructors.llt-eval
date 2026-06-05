@@ -8,4 +8,4 @@
  usr1:   SIGUSR1
  usr2:   SIGUSR2]
 === out
-Dict({"term": Variant(SIGTERM, Null), "int": Variant(SIGINT, Null), "hup": Variant(SIGHUP, Null), "quit": Variant(SIGQUIT, Null), "usr1": Variant(SIGUSR1, Null), "usr2": Variant(SIGUSR2, Null)})
+Dict({"term": Variant(Signal.SIGTERM, Null), "int": Variant(Signal.SIGINT, Null), "hup": Variant(Signal.SIGHUP, Null), "quit": Variant(Signal.SIGQUIT, Null), "usr1": Variant(Signal.SIGUSR1, Null), "usr2": Variant(Signal.SIGUSR2, Null)})

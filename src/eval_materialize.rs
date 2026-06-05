@@ -16,7 +16,7 @@ use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
     as_record_row_merged, format_field_path, format_type_for_assert, match_pattern, materialize,
-    maybe_wrap_guard, validate_and_wrap_record, value_matches_type, EvalContext,
+    maybe_wrap_guard, validate_and_wrap_record, value_matches_type, values_equal, EvalContext,
     DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
 };
 use crate::eval_access::invoke_proxy_handler;
@@ -2063,7 +2063,7 @@ pub(crate) async fn apply_cont(
                         }
                     } else {
                         // For non-Record types, simple value check
-                        if value_matches_type(&value, &expected) {
+                        if value_matches_type(&value, &expected, &guard_ctx) {
                             thunk.set_materialized(value.clone());
                             Action::Continue(Ok(value))
                         } else {
@@ -2898,7 +2898,7 @@ pub(crate) async fn apply_cont(
                                 Action::Continue(Err(err.into()))
                             }
                         }
-                    } else if value_matches_type(&value, &expected) {
+                    } else if value_matches_type(&value, &expected, &ctx) {
                         let is_predicate = annotation.node.get_property(IS_ANNOTATION_KEY).cloned();
                         if let Some(predicate_node) = is_predicate {
                             stack.push(Cont::PredicateCheck(Box::new(PredicateCheckData {
@@ -3409,8 +3409,21 @@ pub(crate) async fn apply_cont(
             match result {
                 Err(e) => Action::Continue(Err(e)),
                 Ok(pattern_value) => {
-                    // Compare the pattern value to the scrutinee using structural equality
-                    if crate::builtins_meta::values_equal(&pattern_value, &scrutinee_value) {
+                    // Compare the pattern value to the scrutinee using structural equality.
+                    // The canonical values_equal handles Dict/Seq/Variant recursively via async
+                    // materialize — cycle detection is provided by materialize's InProgress sentinel.
+                    let eq_result = values_equal(
+                        pattern_value,
+                        scrutinee_value.clone(),
+                        match_span.clone(),
+                        Arc::clone(&ctx),
+                    )
+                    .await;
+                    let patterns_match = match eq_result {
+                        Ok(b) => b,
+                        Err(e) => return Action::Continue(Err(e)),
+                    };
+                    if patterns_match {
                         // Pattern matched. If there is a guard, evaluate it.
                         if let Some(guard_expr) = guard {
                             // Push a continuation to check the guard result

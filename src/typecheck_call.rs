@@ -663,8 +663,9 @@ pub(crate) fn check_call_with_scheme(
             Ok(Type::Unknown)
         }
         // Unit variant constructor call: [Ok 42] wraps 42 as Ok's payload.
-        // Runtime behavior (eval_call.rs:136-196): variant constructors with __variant_tag__
-        // marker accept exactly 1 positional arg and wrap it as Value::Variant payload.
+        // Runtime behavior: the `variant` builtin accepts 1 or 2 args — [variant "Tag"] for unit
+        // and [variant "Tag" payload] for payload variants. Constructors are ordinary values or
+        // functions; no special-casing in invoke_function.
         // Type checking mirrors this: NominalVariant with empty fields + 1 positional arg
         // → result type is NominalVariant with inferred arg type as single-field payload.
         Type::NominalVariant { tag, fields } if fields.fields.is_empty() => {
@@ -1327,8 +1328,9 @@ pub(crate) fn check_call(
             Ok(Type::Unknown)
         }
         // Unit variant constructor call: [Ok 42] wraps 42 as Ok's payload.
-        // Runtime behavior (eval_call.rs:136-196): variant constructors with __variant_tag__
-        // marker accept exactly 1 positional arg and wrap it as Value::Variant payload.
+        // Runtime behavior: the `variant` builtin accepts 1 or 2 args — [variant "Tag"] for unit
+        // and [variant "Tag" payload] for payload variants. Constructors are ordinary values or
+        // functions; no special-casing in invoke_function.
         // Type checking mirrors this: NominalVariant with empty fields + 1 positional arg
         // → result type is NominalVariant with inferred arg type as single-field payload.
         Type::NominalVariant { tag, fields } if fields.fields.is_empty() => {

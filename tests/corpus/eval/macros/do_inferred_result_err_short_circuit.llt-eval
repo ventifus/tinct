@@ -2,5 +2,13 @@
 # [do [x: [Error "fail"]] [Ok x]] → result.bind [Error "fail"] [fn [x] [Ok x]]
 # → and-then [Error "fail"] [fn [x] [Ok x]] → [Error "fail"] (short-circuit).
 [do [x: [Error "fail"]] [Ok x]]
-=== out
-Variant(Error, String("fail"))
+=== error
+[E071] non-exhaustive match: no pattern matched the Variant value (defined at stdlib/prelude.llt:1574:5-1576:34)
+  --> stdlib/prelude.llt:1574:5-1576:34
+   |
+  1574 |     [match result
+  1575 |         [Ok v]: [f v]
+  1576 |         [Error msg]: [Error msg]]]
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [<dot-access> ...] at 3:1-3:32
+  in expansion of `do` at 3:1

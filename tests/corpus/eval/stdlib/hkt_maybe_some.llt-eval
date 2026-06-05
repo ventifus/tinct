@@ -2,7 +2,7 @@
 [Some 42]
 
 === out
-Variant(Some, Int(42))
+Variant(Maybe.Some, Int(42))
 
 === warn
 undefined variable: Some at 1:2-1:6

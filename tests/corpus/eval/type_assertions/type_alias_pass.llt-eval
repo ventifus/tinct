@@ -1,6 +1,11 @@
 # Structural TypeAssert: type alias defined in dict entry is available across documents
 # [MyType: [type Int]] registers MyType as an alias for Int in the type environment.
 # Document 2: [@MyType 42] uses the alias; type checker resolves it to Type::Int.
+#
+# This test exercises CoreExpr::TypeAssert via the TypeAnnotationTable (pre-resolved at
+# type-check time), NOT the TypeAssertPending runtime handler in eval.rs. The pipeline
+# boundary (---) propagates the TypeAnnotationTable so the resolved type is available
+# without any runtime annotation re-resolution.
 [MyType: [type Int]]
 ---
 [@MyType 42]

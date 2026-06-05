@@ -37,7 +37,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::ast::{self, LiteralPattern};
-use crate::types::Type;
+use crate::types::{Type, TyConEnv};
 
 // ---------------------------------------------------------------------------
 // Coverage pattern representation
@@ -171,7 +171,14 @@ impl ConstructorSignature {
     /// Returns `None` if any union member is a type that cannot be represented
     /// as a finite constructor set (e.g., `Function`, `Unknown`, `TypeVar`, `Top`).
     /// Callers should treat `None` as "skip coverage checking" — not as exhaustive.
-    pub fn from_union(members: &[Type]) -> Option<Self> {
+    ///
+    /// `tycon_env` is used to resolve `Type::TyCon(name)` and `Type::App(TyCon(name), _)`
+    /// union members — e.g., `Seq[T]` or a user-defined type constructor. Builtin TyCons
+    /// with `builtin_type` set produce a `TypeTag` constructor; user-defined TyCons with
+    /// declared constructors produce `Variant` constructors. If `constructors` is empty
+    /// (pending population) and `builtin_type` is None, the member is treated as
+    /// unrepresentable (skipped, returns `None`).
+    pub fn from_union(members: &[Type], tycon_env: &TyConEnv) -> Option<Self> {
         let mut constructors = Vec::new();
         let mut skipped_any = false;
         for member in members {
@@ -214,9 +221,6 @@ impl ConstructorSignature {
                     constructors.push((ConstructorTag::TypeTag("Int".into()), 0));
                     constructors.push((ConstructorTag::TypeTag("Float".into()), 0));
                 }
-                _ if member.as_seq().is_some() => {
-                    constructors.push((ConstructorTag::TypeTag("Seq".into()), 0))
-                }
                 Type::StringLiteral(s) => {
                     constructors.push((ConstructorTag::LiteralStr(s.clone()), 0));
                 }
@@ -249,6 +253,51 @@ impl ConstructorSignature {
                     // update ast_pattern_to_coverage to produce fields.len() sub-patterns.
                     let arity = if fields.fields.is_empty() { 0 } else { 1 };
                     constructors.push((ConstructorTag::Variant(tag.clone()), arity));
+                }
+                // General TyCon / App(TyCon, _) handling: replaces the hardcoded Seq arm.
+                // Look up the type constructor name in tycon_env:
+                //   - Builtin TyCon (builtin_type is Some, e.g. "Seq", "Map"): emit TypeTag.
+                //   - User-defined TyCon with declared constructors: emit Variant for each.
+                //   - User-defined TyCon with no constructors yet (pending T-1003): skip.
+                //   - Unknown TyCon (not in tycon_env): skip (open type, unrepresentable).
+                member
+                    if matches!(member, Type::TyCon(_))
+                        || matches!(member, Type::App(f, _) if matches!(f.as_ref(), Type::TyCon(_))) =>
+                {
+                    let name = match member {
+                        Type::TyCon(n) => n.as_str(),
+                        Type::App(f, _) => match f.as_ref() {
+                            Type::TyCon(n) => n.as_str(),
+                            _ => unreachable!(),
+                        },
+                        _ => unreachable!(),
+                    };
+                    match tycon_env.get(name) {
+                        Some(def) if !def.constructors.is_empty() => {
+                            // User-defined type with known constructors — emit Variant for each.
+                            // Arity is clamped to 0/1 (same as NominalVariant) until
+                            // Pattern::Constructor supports per-field bindings (T-1003).
+                            for (tag, arity) in &def.constructors {
+                                let clamped = if *arity == 0 { 0 } else { 1 };
+                                constructors.push((ConstructorTag::Variant(tag.clone()), clamped));
+                            }
+                        }
+                        Some(def) if def.builtin_type.is_some() => {
+                            // Builtin TyCon (e.g. Seq, Map, Handle) with no declared constructors.
+                            // Emit a TypeTag so TypeTag patterns (e.g. [Seq]:) can match it.
+                            let tag_name = def.builtin_type.as_deref().unwrap();
+                            constructors.push((ConstructorTag::TypeTag(tag_name.to_string()), 0));
+                        }
+                        Some(_) => {
+                            // TyCon found but constructors not yet populated (pending T-1003)
+                            // and no builtin_type — cannot enumerate; treat as unrepresentable.
+                            skipped_any = true;
+                        }
+                        None => {
+                            // Unknown TyCon — not in tycon_env, open/external type.
+                            skipped_any = true;
+                        }
+                    }
                 }
                 _ => {
                     // Type has no finite constructor set (Function, Handle, Unknown, TypeVar,
@@ -1475,8 +1524,9 @@ mod tests {
                 tail: crate::type_def::RowTail::Empty,
             }),
         ];
-        let sig = ConstructorSignature::from_union(&union_members)
-            .expect("all members are representable");
+        let sig =
+            ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new())
+                .expect("all members are representable");
         assert_eq!(sig.constructors.len(), 2);
         let tags = sig.tags();
         assert!(tags.contains(&ConstructorTag::DictKey("ok".to_string())));
@@ -1486,8 +1536,9 @@ mod tests {
     #[test]
     fn test_sig_from_union_primitive_types() {
         let union_members = vec![Type::Int, Type::Str];
-        let sig = ConstructorSignature::from_union(&union_members)
-            .expect("all members are representable");
+        let sig =
+            ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new())
+                .expect("all members are representable");
         assert_eq!(sig.constructors.len(), 2);
         let tags = sig.tags();
         assert!(tags.contains(&ConstructorTag::TypeTag("Int".to_string())));
@@ -1500,8 +1551,9 @@ mod tests {
             Type::StringLiteral("ok".to_string()),
             Type::StringLiteral("err".to_string()),
         ];
-        let sig = ConstructorSignature::from_union(&union_members)
-            .expect("all members are representable");
+        let sig =
+            ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new())
+                .expect("all members are representable");
         assert_eq!(sig.constructors.len(), 2);
     }
 
@@ -1517,7 +1569,8 @@ mod tests {
                 variadic: false,
             },
         ];
-        let sig = ConstructorSignature::from_union(&union_members);
+        let sig =
+            ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new());
         assert!(
             sig.is_none(),
             "union containing Function must return None — cannot verify exhaustiveness"
@@ -1529,7 +1582,9 @@ mod tests {
         // Type::Bool must expand to LiteralBool(true) and LiteralBool(false),
         // not TypeTag("Bool"), so it matches LiteralBool patterns.
         let union_members = vec![Type::Bool];
-        let sig = ConstructorSignature::from_union(&union_members).expect("Bool is representable");
+        let sig =
+            ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new())
+                .expect("Bool is representable");
         let tags = sig.tags();
         assert!(
             tags.contains(&ConstructorTag::LiteralBool(true)),
@@ -1551,7 +1606,8 @@ mod tests {
         // not TypeTag("Number"), so it matches Number or-pattern expansion.
         let union_members = vec![Type::Number];
         let sig =
-            ConstructorSignature::from_union(&union_members).expect("Number is representable");
+            ConstructorSignature::from_union(&union_members, &std::collections::HashMap::new())
+                .expect("Number is representable");
         let tags = sig.tags();
         assert!(
             tags.contains(&ConstructorTag::TypeTag("Int".to_string())),

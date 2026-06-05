@@ -1821,7 +1821,8 @@ pub(crate) fn resolve_type_name(
         "Float" => Ok(Type::Float),
         "String" | "Str" => Ok(Type::Str),
         "Bool" => Ok(Type::Bool),
-        "Number" => Ok(Type::Number),
+        "Number" | "Num" => Ok(Type::Number),
+        "Bytes" => Ok(Type::Bytes),
         "Any" => Ok(Type::Top),
         "Proxy" => Ok(Type::Proxy),
         // BAS type names

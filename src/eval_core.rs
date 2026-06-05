@@ -572,9 +572,6 @@ pub(crate) fn eval_core_expr<'a>(
             // calls previously required by the round-trip through eval_dict.
             // eval_dict_core now uses Thunk::new_unevaluated_core for non-literal dict entries
             // (UnevaluatedState::CoreExpr), eliminating the per-entry core_expr_to_expr round-trip.
-            //
-            // B-296: Constructor injection happens automatically when eval_dict_core encounters
-            // CoreExpr::TypeDecl entries (unit constructors are extracted during lowering).
             CoreExpr::Dict(entries) => eval_dict_core(entries, env, ctx, &span).await,
 
             // Call: use eval_call_core — no CoreExpr→Expr round-trip for func or named args.
@@ -759,15 +756,6 @@ pub(crate) fn eval_core_expr<'a>(
                 span.clone(),
             )
             .into()),
-
-            // Placeholder: error on evaluation
-            // B-296: TypeDecl entries in dicts are handled by eval_dict_core's constructor
-            // injection logic. If a TypeDecl is evaluated directly (outside dict context),
-            // it's a no-op — the type declaration has no runtime value.
-            CoreExpr::TypeDecl { .. } => Ok(Arc::new(Thunk::new_materialized(
-                Value::Dict(indexmap::IndexMap::new()),
-                span.clone(),
-            ))),
 
             CoreExpr::Placeholder => Err(EvalError::unimplemented(
                 "placeholder `...` was evaluated — replace with an implementation".to_string(),

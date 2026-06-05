@@ -1,7 +1,7 @@
 # Minimal do macro test
 [do result [Ok 42]]
 === out
-Variant(Ok, Int(42))
+Variant(Result.Ok, Int(42))
 
 === warn
 undefined variable: Ok at 1:13-1:15

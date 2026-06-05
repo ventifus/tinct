@@ -13,5 +13,5 @@
   circle: [Circle r: 5]
   square: [Square s: 10]
 ]
-=== out
-Dict({"Shape": Variant(Shape, Null), "Circle": Variant(Circle, Null), "Square": Variant(Square, Null), "circle": Variant(Circle, Int(5)), "square": Variant(Square, Int(10))})
+=== error
+[E020] arity mismatch: expected 1 argument, got 2 (defined at 1:1-1:1)

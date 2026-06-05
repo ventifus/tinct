@@ -2,7 +2,7 @@
 # [do [Ok 42]] → do-fold base case returns the expression directly → [Ok 42].
 [do [Ok 42]]
 === out
-Variant(Ok, Int(42))
+Variant(Result.Ok, Int(42))
 
 === warn
 undefined variable: Ok at 2:6-2:8

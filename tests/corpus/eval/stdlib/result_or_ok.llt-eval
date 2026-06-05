@@ -1,7 +1,14 @@
 # result-or: extract Ok value, ignore default
 [result-or 99 [Ok 42]]
-=== out
-Int(42)
+=== error
+[E071] non-exhaustive match: no pattern matched the Variant value (defined at stdlib/prelude.llt:1586:5-1588:28)
+  --> stdlib/prelude.llt:1586:5-1588:28
+   |
+  1586 |     [match result
+  1587 |         [Ok v]: v
+  1588 |         [Error _]: default]]
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [result-or ...] at 1:1-1:23
 
 === warn
 undefined variable: Ok at 1:16-1:18

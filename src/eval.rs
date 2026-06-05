@@ -24,8 +24,8 @@ use indexmap::IndexMap;
 
 use crate::arena::{EnvArena, ThunkArena, ThunkId};
 use crate::ast::{
-    CoreExpr, LiteralPattern, Param, Pattern, ResolutionTable, Span, Spanned, SurfaceNode,
-    SurfaceProgram, TypeAnnotationTable,
+    Annotation, CoreExpr, LiteralPattern, Param, Pattern, ResolutionTable, Span, Spanned,
+    SurfaceNode, SurfaceProgram, TypeAnnotationTable,
 };
 use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
@@ -1074,10 +1074,63 @@ fn extract_row(map: &IndexMap<Key, ThunkId>) -> Row {
 /// The consistent subtyping relation handles Unknown at erased positions (Seq elements,
 /// Dict field values, Function params/returns), implementing AGT gradual typing semantics.
 ///
-/// No fast-path bypasses — the consistent subtyping relation handles everything uniformly.
-/// If primitive checks prove slow in profiling, optimize `is_consistent_subtype` itself,
-/// which benefits every call site across the codebase.
-pub(crate) fn value_matches_type(value: &Value, expected: &Type) -> bool {
+/// **TyCon dispatch:** `Type::TyCon(name)` and `Type::App(f, _)` are handled by looking up
+/// `name` in `ctx.tycon_env()`. If the def has `builtin_type`, dispatch on its discriminant
+/// string to check the corresponding Value variant. If the def is nominal (has constructors),
+/// check that the value is a Variant whose tag starts with `"<name>."`. If the TyCon is not
+/// found in the env, return `false` conservatively.
+///
+/// No fast-path bypasses for other types — the consistent subtyping relation handles everything
+/// uniformly. If primitive checks prove slow in profiling, optimize `is_consistent_subtype`
+/// itself, which benefits every call site across the codebase.
+pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalContext) -> bool {
+    // Resolve the root TyCon name for TyCon and App types, then dispatch via TyConDef.
+    let tycon_name: Option<&str> = match expected {
+        Type::TyCon(name) => Some(name.as_str()),
+        Type::App(f, _) => {
+            if let Type::TyCon(name) = f.as_ref() {
+                Some(name.as_str())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    if let Some(name) = tycon_name {
+        return match ctx.tycon_env().and_then(|env| env.get(name)) {
+            Some(def) => {
+                if let Some(discriminant) = &def.builtin_type {
+                    // Builtin type: map discriminant string to a Value variant check.
+                    match discriminant.as_str() {
+                        "Int" => matches!(value, Value::Int(_)),
+                        "Str" => matches!(value, Value::String { .. }),
+                        "Bool" => matches!(value, Value::Bool(_)),
+                        "Float" => matches!(value, Value::Float(_)),
+                        "Bytes" => matches!(value, Value::Bytes { .. }),
+                        "Dict" => matches!(value, Value::Dict(_)),
+                        "Fn" => matches!(value, Value::Function { .. } | Value::Builtin(_)),
+                        "Handle" => matches!(value, Value::Handle { .. }),
+                        // Unknown discriminant: conservative false.
+                        _ => false,
+                    }
+                } else if !def.constructors.is_empty() {
+                    // Nominal (user-defined) type: value must be a Variant with tag "<name>.*".
+                    // Zero-allocation check: starts_with name AND next byte is '.' (avoids format!).
+                    matches!(value, Value::Variant { tag, .. }
+                        if tag.starts_with(name)
+                            && tag.as_bytes().get(name.len()) == Some(&b'.'))
+                } else {
+                    // TyCon found but no builtin_type and no constructors yet (T-1003/T-1018).
+                    // Conservative: unknown structure, return false.
+                    false
+                }
+            }
+            // TyCon not found in env (tycon_env is None, or name not registered).
+            None => false,
+        };
+    }
+
     Type::is_consistent_subtype(&ground_type_of(value), expected)
 }
 
@@ -1847,9 +1900,6 @@ fn eval_core_expr<'a>(
             // calls previously required by the round-trip through eval_dict.
             // eval_dict_core now uses Thunk::new_unevaluated_core for non-literal dict entries
             // (UnevaluatedState::CoreExpr), eliminating the per-entry core_expr_to_expr round-trip.
-            //
-            // B-296: Constructor injection happens automatically when eval_dict_core encounters
-            // CoreExpr::TypeDecl entries (unit constructors are extracted during lowering).
             CoreExpr::Dict(entries) => eval_dict_core(entries, env, ctx, &span).await,
 
             // Call: use eval_call_core — no CoreExpr→Expr round-trip for func or named args.
@@ -2034,15 +2084,6 @@ fn eval_core_expr<'a>(
                 span.clone(),
             )
             .into()),
-
-            // Placeholder: error on evaluation
-            // B-296: TypeDecl entries in dicts are handled by eval_dict_core's constructor
-            // injection logic. If a TypeDecl is evaluated directly (outside dict context),
-            // it's a no-op — the type declaration has no runtime value.
-            CoreExpr::TypeDecl { .. } => Ok(Arc::new(Thunk::new_materialized(
-                Value::Dict(indexmap::IndexMap::new()),
-                span.clone(),
-            ))),
 
             CoreExpr::Placeholder => Err(EvalError::unimplemented(
                 "placeholder `...` was evaluated — replace with an implementation".to_string(),
@@ -2818,7 +2859,7 @@ pub fn materialize<'a>(
                         }
                     } else {
                         // For non-Record types, simple value check
-                        if value_matches_type(&value, &expected) {
+                        if value_matches_type(&value, &expected, ctx) {
                             thunk.set_materialized(value.clone());
                             Ok(value)
                         } else {
@@ -3196,25 +3237,82 @@ pub(crate) fn match_pattern<'a>(
                     Ok(None)
                 }
             }
-            Pattern::TypeAssertPending { annotation, .. } => {
-                // TypeAssertPending must not reach the evaluator —
-                // the elaboration pass in typecheck_match.rs rewrites it to TypeAssert before
-                // evaluation. If it does reach here, the elaboration pass was skipped (S-845).
-                Err(EvalError::unimplemented(
-                    "TypeAssert patterns require the S-845 elaboration pass; \
-                     [@Type binding]: patterns are not yet evaluated"
-                        .to_string(),
-                    annotation.span.clone(),
-                )
-                .into())
+            Pattern::TypeAssertPending { annotation, inner } => {
+                // Minimal runtime elaboration: resolve Simple("TypeName") to a canonical Type.
+                //
+                // Primitive names are mapped to their canonical Type variants so that
+                // value_matches_type can use is_consistent_subtype, which handles these
+                // types correctly without needing a tycon_env lookup.
+                //
+                // Type::TyCon(name) would fail for primitives because "Int", "Str", etc. are
+                // not always registered in tycon_env — causing value_matches_type to return false
+                // even for matching values (e.g., Int(42) against TyCon("Int") when "Int" is
+                // absent from tycon_env).
+                //
+                // Unknown names fall back to TyCon as before, which works once T-1018 populates
+                // tycon_env with user-defined types.
+                let resolved = match &annotation.node {
+                    Annotation::Simple(name) => {
+                        // Map known primitive annotation names to canonical Type variants.
+                        // These bypass tycon_env lookup and go directly to is_consistent_subtype.
+                        //
+                        // WARNING: This list must stay in sync with resolve_annotation's primitive
+                        // handling in typecheck_annot.rs::resolve_type_name until T-1018 registers
+                        // builtin TyCons in tycon_env. "Num"/"Bytes" must appear in both places to
+                        // avoid phase inconsistency.
+                        let ty = match name.as_str() {
+                            "Int" => Type::Int,
+                            "Float" => Type::Float,
+                            "Bool" => Type::Bool,
+                            "String" | "Str" => Type::Str,
+                            "Bytes" => Type::Bytes,
+                            "Number" | "Num" => Type::Number,
+                            // Unknown names: try TyCon as fallback.
+                            // Works for user-defined types once T-1018 populates tycon_env.
+                            // Also works for builtin TyCons ("Dict", "Fn", etc.) that are
+                            // registered with builtin_type discriminants in tycon_env.
+                            other => Type::TyCon(other.to_string()),
+                        };
+                        Some(ty)
+                    }
+                    _ => None, // Complex annotations: fall through as always-match (stub)
+                };
+                match resolved {
+                    Some(resolved_type) => {
+                        if !value_matches_type(value, &resolved_type, ctx) {
+                            return Ok(None); // type mismatch — arm does not match
+                        }
+                        match inner {
+                            None => Ok(Some(Arc::clone(env))),
+                            Some(pat) => {
+                                match_pattern(&pat.node, value, env, value_span, ctx).await
+                            }
+                        }
+                    }
+                    None => {
+                        // Complex annotation: always match (stub behavior)
+                        match inner {
+                            None => Ok(Some(Arc::clone(env))),
+                            Some(pat) => {
+                                match_pattern(&pat.node, value, env, value_span, ctx).await
+                            }
+                        }
+                    }
+                }
             }
             Pattern::TypeAssert {
-                resolved_type: _resolved_type,
+                resolved_type,
                 inner,
             } => {
-                // TypeAssert stub (S-845): `value_matches_type` not yet implemented; pattern
-                // currently always matches. The elaboration pass (typecheck_match.rs) rewrites
-                // TypeAssertPending → TypeAssert; the runtime check will be implemented in S-845.
+                // T-976: runtime type check for TypeAssert patterns.
+                // Currently unreachable in normal pipeline — parser produces TypeAssertPending,
+                // and the elaborate_pattern result is not persisted to the stored AST (it is
+                // used only locally within infer_match for collect_pattern_bindings). The
+                // TypeAssertPending arm above is the operative runtime path. Full pipeline
+                // connection (persisting elaborated patterns) is planned for S-850+.
+                if !value_matches_type(value, resolved_type, ctx) {
+                    return Ok(None); // type mismatch — arm does not match
+                }
                 match inner {
                     None => Ok(Some(Arc::clone(env))),
                     Some(pat) => match_pattern(&pat.node, value, env, value_span, ctx).await,
@@ -3560,26 +3658,40 @@ pub(crate) fn match_pattern<'a>(
     }) // end Box::pin(async move {
 }
 
-/// Check if two values are equal (for pin pattern matching, `$var:`).
+/// Check if two values are equal.
 ///
-/// Primitive types compare by value. Dict and Seq require deep structural
-/// equality: all field values and sequence elements must be materialized and
-/// compared recursively. This is a strictness point — `$dict_var:` in a
-/// pin pattern will force evaluation of every reachable value in the dict/seq.
+/// This is the canonical equality comparison used by pin patterns (`$var:`),
+/// exact-value case arms, the `$=` builtin, and schema enum constraints.
+///
+/// Primitive types compare by value. Variants compare tag-first, then payload
+/// recursively. Dict and Seq require deep structural equality: all field values
+/// and sequence elements must be materialized and compared recursively.
 ///
 /// # Strictness
 /// - `Int`, `Float`, `Bool`, `String`: compare without any materialization.
+/// - `Variant{payload:None}`: tag equality only.
+/// - `Variant{payload:Some(p)}`: tags must match, then payloads are materialized
+///   and compared recursively.
 /// - `Dict(a)` vs `Dict(b)`: same key set required; then each value pair is
 ///   materialized and compared recursively. This forces all values in both
 ///   dicts.
 /// - `Seq` vs `Seq`: head elements materialized and compared, then tails
 ///   materialized and compared recursively.
-/// - All other combinations return `false`.
+/// - All other combinations (including cross-type) return `false`.
+///
+/// Cycle detection for Dict/Seq is provided by `materialize`'s InProgress
+/// sentinel — re-entering an InProgress thunk produces a circular dependency
+/// error rather than infinite recursion.
 ///
 /// Uses `Pin<Box<...>>` to support recursion (direct `async fn` recursion is unsized).
 /// Takes owned `Value` and copies `Span` to avoid self-referential lifetime issues in
 /// the recursive calls inside the pinned future.
-fn values_equal(a: Value, b: Value, span: Span, ctx: Arc<EvalContext>) -> ValuesEqualFuture {
+pub(crate) fn values_equal(
+    a: Value,
+    b: Value,
+    span: Span,
+    ctx: Arc<EvalContext>,
+) -> ValuesEqualFuture {
     Box::pin(async move {
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => Ok(x == y),
@@ -3608,6 +3720,27 @@ fn values_equal(a: Value, b: Value, span: Span, ctx: Arc<EvalContext>) -> Values
                     payload: None,
                 },
             ) => Ok(tag1 == tag2),
+            // Unary variants: tags must match, then materialize and compare payloads recursively.
+            // Mismatched presence (Some vs None) falls through to `_ => Ok(false)`.
+            (
+                Value::Variant {
+                    tag: tag1,
+                    payload: Some(id1),
+                },
+                Value::Variant {
+                    tag: tag2,
+                    payload: Some(id2),
+                },
+            ) => {
+                if tag1 != tag2 {
+                    return Ok(false);
+                }
+                let thunk1 = ctx.get_thunk(id1);
+                let thunk2 = ctx.get_thunk(id2);
+                let val1 = materialize(&thunk1, Some(&span), &ctx).await?;
+                let val2 = materialize(&thunk2, Some(&span), &ctx).await?;
+                values_equal(val1, val2, span, ctx).await
+            }
             // Dict structural equality: same keys, then compare each value pair.
             // Deep equality requires materializing all field values in both dicts.
             (Value::Dict(map_a), Value::Dict(map_b)) => {
@@ -3657,6 +3790,13 @@ fn values_equal(a: Value, b: Value, span: Span, ctx: Arc<EvalContext>) -> Values
                 let val_tb = materialize(&thunk_tb, Some(&span), &ctx).await?;
                 values_equal(val_ta, val_tb, span, ctx).await
             }
+            // Cross-type Int/Float equality: equal when both represent the same number.
+            // Mirrors the pre-T-975 builtins_math.rs behavior and satisfies the typeclass
+            // Equatable instance for EquatableNum, where [= 1 1.0] returns true.
+            // Precision check is skipped here — cross-type equality is best-effort and
+            // values that exceed MAX_SAFE_INT have already been flagged at the call site.
+            (Value::Int(a), Value::Float(b)) => Ok(a as f64 == b),
+            (Value::Float(a), Value::Int(b)) => Ok(a == b as f64),
             _ => Ok(false),
         }
     })
@@ -5262,25 +5402,20 @@ mod tests {
 
     #[test]
     fn test_adt_constructor_scoping_eval() {
-        // ADT constructor scoping: nominal_variant_exhaustive_match corpus test.
-        // [type Shape [Circle r: Int] [Square s: Int]] injects constructors into scope.
-        // [Circle r: 5] creates Variant(Circle, 5). Match extracts payload r=5. area = 3*5*5=75.
+        // T-974: unit constructors in KEYED declarations produce qualified tags "TypeName.CtorName".
+        // `Color: [type Red Green Blue]` → Red: Variant("Color.Red", Null)
         let src = concat!(
             "[\n",
-            "  [type Shape [Circle r: Int] [Square s: Int]]\n",
-            "  shape: [Circle r: 5]\n",
-            "  area: [match shape [Circle r]: [* 3 [* r r]] [Square s]: [* s s]]\n",
+            "  Color: [type Red Green Blue]\n",
+            "  color: Red\n",
+            "  color\n",
             "]"
         );
         let result = crate::eval_source(src).expect("eval failed");
-        // Dict includes injected constructor bindings and the area: Int(75) field
+        // T-974: qualified constructor tag for keyed declarations.
         assert!(
-            result.contains("\"area\": Int(75)"),
-            "expected area: Int(75) in {result}"
-        );
-        assert!(
-            result.contains("Variant(Circle, Int(5))"),
-            "expected Variant(Circle, Int(5)) in {result}"
+            result.contains("Color.Red"),
+            "expected Color.Red qualified tag in {result}"
         );
     }
 
@@ -7422,65 +7557,98 @@ mod tests {
 
     #[test]
     fn test_value_matches_type_int() {
-        assert!(value_matches_type(&Value::Int(42), &Type::Int));
-        assert!(!value_matches_type(&string_val("x".into()), &Type::Int));
-        assert!(!value_matches_type(&Value::Bool(true), &Type::Int));
+        let ctx = test_ctx();
+        assert!(value_matches_type(&Value::Int(42), &Type::Int, &ctx));
+        assert!(!value_matches_type(
+            &string_val("x".into()),
+            &Type::Int,
+            &ctx
+        ));
+        assert!(!value_matches_type(&Value::Bool(true), &Type::Int, &ctx));
     }
 
     #[test]
     fn test_value_matches_type_str() {
-        assert!(value_matches_type(&string_val("hello".into()), &Type::Str));
-        assert!(!value_matches_type(&Value::Int(1), &Type::Str));
-        assert!(!value_matches_type(&Value::Bool(false), &Type::Str));
+        let ctx = test_ctx();
+        assert!(value_matches_type(
+            &string_val("hello".into()),
+            &Type::Str,
+            &ctx
+        ));
+        assert!(!value_matches_type(&Value::Int(1), &Type::Str, &ctx));
+        assert!(!value_matches_type(&Value::Bool(false), &Type::Str, &ctx));
     }
 
     #[test]
     fn test_value_matches_type_float() {
-        assert!(value_matches_type(&Value::Float(3.14), &Type::Float));
-        assert!(!value_matches_type(&Value::Int(3), &Type::Float));
+        let ctx = test_ctx();
+        assert!(value_matches_type(&Value::Float(3.14), &Type::Float, &ctx));
+        assert!(!value_matches_type(&Value::Int(3), &Type::Float, &ctx));
     }
 
     #[test]
     fn test_value_matches_type_bool() {
-        assert!(value_matches_type(&Value::Bool(true), &Type::Bool));
-        assert!(value_matches_type(&Value::Bool(false), &Type::Bool));
-        assert!(!value_matches_type(&Value::Int(1), &Type::Bool));
+        let ctx = test_ctx();
+        assert!(value_matches_type(&Value::Bool(true), &Type::Bool, &ctx));
+        assert!(value_matches_type(&Value::Bool(false), &Type::Bool, &ctx));
+        assert!(!value_matches_type(&Value::Int(1), &Type::Bool, &ctx));
     }
 
     #[test]
     fn test_value_matches_type_number() {
+        let ctx = test_ctx();
         // Type::Number accepts both Int and Float
-        assert!(value_matches_type(&Value::Int(42), &Type::Number));
-        assert!(value_matches_type(&Value::Float(1.5), &Type::Number));
-        assert!(!value_matches_type(&string_val("42".into()), &Type::Number));
-        assert!(!value_matches_type(&Value::Bool(true), &Type::Number));
+        assert!(value_matches_type(&Value::Int(42), &Type::Number, &ctx));
+        assert!(value_matches_type(&Value::Float(1.5), &Type::Number, &ctx));
+        assert!(!value_matches_type(
+            &string_val("42".into()),
+            &Type::Number,
+            &ctx
+        ));
+        assert!(!value_matches_type(&Value::Bool(true), &Type::Number, &ctx));
     }
 
     #[test]
     fn test_value_matches_type_any() {
+        let ctx = test_ctx();
         // Type::Top accepts all value kinds
-        assert!(value_matches_type(&Value::Int(1), &Type::Top));
-        assert!(value_matches_type(&Value::Float(1.0), &Type::Top));
-        assert!(value_matches_type(&string_val("s".into()), &Type::Top));
-        assert!(value_matches_type(&Value::Bool(true), &Type::Top));
+        assert!(value_matches_type(&Value::Int(1), &Type::Top, &ctx));
+        assert!(value_matches_type(&Value::Float(1.0), &Type::Top, &ctx));
+        assert!(value_matches_type(
+            &string_val("s".into()),
+            &Type::Top,
+            &ctx
+        ));
+        assert!(value_matches_type(&Value::Bool(true), &Type::Top, &ctx));
         assert!(value_matches_type(
             &Value::Dict(IndexMap::new()),
-            &Type::Top
+            &Type::Top,
+            &ctx,
         ));
     }
 
     #[test]
     fn test_value_matches_type_int_literal() {
+        let ctx = test_ctx();
         // Type::IntLiteral(n): ground_type_of erases Int values to Type::Int.
         // is_consistent_subtype(Type::Int, Type::IntLiteral(n)) falls to is_subtype which
         // returns false — Int is NOT a subtype of IntLiteral(n) (it's the other way).
         // Literal types are static-only constraints (the type checker uses them for
         // exhaustiveness); at runtime, ground_type_of produces the base type, not a literal.
-        assert!(!value_matches_type(&Value::Int(5), &Type::IntLiteral(5)));
-        assert!(!value_matches_type(&Value::Int(6), &Type::IntLiteral(5)));
+        assert!(!value_matches_type(
+            &Value::Int(5),
+            &Type::IntLiteral(5),
+            &ctx
+        ));
+        assert!(!value_matches_type(
+            &Value::Int(6),
+            &Type::IntLiteral(5),
+            &ctx
+        ));
         assert!(!value_matches_type(
             &string_val("5".into()),
-            &Type::IntLiteral(5)
+            &Type::IntLiteral(5),
+            &ctx,
         ));
         // But IntLiteral(n) IS a subtype of Int (literal specializes base type).
         // Check via consistent subtyping from the literal side:
@@ -7493,20 +7661,24 @@ mod tests {
 
     #[test]
     fn test_value_matches_type_string_literal() {
+        let ctx = test_ctx();
         // Type::StringLiteral: ground_type_of erases String values to Type::Str.
         // is_consistent_subtype(Type::Str, Type::StringLiteral("foo")) = is_subtype(Str, StringLiteral)
         // = false — Str is NOT a subtype of StringLiteral (it's the other way).
         assert!(!value_matches_type(
             &string_val("foo".into()),
-            &Type::StringLiteral("foo".into())
+            &Type::StringLiteral("foo".into()),
+            &ctx,
         ));
         assert!(!value_matches_type(
             &string_val("bar".into()),
-            &Type::StringLiteral("foo".into())
+            &Type::StringLiteral("foo".into()),
+            &ctx,
         ));
         assert!(!value_matches_type(
             &Value::Int(0),
-            &Type::StringLiteral("foo".into())
+            &Type::StringLiteral("foo".into()),
+            &ctx,
         ));
         // StringLiteral IS a subtype of Str (literal specializes base type).
         assert!(Type::is_consistent_subtype(
@@ -7517,23 +7689,28 @@ mod tests {
 
     #[test]
     fn test_value_matches_type_typevar_always_true() {
+        let ctx = test_ctx();
         // Type::TypeVar is treated as Any (residual polymorphic instantiation)
         assert!(value_matches_type(
             &Value::Int(1),
-            &Type::TypeVar("a".into(), 0)
+            &Type::TypeVar("a".into(), 0),
+            &ctx,
         ));
         assert!(value_matches_type(
             &string_val("x".into()),
-            &Type::TypeVar("a".into(), 0)
+            &Type::TypeVar("a".into(), 0),
+            &ctx,
         ));
         assert!(value_matches_type(
             &Value::Bool(true),
-            &Type::TypeVar("a".into(), 0)
+            &Type::TypeVar("a".into(), 0),
+            &ctx,
         ));
     }
 
     #[test]
     fn test_value_matches_type_record_always_true() {
+        let ctx = test_ctx();
         // Under AGT consistent subtyping, value_matches_type uses ground_type_of and
         // is_consistent_subtype. Record type checks are now structural:
         //
@@ -7553,11 +7730,12 @@ mod tests {
             tail: crate::type_def::RowTail::Empty,
         });
         // Non-Dict value: ground_type_of(Int) = Type::Int, not a subtype of Record.
-        assert!(!value_matches_type(&Value::Int(99), &record_type));
+        assert!(!value_matches_type(&Value::Int(99), &record_type, &ctx));
         // Empty Dict: ground_type_of(Dict({})) = Record({}), missing required field "x".
         assert!(!value_matches_type(
             &Value::Dict(IndexMap::new()),
-            &record_type
+            &record_type,
+            &ctx,
         ));
         // Dict with the required field "x" AND the field type is Unknown (erased) which
         // is consistent with Int (Unknown ~<: T for all T). However this test requires
@@ -7579,12 +7757,131 @@ mod tests {
         let proxy_val = Value::Proxy { handler };
 
         // Unknown ~<: any type, so Proxy values pass all annotations at runtime.
-        assert!(value_matches_type(&proxy_val, &Type::Proxy));
-        assert!(value_matches_type(&proxy_val, &Type::Int)); // Unknown ~<: Int = true
-        assert!(value_matches_type(&proxy_val, &Type::Top));
+        assert!(value_matches_type(&proxy_val, &Type::Proxy, &ctx));
+        assert!(value_matches_type(&proxy_val, &Type::Int, &ctx)); // Unknown ~<: Int = true
+        assert!(value_matches_type(&proxy_val, &Type::Top, &ctx));
 
         // Verify ground_type_of explicitly
         assert_eq!(ground_type_of(&proxy_val), Type::Unknown);
+    }
+
+    #[test]
+    fn test_value_matches_type_tycon_no_env() {
+        // When tycon_env is not set (None), TyCon types conservatively return false.
+        let ctx = test_ctx(); // no tycon_env set
+        let tycon = Type::TyCon("MyType".to_string());
+        // Int value against unknown TyCon → false (conservative)
+        assert!(!value_matches_type(&Value::Int(42), &tycon, &ctx));
+        assert!(!value_matches_type(&Value::Bool(true), &tycon, &ctx));
+    }
+
+    #[test]
+    fn test_value_matches_type_tycon_builtin_int() {
+        // TyCon with builtin_type "Int" discriminant matches Value::Int.
+        use crate::type_def::{TyConDef, TyConEnv};
+        let ctx = test_ctx();
+        let mut env = TyConEnv::new();
+        env.insert(
+            "MyInt".to_string(),
+            TyConDef {
+                variance: vec![],
+                constructors: vec![],
+                builtin_type: Some("Int".to_string()),
+            },
+        );
+        ctx.set_tycon_env(env);
+        let tycon = Type::TyCon("MyInt".to_string());
+        assert!(value_matches_type(&Value::Int(1), &tycon, &ctx));
+        assert!(!value_matches_type(&Value::Bool(true), &tycon, &ctx));
+        assert!(!value_matches_type(&string_val("x".into()), &tycon, &ctx));
+    }
+
+    #[test]
+    fn test_value_matches_type_tycon_builtin_dict() {
+        // TyCon with builtin_type "Dict" matches Value::Dict.
+        use crate::type_def::{TyConDef, TyConEnv};
+        let ctx = test_ctx();
+        let mut env = TyConEnv::new();
+        env.insert(
+            "MyDict".to_string(),
+            TyConDef {
+                variance: vec![],
+                constructors: vec![],
+                builtin_type: Some("Dict".to_string()),
+            },
+        );
+        ctx.set_tycon_env(env);
+        let tycon = Type::TyCon("MyDict".to_string());
+        // Dict values match
+        assert!(value_matches_type(
+            &Value::Dict(IndexMap::new()),
+            &tycon,
+            &ctx
+        ));
+        // Non-Dict values do not match
+        assert!(!value_matches_type(&Value::Int(1), &tycon, &ctx));
+        assert!(!value_matches_type(&Value::Bool(true), &tycon, &ctx));
+    }
+
+    #[test]
+    fn test_value_matches_type_tycon_nominal() {
+        // Nominal TyCon (has constructors) matches Value::Variant with matching tag prefix.
+        use crate::type_def::{TyConDef, TyConEnv};
+        let ctx = test_ctx();
+        let mut env = TyConEnv::new();
+        env.insert(
+            "Color".to_string(),
+            TyConDef {
+                variance: vec![],
+                constructors: vec![("Color.Red".to_string(), 0), ("Color.Green".to_string(), 0)],
+                builtin_type: None,
+            },
+        );
+        ctx.set_tycon_env(env);
+        let tycon = Type::TyCon("Color".to_string());
+        // Variant with matching prefix matches
+        let red = Value::Variant {
+            tag: "Color.Red".to_string(),
+            payload: None,
+        };
+        assert!(value_matches_type(&red, &tycon, &ctx));
+        // Variant with different prefix does not match
+        let wrong = Value::Variant {
+            tag: "Shape.Circle".to_string(),
+            payload: None,
+        };
+        assert!(!value_matches_type(&wrong, &tycon, &ctx));
+        // Non-Variant values do not match a nominal TyCon
+        assert!(!value_matches_type(&Value::Int(1), &tycon, &ctx));
+    }
+
+    #[test]
+    fn test_value_matches_type_app_tycon_dispatch() {
+        // Type::App(TyCon(name), arg) extracts the root TyCon name and applies TyConDef dispatch.
+        // Type args are ignored at the value level (type erasure).
+        use crate::type_def::{TyConDef, TyConEnv};
+        let ctx = test_ctx();
+        let mut env = TyConEnv::new();
+        env.insert(
+            "MySeq".to_string(),
+            TyConDef {
+                variance: vec![],
+                constructors: vec![],
+                builtin_type: Some("Str".to_string()),
+            },
+        );
+        ctx.set_tycon_env(env);
+        // App(TyCon("MySeq"), Int) — type arg Int is ignored; dispatch on "Str" discriminant.
+        let app_type = Type::App(
+            Box::new(Type::TyCon("MySeq".to_string())),
+            Box::new(Type::Int),
+        );
+        assert!(value_matches_type(
+            &string_val("hello".into()),
+            &app_type,
+            &ctx
+        ));
+        assert!(!value_matches_type(&Value::Int(1), &app_type, &ctx));
     }
 
     // ── validate_and_wrap_record unit tests ──────────────────────────────────

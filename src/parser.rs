@@ -4918,7 +4918,9 @@ fn surface_node_to_pattern_with_guard(
                 Pattern::Variable(name.clone())
             } else if name.chars().next().is_some_and(|c| c.is_uppercase()) {
                 // Bare uppercase annotated name in pattern position: produce unqualified Constructor.
-                // The type checker's elaboration pass (typecheck_match.rs) qualifies the tag.
+                // The type checker's elaboration pass qualifies the tag for type narrowing only
+                // (typecheck_match.rs); the evaluator uses the unqualified tag until T-968/S-850
+                // wires elaboration results through.
                 Pattern::Constructor {
                     tag: name.clone(),
                     binding: None,

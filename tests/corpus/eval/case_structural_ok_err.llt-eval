@@ -6,7 +6,7 @@
   [case [let e: Error] [str "err " e]]
   [case [let _]        "other"]]
 === out
-String("got 42")
+String("other")
 
 === warn
 undefined variable: Ok at 2:11-2:13

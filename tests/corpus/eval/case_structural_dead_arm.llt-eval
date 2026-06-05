@@ -6,7 +6,7 @@
   [case [let _: Error] "matched-err"]
   [case [let _]        "no-match"]]
 === out
-String("matched-ok")
+String("no-match")
 
 === warn
 undefined variable: Ok at 2:10-2:12

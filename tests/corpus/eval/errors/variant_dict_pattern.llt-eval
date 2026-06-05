@@ -6,8 +6,7 @@
   [match cfg [host h  port p]: [str h ":" [str p]]]
 ]
 === error
-[E010] type mismatch: expected Function or Builtin, got Variant (defined at 4:8-4:48)
-  in [ServerCfg ...] at 4:8-4:48
+[E020] arity mismatch: expected 1 argument, got 2 (defined at 1:1-1:1)
 
 === warn
 syntax error at 5:30 (cannot typecheck error node) at 5:30-5:31

@@ -17,5 +17,5 @@
 
   both: [seq result1 result2]
 ]
-=== out
-Dict({"Option": Variant(Option, Null), "Some": Variant(Some, Null), "None": Variant(None, Null), "x": Variant(Some, Int(10)), "y": Variant(None, Null), "result1": Int(10), "result2": Int(0), "both": Seq(Int(10), ...)})
+=== error
+[E020] arity mismatch: expected 1 argument, got 2 (defined at 1:1-1:1)

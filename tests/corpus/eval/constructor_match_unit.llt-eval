@@ -1,0 +1,20 @@
+# T-977: Match on unit constructor using qualified dot-access patterns.
+# Color.Green: in match arm position → Pattern::Constructor { tag: "Color.Green", binding: None }.
+# Scrutinee Green has Variant tag "Color.Green" — tag equality holds, arm matches.
+# The evaluator's match_pattern checks tag != variant_tag, so "Color.Green" == "Color.Green" → match.
+#
+# Note: the "non-exhaustive match: missing coverage for Green" warning below is expected to
+# disappear when T-1003 lands (which populates TyConDef.constructors, allowing coverage
+# analysis to recognize qualified patterns as covering constructors).
+[
+  Color: [type Red Green Blue]
+  result: [match Green
+    Color.Red:   "red"
+    Color.Green: "green"
+    Color.Blue:  "blue"]
+]
+=== out
+Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null), "result": String("green")})
+
+=== warn
+non-exhaustive match: missing coverage for Green at 10:11-13:25

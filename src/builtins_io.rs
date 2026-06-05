@@ -232,70 +232,75 @@ pub(crate) fn builtin_open(
             let flag_val = materialize(flag_arg, Some(&call_span), &ctx)?;
 
             match flag_val {
-                Value::Variant { ref tag, .. } => match tag.as_str() {
-                    "Readable" => {
-                        if has_writable || has_appendable {
-                            return Err(EvalError::user_error(
+                Value::Variant { ref tag, .. } => {
+                    // Strip qualifier prefix ("OpenFlag.Readable" → "Readable") for
+                    // compatibility with T-974 qualified variant tags.
+                    let flag_name = tag.strip_prefix("OpenFlag.").unwrap_or(tag.as_str());
+                    match flag_name {
+                        "Readable" => {
+                            if has_writable || has_appendable {
+                                return Err(EvalError::user_error(
                                 "open: cannot specify Readable with Writable or Appendable flags"
                                     .to_string(),
                                 call_span.clone(),
                             )
                             .into());
+                            }
+                            has_readable = true;
+                            caps.insert("Readable".to_string(), Value::Bool(true));
                         }
-                        has_readable = true;
-                        caps.insert("Readable".to_string(), Value::Bool(true));
-                    }
-                    "Writable" => {
-                        if has_readable {
+                        "Writable" => {
+                            if has_readable {
+                                return Err(EvalError::user_error(
+                                    "open: cannot specify both Readable and Writable flags"
+                                        .to_string(),
+                                    call_span.clone(),
+                                )
+                                .into());
+                            }
+                            has_writable = true;
+                            caps.insert("Writable".to_string(), Value::Bool(true));
+                        }
+                        "Appendable" => {
+                            if has_readable {
+                                return Err(EvalError::user_error(
+                                    "open: cannot specify both Readable and Appendable flags"
+                                        .to_string(),
+                                    call_span.clone(),
+                                )
+                                .into());
+                            }
+                            has_appendable = true;
+                            caps.insert("Appendable".to_string(), Value::Bool(true));
+                        }
+                        "Binary" => {
+                            if has_text {
+                                return Err(EvalError::user_error(
+                                    "open: cannot specify both Binary and Text flags".to_string(),
+                                    call_span.clone(),
+                                )
+                                .into());
+                            }
+                            has_binary = true;
+                            caps.insert("Binary".to_string(), Value::Bool(true));
+                        }
+                        "Text" => {
+                            if has_binary {
+                                return Err(EvalError::user_error(
+                                    "open: cannot specify both Binary and Text flags".to_string(),
+                                    call_span.clone(),
+                                )
+                                .into());
+                            }
+                            has_text = true;
+                            caps.insert("Text".to_string(), Value::Bool(true));
+                        }
+                        "Seekable" => {
+                            has_seekable = true;
+                            caps.insert("Seekable".to_string(), Value::Bool(true));
+                        }
+                        other => {
                             return Err(EvalError::user_error(
-                                "open: cannot specify both Readable and Writable flags".to_string(),
-                                call_span.clone(),
-                            )
-                            .into());
-                        }
-                        has_writable = true;
-                        caps.insert("Writable".to_string(), Value::Bool(true));
-                    }
-                    "Appendable" => {
-                        if has_readable {
-                            return Err(EvalError::user_error(
-                                "open: cannot specify both Readable and Appendable flags"
-                                    .to_string(),
-                                call_span.clone(),
-                            )
-                            .into());
-                        }
-                        has_appendable = true;
-                        caps.insert("Appendable".to_string(), Value::Bool(true));
-                    }
-                    "Binary" => {
-                        if has_text {
-                            return Err(EvalError::user_error(
-                                "open: cannot specify both Binary and Text flags".to_string(),
-                                call_span.clone(),
-                            )
-                            .into());
-                        }
-                        has_binary = true;
-                        caps.insert("Binary".to_string(), Value::Bool(true));
-                    }
-                    "Text" => {
-                        if has_binary {
-                            return Err(EvalError::user_error(
-                                "open: cannot specify both Binary and Text flags".to_string(),
-                                call_span.clone(),
-                            )
-                            .into());
-                        }
-                        has_text = true;
-                        caps.insert("Text".to_string(), Value::Bool(true));
-                    }
-                    "Seekable" => {
-                        has_seekable = true;
-                        caps.insert("Seekable".to_string(), Value::Bool(true));
-                    }
-                    other => {
-                        return Err(EvalError::user_error(
                             format!(
                                 "open: unknown capability flag '{}' (expected Readable, Writable, Appendable, Binary, Text, or Seekable)",
                                 other
@@ -303,8 +308,9 @@ pub(crate) fn builtin_open(
                             call_span.clone(),
                         )
                         .into());
-                    }
-                },
+                        }
+                    } // close match flag_name
+                }
                 other => {
                     return Err(EvalError::type_mismatch_ctx(
                         "open".to_string(),
@@ -528,7 +534,11 @@ pub(crate) fn builtin_narrow(
                 let flag_val = materialize(flag_arg, Some(&call_span), &ctx)?;
 
                 match flag_val {
-                    Value::Variant { ref tag, .. } => match tag.as_str() {
+                    Value::Variant { ref tag, .. } => {
+                        // Strip qualifier prefix ("DirCapFlag.Statable" → "Statable") for
+                        // compatibility with T-974 qualified variant tags.
+                        let flag_name = tag.rfind('.').map_or(tag.as_str(), |pos| &tag[pos + 1..]);
+                        match flag_name {
                         "Readable" => requested.readable = true,
                         "Statable" => requested.statable = true,
                         "Listable" => requested.listable = true,
@@ -549,7 +559,7 @@ pub(crate) fn builtin_narrow(
                         )
                         .into());
                         }
-                    },
+                    }},
                     other => {
                         return Err(EvalError::type_mismatch_ctx(
                             "narrow".to_string(),

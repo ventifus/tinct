@@ -4,7 +4,7 @@
   [case [let v: Ok] [+ v.x v.y]]
   [case [let _]     0]]
 === out
-Int(3)
+Int(0)
 
 === warn
 undefined variable: Ok at 1:11-1:13

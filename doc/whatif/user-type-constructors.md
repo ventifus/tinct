@@ -584,7 +584,7 @@ Pattern::TypeAssertPending { annotation: Spanned<Annotation>, inner: Option<Box<
 Pattern::TypeAssert { resolved_type: Type, inner: Option<Box<Spanned<Pattern>>> }
 ```
 
-`inner: None` = no binding (bare `Int:` sugar). `inner: Some(pat)` = bind the matched value through `pat`. `TypeAssertPending` never reaches the evaluator — it is an invariant violation (typecheck always runs before eval in normal pipelines).
+`inner: None` = no binding (bare `Int:` sugar). `inner: Some(pat)` = bind the matched value through `pat`. **Implementation note (S-845):** `TypeAssertPending` DOES reach the evaluator in the current implementation via a runtime resolution handler in `eval.rs` (`match_pattern` TypeAssertPending arm). The "never reaches evaluator" invariant was relaxed in S-845 as a pragmatic bridge: the elaboration pass result is used locally within `infer_match` but not persisted to the stored AST. The full elaboration bridge (persisting `TypeAssert` through to the evaluator) is planned for S-850+.
 
 **New arm added to `surface_node_to_pattern_with_guard` at `src/parser.rs:4843`:**
 
@@ -795,8 +795,8 @@ Call sites: the TypeAlias inference pass in `typecheck.rs` passes `Some(&param_n
 
 **Added:**
 
-- `Pattern::TypeAssertPending { annotation: Spanned<Annotation>, inner: Option<Box<Spanned<Pattern>>> }` — surface form; parser-only, never reaches the evaluator.
-- `Pattern::TypeAssert { resolved_type: Type, inner: Option<Box<Spanned<Pattern>>> }` — core form; typecheck elaboration produces this from `TypeAssertPending`.
+- `Pattern::TypeAssertPending { annotation: Spanned<Annotation>, inner: Option<Box<Spanned<Pattern>>> }` — surface form; parser-only. **Implementation note (S-845):** TypeAssertPending DOES reach the evaluator in the current implementation via a runtime resolution handler in `eval.rs`. The "never reaches evaluator" invariant was relaxed in S-845 as a pragmatic bridge until S-850+ wires elaboration results through.
+- `Pattern::TypeAssert { resolved_type: Type, inner: Option<Box<Spanned<Pattern>>> }` — core form; typecheck elaboration produces this from `TypeAssertPending`. Currently unreachable from normal eval pipeline (see S-845 implementation notes).
 
 All constructor patterns use `Pattern::Constructor { tag: String, binding: Option<Box<Pattern>> }`.
 

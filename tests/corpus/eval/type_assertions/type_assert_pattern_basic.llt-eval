@@ -1,0 +1,8 @@
+# [@Int x] pattern matches an Int scrutinee and binds x to the value.
+# Fix 1 (S-845): TypeAssertPending maps "Int" to Type::Int directly for primitive names,
+# bypassing tycon_env lookup. value_matches_type uses is_consistent_subtype(Int, Type::Int) = true.
+[match 42
+  [@Int x]: x
+  _: -1]
+=== out
+Int(42)

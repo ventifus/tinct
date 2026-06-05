@@ -10,4 +10,4 @@
     [Square]:   "unit-match"]
 ]
 === out
-Dict({"Shape": Variant(Shape, Null), "Circle": Variant(Circle, Null), "Square": Variant(Square, Null), "unit-shape": Variant(Square, Null), "result": String("unit-match")})
+Dict({"Shape": Variant(Shape, Null), "Circle": Function(payload), "Square": Variant(Square, Null), "unit-shape": Variant(Square, Null), "result": String("unit-match")})

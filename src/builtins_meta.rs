@@ -1150,6 +1150,11 @@ pub(crate) fn builtin_llt_repr(
 }
 
 /// `tag-of`: Return the tag of a Variant as a String.
+///
+/// After T-974 (S-845), user-defined ADT constructors carry qualified tags (e.g.,
+/// `"Result.Ok"` instead of `"Ok"`). `tag-of` returns the full qualified tag. Code that
+/// compares `[= [tag-of x] "Ok"]` must be updated to use `[= [tag-of x] "Result.Ok"]`
+/// or use pattern matching instead.
 pub(crate) fn builtin_tag_of(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -2474,38 +2479,43 @@ pub(crate) fn builtin_include_cache_put(
             .expect("pre-materialized by force_count/pos_strictness");
 
         let entry = match &entry_val {
-            Value::Variant { tag, payload } => match tag.as_str() {
-                "Missing" => crate::eval::IncludeCacheEntry::Missing,
-                "Pending" => crate::eval::IncludeCacheEntry::Pending,
-                "Cached" => {
-                    let payload_thunk = match payload {
-                        Some(id) => ctx.get_thunk(*id),
-                        None => {
-                            return Err(EvalError::type_mismatch_ctx(
-                                "include-cache-put".to_string(),
-                                "[Cached value]",
-                                "[Cached]",
-                                args[1].span.clone(),
-                            )
-                            .into())
-                        }
-                    };
-                    crate::eval::IncludeCacheEntry::Cached(
-                        payload_thunk,
-                        crate::ast::empty_resolution_table_arc(),
-                        crate::ast::empty_type_annotation_table_arc(),
-                    )
-                }
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "include-cache-put".to_string(),
-                        "[Missing] | [Pending] | [Cached value]",
-                        &format!("[{other}]"),
-                        args[1].span.clone(),
-                    )
-                    .into())
-                }
-            },
+            Value::Variant { tag, payload } => {
+                // Strip qualifier prefix ("IncludeCacheEntry.Pending" → "Pending") for
+                // compatibility with T-974 qualified variant tags from inject_adt_constructors_expr.
+                let tag_name = tag.strip_prefix("IncludeCacheEntry.").unwrap_or(tag.as_str());
+                match tag_name {
+                    "Missing" => crate::eval::IncludeCacheEntry::Missing,
+                    "Pending" => crate::eval::IncludeCacheEntry::Pending,
+                    "Cached" => {
+                        let payload_thunk = match payload {
+                            Some(id) => ctx.get_thunk(*id),
+                            None => {
+                                return Err(EvalError::type_mismatch_ctx(
+                                    "include-cache-put".to_string(),
+                                    "[Cached value]",
+                                    "[Cached]",
+                                    args[1].span.clone(),
+                                )
+                                .into())
+                            }
+                        };
+                        crate::eval::IncludeCacheEntry::Cached(
+                            payload_thunk,
+                            crate::ast::empty_resolution_table_arc(),
+                            crate::ast::empty_type_annotation_table_arc(),
+                        )
+                    }
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "include-cache-put".to_string(),
+                            "[Missing] | [Pending] | [Cached value]",
+                            &format!("[{other}]"),
+                            args[1].span.clone(),
+                        )
+                        .into())
+                    }
+                } // close match tag_name
+            }
             _ => {
                 return Err(EvalError::type_mismatch_ctx(
                     "include-cache-put".to_string(),
@@ -2594,16 +2604,15 @@ pub(crate) fn builtin_validate(
             }
         };
 
-        // Collect violations
-        let mut violations = Vec::new();
-        validate_value(
-            &schema_dict,
-            &data,
-            "",
-            &mut violations,
-            &ctx,
+        // Collect violations. validate_value is async-recursive via Box::pin.
+        let violations = validate_value(
+            schema_dict,
+            data.clone(),
+            String::new(),
+            Arc::clone(&ctx),
             call_span.clone(),
-        )?;
+        )
+        .await?;
 
         if violations.is_empty() {
             // Success: return data unchanged
@@ -2640,344 +2649,362 @@ fn expect_two_args(
     Ok((val1, val2))
 }
 
+/// Return type alias for `validate_value` and `validate_seq_items`.
+///
+/// Both functions are async-recursive (they call each other), so their return types must be
+/// `Pin<Box<dyn Future<...>>>`. This alias avoids the "very complex type" Clippy warning.
+type ValidationFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Vec<(String, String)>>>>>;
+
 /// Recursive validation helper.
 ///
 /// `path` is the dot-separated field path (e.g., "user.address.zip").
-/// `violations` accumulates all violations found.
+/// Returns a list of violations found; an empty list means the value is valid.
+///
+/// Uses `Box::pin(async move { ... })` to support mutual recursion with async
+/// `validate_seq_items`. Takes owned parameters so all data can be moved into the future.
 fn validate_value(
-    schema: &IndexMap<Key, ThunkId>,
-    data: &Value,
-    path: &str,
-    violations: &mut Vec<(String, String)>,
-    ctx: &Arc<crate::eval::EvalContext>,
+    schema: IndexMap<Key, ThunkId>,
+    data: Value,
+    path: String,
+    ctx: Arc<crate::eval::EvalContext>,
     span: Span,
-) -> EvalResult<()> {
-    use crate::value::StrKey;
+) -> ValidationFuture {
+    Box::pin(async move {
+        use crate::value::StrKey;
+        let mut violations: Vec<(String, String)> = Vec::new();
 
-    // Check `type` constraint
-    if let Some(&type_thunk_id) = schema.get(&StrKey("type")) {
-        let type_thunk = ctx.get_thunk(type_thunk_id);
-        let type_val = materialize_sync(&type_thunk, Some(&span), ctx)?;
-        if let Value::String {
-            ref source,
-            start,
-            end,
-        } = type_val
-        {
-            let expected_type = &source[start..end];
-            let actual_type = type_name(data);
-            if expected_type != actual_type {
-                violations.push((
-                    path.to_string(),
-                    format!("expected type {}, got {}", expected_type, actual_type),
-                ));
-            }
-        }
-    }
-
-    // Check numeric range constraints (min, max)
-    if let Some(&min_thunk_id) = schema.get(&StrKey("min")) {
-        let min_thunk = ctx.get_thunk(min_thunk_id);
-        let min_val = materialize_sync(&min_thunk, Some(&span), ctx)?;
-        match (data, &min_val) {
-            (Value::Int(n), Value::Int(min)) if n < min => {
-                violations.push((path.to_string(), format!("must be >= {}", min)));
-            }
-            (Value::Float(n), Value::Float(min)) if n < min => {
-                violations.push((path.to_string(), format!("must be >= {}", min)));
-            }
-            (Value::Int(n), Value::Float(min)) if (*n as f64) < *min => {
-                violations.push((path.to_string(), format!("must be >= {}", min)));
-            }
-            (Value::Float(n), Value::Int(min)) if *n < (*min as f64) => {
-                violations.push((path.to_string(), format!("must be >= {}", min)));
-            }
-            _ => {}
-        }
-    }
-
-    if let Some(&max_thunk_id) = schema.get(&StrKey("max")) {
-        let max_thunk = ctx.get_thunk(max_thunk_id);
-        let max_val = materialize_sync(&max_thunk, Some(&span), ctx)?;
-        match (data, &max_val) {
-            (Value::Int(n), Value::Int(max)) if n > max => {
-                violations.push((path.to_string(), format!("must be <= {}", max)));
-            }
-            (Value::Float(n), Value::Float(max)) if n > max => {
-                violations.push((path.to_string(), format!("must be <= {}", max)));
-            }
-            (Value::Int(n), Value::Float(max)) if (*n as f64) > *max => {
-                violations.push((path.to_string(), format!("must be <= {}", max)));
-            }
-            (Value::Float(n), Value::Int(max)) if *n > (*max as f64) => {
-                violations.push((path.to_string(), format!("must be <= {}", max)));
-            }
-            _ => {}
-        }
-    }
-
-    // Check string/sequence length constraints
-    if let Some(&min_len_thunk_id) = schema.get(&StrKey("min-length")) {
-        let min_len_thunk = ctx.get_thunk(min_len_thunk_id);
-        let min_len_val = materialize_sync(&min_len_thunk, Some(&span), ctx)?;
-        if let Value::Int(min_len) = min_len_val {
-            let actual_len = match data {
-                Value::String {
-                    source: _,
-                    start,
-                    end,
-                } => Some((end - start) as i64),
-                Value::Dict(d) => Some(d.len() as i64),
-                Value::Seq { .. } => {
-                    // For Seq, we'd need to walk the spine to count, which is expensive.
-                    // Skip for now; document limitation.
-                    None
-                }
-                _ => None,
-            };
-            if let Some(len) = actual_len {
-                if len < min_len {
-                    violations.push((path.to_string(), format!("length must be >= {}", min_len)));
+        // Check `type` constraint
+        if let Some(&type_thunk_id) = schema.get(&StrKey("type")) {
+            let type_thunk = ctx.get_thunk(type_thunk_id);
+            let type_val = materialize_sync(&type_thunk, Some(&span), &ctx)?;
+            if let Value::String {
+                ref source,
+                start,
+                end,
+            } = type_val
+            {
+                let expected_type = &source[start..end];
+                let actual_type = type_name(&data);
+                if expected_type != actual_type {
+                    violations.push((
+                        path.clone(),
+                        format!("expected type {}, got {}", expected_type, actual_type),
+                    ));
                 }
             }
         }
-    }
 
-    if let Some(&max_len_thunk_id) = schema.get(&StrKey("max-length")) {
-        let max_len_thunk = ctx.get_thunk(max_len_thunk_id);
-        let max_len_val = materialize_sync(&max_len_thunk, Some(&span), ctx)?;
-        if let Value::Int(max_len) = max_len_val {
-            let actual_len = match data {
-                Value::String {
-                    source: _,
-                    start,
-                    end,
-                } => Some((end - start) as i64),
-                Value::Dict(d) => Some(d.len() as i64),
-                Value::Seq { .. } => None,
-                _ => None,
-            };
-            if let Some(len) = actual_len {
-                if len > max_len {
-                    violations.push((path.to_string(), format!("length must be <= {}", max_len)));
+        // Check numeric range constraints (min, max)
+        if let Some(&min_thunk_id) = schema.get(&StrKey("min")) {
+            let min_thunk = ctx.get_thunk(min_thunk_id);
+            let min_val = materialize_sync(&min_thunk, Some(&span), &ctx)?;
+            match (&data, &min_val) {
+                (Value::Int(n), Value::Int(min)) if n < min => {
+                    violations.push((path.clone(), format!("must be >= {}", min)));
+                }
+                (Value::Float(n), Value::Float(min)) if n < min => {
+                    violations.push((path.clone(), format!("must be >= {}", min)));
+                }
+                (Value::Int(n), Value::Float(min)) if (*n as f64) < *min => {
+                    violations.push((path.clone(), format!("must be >= {}", min)));
+                }
+                (Value::Float(n), Value::Int(min)) if *n < (*min as f64) => {
+                    violations.push((path.clone(), format!("must be >= {}", min)));
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(&max_thunk_id) = schema.get(&StrKey("max")) {
+            let max_thunk = ctx.get_thunk(max_thunk_id);
+            let max_val = materialize_sync(&max_thunk, Some(&span), &ctx)?;
+            match (&data, &max_val) {
+                (Value::Int(n), Value::Int(max)) if n > max => {
+                    violations.push((path.clone(), format!("must be <= {}", max)));
+                }
+                (Value::Float(n), Value::Float(max)) if n > max => {
+                    violations.push((path.clone(), format!("must be <= {}", max)));
+                }
+                (Value::Int(n), Value::Float(max)) if (*n as f64) > *max => {
+                    violations.push((path.clone(), format!("must be <= {}", max)));
+                }
+                (Value::Float(n), Value::Int(max)) if *n > (*max as f64) => {
+                    violations.push((path.clone(), format!("must be <= {}", max)));
+                }
+                _ => {}
+            }
+        }
+
+        // Check string/sequence length constraints
+        if let Some(&min_len_thunk_id) = schema.get(&StrKey("min-length")) {
+            let min_len_thunk = ctx.get_thunk(min_len_thunk_id);
+            let min_len_val = materialize_sync(&min_len_thunk, Some(&span), &ctx)?;
+            if let Value::Int(min_len) = min_len_val {
+                let actual_len = match &data {
+                    Value::String {
+                        source: _,
+                        start,
+                        end,
+                    } => Some((end - start) as i64),
+                    Value::Dict(d) => Some(d.len() as i64),
+                    Value::Seq { .. } => {
+                        // For Seq, walking the spine to count is expensive.
+                        // Skip for now; document limitation.
+                        None
+                    }
+                    _ => None,
+                };
+                if let Some(len) = actual_len {
+                    if len < min_len {
+                        violations.push((path.clone(), format!("length must be >= {}", min_len)));
+                    }
                 }
             }
         }
-    }
 
-    // Check pattern constraint (for strings)
-    if let Some(&pattern_thunk_id) = schema.get(&StrKey("pattern")) {
-        let pattern_thunk = ctx.get_thunk(pattern_thunk_id);
-        let pattern_val = materialize_sync(&pattern_thunk, Some(&span), ctx)?;
-        if let Value::String {
-            ref source,
-            start,
-            end,
-        } = pattern_val
-        {
-            let pattern_str = &source[start..end];
-            if let Some(data_str) = data.as_str() {
-                match regex::Regex::new(pattern_str) {
-                    Ok(re) => {
-                        if !re.is_match(data_str) {
+        if let Some(&max_len_thunk_id) = schema.get(&StrKey("max-length")) {
+            let max_len_thunk = ctx.get_thunk(max_len_thunk_id);
+            let max_len_val = materialize_sync(&max_len_thunk, Some(&span), &ctx)?;
+            if let Value::Int(max_len) = max_len_val {
+                let actual_len = match &data {
+                    Value::String {
+                        source: _,
+                        start,
+                        end,
+                    } => Some((end - start) as i64),
+                    Value::Dict(d) => Some(d.len() as i64),
+                    Value::Seq { .. } => None,
+                    _ => None,
+                };
+                if let Some(len) = actual_len {
+                    if len > max_len {
+                        violations.push((path.clone(), format!("length must be <= {}", max_len)));
+                    }
+                }
+            }
+        }
+
+        // Check pattern constraint (for strings)
+        if let Some(&pattern_thunk_id) = schema.get(&StrKey("pattern")) {
+            let pattern_thunk = ctx.get_thunk(pattern_thunk_id);
+            let pattern_val = materialize_sync(&pattern_thunk, Some(&span), &ctx)?;
+            if let Value::String {
+                ref source,
+                start,
+                end,
+            } = pattern_val
+            {
+                let pattern_str = &source[start..end];
+                if let Some(data_str) = data.as_str() {
+                    match regex::Regex::new(pattern_str) {
+                        Ok(re) => {
+                            if !re.is_match(data_str) {
+                                violations.push((
+                                    path.clone(),
+                                    format!("must match pattern: {}", pattern_str),
+                                ));
+                            }
+                        }
+                        Err(_) => {
                             violations.push((
-                                path.to_string(),
-                                format!("must match pattern: {}", pattern_str),
+                                path.clone(),
+                                format!("invalid regex pattern: {}", pattern_str),
                             ));
                         }
                     }
-                    Err(_) => {
-                        violations.push((
-                            path.to_string(),
-                            format!("invalid regex pattern: {}", pattern_str),
-                        ));
-                    }
                 }
             }
         }
-    }
 
-    // Check enum constraint
-    if let Some(&enum_thunk_id) = schema.get(&StrKey("enum")) {
-        let enum_thunk = ctx.get_thunk(enum_thunk_id);
-        let enum_val = materialize_sync(&enum_thunk, Some(&span), ctx)?;
-        if let Value::Dict(ref enum_dict) = enum_val {
-            // Pre-materialize all enum values once, then check membership.
-            // This avoids re-materializing on early-exit scenarios.
-            let allowed_values: Vec<Value> = enum_dict
-                .iter()
-                .map(|(_key, &val_thunk_id)| {
-                    let val_thunk = ctx.get_thunk(val_thunk_id);
-                    materialize_sync(&val_thunk, Some(&span), ctx)
-                })
-                .collect::<EvalResult<Vec<Value>>>()?;
+        // Check enum constraint.
+        // Uses the canonical async values_equal so that all value types (including
+        // Variant with payload and Dict) are compared correctly.
+        if let Some(&enum_thunk_id) = schema.get(&StrKey("enum")) {
+            let enum_thunk = ctx.get_thunk(enum_thunk_id);
+            let enum_val = materialize_sync(&enum_thunk, Some(&span), &ctx)?;
+            if let Value::Dict(ref enum_dict) = enum_val {
+                // Pre-materialize all enum values, then check membership via canonical equality.
+                let allowed_values: Vec<Value> = enum_dict
+                    .iter()
+                    .map(|(_key, &val_thunk_id)| {
+                        let val_thunk = ctx.get_thunk(val_thunk_id);
+                        materialize_sync(&val_thunk, Some(&span), &ctx)
+                    })
+                    .collect::<EvalResult<Vec<Value>>>()?;
 
-            let found = allowed_values.iter().any(|val| values_equal(val, data));
-            if !found {
-                violations.push((path.to_string(), "value not in allowed enum".to_string()));
+                let mut found = false;
+                for allowed in &allowed_values {
+                    if crate::eval::values_equal(
+                        allowed.clone(),
+                        data.clone(),
+                        span.clone(),
+                        Arc::clone(&ctx),
+                    )
+                    .await?
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    violations.push((path.clone(), "value not in allowed enum".to_string()));
+                }
             }
         }
-    }
 
-    // Check fields constraint (for dicts)
-    if let Some(&fields_thunk_id) = schema.get(&StrKey("fields")) {
-        let fields_thunk = ctx.get_thunk(fields_thunk_id);
-        let fields_val = materialize_sync(&fields_thunk, Some(&span), ctx)?;
-        if let Value::Dict(ref fields_schema) = fields_val {
-            if let Value::Dict(ref data_dict) = data {
-                // Validate each field in the schema
-                for (field_key, &field_schema_thunk_id) in fields_schema {
-                    let field_schema_thunk = ctx.get_thunk(field_schema_thunk_id);
-                    let field_schema_val = materialize_sync(&field_schema_thunk, Some(&span), ctx)?;
-                    if let Value::Dict(ref field_schema) = field_schema_val {
-                        let field_name = match field_key {
-                            Key::String(s) => s.to_string(),
-                            Key::Int(i) => i.to_string(),
-                        };
+        // Check fields constraint (for dicts)
+        if let Some(&fields_thunk_id) = schema.get(&StrKey("fields")) {
+            let fields_thunk = ctx.get_thunk(fields_thunk_id);
+            let fields_val = materialize_sync(&fields_thunk, Some(&span), &ctx)?;
+            if let Value::Dict(ref fields_schema) = fields_val {
+                if let Value::Dict(ref data_dict) = data {
+                    // Validate each field in the schema
+                    for (field_key, &field_schema_thunk_id) in fields_schema {
+                        let field_schema_thunk = ctx.get_thunk(field_schema_thunk_id);
+                        let field_schema_val =
+                            materialize_sync(&field_schema_thunk, Some(&span), &ctx)?;
+                        if let Value::Dict(field_schema) = field_schema_val {
+                            let field_name = match field_key {
+                                Key::String(s) => s.to_string(),
+                                Key::Int(i) => i.to_string(),
+                            };
 
-                        let field_path = if path.is_empty() {
-                            field_name.clone()
-                        } else {
-                            format!("{}.{}", path, field_name)
-                        };
+                            let field_path = if path.is_empty() {
+                                field_name.clone()
+                            } else {
+                                format!("{}.{}", path, field_name)
+                            };
 
-                        // Check if field is required
-                        let is_required =
-                            if let Some(&req_thunk_id) = field_schema.get(&StrKey("required")) {
+                            // Check if field is required
+                            let is_required = if let Some(&req_thunk_id) =
+                                field_schema.get(&StrKey("required"))
+                            {
                                 let req_thunk = ctx.get_thunk(req_thunk_id);
-                                let req_val = materialize_sync(&req_thunk, Some(&span), ctx)?;
+                                let req_val = materialize_sync(&req_thunk, Some(&span), &ctx)?;
                                 matches!(req_val, Value::Bool(true))
                             } else {
                                 false
                             };
 
-                        if let Some(&field_value_thunk_id) = data_dict.get(field_key) {
-                            let field_value_thunk = ctx.get_thunk(field_value_thunk_id);
-                            let field_value =
-                                materialize_sync(&field_value_thunk, Some(&span), ctx)?;
-                            validate_value(
-                                field_schema,
-                                &field_value,
-                                &field_path,
-                                violations,
-                                ctx,
-                                span.clone(),
-                            )?;
-                        } else if is_required {
-                            violations.push((field_path, "required field is missing".to_string()));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Check items constraint (for sequences/dicts with uniform element schema)
-    if let Some(&items_thunk_id) = schema.get(&StrKey("items")) {
-        let items_thunk = ctx.get_thunk(items_thunk_id);
-        let items_val = materialize_sync(&items_thunk, Some(&span), ctx)?;
-        if let Value::Dict(ref items_schema) = items_val {
-            match data {
-                Value::Dict(ref data_dict) => {
-                    for (idx, (_key, &val_thunk_id)) in data_dict.iter().enumerate() {
-                        let val_thunk = ctx.get_thunk(val_thunk_id);
-                        let val = materialize_sync(&val_thunk, Some(&span), ctx)?;
-                        let item_path = if path.is_empty() {
-                            format!("[{}]", idx)
-                        } else {
-                            format!("{}[{}]", path, idx)
-                        };
-                        validate_value(
-                            items_schema,
-                            &val,
-                            &item_path,
-                            violations,
-                            ctx,
-                            span.clone(),
-                        )?;
-                    }
-                }
-                Value::Seq { .. } => {
-                    // Validate each element of the Seq against the items schema
-                    // Helper closure to recursively walk the Seq spine
-                    fn validate_seq_items(
-                        seq_val: &Value,
-                        items_schema: &IndexMap<Key, ThunkId>,
-                        path: &str,
-                        idx: usize,
-                        violations: &mut Vec<(String, String)>,
-                        ctx: &Arc<crate::eval::EvalContext>,
-                        span: Span,
-                    ) -> EvalResult<()> {
-                        match seq_val {
-                            Value::Seq { head, tail } => {
-                                let head_thunk = ctx.get_thunk(*head);
-                                let head_val = materialize_sync(&head_thunk, Some(&span), ctx)?;
-                                let item_path = if path.is_empty() {
-                                    format!("[{}]", idx)
-                                } else {
-                                    format!("{}[{}]", path, idx)
-                                };
-                                validate_value(
-                                    items_schema,
-                                    &head_val,
-                                    &item_path,
-                                    violations,
-                                    ctx,
+                            if let Some(&field_value_thunk_id) = data_dict.get(field_key) {
+                                let field_value_thunk = ctx.get_thunk(field_value_thunk_id);
+                                let field_value =
+                                    materialize_sync(&field_value_thunk, Some(&span), &ctx)?;
+                                let sub_violations = validate_value(
+                                    field_schema,
+                                    field_value,
+                                    field_path,
+                                    Arc::clone(&ctx),
                                     span.clone(),
-                                )?;
-
-                                let tail_thunk = ctx.get_thunk(*tail);
-                                let tail_val = materialize_sync(&tail_thunk, Some(&span), ctx)?;
-                                validate_seq_items(
-                                    &tail_val,
-                                    items_schema,
-                                    path,
-                                    idx + 1,
-                                    violations,
-                                    ctx,
-                                    span,
                                 )
-                            }
-                            Value::Dict(d) if d.is_empty() => {
-                                // Empty dict is the Seq terminator
-                                Ok(())
-                            }
-                            _ => {
-                                // Malformed Seq (non-empty dict or other value as tail)
-                                Ok(())
+                                .await?;
+                                violations.extend(sub_violations);
+                            } else if is_required {
+                                violations
+                                    .push((field_path, "required field is missing".to_string()));
                             }
                         }
                     }
-                    validate_seq_items(data, items_schema, path, 0, violations, ctx, span)?;
                 }
-                _ => {}
             }
         }
-    }
 
-    Ok(())
+        // Check items constraint (for sequences/dicts with uniform element schema)
+        if let Some(&items_thunk_id) = schema.get(&StrKey("items")) {
+            let items_thunk = ctx.get_thunk(items_thunk_id);
+            let items_val = materialize_sync(&items_thunk, Some(&span), &ctx)?;
+            if let Value::Dict(items_schema) = items_val {
+                match &data {
+                    Value::Dict(ref data_dict) => {
+                        for (idx, (_key, &val_thunk_id)) in data_dict.iter().enumerate() {
+                            let val_thunk = ctx.get_thunk(val_thunk_id);
+                            let val = materialize_sync(&val_thunk, Some(&span), &ctx)?;
+                            let item_path = if path.is_empty() {
+                                format!("[{}]", idx)
+                            } else {
+                                format!("{}[{}]", path, idx)
+                            };
+                            let sub_violations = validate_value(
+                                items_schema.clone(),
+                                val,
+                                item_path,
+                                Arc::clone(&ctx),
+                                span.clone(),
+                            )
+                            .await?;
+                            violations.extend(sub_violations);
+                        }
+                    }
+                    Value::Seq { .. } => {
+                        // Validate each element of the Seq against the items schema
+                        let sub_violations = validate_seq_items(
+                            data.clone(),
+                            items_schema,
+                            path.clone(),
+                            0,
+                            Arc::clone(&ctx),
+                            span.clone(),
+                        )
+                        .await?;
+                        violations.extend(sub_violations);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(violations)
+    })
 }
 
-/// Helper to compare two values for equality (for enum checking).
-pub(crate) fn values_equal(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Int(x), Value::Int(y)) => x == y,
-        (Value::Float(x), Value::Float(y)) => (x - y).abs() < f64::EPSILON,
-        (
-            Value::String {
-                source: s1,
-                start: start1,
-                end: end1,
-            },
-            Value::String {
-                source: s2,
-                start: start2,
-                end: end2,
-            },
-        ) => s1[*start1..*end1] == s2[*start2..*end2],
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::Dict(x), Value::Dict(y)) => x.is_empty() && y.is_empty(), // Null check
-        _ => false,
-    }
+/// Walk a Seq spine and validate each element against `items_schema`.
+///
+/// Separated from `validate_value` so both can be async-recursive without
+/// requiring a mutually-recursive `Box::pin` type cycle. Takes owned parameters
+/// to enable `async move`.
+fn validate_seq_items(
+    seq_val: Value,
+    items_schema: IndexMap<Key, ThunkId>,
+    path: String,
+    idx: usize,
+    ctx: Arc<crate::eval::EvalContext>,
+    span: Span,
+) -> ValidationFuture {
+    Box::pin(async move {
+        match seq_val {
+            Value::Seq { head, tail } => {
+                let head_thunk = ctx.get_thunk(head);
+                let head_val = materialize_sync(&head_thunk, Some(&span), &ctx)?;
+                let item_path = if path.is_empty() {
+                    format!("[{}]", idx)
+                } else {
+                    format!("{}[{}]", path, idx)
+                };
+                let mut violations = validate_value(
+                    items_schema.clone(),
+                    head_val,
+                    item_path,
+                    Arc::clone(&ctx),
+                    span.clone(),
+                )
+                .await?;
+
+                let tail_thunk = ctx.get_thunk(tail);
+                let tail_val = materialize_sync(&tail_thunk, Some(&span), &ctx)?;
+                let tail_violations =
+                    validate_seq_items(tail_val, items_schema, path, idx + 1, ctx, span).await?;
+                violations.extend(tail_violations);
+                Ok(violations)
+            }
+            Value::Dict(ref d) if d.is_empty() => {
+                // Empty dict is the Seq terminator
+                Ok(Vec::new())
+            }
+            _ => {
+                // Malformed Seq (non-empty dict or other value as tail)
+                Ok(Vec::new())
+            }
+        }
+    })
 }

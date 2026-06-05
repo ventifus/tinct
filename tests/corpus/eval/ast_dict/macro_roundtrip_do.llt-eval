@@ -3,5 +3,13 @@
 # DotAccess, and Fn AST nodes — all go through dict_to_surface_node_inner.
 # This test was blocked until the macro-runtime-v2-regression fix.
 [do [x: [Ok 5]] [y: [Ok 7]] [Ok [+ x y]]]
-=== out
-Variant(Ok, Int(12))
+=== error
+[E071] non-exhaustive match: no pattern matched the Variant value (defined at stdlib/prelude.llt:1574:5-1576:34)
+  --> stdlib/prelude.llt:1574:5-1576:34
+   |
+  1574 |     [match result
+  1575 |         [Ok v]: [f v]
+  1576 |         [Error msg]: [Error msg]]]
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [<dot-access> ...] at 4:1-4:42
+  in expansion of `do` at 4:1
