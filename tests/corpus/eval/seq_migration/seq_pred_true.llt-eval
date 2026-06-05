@@ -1,0 +1,7 @@
+# seq?: returns true for a Seq.Cons value (not a Dict, not a Variant with other tag)
+# Regression: seq? uses [match x Seq: true _: false] — TypeTag "Seq" must match Seq.Cons
+# After migration type_name() returns "Variant" for Seq.Cons, so TypeTag("Seq") may fail.
+# This test catches that regression.
+[seq? [range 1 4]]
+=== out
+Bool(true)

@@ -2310,11 +2310,10 @@ fn run_eval(
         let eval_programs_val = materialize(&eval_programs_thunk, None, &eval_ctx)
             .map_err(|e| format!("internal error: failed to materialize eval-programs: {e}"))?;
 
-        // Build a [Seq Value::Program] from the collected programs (right-folded linked list).
-        // Seq is: Value::Seq { head: ThunkId, tail: ThunkId } / empty = Value::Dict({})
+        // Build a Seq.Cons/Seq.Nil list of programs from the collected programs (right-folded).
         // Build from the end so the first program is at the head.
         let mut seq_thunk = Arc::new(tinct::Thunk::new_materialized(
-            tinct::Value::Dict(indexmap::IndexMap::new()),
+            tinct::make_seq_nil(),
             tinct::Span::origin(),
         ));
         for prog_val in collected_programs.into_iter().rev() {
@@ -2325,10 +2324,7 @@ fn run_eval(
             let head_id = eval_ctx.alloc_thunk(head_thunk);
             let tail_id = eval_ctx.alloc_thunk(seq_thunk);
             seq_thunk = Arc::new(tinct::Thunk::new_materialized(
-                tinct::Value::Seq {
-                    head: head_id,
-                    tail: tail_id,
-                },
+                tinct::make_seq_cons(head_id, tail_id, &eval_ctx),
                 tinct::Span::origin(),
             ));
         }

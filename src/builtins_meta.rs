@@ -1,4 +1,5 @@
 //! Type introspection, evaluation control, and meta builtins.
+#![allow(clippy::needless_borrow)]
 //!
 //! These builtins provide type checking, evaluation control, AST manipulation,
 //! file inclusion, and schema validation.
@@ -1351,7 +1352,7 @@ fn type_name(val: &Value) -> String {
         Value::Bool(_) => "Bool",
         Value::Bytes { .. } => "Bytes",
         Value::Dict(_) | Value::Overlay(..) => "Dict",
-        Value::Seq { .. } => "Seq",
+        Value::Variant { ref tag, .. } if tag == "Seq.Cons" || tag == "Seq.Nil" => "Seq",
         Value::Function { .. } => "Function",
         Value::Builtin(_) => "Builtin",
         Value::Proxy { .. } => "Proxy",
@@ -1765,12 +1766,41 @@ pub(crate) fn builtin_program(
                     }
                 }
             }
-            Value::Seq { .. } => {
+            ref v if crate::value::is_seq(v) => {
                 // Collect all seq elements
                 let mut current = val;
                 loop {
                     match current {
-                        Value::Seq { head, tail } => {
+                        Value::Variant {
+                            ref tag,
+                            payload: None,
+                        } if tag == "Seq.Nil" => {
+                            // Seq.Nil is the terminator
+                            break;
+                        }
+                        Value::Variant {
+                            ref tag,
+                            payload: Some(payload_id),
+                        } if tag == "Seq.Cons" => {
+                            let payload_thunk = ctx.get_thunk(payload_id);
+                            let payload_val =
+                                crate::eval::materialize(&payload_thunk, Some(&call_span), &ctx)
+                                    .await?;
+                            let (head, tail) = if let Value::Dict(ref d) = payload_val {
+                                let head = *d
+                                    .get(&crate::value::Key::String("head".into()))
+                                    .expect("Seq.Cons must have head");
+                                let tail = *d
+                                    .get(&crate::value::Key::String("tail".into()))
+                                    .expect("Seq.Cons must have tail");
+                                (head, tail)
+                            } else {
+                                return Err(EvalError::internal(
+                                    "Seq.Cons payload must be a Dict".to_string(),
+                                    call_span,
+                                )
+                                .into());
+                            };
                             let head_thunk = ctx.get_thunk(head);
                             let doc_val =
                                 crate::eval::materialize(&head_thunk, Some(&call_span), &ctx)
@@ -1805,10 +1835,6 @@ pub(crate) fn builtin_program(
                             let tail_thunk = ctx.get_thunk(tail);
                             current = crate::eval::materialize(&tail_thunk, Some(&call_span), &ctx)
                                 .await?;
-                        }
-                        Value::Dict(map) if map.is_empty() => {
-                            // Empty dict is the seq terminator
-                            break;
                         }
                         _ => {
                             return Err(EvalError::type_mismatch_ctx(
@@ -2172,7 +2198,34 @@ pub(crate) fn builtin_eval(
         let mut current = seq_val;
         loop {
             match current {
-                Value::Seq { head, tail } => {
+                Value::Variant {
+                    ref tag,
+                    payload: None,
+                } if tag == "Seq.Nil" => {
+                    // End of sequence
+                    break;
+                }
+                Value::Variant {
+                    ref tag,
+                    payload: Some(payload_id),
+                } if tag == "Seq.Cons" => {
+                    let payload_thunk = ctx.get_thunk(payload_id);
+                    let payload_val = materialize(&payload_thunk, Some(&call_span), &ctx).await?;
+                    let (head, tail) = if let Value::Dict(ref d) = payload_val {
+                        let head = *d
+                            .get(&crate::value::Key::String("head".into()))
+                            .expect("Seq.Cons must have head");
+                        let tail = *d
+                            .get(&crate::value::Key::String("tail".into()))
+                            .expect("Seq.Cons must have tail");
+                        (head, tail)
+                    } else {
+                        return Err(EvalError::internal(
+                            "Seq.Cons payload must be a Dict".to_string(),
+                            call_span,
+                        )
+                        .into());
+                    };
                     let head_val =
                         materialize(&ctx.get_thunk(head), Some(&call_span), &ctx).await?;
                     match head_val {
@@ -2190,10 +2243,6 @@ pub(crate) fn builtin_eval(
                         }
                     }
                     current = materialize(&ctx.get_thunk(tail), Some(&call_span), &ctx).await?;
-                }
-                Value::Dict(ref entries) if entries.is_empty() => {
-                    // Empty dict = end of sequence
-                    break;
                 }
                 _ => {
                     return Err(EvalError::type_mismatch_ctx(
@@ -2316,7 +2365,34 @@ pub(crate) fn builtin_eval_types(
         let mut current = seq_val;
         loop {
             match current {
-                Value::Seq { head, tail } => {
+                Value::Variant {
+                    ref tag,
+                    payload: None,
+                } if tag == "Seq.Nil" => {
+                    // End of sequence
+                    break;
+                }
+                Value::Variant {
+                    ref tag,
+                    payload: Some(payload_id),
+                } if tag == "Seq.Cons" => {
+                    let payload_thunk = ctx.get_thunk(payload_id);
+                    let payload_val = materialize(&payload_thunk, Some(&call_span), &ctx).await?;
+                    let (head, tail) = if let Value::Dict(ref d) = payload_val {
+                        let head = *d
+                            .get(&crate::value::Key::String("head".into()))
+                            .expect("Seq.Cons must have head");
+                        let tail = *d
+                            .get(&crate::value::Key::String("tail".into()))
+                            .expect("Seq.Cons must have tail");
+                        (head, tail)
+                    } else {
+                        return Err(EvalError::internal(
+                            "Seq.Cons payload must be a Dict".to_string(),
+                            call_span,
+                        )
+                        .into());
+                    };
                     let head_val =
                         materialize(&ctx.get_thunk(head), Some(&call_span), &ctx).await?;
                     match head_val {
@@ -2335,9 +2411,6 @@ pub(crate) fn builtin_eval_types(
                     }
                     current = materialize(&ctx.get_thunk(tail), Some(&call_span), &ctx).await?;
                 }
-                Value::Dict(ref entries) if entries.is_empty() => {
-                    break;
-                }
                 _ => {
                     return Err(EvalError::type_mismatch_ctx(
                         "eval-types".to_string(),
@@ -2355,7 +2428,7 @@ pub(crate) fn builtin_eval_types(
         let types_table = crate::ast::empty_type_annotation_table_arc();
 
         // Create Surface thunks for each expression
-        let mut result_seq = Value::Dict(IndexMap::new()); // Start with empty (nil)
+        let mut result_seq = crate::value::make_seq_nil();
         for node in expression_nodes.into_iter().rev() {
             let surface_thunk = Arc::new(Thunk::new_surface(
                 node,
@@ -2368,10 +2441,7 @@ pub(crate) fn builtin_eval_types(
             let surface_thunk_id = ctx.alloc_thunk(surface_thunk);
 
             let tail_thunk_id = ctx.alloc_thunk(ok_val(result_seq, call_span.clone())?);
-            result_seq = Value::Seq {
-                head: surface_thunk_id,
-                tail: tail_thunk_id,
-            };
+            result_seq = crate::value::make_seq_cons(surface_thunk_id, tail_thunk_id, &ctx);
         }
 
         ok_val(result_seq, call_span)
@@ -2482,7 +2552,9 @@ pub(crate) fn builtin_include_cache_put(
             Value::Variant { tag, payload } => {
                 // Strip qualifier prefix ("IncludeCacheEntry.Pending" → "Pending") for
                 // compatibility with T-974 qualified variant tags from inject_adt_constructors_expr.
-                let tag_name = tag.strip_prefix("IncludeCacheEntry.").unwrap_or(tag.as_str());
+                let tag_name = tag
+                    .strip_prefix("IncludeCacheEntry.")
+                    .unwrap_or(tag.as_str());
                 match tag_name {
                     "Missing" => crate::eval::IncludeCacheEntry::Missing,
                     "Pending" => crate::eval::IncludeCacheEntry::Pending,
@@ -2748,7 +2820,7 @@ fn validate_value(
                         end,
                     } => Some((end - start) as i64),
                     Value::Dict(d) => Some(d.len() as i64),
-                    Value::Seq { .. } => {
+                    ref v if crate::value::is_seq(v) => {
                         // For Seq, walking the spine to count is expensive.
                         // Skip for now; document limitation.
                         None
@@ -2774,7 +2846,7 @@ fn validate_value(
                         end,
                     } => Some((end - start) as i64),
                     Value::Dict(d) => Some(d.len() as i64),
-                    Value::Seq { .. } => None,
+                    ref v if crate::value::is_seq(v) => None,
                     _ => None,
                 };
                 if let Some(len) = actual_len {
@@ -2936,7 +3008,7 @@ fn validate_value(
                             violations.extend(sub_violations);
                         }
                     }
-                    Value::Seq { .. } => {
+                    ref v if crate::value::is_seq(v) => {
                         // Validate each element of the Seq against the items schema
                         let sub_violations = validate_seq_items(
                             data.clone(),
@@ -2973,7 +3045,34 @@ fn validate_seq_items(
 ) -> ValidationFuture {
     Box::pin(async move {
         match seq_val {
-            Value::Seq { head, tail } => {
+            Value::Variant {
+                ref tag,
+                payload: None,
+            } if tag == "Seq.Nil" => {
+                // End of sequence
+                Ok(Vec::new())
+            }
+            Value::Variant {
+                ref tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val = materialize_sync(&payload_thunk, Some(&span), &ctx)?;
+                let (head, tail) = if let Value::Dict(ref d) = payload_val {
+                    let head = *d
+                        .get(&Key::String("head".into()))
+                        .expect("Seq.Cons must have head");
+                    let tail = *d
+                        .get(&Key::String("tail".into()))
+                        .expect("Seq.Cons must have tail");
+                    (head, tail)
+                } else {
+                    return Err(EvalError::internal(
+                        "Seq.Cons payload must be a Dict".to_string(),
+                        span,
+                    )
+                    .into());
+                };
                 let head_thunk = ctx.get_thunk(head);
                 let head_val = materialize_sync(&head_thunk, Some(&span), &ctx)?;
                 let item_path = if path.is_empty() {
@@ -2997,12 +3096,8 @@ fn validate_seq_items(
                 violations.extend(tail_violations);
                 Ok(violations)
             }
-            Value::Dict(ref d) if d.is_empty() => {
-                // Empty dict is the Seq terminator
-                Ok(Vec::new())
-            }
             _ => {
-                // Malformed Seq (non-empty dict or other value as tail)
+                // Malformed Seq or other value — stop walking
                 Ok(Vec::new())
             }
         }

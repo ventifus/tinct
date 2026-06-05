@@ -124,7 +124,7 @@ impl SpanRecord {
     ///
     /// Produces a dict with kebab-case keys matching the schema in doc/12-tooling.md.
     /// Empty optional fields use Value::Dict(IndexMap::new()) — the tinct empty-dict sentinel.
-    /// Used for converting span sequences to Value::Seq for final output.
+    /// Used for converting span sequences to Seq.Cons/Seq.Nil variants for final output.
     pub fn to_value(&self, ctx: &Arc<EvalContext>) -> Value {
         /// Allocate a materialized thunk into the arena and return the ThunkId.
         fn alloc(val: Value, ctx: &Arc<EvalContext>) -> crate::value::ThunkId {
@@ -419,7 +419,7 @@ impl ProfilingCollector {
         std::mem::take(&mut self.spans)
     }
 
-    /// Convert all collected spans to a tinct Value::Seq of dicts.
+    /// Convert all collected spans to a tinct Seq.Cons/Seq.Nil linked list of dicts.
     ///
     /// Each span becomes a dict with kebab-case keys matching the schema in doc/12-tooling.md.
     /// Empty optional fields use Value::Dict(IndexMap::new()) — the tinct empty-dict sentinel.
@@ -427,7 +427,7 @@ impl ProfilingCollector {
         Self::spans_to_value(self.spans, ctx)
     }
 
-    /// Convert a vector of spans to a tinct Value::Seq of dicts.
+    /// Convert a vector of spans to a tinct Seq.Cons/Seq.Nil linked list of dicts.
     /// Public to allow main.rs to serialize extracted spans.
     pub fn spans_to_value(spans: Vec<SpanRecord>, ctx: &Arc<EvalContext>) -> Value {
         /// Allocate a materialized thunk into the arena and return the ThunkId.
@@ -436,23 +436,15 @@ impl ProfilingCollector {
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, Span::origin())))
         }
 
-        /// The tinct empty-value sentinel (empty dict = `[]`).
-        fn empty() -> Value {
-            Value::Dict(IndexMap::new())
-        }
-
         // Build the Seq from right to left (tail-first linked list).
-        // Start from the empty-dict terminal and prepend each span dict.
-        let mut acc: Value = empty();
+        // Start from the Seq.Nil terminal and prepend each span dict.
+        let mut acc: Value = crate::value::make_seq_nil();
 
         for s in spans.into_iter().rev() {
             let dict = s.to_value(ctx);
             let head_id = alloc(dict, ctx);
             let tail_id = alloc(acc, ctx);
-            acc = Value::Seq {
-                head: head_id,
-                tail: tail_id,
-            };
+            acc = crate::value::make_seq_cons(head_id, tail_id, ctx);
         }
 
         acc
@@ -492,13 +484,27 @@ mod tests {
 
         collector.close_span(id);
 
-        // Convert to Value — one span produces a non-empty Seq (head=dict, tail=empty dict).
+        // Convert to Value — one span produces a non-empty Seq.Cons (head=dict, tail=Seq.Nil).
         let ctx = test_ctx();
         let value = collector.into_value(&ctx);
         match value {
-            Value::Seq { head, tail: _ } => {
+            Value::Variant {
+                ref tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
+                // Extract head from Seq.Cons payload
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val = payload_thunk
+                    .try_get_materialized()
+                    .expect("payload should be materialized");
+                let head_id = match payload_val {
+                    Value::Dict(ref d) => *d
+                        .get(&Key::String("head".into()))
+                        .expect("Seq.Cons must have head"),
+                    _ => panic!("Seq.Cons payload should be a Dict"),
+                };
                 // head is the span dict thunk
-                let head_thunk = ctx.get_thunk(head);
+                let head_thunk = ctx.get_thunk(head_id);
                 let head_val = head_thunk
                     .try_get_materialized()
                     .expect("span dict should be materialized");
@@ -515,7 +521,7 @@ mod tests {
                     _ => panic!("Expected dict as head of Seq"),
                 }
             }
-            _ => panic!("Expected Seq for non-empty span list"),
+            _ => panic!("Expected Seq.Cons for non-empty span list"),
         }
     }
 

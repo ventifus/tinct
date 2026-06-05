@@ -1,6 +1,6 @@
 [+ 1 [head []]]
 === error
-[E034] head on empty collection (defined at stdlib/prelude.llt:2482:15-2482:32)
+[E010] head: expected Seq, got Dict (defined at stdlib/prelude.llt:2482:15-2482:32)
   --> stdlib/prelude.llt:2482:15-2482:32
    |
   2482 | """] [let xs] [builtin-head xs]]

@@ -368,9 +368,9 @@ pub(crate) async fn bind_args_thunks(
                 .unwrap()
                 .insert(var_param.name.clone(), dict_thunk);
         } else {
-            // Pure positional: use legacy Seq cons-list representation (backward compatible)
+            // Pure positional: use Seq cons-list representation
             let nil = Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
+                crate::value::make_seq_nil(),
                 call_span.clone(),
             ));
             let seq_thunk = variadic_positional
@@ -380,10 +380,7 @@ pub(crate) async fn bind_args_thunks(
                     let head_id = ctx.alloc_thunk(Arc::clone(head_arg));
                     let tail_id = ctx.alloc_thunk(Arc::clone(&tail));
                     Arc::new(Thunk::new_materialized(
-                        Value::Seq {
-                            head: head_id,
-                            tail: tail_id,
-                        },
+                        crate::value::make_seq_cons(head_id, tail_id, ctx),
                         call_span.clone(),
                     ))
                 });

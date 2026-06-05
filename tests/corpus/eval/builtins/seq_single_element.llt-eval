@@ -1,4 +1,4 @@
 # seq: single element
-[collect [seq 99 []]]
+[collect [seq 99 [builtin-variant "Seq.Nil"]]]
 === out
 Dict({0: Int(99)})

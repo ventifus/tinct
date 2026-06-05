@@ -4,8 +4,11 @@
 # to App(TyCon("Seq"), Str) via resolve_annotated — only valid as a standalone expression,
 # not in function parameter position (where the parser accepts bare @Seq only).
 [f: [fn [let xs@Seq] xs]
- seq_assert: [@Seq [seq 1 [seq 2 []]]]
- param_seq: [f [seq "a" [seq "b" []]]]]
-=== error
-[E011] type assertion failed: expected Seq[_], got Seq (defined at 6:20-6:38) (materialized at 6:14-6:39)
-  note: value produced here at 6:20-6:38
+ seq_assert: [@Seq [seq 1 [seq 2 [builtin-variant "Seq.Nil"]]]]
+ param_seq: [f [seq "a" [seq "b" [builtin-variant "Seq.Nil"]]]]]
+=== out
+Dict({"f": Function(xs), "seq_assert": Seq(Int(1), ...), "param_seq": Seq(String("a"), ...)})
+
+=== warn
+undefined variable: builtin-variant at 6:35-6:50
+undefined variable: builtin-variant at 7:35-7:50

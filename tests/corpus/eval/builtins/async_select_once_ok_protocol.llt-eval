@@ -17,7 +17,7 @@
   [Ok v]: v
   [Closed]: -1]
 === error
-[E010] type mismatch: expected Dict with ch: and handler: fields, got Dict (defined at 12:27-12:58) (called at 15:8-15:16)
+[E010] type mismatch: expected Seq or Seq.Nil, got Dict (defined at 12:27-12:58) (called at 15:8-15:16)
   in [select-once ...] at 12:27-12:58
   in [if ...] at 12:11-12:91
 

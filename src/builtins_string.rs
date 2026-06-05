@@ -560,7 +560,7 @@ pub(crate) fn builtin_str_chars(
 
         // Build the sequence from the end to the beginning (right-to-left)
         let mut result = Arc::new(Thunk::new_materialized(
-            Value::Dict(indexmap::IndexMap::new()),
+            crate::value::make_seq_nil(),
             call_span.clone(),
         ));
 
@@ -574,11 +574,10 @@ pub(crate) fn builtin_str_chars(
                 call_span.clone(),
             ));
 
+            let head_id = ctx.alloc_thunk(head);
+            let tail_id = ctx.alloc_thunk(result);
             result = Arc::new(Thunk::new_materialized(
-                Value::Seq {
-                    head: ctx.alloc_thunk(head),
-                    tail: ctx.alloc_thunk(result),
-                },
+                crate::value::make_seq_cons(head_id, tail_id, &ctx),
                 call_span.clone(),
             ));
         }

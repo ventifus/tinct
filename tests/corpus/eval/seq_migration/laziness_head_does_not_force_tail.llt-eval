@@ -1,0 +1,6 @@
+# Laziness: head must not force the tail thunk
+# The tail is a deferred error; if head forces it, the eval fails instead of returning 99
+# Regression: Seq.Cons payload layout must preserve laziness of the tail ThunkId
+[head [seq 99 [error "tail must not be forced"]]]
+=== out
+Int(99)

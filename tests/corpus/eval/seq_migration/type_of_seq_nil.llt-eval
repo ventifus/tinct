@@ -1,0 +1,4 @@
+# type-of on Seq.Nil: returns "Variant" (unit Variant, same runtime kind as payload Variant)
+[type-of [tail [range 1 2]]]
+=== out
+String("Variant")

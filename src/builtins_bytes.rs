@@ -190,54 +190,75 @@ pub(crate) fn builtin_bytes_of(
         let mut bytes = Vec::new();
 
         match val {
-            Value::Seq { head, tail } => {
+            _ if crate::value::is_seq(&val) => {
                 // Iterate the sequence — val is moved/consumed here, not borrowed
-                let mut current_head = head;
-                let mut current_tail = tail;
+                let mut current = val;
 
                 loop {
-                    let head_thunk = ctx.get_thunk(current_head);
-                    let head_val = materialize(&head_thunk, Some(&call_span), &ctx).await?;
-
-                    match head_val {
-                        Value::Int(n) if (0..=255).contains(&n) => {
-                            bytes.push(n as u8);
-                        }
-                        Value::Int(n) => {
-                            return Err(EvalError::internal(
-                                format!("bytes-of: integer {n} out of range 0-255"),
-                                call_span,
-                            )
-                            .into());
-                        }
-                        _ => {
-                            return Err(EvalError::type_mismatch_ctx(
-                                "bytes-of".to_string(),
-                                "Int",
-                                head_val.type_name(),
-                                call_span,
-                            )
-                            .into());
-                        }
-                    }
-
-                    let tail_thunk = ctx.get_thunk(current_tail);
-                    let tail_val = materialize(&tail_thunk, Some(&call_span), &ctx).await?;
-
-                    match tail_val {
-                        Value::Dict(map) if map.is_empty() => {
+                    match current {
+                        Value::Variant {
+                            ref tag,
+                            payload: None,
+                        } if tag == "Seq.Nil" => {
                             // End of sequence
                             break;
                         }
-                        Value::Seq { head, tail } => {
-                            current_head = head;
-                            current_tail = tail;
+                        Value::Variant {
+                            ref tag,
+                            payload: Some(payload_id),
+                        } if tag == "Seq.Cons" => {
+                            let payload_thunk = ctx.get_thunk(payload_id);
+                            let payload_val =
+                                materialize(&payload_thunk, Some(&call_span), &ctx).await?;
+                            let (head, tail) = if let Value::Dict(ref d) = payload_val {
+                                let h = *d
+                                    .get(&crate::value::Key::String("head".into()))
+                                    .expect("Seq.Cons must have head");
+                                let t = *d
+                                    .get(&crate::value::Key::String("tail".into()))
+                                    .expect("Seq.Cons must have tail");
+                                (h, t)
+                            } else {
+                                return Err(EvalError::internal(
+                                    "Seq.Cons payload must be a Dict".to_string(),
+                                    call_span,
+                                )
+                                .into());
+                            };
+
+                            let head_thunk = ctx.get_thunk(head);
+                            let head_val = materialize(&head_thunk, Some(&call_span), &ctx).await?;
+
+                            match head_val {
+                                Value::Int(n) if (0..=255).contains(&n) => {
+                                    bytes.push(n as u8);
+                                }
+                                Value::Int(n) => {
+                                    return Err(EvalError::internal(
+                                        format!("bytes-of: integer {n} out of range 0-255"),
+                                        call_span,
+                                    )
+                                    .into());
+                                }
+                                _ => {
+                                    return Err(EvalError::type_mismatch_ctx(
+                                        "bytes-of".to_string(),
+                                        "Int",
+                                        head_val.type_name(),
+                                        call_span,
+                                    )
+                                    .into());
+                                }
+                            }
+
+                            let tail_thunk = ctx.get_thunk(tail);
+                            current = materialize(&tail_thunk, Some(&call_span), &ctx).await?;
                         }
                         _ => {
                             return Err(EvalError::type_mismatch_ctx(
                                 "bytes-of".to_string(),
                                 "Seq",
-                                tail_val.type_name(),
+                                current.type_name(),
                                 call_span,
                             )
                             .into());

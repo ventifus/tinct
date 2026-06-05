@@ -1,4 +1,7 @@
-# tail: returns empty dict for single-element seq
-[collect [tail [seq 1 []]]]
+# tail: returns Seq.Nil for single-element seq
+[tail [seq 1 [builtin-variant "Seq.Nil"]]]
 === out
 Dict({})
+
+=== warn
+undefined variable: builtin-variant at 1:15-1:30

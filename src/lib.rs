@@ -178,7 +178,8 @@ pub use lsp::run_lsp;
 
 /// Runtime value types: values, thunks, environments, and dict keys.
 pub use value::{
-    ChannelInner, ClockCapInner, DirPerms, Environment, Key, NetCapEntry, Thunk, Value,
+    make_seq_cons, make_seq_nil, ChannelInner, ClockCapInner, DirPerms, Environment, Key,
+    NetCapEntry, Thunk, Value,
 };
 
 /// Attach macro expansion provenance to an error by checking if any of the error's
@@ -770,13 +771,35 @@ pub fn visit_value<V: ValueVisitor>(
             let map = builtins::flatten_overlay(l, r, "value serialization", ctx, span.clone())?;
             visit_value(&value::Value::Dict(map), ctx, depth, visitor, span)
         }
-        value::Value::Seq { head, .. } => {
-            let head_thunk = ctx.get_thunk(*head);
+        value::Value::Variant {
+            ref tag,
+            payload: Some(payload_id),
+        } if tag == "Seq.Cons" => {
+            let payload_thunk = ctx.get_thunk(*payload_id);
+            let payload_val =
+                crate::async_rt::block_on_anywhere(eval::materialize(&payload_thunk, None, ctx))?;
+            let head_id = if let value::Value::Dict(ref d) = payload_val {
+                *d.get(&value::Key::String("head".into()))
+                    .expect("Seq.Cons must have head")
+            } else {
+                return Err(Box::new(error::EvalError::internal(
+                    "Seq.Cons payload must be a Dict".to_string(),
+                    span,
+                )));
+            };
+            let head_thunk = ctx.get_thunk(head_id);
             let head_val =
                 crate::async_rt::block_on_anywhere(eval::materialize(&head_thunk, None, ctx))?;
             let head_span = head_thunk.span.clone();
             let head_out = visit_value(&head_val, ctx, depth + 1, visitor, head_span.clone())?;
             visitor.visit_seq_head(head_out, head_span)
+        }
+        value::Value::Variant {
+            ref tag,
+            payload: None,
+        } if tag == "Seq.Nil" => {
+            // Empty sequence — treat as empty dict for serialization
+            Ok(visitor.visit_dict(vec![]))
         }
         value::Value::Function { params, .. } => visitor.visit_function(params, span),
         value::Value::Builtin(def) => visitor.visit_builtin(def.name, span),
@@ -1696,13 +1719,12 @@ mod tests {
                 test_span(1, 1, 1, 1),
             ));
             let tail_thunk = Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
+                value::make_seq_nil(),
                 test_span(1, 1, 1, 1),
             ));
-            Value::Seq {
-                head: ctx.alloc_thunk(head_thunk),
-                tail: ctx.alloc_thunk(tail_thunk),
-            }
+            let head_id = ctx.alloc_thunk(head_thunk);
+            let tail_id = ctx.alloc_thunk(tail_thunk);
+            value::make_seq_cons(head_id, tail_id, &ctx)
         };
         let err = visit_value(&seq, &ctx, 0, &JsonVisitor, ast::Span::origin()).unwrap_err();
         assert!(
@@ -1978,13 +2000,12 @@ mod tests {
                 test_span(1, 1, 1, 1),
             ));
             let tail_thunk = Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
+                value::make_seq_nil(),
                 test_span(1, 1, 1, 1),
             ));
-            Value::Seq {
-                head: ctx.alloc_thunk(head_thunk),
-                tail: ctx.alloc_thunk(tail_thunk),
-            }
+            let head_id = ctx.alloc_thunk(head_thunk);
+            let tail_id = ctx.alloc_thunk(tail_thunk);
+            value::make_seq_cons(head_id, tail_id, &ctx)
         };
         let display =
             value_to_display_string(&seq, &ctx, ast::Span::origin()).expect("display failed");

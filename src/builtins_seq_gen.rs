@@ -17,7 +17,7 @@ use indexmap::IndexMap;
 use crate::builtins::{builtin, ok_val, reject_named, synthetic_call_expr};
 use crate::error::{ArityBound, EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{BuiltinArgs, Thunk, Value};
+use crate::value::{make_seq_cons, make_seq_nil, BuiltinArgs, Thunk, Value};
 
 /// `range`: Sequence of integers from start to end (exclusive), or infinite.
 ///
@@ -81,13 +81,7 @@ pub(crate) fn builtin_range(
             ));
             let head_id = ctx.alloc_thunk(head);
             let tail_id = ctx.alloc_thunk(tail);
-            ok_val(
-                Value::Seq {
-                    head: head_id,
-                    tail: tail_id,
-                },
-                call_span,
-            )
+            ok_val(make_seq_cons(head_id, tail_id, &ctx), call_span)
         } else {
             // Finite range: [start, start+1, ..., end-1]
             // Safe conditional: args.len() check (line 66) doesn't force thunks
@@ -113,7 +107,7 @@ pub(crate) fn builtin_range(
 
             if start_int >= end_int {
                 // Empty range
-                ok_val(Value::Dict(IndexMap::new()), call_span)
+                ok_val(make_seq_nil(), call_span)
             } else {
                 let next_start = start_int.checked_add(1).ok_or_else(|| {
                     EvalError::integer_overflow("range".to_string(), call_span.clone())
@@ -133,13 +127,7 @@ pub(crate) fn builtin_range(
                 ));
                 let head_id = ctx.alloc_thunk(head);
                 let tail_id = ctx.alloc_thunk(tail);
-                ok_val(
-                    Value::Seq {
-                        head: head_id,
-                        tail: tail_id,
-                    },
-                    call_span,
-                )
+                ok_val(make_seq_cons(head_id, tail_id, &ctx), call_span)
             }
         }
     })
@@ -176,13 +164,9 @@ pub(crate) fn builtin_repeat(
             Some(Arc::from("call $repeat")),
             Arc::clone(&ctx),
         ));
-        ok_val(
-            Value::Seq {
-                head: ctx.alloc_thunk(head),
-                tail: ctx.alloc_thunk(tail),
-            },
-            call_span,
-        )
+        let head_id = ctx.alloc_thunk(head);
+        let tail_id = ctx.alloc_thunk(tail);
+        ok_val(make_seq_cons(head_id, tail_id, &ctx), call_span)
     })
 }
 
@@ -268,10 +252,7 @@ pub(crate) fn builtin_cycle_step(
         ));
 
         ok_val(
-            Value::Seq {
-                head: head_id,
-                tail: ctx.alloc_thunk(tail),
-            },
+            make_seq_cons(head_id, ctx.alloc_thunk(tail), &ctx),
             call_span,
         )
     })
@@ -382,13 +363,9 @@ pub(crate) fn builtin_iterate(
             Arc::clone(&ctx),
         ));
 
-        ok_val(
-            Value::Seq {
-                head: ctx.alloc_thunk(head),
-                tail: ctx.alloc_thunk(tail),
-            },
-            call_span,
-        )
+        let head_id = ctx.alloc_thunk(head);
+        let tail_id = ctx.alloc_thunk(tail);
+        ok_val(make_seq_cons(head_id, tail_id, &ctx), call_span)
     })
 }
 
@@ -431,8 +408,8 @@ pub(crate) fn builtin_unfold_step(
 
         match step_result {
             Value::Dict(ref map) if map.is_empty() => {
-                // Termination: return empty dict
-                ok_val(Value::Dict(IndexMap::new()), call_span)
+                // Termination: return Seq.Nil
+                ok_val(make_seq_nil(), call_span)
             }
             Value::Dict(ref map) if map.len() >= 2 => {
                 // Extract first two values (ignore keys)
@@ -455,13 +432,7 @@ pub(crate) fn builtin_unfold_step(
                     Arc::clone(&ctx),
                 ));
 
-                ok_val(
-                    Value::Seq {
-                        head,
-                        tail: ctx.alloc_thunk(tail),
-                    },
-                    call_span,
-                )
+                ok_val(make_seq_cons(head, ctx.alloc_thunk(tail), &ctx), call_span)
             }
             Value::Dict(ref map) => Err(EvalError::type_mismatch_ctx(
                 "unfold".to_string(),

@@ -1,0 +1,7 @@
+# [seq h t] pattern: destructure a Seq.Cons, bind head variable
+# Regression: Pattern::Seq must match Value::Variant{Seq.Cons} after migration
+[match [range 42 46]
+    [seq h t]: h
+    _:         0]
+=== out
+Int(42)

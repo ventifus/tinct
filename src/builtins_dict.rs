@@ -41,7 +41,9 @@ use indexmap::IndexMap;
 use crate::builtins::{builtin, ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{string_val, BuiltinArgs, Key, StrKey, Strictness, Thunk, Value};
+use crate::value::{
+    make_seq_cons, make_seq_nil, string_val, BuiltinArgs, Key, StrKey, Strictness, Thunk, Value,
+};
 
 /// `keys`: Takes 1 arg (a Dict). Returns a Dict with integer keys `0..n`
 /// mapping to the key values (Int keys become Int values, String keys become
@@ -469,13 +471,9 @@ pub(crate) fn builtin_each(
             // an IndexMap of remaining entries at every step. Keys are discarded — each
             // yields values only, regardless of whether the original keys are Int or String.
             if remaining == 1 {
-                let tail = ok_val(Value::Dict(IndexMap::new()), call_span.clone())?;
-                let tail_id = ctx.alloc_thunk(tail);
+                let tail_id = ctx.alloc_thunk(ok_val(make_seq_nil(), call_span.clone())?);
                 ok_val(
-                    Value::Seq {
-                        head: ctx.alloc_thunk(head),
-                        tail: tail_id,
-                    },
+                    make_seq_cons(ctx.alloc_thunk(head), tail_id, &ctx),
                     call_span,
                 )
             } else {
@@ -495,10 +493,7 @@ pub(crate) fn builtin_each(
                 ));
                 let tail_id = ctx.alloc_thunk(tail);
                 ok_val(
-                    Value::Seq {
-                        head: ctx.alloc_thunk(head),
-                        tail: tail_id,
-                    },
+                    make_seq_cons(ctx.alloc_thunk(head), tail_id, &ctx),
                     call_span,
                 )
             }
@@ -574,13 +569,9 @@ pub(crate) fn builtin_each_key(
             // Build tail: if more elements remain, recurse with (same_dict_thunk, offset+1).
             // O(n) total: no IndexMap rebuild per step, just index increment.
             if remaining == 1 {
-                let tail = ok_val(Value::Dict(IndexMap::new()), call_span.clone())?;
-                let tail_id = ctx.alloc_thunk(tail);
+                let tail_id = ctx.alloc_thunk(ok_val(make_seq_nil(), call_span.clone())?);
                 ok_val(
-                    Value::Seq {
-                        head: ctx.alloc_thunk(head),
-                        tail: tail_id,
-                    },
+                    make_seq_cons(ctx.alloc_thunk(head), tail_id, &ctx),
                     call_span,
                 )
             } else {
@@ -600,10 +591,7 @@ pub(crate) fn builtin_each_key(
                 ));
                 let tail_id = ctx.alloc_thunk(tail);
                 ok_val(
-                    Value::Seq {
-                        head: ctx.alloc_thunk(head),
-                        tail: tail_id,
-                    },
+                    make_seq_cons(ctx.alloc_thunk(head), tail_id, &ctx),
                     call_span,
                 )
             }
@@ -687,13 +675,9 @@ pub(crate) fn builtin_each_kv(
             // Build tail: if more elements remain, recurse with (same_dict_thunk, offset+1).
             // O(n) total: no IndexMap rebuild per step, just index increment.
             if remaining == 1 {
-                let tail = ok_val(Value::Dict(IndexMap::new()), call_span.clone())?;
-                let tail_id = ctx.alloc_thunk(tail);
+                let tail_id = ctx.alloc_thunk(ok_val(make_seq_nil(), call_span.clone())?);
                 ok_val(
-                    Value::Seq {
-                        head: ctx.alloc_thunk(head),
-                        tail: tail_id,
-                    },
+                    make_seq_cons(ctx.alloc_thunk(head), tail_id, &ctx),
                     call_span,
                 )
             } else {
@@ -713,10 +697,7 @@ pub(crate) fn builtin_each_kv(
                 ));
                 let tail_id = ctx.alloc_thunk(tail);
                 ok_val(
-                    Value::Seq {
-                        head: ctx.alloc_thunk(head),
-                        tail: tail_id,
-                    },
+                    make_seq_cons(ctx.alloc_thunk(head), tail_id, &ctx),
                     call_span,
                 )
             }
@@ -843,95 +824,117 @@ pub(crate) fn builtin_build_dict(
             // Single-pass traversal: process each element as we walk the spine.
             // No pre-count needed — we use an IndexMap and let it grow dynamically.
             // Growth amortizes to O(1) per insert (same as Vec).
-            Value::Seq { head, tail } => {
+            _ if crate::value::is_seq(&val) => {
                 let mut result = IndexMap::new();
-                let mut current_head_id = head;
-                let mut current_tail_id = tail;
+                let mut current = val;
 
                 loop {
-                    // Process the head: materialize it to get the [key: K, value: V] dict.
-                    let head_thunk = ctx.thunk_arena.lock().unwrap().get(current_head_id).clone();
-                    let head_val = materialize(&head_thunk, None, &ctx).await?;
+                    match current {
+                        Value::Variant {
+                            ref tag,
+                            payload: None,
+                        } if tag == "Seq.Nil" => break,
+                        Value::Variant {
+                            ref tag,
+                            payload: Some(payload_id),
+                        } if tag == "Seq.Cons" => {
+                            // Extract head and tail from Seq.Cons payload
+                            let payload_thunk = ctx.get_thunk(payload_id);
+                            let payload_val = materialize(&payload_thunk, None, &ctx).await?;
+                            let (current_head_id, tail) = if let Value::Dict(ref d) = payload_val {
+                                let h = *d
+                                    .get(&Key::String("head".into()))
+                                    .expect("Seq.Cons must have head");
+                                let t = *d
+                                    .get(&Key::String("tail".into()))
+                                    .expect("Seq.Cons must have tail");
+                                (h, t)
+                            } else {
+                                return Err(EvalError::internal(
+                                    "Seq.Cons payload must be a Dict".to_string(),
+                                    call_span,
+                                )
+                                .into());
+                            };
 
-                    let entry_map = crate::builtins::require_dict(
-                        "build-dict (seq element)",
-                        head_val,
-                        head_thunk.span.clone(),
-                        &ctx,
-                        call_span.clone(),
-                    )?;
+                            // Process the head: materialize it to get the [key: K, value: V] dict.
+                            let head_thunk =
+                                ctx.thunk_arena.lock().unwrap().get(current_head_id).clone();
+                            let head_val = materialize(&head_thunk, None, &ctx).await?;
 
-                    // Extract key and value from the entry dict.
-                    let key_id = entry_map.get(&StrKey("key")).ok_or_else(|| {
-                        EvalError::key_not_found(
-                            "key",
-                            entry_map
-                                .keys()
-                                .map(|k| match k {
-                                    Key::Int(n) => n.to_string(),
-                                    Key::String(s) => s.to_string(),
-                                })
-                                .collect(),
-                            call_span.clone(),
-                        )
-                    })?;
+                            let entry_map = crate::builtins::require_dict(
+                                "build-dict (seq element)",
+                                head_val,
+                                head_thunk.span.clone(),
+                                &ctx,
+                                call_span.clone(),
+                            )?;
 
-                    let value_id = entry_map.get(&StrKey("value")).ok_or_else(|| {
-                        EvalError::key_not_found(
-                            "value",
-                            entry_map
-                                .keys()
-                                .map(|k| match k {
-                                    Key::Int(n) => n.to_string(),
-                                    Key::String(s) => s.to_string(),
-                                })
-                                .collect(),
-                            call_span.clone(),
-                        )
-                    })?;
+                            // Extract key and value from the entry dict.
+                            let key_id = entry_map.get(&StrKey("key")).ok_or_else(|| {
+                                EvalError::key_not_found(
+                                    "key",
+                                    entry_map
+                                        .keys()
+                                        .map(|k| match k {
+                                            Key::Int(n) => n.to_string(),
+                                            Key::String(s) => s.to_string(),
+                                        })
+                                        .collect(),
+                                    call_span.clone(),
+                                )
+                            })?;
 
-                    // Materialize the key to extract it (values stay lazy).
-                    let key_thunk = ctx.thunk_arena.lock().unwrap().get(*key_id).clone();
-                    let key_val = materialize(&key_thunk, None, &ctx).await?;
+                            let value_id = entry_map.get(&StrKey("value")).ok_or_else(|| {
+                                EvalError::key_not_found(
+                                    "value",
+                                    entry_map
+                                        .keys()
+                                        .map(|k| match k {
+                                            Key::Int(n) => n.to_string(),
+                                            Key::String(s) => s.to_string(),
+                                        })
+                                        .collect(),
+                                    call_span.clone(),
+                                )
+                            })?;
 
-                    let key = match key_val {
-                        Value::Int(n) => Key::Int(n),
-                        Value::String {
-                            ref source,
-                            start,
-                            end,
-                        } => {
-                            let s = &source[start..end];
-                            Key::String(s.into())
+                            // Materialize the key to extract it (values stay lazy).
+                            let key_thunk = ctx.thunk_arena.lock().unwrap().get(*key_id).clone();
+                            let key_val = materialize(&key_thunk, None, &ctx).await?;
+
+                            let key = match key_val {
+                                Value::Int(n) => Key::Int(n),
+                                Value::String {
+                                    ref source,
+                                    start,
+                                    end,
+                                } => {
+                                    let s = &source[start..end];
+                                    Key::String(s.into())
+                                }
+                                other => {
+                                    return Err(EvalError::type_mismatch_ctx(
+                                        "build-dict".to_string(),
+                                        "Int or String (for key)",
+                                        other.type_name(),
+                                        key_thunk.span.clone(),
+                                    )
+                                    .into())
+                                }
+                            };
+
+                            // Insert the entry (value stays as a thunk).
+                            result.insert(key, *value_id);
+
+                            // Advance to the next element in the Seq.
+                            let tail_thunk = ctx.thunk_arena.lock().unwrap().get(tail).clone();
+                            current = materialize(&tail_thunk, None, &ctx).await?;
                         }
                         other => {
                             return Err(EvalError::type_mismatch_ctx(
                                 "build-dict".to_string(),
-                                "Int or String (for key)",
-                                other.type_name(),
-                                key_thunk.span.clone(),
-                            )
-                            .into())
-                        }
-                    };
-
-                    // Insert the entry (value stays as a thunk).
-                    result.insert(key, *value_id);
-
-                    // Advance to the next element in the Seq.
-                    let tail_thunk = ctx.thunk_arena.lock().unwrap().get(current_tail_id).clone();
-                    let tail_val = materialize(&tail_thunk, None, &ctx).await?;
-
-                    match tail_val {
-                        Value::Dict(map) if map.is_empty() => break,
-                        Value::Seq { head, tail } => {
-                            current_head_id = head;
-                            current_tail_id = tail;
-                        }
-                        other => {
-                            return Err(EvalError::type_mismatch_ctx(
-                                "build-dict".to_string(),
-                                "Seq (empty dict tail)",
+                                "Seq",
                                 other.type_name(),
                                 args[0].span.clone(),
                             )

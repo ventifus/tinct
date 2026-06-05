@@ -992,9 +992,33 @@ fn extract_alpn_protocols(
 
     loop {
         match current {
-            Value::Dict(ref d) if d.is_empty() => break, // Null (end of list)
-            Value::Seq { head, tail } => {
-                // Materialize head and tail
+            Value::Variant {
+                ref tag,
+                payload: None,
+            } if tag == "Seq.Nil" => break,
+            Value::Variant {
+                ref tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val = materialize(&payload_thunk, Some(&span), ctx)?;
+                let (head, tail) = if let Value::Dict(ref d) = payload_val {
+                    let h = *d
+                        .get(&crate::value::Key::String("head".into()))
+                        .expect("Seq.Cons must have head");
+                    let t = *d
+                        .get(&crate::value::Key::String("tail".into()))
+                        .expect("Seq.Cons must have tail");
+                    (h, t)
+                } else {
+                    return Err(EvalError::internal(
+                        "Seq.Cons payload must be a Dict".to_string(),
+                        span,
+                    )
+                    .into());
+                };
+
+                // Materialize head
                 let head_thunk = ctx.get_thunk(head);
                 let head_val = materialize(&head_thunk, Some(&span), ctx)?;
 
@@ -1064,8 +1088,32 @@ pub(crate) fn validate_spki_pins(
 
     loop {
         match current {
-            Value::Dict(ref d) if d.is_empty() => break, // Null (end of list)
-            Value::Seq { head, tail } => {
+            Value::Variant {
+                ref tag,
+                payload: None,
+            } if tag == "Seq.Nil" => break,
+            Value::Variant {
+                ref tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val = materialize(&payload_thunk, Some(&span), ctx)?;
+                let (head, tail) = if let Value::Dict(ref d) = payload_val {
+                    let h = *d
+                        .get(&crate::value::Key::String("head".into()))
+                        .expect("Seq.Cons must have head");
+                    let t = *d
+                        .get(&crate::value::Key::String("tail".into()))
+                        .expect("Seq.Cons must have tail");
+                    (h, t)
+                } else {
+                    return Err(EvalError::internal(
+                        "Seq.Cons payload must be a Dict".to_string(),
+                        span,
+                    )
+                    .into());
+                };
+
                 let head_thunk = ctx.get_thunk(head);
                 let pin_val = materialize(&head_thunk, Some(&span), ctx)?;
                 pins.push(pin_val);
@@ -1341,15 +1389,12 @@ fn extract_sans(
     }
 
     // Convert Vec<Value> to a Seq by building from right to left
-    // End of Seq is an empty Dict
-    let mut result = ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), span.clone())?);
+    // End of Seq is Seq.Nil
+    let mut result = ctx.alloc_thunk(ok_val(crate::value::make_seq_nil(), span.clone())?);
     for val in sans_list.into_iter().rev() {
         let head_thunk = ctx.alloc_thunk(ok_val(val, span.clone())?);
         result = ctx.alloc_thunk(ok_val(
-            Value::Seq {
-                head: head_thunk,
-                tail: result,
-            },
+            crate::value::make_seq_cons(head_thunk, result, ctx),
             span.clone(),
         )?);
     }

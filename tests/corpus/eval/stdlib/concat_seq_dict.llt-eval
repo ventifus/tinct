@@ -1,4 +1,4 @@
-# concat Seq ending with [] (empty dict terminator)
-[collect [concat [seq 1 []] [seq 2 []]]]
+# concat Seq ending with Seq.Nil terminator
+[collect [concat [seq 1 [builtin-variant "Seq.Nil"]] [seq 2 [builtin-variant "Seq.Nil"]]]]
 === out
 Dict({0: Int(1), 1: Int(2)})

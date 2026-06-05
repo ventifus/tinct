@@ -14,5 +14,5 @@
 ]
 .result
 === error
-[E043] select-once: channel poll limit exceeded — no channel was ready (defined at 12:11-12:42) (called at 5:1-14:8)
+[E010] type mismatch: expected Seq or Seq.Nil, got Dict (defined at 12:11-12:42) (called at 5:1-14:8)
   in [select-once ...] at 12:11-12:42

@@ -1,4 +1,4 @@
 # concat: empty Seq with non-empty Seq (requires collect to materialize)
-[collect [concat [] [seq 1 [seq 2 []]]]]
+[collect [concat [] [seq 1 [seq 2 [builtin-variant "Seq.Nil"]]]]]
 === out
 Dict({0: Int(1), 1: Int(2)})

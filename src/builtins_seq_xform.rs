@@ -21,7 +21,9 @@ use crate::builtins::{
 };
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{BuiltinArgs, Key, Strictness, Thunk, ThunkId, Value};
+use crate::value::{
+    make_seq_cons, make_seq_nil, BuiltinArgs, Key, Strictness, Thunk, ThunkId, Value,
+};
 
 /// `map`: Apply a function to every element of a dict or sequence.
 ///
@@ -53,11 +55,12 @@ pub(crate) fn builtin_map(
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "map", &ctx, call_span.clone())?)
             }
-            // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
+            // Auto-unpack variant payload — but NOT Seq.Cons/Seq.Nil which are handled below.
+            // Unit Variants (no payload) fall through to type error.
             Value::Variant {
+                ref tag,
                 payload: Some(payload_id),
-                ..
-            } => {
+            } if tag != "Seq.Cons" => {
                 let payload_thunk = ctx.get_thunk(payload_id);
                 crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
             }
@@ -91,8 +94,36 @@ pub(crate) fn builtin_map(
                 }
                 ok_val(Value::Dict(new_map), call_span)
             }
-            Value::Seq { head, tail } => {
+            Value::Variant {
+                ref tag,
+                payload: None,
+            } if tag == "Seq.Nil" => {
+                // Empty sequence: return Seq.Nil (map over empty = empty)
+                ok_val(make_seq_nil(), call_span)
+            }
+            Value::Variant {
+                ref tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
                 // Seq path: head = f(head), tail = map(f, tail)
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val =
+                    crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?;
+                let (head, tail) = if let Value::Dict(ref d) = payload_val {
+                    let head = *d
+                        .get(&Key::String("head".into()))
+                        .expect("Seq.Cons must have head");
+                    let tail = *d
+                        .get(&Key::String("tail".into()))
+                        .expect("Seq.Cons must have tail");
+                    (head, tail)
+                } else {
+                    return Err(EvalError::internal(
+                        "Seq.Cons payload must be a Dict".to_string(),
+                        call_span,
+                    )
+                    .into());
+                };
                 let head_thunk = ctx.get_thunk(head);
                 let tail_thunk = ctx.get_thunk(tail);
                 let new_head = Arc::new(Thunk::new_pending_call(
@@ -125,13 +156,9 @@ pub(crate) fn builtin_map(
                     Some(Arc::from("call $map")),
                     Arc::clone(&ctx),
                 ));
-                ok_val(
-                    Value::Seq {
-                        head: ctx.alloc_thunk(new_head),
-                        tail: ctx.alloc_thunk(new_tail),
-                    },
-                    call_span,
-                )
+                let new_head_id = ctx.alloc_thunk(new_head);
+                let new_tail_id = ctx.alloc_thunk(new_tail);
+                ok_val(make_seq_cons(new_head_id, new_tail_id, &ctx), call_span)
             }
             other => Err(EvalError::type_mismatch_ctx(
                 "map".to_string(),
@@ -174,11 +201,12 @@ pub(crate) fn builtin_filter(
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "filter", &ctx, call_span.clone())?)
             }
-            // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
+            // Auto-unpack variant payload — but NOT Seq.Cons/Seq.Nil which are handled below.
+            // Unit Variants (no payload) fall through to type error.
             Value::Variant {
+                ref tag,
                 payload: Some(payload_id),
-                ..
-            } => {
+            } if tag != "Seq.Cons" => {
                 let payload_thunk = ctx.get_thunk(payload_id);
                 crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
             }
@@ -220,7 +248,14 @@ pub(crate) fn builtin_filter(
                 ));
                 Ok(result_thunk)
             }
-            Value::Seq { head: _, tail: _ } => {
+            Value::Variant {
+                ref tag,
+                payload: None,
+            } if tag == "Seq.Nil" => {
+                // Empty sequence: filter of nil = nil
+                ok_val(make_seq_nil(), call_span)
+            }
+            Value::Variant { ref tag, .. } if tag == "Seq.Cons" => {
                 // Seq path: lazy filter. Use `depth` (not `depth + 1`) for the
                 // initial PendingBuiltin, matching the Dict path and the convention
                 // for all other initial-dispatch step functions (unfold, drop, etc.).
@@ -316,7 +351,7 @@ pub(crate) fn builtin_filter_dict_step(
             // Check if we've reached the end
             let idx_usize = usize::try_from(idx_int).ok();
             if idx_usize.is_none() || idx_int >= dict_map.len() as i64 {
-                return ok_val(Value::Dict(IndexMap::new()), call_span);
+                return ok_val(make_seq_nil(), call_span);
             }
 
             // Get the current entry by index (avoids secondary keys map)
@@ -375,13 +410,9 @@ pub(crate) fn builtin_filter_dict_step(
                     Arc::clone(&ctx),
                 ));
 
-                return ok_val(
-                    Value::Seq {
-                        head: ctx.alloc_thunk(value_thunk),
-                        tail: ctx.alloc_thunk(tail),
-                    },
-                    call_span,
-                );
+                let head_id = ctx.alloc_thunk(value_thunk);
+                let tail_id = ctx.alloc_thunk(tail);
+                return ok_val(make_seq_cons(head_id, tail_id, &ctx), call_span);
             } else {
                 // Skip this entry: advance the loop without extra depth
                 idx_int += 1;
@@ -419,11 +450,36 @@ pub(crate) fn builtin_filter_seq_step(
         let mut current = materialize(&seq_thunk, None, &ctx).await?;
         loop {
             match current {
-                Value::Dict(_) => {
+                Value::Variant {
+                    ref tag,
+                    payload: None,
+                } if tag == "Seq.Nil" => {
                     // End of sequence
-                    return ok_val(Value::Dict(IndexMap::new()), call_span);
+                    return ok_val(make_seq_nil(), call_span);
                 }
-                Value::Seq { head, tail } => {
+                Value::Variant {
+                    ref tag,
+                    payload: Some(payload_id),
+                } if tag == "Seq.Cons" => {
+                    // Extract head and tail from Seq.Cons payload
+                    let payload_thunk = ctx.get_thunk(payload_id);
+                    let payload_val =
+                        crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?;
+                    let (head, tail) = if let Value::Dict(ref d) = payload_val {
+                        let head = *d
+                            .get(&Key::String("head".into()))
+                            .expect("Seq.Cons must have head");
+                        let tail = *d
+                            .get(&Key::String("tail".into()))
+                            .expect("Seq.Cons must have tail");
+                        (head, tail)
+                    } else {
+                        return Err(EvalError::internal(
+                            "Seq.Cons payload must be a Dict".to_string(),
+                            call_span,
+                        )
+                        .into());
+                    };
                     // Apply predicate to head
                     let head_thunk = ctx.get_thunk(head);
                     let tail_thunk = ctx.get_thunk(tail);
@@ -464,13 +520,8 @@ pub(crate) fn builtin_filter_seq_step(
                             Some(Arc::from("call $filter")),
                             Arc::clone(&ctx),
                         ));
-                        return ok_val(
-                            Value::Seq {
-                                head,
-                                tail: ctx.alloc_thunk(new_tail),
-                            },
-                            call_span,
-                        );
+                        let new_tail_id = ctx.alloc_thunk(new_tail);
+                        return ok_val(make_seq_cons(head, new_tail_id, &ctx), call_span);
                     } else {
                         // Skip this element: advance the loop without extra depth
                         current = materialize(&tail_thunk, None, &ctx).await?;
@@ -526,24 +577,29 @@ pub(crate) fn builtin_take(
             }
         };
 
-        if n_int <= 0 {
-            // Return empty dict (terminal for Seq, empty for Dict)
-            return ok_val(Value::Dict(IndexMap::new()), call_span);
-        }
-
         let xs = args[1]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
+
+        if n_int <= 0 {
+            // For Seq: return Seq.Nil; for Dict: return empty Dict
+            return if crate::value::is_seq(&xs) {
+                ok_val(make_seq_nil(), call_span)
+            } else {
+                ok_val(Value::Dict(IndexMap::new()), call_span)
+            };
+        }
         // Flatten Overlay to Dict, unpack Variant payload, and convert Bytes before dispatch.
         let xs = match xs {
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "take", &ctx, call_span.clone())?)
             }
-            // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
+            // Auto-unpack variant payload — but NOT Seq.Cons/Seq.Nil which are handled below.
+            // Unit Variants (no payload) fall through to type error.
             Value::Variant {
+                ref tag,
                 payload: Some(payload_id),
-                ..
-            } => {
+            } if tag != "Seq.Cons" => {
                 let payload_thunk = ctx.get_thunk(payload_id);
                 crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
             }
@@ -564,8 +620,36 @@ pub(crate) fn builtin_take(
                     .collect();
                 ok_val(Value::Dict(taken), call_span)
             }
-            Value::Seq { head, tail } => {
+            Value::Variant {
+                ref tag,
+                payload: None,
+            } if tag == "Seq.Nil" => {
+                // Empty sequence: take n from nil = nil
+                ok_val(make_seq_nil(), call_span)
+            }
+            Value::Variant {
+                ref tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
                 // Seq: head = seq head, tail = take(n-1, seq tail)
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val =
+                    crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?;
+                let (head, tail) = if let Value::Dict(ref d) = payload_val {
+                    let head = *d
+                        .get(&Key::String("head".into()))
+                        .expect("Seq.Cons must have head");
+                    let tail = *d
+                        .get(&Key::String("tail".into()))
+                        .expect("Seq.Cons must have tail");
+                    (head, tail)
+                } else {
+                    return Err(EvalError::internal(
+                        "Seq.Cons payload must be a Dict".to_string(),
+                        call_span,
+                    )
+                    .into());
+                };
                 let tail_thunk = ctx.get_thunk(tail);
                 let tail_args = vec![
                     ok_val(Value::Int(n_int - 1), call_span.clone())?,
@@ -590,10 +674,7 @@ pub(crate) fn builtin_take(
                     Arc::clone(&ctx),
                 ));
                 ok_val(
-                    Value::Seq {
-                        head,
-                        tail: ctx.alloc_thunk(new_tail),
-                    },
+                    make_seq_cons(head, ctx.alloc_thunk(new_tail), &ctx),
                     call_span,
                 )
             }
@@ -658,11 +739,12 @@ pub(crate) fn builtin_drop(
             Value::Overlay(l, r) => {
                 Value::Dict(flatten_overlay(&l, &r, "drop", &ctx, call_span.clone())?)
             }
-            // Auto-unpack variant payload — Auto-unpacks dict payload of Variants; unit Variants (no payload) fall through to type error.
+            // Auto-unpack variant payload — but NOT Seq.Cons/Seq.Nil which are handled below.
+            // Unit Variants (no payload) fall through to type error.
             Value::Variant {
+                ref tag,
                 payload: Some(payload_id),
-                ..
-            } => {
+            } if tag != "Seq.Cons" => {
                 let payload_thunk = ctx.get_thunk(payload_id);
                 crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
             }
@@ -683,8 +765,31 @@ pub(crate) fn builtin_drop(
                     .collect();
                 ok_val(Value::Dict(dropped), call_span)
             }
-            Value::Seq { head: _, tail } => {
+            Value::Variant {
+                ref tag,
+                payload: None,
+            } if tag == "Seq.Nil" => {
+                // Empty sequence: drop n from nil = nil
+                ok_val(make_seq_nil(), call_span)
+            }
+            Value::Variant {
+                ref tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
                 // Seq: use lazy step function to drop remaining elements
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val =
+                    crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?;
+                let tail = if let Value::Dict(ref d) = payload_val {
+                    *d.get(&Key::String("tail".into()))
+                        .expect("Seq.Cons must have tail")
+                } else {
+                    return Err(EvalError::internal(
+                        "Seq.Cons payload must be a Dict".to_string(),
+                        call_span,
+                    )
+                    .into());
+                };
                 let n_minus_1 = Arc::new(Thunk::new_materialized(
                     Value::Int(n_int - 1),
                     call_span.clone(),
@@ -750,12 +855,31 @@ pub(crate) fn builtin_drop_seq_step(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         match seq {
-            Value::Dict(_) => {
+            Value::Variant {
+                ref tag,
+                payload: None,
+            } if tag == "Seq.Nil" => {
                 // End of sequence before we finished dropping
-                ok_val(Value::Dict(IndexMap::new()), call_span)
+                ok_val(make_seq_nil(), call_span)
             }
-            Value::Seq { head: _, tail } => {
+            Value::Variant {
+                ref tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
                 // Drop this element, continue with tail
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val =
+                    crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?;
+                let tail = if let Value::Dict(ref d) = payload_val {
+                    *d.get(&Key::String("tail".into()))
+                        .expect("Seq.Cons must have tail")
+                } else {
+                    return Err(EvalError::internal(
+                        "Seq.Cons payload must be a Dict".to_string(),
+                        call_span,
+                    )
+                    .into());
+                };
                 let n_minus_1 = Arc::new(Thunk::new_materialized(
                     Value::Int(n_int - 1),
                     call_span.clone(),

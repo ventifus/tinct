@@ -37,7 +37,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::ast::{self, LiteralPattern};
-use crate::types::{Type, TyConEnv};
+use crate::types::{TyConEnv, Type};
 
 // ---------------------------------------------------------------------------
 // Coverage pattern representation

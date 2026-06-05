@@ -1,0 +1,5 @@
+# map over a Seq produced by range: element-wise transformation
+# Regression: map must produce a new Seq.Cons/Seq.Nil chain, collect must terminate it
+[collect [map [fn [let x] [* x 2]] [range 1 5]]]
+=== out
+Dict({0: Int(2), 1: Int(4), 2: Int(6), 3: Int(8)})

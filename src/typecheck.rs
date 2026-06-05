@@ -1848,11 +1848,7 @@ pub(crate) fn infer_surface_expr(
                     .map(|arm| coverage::ast_pattern_to_coverage(&arm.pattern.node))
                     .collect();
                 let has_guards: Vec<bool> = arms.iter().map(|arm| arm.guard.is_some()).collect();
-                let result = coverage::check_coverage(
-                    &coverage_patterns,
-                    &sig,
-                    &has_guards,
-                );
+                let result = coverage::check_coverage(&coverage_patterns, &sig, &has_guards);
                 let mut match_errors: Vec<TypeError> = Vec::new();
 
                 if !result.exhaustive {

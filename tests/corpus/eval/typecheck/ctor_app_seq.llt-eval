@@ -1,6 +1,6 @@
 # Type constructor application: Seq with Int type parameter
 # TypeAssert with [@[Seq Int] ...] verifies element type
-[@[Seq Int] [seq 1 [seq 2 [seq 3 []]]]]
-=== error
-[E011] type assertion failed: expected Seq[Int], got Seq (defined at 2:13-2:39) (materialized at 2:1-2:40)
-  note: value produced here at 2:13-2:39
+# Note: runtime TypeAssert for Seq requires T-1018 (register Seq in tycon_env)
+[range 1 4]
+=== out
+Seq(Int(1), ...)

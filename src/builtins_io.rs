@@ -539,18 +539,18 @@ pub(crate) fn builtin_narrow(
                         // compatibility with T-974 qualified variant tags.
                         let flag_name = tag.rfind('.').map_or(tag.as_str(), |pos| &tag[pos + 1..]);
                         match flag_name {
-                        "Readable" => requested.readable = true,
-                        "Statable" => requested.statable = true,
-                        "Listable" => requested.listable = true,
-                        "Writable" => requested.writable = true,
-                        "Appendable" => requested.appendable = true,
-                        "Deletable" => requested.deletable = true,
-                        "Renameable" => requested.renameable = true,
-                        "Symlinkable" => requested.symlinkable = true,
-                        "PosixPermissions" => requested.posix_permissions = true,
-                        "ExtendedAttributes" => requested.extended_attributes = true,
-                        other => {
-                            return Err(EvalError::user_error(
+                            "Readable" => requested.readable = true,
+                            "Statable" => requested.statable = true,
+                            "Listable" => requested.listable = true,
+                            "Writable" => requested.writable = true,
+                            "Appendable" => requested.appendable = true,
+                            "Deletable" => requested.deletable = true,
+                            "Renameable" => requested.renameable = true,
+                            "Symlinkable" => requested.symlinkable = true,
+                            "PosixPermissions" => requested.posix_permissions = true,
+                            "ExtendedAttributes" => requested.extended_attributes = true,
+                            other => {
+                                return Err(EvalError::user_error(
                             format!(
                                 "narrow: unknown capability flag '{}' (expected Readable, Statable, Listable, Writable, Appendable, Deletable, Renameable, Symlinkable, PosixPermissions, ExtendedAttributes)",
                                 other
@@ -558,8 +558,9 @@ pub(crate) fn builtin_narrow(
                             call_span.clone(),
                         )
                         .into());
+                            }
                         }
-                    }},
+                    }
                     other => {
                         return Err(EvalError::type_mismatch_ctx(
                             "narrow".to_string(),
@@ -2100,14 +2101,11 @@ pub(crate) fn builtin_list_dir(
         }
 
         // Build a sequence from the collected entries
-        let mut seq = Value::Dict(IndexMap::new()); // Null (end of seq)
+        let mut seq = crate::value::make_seq_nil();
         for entry in entry_values.into_iter().rev() {
             let head_id = ctx.alloc_thunk(ok_val(entry, call_span.clone())?);
             let tail_id = ctx.alloc_thunk(ok_val(seq, call_span.clone())?);
-            seq = Value::Seq {
-                head: head_id,
-                tail: tail_id,
-            };
+            seq = crate::value::make_seq_cons(head_id, tail_id, &ctx);
         }
 
         ok_val(seq, call_span)
@@ -3058,14 +3056,11 @@ pub(crate) fn builtin_list_xattrs(
             .collect();
 
         // Build a Seq from the list
-        let mut seq = Value::Dict(IndexMap::new()); // Null (end of seq)
+        let mut seq = crate::value::make_seq_nil();
         for name_val in name_values.into_iter().rev() {
             let head_id = ctx.alloc_thunk(ok_val(name_val, call_span.clone())?);
             let tail_id = ctx.alloc_thunk(ok_val(seq, call_span.clone())?);
-            seq = Value::Seq {
-                head: head_id,
-                tail: tail_id,
-            };
+            seq = crate::value::make_seq_cons(head_id, tail_id, &ctx);
         }
 
         ok_val(seq, call_span)

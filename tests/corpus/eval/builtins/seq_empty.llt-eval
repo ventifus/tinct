@@ -1,4 +1,4 @@
 # collect: empty seq produces empty dict
-[collect []]
+[collect [builtin-variant "Seq.Nil"]]
 === out
 Dict({})

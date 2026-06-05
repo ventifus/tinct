@@ -20,7 +20,7 @@ use crate::error::{EvalError, EvalResult};
 // builtin_collect uses synchronous materialization (spine-strict by design —
 // all Seq elements must be forced before constructing the Dict index).
 use crate::eval::materialize_sync as materialize;
-use crate::value::{BuiltinArgs, Key, Thunk, Value};
+use crate::value::{make_seq_cons, BuiltinArgs, Key, Thunk, Value};
 
 /// `seq`: Low-level cons constructor for lazy linked-list sequences.
 ///
@@ -44,13 +44,7 @@ pub(crate) fn builtin_seq(
         }
         let head_id = ctx.alloc_thunk(Arc::clone(&args[0]));
         let tail_id = ctx.alloc_thunk(Arc::clone(&args[1]));
-        ok_val(
-            Value::Seq {
-                head: head_id,
-                tail: tail_id,
-            },
-            call_span,
-        )
+        ok_val(make_seq_cons(head_id, tail_id, &ctx), call_span)
     })
 }
 
@@ -71,8 +65,33 @@ pub(crate) fn builtin_head(
     Box::pin(async move {
         let val = expect_one_arg("head", &args, named.as_ref(), &ctx, call_span.clone())?;
         match val {
-            Value::Seq { head, .. } => Ok(ctx.get_thunk(head)),
-            Value::Dict(ref map) if map.is_empty() => {
+            Value::Variant {
+                tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
+                // Materialize the payload dict to extract the "head" key
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val = materialize(&payload_thunk, None, &ctx)?;
+                match payload_val {
+                    Value::Dict(ref dict) => {
+                        if let Some(head_id) = dict.get(&Key::String("head".into())) {
+                            Ok(ctx.get_thunk(*head_id))
+                        } else {
+                            Err(EvalError::internal(
+                                "Seq.Cons payload missing 'head' key".to_string(),
+                                call_span,
+                            )
+                            .into())
+                        }
+                    }
+                    _ => Err(EvalError::internal(
+                        "Seq.Cons payload is not a Dict".to_string(),
+                        call_span,
+                    )
+                    .into()),
+                }
+            }
+            Value::Variant { tag, payload: None } if tag == "Seq.Nil" => {
                 Err(EvalError::empty_collection("head".to_string(), call_span).into())
             }
             other => Err(EvalError::type_mismatch_ctx(
@@ -103,8 +122,33 @@ pub(crate) fn builtin_tail(
     Box::pin(async move {
         let val = expect_one_arg("tail", &args, named.as_ref(), &ctx, call_span.clone())?;
         match val {
-            Value::Seq { tail, .. } => Ok(ctx.get_thunk(tail)),
-            Value::Dict(ref map) if map.is_empty() => {
+            Value::Variant {
+                tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
+                // Materialize the payload dict to extract the "tail" key
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val = materialize(&payload_thunk, None, &ctx)?;
+                match payload_val {
+                    Value::Dict(ref dict) => {
+                        if let Some(tail_id) = dict.get(&Key::String("tail".into())) {
+                            Ok(ctx.get_thunk(*tail_id))
+                        } else {
+                            Err(EvalError::internal(
+                                "Seq.Cons payload missing 'tail' key".to_string(),
+                                call_span,
+                            )
+                            .into())
+                        }
+                    }
+                    _ => Err(EvalError::internal(
+                        "Seq.Cons payload is not a Dict".to_string(),
+                        call_span,
+                    )
+                    .into()),
+                }
+            }
+            Value::Variant { tag, payload: None } if tag == "Seq.Nil" => {
                 Err(EvalError::empty_collection("tail".to_string(), call_span).into())
             }
             other => Err(EvalError::type_mismatch_ctx(
@@ -142,14 +186,21 @@ pub(crate) fn builtin_collect(
             .unwrap_or(call_span.clone());
         let val = expect_one_arg("collect", &args, named.as_ref(), &ctx, call_span.clone())?;
 
-        // Handle empty dict (terminal value) as input
-        if let Value::Dict(ref d) = val {
-            if d.is_empty() {
+        // Handle Seq.Nil (empty sequence) as input
+        if let Value::Variant { tag, payload: None } = &val {
+            if tag == "Seq.Nil" {
                 return ok_val(Value::Dict(IndexMap::new()), call_span);
             }
         }
 
-        if !matches!(val, Value::Seq { .. }) {
+        // Check that we have a Seq.Cons
+        if !matches!(
+            val,
+            Value::Variant {
+                ref tag,
+                payload: Some(_)
+            } if tag == "Seq.Cons"
+        ) {
             return Err(EvalError::type_mismatch_ctx(
                 "collect".to_string(),
                 "Seq",
@@ -166,37 +217,72 @@ pub(crate) fn builtin_collect(
 
         loop {
             match current {
-                Value::Seq { head, tail } => {
-                    // Insert head thunk (not materialized -- stay lazy)
-                    map.insert(Key::Int(index), head);
-                    index = index.checked_add(1).ok_or_else(|| {
-                        EvalError::integer_overflow("collect".to_string(), call_span.clone())
-                    })?;
+                Value::Variant {
+                    tag,
+                    payload: Some(payload_id),
+                } if tag == "Seq.Cons" => {
+                    // Materialize the payload dict to extract head and tail
+                    let payload_thunk = ctx.get_thunk(payload_id);
+                    let payload_val = materialize(&payload_thunk, None, &ctx)?;
+                    match payload_val {
+                        Value::Dict(ref dict) => {
+                            let head_id =
+                                dict.get(&Key::String("head".into())).ok_or_else(|| {
+                                    EvalError::internal(
+                                        "Seq.Cons payload missing 'head' key".to_string(),
+                                        call_span.clone(),
+                                    )
+                                })?;
+                            let tail_id =
+                                dict.get(&Key::String("tail".into())).ok_or_else(|| {
+                                    EvalError::internal(
+                                        "Seq.Cons payload missing 'tail' key".to_string(),
+                                        call_span.clone(),
+                                    )
+                                })?;
 
-                    // Check collection size limit
-                    if index as usize >= MAX_COLLECT_SIZE {
-                        return Err(EvalError::resource_limit_exceeded(
-                            format!(
-                                "collect: exceeded maximum collection size ({}). Use $take to limit infinite sequences before collecting.",
-                                MAX_COLLECT_SIZE
-                            ),
-                            call_span,
-                        )
-                        .into());
+                            // Insert head thunk (not materialized -- stay lazy)
+                            map.insert(Key::Int(index), *head_id);
+                            index = index.checked_add(1).ok_or_else(|| {
+                                EvalError::integer_overflow(
+                                    "collect".to_string(),
+                                    call_span.clone(),
+                                )
+                            })?;
+
+                            // Check collection size limit
+                            if index as usize >= MAX_COLLECT_SIZE {
+                                return Err(EvalError::resource_limit_exceeded(
+                                    format!(
+                                        "collect: exceeded maximum collection size ({}). Use $take to limit infinite sequences before collecting.",
+                                        MAX_COLLECT_SIZE
+                                    ),
+                                    call_span,
+                                )
+                                .into());
+                            }
+
+                            // Materialize tail to check if we should continue
+                            let tail_thunk = ctx.get_thunk(*tail_id);
+                            current = materialize(&tail_thunk, None, &ctx)?;
+                        }
+                        _ => {
+                            return Err(EvalError::internal(
+                                "Seq.Cons payload is not a Dict".to_string(),
+                                call_span,
+                            )
+                            .into())
+                        }
                     }
-
-                    // Materialize tail to check if we should continue
-                    let tail_thunk = ctx.get_thunk(tail);
-                    current = materialize(&tail_thunk, None, &ctx)?;
                 }
-                Value::Dict(ref d) if d.is_empty() => {
-                    // Terminal: empty dict
+                Value::Variant { tag, payload: None } if tag == "Seq.Nil" => {
+                    // Terminal: Seq.Nil
                     break;
                 }
                 other => {
                     return Err(EvalError::type_mismatch_ctx(
                         "collect".to_string(),
-                        "Seq or empty dict",
+                        "Seq",
                         other.type_name(),
                         arg_span,
                     )

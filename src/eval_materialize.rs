@@ -2531,12 +2531,12 @@ pub(crate) async fn apply_cont(
                             let val = match field_str.as_str() {
                                 "documents" => {
                                     if prog.documents.is_empty() {
-                                        Value::Dict(indexmap::IndexMap::new())
+                                        crate::value::make_seq_nil()
                                     } else {
                                         // End-of-Seq sentinel
                                         let mut tail_id =
                                             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                Value::Dict(indexmap::IndexMap::new()),
+                                                crate::value::make_seq_nil(),
                                                 access_span.clone(),
                                             )));
                                         // Wrap elements from second-to-last down to index 1
@@ -2555,10 +2555,9 @@ pub(crate) async fn apply_cont(
                                                 )));
                                             tail_id =
                                                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                    Value::Seq {
-                                                        head: head_id,
-                                                        tail: tail_id,
-                                                    },
+                                                    crate::value::make_seq_cons(
+                                                        head_id, tail_id, &ctx,
+                                                    ),
                                                     access_span.clone(),
                                                 )));
                                         }
@@ -2570,10 +2569,7 @@ pub(crate) async fn apply_cont(
                                                 )),
                                                 access_span.clone(),
                                             )));
-                                        Value::Seq {
-                                            head: head_id,
-                                            tail: tail_id,
-                                        }
+                                        crate::value::make_seq_cons(head_id, tail_id, &ctx)
                                     }
                                 }
                                 _ => Value::Dict(indexmap::IndexMap::new()),
@@ -2604,12 +2600,12 @@ pub(crate) async fn apply_cont(
                                             })
                                             .collect();
                                     if expr_nodes.is_empty() {
-                                        Value::Dict(indexmap::IndexMap::new())
+                                        crate::value::make_seq_nil()
                                     } else {
                                         // End-of-Seq sentinel
                                         let mut tail_id =
                                             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                Value::Dict(indexmap::IndexMap::new()),
+                                                crate::value::make_seq_nil(),
                                                 access_span.clone(),
                                             )));
                                         // Wrap elements from second-to-last down to index 1
@@ -2623,10 +2619,9 @@ pub(crate) async fn apply_cont(
                                                 )));
                                             tail_id =
                                                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                    Value::Seq {
-                                                        head: head_id,
-                                                        tail: tail_id,
-                                                    },
+                                                    crate::value::make_seq_cons(
+                                                        head_id, tail_id, &ctx,
+                                                    ),
                                                     access_span.clone(),
                                                 )));
                                         }
@@ -2638,10 +2633,7 @@ pub(crate) async fn apply_cont(
                                                 )),
                                                 access_span.clone(),
                                             )));
-                                        Value::Seq {
-                                            head: head_id,
-                                            tail: tail_id,
-                                        }
+                                        crate::value::make_seq_cons(head_id, tail_id, &ctx)
                                     }
                                 }
                                 "name" => match &doc.name {
@@ -2685,7 +2677,7 @@ pub(crate) async fn apply_cont(
                                             // End-of-Seq sentinel
                                             let mut tail_id =
                                                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                    Value::Dict(indexmap::IndexMap::new()),
+                                                    crate::value::make_seq_nil(),
                                                     access_span.clone(),
                                                 )));
                                             // Wrap module names from last to second
@@ -2702,10 +2694,9 @@ pub(crate) async fn apply_cont(
                                                 ));
                                                 tail_id = ctx.alloc_thunk(Arc::new(
                                                     Thunk::new_materialized(
-                                                        Value::Seq {
-                                                            head: head_id,
-                                                            tail: tail_id,
-                                                        },
+                                                        crate::value::make_seq_cons(
+                                                            head_id, tail_id, &ctx,
+                                                        ),
                                                         access_span.clone(),
                                                     ),
                                                 ));
@@ -2716,10 +2707,7 @@ pub(crate) async fn apply_cont(
                                                     crate::value::string_val(&modules[0].node),
                                                     access_span.clone(),
                                                 )));
-                                            Value::Seq {
-                                                head: head_id,
-                                                tail: tail_id,
-                                            }
+                                            crate::value::make_seq_cons(head_id, tail_id, &ctx)
                                         }
                                     }
                                 }
@@ -4825,7 +4813,7 @@ mod deep_tests {
 /// Handles four container types:
 /// - `Value::Dict` — materializes all entry thunks and recurses into each value
 /// - `Value::Variant` — materializes the payload thunk and recurses into it
-/// - `Value::Seq` — materializes head/tail thunks and recurses into each
+/// - `Value::Variant` (Seq.Cons/Seq.Nil) — handled by the Variant arm; Seq.Cons payload contains head/tail ThunkIds
 /// - `Value::Overlay` — flattens and recurses (same as Dict path after flatten)
 ///
 /// All other value types (Int, String, Float, Bool, Function, Channel, ReactiveCell,
@@ -4897,40 +4885,9 @@ fn force_dict_tree_impl<'a>(
                     Ok(val.clone())
                 }
             }
-            Value::Seq { head, tail } => {
-                let head_thunk = ctx.get_thunk(*head);
-                let head_ptr = Arc::as_ptr(&head_thunk);
-
-                let new_head = if !visited.insert(head_ptr) {
-                    // Cycle in head — keep original thunk
-                    *head
-                } else {
-                    let forced_head = materialize(&head_thunk, None, ctx).await?;
-                    let deep_head = force_dict_tree_impl(&forced_head, ctx, visited).await?;
-                    let deep_thunk =
-                        Arc::new(Thunk::new_materialized(deep_head, head_thunk.span.clone()));
-                    ctx.alloc_thunk(deep_thunk)
-                };
-
-                let tail_thunk = ctx.get_thunk(*tail);
-                let tail_ptr = Arc::as_ptr(&tail_thunk);
-
-                let new_tail = if !visited.insert(tail_ptr) {
-                    // Cycle in tail — keep original thunk
-                    *tail
-                } else {
-                    let forced_tail = materialize(&tail_thunk, None, ctx).await?;
-                    let deep_tail = force_dict_tree_impl(&forced_tail, ctx, visited).await?;
-                    let deep_thunk =
-                        Arc::new(Thunk::new_materialized(deep_tail, tail_thunk.span.clone()));
-                    ctx.alloc_thunk(deep_thunk)
-                };
-
-                Ok(Value::Seq {
-                    head: new_head,
-                    tail: new_tail,
-                })
-            }
+            // Seq.Cons and Seq.Nil are now Value::Variant — handled by the Variant arm above.
+            // No separate Seq arm needed: force_dict_tree_impl recurses into Variant payloads,
+            // and Seq.Cons payload is {head: ThunkId, tail: ThunkId} which the Dict arm processes.
             Value::Overlay(left, right) => {
                 // Flatten the overlay to a dict, then recurse on the result
                 let flattened_map = flatten_overlay(

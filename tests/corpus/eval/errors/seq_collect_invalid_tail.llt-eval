@@ -1,7 +1,7 @@
 # collect: error when tail is non-empty dict (not Seq or terminal)
 [collect [seq 1 [x: 2]]]
 === error
-[E010] collect: expected Seq or empty dict, got Dict (defined at stdlib/prelude.llt:2498:32-2498:34) (called at stdlib/prelude.llt:2498:15-2498:35)
+[E010] collect: expected Seq, got Dict (defined at stdlib/prelude.llt:2498:32-2498:34) (called at stdlib/prelude.llt:2498:15-2498:35)
   --> stdlib/prelude.llt:2498:32-2498:34
    |
   2498 | """] [let xs] [builtin-collect xs]]

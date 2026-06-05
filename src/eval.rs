@@ -1008,9 +1008,11 @@ pub fn ground_type_of(v: &Value) -> Type {
             fields: HashMap::new(),
             tail: crate::type_def::RowTail::Empty,
         }),
-        // Element type erased (lazy Seq — forcing all elements would break laziness).
-        // is_consistent_subtype accepts Seq(Unknown) ~<: Seq(T) for any T.
-        Value::Seq { .. } => Type::seq(Type::Unknown),
+        // Seq is now a Variant — return Variant type
+        Value::Variant { tag, .. } if tag == "Seq.Cons" || tag == "Seq.Nil" => {
+            // Return Seq(Unknown) for backward compatibility with type checking
+            Type::seq(Type::Unknown)
+        }
         // Param/return types erased — consistent subtyping accepts Function([Unknown..], Unknown)
         // against any function annotation with matching arity.
         Value::Function { params, .. } => Type::Function {
@@ -1401,30 +1403,64 @@ async fn collect_seq_elements(
 
     loop {
         match current {
-            Value::Seq { head, tail } => {
-                // Materialize the head element
-                let head_thunk = ctx.get_thunk(head);
-                let head_value = materialize(&head_thunk, Some(&span), ctx).await?;
-                elements.push(head_value);
+            Value::Variant {
+                tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
+                // Materialize the payload dict to extract head and tail
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
+                match payload_val {
+                    Value::Dict(ref dict) => {
+                        let head_id = dict
+                            .get(&crate::value::Key::String("head".into()))
+                            .ok_or_else(|| {
+                                EvalError::internal(
+                                    "Seq.Cons payload missing 'head' key".to_string(),
+                                    span.clone(),
+                                )
+                            })?;
+                        let tail_id = dict
+                            .get(&crate::value::Key::String("tail".into()))
+                            .ok_or_else(|| {
+                                EvalError::internal(
+                                    "Seq.Cons payload missing 'tail' key".to_string(),
+                                    span.clone(),
+                                )
+                            })?;
 
-                // Enforce size limit to prevent infinite sequences from looping forever
-                if elements.len() >= MAX_COLLECT_SIZE {
-                    return Err(EvalError::resource_limit_exceeded(
-                        format!(
-                            "unquote-splice: too many elements (limit {})",
-                            MAX_COLLECT_SIZE
-                        ),
-                        span,
-                    )
-                    .into());
+                        // Materialize the head element
+                        let head_thunk = ctx.get_thunk(*head_id);
+                        let head_value = materialize(&head_thunk, Some(&span), ctx).await?;
+                        elements.push(head_value);
+
+                        // Enforce size limit to prevent infinite sequences from looping forever
+                        if elements.len() >= MAX_COLLECT_SIZE {
+                            return Err(EvalError::resource_limit_exceeded(
+                                format!(
+                                    "unquote-splice: too many elements (limit {})",
+                                    MAX_COLLECT_SIZE
+                                ),
+                                span,
+                            )
+                            .into());
+                        }
+
+                        // Materialize and move to the tail
+                        let tail_thunk = ctx.get_thunk(*tail_id);
+                        current = materialize(&tail_thunk, Some(&span), ctx).await?;
+                    }
+                    _ => {
+                        return Err(EvalError::internal(
+                            "Seq.Cons payload is not a Dict".to_string(),
+                            span,
+                        )
+                        .into());
+                    }
                 }
-
-                // Materialize and move to the tail
-                let tail_thunk = ctx.get_thunk(tail);
-                current = materialize(&tail_thunk, Some(&span), ctx).await?;
             }
-            Value::Dict(ref map) if map.is_empty() => {
-                // Empty sequence (nil sentinel is an empty dict) - we're done
+            Value::Variant { tag, payload: None } if tag == "Seq.Nil" => {
+                // Empty sequence (Seq.Nil) - we're done
                 break;
             }
             _ => {
@@ -3480,70 +3516,108 @@ pub(crate) fn match_pattern<'a>(
                 }
             }
             Pattern::Seq { head, tail } => {
-                // Seq pattern: match Value::Seq, force head, lazily bind tail
+                // Seq pattern: match Seq.Cons variant, force head, lazily bind tail
                 match value {
-                    Value::Seq {
-                        head: head_thunk_id,
-                        tail: tail_thunk_id,
-                    } => {
-                        // Force the head value
-                        let head_thunk = ctx.get_thunk(*head_thunk_id);
-                        let head_value = materialize(&head_thunk, Some(value_span), ctx).await?;
+                    Value::Variant {
+                        tag,
+                        payload: Some(payload_id),
+                    } if tag == "Seq.Cons" => {
+                        // Materialize the payload dict to extract head and tail
+                        let payload_thunk = ctx.get_thunk(*payload_id);
+                        let payload_val =
+                            materialize(&payload_thunk, Some(value_span), ctx).await?;
+                        match payload_val {
+                            Value::Dict(ref dict) => {
+                                let head_thunk_id = dict
+                                    .get(&crate::value::Key::String("head".into()))
+                                    .ok_or_else(|| {
+                                        EvalError::internal(
+                                            "Seq.Cons payload missing 'head' key".to_string(),
+                                            value_span.clone(),
+                                        )
+                                    })?;
+                                let tail_thunk_id = dict
+                                    .get(&crate::value::Key::String("tail".into()))
+                                    .ok_or_else(|| {
+                                        EvalError::internal(
+                                            "Seq.Cons payload missing 'tail' key".to_string(),
+                                            value_span.clone(),
+                                        )
+                                    })?;
 
-                        // Match the head pattern
-                        let mut result_env =
-                            Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
-                        match match_pattern(&head.node, &head_value, &result_env, &head.span, ctx)
-                            .await?
-                        {
-                            Some(new_env) => {
-                                result_env = new_env;
-                            }
-                            None => {
-                                // Head pattern didn't match
-                                return Ok(None);
-                            }
-                        }
+                                // Force the head value
+                                let head_thunk = ctx.get_thunk(*head_thunk_id);
+                                let head_value =
+                                    materialize(&head_thunk, Some(value_span), ctx).await?;
 
-                        // Handle the tail pattern. Preserve laziness when possible:
-                        // - Variable: bind the tail thunk directly without materializing it.
-                        //   The tail is a lazy sequence and should stay unevaluated until
-                        //   the binding is actually used.
-                        // - Wildcard: discard the tail entirely — no binding, no forcing.
-                        // - Anything else (TypeTag, Constructor, Dict, Literal, Seq, Pin):
-                        //   materialize the tail and recurse into match_pattern as before.
-                        match &tail.node {
-                            Pattern::Variable(name) => {
-                                // Bind the tail thunk directly — no materialization.
-                                let tail_thunk = ctx.get_thunk(*tail_thunk_id);
-                                let child_env = Arc::new(RwLock::new(Environment::with_parent(
-                                    Arc::clone(&result_env),
-                                )));
-                                child_env.write().unwrap().insert(name.clone(), tail_thunk);
-                                Ok(Some(child_env))
-                            }
-                            Pattern::Wildcard => {
-                                // Tail is discarded — no binding, no forcing.
-                                Ok(Some(result_env))
-                            }
-                            _ => {
-                                // Structural tail pattern: materialize and recurse.
-                                let tail_thunk = ctx.get_thunk(*tail_thunk_id);
-                                let tail_value =
-                                    materialize(&tail_thunk, Some(value_span), ctx).await?;
+                                // Match the head pattern
+                                let mut result_env = Arc::new(RwLock::new(
+                                    Environment::with_parent(Arc::clone(env)),
+                                ));
                                 match match_pattern(
-                                    &tail.node,
-                                    &tail_value,
+                                    &head.node,
+                                    &head_value,
                                     &result_env,
-                                    &tail.span,
+                                    &head.span,
                                     ctx,
                                 )
                                 .await?
                                 {
-                                    Some(new_env) => Ok(Some(new_env)),
-                                    None => Ok(None),
+                                    Some(new_env) => {
+                                        result_env = new_env;
+                                    }
+                                    None => {
+                                        // Head pattern didn't match
+                                        return Ok(None);
+                                    }
+                                }
+
+                                // Handle the tail pattern. Preserve laziness when possible:
+                                // - Variable: bind the tail thunk directly without materializing it.
+                                //   The tail is a lazy sequence and should stay unevaluated until
+                                //   the binding is actually used.
+                                // - Wildcard: discard the tail entirely — no binding, no forcing.
+                                // - Anything else (TypeTag, Constructor, Dict, Literal, Seq, Pin):
+                                //   materialize the tail and recurse into match_pattern as before.
+                                match &tail.node {
+                                    Pattern::Variable(name) => {
+                                        // Bind the tail thunk directly — no materialization.
+                                        let tail_thunk = ctx.get_thunk(*tail_thunk_id);
+                                        let child_env = Arc::new(RwLock::new(
+                                            Environment::with_parent(Arc::clone(&result_env)),
+                                        ));
+                                        child_env.write().unwrap().insert(name.clone(), tail_thunk);
+                                        Ok(Some(child_env))
+                                    }
+                                    Pattern::Wildcard => {
+                                        // Tail is discarded — no binding, no forcing.
+                                        Ok(Some(result_env))
+                                    }
+                                    _ => {
+                                        // Structural tail pattern: materialize and recurse.
+                                        let tail_thunk = ctx.get_thunk(*tail_thunk_id);
+                                        let tail_value =
+                                            materialize(&tail_thunk, Some(value_span), ctx).await?;
+                                        match match_pattern(
+                                            &tail.node,
+                                            &tail_value,
+                                            &result_env,
+                                            &tail.span,
+                                            ctx,
+                                        )
+                                        .await?
+                                        {
+                                            Some(new_env) => Ok(Some(new_env)),
+                                            None => Ok(None),
+                                        }
+                                    }
                                 }
                             }
+                            _ => Err(EvalError::internal(
+                                "Seq.Cons payload is not a Dict".to_string(),
+                                value_span.clone(),
+                            )
+                            .into()),
                         }
                     }
                     _ => {
@@ -3765,31 +3839,9 @@ pub(crate) fn values_equal(
                 Ok(true)
             }
             // Seq structural equality: materialize head and tail, compare element by element.
-            // The nil sentinel is an empty Dict, so an exhausted Seq on both sides compares
-            // equal via the Dict arm above (both are Dict({})).
-            (
-                Value::Seq {
-                    head: head_a,
-                    tail: tail_a,
-                },
-                Value::Seq {
-                    head: head_b,
-                    tail: tail_b,
-                },
-            ) => {
-                let thunk_ha = ctx.get_thunk(head_a);
-                let thunk_hb = ctx.get_thunk(head_b);
-                let val_ha = materialize(&thunk_ha, Some(&span), &ctx).await?;
-                let val_hb = materialize(&thunk_hb, Some(&span), &ctx).await?;
-                if !values_equal(val_ha, val_hb, span.clone(), Arc::clone(&ctx)).await? {
-                    return Ok(false);
-                }
-                let thunk_ta = ctx.get_thunk(tail_a);
-                let thunk_tb = ctx.get_thunk(tail_b);
-                let val_ta = materialize(&thunk_ta, Some(&span), &ctx).await?;
-                let val_tb = materialize(&thunk_tb, Some(&span), &ctx).await?;
-                values_equal(val_ta, val_tb, span, ctx).await
-            }
+            // Seq values are now Variants and fall through to cross-type false below.
+            // T-980: Deleted dedicated Seq equality arm after Seq→Variant migration.
+            // Seq.Cons/Seq.Nil equality handled by general Variant equality rules.
             // Cross-type Int/Float equality: equal when both represent the same number.
             // Mirrors the pre-T-975 builtins_math.rs behavior and satisfies the typeclass
             // Equatable instance for EquatableNum, where [= 1 1.0] returns true.
@@ -4556,9 +4608,9 @@ mod tests {
     #[test]
     fn test_call_variadic() {
         // f: [fn [x ...rest] $rest]
-        // [call $f 1 2 3] → rest = Seq(2, Seq(3, {}))
-        // Variadic args are now collected as a lazy Seq cons-list.
-        // Empty variadic = Dict({}) (nil sentinel); non-empty = Seq { head, tail }.
+        // [call $f 1 2 3] → rest = Seq.Cons(2, Seq.Cons(3, Seq.Nil))
+        // Variadic args are collected as a lazy Seq.Cons/Seq.Nil cons-list.
+        // Empty variadic = Seq.Nil; non-empty = Seq.Cons { head, tail }.
         let env = empty_env();
         let fn_val = Value::Function {
             params: Rc::new(vec![
@@ -4584,27 +4636,55 @@ mod tests {
         let ctx = test_ctx();
         let thunk = eval_str("[call $f 1 2 3]", env, &ctx).unwrap();
         let val = materialize(&thunk, None, &ctx).unwrap();
-        // Outer Seq: head = Int(2), tail = Seq(3, {})
+        // After migration: Seq is Variant with Seq.Cons tag
         match val {
-            Value::Seq { head, tail } => {
-                assert_eq!(mat_id(&head, &ctx).unwrap(), Value::Int(2));
-                // tail = Seq { head: Int(3), tail: Dict({}) }
-                match mat_id(&tail, &ctx).unwrap() {
-                    Value::Seq {
-                        head: head2,
-                        tail: tail2,
-                    } => {
-                        assert_eq!(mat_id(&head2, &ctx).unwrap(), Value::Int(3));
-                        // tail of tail = nil sentinel (empty Dict)
-                        match mat_id(&tail2, &ctx).unwrap() {
-                            Value::Dict(m) => assert!(m.is_empty()),
-                            other => panic!("expected empty Dict (nil), got {other:?}"),
+            Value::Variant {
+                tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
+                let payload_val = mat_id(&payload_id, &ctx).unwrap();
+                match payload_val {
+                    Value::Dict(ref dict) => {
+                        let head = dict.get(&crate::value::Key::String("head".into())).unwrap();
+                        let tail = dict.get(&crate::value::Key::String("tail".into())).unwrap();
+                        assert_eq!(mat_id(head, &ctx).unwrap(), Value::Int(2));
+                        // tail = Seq.Cons { head: Int(3), tail: Seq.Nil }
+                        match mat_id(tail, &ctx).unwrap() {
+                            Value::Variant {
+                                tag: tag2,
+                                payload: Some(payload_id2),
+                            } if tag2 == "Seq.Cons" => {
+                                let payload_val2 = mat_id(&payload_id2, &ctx).unwrap();
+                                match payload_val2 {
+                                    Value::Dict(ref dict2) => {
+                                        let head2 = dict2
+                                            .get(&crate::value::Key::String("head".into()))
+                                            .unwrap();
+                                        let tail2 = dict2
+                                            .get(&crate::value::Key::String("tail".into()))
+                                            .unwrap();
+                                        assert_eq!(mat_id(head2, &ctx).unwrap(), Value::Int(3));
+                                        // tail of tail = Seq.Nil
+                                        match mat_id(tail2, &ctx).unwrap() {
+                                            Value::Variant {
+                                                tag: tag3,
+                                                payload: None,
+                                            } if tag3 == "Seq.Nil" => {
+                                                // Success
+                                            }
+                                            other => panic!("expected Seq.Nil, got {other:?}"),
+                                        }
+                                    }
+                                    other => panic!("expected Dict payload, got {other:?}"),
+                                }
+                            }
+                            other => panic!("expected Seq.Cons as tail, got {other:?}"),
                         }
                     }
-                    other => panic!("expected Seq as tail, got {other:?}"),
+                    other => panic!("expected Dict payload, got {other:?}"),
                 }
             }
-            other => panic!("expected Seq, got {other:?}"),
+            other => panic!("expected Seq.Cons variant, got {other:?}"),
         }
     }
 
@@ -4636,9 +4716,13 @@ mod tests {
         );
         let thunk = eval_str("[call $f 1]", env, &test_ctx()).unwrap();
         let val = materialize(&thunk, None, &test_ctx()).unwrap();
+        // After S-847: empty variadic rest is Seq.Nil (not empty Dict)
         match val {
-            Value::Dict(map) => assert_eq!(map.len(), 0),
-            other => panic!("expected empty Dict, got {other:?}"),
+            Value::Variant {
+                ref tag,
+                payload: None,
+            } if tag == "Seq.Nil" => {}
+            other => panic!("expected Seq.Nil, got {other:?}"),
         }
     }
 

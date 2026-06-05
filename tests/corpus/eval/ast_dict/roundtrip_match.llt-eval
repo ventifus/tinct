@@ -3,6 +3,6 @@
 [eval [seq [quote [match 1
     0: "zero"
     1: "one"
-    _: "other"]] []]]
+    _: "other"]] [builtin-variant "Seq.Nil"]]]
 === out
 String("one")

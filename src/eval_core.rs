@@ -135,7 +135,36 @@ async fn collect_seq_elements(
 
     loop {
         match current {
-            Value::Seq { head, tail } => {
+            Value::Variant {
+                ref tag,
+                payload: None,
+            } if tag == "Seq.Nil" => {
+                // Empty sequence — we're done
+                break;
+            }
+            Value::Variant {
+                ref tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
+                // Extract head and tail from Seq.Cons payload
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
+                let (head, tail) = if let Value::Dict(ref d) = payload_val {
+                    let head = *d
+                        .get(&Key::String("head".into()))
+                        .expect("Seq.Cons must have head");
+                    let tail = *d
+                        .get(&Key::String("tail".into()))
+                        .expect("Seq.Cons must have tail");
+                    (head, tail)
+                } else {
+                    return Err(EvalError::internal(
+                        "Seq.Cons payload must be a Dict".to_string(),
+                        span,
+                    )
+                    .into());
+                };
+
                 // Materialize the head element
                 let head_thunk = ctx.get_thunk(head);
                 let head_value = materialize(&head_thunk, Some(&span), ctx).await?;
@@ -156,10 +185,6 @@ async fn collect_seq_elements(
                 // Materialize and move to the tail
                 let tail_thunk = ctx.get_thunk(tail);
                 current = materialize(&tail_thunk, Some(&span), ctx).await?;
-            }
-            Value::Dict(ref map) if map.is_empty() => {
-                // Empty sequence (nil sentinel is an empty dict) - we're done
-                break;
             }
             _ => {
                 return Err(EvalError::type_mismatch("Seq", current.type_name(), span).into());

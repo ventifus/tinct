@@ -69,33 +69,6 @@ pub fn fmt_dict(
     Ok(out)
 }
 
-/// Format a sequence as a tinct literal `[seq head tail]`.
-///
-/// Uses the `seq` builtin constructor. Recursively formats head and tail via `to_tinct`.
-pub fn fmt_seq(
-    head: ThunkId,
-    tail: ThunkId,
-    ctx: Option<&Arc<EvalContext>>,
-) -> Result<String, String> {
-    let ctx_ref = ctx.ok_or("seq serialization requires EvalContext")?;
-
-    let head_thunk = ctx_ref.get_thunk(head);
-    let head_value = head_thunk
-        .try_get_materialized()
-        .ok_or("seq head not materialized")?;
-
-    let tail_thunk = ctx_ref.get_thunk(tail);
-    let tail_value = tail_thunk
-        .try_get_materialized()
-        .ok_or("seq tail not materialized")?;
-
-    Ok(format!(
-        "[seq {} {}]",
-        head_value.to_tinct(ctx)?,
-        tail_value.to_tinct(ctx)?
-    ))
-}
-
 /// Format a variant as a tinct literal.
 ///
 /// Nullary constructors: `Tag`
@@ -1613,7 +1586,6 @@ impl Value {
             Value::Bool(b) => Ok(fmt_bool(*b).to_string()),
             Value::String { source, start, end } => Ok(fmt_string(&source[*start..*end])),
             Value::Dict(map) => fmt_dict(map, ctx),
-            Value::Seq { head, tail } => fmt_seq(*head, *tail, ctx),
             Value::Variant { tag, payload } => fmt_variant(tag, *payload, ctx),
             Value::Builtin(b) => Ok(b.name.to_string()),
             Value::Function {

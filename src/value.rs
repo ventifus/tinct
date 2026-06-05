@@ -537,8 +537,6 @@ pub enum Value {
     },
     /// Rust-native built-in function
     Builtin(BuiltinDef),
-    /// Lazy linked-list sequence (head element, tail sequence)
-    Seq { head: ThunkId, tail: ThunkId },
     /// Proxy object — field access calls the handler function with the field name
     Proxy { handler: ThunkId },
     /// Lazy overlay: R overrides L (right-biased merge). Flattened to Dict on demand.
@@ -830,6 +828,62 @@ pub fn bytes_val(data: &[u8]) -> Value {
     }
 }
 
+/// Helper: Construct a Seq.Cons variant from head and tail ThunkIds.
+///
+/// Creates `Variant { tag: "Seq.Cons", payload: Some(dict_thunk) }` where
+/// the payload is a Dict with `"head"` and `"tail"` keys pointing to the
+/// provided thunks. This is the Seq→Variant migration representation.
+///
+/// **Laziness preserved**: head and tail ThunkIds are embedded directly in
+/// the payload dict without materialization. Only when the payload dict is
+/// accessed will those thunks be forced.
+///
+/// **Usage**: Replaces `Value::Seq { head, tail }` construction sites.
+pub fn make_seq_cons(head: ThunkId, tail: ThunkId, ctx: &crate::eval::EvalContext) -> Value {
+    use indexmap::IndexMap;
+    let mut dict = IndexMap::new();
+    dict.insert(Key::String("head".into()), head);
+    dict.insert(Key::String("tail".into()), tail);
+    let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::Dict(dict),
+        Span::origin(),
+    )));
+    Value::Variant {
+        tag: "Seq.Cons".to_string(),
+        payload: Some(payload_id),
+    }
+}
+
+/// Helper: Construct a Seq.Nil variant (empty sequence).
+///
+/// Creates `Variant { tag: "Seq.Nil", payload: None }`.
+/// This is the unit variant representation of an empty sequence.
+///
+/// **Usage**: Replaces empty dict pattern used for Seq termination.
+pub fn make_seq_nil() -> Value {
+    Value::Variant {
+        tag: "Seq.Nil".to_string(),
+        payload: None,
+    }
+}
+
+/// Helper: Check if a value is a Seq (either Seq.Cons or Seq.Nil).
+///
+/// Returns `true` for both `Seq.Cons` (payload variant) and `Seq.Nil` (unit variant).
+/// This replaces the old `matches!(val, Value::Seq { .. })` pattern.
+pub fn is_seq(val: &Value) -> bool {
+    matches!(
+        val,
+        Value::Variant {
+            tag,
+            payload: Some(_)
+        } if tag == "Seq.Cons"
+    ) || matches!(
+        val,
+        Value::Variant { tag, payload: None } if tag == "Seq.Nil"
+    )
+}
+
 impl Value {
     /// Returns a human-readable type name for error messages and diagnostics.
     ///
@@ -845,7 +899,6 @@ impl Value {
             Value::Builder(_) => "Builder",
             Value::Function { .. } => "Function",
             Value::Builtin(_) => "Builtin",
-            Value::Seq { .. } => "Seq",
             Value::Proxy { .. } => "Proxy",
             Value::Overlay(..) => "Dict",
             Value::DirCap { .. } => "DirCap",
@@ -853,6 +906,9 @@ impl Value {
             Value::Handle { .. } => "Handle",
             Value::WriteHandle { .. } => "WriteHandle",
             Value::RevocableDirCap { .. } => "DirCap",
+            // Seq.Cons is a non-empty sequence — TypeTag("Seq") patterns match it.
+            // Seq.Nil is a unit variant — TypeTag patterns fall through to wildcard.
+            Value::Variant { tag, .. } if tag == "Seq.Cons" => "Seq",
             Value::Variant { .. } => "Variant",
             Value::Decimal(_) => "Decimal",
             Value::BigInt(_) => "BigInt",
@@ -923,7 +979,6 @@ impl fmt::Debug for Value {
                 write!(f, "Function({})", names.join(", "))
             }
             Value::Builtin(def) => write!(f, "Builtin({})", def.name),
-            Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "Proxy"),
             Value::Overlay(..) => write!(f, "Overlay(...)"),
             Value::DirCap { .. } => write!(f, "DirCap"),
@@ -1016,7 +1071,6 @@ impl fmt::Display for Value {
                 write!(f, "] ...]")
             }
             Value::Builtin(def) => write!(f, "<builtin {}>", def.name),
-            Value::Seq { .. } => write!(f, "Seq(...)"),
             Value::Proxy { .. } => write!(f, "<proxy>"),
             Value::Overlay(..) => write!(f, "[<overlay>]"),
             Value::DirCap { .. } => write!(f, "<DirCap>"),
@@ -1031,7 +1085,12 @@ impl fmt::Display for Value {
                 }
             }
             Value::Variant { tag, payload } => {
-                if payload.is_some() {
+                // Special display for Seq variants to maintain backward compatibility
+                if tag == "Seq.Cons" {
+                    write!(f, "Seq(...)")
+                } else if tag == "Seq.Nil" {
+                    write!(f, "Seq()")
+                } else if payload.is_some() {
                     write!(f, "{tag}(<payload>)")
                 } else {
                     write!(f, "{tag}")
@@ -2375,16 +2434,13 @@ mod tests {
     fn test_seq_type_name() {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
-        let seq = Value::Seq {
-            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(42),
-                span.clone(),
-            ))),
-            tail: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
-                span,
-            ))),
-        };
+        let head_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Int(42),
+            span.clone(),
+        )));
+        let tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(make_seq_nil(), span)));
+        let seq = make_seq_cons(head_id, tail_id, &ctx);
+        // Seq.Cons returns "Seq" from type_name() for TypeTag("Seq") pattern matching.
         assert_eq!(seq.type_name(), "Seq");
     }
 
@@ -2392,35 +2448,33 @@ mod tests {
     fn test_seq_debug() {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
-        let seq = Value::Seq {
-            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(1),
-                span.clone(),
-            ))),
-            tail: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
-                span,
-            ))),
-        };
+        let head_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Int(1),
+            span.clone(),
+        )));
+        let tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(make_seq_nil(), span)));
+        let seq = make_seq_cons(head_id, tail_id, &ctx);
         let debug_str = format!("{:?}", seq);
-        assert_eq!(debug_str, "Seq(...)");
+        // Seq.Cons is a Variant: debug shows "Variant(Seq.Cons, <payload>)"
+        assert!(
+            debug_str.contains("Seq.Cons"),
+            "debug should contain Seq.Cons, got: {}",
+            debug_str
+        );
     }
 
     #[test]
     fn test_seq_display() {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
-        let seq = Value::Seq {
-            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(1),
-                span.clone(),
-            ))),
-            tail: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
-                span,
-            ))),
-        };
+        let head_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Int(1),
+            span.clone(),
+        )));
+        let tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(make_seq_nil(), span)));
+        let seq = make_seq_cons(head_id, tail_id, &ctx);
         let display_str = format!("{}", seq);
+        // Seq.Cons display uses the special backward-compat format "Seq(...)"
         assert_eq!(display_str, "Seq(...)");
     }
 
@@ -2428,16 +2482,13 @@ mod tests {
     fn test_seq_not_equal_to_itself() {
         let ctx = test_ctx();
         let span = test_span(1, 1, 1, 1);
-        let seq = Value::Seq {
-            head: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Int(42),
-                span.clone(),
-            ))),
-            tail: ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
-                span,
-            ))),
-        };
+        let head_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Int(42),
+            span.clone(),
+        )));
+        let tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(make_seq_nil(), span)));
+        let seq = make_seq_cons(head_id, tail_id, &ctx);
+        // Variant PartialEq always returns false (by design)
         assert_ne!(seq.clone(), seq);
     }
 

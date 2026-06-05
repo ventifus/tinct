@@ -1,0 +1,11 @@
+# Combined: Seq.Nil vs [seq h t] patterns in the same match expression
+# Verifies both arms dispatch correctly on Seq.Cons vs Seq.Nil Variant tags
+# Non-empty input hits the [seq h t] arm; empty (Seq.Nil) hits the Seq.Nil arm
+[label: [match [range 3 6]
+    Seq.Nil:    "empty"
+    [seq h t]:  "non-empty"]
+ empty: [match [tail [range 9 10]]
+    Seq.Nil:    "empty"
+    [seq h t]:  "non-empty"]]
+=== out
+Dict({"label": String("non-empty"), "empty": String("empty")})

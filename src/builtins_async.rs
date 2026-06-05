@@ -132,7 +132,35 @@ async fn collect_seq_to_vec(
 
     loop {
         match current {
-            Value::Seq { head, tail } => {
+            Value::Variant {
+                ref tag,
+                payload: None,
+            } if tag == "Seq.Nil" => {
+                // Terminal: Seq.Nil
+                break;
+            }
+            Value::Variant {
+                ref tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val = materialize(&payload_thunk, None, ctx).await?;
+                let (head, tail) = if let Value::Dict(ref d) = payload_val {
+                    let h = *d
+                        .get(&crate::value::Key::String("head".into()))
+                        .expect("Seq.Cons must have head");
+                    let t = *d
+                        .get(&crate::value::Key::String("tail".into()))
+                        .expect("Seq.Cons must have tail");
+                    (h, t)
+                } else {
+                    return Err(EvalError::internal(
+                        "Seq.Cons payload must be a Dict".to_string(),
+                        call_span,
+                    )
+                    .into());
+                };
+
                 items.push(head);
 
                 if items.len() >= MAX_COLLECT_SIZE {
@@ -150,13 +178,9 @@ async fn collect_seq_to_vec(
                 let tail_thunk = ctx.get_thunk(tail);
                 current = materialize(&tail_thunk, None, ctx).await?;
             }
-            Value::Dict(ref d) if d.is_empty() => {
-                // Terminal: empty dict
-                break;
-            }
             other => {
                 return Err(EvalError::type_mismatch(
-                    "Seq or empty dict",
+                    "Seq or Seq.Nil",
                     other.type_name(),
                     call_span,
                 )
@@ -175,17 +199,14 @@ fn build_seq_from_vec(
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> ThunkId {
-    // Build from right to left: [..., tail] where tail is empty dict
+    // Build from right to left: [..., tail] where tail is Seq.Nil
     let mut tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Dict(IndexMap::new()),
+        crate::value::make_seq_nil(),
         call_span.clone(),
     )));
 
     for head_id in items.into_iter().rev() {
-        let seq = Value::Seq {
-            head: head_id,
-            tail: tail_id,
-        };
+        let seq = crate::value::make_seq_cons(head_id, tail_id, ctx);
         tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(seq, call_span.clone())));
     }
 
@@ -786,27 +807,21 @@ pub(crate) fn builtin_oneshot_channel(
             call_span.clone(),
         )));
 
-        // Build empty dict tail
+        // Build Seq.Nil tail
         let tail_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Dict(IndexMap::new()),
+            crate::value::make_seq_nil(),
             call_span.clone(),
         )));
 
         // Build sender cons cell
         let sender_cons = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Seq {
-                head: sender_thunk,
-                tail: tail_thunk,
-            },
+            crate::value::make_seq_cons(sender_thunk, tail_thunk, &ctx),
             call_span.clone(),
         )));
 
         // Build receiver cons cell (head of the list)
         ok_val(
-            Value::Seq {
-                head: receiver_thunk,
-                tail: sender_cons,
-            },
+            crate::value::make_seq_cons(receiver_thunk, sender_cons, &ctx),
             call_span,
         )
     })
@@ -1592,8 +1607,32 @@ pub(crate) fn builtin_signal_channel(
         let mut current = signals_val;
         loop {
             match current {
-                Value::Dict(ref map) if map.is_empty() => break,
-                Value::Seq { head, tail } => {
+                Value::Variant {
+                    ref tag,
+                    payload: None,
+                } if tag == "Seq.Nil" => break,
+                Value::Variant {
+                    ref tag,
+                    payload: Some(payload_id),
+                } if tag == "Seq.Cons" => {
+                    let payload_thunk = ctx.get_thunk(payload_id);
+                    let payload_val = materialize(&payload_thunk, Some(&call_span), &ctx).await?;
+                    let (head, tail) = if let Value::Dict(ref d) = payload_val {
+                        let h = *d
+                            .get(&crate::value::Key::String("head".into()))
+                            .expect("Seq.Cons must have head");
+                        let t = *d
+                            .get(&crate::value::Key::String("tail".into()))
+                            .expect("Seq.Cons must have tail");
+                        (h, t)
+                    } else {
+                        return Err(EvalError::internal(
+                            "Seq.Cons payload must be a Dict".to_string(),
+                            call_span,
+                        )
+                        .into());
+                    };
+
                     let head_thunk = ctx.get_thunk(head);
                     let head_val = materialize(&head_thunk, Some(&call_span), &ctx).await?;
                     let name = match head_val {
@@ -2905,13 +2944,19 @@ mod tests {
     /// "select-once requires at least one source" guard.
     ///
     /// Uses builtin-select-once (bare name removed in builtin-privacy-primary-names sprint).
+    /// After Seq→Variant migration, sources must be a Seq (not a Dict). Seq.Nil is the
+    /// correct empty-sequence terminal; passing [] (empty Dict) would give a type error
+    /// instead of the "at least one source" guard. Use [builtin-variant "Seq.Nil"] for
+    /// the empty-sequence case.
     #[test]
     fn test_select_once_empty_sources_returns_error() {
-        let result =
-            crate::eval_source_with_config("[builtin-select-once [builtin-context] []]", false);
+        let result = crate::eval_source_with_config(
+            "[builtin-select-once [builtin-context] [builtin-variant \"Seq.Nil\"]]",
+            false,
+        );
         assert!(
             result.is_err(),
-            "expected [builtin-select-once ctx []] to return an error, got: {result:?}"
+            "expected [builtin-select-once ctx Seq.Nil] to return an error, got: {result:?}"
         );
         let msg = result.unwrap_err();
         assert!(

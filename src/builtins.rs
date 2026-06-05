@@ -103,26 +103,26 @@ pub(crate) fn ok_val(v: Value, span: Span) -> EvalResult<Arc<Thunk>> {
     Ok(Arc::new(Thunk::new_materialized(v, span)))
 }
 
-/// Convert a `Value::Bytes` slice into a `Value::Seq` of `Value::Int` (one per byte).
+/// Convert a `Value::Bytes` slice into a Seq of `Value::Int` (one per byte).
 ///
 /// Used by sequence operations (map, filter, take, drop, reduce) to treat Bytes as
 /// an iterable sequence of byte values (0–255). Results are always Seq (not Bytes).
 ///
-/// The returned value is a `Value::Seq { head, tail }` if bytes is non-empty, or
-/// `Value::Dict(IndexMap::new())` (the terminal empty-dict sentinel) if empty.
+/// The returned value is a `Seq.Cons` variant if bytes is non-empty, or
+/// `Seq.Nil` (the terminal empty sequence) if empty.
 pub(crate) fn bytes_to_seq(bytes: &[u8], span: Span, ctx: &Arc<crate::eval::EvalContext>) -> Value {
+    use crate::value::{make_seq_cons, make_seq_nil};
     // Build from the right so we don't need a separate pass.
-    let mut acc: Value = Value::Dict(IndexMap::new());
+    let mut acc: Value = make_seq_nil();
     for &byte in bytes.iter().rev() {
         let head = Arc::new(Thunk::new_materialized(
             Value::Int(i64::from(byte)),
             span.clone(),
         ));
         let tail = Arc::new(Thunk::new_materialized(acc, span.clone()));
-        acc = Value::Seq {
-            head: ctx.alloc_thunk(head),
-            tail: ctx.alloc_thunk(tail),
-        };
+        let head_id = ctx.alloc_thunk(head);
+        let tail_id = ctx.alloc_thunk(tail);
+        acc = make_seq_cons(head_id, tail_id, ctx);
     }
     acc
 }
@@ -827,7 +827,7 @@ pub(crate) fn builtin_rest(
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Spine");
         // Seq path: delegate to $tail (O(1), preserves laziness).
-        if matches!(val, Value::Seq { .. }) {
+        if crate::value::is_seq(&val) {
             return builtin_tail(BuiltinArgs {
                 args: args.clone(),
                 named: named.clone(),
@@ -880,7 +880,7 @@ pub(crate) fn builtin_cons(
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[1]=Spine");
         // Seq path: delegate to $seq (O(1), preserves laziness).
-        if matches!(xs_val, Value::Seq { .. }) {
+        if crate::value::is_seq(&xs_val) {
             return builtin_seq(BuiltinArgs {
                 args: args.clone(),
                 named: named.clone(),
@@ -1877,28 +1877,64 @@ mod tests {
         crate::eval::materialize_sync(&thunk, None, ctx).unwrap()
     }
 
-    /// Helper: build a `Value::Seq` with both `head` and `tail` allocated into `ctx`.
-    /// Returns a materialized `Arc<Thunk>` wrapping the `Seq`.
+    /// Helper: build a `Seq.Cons` variant with both `head` and `tail` allocated into `ctx`.
+    /// Returns a materialized `Arc<Thunk>` wrapping the `Seq.Cons` variant.
     fn seq_thunk(
         head: Arc<Thunk>,
         tail: Arc<Thunk>,
         ctx: &Arc<crate::eval::EvalContext>,
     ) -> Arc<Thunk> {
+        use crate::value::make_seq_cons;
+        let head_id = ctx.alloc_thunk(head);
+        let tail_id = ctx.alloc_thunk(tail);
         Arc::new(Thunk::new_materialized(
-            Value::Seq {
-                head: ctx.alloc_thunk(head),
-                tail: ctx.alloc_thunk(tail),
-            },
+            make_seq_cons(head_id, tail_id, ctx),
             test_span(1, 1, 1, 5),
         ))
     }
 
-    /// Helper: build an empty dict as a materialized `Arc<Thunk>` (no arena needed — no ThunkId entries).
-    fn empty_dict_thunk() -> Arc<Thunk> {
+    /// Helper: build a Seq.Nil variant as a materialized `Arc<Thunk>`.
+    fn empty_seq_thunk() -> Arc<Thunk> {
+        use crate::value::make_seq_nil;
         Arc::new(Thunk::new_materialized(
-            Value::Dict(IndexMap::new()),
+            make_seq_nil(),
             test_span(1, 1, 1, 5),
         ))
+    }
+
+    /// Helper: extract (head_id, tail_id) from a Seq.Cons value, or panic.
+    /// Used in tests to avoid repeating the payload extraction pattern.
+    fn seq_head_tail(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> (ThunkId, ThunkId) {
+        match val {
+            Value::Variant {
+                ref tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
+                let payload_thunk = ctx.get_thunk(*payload_id);
+                let payload_val = payload_thunk.try_get_materialized().unwrap_or_else(|| {
+                    crate::eval::materialize_sync(&payload_thunk, None, ctx)
+                        .expect("payload materialized")
+                });
+                match payload_val {
+                    Value::Dict(ref d) => {
+                        let head = *d
+                            .get(&Key::String("head".into()))
+                            .expect("Seq.Cons must have head");
+                        let tail = *d
+                            .get(&Key::String("tail".into()))
+                            .expect("Seq.Cons must have tail");
+                        (head, tail)
+                    }
+                    _ => panic!("Seq.Cons payload must be a Dict, got {:?}", payload_val),
+                }
+            }
+            other => panic!("expected Seq.Cons, got {:?}", other),
+        }
+    }
+
+    /// Helper: check if a value is Seq.Nil.
+    fn is_seq_nil(val: &Value) -> bool {
+        matches!(val, Value::Variant { ref tag, payload: None } if tag == "Seq.Nil")
     }
 
     #[test]
@@ -3530,20 +3566,16 @@ mod tests {
 
     #[test]
     fn test_type_of_seq() {
-        // Seq values should report type name "Seq" from $type-of
+        // Seq values should report type name "Variant" from $type-of (Seq is now a Variant)
         let ctx = test_ctx();
-        let head_id = ctx.alloc_thunk(thunk(Value::Int(1)));
-        let tail_id = ctx.alloc_thunk(thunk(Value::Dict(IndexMap::new())));
-        let seq = Value::Seq {
-            head: head_id,
-            tail: tail_id,
-        };
+        let seq = seq_thunk(thunk(Value::Int(1)), empty_seq_thunk(), &ctx);
         let result = mat(builtin_type_of(BuiltinArgs {
-            args: vec![thunk(seq)],
+            args: vec![seq],
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
         }));
+        // After migration, Seq.Cons returns "Seq" from type_name() for TypeTag("Seq") matching.
         assert_eq!(result, string_val("Seq".into()));
     }
 
@@ -6955,13 +6987,9 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
         }));
-        match result {
-            Value::Seq { head, tail } => {
-                assert_eq!(mat_id(head, &ctx), Value::Int(1));
-                assert_eq!(mat_id(tail, &ctx), Value::Int(2));
-            }
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        let (head, tail) = seq_head_tail(&result, &ctx);
+        assert_eq!(mat_id(head, &ctx), Value::Int(1));
+        assert_eq!(mat_id(tail, &ctx), Value::Int(2));
     }
 
     #[test]
@@ -7017,17 +7045,19 @@ mod tests {
             ctx: test_ctx(),
         }));
         assert!(result.is_ok());
-        // Verify the result is a Seq
-        match mat_val(result.unwrap()) {
-            Value::Seq { .. } => {} // Success
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        // Verify the result is a Seq.Cons
+        let r = mat_val(result.unwrap());
+        assert!(
+            matches!(r, Value::Variant { ref tag, .. } if tag == "Seq.Cons"),
+            "expected Seq.Cons, got {:?}",
+            r
+        );
     }
 
     #[test]
     fn head_basic() {
         let ctx = test_ctx();
-        let seq_val = seq_thunk(thunk(string_val("first".into())), empty_dict_thunk(), &ctx);
+        let seq_val = seq_thunk(thunk(string_val("first".into())), empty_seq_thunk(), &ctx);
         let result = run(builtin_head(BuiltinArgs {
             args: vec![seq_val],
             named: no_named(),
@@ -7073,9 +7103,14 @@ mod tests {
     }
 
     #[test]
-    fn head_empty_dict() {
+    fn head_empty_seq_nil() {
+        // After Seq→Variant migration, the empty-sequence terminal is Seq.Nil (not empty Dict).
+        // head on Seq.Nil must produce an "on empty collection" error.
         let result = run(builtin_head(BuiltinArgs {
-            args: vec![thunk(Value::Dict(IndexMap::new()))],
+            args: vec![Arc::new(Thunk::new_materialized(
+                crate::value::make_seq_nil(),
+                call_span(),
+            ))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7089,9 +7124,14 @@ mod tests {
     }
 
     #[test]
-    fn tail_empty_dict() {
+    fn tail_empty_seq_nil() {
+        // After Seq→Variant migration, the empty-sequence terminal is Seq.Nil (not empty Dict).
+        // tail on Seq.Nil must produce an "on empty collection" error.
         let result = run(builtin_tail(BuiltinArgs {
-            args: vec![thunk(Value::Dict(IndexMap::new()))],
+            args: vec![Arc::new(Thunk::new_materialized(
+                crate::value::make_seq_nil(),
+                call_span(),
+            ))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -7138,7 +7178,7 @@ mod tests {
     fn collect_basic() {
         // Build a 3-element sequence: Seq(1, Seq(2, Seq(3, {})))
         let ctx = test_ctx();
-        let seq3 = seq_thunk(thunk(Value::Int(3)), empty_dict_thunk(), &ctx);
+        let seq3 = seq_thunk(thunk(Value::Int(3)), empty_seq_thunk(), &ctx);
         let seq2 = seq_thunk(thunk(Value::Int(2)), seq3, &ctx);
         let seq_val = seq_thunk(thunk(Value::Int(1)), seq2, &ctx);
 
@@ -7163,7 +7203,7 @@ mod tests {
     fn collect_empty_tail() {
         // Single element: Seq(42, {})
         let ctx = test_ctx();
-        let seq_val = seq_thunk(thunk(Value::Int(42)), empty_dict_thunk(), &ctx);
+        let seq_val = seq_thunk(thunk(Value::Int(42)), empty_seq_thunk(), &ctx);
         let result = mat(builtin_collect(BuiltinArgs {
             args: vec![seq_val],
             named: no_named(),
@@ -7336,50 +7376,44 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
         }));
-        match result {
-            Value::Seq { head, tail } => {
-                assert_eq!(mat_id(head, &ctx), Value::Int(0));
-                // Materialize tail to get next element
-                let tail_val = mat_id(tail, &ctx);
-                match tail_val {
-                    Value::Seq { head: h2, .. } => {
-                        assert_eq!(mat_id(h2, &ctx), Value::Int(1));
-                    }
-                    other => panic!("expected Seq for tail, got {:?}", other),
-                }
-            }
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        let (head, tail) = seq_head_tail(&result, &ctx);
+        assert_eq!(mat_id(head, &ctx), Value::Int(0));
+        // Materialize tail to get next element
+        let tail_val = mat_id(tail, &ctx);
+        let (h2, _) = seq_head_tail(&tail_val, &ctx);
+        assert_eq!(mat_id(h2, &ctx), Value::Int(1));
     }
 
     #[test]
     fn range_empty() {
-        // range(5, 5) → empty
+        // range(5, 5) → Seq.Nil (after Seq→Variant migration, empty range is Seq.Nil not {})
         let result = mat(builtin_range(BuiltinArgs {
             args: vec![thunk(Value::Int(5)), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
         }));
-        match result {
-            Value::Dict(map) if map.is_empty() => {} // Success
-            other => panic!("expected empty dict, got {:?}", other),
-        }
+        assert!(
+            is_seq_nil(&result),
+            "expected Seq.Nil for empty range, got {:?}",
+            result
+        );
     }
 
     #[test]
     fn range_negative_range() {
-        // range(10, 5) → empty (start >= end)
+        // range(10, 5) → Seq.Nil (start >= end; after Seq→Variant migration, empty range is Seq.Nil not {})
         let result = mat(builtin_range(BuiltinArgs {
             args: vec![thunk(Value::Int(10)), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
         }));
-        match result {
-            Value::Dict(map) if map.is_empty() => {} // Success
-            other => panic!("expected empty dict, got {:?}", other),
-        }
+        assert!(
+            is_seq_nil(&result),
+            "expected Seq.Nil for empty range, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -7392,18 +7426,15 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
         }));
-        match result {
-            Value::Seq { head, tail } => {
-                assert_eq!(mat_id(head, &ctx), Value::Int(0));
-                // tail should be empty (terminal)
-                let tail_val = mat_id(tail, &ctx);
-                match tail_val {
-                    Value::Dict(map) if map.is_empty() => {} // Success
-                    other => panic!("expected empty dict for tail, got {:?}", other),
-                }
-            }
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        let (head, tail) = seq_head_tail(&result, &ctx);
+        assert_eq!(mat_id(head, &ctx), Value::Int(0));
+        // tail should be Seq.Nil (terminal)
+        let tail_val = mat_id(tail, &ctx);
+        assert!(
+            is_seq_nil(&tail_val),
+            "expected Seq.Nil for tail, got {:?}",
+            tail_val
+        );
     }
 
     #[test]
@@ -7416,26 +7447,14 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
         }));
-        match result {
-            Value::Seq { head, tail } => {
-                assert_eq!(mat_id(head, &ctx), Value::Int(0));
-                let tail_val = mat_id(tail, &ctx);
-                match tail_val {
-                    Value::Seq { head: h2, tail: t2 } => {
-                        assert_eq!(mat_id(h2, &ctx), Value::Int(1));
-                        let t2_val = mat_id(t2, &ctx);
-                        match t2_val {
-                            Value::Seq { head: h3, .. } => {
-                                assert_eq!(mat_id(h3, &ctx), Value::Int(2));
-                            }
-                            other => panic!("expected Seq, got {:?}", other),
-                        }
-                    }
-                    other => panic!("expected Seq, got {:?}", other),
-                }
-            }
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        let (head, tail) = seq_head_tail(&result, &ctx);
+        assert_eq!(mat_id(head, &ctx), Value::Int(0));
+        let tail_val = mat_id(tail, &ctx);
+        let (h2, t2) = seq_head_tail(&tail_val, &ctx);
+        assert_eq!(mat_id(h2, &ctx), Value::Int(1));
+        let t2_val = mat_id(t2, &ctx);
+        let (h3, _) = seq_head_tail(&t2_val, &ctx);
+        assert_eq!(mat_id(h3, &ctx), Value::Int(2));
     }
 
     #[test]
@@ -7498,26 +7517,14 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
         }));
-        match result {
-            Value::Seq { head, tail } => {
-                assert_eq!(mat_id(head, &ctx), Value::Int(42));
-                let tail_val = mat_id(tail, &ctx);
-                match tail_val {
-                    Value::Seq { head: h2, tail: t2 } => {
-                        assert_eq!(mat_id(h2, &ctx), Value::Int(42));
-                        let t2_val = mat_id(t2, &ctx);
-                        match t2_val {
-                            Value::Seq { head: h3, .. } => {
-                                assert_eq!(mat_id(h3, &ctx), Value::Int(42));
-                            }
-                            other => panic!("expected Seq, got {:?}", other),
-                        }
-                    }
-                    other => panic!("expected Seq, got {:?}", other),
-                }
-            }
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        let (head, tail) = seq_head_tail(&result, &ctx);
+        assert_eq!(mat_id(head, &ctx), Value::Int(42));
+        let tail_val = mat_id(tail, &ctx);
+        let (h2, t2) = seq_head_tail(&tail_val, &ctx);
+        assert_eq!(mat_id(h2, &ctx), Value::Int(42));
+        let t2_val = mat_id(t2, &ctx);
+        let (h3, _) = seq_head_tail(&t2_val, &ctx);
+        assert_eq!(mat_id(h3, &ctx), Value::Int(42));
     }
 
     #[test]
@@ -7533,10 +7540,12 @@ mod tests {
             ctx: test_ctx(),
         }));
         assert!(result.is_ok());
-        match mat_val(result.unwrap()) {
-            Value::Seq { .. } => {} // Success
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        let r = mat_val(result.unwrap());
+        assert!(
+            matches!(r, Value::Variant { ref tag, .. } if tag == "Seq.Cons"),
+            "expected Seq.Cons, got {:?}",
+            r
+        );
     }
 
     #[test]
@@ -7578,37 +7587,21 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
         }));
-        match result {
-            Value::Seq { head, tail } => {
-                // First element: "a"
-                assert_eq!(mat_id(head, &ctx), string_val("a".into()));
-                let tail_val = mat_id(tail, &ctx);
-                match tail_val {
-                    Value::Seq { head: h2, tail: t2 } => {
-                        // Second element: "b"
-                        assert_eq!(mat_id(h2, &ctx), string_val("b".into()));
-                        let t2_val = mat_id(t2, &ctx);
-                        match t2_val {
-                            Value::Seq { head: h3, tail: t3 } => {
-                                // Third element: "a" (cycling back)
-                                assert_eq!(mat_id(h3, &ctx), string_val("a".into()));
-                                let t3_val = mat_id(t3, &ctx);
-                                match t3_val {
-                                    Value::Seq { head: h4, .. } => {
-                                        // Fourth element: "b"
-                                        assert_eq!(mat_id(h4, &ctx), string_val("b".into()));
-                                    }
-                                    other => panic!("expected Seq, got {:?}", other),
-                                }
-                            }
-                            other => panic!("expected Seq, got {:?}", other),
-                        }
-                    }
-                    other => panic!("expected Seq, got {:?}", other),
-                }
-            }
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        let (head, tail) = seq_head_tail(&result, &ctx);
+        // First element: "a"
+        assert_eq!(mat_id(head, &ctx), string_val("a".into()));
+        let tail_val = mat_id(tail, &ctx);
+        let (h2, t2) = seq_head_tail(&tail_val, &ctx);
+        // Second element: "b"
+        assert_eq!(mat_id(h2, &ctx), string_val("b".into()));
+        let t2_val = mat_id(t2, &ctx);
+        let (h3, t3) = seq_head_tail(&t2_val, &ctx);
+        // Third element: "a" (cycling back)
+        assert_eq!(mat_id(h3, &ctx), string_val("a".into()));
+        let t3_val = mat_id(t3, &ctx);
+        let (h4, _) = seq_head_tail(&t3_val, &ctx);
+        // Fourth element: "b"
+        assert_eq!(mat_id(h4, &ctx), string_val("b".into()));
     }
 
     #[test]
@@ -7664,26 +7657,18 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
         }));
-        match result {
-            Value::Seq { head, tail } => {
-                // Head should be x (0)
-                assert_eq!(mat_id(head, &ctx), Value::Int(0));
-                // Tail is a PendingBuiltin wrapping iterate(f, f(x))
-                // Materializing it returns another Seq (doesn't error yet)
-                let tail_val = mat_id(tail, &ctx);
-                match tail_val {
-                    Value::Seq { head: h2, .. } => {
-                        // Trying to materialize h2 (which is PendingCall(Int(999), [Int(0)]))
-                        // will error because Int(999) is not a function
-                        let h2_thunk = ctx.get_thunk(h2);
-                        let h2_result = crate::eval::materialize_sync(&h2_thunk, None, &ctx);
-                        assert!(h2_result.is_err());
-                    }
-                    other => panic!("expected Seq for tail, got {:?}", other),
-                }
-            }
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        let (head, tail) = seq_head_tail(&result, &ctx);
+        // Head should be x (0)
+        assert_eq!(mat_id(head, &ctx), Value::Int(0));
+        // Tail is a PendingBuiltin wrapping iterate(f, f(x))
+        // Materializing it returns another Seq.Cons (doesn't error yet)
+        let tail_val = mat_id(tail, &ctx);
+        let (h2, _) = seq_head_tail(&tail_val, &ctx);
+        // Trying to materialize h2 (which is PendingCall(Int(999), [Int(0)]))
+        // will error because Int(999) is not a function
+        let h2_thunk = ctx.get_thunk(h2);
+        let h2_result = crate::eval::materialize_sync(&h2_thunk, None, &ctx);
+        assert!(h2_result.is_err());
     }
 
     #[test]
@@ -7699,10 +7684,12 @@ mod tests {
             ctx: test_ctx(),
         }));
         assert!(result.is_ok());
-        match mat_val(result.unwrap()) {
-            Value::Seq { .. } => {} // Success
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        let r = mat_val(result.unwrap());
+        assert!(
+            matches!(r, Value::Variant { ref tag, .. } if tag == "Seq.Cons"),
+            "expected Seq.Cons, got {:?}",
+            r
+        );
     }
 
     #[test]
@@ -7852,7 +7839,7 @@ mod tests {
     fn take_seq_basic() {
         // Build a 3-element sequence: Seq(1, Seq(2, Seq(3, {})))
         let ctx = test_ctx();
-        let seq3 = seq_thunk(thunk(Value::Int(3)), empty_dict_thunk(), &ctx);
+        let seq3 = seq_thunk(thunk(Value::Int(3)), empty_seq_thunk(), &ctx);
         let seq2 = seq_thunk(thunk(Value::Int(2)), seq3, &ctx);
         let seq_val = seq_thunk(thunk(Value::Int(1)), seq2, &ctx);
 
@@ -7863,32 +7850,21 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
         }));
-        match result {
-            Value::Seq { head, tail } => {
-                assert_eq!(mat_id(head, &ctx), Value::Int(1));
-                let tail_val = mat_id(tail, &ctx);
-                match tail_val {
-                    Value::Seq { head: h2, tail: t2 } => {
-                        assert_eq!(mat_id(h2, &ctx), Value::Int(2));
-                        // tail of tail should be empty dict (terminal)
-                        let t2_val = mat_id(t2, &ctx);
-                        match t2_val {
-                            Value::Dict(map) if map.is_empty() => {} // Success
-                            other => panic!("expected empty dict, got {:?}", other),
-                        }
-                    }
-                    other => panic!("expected Seq, got {:?}", other),
-                }
-            }
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        let (head, tail) = seq_head_tail(&result, &ctx);
+        assert_eq!(mat_id(head, &ctx), Value::Int(1));
+        let tail_val = mat_id(tail, &ctx);
+        let (h2, t2) = seq_head_tail(&tail_val, &ctx);
+        assert_eq!(mat_id(h2, &ctx), Value::Int(2));
+        // tail of tail should be Seq.Nil (terminal)
+        let t2_val = mat_id(t2, &ctx);
+        assert!(is_seq_nil(&t2_val), "expected Seq.Nil, got {:?}", t2_val);
     }
 
     #[test]
     fn take_seq_zero() {
-        // take(0, seq) → []
+        // take(0, seq) → Seq.Nil (after Seq→Variant migration, empty-take on a Seq returns Seq.Nil)
         let ctx = test_ctx();
-        let seq_val = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
+        let seq_val = seq_thunk(thunk(Value::Int(1)), empty_seq_thunk(), &ctx);
 
         let result = mat(builtin_take(BuiltinArgs {
             args: vec![thunk(Value::Int(0)), seq_val],
@@ -7896,10 +7872,11 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
         }));
-        match result {
-            Value::Dict(map) if map.is_empty() => {} // Success
-            other => panic!("expected empty dict, got {:?}", other),
-        }
+        assert!(
+            is_seq_nil(&result),
+            "expected Seq.Nil for take(0, seq), got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -7943,11 +7920,11 @@ mod tests {
         // Build two 2-element sequences and concat them
         let ctx = test_ctx();
         // xs = Seq(1, Seq(2, {}))
-        let xs_inner = seq_thunk(thunk(Value::Int(2)), empty_dict_thunk(), &ctx);
+        let xs_inner = seq_thunk(thunk(Value::Int(2)), empty_seq_thunk(), &ctx);
         let xs = seq_thunk(thunk(Value::Int(1)), xs_inner, &ctx);
 
         // ys = Seq(3, Seq(4, {}))
-        let ys_inner = seq_thunk(thunk(Value::Int(4)), empty_dict_thunk(), &ctx);
+        let ys_inner = seq_thunk(thunk(Value::Int(4)), empty_seq_thunk(), &ctx);
         let ys = seq_thunk(thunk(Value::Int(3)), ys_inner, &ctx);
 
         // concat(xs, ys) should produce Seq(1, Seq(2, Seq(3, Seq(4, {}))))
@@ -7961,38 +7938,19 @@ mod tests {
 
         // Materialize the result to verify structure
         let result_val = crate::eval::materialize_sync(&result, None, &ctx).unwrap();
-        match result_val {
-            Value::Seq { head: h1, tail: t1 } => {
-                assert_eq!(mat_id(h1, &ctx), Value::Int(1));
-                let t1_val = mat_id(t1, &ctx);
-                match t1_val {
-                    Value::Seq { head: h2, tail: t2 } => {
-                        assert_eq!(mat_id(h2, &ctx), Value::Int(2));
-                        let t2_val = mat_id(t2, &ctx);
-                        match t2_val {
-                            Value::Seq { head: h3, tail: t3 } => {
-                                assert_eq!(mat_id(h3, &ctx), Value::Int(3));
-                                let t3_val = mat_id(t3, &ctx);
-                                match t3_val {
-                                    Value::Seq { head: h4, tail: t4 } => {
-                                        assert_eq!(mat_id(h4, &ctx), Value::Int(4));
-                                        let t4_val = mat_id(t4, &ctx);
-                                        match t4_val {
-                                            Value::Dict(map) if map.is_empty() => {} // Success
-                                            other => panic!("expected empty dict, got {:?}", other),
-                                        }
-                                    }
-                                    other => panic!("expected Seq, got {:?}", other),
-                                }
-                            }
-                            other => panic!("expected Seq, got {:?}", other),
-                        }
-                    }
-                    other => panic!("expected Seq, got {:?}", other),
-                }
-            }
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        let (h1, t1) = seq_head_tail(&result_val, &ctx);
+        assert_eq!(mat_id(h1, &ctx), Value::Int(1));
+        let t1_val = mat_id(t1, &ctx);
+        let (h2, t2) = seq_head_tail(&t1_val, &ctx);
+        assert_eq!(mat_id(h2, &ctx), Value::Int(2));
+        let t2_val = mat_id(t2, &ctx);
+        let (h3, t3) = seq_head_tail(&t2_val, &ctx);
+        assert_eq!(mat_id(h3, &ctx), Value::Int(3));
+        let t3_val = mat_id(t3, &ctx);
+        let (h4, t4) = seq_head_tail(&t3_val, &ctx);
+        assert_eq!(mat_id(h4, &ctx), Value::Int(4));
+        let t4_val = mat_id(t4, &ctx);
+        assert!(is_seq_nil(&t4_val), "expected Seq.Nil, got {:?}", t4_val);
     }
 
     #[test]
@@ -8000,7 +7958,7 @@ mod tests {
         // concat({}, ys) should return ys (same materialized value)
         let ctx = test_ctx();
         let xs = thunk(Value::Dict(IndexMap::new()));
-        let ys = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
+        let ys = seq_thunk(thunk(Value::Int(1)), empty_seq_thunk(), &ctx);
 
         let result = run(builtin_concat(BuiltinArgs {
             args: vec![xs, ys.clone()],
@@ -8012,19 +7970,18 @@ mod tests {
 
         // Result should be ys — verify by materializing and checking value
         let result_val = crate::eval::materialize_sync(&result, None, &ctx).unwrap();
-        match result_val {
-            Value::Seq { head, .. } => {
-                assert_eq!(mat_id(head, &ctx), Value::Int(1));
-            }
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        let (head, _) = seq_head_tail(&result_val, &ctx);
+        assert_eq!(mat_id(head, &ctx), Value::Int(1));
     }
 
     #[test]
     fn concat_seq_empty_ys() {
-        // concat(xs, {}) should return xs's elements followed by empty dict
+        // concat(xs, {}) returns xs's elements with the empty dict {} as the tail sentinel.
+        // After Seq→Variant migration: when xs is exhausted (tail is Seq.Nil), concat_seq_step
+        // returns ys_thunk directly. ys = {} (empty Dict), so the tail of the result is Dict({}).
+        // Note: concat accepts Dict as a valid ys type, so {} is valid but terminates as Dict, not Seq.Nil.
         let ctx = test_ctx();
-        let xs = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
+        let xs = seq_thunk(thunk(Value::Int(1)), empty_seq_thunk(), &ctx);
         let ys = thunk(Value::Dict(IndexMap::new()));
 
         let result = run(builtin_concat(BuiltinArgs {
@@ -8037,17 +7994,14 @@ mod tests {
 
         // Materialize to verify: Seq(1, {})
         let result_val = crate::eval::materialize_sync(&result, None, &ctx).unwrap();
-        match result_val {
-            Value::Seq { head, tail } => {
-                assert_eq!(mat_id(head, &ctx), Value::Int(1));
-                let tail_val = mat_id(tail, &ctx);
-                match tail_val {
-                    Value::Dict(map) if map.is_empty() => {} // Success
-                    other => panic!("expected empty dict, got {:?}", other),
-                }
-            }
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        let (head, tail) = seq_head_tail(&result_val, &ctx);
+        assert_eq!(mat_id(head, &ctx), Value::Int(1));
+        let tail_val = mat_id(tail, &ctx);
+        assert!(
+            matches!(tail_val, Value::Dict(ref map) if map.is_empty()),
+            "expected empty Dict as tail sentinel from concat(seq, {{}}), got {:?}",
+            tail_val
+        );
     }
 
     #[test]
@@ -8097,7 +8051,7 @@ mod tests {
         //
         // xs = Seq(1, Seq(2, Seq(3, {})))
         let ctx = test_ctx();
-        let seq3 = seq_thunk(thunk(Value::Int(3)), empty_dict_thunk(), &ctx);
+        let seq3 = seq_thunk(thunk(Value::Int(3)), empty_seq_thunk(), &ctx);
         let seq2 = seq_thunk(thunk(Value::Int(2)), seq3, &ctx);
         let xs = seq_thunk(thunk(Value::Int(1)), seq2, &ctx);
         let ys = thunk(Value::Int(42));
@@ -8282,22 +8236,14 @@ mod tests {
                 // exceeded after ~128 consecutive failures. After the fix the internal
                 // loop handles all 299 failures at constant depth.
                 let val = crate::eval::materialize_sync(&filter_result, None, &ctx).unwrap();
-                match val {
-                    Value::Seq { head, .. } => {
-                        let head_thunk = ctx.get_thunk(head);
-                        let head_val =
-                            crate::eval::materialize_sync(&head_thunk, None, &ctx).unwrap();
-                        assert_eq!(
-                            head_val,
-                            Value::Int(299),
-                            "expected Int(299) as first passing element"
-                        );
-                    }
-                    other => panic!(
-                        "expected Seq from filter with one passing element, got {:?}",
-                        other
-                    ),
-                }
+                let (head, _) = seq_head_tail(&val, &ctx);
+                let head_thunk = ctx.get_thunk(head);
+                let head_val = crate::eval::materialize_sync(&head_thunk, None, &ctx).unwrap();
+                assert_eq!(
+                    head_val,
+                    Value::Int(299),
+                    "expected Int(299) as first passing element"
+                );
             })
             .unwrap()
             .join();
@@ -8635,7 +8581,7 @@ mod tests {
         // Create args: [String("not an int"), Seq { head: Int(1), tail: empty dict }]
         let ctx = test_ctx();
         let n_remaining = thunk(string_val("not an int"));
-        let seq = seq_thunk(thunk(Value::Int(1)), empty_dict_thunk(), &ctx);
+        let seq = seq_thunk(thunk(Value::Int(1)), empty_seq_thunk(), &ctx);
 
         // Create the PendingBuiltin thunk
         let pending_thunk = Arc::new(Thunk::new_pending_builtin(
@@ -8750,14 +8696,10 @@ mod tests {
             ctx: Arc::clone(&ctx),
         }));
 
-        // Result should be a PendingBuiltin (can't inspect internal state, but can verify it materializes correctly)
-        match result {
-            Value::Seq { head, .. } => {
-                // First element after dropping 2 should be 2
-                assert_eq!(mat_id(head, &ctx), Value::Int(2));
-            }
-            other => panic!("expected Seq from drop, got {:?}", other),
-        }
+        // Result should be a Seq.Cons (drop materializes and returns remaining Seq)
+        let (head, _) = seq_head_tail(&result, &ctx);
+        // First element after dropping 2 should be 2
+        assert_eq!(mat_id(head, &ctx), Value::Int(2));
     }
 
     #[test]
@@ -9116,18 +9058,14 @@ mod tests {
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
         }));
-        // each returns a Seq — materialize head
-        match result {
-            Value::Seq { head, tail } => {
-                let head_val = mat_id(head, &ctx);
-                assert_eq!(head_val, Value::Int(10));
-                // Verify tail is also a Seq (not fully unwinding it here)
-                let tail_thunk = ctx.get_thunk(tail);
-                let tail_val = crate::eval::materialize_sync(&tail_thunk, None, &ctx).unwrap();
-                assert!(matches!(tail_val, Value::Seq { .. }));
-            }
-            other => panic!("expected Seq, got {:?}", other),
-        }
+        // each returns a Seq.Cons — materialize head
+        let (head, tail) = seq_head_tail(&result, &ctx);
+        let head_val = mat_id(head, &ctx);
+        assert_eq!(head_val, Value::Int(10));
+        // Verify tail is also a Seq.Cons (not fully unwinding it here)
+        let tail_thunk = ctx.get_thunk(tail);
+        let tail_val = crate::eval::materialize_sync(&tail_thunk, None, &ctx).unwrap();
+        assert!(matches!(tail_val, Value::Variant { ref tag, .. } if tag == "Seq.Cons"));
     }
 
     #[test]

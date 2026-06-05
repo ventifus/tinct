@@ -1,4 +1,4 @@
 # eval: evaluate a single quoted literal expression, verify the result
-[eval [seq [quote 42] []]]
+[eval [seq [quote 42] [builtin-variant "Seq.Nil"]]]
 === out
 Int(42)

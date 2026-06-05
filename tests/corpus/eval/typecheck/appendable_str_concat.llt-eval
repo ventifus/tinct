@@ -1,6 +1,6 @@
 # Appendable class infrastructure: AppendableSeq instance with string elements.
 # Verifies that concat on Seq of strings works correctly.
 # Note: builtin-concat Appendable constraint for Seq[T] is tracked in TODO.md.
-[result: [collect [concat [seq "a" []] [seq "b" []]]]]
+[result: [collect [concat [seq "a" [builtin-variant "Seq.Nil"]] [seq "b" [builtin-variant "Seq.Nil"]]]]]
 === out
 Dict({"result": Dict({0: String("a"), 1: String("b")})})

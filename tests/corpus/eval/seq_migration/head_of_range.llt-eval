@@ -1,0 +1,5 @@
+# head: extract first element from a range-produced Seq.Cons chain
+# Regression: after Seq->Variant migration, head must work on Value::Variant{Seq.Cons}
+[head [range 10 14]]
+=== out
+Int(10)

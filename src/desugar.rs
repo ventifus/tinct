@@ -173,7 +173,33 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
                         }
                     }
                 }
-                // Always include the original entry (TypeAlias Decl is preserved for type checker)
+                // Include the original entry UNLESS a constructor with the same name as the
+                // type key was already injected (which would create a duplicate key at runtime).
+                // When CtorName == TypeKey, the injected constructor fn replaces the TypeAlias.
+                let skip_original = if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
+                    if let SurfaceDeclaration::TypeAlias { .. } = decl.as_ref() {
+                        // Check if any injected constructor has the same name as this type key
+                        if let Some(key_node) = &se.node.key {
+                            match &key_node.expr {
+                                SurfaceExpression::Str(s) => injected_names.contains(s),
+                                SurfaceExpression::VarRef { name, .. } => {
+                                    injected_names.contains(name)
+                                }
+                                _ => false,
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if skip_original {
+                    // Constructor already injected with same key — TypeAlias would create duplicate
+                    continue;
+                }
                 // Recurse into the entry's value to handle nested dicts
                 let new_value = inject_adt_constructors_node(Arc::clone(&se.node.value));
                 let new_key = se

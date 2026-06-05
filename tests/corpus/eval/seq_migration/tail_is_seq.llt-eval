@@ -1,0 +1,5 @@
+# tail: returns a Seq.Cons, displayed as Seq(...)
+# Regression: after Seq->Variant migration, tail must return Seq.Cons Variant, not Dict
+[tail [range 1 4]]
+=== out
+Seq(Int(2), ...)
