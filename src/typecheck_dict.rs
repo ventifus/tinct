@@ -1114,6 +1114,11 @@ pub(crate) fn infer_dict(
     // the observed semantics: prelude-level class/instance declarations must be visible globally.
     // If future work requires true local-scoped classes (invisible outside the declaring dict),
     // a separate mechanism (export list or explicit opt-out) would be needed.
+    //
+    // TODO(B-330): This merge-back breaks lexical scoping for user code. The correct fix is
+    // to distinguish between prelude-stage declarations (which must propagate) and user-code
+    // declarations (which should be scoped). Requires either stage-aware propagation or
+    // explicit export lists.
     {
         // Collect local child declarations before taking the child env for restoration.
         let child_classes: Vec<_> = state.class_env.iter_classes().cloned().collect();

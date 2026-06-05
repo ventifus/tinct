@@ -13,7 +13,8 @@ use std::collections::{HashMap, HashSet};
 // Use these constants when creating TypeDiagnostic instances to prevent typos.
 //
 // Legend:
-//   T0xx = Type quality diagnostics (Unknown, overbroad annotations)
+//   T0xx = Type quality and annotation diagnostics (Unknown inference, overbroad annotations,
+//          unknown type parameter annotations)
 //   T1xx = Constraint/unification ambiguities
 //   T2xx = Pattern matching issues
 //   W0xx = Warnings (non-error conditions)
@@ -38,6 +39,9 @@ pub const T019_MATCH_GUARD_FAILURE: &str = "T019";
 
 /// T020: Match pattern exhaustiveness issue (context-dependent level)
 pub const T020_MATCH_EXHAUSTIVENESS: &str = "T020";
+
+/// T021: Unknown type parameter annotation — not a variance keyword or registered class (Warn)
+pub const T021_UNKNOWN_TYPE_PARAM_ANNOTATION: &str = "T021";
 
 /// W042: Duplicate nominal variant tags in type definition (Warn)
 pub const W042_DUPLICATE_NOMINAL_TAG: &str = "W042";

@@ -1,4 +1,6 @@
 # --- uses: ["core"] injects core builtins into document scope
+# TODO(B-332): Test that builtin-pow and builtin-if produce T002 warnings when used
+# WITHOUT --- uses: ["core"]. The warnings disappeared in a recent change.
 --- uses: ["core"]
 [result: [builtin-if true "yes" "no"]]
 === out

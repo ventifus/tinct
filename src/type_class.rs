@@ -372,55 +372,62 @@ impl InstanceEnv {
         candidate: &InstanceDecl,
         state: &mut InferState,
     ) -> Result<(), String> {
-        for ((cname, _), existing) in &self.instances {
-            if cname != &candidate.class_name {
-                continue;
+        // Walk the parent chain to check for overlap across all frames (T-1031).
+        // A user instance can overlap with a prelude instance in the parent frame,
+        // which should be detected and reported.
+        let mut current_env: Option<&InstanceEnv> = Some(self);
+        while let Some(env) = current_env {
+            for ((cname, _), existing) in &env.instances {
+                if cname != &candidate.class_name {
+                    continue;
+                }
+
+                // Save ALL fields BEFORE freshening — instantiate_at_level advances the
+                // name_counter (now in state.subst) and extends state.levels with fresh type
+                // variable entries. Saving before the call means both the freshening allocations
+                // and the unification probe are fully rolled back, making this check completely
+                // side-effect-free (mirrors patterns_overlap in typecheck.rs).
+                // NOTE: name_counter is part of state.subst, so saved_subst captures it.
+                let saved_levels = state.levels.clone();
+                let saved_constraints = state.constraints.clone();
+                let saved_kind_env = state.kind_env.clone();
+                let saved_deferred = state.deferred_equalities.clone();
+                let saved_subst = state.subst.clone();
+
+                // Freshen both instance types independently so that a type variable named
+                // `a` in `[Seq a]` and a type variable named `a` in another instance map
+                // to distinct fresh variables and do not accidentally unify.
+                let fresh_existing = instantiate_at_level(&existing.instance_type, state);
+                let fresh_candidate = instantiate_at_level(&candidate.instance_type, state);
+
+                let mut temp_subst = state.subst.clone();
+                let overlaps = unify(
+                    &fresh_existing,
+                    &fresh_candidate,
+                    &mut temp_subst,
+                    state,
+                    Span::origin(),
+                )
+                .is_ok();
+
+                // Always restore state — this is a pure probe.
+                // Restoring state.subst also restores name_counter (it lives in the Substitution).
+                state.levels = saved_levels;
+                state.constraints = saved_constraints;
+                state.kind_env = saved_kind_env;
+                state.deferred_equalities = saved_deferred;
+                state.subst = saved_subst;
+
+                if overlaps {
+                    return Err(format!(
+                        "overlapping instances for class '{}': new instance '{}' overlaps with existing instance '{}'",
+                        candidate.class_name,
+                        candidate.instance_type,
+                        existing.instance_type,
+                    ));
+                }
             }
-
-            // Save ALL fields BEFORE freshening — instantiate_at_level advances the
-            // name_counter (now in state.subst) and extends state.levels with fresh type
-            // variable entries. Saving before the call means both the freshening allocations
-            // and the unification probe are fully rolled back, making this check completely
-            // side-effect-free (mirrors patterns_overlap in typecheck.rs).
-            // NOTE: name_counter is part of state.subst, so saved_subst captures it.
-            let saved_levels = state.levels.clone();
-            let saved_constraints = state.constraints.clone();
-            let saved_kind_env = state.kind_env.clone();
-            let saved_deferred = state.deferred_equalities.clone();
-            let saved_subst = state.subst.clone();
-
-            // Freshen both instance types independently so that a type variable named
-            // `a` in `[Seq a]` and a type variable named `a` in another instance map
-            // to distinct fresh variables and do not accidentally unify.
-            let fresh_existing = instantiate_at_level(&existing.instance_type, state);
-            let fresh_candidate = instantiate_at_level(&candidate.instance_type, state);
-
-            let mut temp_subst = state.subst.clone();
-            let overlaps = unify(
-                &fresh_existing,
-                &fresh_candidate,
-                &mut temp_subst,
-                state,
-                Span::origin(),
-            )
-            .is_ok();
-
-            // Always restore state — this is a pure probe.
-            // Restoring state.subst also restores name_counter (it lives in the Substitution).
-            state.levels = saved_levels;
-            state.constraints = saved_constraints;
-            state.kind_env = saved_kind_env;
-            state.deferred_equalities = saved_deferred;
-            state.subst = saved_subst;
-
-            if overlaps {
-                return Err(format!(
-                    "overlapping instances for class '{}': new instance '{}' overlaps with existing instance '{}'",
-                    candidate.class_name,
-                    candidate.instance_type,
-                    existing.instance_type,
-                ));
-            }
+            current_env = env.parent.as_deref();
         }
         Ok(())
     }
@@ -1254,6 +1261,43 @@ mod tests {
         assert!(
             resolved.is_some(),
             "should find a matching instance for Seq[Int] via [Seq a]"
+        );
+    }
+
+    /// check_structural_overlap walks the parent chain (T-1031): an instance in a parent frame
+    /// must be detected as overlapping with a candidate inserted into a child frame.
+    #[test]
+    fn test_overlap_check_parent_chain() {
+        let mut state = InferState::new();
+
+        // Parent frame: register Appendable(Int).
+        let mut parent_env = InstanceEnv::new();
+        let int_inst = make_appendable_instance(Type::Int);
+        parent_env.insert(int_inst).unwrap();
+
+        // Child frame: no instances yet, parent contains Appendable(Int).
+        let child_env = InstanceEnv::child(Arc::new(parent_env));
+
+        // Attempting to add another Appendable(Int) to child must detect overlap with parent.
+        let duplicate_int = make_appendable_instance(Type::Int);
+        let result = child_env.check_structural_overlap(&duplicate_int, &mut state);
+        assert!(
+            result.is_err(),
+            "Appendable(Int) in child should overlap with Appendable(Int) in parent frame"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("overlapping instances"),
+            "Error message should mention overlapping instances, got: {msg}"
+        );
+
+        // A disjoint instance (Appendable(Str)) must NOT be reported as overlapping.
+        let str_inst = make_appendable_instance(Type::Str);
+        assert!(
+            child_env
+                .check_structural_overlap(&str_inst, &mut state)
+                .is_ok(),
+            "Appendable(Str) should not overlap with Appendable(Int) in parent frame"
         );
     }
 

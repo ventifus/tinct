@@ -1173,6 +1173,10 @@ fn tvar_display_name(idx: usize) -> String {
 ///
 /// When instantiated (e.g., `[Pair Int String]`), build substitution
 /// `{a -> Int, b -> String}` and apply to body.
+///
+/// TODO(T-1035): Add `constraints: Vec<Constraint>` field to store class constraints
+/// on type parameters (e.g., `[type [a@Equatable] ...]`). Constraints must be checked
+/// during instantiation to ensure type arguments satisfy the required type classes.
 #[derive(Debug, Clone)]
 pub struct TypeAlias {
     pub params: Vec<String>,

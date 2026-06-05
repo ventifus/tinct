@@ -1,8 +1,10 @@
 # Structural overlap test: declares a second Equatable Int instance within a user dict.
 # After T-954/T-955 (lexically-scoped ClassEnv/InstanceEnv), check_structural_overlap only
 # checks the CURRENT frame; the prelude's Equatable Int is in a parent frame and is not seen.
-# So W043 does NOT fire for this test — only T010 Unknown warnings from the untyped method body.
-# TODO(T-1031): W043 will fire once check_structural_overlap walks the InstanceEnv parent chain.
+# T-1031 is done: check_structural_overlap now walks the InstanceEnv parent chain,
+# so W043 fires for cross-frame instance conflicts where a candidate overlaps a parent-frame instance.
+# TODO(B-326): Instance method body params infer as Unknown — pattern `[Int]` should propagate
+# to method params so `x` and `y` get type Int, eliminating the T010 warnings.
 [
   MyEqInt: [instance Equatable
     [pattern [Int]]:
@@ -18,6 +20,7 @@
 Bool(true)
 
 === warn
+overlapping instances for class 'Equatable': new instance 'Int' overlaps with existing instance 'Int'
 inferred type is Unknown — consider adding a type annotation
 inferred type is Unknown — consider adding a type annotation
 inferred type is Unknown — consider adding a type annotation

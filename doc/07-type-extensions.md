@@ -165,7 +165,7 @@ Constructor tags are qualified: `"Color.Red"`, `"Result.Ok"`, `"Seq.Cons"`. Nomi
 
 **Exhaustiveness checking** uses `TyConDef.constructors` — the arity-only `Vec<(String, usize)>` is exactly the right level of detail for Maranget (2007) matrix decomposition. Field types are irrelevant to coverage; they matter only for type-checking bindings within pattern arms.
 
-**Pattern qualification.** Dot-access pattern heads (`[Result.Ok v]`, `Color.Red:`) are syntactically assembled by the parser via `flatten_dot_access_to_tag` in `src/ast.rs`. Bare uppercase names in patterns are validated and rewritten to qualified form by `typecheck_match.rs`.
+**Pattern syntax.** Dot-access pattern heads (`[Result.Ok v]`, `Color.Red:`) are syntactically assembled by the parser via `flatten_dot_access_to_tag` in `src/ast.rs`. Constructor patterns require fully qualified dot-access syntax — bare uppercase names (e.g., `[Ok v]`, `Red:`) are a type error. The type checker does not silently qualify bare Constructor names: the type-checker-local elaboration in `typecheck_match.rs` qualifies tags for coverage analysis only and the result is never persisted to the stored AST, so bare names fail at runtime when compared against qualified variant tags.
 
 ### Absent — First-Class Absence
 

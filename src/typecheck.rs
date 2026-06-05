@@ -1028,10 +1028,26 @@ fn register_type_aliases(
                     if let Some(name) = ann_name {
                         if let Some(v) = typecheck_annot::annotation_to_variance(name) {
                             declared_variances[idx] = Some(v);
+                        } else {
+                            // Not a variance annotation — check if it's a class constraint.
+                            if state.class_env.get(name).is_some() {
+                                // TODO(T-1035): record class constraint on this type param — requires TypeAlias.constraints field
+                            } else {
+                                // Unknown annotation — error
+                                let err_msg = format!(
+                                    "unknown type parameter annotation '@{}' — \
+                                     expected a variance annotation (Covariant, Contravariant, Invariant, Phantom) \
+                                     or a type class constraint",
+                                    name
+                                );
+                                state.diagnostics.push(crate::error::TypeDiagnostic {
+                                    message: err_msg,
+                                    span: ann_spanned.span.clone(),
+                                    code: typecheck_diag::T021_UNKNOWN_TYPE_PARAM_ANNOTATION,
+                                    level: crate::error::DiagnosticLevel::Warn,
+                                });
+                            }
                         }
-                        // If annotation_to_variance returns None: could be a typeclass constraint.
-                        // Class constraint processing is deferred to T-953 Phase B (class lookup).
-                        // For now: if not a variance annotation, leave as None (will become Invariant).
                     }
                 }
             }
@@ -1566,6 +1582,10 @@ pub(crate) fn infer_surface_expr(
                             let ret = ret.clone();
 
                             let total_supplied = args.len() + named_args.len();
+                            // TODO(B-333): Default-valued params (e.g., `[fn [let prefix: "gensym"] ...]`)
+                            // should be optional in arity checking. Currently calling with 0 args produces
+                            // arity mismatch error. Need to track which params have defaults and reduce
+                            // min_required accordingly.
                             let min_required = if variadic && !params.is_empty() {
                                 params.len() - 1
                             } else {

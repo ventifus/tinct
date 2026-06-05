@@ -562,6 +562,33 @@ impl fmt::Display for Type {
                     }
                     return write!(f, "Handle[{}]", cap);
                 }
+
+                // General case: TyCon applications show as Name[Arg, ...] instead of App[TyCon(Name) Arg].
+                // Collect the full curried spine: App(App(...App(TyCon(name), a1)..., an-1), an).
+                {
+                    let mut args_rev: Vec<&Type> = vec![arg.as_ref()];
+                    let mut cur: &Type = func.as_ref();
+                    loop {
+                        match cur {
+                            Type::App(inner_func, inner_arg) => {
+                                args_rev.push(inner_arg.as_ref());
+                                cur = inner_func.as_ref();
+                            }
+                            Type::TyCon(name) => {
+                                args_rev.reverse();
+                                write!(f, "{name}[")?;
+                                for (i, a) in args_rev.iter().enumerate() {
+                                    if i > 0 {
+                                        write!(f, ", ")?;
+                                    }
+                                    write!(f, "{a}")?;
+                                }
+                                return write!(f, "]");
+                            }
+                            _ => break,
+                        }
+                    }
+                }
                 write!(f, "[{} {}]", func, arg)
             }
             Type::TyCon(name) => write!(f, "{}", name),

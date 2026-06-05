@@ -1952,6 +1952,13 @@ fn lower_levels_check_occurs(
             for ty in fields.fields.values() {
                 found |= lower_levels_check_occurs(ty, occurs_name, cap_level, state);
             }
+            // Lower levels through RowTail::Uniform key and value types
+            if let crate::type_def::RowTail::Uniform { key, value } = &fields.tail {
+                if let Some(k) = key {
+                    found |= lower_levels_check_occurs(k, occurs_name, cap_level, state);
+                }
+                found |= lower_levels_check_occurs(value, occurs_name, cap_level, state);
+            }
             found
         }
     }

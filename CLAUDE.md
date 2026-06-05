@@ -5,6 +5,7 @@ Tinct is a structured-data-first general purpose programming language with lazy 
 Documentation:
 
 - README.md
+- Read @doc/quickstart.md to learn about writing Tinct code
 - General Documentation: doc/*.md
 - Feature Documentation: doc/feature/*.md
 - Proposals for Future Features: doc/whatif/*.md

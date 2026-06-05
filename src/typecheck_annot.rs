@@ -103,6 +103,15 @@ fn walk_polarity(
             for t in row.fields.values() {
                 walk_polarity(t, pol, params, pos_seen, neg_seen, type_env);
             }
+            // Uniform tail key and value types also in covariant position.
+            // The key type can be a TypeVar (e.g. `[type [let k v] {_@k: v}]`), so both must
+            // be visited. Mirrors the B-328 fix in type_unify.rs (lower_levels_check_occurs).
+            if let crate::type_def::RowTail::Uniform { key, value } = &row.tail {
+                if let Some(k) = key {
+                    walk_polarity(k, pol, params, pos_seen, neg_seen, type_env);
+                }
+                walk_polarity(value, pol, params, pos_seen, neg_seen, type_env);
+            }
         }
         Type::Function {
             params: fn_params,
@@ -190,6 +199,19 @@ fn walk_polarity(
         Type::NominalVariant { fields, .. } => {
             for t in fields.fields.values() {
                 walk_polarity(t, pol, params, pos_seen, neg_seen, type_env);
+            }
+            // Also traverse RowTail::Uniform key and value types (T-1032).
+            // The key type can be a TypeVar (e.g. `[type [let k v] {_@k: v}]`), so both must
+            // be visited. Mirrors the B-328 fix in type_unify.rs (lower_levels_check_occurs).
+            if let crate::type_def::RowTail::Uniform {
+                key,
+                value: value_ty,
+            } = &fields.tail
+            {
+                if let Some(k) = key {
+                    walk_polarity(k, pol, params, pos_seen, neg_seen, type_env);
+                }
+                walk_polarity(value_ty, pol, params, pos_seen, neg_seen, type_env);
             }
         }
         // Concrete types (Int, Str, Bool, etc.), TyCon, Unknown, Top, Error — no TypeVar involvement.
@@ -2703,11 +2725,12 @@ pub(crate) fn resolve_type_expr(
             // Built-in type constructor application in implied-call position.
             // Checked BEFORE parameterized alias lookup so builtin constructors have priority.
             //
-            // Dispatches through `kind_env` (same as `resolve_type_dict`) to
-            // `apply_builtin_constructor`, ensuring arity rules and error messages stay in sync
-            // across both call paths. This is the permanent dispatch path for Seq, Map, and
-            // Handle — these builtins are registered in `kind_env` but resolve through
-            // `apply_builtin_constructor` rather than through `tycon_env`.
+            // FIXME(T-1021): This is a fallback path. Seq/Map/Handle are registered in tycon_env
+            // as of T-1018, so they should be caught by the TyConDef path above (lines 2687-2705).
+            // This fallback exists for two reasons:
+            // (1) resolve_type_dict still uses apply_builtin_constructor directly (no TyConDef check).
+            // (2) Conservative defense against tycon_env registration failure.
+            // This can be deleted once resolve_type_dict is refactored to use TyConDef lookup first.
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 if let Some(kind) = state.kind_env.get(name.as_str()).cloned() {
                     if kind.arity() > 0 && is_builtin_type_name(name) {

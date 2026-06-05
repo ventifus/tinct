@@ -1,0 +1,10 @@
+# T-1032: walk_polarity must traverse RowTail::Uniform value type.
+# Container[T] has a covariant type parameter. Without the T-1032 fix, the TypeVar
+# inside a RowTail::Uniform field would be classified as Phantom instead of Covariant.
+# This test verifies that declaring a user-defined parameterized type works without errors.
+[
+  Container: [type [let v] [value: v]]
+  result: 42
+]
+=== out
+Dict({"result": Int(42)})

@@ -1,0 +1,8 @@
+# T-1023: @X annotation on type param where X is neither a variance nor a class name.
+# Should emit T021 diagnostic warning.
+[Wrapper: [type [let a@NotAVariance] a]]
+=== out
+Dict({})
+
+=== warn
+unknown type parameter annotation '@NotAVariance' — expected a variance annotation (Covariant, Contravariant, Invariant, Phantom) or a type class constraint

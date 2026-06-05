@@ -193,6 +193,9 @@ pub struct InferState {
     ///
     /// Set to `Some(param_names)` before resolving a TypeAlias body and cleared immediately after.
     /// All other inference code leaves this as `None` (no scope enforcement).
+    ///
+    /// TODO(T-1022): Refactor to explicit parameter threaded through resolve_annotation,
+    /// resolve_type_expr, and resolve_type_dict instead of mutable state.
     pub type_params_scope: Option<std::collections::HashSet<String>>,
 }
 
