@@ -68,7 +68,7 @@ Config: [type [record
 
 - **`Value::Function` values**: `FnAnnotation.extra: IndexMap<String, Value>` alongside existing `doc`, `return_type`, and params fields. All annotation fields — well-known and custom — are stored here uniformly; `annotation-of` reads `extra` as the canonical annotation dict.
 - **All other values** (`Value::String`, `Value::Int`, `Value::Dict`, etc.): `Value::Annotated { inner: Arc<Thunk>, annotation: Value }` wraps any non-function value with its annotation dict. All other Value operations unwrap `Annotated` transparently.
-- **Type-level positions** (type alias declarations, record field type annotations): `TyConDef.annotation: IndexMap<String, Value>` for type-level positions. Record field type annotations are stored in `TypeNode.Record.field_annotations`.
+- **Type-level positions** (type alias declarations, record field type annotations): `TyConDef.annotation: IndexMap<String, Value>` for type-level positions. Record field type annotations are stored in `TypeNode.Record.field_annotations`. _(Forward spec: `TyConDef` currently carries only `variance`, `constructors`, and `builtin_type`; the `annotation` and `field_annotations` storage sites are planned for a future sprint.)_
 
 **`annotation-of` is a Rust builtin** that reads from all three storage sites uniformly, returning the annotation dict or an empty dict when no annotation is present. It is available at both runtime and in the type-stage evaluator.
 
@@ -748,7 +748,7 @@ Handle: [type [let a] [builtin-type "Handle"]]
 | `a` (none) | invariant — default; safe for opaque types |
 | `a@Phantom` | `F a <: F b` always — `a` is type-level only, no runtime presence |
 
-For transparent aliases, the compiler infers variance via polarity analysis (Dolan 2017 §4). Explicit annotations serve as checked declarations — a mismatch is a type error.
+For transparent aliases, the compiler infers variance via polarity analysis (Dolan 2017 §4). Explicit annotations serve as checked declarations — a mismatch is a type error. Variance parsing and polarity analysis are implemented (S-842/S-843). Variance-directed subtyping for user-declared types (e.g. `Tree Int <: Tree Number` via `@Covariant`) is infrastructure-complete; cross-scope TyCon identity enforcement is pending B-343.
 
 **Parameterized alias use:** `x@[Either Int String]` substitutes `a=Int`, `b=String` directly — it is a substitution, not instantiation of fresh TypeVars. Using `x@Either` (bare) leaves `a`, `b` as fresh inference variables.
 
@@ -831,7 +831,7 @@ absent?: [fn@Bool [let x@Unknown] [match x Absent.Absent: true  _: false]]
   _:              "present"]
 ```
 
-Builtins that return a missing value (`get?`, `env`) return `Absent.Absent` rather than `[]`. Testing with `absent?` or pattern matching on `Absent.Absent` is correct; `null?` checks only for `[]` (empty collection) and is not interchangeable. Note: `head` raises [E034] on `Seq.Nil` rather than returning `Absent.Absent`. `get-in?` is not yet implemented; use nested `get?` calls in the interim (tracked for implementation).
+Builtins that return a missing value (`get?`, `env`) return `Absent.Absent` rather than `[]`. Testing with `absent?` or pattern matching on `Absent.Absent` is correct; `null?` checks only for `[]` (empty collection) and is not interchangeable. Note: `head` raises [E034] on `Seq.Nil` rather than returning `Absent.Absent`. `get-in?` returns `Absent.Absent` if any key in the path is missing; signature: `Dict -> [Seq String] -> Any`. Example: `[get-in? dict ["a" "b" "c"]]` (implemented in the prelude, T-1047, S-855).
 
 ### 16. TypeNode: The Primary Type Representation
 

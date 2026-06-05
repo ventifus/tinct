@@ -1,0 +1,11 @@
+# T-1011: Tree[Int] <: Tree[Number] via Covariant annotation.
+# [let a@Covariant] marks the type parameter as covariant — subtyping is covariant in `a`.
+# The body [node: a] is a named-key record annotation (not a constructor), so no
+# runtime constructors are injected. TypeAlias Tree entry is skipped at runtime.
+# Absence of === warn asserts annotation_to_variance("Covariant") resolves cleanly.
+[
+  Tree: [type [let a@Covariant] [node: a]]
+  result: true
+]
+=== out
+Dict({"result": Bool(true)})

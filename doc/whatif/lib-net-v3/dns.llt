@@ -6,6 +6,76 @@
 [include %libdir "protocols/quic.llt"]   # quic-connect, quic-open-stream (DoQ resolver)
 [include %libdir "protocols/http3.llt"]  # http3-client, h3-http-request (DoH resolver)
 
+# ── Types (camelCase — accessible to internal helpers; re-exported as PascalCase in Public API) ──
+
+[
+  dnsQtype: [union [A] [AAAA] [CNAME] [MX] [NS] [TXT] [PTR] [SRV] [HTTPS] [SOA] [ANY]]
+
+  # RFC 9460 §2.3 SvcParams: a record of optional typed fields, one per SvcParamKey.
+  # Each field uses [or T Absent] so absence of a param is distinct from an empty value.
+  svcParams: [type
+    [alpn:            [or [Seq String] Absent]      # key 1: Absent = no ALPN restriction
+     no-default-alpn: Bool                           # key 2: false = param absent
+     port:            [or Port Absent]               # key 3: Absent = use target's port
+     ipv4-hint:       [or [Seq [Bytes 4]] Absent]    # key 4: Absent = no IPv4 hints
+     ipv6-hint:       [or [Seq [Bytes 16]] Absent]   # key 6: Absent = no IPv6 hints
+     ech:             [or Bytes Absent]              # key 5: Absent = no ECH config
+     mandatory:       [or [Seq Int] Absent]          # key 0: Absent = no mandatory keys
+     other:           [Map Int Bytes]]]              # unknown SvcParamKeys (extensibility)
+
+  dnsRecord: [union
+    [ARecord      addr@[Bytes 4]    ttl@Int]
+    [AAAARecord   addr@[Bytes 16]   ttl@Int]
+    [CNameRecord  name@String       ttl@Int]
+    [MxRecord     pref@Int  name@String  ttl@Int]
+    [NsRecord     name@String  ttl@Int]
+    [TxtRecord    strings@[Seq Bytes]  ttl@Int]
+    [PtrRecord    name@String  ttl@Int]
+    [SrvRecord    prio@Int  weight@Int  port@Int  target@String  ttl@Int]
+    [HttpsRecord  prio@Int  target@String  params@svcParams  ttl@Int]
+    [SoaRecord    mname@String  rname@String  serial@Int  refresh@Int
+                  retry@Int  expire@Int  minimum@Int  ttl@Int]
+    [UnknownRecord  qtype@Int  data@Bytes  ttl@Int]]
+
+  dnsRcode: [union [NoError] [FormErr] [ServFail] [NXDomain] [NotImpl] [Refused]]
+
+  dnsResponse: [type
+    [id:         Int
+     rcode:      dnsRcode
+     answers:    [Seq dnsRecord]
+     authority:  [Seq dnsRecord]
+     additional: [Seq dnsRecord]
+     truncated:  Bool]]
+
+  dnsQuery: [type
+    [id:        Int
+     name:      String
+     qtype:     dnsQtype
+     recursive: Bool
+     respond:   [or [Fn [dnsResponse] Null] Null]]]
+
+  nameserver: [union
+    [UdpNameserver  addr@SocketAddress]
+    [DotNameserver  addr@SocketAddress  sni@String]
+    [DohNameserver  addr@SocketAddress  sni@String  path@String]
+    [DoqNameserver  addr@SocketAddress  sni@String]]
+
+  dnsConfig: [type
+    [nameservers:    [Seq nameserver]
+     search:         [Seq String]
+     ndots:          Int
+     timeout:        Duration
+     attempts:       Int
+     rotate:         Bool
+     no-aaaa:        Bool
+     edns0:          Bool
+     use-vc:         Bool
+     no-check-names: Bool
+     trust-ad:       Bool
+     single-request: Bool
+     sortlist:       [Seq String]]]
+]
+
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
@@ -20,35 +90,38 @@
        labels]
       [bytes 0]]]
 
-  qtype->int: [fn [let qt@DnsQtype]
+  qtype->int: [fn [let qt@dnsQtype]
     [match qt
-      [A]: 1  [AAAA]: 28  [CNAME]: 5  [MX]: 15  [NS]: 2
-      [TXT]: 16  [PTR]: 12  [SRV]: 33  [HTTPS]: 65  [SOA]: 6  [ANY]: 255]]
+      [dnsQtype.A]: 1    [dnsQtype.AAAA]: 28  [dnsQtype.CNAME]: 5
+      [dnsQtype.MX]: 15  [dnsQtype.NS]: 2     [dnsQtype.TXT]: 16
+      [dnsQtype.PTR]: 12 [dnsQtype.SRV]: 33   [dnsQtype.HTTPS]: 65
+      [dnsQtype.SOA]: 6  [dnsQtype.ANY]: 255]]
 
   int->rcode: [fn [let n@Int]
     [match n
-      0: [NoError]  1: [FormErr]  2: [ServFail]  3: [NXDomain]
-      4: [NotImpl]  5: [Refused]  _: [ServFail]]]
+      0: dnsRcode.NoError   1: dnsRcode.FormErr   2: dnsRcode.ServFail
+      3: dnsRcode.NXDomain  4: dnsRcode.NotImpl   5: dnsRcode.Refused
+      _: dnsRcode.ServFail]]
 
   rotate-list: [fn [let xs]
     [match xs [] [] [let [h ...t]]: [append [list h] t]]]
 
-  dns-try-servers: [fn [let cap@NetCap servers@[Seq Nameserver]
-                         name@String qtype@DnsQtype remaining@Int timeout@Duration]
+  dns-try-servers: [fn [let cap@NetCap servers@[Seq nameserver]
+                         name@String qtype@dnsQtype remaining@Int timeout@Duration]
     [if [= remaining 0]
       [error [str "DNS: no more attempts for " name]]
       [match servers
         []: [error [str "DNS: all nameservers exhausted for " name]]
         [let [ns ...rest]]:
           [resolver: [ns-to-resolver cap ns]]
-          [match [try [await [timeout timeout [resolver [DnsQuery
-                                                [id: [random-id]  name: name
-                                                 qtype: qtype  recursive: true]]]]]]
-            [Ok resp]:
+          [match [try [await [timeout timeout [resolver
+                  dnsQuery.dnsQuery id: [random-id]  name: name
+                                    qtype: qtype  recursive: true  respond: null]]]]
+            [Result.Ok resp]:
               [match resp.rcode
-                [ServFail]: [dns-try-servers cap rest name qtype [- remaining 1] timeout]
-                _:          resp]
-            [Err _]:   [dns-try-servers cap rest name qtype [- remaining 1] timeout]]]]]
+                [dnsRcode.ServFail]: [dns-try-servers cap rest name qtype [- remaining 1] timeout]
+                _:                   resp]
+            [Result.Error _]: [dns-try-servers cap rest name qtype [- remaining 1] timeout]]]]]
 
   candidate-names: [fn [let host@String search@[Seq String] ndots@Int]
     [if [ends-with? "." host]
@@ -66,31 +139,31 @@
     [dns-try-servers cap [if rotate [rotate-list nameservers] nameservers]
                      name qtype attempts timeout]]
 
-  dns-try-names: [fn [let cap@NetCap config@DnsConfig names@[Seq String] qtype@DnsQtype
+  dns-try-names: [fn [let cap@NetCap config@dnsConfig names@[Seq String] qtype@dnsQtype
                        cname-depth@[type: Int  default: 0]]
     [match names
       []: [error "DNS: all candidates exhausted"]
       [let [name ...rest]]:
         [match [try [dns-query-with-retry cap config.nameservers name qtype
                                          config.attempts config.rotate config.timeout]]
-          [Ok resp]:
+          [Result.Ok resp]:
             [match resp.rcode
-              [NXDomain]: [dns-try-names cap config rest qtype cname-depth]
-              _:          [records->addrs resp.answers qtype cap cname-depth]]
-          [Err _]: [dns-try-names cap config rest qtype cname-depth]]]]
+              [dnsRcode.NXDomain]: [dns-try-names cap config rest qtype cname-depth]
+              _:                   [records->addrs resp.answers qtype cap cname-depth]]
+          [Result.Error _]: [dns-try-names cap config rest qtype cname-depth]]]]
 
   # cname-depth: current CNAME chain depth; error at 8 per RFC 1034 §3.6.2 guidance.
-  records->addrs: [fn [let records@[Seq DnsRecord] qtype@DnsQtype cap@NetCap cname-depth@[type: Int  default: 0]]
+  records->addrs: [fn [let records@[Seq dnsRecord] qtype@dnsQtype cap@NetCap cname-depth@[type: Int  default: 0]]
     [if [>= cname-depth 8]
       [error "DNS: CNAME chain too long (max 8)"]
       [flat-map [fn [let r]
         [match r
-          [ARecord [addr: addr]]: [if [= qtype [A]]    [list [Ipv4 addr]] []]
-          [AAAARecord [addr: addr]]: [if [= qtype [AAAA]] [list [Ipv6 addr]] []]
-          [CNameRecord [name: name]]:
+          [dnsRecord.ARecord     addr: addr]: [if [= qtype dnsQtype.A]    [list IpAddress.Ipv4 addr] []]
+          [dnsRecord.AAAARecord  addr: addr]: [if [= qtype dnsQtype.AAAA] [list IpAddress.Ipv6 addr] []]
+          [dnsRecord.CNameRecord name: name]:
             [match [try [dns-try-names cap %dns [list [str name "."]] qtype [+ cname-depth 1]]]
-              [Ok addrs]: addrs
-              [Err _]:    []]
+              [Result.Ok addrs]: addrs
+              [Result.Error _]:  []]
           _: []]]
        records]]]
 
@@ -109,17 +182,17 @@
         [Ok r]:  r
         [Err e]: [error [str "DoH decode: " e]]]]]
 
-  encode-rr: [fn [let r@DnsRecord]
+  encode-rr: [fn [let r@dnsRecord]
     [match r
-      [ARecord [addr: addr  ttl: ttl]]:
+      [dnsRecord.ARecord    addr: addr  ttl: ttl]:
         [concat [encode-dns-name ""]
-                [encode BigEndian [@UInt16 1]]   [encode BigEndian [@UInt16 1]]
-                [encode BigEndian [@UInt32 ttl]] [encode BigEndian [@UInt16 4]]
+                [bytes BigEndian [@UInt16 1]]   [bytes BigEndian [@UInt16 1]]
+                [bytes BigEndian [@UInt32 ttl]] [bytes BigEndian [@UInt16 4]]
                 addr]
-      [AAAARecord [addr: addr  ttl: ttl]]:
+      [dnsRecord.AAAARecord addr: addr  ttl: ttl]:
         [concat [encode-dns-name ""]
-                [encode BigEndian [@UInt16 28]]  [encode BigEndian [@UInt16 1]]
-                [encode BigEndian [@UInt32 ttl]] [encode BigEndian [@UInt16 16]]
+                [bytes BigEndian [@UInt16 28]]  [bytes BigEndian [@UInt16 1]]
+                [bytes BigEndian [@UInt32 ttl]] [bytes BigEndian [@UInt16 16]]
                 addr]
       _: [bytes 0]]]
 ]
@@ -127,82 +200,42 @@
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
-  DnsQtype: [union [A] [AAAA] [CNAME] [MX] [NS] [TXT] [PTR] [SRV] [HTTPS] [SOA] [ANY]]
-
-  DnsRecord: [union
-    [ARecord      addr@[Bytes 4]    ttl@Int]
-    [AAAARecord   addr@[Bytes 16]   ttl@Int]
-    [CNameRecord  name@String       ttl@Int]
-    [MxRecord     pref@Int  name@String  ttl@Int]
-    [NsRecord     name@String  ttl@Int]
-    [TxtRecord    strings@[Seq Bytes]  ttl@Int]
-    [PtrRecord    name@String  ttl@Int]
-    [SrvRecord    prio@Int  weight@Int  port@Int  target@String  ttl@Int]
-    [HttpsRecord  prio@Int  target@String  params@[Map String Bytes]  ttl@Int]
-    [SoaRecord    mname@String  rname@String  serial@Int  refresh@Int
-                  retry@Int  expire@Int  minimum@Int  ttl@Int]
-    [UnknownRecord  qtype@Int  data@Bytes  ttl@Int]]
-
-  DnsRcode: [union [NoError] [FormErr] [ServFail] [NXDomain] [NotImpl] [Refused]]
-
-  DnsQuery: [type
-    [id:        Int
-     name:      String
-     qtype:     DnsQtype
-     recursive: Bool
-     respond:   [or [Fn [DnsResponse] Null] Null]]]  # null for client queries; set by dns-udp-server
-
-  DnsResponse: [type
-    [id:         Int
-     rcode:      DnsRcode
-     answers:    [Seq DnsRecord]
-     authority:  [Seq DnsRecord]
-     additional: [Seq DnsRecord]
-     truncated:  Bool]]
-
-  Nameserver: [union
-    [UdpNameserver  addr@SocketAddress]
-    [DotNameserver  addr@SocketAddress  sni@String]
-    [DohNameserver  addr@SocketAddress  sni@String  path@String]
-    [DoqNameserver  addr@SocketAddress  sni@String]]
-
-  DnsConfig: [type
-    [nameservers:    [Seq Nameserver]
-     search:         [Seq String]
-     ndots:          Int
-     timeout:        Duration
-     attempts:       Int
-     rotate:         Bool
-     no-aaaa:        Bool
-     edns0:          Bool
-     use-vc:         Bool
-     no-check-names: Bool
-     trust-ad:       Bool
-     single-request: Bool
-     sortlist:       [Seq String]]]
+  # Re-export types under canonical PascalCase names.
+  # (Defined with camelCase in the types dict above so internal helpers can access them.)
+  # Note: runtime constructor tags carry the camelCase prefix (e.g. "dnsQtype.A") — see R-13.
+  SvcParams:   svcParams     # RFC 9460 SvcParams record type
+  DnsQtype:    dnsQtype
+  DnsRecord:   dnsRecord
+  DnsRcode:    dnsRcode
+  DnsQuery:    dnsQuery
+  DnsResponse: dnsResponse
+  Nameserver:  nameserver
+  DnsConfig:   dnsConfig
 
   encode-dns-wire: [fn [let q@DnsQuery]
     [concat
-      [encode BigEndian [@UInt16 q.id]]
-      [encode BigEndian [@UInt16 [if q.recursive 0x0100 0x0000]]]
-      [encode BigEndian [@UInt16 1]]  [encode BigEndian [@UInt16 0]]
-      [encode BigEndian [@UInt16 0]]  [encode BigEndian [@UInt16 0]]
+      [bytes BigEndian [@UInt16 q.id]]
+      [bytes BigEndian [@UInt16 [if q.recursive 0x0100 0x0000]]]
+      [bytes BigEndian [@UInt16 1]]  [bytes BigEndian [@UInt16 0]]
+      [bytes BigEndian [@UInt16 0]]  [bytes BigEndian [@UInt16 0]]
       [encode-dns-name q.name]
-      [encode BigEndian [@UInt16 [qtype->int q.qtype]]]
-      [encode BigEndian [@UInt16 1]]]]
+      [bytes BigEndian [@UInt16 [qtype->int q.qtype]]]
+      [bytes BigEndian [@UInt16 1]]]]
 
   decode-dns-wire: [fn [let b@Bytes]
     [error "TODO: decode-dns-wire — RFC 1035 §4 TLV decoder with pointer compression"]]
 
   encode-dns-response: [fn [let resp@DnsResponse]
-    [rcode-int: [match resp.rcode [NoError]: 0  [FormErr]: 1  [ServFail]: 2  [NXDomain]: 3  [NotImpl]: 4  [Refused]: 5  _: 2]]
+    [rcode-int: [match resp.rcode
+      [dnsRcode.NoError]: 0  [dnsRcode.FormErr]: 1  [dnsRcode.ServFail]: 2
+      [dnsRcode.NXDomain]: 3 [dnsRcode.NotImpl]: 4  [dnsRcode.Refused]: 5  _: 2]]
     [concat
-      [encode BigEndian [@UInt16 resp.id]]
-      [encode BigEndian [@UInt16 [bit-or 0x8080 rcode-int]]]
-      [encode BigEndian [@UInt16 0]]
-      [encode BigEndian [@UInt16 [length resp.answers]]]
-      [encode BigEndian [@UInt16 [length resp.authority]]]
-      [encode BigEndian [@UInt16 [length resp.additional]]]
+      [bytes BigEndian [@UInt16 resp.id]]
+      [bytes BigEndian [@UInt16 [bit-or 0x8080 rcode-int]]]
+      [bytes BigEndian [@UInt16 0]]
+      [bytes BigEndian [@UInt16 [length resp.answers]]]
+      [bytes BigEndian [@UInt16 [length resp.authority]]]
+      [bytes BigEndian [@UInt16 [length resp.additional]]]
       [flat-map encode-rr resp.answers]
       [flat-map encode-rr resp.authority]
       [flat-map encode-rr resp.additional]]]
@@ -214,8 +247,8 @@
         [send sock addr [encode-dns-wire q]]
         [resp: [recv sock]]
         [match [decode-dns-wire resp.data]
-          [Ok r]:  r
-          [Err e]: [error [str "dns-udp: " e]]]]]]
+          [Result.Ok r]:  r
+          [Result.Error e]: [error [str "dns-udp: " e]]]]]]
 
   dns-tls-resolver: [fn [let cap@NetCap addr@SocketAddress sni@String]
     [fn [let q@DnsQuery]
@@ -238,20 +271,18 @@
 
   dns-framed-send: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h q@DnsQuery]
     [wire: [encode-dns-wire q]]
-    [write-bytes h [concat [encode BigEndian [@UInt16 [length wire]]] wire]]
-    [resp-len: [match [decode BigEndian [@[Bytes 2] [read-bytes h 2]]]
-      [Ok n]:  n
-      [Err _]: [error "DNS: bad length prefix"]]]
+    [write-bytes h [concat [bytes BigEndian [@UInt16 [length wire]]] wire]]
+    [resp-len: [uint16 BigEndian [read-bytes h 2]]]
     [match [decode-dns-wire [read-bytes h resp-len]]
-      [Ok r]:  r
-      [Err e]: [error [str "dns-framed: " e]]]]
+      [Result.Ok r]:    r
+      [Result.Error e]: [error [str "dns-framed: " e]]]]
 
   ns-to-resolver: [fn [let cap@NetCap ns@Nameserver]
     [match ns
-      [UdpNameserver [addr: addr]]:          [dns-udp-resolver   cap addr]
-      [DotNameserver [addr: addr  sni: sni]]:      [dns-tls-resolver   cap addr sni]
-      [DohNameserver [addr: addr  sni: sni  path: path]]: [dns-https-resolver cap addr sni path]
-      [DoqNameserver [addr: addr  sni: sni]]:      [dns-quic-resolver  cap addr sni]]]
+      [nameserver.UdpNameserver addr: addr]:                [dns-udp-resolver   cap addr]
+      [nameserver.DotNameserver addr: addr  sni: sni]:      [dns-tls-resolver   cap addr sni]
+      [nameserver.DohNameserver addr: addr  sni: sni  path: path]: [dns-https-resolver cap addr sni path]
+      [nameserver.DoqNameserver addr: addr  sni: sni]:      [dns-quic-resolver  cap addr sni]]]
 
   # Re-exported from internal dict so callers have one import point.
   dns-query-with-retry: dns-query-with-retry
@@ -259,20 +290,20 @@
   # resolve-address: resolve an Address to an interleaved [Seq IpAddress] via Happy Eyeballs.
   # [Hostname h]: parallel A+AAAA with 50ms IPv6 head start, interleaved v6-first.
   # IpAddress variants: returned as a single-element list (no DNS needed).
-  resolve-address: [fn [let cap@NetCap addr@Address]   # takes Address, not HostPort — used internally
+  resolve-address: [fn [let cap@NetCap addr@Host]   # takes Host, not HostPort — used internally
     [match addr
-      [Hostname h]:
+      [Hostname.Hostname h]:
         [config: %dns]
         [if config.single-request
-          [v6: [match [try [dns-resolve cap h AAAA]] [Ok a]: a [Err _]: []]
-           v4: [match [try [dns-resolve cap h A]]    [Ok a]: a [Err _]: []]
+          [v6: [match [try [dns-resolve cap h DnsQtype.AAAA]] [Result.Ok a]: a [Result.Error _]: []]
+           v4: [match [try [dns-resolve cap h DnsQtype.A]]    [Result.Ok a]: a [Result.Error _]: []]
            [interleave v6 v4]]
-          [v6-task: [task [dns-resolve cap h AAAA]]
-           v4-task: [task [dns-resolve cap h A]]
-           v6-first: [match [timeout [millis 50] v6-task] [Ok a]: a [Err _]: []]
+          [v6-task: [task [dns-resolve cap h DnsQtype.AAAA]]
+           v4-task: [task [dns-resolve cap h DnsQtype.A]]
+           v6-first: [match [timeout [millis 50] v6-task] [Result.Ok a]: a [Result.Error _]: []]
            v4: [await v4-task]
            v6: [if [= [] v6-first]
-             [match [try [await v6-task]] [Ok a]: a [Err _]: []]
+             [match [try [await v6-task]] [Result.Ok a]: a [Result.Error _]: []]
              v6-first]
            [interleave v6 v4]]]
       [let ip@IpAddress]: [list ip]]]
@@ -285,42 +316,41 @@
       [error "DNS disabled"]
       [dns-try-names cap config [candidate-names host config.search config.ndots] qtype]]]
 
-  # dns-resolve-host: resolve a hostname to IPv4 addresses (A record).
-  # For full qtype control use dns-resolve directly.
-  dns-resolve-host: [fn [let cap@NetCap host@String]
-    [config: %dns]
-    [if [empty? config.nameservers]
-      [error "DNS disabled — use --nameservers or --no-dns"]
-      [dns-try-names cap config [candidate-names host config.search config.ndots] [A]]]]
-
   dns-server-loop: [fn [let query-ch@[Channel DnsQuery]
                          handler@[Fn [DnsQuery] DnsResponse]]
     [let step [fn []
       [match [recv query-ch]
-        [Closed]: []
-        [Ok q]:   [[task [q.respond [handler q]]] [step]]]]]
+        [Closed.Closed]: []
+        [Result.Ok q]:   [[task [q.respond [handler q]]] [step]]]]]
     [step]]
 
   dns-udp-server: [fn [let cap@NetCap port@Port]
-    [sock: [udp-socket cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: port]]]]
+    [sock: [udp-socket cap BindTarget.IpBind {addr: IpAddress.Ipv4 [0 0 0 0]  port: port}]]
     [out:  [channel 256]]
     [task
       [let step [fn []
         [dg: [recv sock]]
         [match [decode-dns-wire dg.data]
-          [Ok q]:
-            [send out [DnsQuery
-              [id:        q.id         name:      q.name
-               qtype:     q.qtype      recursive: q.recursive
-               respond:   [fn [let resp@DnsResponse]
-                 [send sock dg.src [encode-dns-response resp]]]]]]
-          [Err _]: null]
+          [Result.Ok q]:
+            [send out dnsQuery.dnsQuery
+              id:        q.id         name:      q.name
+              qtype:     q.qtype      recursive: q.recursive
+              respond:   [fn [let resp@DnsResponse]
+                [send sock dg.src [encode-dns-response resp]]]]
+          [Result.Error _]: null]
         [step]]]
       [step]]
     out]
 
   # resolve-address: exported so callers can resolve without connecting.
   resolve-address: resolve-address
+
+  # dns-resolve-host: qualify the qtype arg with the camelCase type name.
+  dns-resolve-host: [fn [let cap@NetCap host@String]
+    [config: %dns]
+    [if [empty? config.nameservers]
+      [error "DNS disabled — use --nameservers or --no-dns"]
+      [dns-try-names cap config [candidate-names host config.search config.ndots] dnsQtype.A]]]
 ]
 
 # Transport typeclass instances — live here because they need dns-resolve.
@@ -336,8 +366,7 @@
 
 [instance [Transport Tcp]
   connect: [fn [let cap@NetCap _@Tcp ep@HostPort]
-    [ep-inner: [match ep [HostPort inner]: inner]
-     addr: ep-inner.addr  port: ep-inner.port]
+    [addr: ep.host  port: ep.port]
     # TcpHandle wraps the original addr (for SNI inference etc.) + a lazy stream thunk.
     # The stream thunk evaluates on first read/write; tinct memoizes the result.
     [TcpHandle
@@ -352,23 +381,22 @@
            [i: e.0  ip: e.1]
            [task
              [recv [timer-channel %clock [millis [* i attempt-ms]]]]
-             [match [try [tcp-connect cap [addr: ip  port: [@Port port]]]]
-               [Ok h]:  [try [send result-ch h]]
-               [Err _]: null]]]
+             [match [try [tcp-connect cap {addr: ip  port: [@Port port]}]]
+               [Result.Ok h]:    [try [send result-ch h]]
+               [Result.Error _]: null]]]
            [entries addrs]]]]
          [match [recv result-ch]
-           [Closed]: [error [str "connect: all TCP connection attempts failed for " [str addr]]]
-           [Ok h]:
+           [Closed.Closed]: [error [str "connect: all TCP attempts failed for " [str addr]]]
+           [Result.Ok h]:
              [par-map [fn [let t] [cancel-task t]] tasks]
              h]]]]]
 
 [instance [Transport Udp]
   connect: [fn [let cap@NetCap _@Udp ep@HostPort]
-    [ep-inner: [match ep [HostPort inner]: inner]
-     addr: ep-inner.addr  port: ep-inner.port]
+    [addr: ep.host  port: ep.port]
     [addrs: [resolve-address cap addr]]
     [if [empty? addrs] [error "connect: no addresses resolved"] null]
-    [peer: [addr: [get addrs 0]  port: [@Port port]]]
-    [ConnectedUdp
-      [sock: [udp-socket cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: 0]]]
-       peer: peer]]]]
+    [peer: {addr: [get addrs 0]  port: [@Port port]}]
+    ConnectedUdp
+      sock: [udp-socket cap BindTarget.IpBind {addr: IpAddress.Ipv4 [0 0 0 0]  port: 0}]
+      peer: peer]]

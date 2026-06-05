@@ -1,0 +1,6 @@
+# T-1039: Numeric index in dot-access pattern — parse error.
+# 1.bad in pattern position: DotAccess(Int(1), "bad") — base is not an identifier,
+# so flatten_dot_access_to_tag returns None → parse error.
+[match x 1.bad: "yes" _: "no"]
+=== out
+numeric index in dot-access

@@ -1,0 +1,14 @@
+# T-1038: --- uses: ["core"] injects builtin-* aliases into document scope.
+# Without it, builtin-* aliases are undefined and produce T002 warnings.
+# This test confirms the baseline: WITH --- uses: ["core"], no T002 warning fires.
+#
+# Document isolation means the uses directive applies to THIS document only.
+# Other documents in the same file (or files that include this one) do NOT
+# automatically gain access to the injected builtin-* aliases.
+#
+# See raw_builtin_t002.llt-eval for the complementary test WITHOUT --- uses: ["core"].
+--- uses: ["core"]
+[result: [builtin-pow 2 10]]
+
+=== out
+Dict({"result": Float(1024)})

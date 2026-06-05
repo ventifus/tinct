@@ -1,0 +1,15 @@
+# T-1090: walk_polarity traversal for parameterized nominal variant type.
+# Container: [type [let v] [value: v]] creates a NominalVariant with a named field,
+# producing Type::Record { fields: {value: v}, tail: RowTail::Empty } in the alias body.
+# This exercises polarity traversal for NominalVariant (RowTail::Empty), NOT RowTail::Uniform.
+# RowTail::Uniform is produced only by {_ : V} or {_@K : V} in type annotation position.
+# A direct RowTail::Uniform polarity test requires either:
+#   - Parser support for {_ : v} inside [type [let v] ...] body (not yet confirmed), or
+#   - A unit test in type_unify_tests.rs constructing Type::Record { tail: RowTail::Uniform }
+#     and calling infer_variance directly (deferred, tracked via T-1090 follow-up).
+[
+  Container: [type [let v] [value: v]]
+  result: 42
+]
+=== out
+Dict({"result": Int(42)})

@@ -1,0 +1,14 @@
+# T-1013: {_@String : Int} typed-key annotation accepted by type checker.
+# The _@String wildcard-key annotation in a type body produces
+# RowTail::Uniform { key: Some(String), value: Int }.
+# The parser emits Annotated { name: "_", annotation: Simple("String") } for the key
+# `_@String`, which is recognized by resolve_type_dict as the typed-key constraint form.
+# This is a basic acceptance test — the type annotation resolves without error.
+# The function f is defined but not called (avoids unify_rows Uniform vs Empty).
+# Absence of === warn asserts the typed-key column-constraint annotation resolves cleanly.
+[
+  f: [fn [let x@[_@String : Int]] x]
+  result: 42
+]
+=== out
+Dict({"f": Function(x), "result": Int(42)})

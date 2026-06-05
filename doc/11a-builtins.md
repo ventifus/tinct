@@ -172,7 +172,8 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 
 | Builtin | Type | Description |
 |---------|------|-------------|
-| `gensym` | `[Fn@String [String "gensym"]]` | Generate a unique symbol with ℊ scope; optional prefix (e.g., `[gensym "tmp"]` → `"ℊꜱʏᴍ⧼tmp⧽0"`, `[gensym]` → `"ℊꜱʏᴍ⧼gensym⧽0"`). Prelude wrapper over `builtin-gensym`. |
+| `gensym` | `[Fn@String []]` | Generate a unique symbol with ℊ scope and the default "gensym" prefix (e.g., `[gensym]` → `"ℊꜱʏᴍ⧼gensym⧽0"`). 0-arg function. Prelude wrapper over `builtin-gensym`. |
+| `gensym-with-prefix` | `[Fn@String [String]]` | Generate a unique symbol with ℊ scope and a custom prefix (e.g., `[gensym-with-prefix "tmp"]` → `"ℊꜱʏᴍ⧼tmp⧽0"`). Prelude wrapper over `builtin-gensym`. |
 | `gensym-with-scope` | `[Fn@String [String String]]` | Generate a unique symbol with explicit scope char (e.g., `[gensym-with-scope "𝜇" "rec"]` → `"𝜇ꜱʏᴍ⧼rec⧽N"`). Scope chars: ℊ user, 𝜇 μ-binders, 𝒩 nominal, 𝒻 formatter. |
 | `macro-injects` | `[Fn@String [String]]` | Given a macro name, return its `inject:` default binding name if declared, or `null` if not. Reflection primitive for anaphoric macros (e.g., `[macro-injects "aif"]` → `"it"`). |
 | `llt-repr` | `[Fn@String [Any]]` | Convert value to LLT source code representation (inverse of parsing; useful for code generation) |
@@ -181,7 +182,7 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 
 **Error cases:**
 
-- `gensym`: None (accepts 0 or 1 args; non-String arg produces type error)
+- `gensym`: None (strictly 0 args; use `gensym-with-prefix` for a custom prefix)
 - `llt-repr`: None (all values have a repr)
 - `builtin-ast-of`: None (all values return a dict)
 - `macro-injects`: Arity mismatch (requires exactly 1 arg); non-String argument produces type error

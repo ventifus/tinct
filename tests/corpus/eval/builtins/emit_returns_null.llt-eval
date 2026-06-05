@@ -1,12 +1,12 @@
 [emit "hello"]
 === error
-[E002] undefined variable: %emit (defined at stdlib/prelude.llt:3082:34-3082:39) (called at stdlib/prelude.llt:3082:28-3082:42)
-  --> stdlib/prelude.llt:3082:34-3082:39
+[E002] undefined variable: %emit (defined at stdlib/prelude.llt:3113:34-3113:39) (called at stdlib/prelude.llt:3113:28-3113:42)
+  --> stdlib/prelude.llt:3113:34-3113:39
    |
-  3082 | emit: [fn@Null [let v@Any] [send %emit v]]
+  3113 | emit: [fn@Null [let v@Any] [send %emit v]]
        |                                  ^^^^^
-  in [send ...] at stdlib/prelude.llt:3082:28-3082:42
+  in [send ...] at stdlib/prelude.llt:3113:28-3113:42
    |
-  3082 | emit: [fn@Null [let v@Any] [send %emit v]]
+  3113 | emit: [fn@Null [let v@Any] [send %emit v]]
        |                            ^^^^^^^^^^^^^^
   in [emit ...] at 1:1-1:15

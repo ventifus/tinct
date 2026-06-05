@@ -25,8 +25,8 @@
   wg-timestamp: [fn []
     [now-ns: [timestamp-nanos [now %clock]]]
     [concat
-      [encode BigEndian [@UInt64 [+ [/ now-ns 1000000000] 4611686018427387914]]]
-      [encode BigEndian [@UInt32 [mod now-ns 1000000000]]]]]
+      [bytes BigEndian [@UInt64 [+ [/ now-ns 1000000000] 4611686018427387914]]]
+      [bytes BigEndian [@UInt32 [mod now-ns 1000000000]]]]]
 
   # Build a NoiseConfig for WireGuard's Noise_IKpsk2 handshake from a WireguardConfig.
   # pattern IKpsk2: initiator knows responder's static key; PSK injected at mix step 2.
@@ -48,8 +48,8 @@
   wg-frame-initiation: [fn [let cfg@WireguardConfig sender-index@Int noise-msg@Bytes]
     [mac1-key: [blake2s [concat [str-bytes wg-label-mac1] cfg.peer-key]]]
     [msg-body: [concat
-      [encode BigEndian [@UInt32 1]]
-      [encode BigEndian [@UInt32 sender-index]]
+      [bytes BigEndian [@UInt32 1]]
+      [bytes BigEndian [@UInt32 sender-index]]
       noise-msg]]
     [concat msg-body [wg-mac mac1-key msg-body] [bytes-zero 16]]]
 
@@ -60,9 +60,9 @@
   wg-frame-response: [fn [let cfg@WireguardConfig sender-index@Int receiver-index@Int noise-msg@Bytes]
     [mac1-key: [blake2s [concat [str-bytes wg-label-mac1] cfg.peer-key]]]
     [msg-body: [concat
-      [encode BigEndian [@UInt32 2]]
-      [encode BigEndian [@UInt32 sender-index]]
-      [encode BigEndian [@UInt32 receiver-index]]
+      [bytes BigEndian [@UInt32 2]]
+      [bytes BigEndian [@UInt32 sender-index]]
+      [bytes BigEndian [@UInt32 receiver-index]]
       noise-msg]]
     [concat msg-body [wg-mac mac1-key msg-body] [bytes-zero 16]]]
 
@@ -96,7 +96,7 @@
     [underlying: h
      tx-key:     [Bytes 32]
      rx-key:     [Bytes 32]
-     tx-nonce:   [Channel Int]]]
+     tx-nonce:   [Channel UInt64]]]  # 64-bit little-endian counter (WireGuard §5.4.6)
 
   # Serve layer: promotes a Channel@ByteStream to Channel@WireguardConnection.
   # Lives here (not serve.llt) because it closes over WireguardConfig.
@@ -135,11 +135,11 @@
     # tx-nonce channel holds exactly one value (atomic counter via channel).
     # recv returns [Ok n]; [Closed] is impossible for an internal nonce channel.
     [match [recv conn.tx-nonce]
-      [Closed]: [error "WireGuard: nonce channel closed unexpectedly"]
-      [Ok nonce]:
-        [if [= nonce [- [pow 2 64] 1]] [error "WireGuard: nonce exhausted — rekey required"] null]  # TODO: verify pow exists in prelude
+      [Closed.Closed]:  [error "WireGuard: nonce channel closed unexpectedly"]
+      [Result.Ok nonce]:
+        [if [= nonce 18446744073709551615] [error "WireGuard: nonce exhausted — rekey required"] null]
         [send conn.tx-nonce [+ nonce 1]]
-        [nonce-bytes: [encode LittleEndian [@UInt64 nonce]]]   # WireGuard §5.4.6: little-endian counter
+        [nonce-bytes: [bytes LittleEndian nonce]]     # WireGuard §5.4.6: nonce: UInt64
         [ciphertext: [chacha20-poly1305-seal conn.tx-key [concat [0 0 0 0] nonce-bytes] data []]]
         [write-bytes conn.underlying [concat [bytes 4] [0 0 0 0] nonce-bytes ciphertext]]]]
 
@@ -150,8 +150,8 @@
     [nonce12:  [concat [0 0 0 0] [slice 8 16 header]]]
     [ct:       [read-bytes conn.underlying [+ n 16]]]
     [match [chacha20-poly1305-open conn.rx-key nonce12 ct []]
-      [Ok plain]: [slice 0 n plain]
-      [Err _]:    [error "WireGuard: decryption failed"]]]
+      [Result.Ok plain]:    [slice 0 n plain]
+      [Result.Error _]:     [error "WireGuard: decryption failed"]]]
 ]
 
 # ── WireguardLayer typeclass — bidirectional wireguard ────────────────────────

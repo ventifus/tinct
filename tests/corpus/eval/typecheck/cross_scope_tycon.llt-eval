@@ -1,0 +1,14 @@
+# T-1012: Single-scope Color type — verifies constructor injection and runtime output.
+# Color: [type Red Green Blue] injects Red, Green, Blue as Variant(Color.Red, Null) etc.
+# The TypeAlias entry (Color) is skipped at runtime — Color is NOT available as a
+# runtime binding. result: Red uses the injected Red constructor directly.
+# NOTE: Cross-scope TyCon identity rejection (two Color declarations in distinct nested
+# scopes that should fail to unify) is NOT tested here — it is deferred to B-343
+# (Arc<TyConDef> pointer-equality identity). Once B-343 lands a separate corpus test
+# should verify that a value from an inner Color is rejected where an outer Color is expected.
+[
+  Color: [type Red Green Blue]
+  result: Red
+]
+=== out
+Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null), "result": Variant(Color.Red, Null)})

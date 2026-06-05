@@ -16,12 +16,8 @@
   # Alias the prelude async `timeout` before the public dict's `timeout` middleware shadows it.
   async-timeout:   timeout
 
-  # TODO: verify get? exists in prelude (get-or with null default); map-from-pairs unverified
-  svcb-alpn:       [fn [let p] [or [get? p "alpn"]     []]]
-  svcb-ipv4-hints: [fn [let p] [or [get? p "ipv4hint"] []]]
-  svcb-ipv6-hints: [fn [let p] [or [get? p "ipv6hint"] []]]
-  svcb-ech:        [fn [let p] [or [get? p "ech"]      []]]
-  svcb-port:       [fn [let p] [get? p "port"]]
+  # SvcParams fields are accessed directly: sm.params.alpn, sm.params.port, etc.
+  # No helper functions needed — the record type encodes the structure.
 
   http-protocol-race: [fn [let cap@NetCap host@String port@Int
                             alpn@[Seq String] addrs@[Seq IpAddress] ech@Bytes]
@@ -34,8 +30,8 @@
         [task
           [recv [timer-channel %clock [millis (* i 250)]]]
           [match [try [quic-h3-connect cap host addr port ech]]
-            [Ok h]:  [try [send result-ch h]]
-            [Err _]: null]]]
+            [Result.Ok h]:    [try [send result-ch h]]
+            [Result.Error _]: null]]]
        [entries addrs]]] []]]
     [h2-tasks: [if h2?
       [collect [map [fn [let e]
@@ -43,12 +39,12 @@
         [task
           [recv [timer-channel %clock [millis [+ [if h3? 250 0] (* i 250)]]]]
           [match [try [tcp-h2-connect cap host addr port ech]]
-            [Ok h]:  [try [send result-ch h]]
-            [Err _]: null]]]
+            [Result.Ok h]:    [try [send result-ch h]]
+            [Result.Error _]: null]]]
        [entries addrs]]] []]]
     [match [recv result-ch]
-      [Closed]: [error "http-connect: all protocol connection attempts failed"]
-      [Ok result]:
+      [Closed.Closed]: [error "http-connect: all protocol connection attempts failed"]
+      [Result.Ok result]:
         [par-map [fn [let t] [cancel-task t]] [append h3-tasks h2-tasks]]
         result]]
 
@@ -74,7 +70,7 @@
         [let c@CompressedCodec]:
           [if [= c.name "identity"]
             resp.body
-            [match [try [c.decode resp.body]] [Ok b]: b [Err _]: resp.body]]
+            [match [try [c.decode resp.body]] [Result.Ok b]: b [Result.Error _]: resp.body]]
         null: resp.body]]
     [if [= body resp.body]
       resp
@@ -85,13 +81,11 @@
 
 [
   SvcbRecord: [union
-    [AliasMode   target@String]
-    [ServiceMode
-      alpn@[Seq String]
-      ipv4@[Seq [Bytes 4]]
-      ipv6@[Seq [Bytes 16]]
-      ech@Bytes
-      port@[or Port Null]]]
+    [AliasMode  target@String]           # SvcPriority=0 (RFC 9460 §3): redirect to target
+    [ServiceMode                         # SvcPriority>0: connection hints
+      priority@Int                       # lower = more preferred when multiple records exist
+      target@[or String Absent]          # Absent/"." = use original QNAME (RFC 9460 §2.5.2)
+      params@SvcParams]]                 # fully-typed SvcParams — access via params.alpn etc.
 
   http-channel: [fn [let cap@NetCap port@Port]
     [http1-serve [tcp-listen-port cap port]]]
@@ -102,41 +96,57 @@
   resolve-svcb: [fn [let cap@NetCap host@String depth@Int]
     [if [> depth 3]
       null
-      [match [try [await [task [dns-resolve cap host HTTPS]]]]
-        [Ok records]:
-          [match records
-            []: null
-            [let [rec ...rest]]:
-              [match rec
-                [HttpsRecord [prio: 0  target: target]]:
-                  [resolve-svcb cap target [+ depth 1]]
-                [HttpsRecord [params: params]]:
-                  [ServiceMode
-                    [alpn:  [svcb-alpn params]   ipv4: [svcb-ipv4-hints params]
-                     ipv6:  [svcb-ipv6-hints params]   ech:  [svcb-ech params]
-                     port:  [svcb-port params]]]]]
-        [Err _]: null]]]
+      [match [try [await [task [dns-resolve cap host DnsQtype.HTTPS]]]]
+        [Result.Ok records]:
+          # RFC 9460 §3: AliasMode = prio 0; ServiceMode = prio > 0.
+          # When multiple ServiceMode records exist, sort by priority (lowest first).
+          [aliases:  [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: 0]: true _: false]] records]]
+          [services: [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: p]: [> p 0] _: false]] records]]
+          [if [not [empty? aliases]]
+            # Follow the first AliasMode redirect (depth-limited)
+            [match [get aliases 0]
+              [dnsRecord.HttpsRecord target: target]: [resolve-svcb cap target [+ depth 1]]]
+            # Return the highest-priority (lowest prio number) ServiceMode record
+            [best: [reduce [fn [let a b]
+              [match [a [b]]
+                [[dnsRecord.HttpsRecord prio: pa] [dnsRecord.HttpsRecord prio: pb]]:
+                  [if [<= pa pb] a b]]]
+              [get services 0] services]]
+            [match best
+              [dnsRecord.HttpsRecord prio: prio  target: target  params: params]:
+                SvcbRecord.ServiceMode
+                  priority: prio
+                  target:   [if [or [= target "."] [= target ""]] Absent.Absent target]
+                  params:   params]]   # pass SvcParams through directly — already fully typed
+        [Result.Error _]: null]]]
 
   http-connect: [fn [let cap@NetCap host@String port@Int]
     [svcb-task: [task [resolve-svcb cap host 0]]
-     v6-task:   [task [dns-resolve cap host AAAA]]
-     v4-task:   [task [dns-resolve cap host A]]]
-    [svcb: [match [async-timeout [millis 50] svcb-task] [Ok r]: r [Err _]: null]]
+     v6-task:   [task [dns-resolve cap host DnsQtype.AAAA]]
+     v4-task:   [task [dns-resolve cap host DnsQtype.A]]]
+    [svcb: [match [async-timeout [millis 50] svcb-task]
+      [Result.Ok r]: r  [Result.Error _]: null]]
     [match svcb
-      [let sm@ServiceMode]:
-        [v6: [if [empty? sm.ipv6]
-          [match [try [await v6-task]] [Ok a]: a [Err _]: []]
-          [map [fn [let b] [Ipv6 b]] sm.ipv6]]]
-        [v4: [if [empty? sm.ipv4]
-          [await v4-task]
-          [map [fn [let b] [Ipv4 b]] sm.ipv4]]]
-        [http-protocol-race cap host [or sm.port port] sm.alpn [interleave v6 v4] sm.ech]
+      [let sm: SvcbRecord.ServiceMode]:
+        [p: sm.params]
+        # Use IP hints to skip A/AAAA round-trips; fall back to DNS if absent
+        [v6: [match p.ipv6-hint
+          [Absent.Absent]: [match [try [await v6-task]] [Result.Ok a]: a [Result.Error _]: []]
+          [let hints]:     [map IpAddress.Ipv6 hints]]]
+        [v4: [match p.ipv4-hint
+          [Absent.Absent]: [await v4-task]
+          [let hints]:     [map IpAddress.Ipv4 hints]]]
+        [connect-host: [match sm.target [Absent.Absent]: host  [let t]: t]]
+        [use-port:     [match p.port [Absent.Absent]: port  [let q]: q]]
+        [alpn:         [match p.alpn [Absent.Absent]: []    [let a]: a]]
+        [ech:          [match p.ech  [Absent.Absent]: [bytes 0]  [let e]: e]]
+        [http-protocol-race cap connect-host use-port alpn [interleave v6 v4] ech]
       null:
         [addrs: [interleave
-          [match [try [await v6-task]] [Ok a]: a [Err _]: []]
+          [match [try [await v6-task]] [Result.Ok a]: a [Result.Error _]: []]
           [await v4-task]]]
         [raw: [happy-connect cap port addrs]]
-        [raw | [tls-layer [sni: host  alpn: ["h2" "http/1.1"]  ech: []  trust-roots: SystemRoots]]]]]
+        [raw | [tls-layer sni: host  alpn: ["h2" "http/1.1"]  ech: []  trust-roots: SystemRoots]]]]
 
   # max-decompressed: ceiling on decompressed body (default 256 MB); prevents zip bombs.
   fetch: [fn [let cap@NetCap url@Url  max-decompressed@[type: Int  default: 268435456]]
@@ -150,7 +160,7 @@
   fetch-h1: [fn [let cap@NetCap url@Url]
     [host: [or url.host [error "fetch-h1: no host"]]]
     [port: [or url.port [scheme-default-port url.scheme]]]
-    [raw:  [connect cap [Hostname host] Tcp port]]
+    [raw:  [connect cap [host-port [hostname host] port] Tcp]]
     [http1-request raw "GET" url.path [] [] host]]
 
   router: [fn [let routes@[Seq [Seq t]]]
@@ -193,8 +203,8 @@
   timeout: [fn [let ms@Int handler@[Fn [RawRequest] RawResponse]]
     [fn [let req@RawRequest]
       [match [try [await [async-timeout [millis ms] [task [handler req]]]]]
-        [Ok resp]: resp
-        [Err _]:   [RawResponse [status: 503  headers: []  body: [str-bytes "Request timeout"]]]]]]
+        [Result.Ok resp]:    resp
+        [Result.Error _]:    [RawResponse [status: 503  headers: []  body: [str-bytes "Request timeout"]]]]]]
 
   cors: [fn [let origins@[Seq String] handler@[Fn [RawRequest] RawResponse]]
     [fn [let req@RawRequest]

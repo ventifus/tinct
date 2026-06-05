@@ -4,6 +4,7 @@ use super::{
     promote_literal_for_constrained_var, resolve_has_field, unify, MAX_RESOLVE_HAS_FIELD_DEPTH,
 };
 use crate::ast::Span;
+use crate::type_def::{TyConDef, Variance};
 use crate::types::{Constraint, InferState, Kind, Label, Row, Substitution, Type};
 use std::collections::HashMap;
 
@@ -1196,4 +1197,227 @@ fn test_fd_in_progress_terminates_mutual_recursion() {
         state.fd_in_progress.is_empty(),
         "fd_in_progress should be empty after unification completes"
     );
+}
+
+// ============================================================================
+// T-1020: Variance/TyConDef/UNIFY-TYCON/UNIFY-UNIFORM unit tests
+// ============================================================================
+
+/// T-1020a: Variance enum Display — each variant has the expected display string.
+#[test]
+fn test_variance_debug_display() {
+    // We test Debug since Variance derives Debug.
+    assert_eq!(format!("{:?}", Variance::Covariant), "Covariant");
+    assert_eq!(format!("{:?}", Variance::Contravariant), "Contravariant");
+    assert_eq!(format!("{:?}", Variance::Invariant), "Invariant");
+    assert_eq!(format!("{:?}", Variance::Phantom), "Phantom");
+}
+
+/// T-1020b: Variance ordering — Covariant, Contravariant, Invariant, Phantom are all distinct.
+/// PartialEq is derived, so equality and inequality work correctly.
+#[test]
+fn test_variance_equality_and_distinctness() {
+    assert_eq!(Variance::Covariant, Variance::Covariant);
+    assert_eq!(Variance::Contravariant, Variance::Contravariant);
+    assert_eq!(Variance::Invariant, Variance::Invariant);
+    assert_eq!(Variance::Phantom, Variance::Phantom);
+
+    // All four variants are mutually distinct.
+    assert_ne!(Variance::Covariant, Variance::Contravariant);
+    assert_ne!(Variance::Covariant, Variance::Invariant);
+    assert_ne!(Variance::Covariant, Variance::Phantom);
+    assert_ne!(Variance::Contravariant, Variance::Invariant);
+    assert_ne!(Variance::Contravariant, Variance::Phantom);
+    assert_ne!(Variance::Invariant, Variance::Phantom);
+}
+
+/// T-1020c: Variance Copy — can be copied without moving.
+#[test]
+fn test_variance_is_copy() {
+    let v = Variance::Covariant;
+    let v2 = v; // Copy
+    assert_eq!(v, v2);
+}
+
+/// T-1020d: TyConDef construction with variance and constructors.
+/// Unit constructor (arity 0) and field constructor (arity 1) can be stored.
+#[test]
+fn test_tycondef_construction() {
+    let def = TyConDef {
+        variance: vec![Variance::Covariant],
+        constructors: vec![("Maybe.Some".to_string(), 1), ("Maybe.None".to_string(), 0)],
+        builtin_type: None,
+    };
+
+    assert_eq!(def.variance, vec![Variance::Covariant]);
+    assert_eq!(def.constructors.len(), 2);
+    assert_eq!(def.constructors[0], ("Maybe.Some".to_string(), 1));
+    assert_eq!(def.constructors[1], ("Maybe.None".to_string(), 0));
+    assert!(def.builtin_type.is_none());
+}
+
+/// T-1020e: TyConDef with multiple variance parameters (bivariant map).
+#[test]
+fn test_tycondef_multi_variance() {
+    let def = TyConDef {
+        variance: vec![Variance::Contravariant, Variance::Covariant],
+        constructors: vec![],
+        builtin_type: None,
+    };
+
+    assert_eq!(def.variance.len(), 2);
+    assert_eq!(def.variance[0], Variance::Contravariant);
+    assert_eq!(def.variance[1], Variance::Covariant);
+}
+
+/// T-1020f: TyConDef with builtin_type discriminant.
+#[test]
+fn test_tycondef_builtin_type() {
+    let def = TyConDef {
+        variance: vec![Variance::Covariant],
+        constructors: vec![],
+        builtin_type: Some("Seq".to_string()),
+    };
+
+    assert_eq!(def.builtin_type, Some("Seq".to_string()));
+}
+
+/// T-1020g: UNIFY-TYCON — same name unifies successfully.
+/// Two TyCon("Color") values should unify with Ok(()).
+#[test]
+fn test_unify_tycon_same_name_ok() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    let ty1 = Type::TyCon("Color".to_string());
+    let ty2 = Type::TyCon("Color".to_string());
+
+    let result = unify(&ty1, &ty2, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_ok(),
+        "TyCon(\"Color\") ~ TyCon(\"Color\") should unify: {:?}",
+        result.unwrap_err()
+    );
+}
+
+/// T-1020h: UNIFY-TYCON — different names fail unification.
+/// TyCon("Color") and TyCon("Shape") are distinct nominal types.
+#[test]
+fn test_unify_tycon_different_name_err() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    let ty1 = Type::TyCon("Color".to_string());
+    let ty2 = Type::TyCon("Shape".to_string());
+
+    let result = unify(&ty1, &ty2, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_err(),
+        "TyCon(\"Color\") and TyCon(\"Shape\") must not unify"
+    );
+}
+
+/// T-1020i: UNIFY-TYCON — TyCon does not unify with TyCon of empty string.
+/// Name equality is required regardless of triviality.
+#[test]
+fn test_unify_tycon_vs_empty_name_err() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    let ty1 = Type::TyCon("Foo".to_string());
+    let ty2 = Type::TyCon("".to_string());
+
+    let result = unify(&ty1, &ty2, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_err(),
+        "TyCon(\"Foo\") and TyCon(\"\") must not unify"
+    );
+}
+
+/// T-1020j: UNIFY-UNIFORM — two Uniform tails with the same value type should not error
+/// when unified in isolated row unification (same concrete V, Empty vs Uniform step).
+///
+/// Note: The current implementation at UNIFY-UNIFORM step 2/3 is stubbed with a TODO(T-1024)
+/// that always returns an error for Empty vs Uniform pairs. This test documents the EXPECTED
+/// future behavior (both Uniform same value type → compatible) but currently verifies that
+/// two identical Uniform-tailed rows do NOT fail when unified against each other (Uniform
+/// vs Uniform with identical value type).
+#[test]
+fn test_unify_uniform_same_value_type_records_ok() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // Two open records with the same uniform value type and same named fields.
+    // {x: Int, _ : Str} ~ {x: Int, _ : Str}
+    let mut fields = HashMap::new();
+    fields.insert("x".to_string(), Type::Int);
+    let row = crate::type_def::Row {
+        fields: fields.clone(),
+        tail: crate::type_def::RowTail::Uniform {
+            key: None,
+            value: Box::new(Type::Str),
+        },
+    };
+    let rec1 = Type::Record(row.clone());
+    let rec2 = Type::Record(row);
+
+    let result = unify(&rec1, &rec2, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_ok(),
+        "Identical Uniform-tailed records should unify: {:?}",
+        result.unwrap_err()
+    );
+}
+
+/// T-1020k: Variance is preserved through Clone.
+#[test]
+fn test_variance_clone() {
+    let variances = vec![
+        Variance::Covariant,
+        Variance::Contravariant,
+        Variance::Invariant,
+        Variance::Phantom,
+    ];
+    let cloned = variances.clone();
+    assert_eq!(variances, cloned);
+}
+
+/// T-1020l: TyConDef PartialEq — identical defs are equal.
+#[test]
+fn test_tycondef_partialeq() {
+    let def1 = TyConDef {
+        variance: vec![Variance::Invariant],
+        constructors: vec![("X.A".to_string(), 0), ("X.B".to_string(), 1)],
+        builtin_type: None,
+    };
+    let def2 = TyConDef {
+        variance: vec![Variance::Invariant],
+        constructors: vec![("X.A".to_string(), 0), ("X.B".to_string(), 1)],
+        builtin_type: None,
+    };
+    assert_eq!(def1, def2);
+}
+
+/// T-1020m: TyConDef PartialEq — different variance makes defs unequal.
+#[test]
+fn test_tycondef_partialeq_different_variance() {
+    let def1 = TyConDef {
+        variance: vec![Variance::Covariant],
+        constructors: vec![],
+        builtin_type: None,
+    };
+    let def2 = TyConDef {
+        variance: vec![Variance::Invariant],
+        constructors: vec![],
+        builtin_type: None,
+    };
+    assert_ne!(def1, def2);
 }

@@ -1,0 +1,13 @@
+# T-1028: [do result ...] multi-step scoped Result monad.
+# Desugars to nested bind chain:
+# [result.bind [Ok 1] [fn [x] [result.bind [Ok 2] [fn [y] [Ok [+ x y]]]]]]
+# → and-then f1 [Ok 1] → f1(1): and-then f2 [Ok 2] → f2(2): [Ok 3]
+# → Variant(Result.Ok, Int(3))
+[do result [x: [Ok 1]] [y: [Ok 2]] [Ok [+ x y]]]
+=== out
+Variant(Result.Ok, Int(3))
+
+=== warn
+undefined variable: Ok at 5:17-5:19
+undefined variable: Ok at 5:29-5:31
+undefined variable: Ok at 5:37-5:39

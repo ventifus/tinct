@@ -2915,17 +2915,19 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
 
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
     // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-    let weave_base_dir = open_file_base_dir(markdown_path, "weave")?;
+    let eval_base_dir = open_file_base_dir(markdown_path, "literate eval")?;
     // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
     let mut program = output.program;
     tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
         &mut program,
         false,
-        &weave_base_dir,
+        &eval_base_dir,
     ))
     .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
+    // Inject ADT constructor bindings (must run after desugar, before resolve).
+    tinct::desugar::inject_adt_constructors_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let resolution_table = std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
     let (type_errors, type_annotation_table, expects_resolved) =
@@ -3202,6 +3204,11 @@ fn run_literate_lint(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
+    // Inject ADT constructor bindings so that [type ...] declarations produce usable
+    // sibling constructor names (e.g., Red, Green, Blue from Color). Runs on the Surface
+    // AST before resolve; lib.rs typecheck-only paths skip this because they run
+    // typecheck_surface_program_with_env which already seeds from the prelude env. B-342
+    tinct::desugar::inject_adt_constructors_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let _resolution_table = tinct::resolve::resolve_surface_program(&program);
     // Type check with prelude environment
@@ -3539,6 +3546,8 @@ fn run_literate_weave(
         }
         // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         tinct::desugar::desugar_surface_program(&mut program);
+        // Inject ADT constructor bindings (must run after desugar, before resolve).
+        tinct::desugar::inject_adt_constructors_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let resolution_table =
             std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));

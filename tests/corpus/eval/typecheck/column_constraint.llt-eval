@@ -1,0 +1,13 @@
+# T-1016: Documents runtime behavior of a dict that COULD satisfy a {host: String _ : Int}
+# column constraint. The column constraint annotation syntax itself is not exercised here —
+# the {host: String _ : Int} type annotation form is handled by resolve_type_dict only
+# when used in a [let x@[host: String _ : Int]] parameter annotation. This test covers
+# the eval-level behavior: dict construction with a String-typed host field and Int-typed
+# remaining fields (port, timeout), and field access via dot notation.
+# Absence of === warn asserts no type warnings from the structural access chain.
+[
+  config: [host: "localhost"  port: 8080  timeout: 30]
+  result: config.port
+]
+=== out
+Dict({"config": Dict({"host": String("localhost"), "port": Int(8080), "timeout": Int(30)}), "result": Int(8080)})

@@ -1,0 +1,15 @@
+# T-1017: Result.Ok value unification — two Ok calls produce independent types.
+# Declares Result locally so Ok is in typecheck scope (no T002 warnings).
+# ok1 and ok2 use different payload types (Int vs String), verifying independent types.
+[
+  Result: [type [Ok a] [Error String]]
+  ok1: [Ok 42]
+  ok2: [Ok "hello"]
+  result: ok1
+]
+=== out
+Dict({"Ok": Variant(Result.Ok, Null), "Error": Variant(Result.Error, Null), "ok1": Variant(Result.Ok, Int(42)), "ok2": Variant(Result.Ok, String("hello")), "result": Variant(Result.Ok, Int(42))})
+
+=== warn
+undefined variable: Ok at 5:9-5:11
+undefined variable: Ok at 6:9-6:11

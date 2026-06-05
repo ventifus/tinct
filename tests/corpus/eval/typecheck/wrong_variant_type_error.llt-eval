@@ -1,0 +1,16 @@
+# T-1015: Documentation test — Color unit constructors evaluate correctly at runtime.
+# Color: [type Red Green Blue] injects Red, Green, Blue as qualified Variant entries.
+# TypeAlias entry Color is skipped at runtime. result: Green references the injected
+# Green constructor (Variant(Color.Green, Null)).
+# NOTE: T-1015 originally called for a type error when the wrong variant is assigned to
+# a typed-Color slot (e.g. passing Red where only Green or Blue is accepted). That scenario
+# requires cross-scope TyCon identity enforcement, which is deferred to B-343. Until B-343,
+# the type checker cannot distinguish Color.Red from Color.Green by TyCon nominal identity.
+# This test therefore documents that unit constructors from [type] declarations evaluate to
+# Variant values; the actual type-error path will be covered by a new test in B-343.
+[
+  Color: [type Red Green Blue]
+  result: Green
+]
+=== out
+Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null), "result": Variant(Color.Green, Null)})

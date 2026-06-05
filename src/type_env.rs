@@ -1327,6 +1327,22 @@ impl TypeEnv {
             .and_then(|p| p.resolve_constructor_tag(name))
     }
 
+    /// Collect all tycon_defs visible from this environment (including parent scopes).
+    ///
+    /// Walks the full scope chain; inner-scope definitions overwrite outer ones (inner-scope wins).
+    /// Used by the REPL to seed `InferState.tycon_env` with type constructor definitions
+    /// accumulated across previous REPL turns, so that `[type ...]` declarations from
+    /// one turn are visible to the type checker in subsequent turns (B-345).
+    pub fn collect_all_tycon_defs(&self, defs: &mut HashMap<String, TyConDef>) {
+        // Walk parent chain first, then overlay current frame — inner-scope wins.
+        if let Some(ref parent) = self.parent {
+            parent.collect_all_tycon_defs(defs);
+        }
+        for (name, def) in &self.tycon_defs {
+            defs.insert(name.clone(), def.clone());
+        }
+    }
+
     /// Collect all binding names visible from this environment (including parent scopes).
     ///
     /// Walks the scope chain and inserts every bound name into `names`. Used by

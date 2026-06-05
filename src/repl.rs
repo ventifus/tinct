@@ -225,9 +225,9 @@ impl ReplSession {
         // TypeAnnotationTable for static type resolution in TypeAssert nodes.
         // Use the accumulated type_env so bindings from previous REPL turns
         // are visible to the type checker, preventing false T002 warnings.
-        // TODO(B-329): typecheck_surface_program_with_env creates a new InferState which has
-        // empty tycon_env. Need to seed InferState.tycon_env from self.type_env.tycon_defs
-        // so that [type ...] declarations from previous REPL turns are visible.
+        // B-345: typecheck_surface_program_with_env now seeds InferState.tycon_env from the
+        // parent_env's collected tycon_defs, so [type ...] declarations from previous REPL
+        // turns are visible to the type checker in this turn (exhaustiveness, subtyping, etc.).
         let (
             _type_errors,
             type_map,

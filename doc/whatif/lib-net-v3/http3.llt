@@ -26,14 +26,16 @@
 
   int->h3-frame-type: [fn [let n@Int]
     [match n
-      0: [H3Data]  1: [H3Headers]  3: [H3CancelPush]
-      4: [H3Settings]  5: [H3PushPromise]  7: [H3Goaway]  13: [H3MaxPushId]
+      0: H3FrameType.H3Data   1: H3FrameType.H3Headers   3: H3FrameType.H3CancelPush
+      4: H3FrameType.H3Settings  5: H3FrameType.H3PushPromise
+      7: H3FrameType.H3Goaway    13: H3FrameType.H3MaxPushId
       _: [error [str "HTTP/3: unknown frame type: " n]]]]
 
   h3-frame-type->int: [fn [let t@H3FrameType]
     [match t
-      [H3Data]: 0  [H3Headers]: 1  [H3CancelPush]: 3  [H3Settings]: 4
-      [H3PushPromise]: 5  [H3Goaway]: 7  [H3MaxPushId]: 13]]
+      [H3FrameType.H3Data]: 0    [H3FrameType.H3Headers]: 1    [H3FrameType.H3CancelPush]: 3
+      [H3FrameType.H3Settings]: 4  [H3FrameType.H3PushPromise]: 5
+      [H3FrameType.H3Goaway]: 7  [H3FrameType.H3MaxPushId]: 13]]
 
   read-h3-frame: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
     [H3Frame
@@ -66,13 +68,18 @@
 
   H3Frame: [type [type: H3FrameType  payload: Bytes]]
 
+  # RFC 9114 §4 HTTP/3 SETTINGS parameters — a record of typed optional fields, not a map.
+  Http3Settings: [type
+    [qpack-max-table-size:    [or UInt32 Absent]   # SETTINGS_QPACK_MAX_TABLE_CAPACITY (default 0)
+     max-field-section-size:  [or UInt32 Absent]]] # SETTINGS_MAX_FIELD_SECTION_SIZE (default unlimited)
+
   Http3Connection: [type
     [quic:         QuicConnection
      control-send: QuicStream
      control-recv: QuicStream
      qpack-enc:    QuicStream
      qpack-dec:    QuicStream
-     settings:     [Map String Int]]]
+     settings:     Http3Settings]]
 
   h3-accept: [fn [let conn@QuicConnection]
     [error "TODO: h3-accept — open control/QPACK substreams, send SETTINGS, recv peer SETTINGS"]]

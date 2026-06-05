@@ -34,10 +34,6 @@
   slice:  [Fn@s [s Int Int]]
   length: [Fn@Int [s]]]
 
-[class [let ByteLabel t a b]
-  encode: [Fn@b [t a]]
-  decode: [Fn@[Result a] [t b]]]
-
 [type [BigEndian]]
 [type [LittleEndian]]
 [type [NativeEndian]]
@@ -88,17 +84,20 @@
   slice:  [fn [let s@[Seq T] s2@Int n@Int]  builtin-seq-slice]
   length: [fn [let s@[Seq T]]               builtin-seq-length]]
 
-[instance [ByteLabel ByteOrder UInt16 [Bytes 2]]
-  encode: [fn [let order@ByteOrder v@UInt16]   builtin-encode-u16 order v]
-  decode: [fn [let order@ByteOrder b@[Bytes 2]] builtin-decode-u16 order b]]
-
-[instance [ByteLabel ByteOrder UInt32 [Bytes 4]]
-  encode: [fn [let order@ByteOrder v@UInt32]   builtin-encode-u32 order v]
-  decode: [fn [let order@ByteOrder b@[Bytes 4]] builtin-decode-u32 order b]]
-
-[instance [ByteLabel ByteOrder UInt64 [Bytes 8]]
-  encode: [fn [let order@ByteOrder v@UInt64]   builtin-encode-u64 order v]
-  decode: [fn [let order@ByteOrder b@[Bytes 8]] builtin-decode-u64 order b]]
+# Integer ↔ bytes conversion. ByteOrder is always required — there is no endianness-ambiguous
+# multi-byte encoding. The type of the second argument to bytes determines the output width.
+#
+# bytes: [Fn [ByteOrder UInt8]  [Bytes 1]]  — builtin-bytes-u8  (ByteOrder harmless for 1 byte)
+# bytes: [Fn [ByteOrder UInt16] [Bytes 2]]  — builtin-bytes-u16
+# bytes: [Fn [ByteOrder UInt24] [Bytes 3]]  — builtin-bytes-u24
+# bytes: [Fn [ByteOrder UInt32] [Bytes 4]]  — builtin-bytes-u32
+# bytes: [Fn [ByteOrder UInt64] [Bytes 8]]  — builtin-bytes-u64
+#
+# uint16: [Fn [ByteOrder [Bytes 2]] UInt16]  — builtin-uint16 (always succeeds; [Bytes 2] is exact)
+# uint24: [Fn [ByteOrder [Bytes 3]] UInt24]  — builtin-uint24
+# uint32: [Fn [ByteOrder [Bytes 4]] UInt32]  — builtin-uint32
+# uint64: [Fn [ByteOrder [Bytes 8]] UInt64]  — builtin-uint64
+# (single byte: use [get buf i] from the Indexed typeclass — no ByteOrder needed)
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
@@ -112,19 +111,17 @@
       [task
         [recv [timer-channel %clock [millis (* i attempt-ms)]]]
         [match [try [tcp-connect cap [addr: addr  port: [@Port port]]]]
-          [Ok  h]: [try [send result-ch h]]
-          [Err _]: null]]]
+          [Result.Ok  h]: [try [send result-ch h]]
+          [Result.Error _]: null]]]
       [entries addrs]]]]
     [match [recv result-ch]
-      [Closed]: [error "happy-connect: all connection attempts failed"]
-      [Ok h]:
+      [Closed.Closed]: [error "happy-connect: all connection attempts failed"]
+      [Result.Ok h]:
         [par-map [fn [let t] [cancel-task t]] tasks]
         h]]
 
   ipv6-canonical: [fn [let b@[Bytes 16]] builtin-ipv6-canonical]
 
-  decode-u16-be: [fn [let b@Bytes offset@Int]
-    [+ [* [get b offset] 256] [get b [+ offset 1]]]]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
@@ -136,23 +133,30 @@
     [Ipv6     [Bytes 16]]
     [Ipv6Zone [Bytes 16] zone@String]]
 
-  # Address extends IpAddress with a resolvable hostname.
-  # IpAddress stays IP-only (used for SocketAddress, DNS results, bind targets, etc.).
-  Address: [union
-    [Ipv4     [Bytes 4]]
-    [Ipv6     [Bytes 16]]
-    [Ipv6Zone [Bytes 16] zone@String]
-    [Hostname String]]
+  # Hostname: an unresolved DNS name (RFC 3986 §3.2.2 reg-name).
+  Hostname: [type [Hostname String]]
+
+  # Host: RFC 3986 §3.2.2 "host" — either a resolved IP address or an unresolved name.
+  # Structural alias; values are IpAddress.* or Hostname.Hostname.
+  # Used in HostPort (connect target) and TcpHandle.addr (for SNI inference).
+  # SocketAddress uses IpAddress directly — binding always requires a resolved IP.
+  Host: [type [or IpAddress Hostname]]
+
+  # Convenience constructors.
+  hostname: Hostname.Hostname     # [hostname "api.example.com"] → Hostname.Hostname value
 
   Port: [type Int@[is: [between 0 65535]  repr: "u16"]]
 
   SocketAddress: [type [addr: IpAddress  port: Port]]
 
-  # HostPort: the subject of connect. Bundles Address + Port so the endpoint is a single value.
-  # Subject-last: [connect %net Tcp [HostPort [Hostname "api.example.com"] 443]]
-  # Partial application works: [connect %net Http] is a Fn@c [HostPort].
-  # Use SocketAddress for places that need a resolved IP (bind targets, UDP send, DNS results).
-  HostPort: [union [HostPort addr@Address port@Port]]
+  # HostPort: the subject of connect. Bundles Host + Port as a plain record.
+  # Subject-last: [connect %net Tcp [host-port [hostname "api.example.com"] 443]]
+  # Partial application: [connect %net Tcp] is Fn@TcpHandle [HostPort].
+  # Use SocketAddress for resolved-IP contexts (bind targets, UDP send, DNS results).
+  HostPort: [type [host: Host  port: Port]]
+
+  # host-port: convenience constructor for HostPort.
+  host-port: [fn [let h@Host p@Port] HostPort.HostPort host: h port: p]
 
   UdpDatagram: [type
     [src:     SocketAddress
@@ -171,14 +175,15 @@
     [GlobalScope]
     [Loopback]]    # 127.0.0.0/8 or ::1
 
-  # Wire encoding utilities.
+  # Wire encoding.
   ByteOrder: [union [BigEndian] [LittleEndian] [NativeEndian]]
 
-  OrderedBytes: [type [data: Bytes  order: ByteOrder]]
+  # 24-bit unsigned integer — used for HTTP/2 frame lengths (RFC 7540 §4.1).
+  UInt24: [type Int@[is: [between 0 16777215]  repr: u32]]
 
   # Convenience BindTarget constructors.
-  bind-ip:        [fn [let addr@SocketAddress]    [IpBind addr]]
-  bind-interface: [fn [let name@String port@Port] [InterfaceBind name port]]
+  bind-ip:        [fn [let addr@SocketAddress]    BindTarget.IpBind addr]
+  bind-interface: [fn [let name@String port@Port] BindTarget.InterfaceBind name port]
 
   # Accept loop. Suspends when buffer full → backpressure to OS listen queue.
   listen-loop: [fn@[bind: [l]  constraint: [l: Listener]]
@@ -191,7 +196,7 @@
     [listen-loop [tcp-bind cap target]]]
 
   tcp-listen-port: [fn [let cap@NetCap port@Port]
-    [tcp-listen cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: port]]]]
+    [tcp-listen cap BindTarget.IpBind {addr: IpAddress.Ipv4 [0 0 0 0]  port: port}]]
 
   udp-bind: [fn [let cap@NetCap target@BindTarget]
     [sock: [udp-socket cap target]]
@@ -200,11 +205,11 @@
     out]
 
   udp-ephemeral: [fn [let cap@NetCap]
-    [udp-socket cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: 0]]]]
+    [udp-socket cap BindTarget.IpBind {addr: IpAddress.Ipv4 [0 0 0 0]  port: 0}]]
 
   # udp-listen: bind a UdpSocket on all interfaces at port (for use with | quic server instance).
   udp-listen: [fn [let cap@NetCap port@Port]
-    [udp-socket cap [IpBind [addr: [Ipv4 [0 0 0 0]] port: port]]]]
+    [udp-socket cap BindTarget.IpBind {addr: IpAddress.Ipv4 [0 0 0 0]  port: port}]]
 
   # HttpStream: bidirectional HTTP request/response typeclass.
   # send (client): initiate request on established connection → Task@RawResponse
@@ -233,9 +238,9 @@
   #   [connect %net Http]  → Fn@HttpConnection [HostPort]
   #
   # Usage — connect is always the bottom of a protocol stack:
-  #   [connect %net Tcp  [HostPort [Hostname "api.example.com"] 443]] | tls | h2
-  #   [connect %net Udp  [HostPort [Hostname "api.example.com"] 443]] | quic | h3
-  #   [connect %net Http [HostPort [Hostname "api.example.com"] 443]]  # SVCB-aware
+  #   [connect %net Tcp  [host-port [hostname "api.example.com"] 443]] | tls | h2
+  #   [connect %net Udp  [host-port [hostname "api.example.com"] 443]] | quic | h3
+  #   [connect %net Http [host-port [hostname "api.example.com"] 443]]  # SVCB-aware
   #
   # Resolution: Happy Eyeballs for all [Hostname h] — parallel A+AAAA, 50ms IPv6 head start,
   # interleaved addresses. Tcp races connections (250ms stagger, first success wins).
@@ -254,7 +259,7 @@
   # TcpHandle: transparent wrapper around Handle. addr/port visible to upstream layers.
   # stream: Handle — the lazy TCP connection thunk (Handle is the ByteStream interface type).
   # Both TCP and file handles use the same Handle type at the Rust level.
-  TcpHandle: [type [addr: Address  port: Port  stream: Handle]]
+  TcpHandle: [type [addr: Host  port: Port  stream: Handle]]
 
   # FileHandle: transparent wrapper around Handle for file I/O. path/mode visible.
   FileHandle: [type [path: String  mode: Symbol  file: Handle]]
@@ -263,21 +268,21 @@
 
   ip->string: [fn [let addr@IpAddress]
     [match addr
-      [Ipv4 b]:       [str [get b 0] "." [get b 1] "." [get b 2] "." [get b 3]]
-      [Ipv6 b]:       [ipv6-canonical b]
-      [Ipv6Zone b z]: [str "[" [ipv6-canonical b] "%" z "]"]]]
+      [IpAddress.Ipv4     b]:   [str [get b 0] "." [get b 1] "." [get b 2] "." [get b 3]]
+      [IpAddress.Ipv6     b]:   [ipv6-canonical b]
+      [IpAddress.Ipv6Zone b z]: [str "[" [ipv6-canonical b] "%" z "]"]]]
 
   ip-is-loopback?: [fn [let addr@IpAddress]
     [match addr
-      [Ipv4 b]:       [= [get b 0] 127]
-      [Ipv6 b]:       [= b [0 0 0 0  0 0 0 0  0 0 0 0  0 0 0 1]]
-      [Ipv6Zone b _]: [= b [0 0 0 0  0 0 0 0  0 0 0 0  0 0 0 1]]]]
+      [IpAddress.Ipv4     b]:   [= [get b 0] 127]
+      [IpAddress.Ipv6     b]:   [= b [0 0 0 0  0 0 0 0  0 0 0 0  0 0 0 1]]
+      [IpAddress.Ipv6Zone b _]: [= b [0 0 0 0  0 0 0 0  0 0 0 0  0 0 0 1]]]]
 
   ip-is-link-local?: [fn [let addr@IpAddress]
     [match addr
-      [Ipv4 b]:       [and [= [get b 0] 169] [= [get b 1] 254]]
-      [Ipv6 b]:       [= [bit-and [decode-u16-be b 0] 0xFFC0] 0xFE80]
-      [Ipv6Zone b _]: [= [bit-and [decode-u16-be b 0] 0xFFC0] 0xFE80]]]
+      [IpAddress.Ipv4     b]:   [and [= [get b 0] 169] [= [get b 1] 254]]
+      [IpAddress.Ipv6     b]:   [= [bit-and [uint16 BigEndian [slice b 0 2]] 0xFFC0] 0xFE80]
+      [IpAddress.Ipv6Zone b _]: [= [bit-and [uint16 BigEndian [slice b 0 2]] 0xFFC0] 0xFE80]]]
 
   Url: [type
     [scheme:   String

@@ -1,0 +1,13 @@
+# T-1034: [do result ...] with explicit Result monad specifier — single-step form.
+# Uses bare Ok constructor (injected as Result.Ok at desugar time, visible after T-1048).
+# NOTE: The inferred-specifier path ([do [Result.Ok 42]] without explicit "result")
+# is not yet exercised here; that scenario requires resolve_monad_from_surface to
+# pick up the monad identity from a qualified DotAccess like Result.Ok, and is
+# deferred until the qualified constructor form is reliably accessible end-to-end.
+# This test covers the explicit-specifier + bare-constructor path.
+[do result [Ok value: 42]]
+=== out
+Variant(Result.Ok, Int(42))
+
+=== warn
+undefined variable: Ok at 7:13-7:15

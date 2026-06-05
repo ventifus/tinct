@@ -1001,53 +1001,82 @@ HTTPS records have two forms. **ServiceMode** (priority > 0) carries the paramet
 # protocols/http.llt
 
 SvcbRecord: [union
-  [AliasMode  target@String]            # priority 0: redirect to target
-  [ServiceMode                          # priority > 0: connection parameters
-    alpn@[Seq String]
-    ipv4@[Seq [Bytes 4]]
-    ipv6@[Seq [Bytes 16]]
-    ech@Bytes
-    port@[or Port Null]]]
+  [AliasMode  target@String]           # SvcPriority=0 (RFC 9460 §3): redirect to target
+  [ServiceMode                         # SvcPriority>0: connection hints
+    priority@Int                       # lower = more preferred when multiple records exist
+    target@[or String Absent]          # Absent/"." = use original QNAME (RFC 9460 §2.5.2)
+    params@SvcParams]]                 # typed SvcParams — access via params.alpn, params.port, etc.
 
-# Follow the SVCB alias chain. AliasMode records (priority=0) redirect
-# to another hostname. Depth limit avoids loops.
+# RFC 9460 §2.3 SvcParams: a record of optional typed fields (not a heterogeneous map).
+# Absent = that SvcParamKey was not present in the DNS record.
+SvcParams: [type
+  [alpn:            [or [Seq String] Absent]      # key 1
+   no-default-alpn: Bool                           # key 2: false = absent
+   port:            [or Port Absent]               # key 3
+   ipv4-hint:       [or [Seq [Bytes 4]] Absent]    # key 4
+   ipv6-hint:       [or [Seq [Bytes 16]] Absent]   # key 6
+   ech:             [or Bytes Absent]              # key 5
+   mandatory:       [or [Seq Int] Absent]          # key 0
+   other:           [Map Int Bytes]]]              # unknown SvcParamKeys (extensibility)
+
+# Follow the SVCB alias chain and select the best ServiceMode record.
+# AliasMode (priority=0) redirects; ServiceMode (priority>0) carries hints.
+# When multiple ServiceMode records exist, the lowest priority number wins.
 resolve-svcb: [fn [let cap@NetCap host@String depth@Int]
   [if [> depth 3]
     null
-    [match [try [await [task [dns-resolve cap host HTTPS]]]]
-      [Ok [let rec ...rest]]:
-        [match rec
-          [let [AliasMode target]]: [resolve-svcb cap target [+ depth 1]]
-          [let sm: ServiceMode]:    sm]
-      [Err _]: null]]]
+    [match [try [await [task [dns-resolve cap host DnsQtype.HTTPS]]]]
+      [Result.Ok records]:
+        [aliases:  [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: 0]: true _: false]] records]]
+        [services: [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: p]: [> p 0] _: false]] records]]
+        [if [not [empty? aliases]]
+          [match [get aliases 0]
+            [dnsRecord.HttpsRecord target: target]: [resolve-svcb cap target [+ depth 1]]]
+          [best: [reduce [fn [let a b]
+            [match [a b]
+              [[dnsRecord.HttpsRecord prio: pa] [dnsRecord.HttpsRecord prio: pb]]:
+                [if [<= pa pb] a b]]]
+            [get services 0] services]]
+          [match best
+            [dnsRecord.HttpsRecord prio: prio  target: target  params: params]:
+              SvcbRecord.ServiceMode
+                priority: prio
+                target:   [if [or [= target "."] [= target ""]] null target]
+                alpn:     [svcb-alpn params]   ipv4: [svcb-ipv4-hints params]
+                ipv6:     [svcb-ipv6-hints params]   ech: [svcb-ech params]
+                port:     [svcb-port params]   mandatory: [svcb-mandatory params]]]
+      [Result.Error _]: null]]]
 
 # SVCB-aware HTTP connection — the implementation behind fetch.
 # Races HTTPS record lookup against A/AAAA, then races h3/QUIC against h2/TCP.
 http-connect: [fn [let cap@NetCap host@String port@Int]
   [svcb-task: [task [resolve-svcb cap host 0]]
-   v6-task:   [task [dns-resolve cap host AAAA]]
-   v4-task:   [task [dns-resolve cap host A]]]
+   v6-task:   [task [dns-resolve cap host DnsQtype.AAAA]]
+   v4-task:   [task [dns-resolve cap host DnsQtype.A]]]
 
   # Use same 50ms window as AAAA preference (RFC 8305 §5) — if SVCB arrives first, use it
   [svcb: [match [timeout [millis 50] svcb-task]
-    [Ok rec]: rec
-    [Err _]:  null]]
+    [Result.Ok rec]: rec  [Result.Error _]: null]]
 
   [match svcb
-    [let sm: ServiceMode]
-      # IP hints skip A/AAAA round-trips; fall back to DNS if hints absent
-      [v6-addrs: [if [empty? sm.ipv6]
-        [match [try [await v6-task]] [Ok a]: a [Err _]: []]
-        [map Ipv6 sm.ipv6]]]
-      [v4-addrs: [if [empty? sm.ipv4]
-        [await v4-task]
-        [map Ipv4 sm.ipv4]]]
-      [http-protocol-race cap host [or sm.port port]
-                          sm.alpn [interleave v6-addrs v4-addrs] sm.ech]
+    [let sm: SvcbRecord.ServiceMode]
+      [p: sm.params]
+      # IP hints skip A/AAAA round-trips; Absent = fall back to DNS
+      [v6-addrs: [match p.ipv6-hint
+        [Absent.Absent]: [match [try [await v6-task]] [Result.Ok a]: a [Result.Error _]: []]
+        [let hints]:     [map IpAddress.Ipv6 hints]]]
+      [v4-addrs: [match p.ipv4-hint
+        [Absent.Absent]: [await v4-task]
+        [let hints]:     [map IpAddress.Ipv4 hints]]]
+      [connect-host: [match sm.target [Absent.Absent]: host  [let t]: t]]
+      [use-port:     [match p.port [Absent.Absent]: port  [let q]: q]]
+      [alpn:         [match p.alpn [Absent.Absent]: []    [let a]: a]]
+      [ech:          [match p.ech  [Absent.Absent]: [bytes 0]  [let e]: e]]
+      [http-protocol-race cap connect-host use-port alpn [interleave v6-addrs v4-addrs] ech]
 
     null
-      # No SVCB — use connect Http which does Happy Eyeballs + h2/h1 ALPN negotiation
-      [connect cap Http [HostPort [Hostname host] port]]]
+      # No SVCB — Happy Eyeballs + h2/h1 ALPN negotiation
+      [connect cap Http [host-port [hostname host] port]]]
 
 # Race h3/QUIC and h2/TCP with 250ms stagger in ALPN preference order.
 http-protocol-race: [fn [let cap@NetCap host@String port@Int
@@ -1230,14 +1259,20 @@ The subtyping relationship is that of refinement types: `[Bytes N]` is `Bytes` r
 
 ### Type system change
 
-Add `Type::SizedBytes(usize)` alongside the existing `Type::Bytes`:
+`[Bytes N]` is implemented as a new TypeNode constructor declared entirely in tinct — no new Rust type variants, no new kind system extensions. The `SizedBytes` constructor carries `N` as a plain `Int` field, and a `supertype:` annotation (a direct TypeNode value reference, not a string) expresses the subtype relationship:
 
-- `[Bytes 4]` in an annotation resolves to `Type::SizedBytes(4)` — the `4` is a `Kind::Nat` argument
-- `Type::SizedBytes(N) <: Type::Bytes` — fixed-size is a subtype of variable-size
-- `Type::SizedBytes(M) ≠ Type::SizedBytes(N)` when `M ≠ N` — sizes are statically distinct
+```tinct
+# Added to the TypeNode ADT declaration alongside Recursive, TypeVar, etc.:
+[SizedBytes@[supertype: TypeNode.Bytes  as-type: [fn [let b] b]  guarding: false]
+  n: Int]
+```
+
+- `[Bytes 4]` in annotation position invokes `expand_named("Bytes", [4])` — `4` is a plain `Int` value in the type stage — producing `TypeNode.SizedBytes { n: 4 }`
+- `TypeNode.SizedBytes { n: N } <: TypeNode.Bytes` — the `supertype: TypeNode.Bytes` annotation carries an actual TypeNode value; the type checker reads it and applies the subtype rule generically, with no Rust special-case for `SizedBytes`
+- `TypeNode.SizedBytes { n: M }` is incompatible with `TypeNode.SizedBytes { n: N }` when `M ≠ N` — the generic TypeNode structural equality check compares the `n` field; `4 ≠ 16` → type error with no special unification arm needed
 - A `Bytes` value narrows to `[Bytes N]` at a `TypeAssert` boundary when the `is:` predicate validates the length — the same runtime validation mechanism used by `UInt8`, `Port`, etc.
 
-`Kind::Nat` is a bounded extension to the kind system: integer literals used as type arguments. Only `Bytes` takes a `Kind::Nat` argument initially. Type-level arithmetic over `Nat` is supported through the existing type-stage evaluator: `[+ m n]` in a return type position evaluates at type-check time when `m` and `n` are known `Kind::Nat` values. When either is unresolvable (because the caller passed a variable-length `Bytes`), the return type degrades to `Bytes` via the `[Bytes N] <: Bytes` subtyping. No new type-stage machinery is needed beyond `Kind::Nat` itself — `+` over `Nat` is just type-stage arithmetic. The `[instance [MessageStream [Channel t] t] ...]` declaration requires HKT instance head matching (matching on `App(Operator("Channel"), TypeVar("t"))` during instance resolution); this must be verified as supported or added alongside `Kind::Nat`.
+`N` is a plain `Int` value in the type stage — no `Kind::Nat` Rust enum variant is needed. `[Bytes N]` in annotation position is a type-stage function application: `Bytes` is a `TyConDef` whose body is `[fn [let n] TypeNode.SizedBytes n: n]`, applied to the integer literal `N`. Type-level arithmetic uses the existing type-stage evaluator's Int arithmetic: `[+ 32 32]` → `64` at type-check time. When `N` is unresolved (the caller passed a variable-length `Bytes`), it is an unbound `TypeNode.TypeVar`; the stuck application degrades to `TypeNode.Bytes` via the `supertype:` annotation. The `[instance [MessageStream [Channel t] t] ...]` declaration requires HKT instance head matching; this must be verified as supported or added.
 
 ### How it cleans up this whatif's signatures
 
@@ -1284,7 +1319,7 @@ UdpDatagram: [type
    respond: [Fn [Bytes] Null]]]
 ```
 
-`[decode BigEndian @[Bytes 4]: ip-bytes]` converts a `[Bytes 4]` to `[Result UInt32]` for IPv4 CIDR masking via the `ByteLabel ByteOrder UInt32 [Bytes 4]` instance. The byte order is always explicit — no implicit native-endian conversion. IPv4 and all standard internet protocols use `BigEndian` (network byte order).
+`[uint32 BigEndian ip-bytes]` converts a `[Bytes 4]` to `UInt32` for IPv4 CIDR masking. The byte order is always explicit — no implicit native-endian conversion. IPv4 and all standard internet protocols use `BigEndian` (network byte order).
 
 ### Construction and operations for `[Bytes N]`
 
@@ -1313,13 +1348,14 @@ No separate `bytes` constructor function — uppercase `[Bytes N]` is a type ann
 [instance [Indexed [Seq T] T] ...]
 ```
 
-Integer interpretation of byte sequences uses `encode`/`decode` via the `ByteLabel ByteOrder` instances. The byte order is always explicit — there is no implicit native-endian conversion, which would silently produce wrong results when tinct runs on a CPU with different endianness than the protocol expects:
+Integer ↔ bytes conversion always names the byte order explicitly — there is no way to create a multi-byte integer representation without specifying endianness. The type of the second argument to `bytes` determines the output width:
 
 ```tinct
-[decode BigEndian @[Bytes 4]: ip-bytes]    # → [Result UInt32] — IPv4 for CIDR masking
-[decode BigEndian snmp-length]             # → [Result UInt16] — SNMP PDU length field
-[decode LittleEndian ble-bytes]            # → [Result UInt32] — Bluetooth LE 32-bit value
-[encode BigEndian 443@UInt16]              # → [Bytes 2] — port in network byte order
+[uint32 BigEndian ip-bytes]               # [Bytes 4] → UInt32 — IPv4 for CIDR masking
+[uint16 BigEndian snmp-length]            # [Bytes 2] → UInt16 — SNMP PDU length field
+[uint32 LittleEndian ble-bytes]           # [Bytes 4] → UInt32 — Bluetooth LE 32-bit value
+[bytes BigEndian [@UInt16 443]]           # UInt16 → [Bytes 2] — port in network byte order
+[bytes LittleEndian nonce@UInt64]         # UInt64 → [Bytes 8] — 64-bit little-endian counter
 ```
 
 `concat` is variadic and works for all `Appendable` types — `String`, `Bytes`, `[Bytes N]`, and `[Seq T]`. No type-encoded name needed:
@@ -1329,15 +1365,15 @@ concat: [fn@[bind: [t]  return: t  constraint: [t: Appendable]] [...args@t]
   [reduce append empty args]]
 ```
 
-`[concat a b]` where both `a: [Bytes 32]` and `b: [Bytes 32]` gives `[Bytes 64]` — the type-stage evaluator propagates `Kind::Nat` arithmetic through the `append` reduction. `[concat a b c]` gives `[Bytes [+ [+ m n] k]]`. When any argument is variable-length `Bytes`, the result is `Bytes`. The same `concat` works for strings: `[concat "hello" " " "world"]` → `String`.
+`[concat a b]` where both `a: [Bytes 32]` and `b: [Bytes 32]` gives `[Bytes 64]` — the type-stage evaluator propagates ordinary Int arithmetic through the `append` reduction: `[+ 32 32]` → `64`, yielding `TypeNode.SizedBytes { n: 64 }`. `[concat a b c]` gives `[Bytes [+ [+ m n] k]]`. When any argument is variable-length `Bytes`, the result is `Bytes`. The same `concat` works for strings: `[concat "hello" " " "world"]` → `String`.
 
 ### What changes in the implementation
 
-- **Kind system**: add `Kind::Nat` — a new kind for integer literal type arguments. `Kind::Nat` does not exist today (`src/type_def.rs` has only `Kind::Type`, `Kind::Operator`, `Kind::Label`). This is a prerequisite for `[Bytes N]` and must be added in the same sprint. Type-stage arithmetic (`+`, `-`, `*` over `Kind::Nat`) plugs into the existing `NormCtxt::normalize()` infrastructure from the CHR sprint (`src/type_normalize.rs`): concrete `NatLit` values reduce immediately; unresolved `NatVar` variables produce a stuck `TypeStageApp` that is handled by `process_deferred_equalities`. When stuck, the return type of `[Bytes [+ m n]]` degrades to `Bytes` via the `SizedBytes(N) <: Bytes` subtyping rule — the same fallback already in place for other stuck `TypeStageApp` results. A new `NatVar` type variant (distinct from `TypeVar`) is needed to track kind correctly.
-- **Parser**: `[Bytes N]` in annotation position — parse `N` as a `NatLit` type argument of kind `Kind::Nat`
-- **Type checker**: `Type::SizedBytes(usize)` variant; subtype rule `SizedBytes(N) <: Bytes` (refinement); `Kind::Nat` for the `N` position in `Bytes` type application; well-formedness check that `N` is a positive integer literal
-- **Unification**: `SizedBytes(M)` unifies with `SizedBytes(N)` only if `M = N`; `SizedBytes(N)` unifies with `Bytes` (via subtyping)
-- **Instance resolution**: verify or add support for HKT instance heads — `[instance [MessageStream [Channel t] t] ...]` requires matching `App(Operator("Channel"), TypeVar("t"))` during instance lookup. If not yet supported, add alongside `Kind::Nat`.
+- **TypeNode ADT**: add `[SizedBytes@[supertype: TypeNode.Bytes  as-type: [fn [let b] b]  guarding: false]  n: Int]` to the `TypeNode` declaration in `stdlib/prelude.llt`; register `Bytes` as a `TyConDef` with `params: ["n"]` and body `[fn [let n] TypeNode.SizedBytes n: n]`; `expand_named("Bytes", [k])` produces `TypeNode.SizedBytes { n: k }` for any Int `k`; well-formedness check that `k` is a non-negative integer literal at annotation resolution time
+- **Parser**: `[Bytes N]` in annotation position — `N` is parsed as a type-stage Int expression (integer literal); no new syntax or kind annotation required
+- **Type checker**: the `supertype:` annotation on `SizedBytes` is read as a TypeNode value (`TypeNode.Bytes`) and applied generically by the subtype checker — no Rust special-case for `SizedBytes`; size inequality (`M ≠ N`) falls out of generic TypeNode structural equality on the `n` field
+- **Unification**: handled entirely by the generic TypeNode structural equality path — `SizedBytes { n: M }` vs `SizedBytes { n: N }` compares field `n` by value; `SizedBytes <: Bytes` via `supertype:` annotation
+- **Instance resolution**: verify or add support for HKT instance heads — `[instance [MessageStream [Channel t] t] ...]` requires matching `App(Operator("Channel"), TypeVar("t"))` during instance lookup.
 - **Eval/materialize**: no change — runtime representation is `Value::Bytes`; size is checked at `TypeAssert` boundaries via `is:` predicate on `bytes-length`
 - **Builtins**: update crypto primitive return type registrations; add `bytes-to-int`; add `Indexed` typeclass with `Handle`/`String`/`[Bytes N]`/`[Seq T]` instances (making `get`, `slice`, `length` work uniformly); `concat` already exists via `Appendable` — extend `Appendable` instance for `Bytes` if not present
 

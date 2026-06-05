@@ -1,0 +1,11 @@
+# T-1027: Contravariant annotation accepted by annotation_to_variance.
+# [let a@Contravariant] marks parameter `a` as contravariant — accepted by the type system.
+# The body [fn: [fn@a []]] is a named-key record annotation (no runtime constructors).
+# TypeAlias Callback entry is skipped at runtime — only result: true is present.
+# Absence of === warn asserts annotation_to_variance("Contravariant") resolves cleanly.
+[
+  Callback: [type [let a@Contravariant] [fn: [fn@a []]]]
+  result: true
+]
+=== out
+Dict({"result": Bool(true)})

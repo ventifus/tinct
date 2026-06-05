@@ -1,15 +1,15 @@
 # iterate: infinite sequence of repeated function application, take 5 elements
 [collect [take 5 [iterate [fn [x] [+ x 1]] 0]]]
 === error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:18-1:46) (called at stdlib/prelude.llt:2076:57-2076:76)
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:18-1:46) (called at stdlib/prelude.llt:2093:57-2093:76)
   in [iterate ...] at 1:18-1:46
   in [iterate ...] at 1:18-1:46
-  in [builtin-take ...] at stdlib/prelude.llt:2076:57-2076:76
+  in [builtin-take ...] at stdlib/prelude.llt:2093:57-2093:76
    |
-  2076 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+  2093 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2514:15-2514:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2531:15-2531:35
    |
-  2514 | """] [let xs] [builtin-collect xs]]
+  2531 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in [collect ...] at 1:1-1:48

@@ -19,22 +19,22 @@
 
   int->ws-frame: [fn [let opcode@Int payload@Bytes]
     [match opcode
-      1:  [Text   [bytes-str payload]]
-      2:  [Binary payload]
-      8:  [Close  [if [>= [length payload] 2]
-                    [+ [* [get payload 0] 256] [get payload 1]] 1000]
-                  [if [> [length payload] 2] [bytes-str [slice 2 [length payload] payload]] ""]]
-      9:  [Ping   payload]
-      10: [Pong   payload]
+      1:  WsFrame.Text   [bytes-str payload]
+      2:  WsFrame.Binary payload
+      8:  WsFrame.Close
+            [@UInt16 [if [>= [length payload] 2] [uint16 BigEndian [slice payload 0 2]] 1000]]
+            [if [> [length payload] 2] [bytes-str [slice payload 2 [length payload]]] ""]
+      9:  WsFrame.Ping  payload
+      10: WsFrame.Pong  payload
       _:  [error [str "WebSocket: unknown opcode: " opcode]]]]
 
   ws-frame->opcode-payload: [fn [let frame@WsFrame]
     [match frame
-      [Text s]:            [opcode: 1   payload: [str-bytes s]]
-      [Binary b]:            [opcode: 2   payload: b]
-      [Close code reason]:  [opcode: 8   payload: [concat [encode BigEndian [@UInt16 code]] [str-bytes reason]]]
-      [Ping b]:            [opcode: 9   payload: b]
-      [Pong b]:            [opcode: 10  payload: b]]]
+      [WsFrame.Text   s]:            [opcode: 1   payload: [str-bytes s]]
+      [WsFrame.Binary b]:            [opcode: 2   payload: b]
+      [WsFrame.Close  code reason]:  [opcode: 8   payload: [concat [bytes BigEndian code] [str-bytes reason]]]
+      [WsFrame.Ping   b]:            [opcode: 9   payload: b]
+      [WsFrame.Pong   b]:            [opcode: 10  payload: b]]]
 
   base64-encode: [fn [let data@Bytes] [error "TODO: base64-encode — RFC 4648 §4"]]
 ]
@@ -47,7 +47,7 @@
     [Binary data@Bytes]
     [Ping   data@Bytes]
     [Pong   data@Bytes]
-    [Close  code@Int  reason@String]]
+    [Close  code@UInt16  reason@String]]  # RFC 6455 §7.4: 16-bit status code (1000=normal, 1001=going away, ...)
 
   WebSocketConnection: [type
     [underlying:  Handle
@@ -85,8 +85,8 @@
   ws-recv-frame: [fn [let conn@WebSocketConnection]
     # Returns [Ok WsFrame] | [Closed]. EOF from underlying → [Closed].
     [match [try [read-bytes conn.underlying 1]]
-      [Err _]: [Closed]
-      [Ok b0-bytes]:
+      [Result.Error _]: Closed.Closed
+      [Result.Ok b0-bytes]:
         [h:    conn.underlying]
         [b0:   [get b0-bytes 0]]
         [b1:   [get [read-bytes h 1] 0]]
@@ -104,7 +104,7 @@
         [raw:      [read-bytes h payload-len]]
         [payload:  [if masked [bytes-xor-mask raw mask-key] raw]]
         [if [not [= [bit-and b0 0x80] 0x80]] [error "WebSocket: fragmented frames not supported"] null]
-        [Ok [int->ws-frame opcode payload]]]]
+        [Result.Ok [int->ws-frame opcode payload]]]]
 
   ws-send-frame: [fn [let conn@WebSocketConnection frame@WsFrame]
     [h:       conn.underlying]

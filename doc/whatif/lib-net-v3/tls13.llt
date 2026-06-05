@@ -16,58 +16,60 @@
 
 [
   int->ct: [fn [let n@Int]
-    [match n 20: [ChangeCipherSpec] 21: [Alert] 22: [Handshake] 23: [ApplicationData]
-                 _: [error [str "TLS: unknown content type: " n]]]]
+    [match n 20: ContentType.ChangeCipherSpec  21: ContentType.Alert
+               22: ContentType.Handshake       23: ContentType.ApplicationData
+               _:  [error [str "TLS: unknown content type: " n]]]]
 
   ct->int: [fn [let ct@ContentType]
-    [match ct [ChangeCipherSpec]: 20  [Alert]: 21  [Handshake]: 22  [ApplicationData]: 23]]
+    [match ct
+      [ContentType.ChangeCipherSpec]: 20  [ContentType.Alert]: 21
+      [ContentType.Handshake]:        22  [ContentType.ApplicationData]: 23]]
 
   read-tls-record: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
     [header: [read-bytes h 5]]
-    [len: [+ [* [get header 3] 256] [get header 4]]]
-    [if [> len 16640] [error [str "TLS: record too large: " len]] null]  # RFC 8446 §5.2: max 2^14+256
+    [len: [uint16 BigEndian [slice header 3 5]]]    # RFC 8446 §5.2: 16-bit length
+    [if [> len 16640] [error [str "TLS: record too large: " len]] null]
     [TlsRecord [content-type: [int->ct [get header 0]]  payload: [read-bytes h len]]]]
 
   write-tls-record: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h r@TlsRecord]
     [len: [length r.payload]]
     [write-bytes h
       [concat
-        [bytes [ct->int r.content-type]]
+        [bytes BigEndian [@UInt8 [ct->int r.content-type]]]
         [0x03 0x03]
-        [bytes [/ len 256]]
-        [bytes [mod len 256]]
+        [bytes BigEndian [@UInt16 len]]
         r.payload]]]
 
   tls-nonce: [fn [let iv@[Bytes 12] seq@Int]
-    [bytes-xor iv [concat [0x00 0x00 0x00 0x00] [encode BigEndian [@UInt64 seq]]]]]
+    [bytes-xor iv [concat [0x00 0x00 0x00 0x00] [bytes BigEndian [@UInt64 seq]]]]]
 
   # aad: RFC 8446 §5.2 additional data = 5-byte TLSCiphertext header.
   # Must be 0x17 0x03 0x03 || ciphertext-length(2). Passed explicitly so both
   # seal and open share the same construction and authenticate the record framing.
   tls-seal: [fn [let conn@TlsConnection plain@Bytes nonce@[Bytes 12] aad@Bytes]
     [match conn.cipher
-      [Chacha20Poly1305Sha256]: [chacha20-poly1305-seal conn.write-key nonce plain aad]
-      [Aes128GcmSha256]:        [aes-128-gcm-seal       conn.write-key nonce plain aad]
-      [Aes256GcmSha384]:        [aes-256-gcm-seal       conn.write-key nonce plain aad]]]
+      [CipherSuite.Chacha20Poly1305Sha256]: [chacha20-poly1305-seal conn.write-key nonce plain aad]
+      [CipherSuite.Aes128GcmSha256]:        [aes-128-gcm-seal       conn.write-key nonce plain aad]
+      [CipherSuite.Aes256GcmSha384]:        [aes-256-gcm-seal       conn.write-key nonce plain aad]]]
 
   tls-open: [fn [let conn@TlsConnection ct@Bytes nonce@[Bytes 12] aad@Bytes]
     [match [match conn.cipher
-      [Chacha20Poly1305Sha256]: [chacha20-poly1305-open conn.read-key nonce ct aad]
-      [Aes128GcmSha256]:        [aes-128-gcm-open       conn.read-key nonce ct aad]
-      [Aes256GcmSha384]:        [aes-256-gcm-open       conn.read-key nonce ct aad]]
-      [Ok p]:  p
-      [Err _]: [error "TLS: AEAD decryption failed"]]]
+      [CipherSuite.Chacha20Poly1305Sha256]: [chacha20-poly1305-open conn.read-key nonce ct aad]
+      [CipherSuite.Aes128GcmSha256]:        [aes-128-gcm-open       conn.read-key nonce ct aad]
+      [CipherSuite.Aes256GcmSha384]:        [aes-256-gcm-open       conn.read-key nonce ct aad]]
+      [Result.Ok p]:    p
+      [Result.Error _]: [error "TLS: AEAD decryption failed"]]]
 
   # aad = 0x17 0x03 0x03 || ciphertext-length(2).
   # Ciphertext length = inner-plaintext length + 16 (AEAD tag). Known before encrypt.
   tls-record-aad: [fn [let ct-len@Int]
-    [concat [bytes 0x17] [0x03 0x03] [encode BigEndian [@UInt16 ct-len]]]]
+    [concat [0x17] [0x03 0x03] [bytes BigEndian [@UInt16 ct-len]]]]
 
   tls-write-record: [fn [let conn@TlsConnection ct@ContentType plain@Bytes]
     # write-seq channel holds exactly one value (atomic counter). [Closed] is impossible.
     [match [recv conn.write-seq]
-      [Closed]: [error "TLS: write-seq channel closed unexpectedly"]
-      [Ok seq]:
+      [Closed.Closed]: [error "TLS: write-seq channel closed unexpectedly"]
+      [Result.Ok seq]:
         [send conn.write-seq [+ seq 1]]
         [inner:  [concat plain [bytes [ct->int ct]]]]    # inner = data || content-type byte
         [ct-len: [+ [length inner] 16]]                  # ciphertext = inner + 16-byte tag
@@ -82,8 +84,8 @@
   tls-decrypt-conn-record: [fn [let conn@TlsConnection record@TlsRecord]
     # read-seq channel holds exactly one value (atomic counter). [Closed] is impossible.
     [match [recv conn.read-seq]
-      [Closed]: [error "TLS: read-seq channel closed unexpectedly"]
-      [Ok seq]:
+      [Closed.Closed]: [error "TLS: read-seq channel closed unexpectedly"]
+      [Result.Ok seq]:
         [send conn.read-seq [+ seq 1]]
         [aad: [tls-record-aad [length record.payload]]]  # ciphertext length is payload length
         [plain: [tls-open conn record.payload [tls-nonce conn.read-iv seq] aad]]
@@ -123,10 +125,8 @@
 
   encode-hs: [fn [let type@Int body@Bytes]
     [len: [length body]]
-    [concat [bytes type]
-            [bytes [/ [/ len 256] 256]]
-            [bytes [mod [/ len 256] 256]]
-            [bytes [mod len 256]]
+    [concat [bytes BigEndian [@UInt8 type]]
+            [bytes BigEndian [@UInt24 len]]
             body]]
 
   parse-finished:    [fn [let payload@Bytes] [slice 4 32 payload]]
@@ -137,24 +137,24 @@
   parse-server-hello:[fn [let payload@Bytes] [error "TODO: parse-server-hello"]]
   parse-certificate: [fn [let payload@Bytes] [error "TODO: parse-certificate — [Seq Bytes] DER list"]]
   parse-certificate-verify-sig: [fn [let payload@Bytes] [error "TODO: parse-certificate-verify-sig"]]
-  encode-encrypted-extensions: [fn [let alpn@[or String Null]] [encode-hs 8 []]]
-  encode-certificate:          [fn [let cert@Bytes] [encode-hs 11 [concat [bytes 0] [encode BigEndian [@UInt16 [+ [length cert] 5]]] [encode BigEndian [@UInt32 [length cert]]] cert [encode BigEndian [@UInt16 0]]]]]
-  encode-certificate-verify:   [fn [let sig@Bytes]  [encode-hs 15 [concat [0x08 0x04] [encode BigEndian [@UInt16 [length sig]]] sig]]]
+  encode-encrypted-extensions: [fn [let alpn@[or String Absent]] [encode-hs 8 []]]
+  encode-certificate:          [fn [let cert@Bytes] [encode-hs 11 [concat [0x00] [bytes BigEndian [@UInt16 [+ [length cert] 5]]] [bytes BigEndian [@UInt32 [length cert]]] cert [bytes BigEndian [@UInt16 0]]]]]
+  encode-certificate-verify:   [fn [let sig@Bytes]  [encode-hs 15 [concat [0x08 0x04] [bytes BigEndian [@UInt16 [length sig]]] sig]]]
   negotiate-alpn: [fn [let client-alpn@[Seq String] server-alpn@[Seq String]]
     [match [filter [fn [let p] [any? [fn [let s] [= p s]] server-alpn]] client-alpn]
       []: null
       [let [first ...rest]]: first]]
   choose-cipher: [fn [let suites@[Seq Int] cfg@TlsServerConfig]
     # Prefer ChaCha20 → AES-256 → AES-128.
-    [if [any? [fn [let s] [= s 0x1303]] suites] [Chacha20Poly1305Sha256]
-      [if [any? [fn [let s] [= s 0x1302]] suites] [Aes256GcmSha384] [Aes128GcmSha256]]]]
+    [if [any? [fn [let s] [= s 0x1303]] suites] [CipherSuite.Chacha20Poly1305Sha256]
+      [if [any? [fn [let s] [= s 0x1302]] suites] [CipherSuite.Aes256GcmSha384] [CipherSuite.Aes128GcmSha256]]]]
 
   # RFC 8446 §7.1: key schedule hash and key/IV lengths per cipher suite.
   cipher-params: [fn [let c@CipherSuite]
     [match c
-      [Aes128GcmSha256]:        [hash: [Sha256]  key-len: 16  iv-len: 12]
-      [Aes256GcmSha384]:        [hash: [Sha384]  key-len: 32  iv-len: 12]
-      [Chacha20Poly1305Sha256]: [hash: [Sha256]  key-len: 32  iv-len: 12]]]
+      [CipherSuite.Aes128GcmSha256]:        [hash: Sha256.Sha256  key-len: 16  iv-len: 12]
+      [CipherSuite.Aes256GcmSha384]:        [hash: Sha384.Sha384  key-len: 32  iv-len: 12]
+      [CipherSuite.Chacha20Poly1305Sha256]: [hash: Sha256.Sha256  key-len: 32  iv-len: 12]]]
 
   bytes-repeat: [fn [let val@Int n@Int]
     [reduce [fn [let acc _] [concat acc [bytes val]]] [] [range 0 n]]]
@@ -172,28 +172,29 @@
      min-version: Symbol]]
 
   TlsClientConfig: [type
-    [sni:         [or String Null]    # null = infer from [Hostname h] in pending connection
+    [sni:         [or String Absent]    # null = infer from [Hostname h] in pending connection
      alpn:        [Seq String]
      ech:         Bytes
      trust-roots: [or [Seq Bytes] Symbol]]]
 
   CipherSuite: [union
-    [Aes128GcmSha256]
-    [Aes256GcmSha384]
-    [Chacha20Poly1305Sha256]]
+    [CipherSuite.Aes128GcmSha256]
+    [CipherSuite.Aes256GcmSha384]
+    [CipherSuite.Chacha20Poly1305Sha256]]
 
   # TlsConnection is parametric over its underlying ByteStream h so TLS can be stacked
   # on top of any stream (TCP Handle, WireguardConnection, NoiseConnection, etc.).
   TlsConnection: [type [h]   # h must satisfy ByteStream; enforced at instance sites
-    [underlying:  h
-     write-key:   [Bytes 32]
-     read-key:    [Bytes 32]
-     write-iv:    [Bytes 12]
-     read-iv:     [Bytes 12]
-     cipher:      CipherSuite
-     write-seq:   [Channel Int]
-     read-seq:    [Channel Int]
-     sni:         [or String Null]]]
+    [underlying:       h
+     write-key:        [Bytes 32]
+     read-key:         [Bytes 32]
+     write-iv:         [Bytes 12]
+     read-iv:          [Bytes 12]
+     cipher:           CipherSuite
+     write-seq:        [Channel Int]
+     read-seq:         [Channel Int]
+     sni:              [or String Absent]
+     negotiated-alpn:  [or String Absent]]]  # RFC 8446 §4.4: ALPN protocol selected during handshake
 
   ContentType: [union [ChangeCipherSpec] [Alert] [Handshake] [ApplicationData]]
 
@@ -207,9 +208,9 @@
 
   tls-recv-record: [fn [let conn@TlsConnection]
     [match [try [read-tls-record conn.underlying]]
-      [Ok record]: [Ok [TlsRecord [content-type: record.content-type
-                                   payload: [tls-decrypt-conn-record conn record]]]]
-      [Err _]:     [Closed]]]
+      [Result.Ok record]: [Result.Ok TlsRecord content-type: record.content-type
+                                              payload: [tls-decrypt-conn-record conn record]]
+      [Result.Error _]:   Closed.Closed]]
 
   tls-read-bytes: [fn [let conn@TlsConnection n@Int]
     [tls-read-acc conn n []]]
@@ -223,18 +224,18 @@
   # hash: the PRF hash for this cipher suite — passed from cipher-params.
   hkdf-expand-label: [fn [let secret@Bytes label@String context@Bytes len@Int hash@HkdfHash]
     [label-str: [str "tls13 " label]]
-    [info: [concat [encode BigEndian [@UInt16 len]]
-                   [bytes [length [str-bytes label-str]]] [str-bytes label-str]
-                   [bytes [length context]] context]]
+    [info: [concat [bytes BigEndian [@UInt16 len]]
+                   [bytes BigEndian [@UInt8 [length [str-bytes label-str]]]] [str-bytes label-str]
+                   [bytes BigEndian [@UInt8 [length context]]] context]]
     [hkdf-expand hash secret info len]]
 
   derive-secret: [fn [let secret@Bytes label@String transcript@Bytes hash@HkdfHash]
     # hash-fn selects the right SHA variant for the transcript hash itself.
     [transcript-hash: [match hash
-      [Sha256]: [sha256 transcript]
-      [Sha384]: [sha384 transcript]
-      [Sha512]: [sha512 transcript]
-      _:        [sha256 transcript]]]
+      [Sha256.Sha256]: [sha256 transcript]
+      [Sha384.Sha384]: [sha384 transcript]
+      [Sha512.Sha512]: [sha512 transcript]
+      _:               [sha256 transcript]]]
     [hkdf-expand-label secret label transcript-hash [length transcript-hash] hash]]
 
   # Takes cipher: CipherSuite so hash and key lengths are derived correctly per RFC 8446 §7.1.
@@ -279,7 +280,7 @@
   # downstream layers (h2, grpc, doq) set ALPN via with-alpn then fire tls-commit.
   TlsHandle: [type
     [handle:      TcpHandle
-     sni:         [or String Null]    # null = infer from handle.addr on commit
+     sni:         [or String Absent]    # null = infer from handle.addr on commit
      alpn:        [Seq String]        # set by downstream layer
      ech:         Bytes
      trust-roots: [or [Seq Bytes] Symbol]]]
@@ -300,8 +301,8 @@
   tls-commit: [fn [let th@TlsHandle]
     [sni: [or th.sni
       [match th.handle.addr
-        [Hostname h]: h
-        _: [error "tls-commit: no hostname for SNI — use [Hostname h] in connect or set sni explicitly"]]]]
+        [Hostname.Hostname h]: h
+        _: [error "tls-commit: no hostname for SNI — use [Hostname.Hostname h] in connect or set sni explicitly"]]]]
     [tls-handshake th.handle.stream
       [TlsClientConfig [sni: sni  alpn: th.alpn  ech: th.ech  trust-roots: th.trust-roots]]]]
 

@@ -1,0 +1,4 @@
+# get-in?: nested lookup returns Absent.Absent when a key is missing
+[get-in? [a: [b: 1]] ["a" "c"]]
+=== out
+Absent()

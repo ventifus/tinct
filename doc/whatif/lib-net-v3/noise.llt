@@ -36,7 +36,7 @@
                  ck: new-ck  h: state.h  k: new-k  n: 0]]]
 
   encrypt-and-hash: [fn [let state@NoiseState plaintext@Bytes]
-    [if [null? state.k]
+    [if [absent? state.k]
       [ciphertext: plaintext   new-h: [mix-hash state.h plaintext]]
       [nonce12:    [noise-nonce state.n]]
       [ciphertext: [chacha20-poly1305-seal state.k nonce12 plaintext state.h]]
@@ -44,18 +44,18 @@
     [ciphertext: ciphertext  new-h: new-h  new-n: [+ state.n 1]]]
 
   decrypt-and-hash: [fn [let state@NoiseState ciphertext@Bytes]
-    [if [null? state.k]
+    [if [absent? state.k]
       [plaintext: ciphertext  new-h: [mix-hash state.h ciphertext]  new-n: state.n]
       [nonce12:  [noise-nonce state.n]]
       [match [chacha20-poly1305-open state.k nonce12 ciphertext state.h]
-        [Ok p]:
+        [Result.Ok p]:
           [new-h: [mix-hash state.h ciphertext]]
           [plaintext: p  new-h: new-h  new-n: [+ state.n 1]]
-        [Err _]: [error "Noise: decryption failed"]]]]
+        [Result.Error _]: [error "Noise: decryption failed"]]]]
 
   # Noise spec §12: ChaCha20-Poly1305 nonce = 32 zero bits || little-endian 64-bit n.
-  noise-nonce: [fn [let n@Int]
-    [concat [0 0 0 0] [encode LittleEndian [@UInt64 n]]]]
+  noise-nonce: [fn [let n@UInt64]
+    [concat [0 0 0 0] [bytes LittleEndian n]]]  # n: UInt64
 
   # noise-split: derive send/recv keys per Noise spec §5.2 HKDF(state.ck, empty, 2).
   # Single 64-byte expand per RFC 5869: T(1)||T(2); T(2) = HMAC(PRK, T(1)||0x02).
@@ -84,18 +84,16 @@
   noise-read-acc: [fn [let conn@NoiseConnection remaining@Int acc@[Seq Bytes]]
     [if [= remaining 0]
       [reduce concat [] acc]
-      [len: [match [decode BigEndian [@[Bytes 2] [read-bytes conn.underlying 2]]]
-        [Ok n]:  n
-        [Err _]: [error "Noise: bad frame length"]]]
+      [len: [uint16 BigEndian [read-bytes conn.underlying 2]]]
       [ct: [read-bytes conn.underlying len]]
       # recv-n channel holds exactly one value (atomic counter). [Closed] is impossible.
       [match [recv conn.recv-n]
-        [Closed]: [error "Noise: recv-n channel closed unexpectedly"]
-        [Ok n]:
+        [Closed.Closed]: [error "Noise: recv-n channel closed unexpectedly"]
+        [Result.Ok n]:
           [send conn.recv-n [+ n 1]]
           [plain: [match [chacha20-poly1305-open conn.recv-key [noise-nonce n] ct []]
-            [Ok p]:  p
-            [Err _]: [error "Noise: decryption failed"]]]
+            [Result.Ok p]:    p
+            [Result.Error _]: [error "Noise: decryption failed"]]]
           [got: [min remaining [length plain]]]
           [noise-read-acc conn [- remaining got] [append [list [slice 0 got plain]] acc]]]]]]
 
@@ -123,32 +121,32 @@
     [pattern:    NoisePattern
      dh:         NoiseDh
      cipher:     NoiseCipher
-     hash:       HkdfHash           # from crypto.llt (included above)
+     hash:       HkdfHash                # from crypto.llt (included above)
      private-key:[Bytes 32]
      public-key: [Bytes 32]
-     remote-key: [or [Bytes 32] Null]
-     psk:        [or [Bytes 32] Null]   # pre-shared key for psk patterns (e.g. IKpsk2); null otherwise
+     remote-key: [or [Bytes 32] Absent]  # Absent = not required by pattern (e.g. XX)
+     psk:        [or [Bytes 32] Absent]  # Absent = non-PSK pattern; [Bytes 32] = pre-shared key
      prologue:   Bytes]]
 
   NoiseState: [type
-    [s:  [or [Bytes 32] Null]
-     e:  [or [Bytes 32] Null]
-     rs: [or [Bytes 32] Null]
-     re: [or [Bytes 32] Null]
-     ck: [Bytes 32]
-     h:  [Bytes 32]
-     k:  [or [Bytes 32] Null]
-     n:  Int]]
+    [s:  [or [Bytes 32] Absent]   # local static key pair (present after s is set)
+     e:  [or [Bytes 32] Absent]   # local ephemeral key pair
+     rs: [or [Bytes 32] Absent]   # remote static public key
+     re: [or [Bytes 32] Absent]   # remote ephemeral public key
+     ck: [Bytes 32]               # chaining key
+     h:  [Bytes 32]               # handshake hash
+     k:  [or [Bytes 32] Absent]   # cipher key; Absent = no encryption yet (before mix-key)
+     n:  UInt64]]                 # nonce counter; Noise spec §12: 64-bit little-endian
 
   # NoiseConnection is parametric over its underlying ByteStream h so Noise
   # can be stacked over any stream (Handle, TlsConnection, etc.).
-  # send-n and recv-n are separate counters — one writer per direction.
+  # send-n and recv-n are separate nonce counters — one writer per direction.
   NoiseConnection: [type [h]   # h must satisfy ByteStream; enforced at instance sites
     [underlying: h
      send-key:   [Bytes 32]
      recv-key:   [Bytes 32]
-     send-n:     [Channel Int]
-     recv-n:     [Channel Int]]]
+     send-n:     [Channel UInt64]   # 64-bit nonce counter (Noise spec §12)
+     recv-n:     [Channel UInt64]]]
 
   # Serve layer: promotes a Channel@ByteStream to Channel@NoiseConnection.
   # Lives here (not serve.llt) because it closes over NoiseConfig.
@@ -158,29 +156,29 @@
 
   noise-accept: [fn@[bind: [h]  return: [NoiseConnection h]  constraint: [h: ByteStream]] [let cfg@NoiseConfig h@h]
     [match cfg.pattern
-      [XX]:     [noise-xx-accept h cfg]
-      [IK]:     [noise-ik-accept h cfg]
-      [IKpsk2]: [noise-ik-accept h cfg]   # IKpsk2 uses the same IK acceptor; PSK injected via cfg.psk
-      [NK]:     [noise-nk-accept h cfg]
-      _:        [error "TODO: noise pattern not yet implemented"]]]
+      [NoisePattern.XX]:     [noise-xx-accept h cfg]
+      [NoisePattern.IK]:     [noise-ik-accept h cfg]
+      [NoisePattern.IKpsk2]: [noise-ik-accept h cfg]   # PSK injected via cfg.psk
+      [NoisePattern.NK]:     [noise-nk-accept h cfg]
+      _:                     [error "TODO: noise pattern not yet implemented"]]]
 
   noise: [fn@[bind: [h]  return: [NoiseConnection h]  constraint: [h: ByteStream]] [let cfg@NoiseConfig h@h]
     [match cfg.pattern
-      [XX]:     [noise-xx-connect h cfg]
-      [IK]:     [noise-ik-connect h cfg]
-      [IKpsk2]: [noise-ik-connect h cfg]   # IKpsk2 uses the same IK connector; PSK injected via cfg.psk
-      [NK]:     [noise-nk-connect h cfg]
-      _:        [error "TODO: noise pattern not yet implemented"]]]
+      [NoisePattern.XX]:     [noise-xx-connect h cfg]
+      [NoisePattern.IK]:     [noise-ik-connect h cfg]
+      [NoisePattern.IKpsk2]: [noise-ik-connect h cfg]   # PSK injected via cfg.psk
+      [NoisePattern.NK]:     [noise-nk-connect h cfg]
+      _:                     [error "TODO: noise pattern not yet implemented"]]]
 
   # Transport messages: 2-byte length prefix | ciphertext (includes 16-byte poly tag).
   noise-write: [fn [let conn@NoiseConnection data@Bytes]
     # send-n channel holds exactly one value (atomic counter). [Closed] is impossible.
     [match [recv conn.send-n]
-      [Closed]: [error "Noise: send-n channel closed unexpectedly"]
-      [Ok n]:
+      [Closed.Closed]: [error "Noise: send-n channel closed unexpectedly"]
+      [Result.Ok n]:
         [send conn.send-n [+ n 1]]
         [ct: [chacha20-poly1305-seal conn.send-key [noise-nonce n] data []]]
-        [write-bytes conn.underlying [concat [encode BigEndian [@UInt16 [length ct]]] ct]]]]
+        [write-bytes conn.underlying [concat [bytes BigEndian [@UInt16 [length ct]]] ct]]]]
 
   noise-read: [fn [let conn@NoiseConnection wanted@Int]
     [noise-read-acc conn wanted []]]

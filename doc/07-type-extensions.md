@@ -65,7 +65,7 @@ See `doc/feature/boolean-algebraic-subtyping.md` (canonical post-implementation 
 
 ## Column Constraints — `RowTail::Uniform`
 
-> **Implemented in S-842**: `RowTail` enum and `Row.tail` field are now in `src/type_def.rs`. `UNIFY-UNIFORM` is implemented in `type_unify.rs`. The annotation parser for `{_ : V}` and `{_@K : V}` syntax is deferred to S-843/S-844.
+> **Infrastructure complete (S-842/S-843)**: `RowTail` enum and `Row.tail` field are in `src/type_def.rs`. The annotation parser for `{_ : V}` and `{_@K : V}` syntax is implemented in `src/typecheck_annot.rs` (S-843). `UNIFY-UNIFORM` for the symmetric Uniform+Uniform case is implemented in `type_unify.rs`. The Empty+Uniform unification path (TypeVar-join logic described in §Unification below) currently produces a "closed row does not satisfy uniform column constraint" error — the full TypeVar-join / concrete-subtype branching is deferred to T-1024. Variance-directed subtyping for user-declared TyCons (e.g. `Tree Int <: Tree Number`) is infrastructure-complete but pending B-343 (Arc-based TyConDef pointer identity for cross-scope rejection).
 
 `RowTail::Uniform` is a deterministic constraint on the tail of a row — not a row variable. It expresses "whatever fields are present, their values have type V." This is distinct from BAS row variables (eliminated); `RowTail::Uniform` is a finite conjunction of field-type constraints that happen to be uniform.
 

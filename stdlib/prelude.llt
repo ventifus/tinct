@@ -923,6 +923,23 @@ Returns default when any intermediate key is missing. Inherently materializing: 
             [get-in-or [builtin-rest path] default [get path.0 xs]]
             default]]]
 
+get-in?: [fn@[return: Unknown  doc: """
+Nested optional lookup returning Absent.Absent if any key is missing.
+
+Example: [get-in? [a: [b: [c: 42]]] ["a" "b" "c"]] => 42
+Example: [get-in? [a: [b: 1]] ["a" "c"]] => Absent.Absent
+Example: [get-in? [] ["x"]] => Absent.Absent
+
+Note: Signature is Dict -> Path -> Any (dict-first, path-second).
+Returns Absent.Absent as soon as any key in the path is missing.
+Unlike get-in which errors on missing keys, get-in? propagates absence safely.
+"""] [let dict keys]
+  [reduce
+    [fn [let acc key]
+      [if [absent? acc] acc [get? key acc]]]
+    dict
+    keys]]
+
 pick: [fn@[return: Dict  doc: """
 Return a sub-dict containing only the specified keys.
 
@@ -1749,7 +1766,7 @@ absent?@[doc: "True if x is Absent.Absent (a missing value), false otherwise. NO
 
 maybe-map@[doc: "Map over Maybe value"]: [fn [let f ma]
   [match ma
-    [Maybe.Some a]: [Some a: [f a]]
+    [Maybe.Some a]: [Some [f a]]
     [Maybe.None]:   None]]
 
 # Functor instance for Maybe type
@@ -2631,18 +2648,32 @@ Note: Returns a new Dict with elements sorted, keys reindexed from 0. Uses natur
 # ============================================================================
 
 gensym: [fn@[return: String  doc: """
-Generate a unique symbol name with the standard ℊ scope.
-
-Args:
-  prefix: String — Label embedded in the name (default: "gensym")
+Generate a unique symbol name with the standard ℊ scope and the default "gensym" prefix.
 
 Examples:
-  [gensym]        => "ℊꜱʏᴍ⧼gensym⧽0"
-  [gensym "foo"]  => "ℊꜱʏᴍ⧼foo⧽1"
+  [gensym]  => "ℊꜱʏᴍ⧼gensym⧽0"
+  [gensym]  => "ℊꜱʏᴍ⧼gensym⧽1"
 
 Scope ℊ (U+210A) marks user-facing gensyms. The counter is global and shared with
 all internal call sites. Each call produces a globally unique identifier.
-"""] [let prefix: "gensym"]
+
+For a custom prefix, use gensym-with-prefix instead.
+"""] [let]
+  [builtin-gensym "ℊ" "gensym"]]
+
+gensym-with-prefix: [fn@[return: String  doc: """
+Generate a unique symbol name with the standard ℊ scope and a custom prefix.
+
+Args:
+  prefix: String — Label embedded in the name
+
+Examples:
+  [gensym-with-prefix "foo"]      => "ℊꜱʏᴍ⧼foo⧽0"
+  [gensym-with-prefix "do-infer"] => "ℊꜱʏᴍ⧼do-infer⧽1"
+
+Scope ℊ (U+210A) marks user-facing gensyms. The counter is global and shared with
+all internal call sites. Each call produces a globally unique identifier.
+"""] [let prefix@String]
   [builtin-gensym "ℊ" prefix]]
 
 gensym-with-scope: [fn@[return: String  doc: """
@@ -3536,7 +3567,7 @@ do-fold: [fn [let monad-ast steps]
 # Returns: [ℊꜱʏᴍ⧼do-infer⧽N.bind step0 [fn [name] [ℊꜱʏᴍ⧼do-infer⧽N.bind step1 [...]]]] or
 #          [ℊꜱʏᴍ⧼do-infer⧽N.bind step0 [fn [name] last-step]] for a 2-step do block.
 do-desugar-inferred: [fn [let steps]
-  [sentinel: [do-var-node [gensym "do-infer"]]]
+  [sentinel: [do-var-node [gensym-with-prefix "do-infer"]]]
   [do-fold sentinel steps]]
 
 # ============================================================================

@@ -1,0 +1,12 @@
+# T-1026: Two sibling dicts each containing an identity function have independent TypeVars.
+# dict1.f and dict2.f have separate fresh TypeVar instantiations — unifying one does
+# not constrain the other. This is a basic acceptance test verifying that two [fn [let x] x]
+# bindings in sibling dicts are not accidentally merged into the same TypeVar.
+# Absence of === warn asserts both definitions type-check cleanly with zero warnings.
+[
+  dict1: [f: [fn [let x] x]]
+  dict2: [f: [fn [let y] y]]
+  result: true
+]
+=== out
+Dict({"dict1": Dict({"f": Function(x)}), "dict2": Dict({"f": Function(y)}), "result": Bool(true)})

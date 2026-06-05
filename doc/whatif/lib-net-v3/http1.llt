@@ -136,10 +136,10 @@
   http1-conn: [fn [let h@Handle out@[Channel RawRequest]]
     [let step [fn []
       [match [try [parse-request h [fn [let resp] [write-response h resp]]]]
-        [Ok req]:
+        [Result.Ok req]:
           [send out req]
           [if [= [get? req.headers "connection"] "close"] [] [step]]
-        [Err _]: []]]]
+        [Result.Error _]: []]]]
     [step]]
 
   http1-request: [fn@[bind: [h]  constraint: [h: ByteStream]]

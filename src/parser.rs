@@ -4917,10 +4917,17 @@ fn surface_node_to_pattern_with_guard(
             } else if name.chars().next().is_some_and(|c| c.is_lowercase()) {
                 Pattern::Variable(name.clone())
             } else if name.chars().next().is_some_and(|c| c.is_uppercase()) {
-                // Bare uppercase annotated name in pattern position: produce unqualified Constructor.
-                // The type checker's elaboration pass qualifies the tag for type narrowing only
-                // (typecheck_match.rs); the evaluator uses the unqualified tag until T-968/S-850
-                // wires elaboration results through.
+                // B-334: Annotated uppercase names in pattern position (e.g., `Int@[is: pred]:`)
+                // produce Pattern::Constructor (NOT Pattern::TypeTag). This is intentional post-S-845:
+                // type-based dispatch is handled by Pattern::TypeAssert (produced from TypeAssertPending
+                // via elaboration in typecheck_match.rs), not by TypeTag patterns. An annotated
+                // uppercase name like `Int@[is: positive?]:` should produce Constructor("Int") with a
+                // guard from the `is:` annotation, not a type narrowing pattern. If the annotation
+                // contains only `is:`, it is extracted as a guard expression. If the annotation contains
+                // type information (e.g., `@Int`), that is handled by the TypeAssertPending path
+                // (SurfaceExpression::Annotated with lowercase name → TypeAssertPending; uppercase →
+                // Constructor with guard). The type checker's elaboration pass qualifies the tag for
+                // nominal ADT matching via typecheck_match.rs::elaborate_pattern.
                 Pattern::Constructor {
                     tag: name.clone(),
                     binding: None,

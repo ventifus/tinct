@@ -16,8 +16,8 @@
       [dg:    [recv sock]]
       [dcid:  [quic-extract-dcid dg.data]]
       [match [recv conns-ch]
-        [Closed]: []
-        [Ok table]:
+        [Closed.Closed]: []
+        [Result.Ok table]:
           [if [get? table dcid]
             # Existing connection — deliver datagram to its handler task.
             [[send [get table dcid] dg]
@@ -73,17 +73,20 @@
   # quic creates it (sni inferred, ALPN open); h3/doq/etc add ALPN via with-alpn then quic-commit.
   QuicHandle: [type
     [pending:     [or ConnectedUdp UdpSocket]
-     sni:         [or String Null]    # null = infer from [Hostname h] in peer address
+     sni:         [or String Absent]   # Absent = infer from [Hostname h] in peer address
      alpn:        [Seq String]        # set by downstream layer
      ech:         Bytes
      trust-roots: [or [Seq Bytes] Symbol]]]
 
   QuicPacketType: [union [Initial] [ZeroRTT] [Handshake] [Retry] [OneRTT]]
 
+  # RFC 9000 §3.2: each ACK range is a (gap, range) pair — two distinct semantics in one slot.
+  AckRange: [type [gap: Int  range: Int]]
+
   QuicFrame: [union
     [Padding       length@Int]
     [Ping]
-    [Ack           largest@Int  delay@Int  ranges@[Seq Int]]
+    [Ack           largest@Int  delay@Int  ranges@[Seq AckRange]]
     [ResetStream   id@Int  error@Int  final-size@Int]
     [StopSending   id@Int  error@Int]
     [Crypto        offset@Int  data@Bytes]
@@ -104,7 +107,7 @@
   QuicLossState: [type
     [largest-acked: Int
      sent-packets:  [Map Int QuicSentPacket]
-     loss-time:     [or Duration Null]
+     loss-time:     [or Duration Absent]   # Absent = no loss timer running
      pto-count:     Int]]
 
   QuicSentPacket: [type
@@ -116,7 +119,7 @@
   QuicFlowState: [type
     [send-window:     Int
      recv-window:     Int
-     send-blocked-at: [or Int Null]]]
+     send-blocked-at: [or Int Absent]]]  # Absent = not currently blocked
 
   QuicStream: [type
     [id:       Int
@@ -134,9 +137,9 @@
      pn-initial:    [Channel Int]
      pn-handshake:  [Channel Int]
      pn-app:        [Channel Int]
-     initial-keys:  [or QuicKeys Null]
-     handshake-keys:[or QuicKeys Null]
-     app-keys:      [or QuicKeys Null]
+     initial-keys:  [or QuicKeys Absent]    # Absent = not yet derived
+     handshake-keys:[or QuicKeys Absent]    # Absent = not yet derived
+     app-keys:      [or QuicKeys Absent]    # Absent = not yet derived
      loss-state:    QuicLossState
      flow:          QuicFlowState]]
 
@@ -148,7 +151,7 @@
           [let sock@d]
     [QuicHandle
       [pending: sock
-       sni:     null          # infer from [Hostname h] in sock peer
+       sni:     Absent.Absent  # infer from [Hostname h] in sock peer
        alpn:    []            # set by downstream layer (h3, doq, etc.)
        ech:     []
        trust-roots: SystemRoots]]]

@@ -17,7 +17,7 @@
 # ... all ~38 WHATWG encodings backed by encoding_rs
 
 [instance [TextCodec UTF8]
-  encode:       [fn [let _ s@String] [Ok [builtin-utf8-encode s]]]
+  encode:       [fn [let _ s@String] [Result.Ok [builtin-utf8-encode s]]]
   decode:       [fn [let _ b@Bytes]  [builtin-utf8-decode b]]
   decode-lossy: [fn [let _ b@Bytes]  [builtin-utf8-decode-lossy b]]
   codec-name:   [fn [let _] "utf-8"]]
@@ -73,8 +73,8 @@
   encoding-for-name: [fn [let name@String]
     [internal: [builtin-encoding-for-name [lower name]]]
     [if [null? internal]
-      [Err [str "Unknown charset: " name]]
-      [Ok [TextEncoding
+      [Result.Error [str "Unknown charset: " name]]
+      [Result.Ok [TextEncoding
         [name:         internal
          encode:       [fn [let s] [builtin-encoding-encode internal s]]
          decode:       [fn [let b] [builtin-encoding-decode internal b]]
@@ -82,8 +82,8 @@
 
   text-encode: [fn@[bind: [c]  return: TextBytes  constraint: [c: TextCodec]] [let c@c s@String]
     [match [encode c s]
-      [Ok b]:  [TextBytes [data: b  encoding: [to-encoding c]]]
-      [Err e]: [error e]]]
+      [Result.Ok b]:    [TextBytes [data: b  encoding: [to-encoding c]]]
+      [Result.Error e]: [error e]]]
 
   text-decode: [fn [let tb@TextBytes] [tb.encoding.decode tb.data]]
 
@@ -100,6 +100,6 @@
     [cs: [extract-charset content-type]]   # bare String or null
     [enc: [if [null? cs]
       [to-encoding UTF8]
-      [match [encoding-for-name cs] [Ok e]: e [Err _]: [to-encoding UTF8]]]]
+      [match [encoding-for-name cs] [Result.Ok e]: e [Result.Error _]: [to-encoding UTF8]]]]
     [enc.decode-lossy body]]
 ]

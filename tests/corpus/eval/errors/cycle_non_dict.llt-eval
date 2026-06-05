@@ -1,13 +1,13 @@
 # cycle: error when called with non-Dict argument
 [cycle 42]
 === error
-[E010] cycle: expected Dict, got Int (defined at stdlib/prelude.llt:2542:15-2542:33)
-  --> stdlib/prelude.llt:2542:15-2542:33
+[E010] cycle: expected Dict, got Int (defined at stdlib/prelude.llt:2559:15-2559:33)
+  --> stdlib/prelude.llt:2559:15-2559:33
    |
-  2542 | """] [let xs] [builtin-cycle xs]]
+  2559 | """] [let xs] [builtin-cycle xs]]
        |               ^^^^^^^^^^^^^^^^^^
-  in [builtin-cycle ...] at stdlib/prelude.llt:2542:15-2542:33
+  in [builtin-cycle ...] at stdlib/prelude.llt:2559:15-2559:33
    |
-  2542 | """] [let xs] [builtin-cycle xs]]
+  2559 | """] [let xs] [builtin-cycle xs]]
        |               ^^^^^^^^^^^^^^^^^^
   in [cycle ...] at 1:1-1:11

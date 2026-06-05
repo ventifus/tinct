@@ -11,6 +11,29 @@
 # Defined here — not in tls.llt — because they are crypto primitives, not TLS-specific.
 [type [Sha256]] [type [Sha384]] [type [Sha512]] [type [Blake2s]]
 
+# AsnValue: recursive DER/BER type tree. Declared before the internal dict so der-parse-one
+# can construct AsnValue.* values. Re-exported under the same name in the Public API dict.
+# (camelCase private name avoided here — asnValue.AsnSeq would be confusing; instead we
+# declare it early at file scope so the internal dict can reference it directly.)
+#
+# Note: runtime tags will be "asnValue.*" if a camelCase alias is used; here we declare
+# with the canonical name directly at file scope. The internal dict can reference AsnValue
+# because this expression is evaluated before the internal dict.
+[
+  asnValue: [union
+    [AsnBool     Bool]
+    [AsnInt      Bytes]
+    [AsnBitStr   Bytes]
+    [AsnOctetStr Bytes]
+    [AsnNull]
+    [AsnOid      [Seq Int]]
+    [AsnStr      String]
+    [AsnSeq      [Seq asnValue]]   # recursive — letrec within this dict handles it
+    [AsnSet      [Seq asnValue]]
+    [AsnTime     String]
+    [AsnRaw      tag@Int  data@Bytes]]
+]
+
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
@@ -36,24 +59,24 @@
         # Then: sequence/set — bind children via immediately-invoked lambda (single if-arg).
         [[fn [let children]
            [match tag-num
-             16: [AsnSeq children]
-             17: [AsnSet children]
-             _:  [AsnSeq children]]]   # context-constructed treated as sequence
+             16: asnValue.AsnSeq children
+             17: asnValue.AsnSet children
+             _:  asnValue.AsnSeq children]]   # context-constructed treated as sequence
          [der-parse-seq raw 0 []]]
         # Else: primitive tag dispatch.
         [match tag-num
-          1:  [AsnBool [not [= [get raw 0] 0]]]
-          2:  [AsnInt raw]
-          3:  [AsnBitStr raw]
-          4:  [AsnOctetStr raw]
-          5:  [AsnNull]
-          6:  [AsnOid [decode-oid raw]]
-          12: [AsnStr [bytes-str raw]]
-          19: [AsnStr [bytes-str raw]]
-          22: [AsnStr [bytes-str raw]]
-          23: [AsnTime [bytes-str raw]]
-          24: [AsnTime [bytes-str raw]]
-          _:  [AsnRaw tag-num raw]]]]
+          1:  [asnValue.AsnBool  [not [= [get raw 0] 0]]]
+          2:  [asnValue.AsnInt   raw]
+          3:  [asnValue.AsnBitStr raw]
+          4:  [asnValue.AsnOctetStr raw]
+          5:  asnValue.AsnNull
+          6:  [asnValue.AsnOid  [decode-oid raw]]
+          12: [asnValue.AsnStr  [bytes-str raw]]
+          19: [asnValue.AsnStr  [bytes-str raw]]
+          22: [asnValue.AsnStr  [bytes-str raw]]
+          23: [asnValue.AsnTime [bytes-str raw]]
+          24: [asnValue.AsnTime [bytes-str raw]]
+          _:  [asnValue.AsnRaw  tag-num raw]]]]
     [value: value  next: [+ len-result.value-offset len-result.len]]]
 
   der-parse-seq: [fn [let b@Bytes offset@Int acc@[Seq AsnValue]]
@@ -103,8 +126,8 @@
 
   root-trusted?: [fn [let cert-der@Bytes trust-roots@[or [Seq Bytes] Symbol]]
     [match trust-roots
-      [SystemRoots _]:      [builtin-verify-cert-trusted cert-der]
-      [let roots@[Seq Bytes]]:  [any? [fn [let root] [cert-signed-by? cert-der root]] roots]]]
+      [Symbol.SystemRoots]: [builtin-verify-cert-trusted cert-der]
+      [let roots@[Seq Bytes]]: [any? [fn [let root] [cert-signed-by? cert-der root]] roots]]]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
@@ -114,18 +137,8 @@
   # The four [type [X]] top-level declarations above define Sha256/Sha384/Sha512/Blake2s.
   HkdfHash: [union [Sha256] [Sha384] [Sha512] [Blake2s]]
 
-  AsnValue: [union
-    [AsnBool    Bool]
-    [AsnInt     Bytes]
-    [AsnBitStr  Bytes]
-    [AsnOctetStr Bytes]
-    [AsnNull]
-    [AsnOid     [Seq Int]]
-    [AsnStr     String]
-    [AsnSeq     [Seq AsnValue]]
-    [AsnSet     [Seq AsnValue]]
-    [AsnTime    String]
-    [AsnRaw     tag@Int  data@Bytes]]
+  # Re-export AsnValue (declared before the internal dict as `asnValue`).
+  AsnValue: asnValue
 
   parse-cert: [fn [let der@Bytes]
     [result: [der-parse-one der 0]]

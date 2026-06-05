@@ -1,0 +1,9 @@
+# B-334: Post-S-845 annotated uppercase patterns → Pattern::Constructor (not TypeTag).
+# TypeAssert handles type-based dispatch; Constructor handles ADT matching.
+# This test documents the current behavior: annotated patterns work with ADT constructors.
+[
+  Maybe: [type [Some value: Int] [None]]
+  result: [Some value: 42]
+]
+=== out
+Dict({"Some": Function(payload), "None": Variant(Maybe.None, Null), "result": Variant(Maybe.Some, Dict({"value": Int(42)}))})

@@ -10,42 +10,36 @@
 [
   int->h2-frame-type: [fn [let n@Int]
     [match n
-      0: [H2Data]  1: [H2Headers]    2: [H2Priority]  3: [H2RstStream]
-      4: [H2Settings]  5: [H2PushPromise]  6: [H2Ping]  7: [H2Goaway]
-      8: [H2WindowUpdate]  9: [H2Continuation]
+      0: H2FrameType.H2Data    1: H2FrameType.H2Headers    2: H2FrameType.H2Priority
+      3: H2FrameType.H2RstStream  4: H2FrameType.H2Settings  5: H2FrameType.H2PushPromise
+      6: H2FrameType.H2Ping   7: H2FrameType.H2Goaway
+      8: H2FrameType.H2WindowUpdate  9: H2FrameType.H2Continuation
       _: [error [str "HTTP/2: unknown frame type: " n]]]]
 
   h2-frame-type->int: [fn [let t@H2FrameType]
     [match t
-      [H2Data]: 0  [H2Headers]: 1  [H2Priority]: 2  [H2RstStream]: 3
-      [H2Settings]: 4  [H2PushPromise]: 5  [H2Ping]: 6  [H2Goaway]: 7
-      [H2WindowUpdate]: 8  [H2Continuation]: 9]]
+      [H2FrameType.H2Data]: 0      [H2FrameType.H2Headers]: 1   [H2FrameType.H2Priority]: 2
+      [H2FrameType.H2RstStream]: 3 [H2FrameType.H2Settings]: 4  [H2FrameType.H2PushPromise]: 5
+      [H2FrameType.H2Ping]: 6      [H2FrameType.H2Goaway]: 7
+      [H2FrameType.H2WindowUpdate]: 8  [H2FrameType.H2Continuation]: 9]]
 
   read-h2-frame: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
     [header:  [read-bytes h 9]]
-    [len:     [+ [+ [* [get header 0] 65536] [* [get header 1] 256]] [get header 2]]]
-    [sid:     [bit-and [+ [+ [+ [* [get header 5] 16777216]
-                               [* [get header 6] 65536]]
-                            [* [get header 7] 256]]
-                         [get header 8]]
-                0x7FFFFFFF]]
-    [H2Frame [type: [int->h2-frame-type [get header 3]]
-              flags: [get header 4]  stream-id: sid
-              payload: [read-bytes h len]]]]
+    [len:     [uint24 BigEndian [slice header 0 3]]]     # RFC 7540 §4.1: 24-bit frame length
+    [sid:     [bit-and [uint32 BigEndian [slice header 5 9]] 0x7FFFFFFF]]  # 31-bit stream id
+    [H2Frame [type:      [int->h2-frame-type [get header 3]]
+              flags:     [@UInt8 [get header 4]]
+              stream-id: sid
+              payload:   [read-bytes h len]]]]
 
   write-h2-frame: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h frame@H2Frame]
-    [len: [length frame.payload]]
+    [len: [@UInt24 [length frame.payload]]]
     [write-bytes h
       [concat
-        [bytes [/ [/ len 256] 256]]
-        [bytes [mod [/ len 256] 256]]
-        [bytes [mod len 256]]
-        [bytes [h2-frame-type->int frame.type]]
-        [bytes frame.flags]
-        [bytes [/ frame.stream-id 16777216]]           # byte 0: sid >> 24
-        [bytes [mod [/ frame.stream-id 65536] 256]]    # byte 1: (sid >> 16) & 0xFF
-        [bytes [mod [/ frame.stream-id 256]   256]]    # byte 2: (sid >> 8)  & 0xFF
-        [bytes [mod frame.stream-id 256]]              # byte 3:  sid        & 0xFF
+        [bytes BigEndian len]                                        # 24-bit frame length
+        [bytes BigEndian [@UInt8 [h2-frame-type->int frame.type]]]
+        [bytes BigEndian frame.flags]                                # UInt8
+        [bytes BigEndian [@UInt32 [bit-and frame.stream-id 0x7FFFFFFF]]]  # 31-bit stream id
         frame.payload]]]
 
   # HPACK static table (RFC 7541 Appendix A) — 61 entries, indexed 1–61.
@@ -101,14 +95,17 @@
 
   H2Frame: [type
     [type:      H2FrameType
-     flags:     Int
-     stream-id: Int
+     flags:     UInt8             # RFC 7540 §3.3: 8-bit flags field
+     stream-id: Int               # RFC 7540: 31-bit unsigned (high bit reserved); 0 = connection-level
      payload:   Bytes]]
 
+  # RFC 7541: each HPACK table entry is a (name, value) header field.
+  HpackEntry: [type [name: String  value: [or String Absent]]]  # Absent for name-only static entries
+
   HpackTable: [type
-    [entries:  [Seq [Seq [or String Null]]]   # [name value] pairs; value null for name-only static entries
-     size:     Int
-     max-size: Int]]
+    [entries:  [Seq HpackEntry]
+     size:     Int                # current dynamic table size in octets (RFC 7541 §4.1)
+     max-size: Int]]              # SETTINGS_HEADER_TABLE_SIZE (default 4096)
 
   H2Stream: [type
     [id:         Int
@@ -116,15 +113,24 @@
      recv-ch:    [Channel Bytes]
      headers-ch: [Channel [Map String String]]]]
 
+  # RFC 7540 §6.5 SETTINGS parameters — a record of typed optional fields, not a map.
+  Http2Settings: [type
+    [header-table-size:      [or UInt32 Absent]   # SETTINGS_HEADER_TABLE_SIZE (default 4096)
+     enable-push:            [or Bool Absent]       # SETTINGS_ENABLE_PUSH (default true)
+     max-concurrent-streams: [or UInt32 Absent]    # SETTINGS_MAX_CONCURRENT_STREAMS (default unlimited)
+     initial-window-size:    [or UInt32 Absent]    # SETTINGS_INITIAL_WINDOW_SIZE (default 65535; max 2^31-1)
+     max-frame-size:         [or UInt32 Absent]    # SETTINGS_MAX_FRAME_SIZE (default 16384; range 2^14–2^24-1)
+     max-header-list-size:   [or UInt32 Absent]]]  # SETTINGS_MAX_HEADER_LIST_SIZE (default unlimited)
+
   Http2Connection: [type
     [handle:      Handle
-     substreams:     [Map Int H2Stream]
+     substreams:  [Map Int H2Stream]
      hpack-send:  HpackTable
      hpack-recv:  HpackTable
      next-stream: [Channel Int]
      send-window: [Channel Int]
      recv-window: [Channel Int]
-     settings:    [Map String Int]]]
+     settings:    Http2Settings]]
 
   hpack-decode: [fn [let table@HpackTable data@Bytes]
     [error "TODO: hpack-decode — integer decoding (RFC 7541 §5.1), Huffman decoding (§5.2), indexed/literal field representations (§6)"]]

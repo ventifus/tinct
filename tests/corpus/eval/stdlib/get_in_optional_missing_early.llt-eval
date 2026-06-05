@@ -1,0 +1,4 @@
+# get-in?: returns Absent.Absent on first missing key, skipping remaining key lookups
+[get-in? [] ["x" "y" "z"]]
+=== out
+Absent()

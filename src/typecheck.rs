@@ -214,6 +214,18 @@ pub fn typecheck_surface_program_with_env(
     // Seed with prelude instances so constraint checking works for dynamically registered classes.
     crate::imports::seed_infer_state_from_prelude_cache(&mut state);
 
+    // B-345: Seed state.tycon_env from the parent TypeEnv so that [type ...] declarations
+    // registered in previous type-check passes (e.g., earlier REPL turns) are visible
+    // to the type checker for exhaustiveness checking, subtype checking, and variance-directed
+    // subtyping in the current pass.
+    {
+        let mut inherited_tycon_defs = HashMap::new();
+        env.collect_all_tycon_defs(&mut inherited_tycon_defs);
+        for (name, def) in inherited_tycon_defs {
+            state.tycon_env.entry(name).or_insert(def);
+        }
+    }
+
     state.in_prelude_load = in_prelude_load;
 
     if enable_scheme_map {
@@ -900,6 +912,54 @@ pub(crate) fn extract_constructors_from_type(ty: &Type, type_name: &str) -> Vec<
     }
 }
 
+/// Build a constructor type from a NominalVariant present in a type alias body.
+///
+/// For each NominalVariant found in `alias_ty`:
+/// - **Unit constructor** (no fields): the constructor IS the variant value, so the type
+///   is `NominalVariant { tag: tag, fields: empty }` — a value, not a function (tag is the
+///   unqualified form, e.g., "Ok" not "Result.Ok"; the qualified form is only the map key).
+/// - **Field constructor** (has fields): the constructor is a named-argument function.
+///   The type is `Function { params: [(Some(field_name), field_type), ...], ret: NominalVariant }`.
+///   Fields are sorted by name for deterministic output (HashMap is unordered).
+///
+/// Returns a `Vec<(qualified_tag, Type)>` for each constructor found in the alias body.
+pub(crate) fn extract_constructor_types(alias_ty: &Type, type_name: &str) -> Vec<(String, Type)> {
+    match alias_ty {
+        Type::NominalVariant { tag, fields } => {
+            let qualified_tag = format!("{}.{}", type_name, tag);
+            // Build the return type: the full NominalVariant with tag and fields.
+            let ret_ty = Type::NominalVariant {
+                tag: tag.clone(),
+                fields: fields.clone(),
+            };
+            let ctor_ty = if fields.fields.is_empty() {
+                // Unit constructor: the value IS the variant (no parameters needed).
+                ret_ty
+            } else {
+                // Field constructor: a function that takes named arguments.
+                // Sort fields by name for deterministic parameter order.
+                let mut sorted_fields: Vec<(&String, &Type)> = fields.fields.iter().collect();
+                sorted_fields.sort_by_key(|(name, _)| name.as_str());
+                let params: Vec<(Option<String>, Type)> = sorted_fields
+                    .into_iter()
+                    .map(|(field_name, field_ty)| (Some(field_name.clone()), field_ty.clone()))
+                    .collect();
+                Type::Function {
+                    params,
+                    ret: Box::new(ret_ty),
+                    variadic: false,
+                }
+            };
+            vec![(qualified_tag, ctor_ty)]
+        }
+        Type::Union(members) => members
+            .iter()
+            .flat_map(|m| extract_constructor_types(m, type_name))
+            .collect(),
+        _ => vec![],
+    }
+}
+
 fn register_type_aliases(
     node: &Arc<SurfaceNode>,
     target_env: &mut TypeEnv,
@@ -1146,13 +1206,39 @@ fn register_type_aliases(
                     target_env.insert_tycon_def(name.clone(), tycon_def.clone());
                     state.tycon_env.insert(name.clone(), tycon_def);
 
-                    // B-340: Register each constructor name as a binding in the type environment.
+                    // T-1048: Register each constructor name with a precise type.
                     // Constructors are injected at desugar time (inject_adt_constructors_expr) but
                     // the type checker doesn't see them, causing "undefined variable" warnings.
-                    // For now, bind each constructor to Unknown to suppress the warnings; proper
-                    // constructor typing (Fn@ResultType [FieldTypes...]) is future work.
-                    for (qualified_tag, _arity) in &constructors {
-                        target_env.insert(qualified_tag.clone(), Type::Unknown);
+                    // Unit constructors (no fields): type is the NominalVariant value itself.
+                    // Field constructors: type is Function{params: [(field_name, field_ty), ...], ret: NominalVariant}.
+                    // Both qualified ("Result.Ok") and unqualified ("Ok") forms are registered:
+                    // the desugar pass injects bare constructor names as runtime bindings, so the
+                    // type checker must see the unqualified name to suppress "undefined variable" warnings.
+                    //
+                    // B-351: Constructor types must be registered as properly quantified TypeSchemes
+                    // (not TypeScheme::mono) so that instantiate_scheme freshens the TypeVars on each
+                    // call site. remapped_params contains the fresh TypeVar names (e.g., "_t0", "_t1")
+                    // that alias_ann_map assigned to this alias's type parameters and that are baked
+                    // into ctor_ty. With an empty type_vars list, two calls like [Ok value: 42] and
+                    // [Ok value: "hello"] would share the same _t0 and spuriously unify Int with Str.
+                    for (qualified_tag, ctor_ty) in extract_constructor_types(&alias_ty, &name) {
+                        let scheme = TypeScheme {
+                            type_vars: remapped_params.clone(),
+                            constraints: vec![],
+                            body: ctor_ty,
+                            label_vars: vec![],
+                            kind_vars: vec![],
+                            doc: None,
+                            inner_schemes: None,
+                        };
+                        // Unqualified form (e.g., "Ok"): inserted first so the qualified form can
+                        // override it if a name collision occurs (qualified takes precedence).
+                        if let Some(dot_pos) = qualified_tag.rfind('.') {
+                            let unqualified = qualified_tag[dot_pos + 1..].to_string();
+                            target_env.insert_scheme(unqualified, scheme.clone());
+                        }
+                        // Qualified form (e.g., "Result.Ok"): for dot-access uses in type checker.
+                        target_env.insert_scheme(qualified_tag, scheme);
                     }
                 }
                 Err(e) => errors.push(e),
@@ -1582,10 +1668,10 @@ pub(crate) fn infer_surface_expr(
                             let ret = ret.clone();
 
                             let total_supplied = args.len() + named_args.len();
-                            // TODO(B-333): Default-valued params (e.g., `[fn [let prefix: "gensym"] ...]`)
-                            // should be optional in arity checking. Currently calling with 0 args produces
-                            // arity mismatch error. Need to track which params have defaults and reduce
-                            // min_required accordingly.
+                            // Default-valued params: B-333 workaround was to rewrite gensym as 0-arg
+                            // (B-348, S-855). The arity checker still treats all non-variadic params as
+                            // required. If default-valued params appear in future code, arity mismatch
+                            // will fire — fix requires tracking default-value presence in Function type.
                             let min_required = if variadic && !params.is_empty() {
                                 params.len() - 1
                             } else {

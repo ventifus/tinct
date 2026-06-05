@@ -1,7 +1,17 @@
 # Test: maybe-map on Some value
-[maybe-map [fn [x] [+ x 1]] [Some 42]]
+#
+# Previously broken (B-335): The test used `[fn [x] ...]` (old-style params
+# without [let]), which the runtime interprets as an extra argument — causing
+# a spurious "expected 2 arguments, got 3" arity mismatch on maybe-map.
+#
+# Additionally, the maybe-map body had `[Some a: [f a]]` (named-arg syntax)
+# instead of `[Some [f a]]` (positional). Both bugs are fixed in S-855.
+#
+# Remaining known issue: FunctorMaybe.fmap dispatch via the Functor typeclass
+# instance is unavailable because class/instance declarations do not yet export
+# instance dicts into the prelude stdlib env. Direct calls to maybe-map work.
+# MonadMaybe is also not seeded in the type env (separate issue from the arity bug).
+[maybe-map [fn [let x] [+ x 1]] [Some 42]]
 
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-1:39)
-  in [maybe-map ...] at 1:1-1:39
-  in [maybe-map ...] at 1:1-1:39
+=== out
+Variant(Maybe.Some, Int(43))

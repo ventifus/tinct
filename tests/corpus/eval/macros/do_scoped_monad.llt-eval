@@ -1,0 +1,11 @@
+# T-1025: [do result ...] with explicit scoped Monad instance (result monad dict).
+# Desugars to [result.bind [Ok 1] [fn [x] [Ok [+ x 1]]]] = [and-then [fn [x] [Ok [+ x 1]]] [Ok 1]]
+# → applies f to 1 → [Ok 2] = Variant(Result.Ok, Int(2)).
+# result monad dict defined in prelude: bind: [fn [let r f] [and-then f r]], pure: Ok.
+[do result [x: [Ok 1]] [Ok [+ x 1]]]
+=== out
+Variant(Result.Ok, Int(2))
+
+=== warn
+undefined variable: Ok at 4:17-4:19
+undefined variable: Ok at 4:25-4:27
