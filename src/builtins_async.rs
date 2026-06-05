@@ -526,9 +526,9 @@ pub(crate) fn builtin_send(
 
 /// `recv`: Receive a value from a channel.
 ///
-/// Signature: `Channel@T → [Ok T] | [Closed]`
+/// Signature: `Channel@T → [Result.Ok T] | [Closed]`
 ///
-/// Suspends until a value is available. Returns `[Ok v]` on success, `[Closed]` if the
+/// Suspends until a value is available. Returns `[Result.Ok v]` on success, `[Closed]` if the
 /// channel is closed (sender dropped). Context cancellation still raises an exception.
 pub(crate) fn builtin_recv(
     ctx_arg: BuiltinArgs,
@@ -559,7 +559,7 @@ pub(crate) fn builtin_recv(
                     }
                 };
 
-                // Return [Ok v] or [Closed]
+                // Return [Result.Ok v] or [Closed]
                 match result {
                     Some(value) => {
                         let value_thunk =
@@ -567,7 +567,7 @@ pub(crate) fn builtin_recv(
                         let value_thunk_id = ctx.alloc_thunk(value_thunk);
                         ok_val(
                             Value::Variant {
-                                tag: "Ok".to_string(),
+                                tag: "Result.Ok".to_string(),
                                 payload: Some(value_thunk_id),
                             },
                             call_span,
@@ -600,7 +600,7 @@ pub(crate) fn builtin_recv(
                     }
                 };
 
-                // Return [Ok v], [Closed], or [Lagged n]
+                // Return [Result.Ok v], [Closed], or [Lagged n]
                 match result {
                     Ok(value) => {
                         let value_thunk =
@@ -608,7 +608,7 @@ pub(crate) fn builtin_recv(
                         let value_thunk_id = ctx.alloc_thunk(value_thunk);
                         ok_val(
                             Value::Variant {
-                                tag: "Ok".to_string(),
+                                tag: "Result.Ok".to_string(),
                                 payload: Some(value_thunk_id),
                             },
                             call_span,
@@ -662,7 +662,7 @@ pub(crate) fn builtin_recv(
                     }
                 };
 
-                // Return [Ok v] or [Closed]
+                // Return [Result.Ok v] or [Closed]
                 match result {
                     Ok(value) => {
                         let value_thunk =
@@ -670,7 +670,7 @@ pub(crate) fn builtin_recv(
                         let value_thunk_id = ctx.alloc_thunk(value_thunk);
                         ok_val(
                             Value::Variant {
-                                tag: "Ok".to_string(),
+                                tag: "Result.Ok".to_string(),
                                 payload: Some(value_thunk_id),
                             },
                             call_span,
@@ -855,10 +855,10 @@ pub(crate) fn builtin_try_send(
                 // Try to send the value
                 match channel_inner.sender.try_send(value) {
                     Ok(_) => {
-                        // Success: return [Ok]
+                        // Success: return [Result.Ok]
                         ok_val(
                             Value::Variant {
-                                tag: "Ok".to_string(),
+                                tag: "Result.Ok".to_string(),
                                 payload: None,
                             },
                             call_span,
@@ -893,12 +893,12 @@ pub(crate) fn builtin_try_send(
 
 /// `select-once`: Wait for the first of multiple sources to complete.
 ///
-/// Signature: `Context → [Seq {ch: Channel|BroadcastChannel|OneshotReceiver  handler: Fn}] → [Ok T] | [Closed]`
+/// Signature: `Context → [Seq {ch: Channel|BroadcastChannel|OneshotReceiver  handler: Fn}] → [Result.Ok T] | [Closed]`
 ///
 /// Takes a context (for cancellation checking) and a sequence of source dicts, where each
 /// source has a `ch:` field (Channel, BroadcastChannel, or OneshotReceiver) and a `handler:` field (Fn).
 /// Waits for the FIRST channel to have a value available, then calls that channel's handler
-/// with the received value. Returns `[Ok result]` where result is the handler's return value.
+/// with the received value. Returns `[Result.Ok result]` where result is the handler's return value.
 ///
 /// If all channels are closed, returns `[Closed]` (not an error). Context cancellation still
 /// raises an exception.
@@ -1250,11 +1250,11 @@ pub(crate) fn builtin_select_once(
                         }
                     };
 
-                    // Wrap the handler result in [Ok v] — result_thunk stays lazy.
+                    // Wrap the handler result in [Result.Ok v] — result_thunk stays lazy.
                     let result_thunk_id = ctx.alloc_thunk(result_thunk);
                     return ok_val(
                         Value::Variant {
-                            tag: "Ok".to_string(),
+                            tag: "Result.Ok".to_string(),
                             payload: Some(result_thunk_id),
                         },
                         call_span,
@@ -2969,19 +2969,19 @@ mod tests {
     /// not the sentinel `{}` value.
     ///
     /// Regression test for the bug where `result?` moved the error out of Done without
-    /// restoring it to the guard, leaving the sentinel `Done(Ok({}))` in place. The
-    /// second await would then read `Ok({})` and return `{}` instead of the error.
+    /// restoring it to the guard, leaving the sentinel `Done(Result.Ok({}))` in place. The
+    /// second await would then read `Result.Ok({})` and return `{}` instead of the error.
     ///
     /// Uses builtin-task/builtin-await (bare names removed in builtin-privacy-primary-names sprint).
     /// `try` stays as the prelude wrapper; [builtin-div 1 0] gives a reliable division-by-zero error.
-    /// Note: builtin-add accepts 2+ args (uses first two), so [builtin-add 1 2 3] returns Ok(3),
+    /// Note: builtin-add accepts 2+ args (uses first two), so [builtin-add 1 2 3] returns Result.Ok(3),
     /// not an error — division by zero is used instead.
     #[test]
     fn test_await_error_twice_returns_error_both_times() {
         // Create a task that errors ([builtin-div 1 0] fails: division by zero). [try [fn [] ...]] catches
-        // the error as [Error "msg"]. We await the same task twice — both should return
-        // [Error ...], not [Ok {}].
-        // The bug: before the fix, Done stored Ok({}) after first await and second
+        // the error as [Result.Error "msg"]. We await the same task twice — both should return
+        // [Result.Error ...], not [Result.Ok {}].
+        // The bug: before the fix, Done stored Result.Ok({}) after first await and second
         // await would return {} instead of the original error.
         let result = crate::eval_source_with_config(
             "[t: [builtin-task [fn [let] [builtin-div 1 0]]]] [first-err: [try [fn [let] [builtin-await t]]]] [second-err: [try [fn [let] [builtin-await t]]]] [first-result: first-err  second-result: second-err]",
@@ -2990,11 +2990,11 @@ mod tests {
         let output = result.expect("eval should succeed (try catches errors)");
         // Both should be Error variants, not Ok({}). If the bug existed, second await would
         // return Ok({}) so first-result and second-result would differ.
-        // The output contains "Error" (the variant tag) and does NOT contain "()" or "{}"
+        // The output contains "Result.Error" (the variant tag) and does NOT contain "()" or "{}"
         // as the second result.
         assert!(
-            output.contains("Error") && !output.contains("second-result\": Ok"),
-            "both awaits should produce Error, not Ok: {output}"
+            output.contains("Result.Error") && !output.contains("second-result\": Result.Ok"),
+            "both awaits should produce Result.Error, not Result.Ok: {output}"
         );
         // Verify they're the same error (same message appears twice)
         let error_msg = "division by zero";

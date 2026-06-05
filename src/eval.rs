@@ -2643,10 +2643,11 @@ pub fn materialize<'a>(
                         }
                     }
                 }
-                // Unit variant used as a constructor: [Ok payload] where Ok = [variant "Ok"].
+                // Unit variant used as a constructor: e.g. `[Result.Ok payload]`.
                 // When a unit Variant (payload: None) is called with exactly one positional
                 // arg and no named args, treat it as constructing Variant(tag, payload).
-                // This allows `Ok: [variant "Ok"]` in the prelude to be called as `[Ok 42]`.
+                // Unit constructors from `[type ...]` declarations are Value::Variant{payload:None}
+                // at runtime; calling them with one positional arg constructs a new Variant with that payload.
                 Value::Variant { tag, payload: None }
                     if args.len() == 1 && named.as_ref().is_none_or(|m| m.is_empty()) =>
                 {
@@ -3274,19 +3275,21 @@ pub(crate) fn match_pattern<'a>(
                 }
             }
             Pattern::TypeAssertPending { annotation, inner } => {
-                // Minimal runtime elaboration: resolve Simple("TypeName") to a canonical Type.
+                // FALLBACK RUNTIME ELABORATION (B-338):
                 //
-                // Primitive names are mapped to their canonical Type variants so that
-                // value_matches_type can use is_consistent_subtype, which handles these
-                // types correctly without needing a tycon_env lookup.
+                // In the normal pipeline, `lower_pattern` in `lower.rs` converts
+                // `TypeAssertPending → TypeAssert` using `TypeAnnotationTable.pattern_types`
+                // populated by the type checker. When type checking runs, this arm is NOT
+                // reached — the `Pattern::TypeAssert` arm above handles those cases.
                 //
-                // Type::TyCon(name) would fail for primitives because "Int", "Str", etc. are
-                // not always registered in tycon_env — causing value_matches_type to return false
-                // even for matching values (e.g., Int(42) against TyCon("Int") when "Int" is
-                // absent from tycon_env).
+                // This arm is only reached when:
+                // 1. `--no-typecheck` is in effect (type checking skipped; table is empty)
+                // 2. Macro-synthesized patterns that bypassed the type checker
                 //
-                // Unknown names fall back to TyCon as before, which works once T-1018 populates
-                // tycon_env with user-defined types.
+                // The fallback provides minimal runtime resolution for Simple annotations
+                // (primitive type names), covering the most common no-typecheck cases.
+                // Complex annotations (union types, record types) still always-match as
+                // before — they require the full type checker to resolve correctly.
                 let resolved = match &annotation.node {
                     Annotation::Simple(name) => {
                         // Map known primitive annotation names to canonical Type variants.
@@ -3341,11 +3344,17 @@ pub(crate) fn match_pattern<'a>(
                 inner,
             } => {
                 // T-976: runtime type check for TypeAssert patterns.
-                // Currently unreachable in normal pipeline — parser produces TypeAssertPending,
-                // and the elaborate_pattern result is not persisted to the stored AST (it is
-                // used only locally within infer_match for collect_pattern_bindings). The
-                // TypeAssertPending arm above is the operative runtime path. Full pipeline
-                // connection (persisting elaborated patterns) is planned for S-850+.
+                //
+                // B-338 fix: This arm is now the PRIMARY runtime path for typed patterns.
+                // The type checker's `elaborate_pattern` result is persisted via
+                // `record_pattern_elaborations` → `TypeAnnotationTable.pattern_types` →
+                // `lower.rs:lower_pattern` which converts `TypeAssertPending → TypeAssert`
+                // when building `CoreMatchArm`. The resolved_type here is the fully-resolved
+                // type from the type checker (not a fragile runtime name lookup).
+                //
+                // The `TypeAssertPending` arm below remains as a fallback for:
+                // - Programs run with `--no-typecheck` (type checking skipped)
+                // - Macro-synthesized patterns that bypassed the type checker
                 if !value_matches_type(value, resolved_type, ctx) {
                     return Ok(None); // type mismatch — arm does not match
                 }
@@ -9315,7 +9324,7 @@ mod tests {
             rest: true,
         });
         let pattern = sp(Pattern::Constructor {
-            tag: "Some".to_string(),
+            tag: "Maybe.Some".to_string(),
             binding: Some(Box::new(payload)),
         });
         let result = check_pattern_linearity(&pattern);

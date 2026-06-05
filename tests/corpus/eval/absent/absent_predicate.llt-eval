@@ -1,0 +1,11 @@
+# S-850: absent? predicate returns true for Absent.Absent, false for other values.
+# get? on a missing key returns Absent.Absent.
+# absent? on an empty dict [] returns false (not the same as Absent.Absent).
+# env on a nonexistent env var returns Absent.Absent.
+[
+  a: [absent? [get? "missing" []]]
+  b: [absent? []]
+  c: [absent? [env "THIS_ENV_VAR_SHOULD_NOT_EXIST_xyz123"]]
+]
+=== out
+Dict({"a": Bool(true), "b": Bool(false), "c": Bool(true)})

@@ -1,7 +1,7 @@
 # Placeholder (...) evaluation: forces an UnimplementedError (E081).
-# $try catches the error and returns Variant(Err, message-string).
+# $try catches the error and returns Variant(Result.Error, message-string).
 # This tests that ... is properly lazy — the error only fires when the thunk is forced
 # inside the zero-argument function passed to try.
 [try [fn [] ...]]
 === out
-Variant(Error, String("placeholder `...` was evaluated — replace with an implementation"))
+Variant(Result.Error, String("placeholder `...` was evaluated — replace with an implementation"))

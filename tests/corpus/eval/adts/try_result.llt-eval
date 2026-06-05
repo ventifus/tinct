@@ -1,4 +1,4 @@
-# Test: try builtin returns result variant (nominal Ok/Err)
+# Test: try builtin returns result variant (nominal Result.Ok/Result.Error)
 [try [fn [] 42]]
 === out
-Variant(Ok, Int(42))
+Variant(Result.Ok, Int(42))

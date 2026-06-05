@@ -1,0 +1,10 @@
+# S-850 / B-338: TypeAssert pattern pipeline is fully elaborated end-to-end.
+# [@Int x] arm is now converted from TypeAssertPending to TypeAssert by lower.rs
+# using the TypeAnnotationTable populated by the type checker (B-338 fix).
+# Pattern::TypeAssert arm in eval.rs is the primary runtime path.
+# The bound variable x is usable as an Int in the arm body.
+[match 42
+  [@Int x]: [+ x 1]
+  _: 0]
+=== out
+Int(43)

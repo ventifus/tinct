@@ -1,7 +1,7 @@
 # S-844 T-964: DotAccess in Call-func position produces Pattern::Constructor with qualified tag.
 # [Result.Ok v] → Constructor { tag: "Result.Ok", binding: Some(Variable("v")) }
-# Parser accepts this syntax. Runtime tag matching deferred (variant tags currently unqualified).
-# The _ arm catches all values until the elaboration pass qualifies variant tags.
+# Parser accepts this syntax. Variant tags are qualified (Result.Ok, etc.) after S-850.
+# The _ arm fires here because the scrutinee is a String "x", not a Result.Ok variant.
 [match "x"
     [Result.Ok v]: v
     _:             "other"]

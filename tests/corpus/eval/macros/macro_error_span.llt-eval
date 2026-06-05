@@ -14,17 +14,17 @@
 [expect-int "hello"]
 === error
 [E080] macro 'expect-int' expansion result failed to evaluate: builtin-get (key "span"): expected Dict, got Expression (defined at 13:1-13:21)
-  in [builtin-get ...] at stdlib/prelude.llt:872:25-872:47
+  in [builtin-get ...] at stdlib/prelude.llt:873:25-873:47
    |
-  872 | """] [let key@k dict@d] [builtin-get key dict]]
+  873 | """] [let key@k dict@d] [builtin-get key dict]]
       |                         ^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2787:3-2787:37
+  in materialized at stdlib/prelude.llt:2803:3-2803:37
    |
-  2787 |   [builtin-macro-error span message]]
+  2803 |   [builtin-macro-error span message]]
        |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-macro-error ...] at stdlib/prelude.llt:2787:3-2787:37
+  in [builtin-macro-error ...] at stdlib/prelude.llt:2803:3-2803:37
    |
-  2787 |   [builtin-macro-error span message]]
+  2803 |   [builtin-macro-error span message]]
        |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in materialized at 13:1-13:21
   in [if ...] at 7:3-9:63
@@ -33,17 +33,17 @@
 
 === warn
 [E080] macro 'expect-int' expansion result failed to evaluate: builtin-get (key "span"): expected Dict, got Expression (defined at 13:1-13:21)
-  in [builtin-get ...] at stdlib/prelude.llt:872:25-872:47
+  in [builtin-get ...] at stdlib/prelude.llt:873:25-873:47
    |
-  872 | """] [let key@k dict@d] [builtin-get key dict]]
+  873 | """] [let key@k dict@d] [builtin-get key dict]]
       |                         ^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2787:3-2787:37
+  in materialized at stdlib/prelude.llt:2803:3-2803:37
    |
-  2787 |   [builtin-macro-error span message]]
+  2803 |   [builtin-macro-error span message]]
        |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-macro-error ...] at stdlib/prelude.llt:2787:3-2787:37
+  in [builtin-macro-error ...] at stdlib/prelude.llt:2803:3-2803:37
    |
-  2787 |   [builtin-macro-error span message]]
+  2803 |   [builtin-macro-error span message]]
        |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in materialized at 13:1-13:21
   in [if ...] at 7:3-9:63

@@ -7,13 +7,14 @@
 //! - `VarRef` → `Var` (resolved de Bruijn coordinates) or `FreeVar` (unresolvable)
 //! - `Pipe { lhs, rhs }` → `Call { func: rhs, args: [lhs], implied: true }` (syntactic sugar)
 //! - `TypeAssert` → `TypeAssert` (with resolved_type from TypeAnnotationTable or Type::Unknown)
+//! - `TypeAssertPending` in patterns → `TypeAssert` (using TypeAnnotationTable.pattern_types)
 //! - All other variants: structural lowering, recursing into child nodes
 
 use std::sync::Arc;
 
 use crate::ast::{
-    node_id, CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, ResolutionTable, Spanned,
-    SurfaceExpression, SurfaceNode, TypeAnnotationTable,
+    node_id, CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Pattern, ResolutionTable,
+    Spanned, SurfaceExpression, SurfaceNode, TypeAnnotationTable,
 };
 use crate::type_def::Type;
 
@@ -33,6 +34,120 @@ pub fn lower(
     let span = arc.span.clone();
     let core_expr = lower_expr(arc, &arc.expr, res, types);
     Spanned::new(core_expr, span)
+}
+
+/// Lower a `Pattern`, converting `TypeAssertPending → TypeAssert` using the type annotation
+/// table populated by the type checker's elaboration pass (B-338).
+///
+/// Recursively walks all sub-patterns so nested `TypeAssertPending` nodes (e.g., inside
+/// `Or`, `Dict`, `Seq`, or `Constructor` bindings) are also converted.
+///
+/// For `TypeAssertPending`:
+/// - Looks up `annotation.span` in `types.pattern_types` (populated by `record_pattern_elaborations`)
+/// - If found: produces `Pattern::TypeAssert { resolved_type, inner: lower(inner) }`
+/// - If not found (type checking was skipped, or macro-synthesized pattern): leaves as
+///   `TypeAssertPending` so the runtime fallback in `eval.rs` is still invoked for the
+///   simple-name cases it handles.
+///
+/// For all other pattern variants: returns a structurally identical pattern with any
+/// sub-patterns recursively lowered.
+fn lower_pattern(pat: &Pattern, types: &TypeAnnotationTable) -> Pattern {
+    match pat {
+        Pattern::TypeAssertPending { annotation, inner } => {
+            // Look up the resolved type by annotation span.
+            match types.get_pattern(&annotation.span) {
+                Some(resolved_type) => {
+                    // Elaborate inner sub-pattern recursively.
+                    let elaborated_inner = inner.as_ref().map(|boxed| {
+                        Box::new(Spanned::new(
+                            lower_pattern(&boxed.node, types),
+                            boxed.span.clone(),
+                        ))
+                    });
+                    Pattern::TypeAssert {
+                        resolved_type: resolved_type.clone(),
+                        inner: elaborated_inner,
+                    }
+                }
+                None => {
+                    // Type checking was skipped or this is a macro-synthesized pattern.
+                    // Keep as TypeAssertPending; the runtime fallback handles Simple names.
+                    let lowered_inner = inner.as_ref().map(|boxed| {
+                        Box::new(Spanned::new(
+                            lower_pattern(&boxed.node, types),
+                            boxed.span.clone(),
+                        ))
+                    });
+                    Pattern::TypeAssertPending {
+                        annotation: annotation.clone(),
+                        inner: lowered_inner,
+                    }
+                }
+            }
+        }
+
+        Pattern::TypeAssert {
+            resolved_type,
+            inner,
+        } => {
+            // Already elaborated — recurse into inner.
+            let elaborated_inner = inner.as_ref().map(|boxed| {
+                Box::new(Spanned::new(
+                    lower_pattern(&boxed.node, types),
+                    boxed.span.clone(),
+                ))
+            });
+            Pattern::TypeAssert {
+                resolved_type: resolved_type.clone(),
+                inner: elaborated_inner,
+            }
+        }
+
+        Pattern::Or(branches) => Pattern::Or(
+            branches
+                .iter()
+                .map(|b| Spanned::new(lower_pattern(&b.node, types), b.span.clone()))
+                .collect(),
+        ),
+
+        Pattern::Constructor { tag, binding } => Pattern::Constructor {
+            tag: tag.clone(),
+            binding: binding
+                .as_ref()
+                .map(|b| Box::new(Spanned::new(lower_pattern(&b.node, types), b.span.clone()))),
+        },
+
+        Pattern::Dict { fields, rest } => Pattern::Dict {
+            fields: fields
+                .iter()
+                .map(|(k, s)| {
+                    (
+                        k.clone(),
+                        Spanned::new(lower_pattern(&s.node, types), s.span.clone()),
+                    )
+                })
+                .collect(),
+            rest: *rest,
+        },
+
+        Pattern::Seq { head, tail } => Pattern::Seq {
+            head: Box::new(Spanned::new(
+                lower_pattern(&head.node, types),
+                head.span.clone(),
+            )),
+            tail: Box::new(Spanned::new(
+                lower_pattern(&tail.node, types),
+                tail.span.clone(),
+            )),
+        },
+
+        // Leaf patterns: no sub-patterns to lower.
+        Pattern::Variable(_)
+        | Pattern::Wildcard
+        | Pattern::Literal(_)
+        | Pattern::Pin(_)
+        | Pattern::TypeTag(_) => pat.clone(),
+    }
 }
 
 fn lower_expr(
@@ -188,7 +303,13 @@ fn lower_expr(
             arms: arms
                 .iter()
                 .map(|arm| CoreMatchArm {
-                    pattern: arm.pattern.clone(),
+                    // B-338: lower_pattern converts TypeAssertPending → TypeAssert using
+                    // the TypeAnnotationTable.pattern_types map populated by the type checker.
+                    // This replaces the fragile runtime name-mapping fallback in eval.rs.
+                    pattern: Spanned::new(
+                        lower_pattern(&arm.pattern.node, types),
+                        arm.pattern.span.clone(),
+                    ),
                     guard: arm.guard.as_ref().map(|g| Arc::new(lower(g, res, types))),
                     body: Arc::new(lower(&arm.body, res, types)),
                 })

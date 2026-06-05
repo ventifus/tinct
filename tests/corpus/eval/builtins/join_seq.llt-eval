@@ -1,16 +1,16 @@
 # join on seq of strings
 [join "-" [take 3 [map [fn [x] [str x]] [range 1]]]]
 === error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:19-1:51) (called at stdlib/prelude.llt:2060:57-2060:76)
+[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:19-1:51) (called at stdlib/prelude.llt:2076:57-2076:76)
   in [map ...] at 1:19-1:51
   in [map ...] at 1:19-1:51
-  in [builtin-take ...] at stdlib/prelude.llt:2060:57-2060:76
+  in [builtin-take ...] at stdlib/prelude.llt:2076:57-2076:76
    |
-  2060 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
+  2076 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-join ...] at stdlib/prelude.llt:2550:26-2550:47
+  in [builtin-join ...] at stdlib/prelude.llt:2566:26-2566:47
    |
-  2550 | """] [let sep@String xs] [builtin-join sep xs]]
+  2566 | """] [let sep@String xs] [builtin-join sep xs]]
        |                          ^^^^^^^^^^^^^^^^^^^^^
   in [join ...] at 1:1-1:53
 

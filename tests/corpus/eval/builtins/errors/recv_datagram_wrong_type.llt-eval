@@ -3,10 +3,10 @@
 [recv-datagram "not-a-socket"]
 
 === error
-[E002] undefined variable: builtin-recv-datagram (defined at stdlib/prelude.llt:2291:51-2291:72) (called at 2:1-2:31)
-  --> stdlib/prelude.llt:2291:51-2291:72
+[E002] undefined variable: builtin-recv-datagram (defined at stdlib/prelude.llt:2307:51-2307:72) (called at 2:1-2:31)
+  --> stdlib/prelude.llt:2307:51-2307:72
    |
-  2291 | recv-datagram@[doc: "Receive a datagram packet"]: builtin-recv-datagram
+  2307 | recv-datagram@[doc: "Receive a datagram packet"]: builtin-recv-datagram
        |                                                   ^^^^^^^^^^^^^^^^^^^^^
   in [recv-datagram ...] at 2:1-2:31
 

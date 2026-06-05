@@ -33,7 +33,7 @@ latest-rust: [result-or "?"
       [section: [get 0 [split "\n[" after-section]]]
       [after-key: [get 1 [split "version = \"" section]]]
       [ver: [get 0 [split "\"" after-key]]]
-      [if [= [length ver] 0] [Error "version not found"] [Ok ver]]]
+      [if [= [length ver] 0] [Result.Error "version not found"] [Result.Ok ver]]]
     [fetch %nc "https://static.rust-lang.org/dist/channel-rust-stable.toml"]]]
 
 latest-rust-short: [if [= [length latest-rust] 0] "?" [first [split " " latest-rust]]]
@@ -80,11 +80,11 @@ crate-latest: [fn@String [let name@String]
     [and-then
       [fn [let resp]
         [if [= [length resp.body] 0]
-          [Error "empty response"]
+          [Result.Error "empty response"]
           # Extract "max_stable_version":"X.Y.Z" via string splitting — avoids full JSON parse.
           [if [= [length [split "\"max_stable_version\":\"" resp.body]] 1]
-            [Error "max_stable_version not found"]
-            [Ok [get 0 [split "\"" [get 1 [split "\"max_stable_version\":\"" resp.body]]]]]]]]
+            [Result.Error "max_stable_version not found"]
+            [Result.Ok [get 0 [split "\"" [get 1 [split "\"max_stable_version\":\"" resp.body]]]]]]]]
       [fetch %nc [str "https://crates.io/api/v1/crates/" name]]]]]
 
 rust-version: [env "RUST_VERSION"]

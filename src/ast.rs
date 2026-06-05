@@ -187,8 +187,8 @@ pub enum Pattern {
         tail: Box<Spanned<Pattern>>,
     },
     /// Constructor pattern — matches nominal variants by tag, binds payload
-    /// `[Some v]` matches `Variant { tag: "Some", payload }` and binds `v` to the payload
-    /// `[None]` (bracket form) matches `Variant { tag: "None", payload: None }` via Constructor { binding: None }
+    /// `[Maybe.Some v]` matches `Variant { tag: "Maybe.Some", payload }` and binds `v` to the payload
+    /// `[Maybe.None]` (bracket form) matches `Variant { tag: "Maybe.None", payload: None }` via Constructor { binding: None }
     Constructor {
         tag: String,
         binding: Option<Box<Spanned<Pattern>>>,
@@ -867,24 +867,63 @@ impl Default for ResolutionTable {
 
 /// Type annotation side table — populated by the typechecker, keyed by NodeId.
 /// Replaces TypeAssert.resolved_type: RefCell<Option<Type>> in the old design.
+///
+/// Also carries pattern type resolutions: `pattern_types` maps the annotation span of a
+/// `Pattern::TypeAssertPending` to the `Type` resolved by `elaborate_pattern`. This allows
+/// `lower.rs` to convert `TypeAssertPending → TypeAssert` without mutating the immutable AST.
 #[derive(Debug, Clone)]
-pub struct TypeAnnotationTable(pub HashMap<NodeId, Type>);
+pub struct TypeAnnotationTable {
+    /// NodeId → inferred Type for SurfaceExpression::TypeAssert nodes.
+    pub node_types: HashMap<NodeId, Type>,
+    /// Annotation-span → resolved Type for Pattern::TypeAssertPending elaborations.
+    ///
+    /// Keyed by the span of the `annotation` field inside `TypeAssertPending`.
+    /// Populated by the type checker during match arm elaboration.
+    /// Consumed by `lower.rs` to convert `TypeAssertPending → TypeAssert` in CoreMatchArm.
+    pub pattern_types: HashMap<Span, Type>,
+}
 
 impl TypeAnnotationTable {
     pub fn new() -> Self {
-        Self(HashMap::new())
+        Self {
+            node_types: HashMap::new(),
+            pattern_types: HashMap::new(),
+        }
     }
 
     pub fn get(&self, id: &NodeId) -> Option<&Type> {
-        self.0.get(id)
+        self.node_types.get(id)
     }
 
     pub fn insert(&mut self, id: NodeId, ty: Type) {
-        self.0.insert(id, ty);
+        self.node_types.insert(id, ty);
     }
 
+    /// Drain only node_types. Prefer `drain_into` to also drain pattern_types.
     pub fn drain(&mut self) -> std::collections::hash_map::Drain<'_, NodeId, Type> {
-        self.0.drain()
+        self.node_types.drain()
+    }
+
+    /// Look up the resolved type for a `TypeAssertPending` pattern by its annotation span.
+    pub fn get_pattern(&self, span: &Span) -> Option<&Type> {
+        self.pattern_types.get(span)
+    }
+
+    /// Record the resolved type for a `TypeAssertPending` pattern.
+    /// Called by the type checker after `elaborate_pattern` resolves the annotation.
+    pub fn insert_pattern(&mut self, span: Span, ty: Type) {
+        self.pattern_types.insert(span, ty);
+    }
+
+    /// Drain both node_types and pattern_types, merging into `other`.
+    /// Used by `typecheck_surface_document` to collect per-expression results.
+    pub fn drain_into(&mut self, other: &mut TypeAnnotationTable) {
+        for (id, ty) in self.node_types.drain() {
+            other.node_types.insert(id, ty);
+        }
+        for (span, ty) in self.pattern_types.drain() {
+            other.pattern_types.insert(span, ty);
+        }
     }
 }
 

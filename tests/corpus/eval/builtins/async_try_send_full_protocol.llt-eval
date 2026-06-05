@@ -1,8 +1,8 @@
-# try-send returns [Ok] on success, [Full] when channel is at capacity
+# try-send returns [Result.Ok] on success, [Full] when channel is at capacity
 # Phase 3: try-send builtin (T-813)
 #
 # try-send is non-blocking: succeeds immediately on an empty channel.
-# Returns [Ok] (no payload) on success. This is serializable.
+# Returns [Result.Ok] (no payload) on success. This is serializable.
 # Channel is accessed only internally by try-send — not serialized.
 [
   ch: [channel 10]
@@ -10,4 +10,4 @@
 ]
 .result
 === out
-Variant(Ok, Null)
+Variant(Result.Ok, Null)

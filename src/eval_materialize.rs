@@ -1731,10 +1731,11 @@ pub(crate) async fn apply_cont(
                             }
                         }
                     }
-                    // Unit variant used as a constructor: [Ok payload] where Ok = [variant "Ok"].
+                    // Unit variant used as a constructor: e.g. `[Result.Ok payload]`.
                     // When a unit Variant (payload: None) is called with exactly one positional
                     // arg and no named args, treat it as constructing Variant(tag, payload).
-                    // This allows `Ok: [variant "Ok"]` in the prelude to be called as `[Ok 42]`.
+                    // Unit constructors from `[type ...]` declarations are Value::Variant{payload:None}
+                    // at runtime; calling them with one positional arg constructs a new Variant with that payload.
                     Value::Variant { tag, payload: None }
                         if args.as_ref().is_some_and(|v| v.len() == 1)
                             && named

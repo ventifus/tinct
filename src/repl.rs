@@ -215,6 +215,8 @@ impl ReplSession {
         // Desugar $_ implicit lambdas on SurfaceProgram (before conversion to File)
         let mut program = parse_output.program.clone();
         crate::desugar::desugar_surface_program(&mut program);
+        // Inject ADT constructor bindings (must run after desugar, before resolve).
+        crate::desugar::inject_adt_constructors_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let resolution_table =
             std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));

@@ -54,7 +54,7 @@ pub fn desugar_surface_program(program: &mut SurfaceProgram) {
 ///   Injects `"CtorName": [variant "TypeName.CtorName"]`.
 /// - `Call { func: VarRef(UpperName), named_args: [...], ... }` with non-empty named_args →
 ///   named-field constructor. Injects a variadic `fn` wrapper:
-///   `"CtorName": [fn [...payload] [variant "TypeName.CtorName" payload]]`.
+///   `"CtorName": [fn [...payload] [variant-payload "TypeName.CtorName" payload]]`.
 ///   The variadic `...payload` param collects all named args into a Dict (via B-277 extension
 ///   to bind_args_thunks). Users call constructors with named args:
 ///   `[Ctor field: val]` → `Variant { tag: "TypeName.CtorName", payload: {field: val} }`.
@@ -458,22 +458,40 @@ fn extract_surface_adt_ctors_from_expr(body: &SurfaceExpression) -> Vec<AliasCon
 ///
 /// - Unit constructor (`ctor.fields` is empty): `[variant "TypeName.CtorName"]`
 /// - Named-field constructor (`ctor.fields` non-empty):
-///   `[fn [...payload] [variant "TypeName.CtorName" payload]]`
+///   `[fn [...payload] [variant-payload "TypeName.CtorName" payload]]`
 ///   A variadic `...payload` param collects all named args into a dict at runtime
 ///   (via bind_args_thunks B-277 / C-NAMED-VALID amended for variadics).
 ///   Callers use named args: `[Ctor field1: val1 field2: val2]`.
 ///
-///   Note: per-field positional params would cause letrec self-reference in the payload
-///   dict body, because dict keys shadow outer scope bindings with the same name.
-///   The variadic form avoids this by collecting named args BEFORE building any inner dict.
+///   Why variadic instead of per-field named params:
+///   Using `[fn [let field1 field2 ...] [variant-payload "Tag" [field1: field1 ...]]]`
+///   causes a letrec self-reference. The inner payload dict `[field1: field1 ...]` enters
+///   a letrec scope that shadows the fn params with the SAME names. The resolver assigns
+///   level=0 (inner dict scope) to the VarRef references, making each dict value reference
+///   ITS OWN entry rather than the fn param — cycle error at runtime.
+///
+///   The variadic form avoids this: `payload` is collected by bind_args_thunks into a
+///   materialized Dict BEFORE any inner dict is constructed in the body. The body
+///   `[variant-payload "Tag" payload]` simply references the already-bound `payload` param.
 fn build_constructor_value(
     ctor: &AliasConstructor,
     qualified_tag: &str,
     syn_span: &Span,
 ) -> Arc<SurfaceNode> {
-    let variant_fn = Arc::new(SurfaceNode {
+    // For unit constructors: use the prelude's 1-arg `variant` wrapper.
+    // For named-field constructors: use `variant-payload` (the 2-arg wrapper).
+    // Both delegate to `builtin-variant`; split because the prelude's `variant`
+    // only accepts 1 arg.
+    let unit_variant_fn = Arc::new(SurfaceNode {
         expr: SurfaceExpression::VarRef {
             name: "variant".to_string(),
+            escaped: false,
+        },
+        span: syn_span.clone(),
+    });
+    let payload_variant_fn = Arc::new(SurfaceNode {
+        expr: SurfaceExpression::VarRef {
+            name: "variant-payload".to_string(),
             escaped: false,
         },
         span: syn_span.clone(),
@@ -487,7 +505,7 @@ fn build_constructor_value(
         // Unit constructor: [variant "TypeName.CtorName"]
         Arc::new(SurfaceNode {
             expr: SurfaceExpression::Call {
-                func: variant_fn,
+                func: unit_variant_fn,
                 args: vec![tag_arg],
                 named_args: vec![],
                 implied: false,
@@ -501,21 +519,14 @@ fn build_constructor_value(
         // `field1: val1 field2: val2`) into a single Dict at runtime, via the B-277 extension
         // to bind_args_thunks (C-NAMED-VALID amended: unmatched named args flow into variadic).
         //
-        // Why variadic instead of per-field positional params:
-        // Using `[fn [field1 field2 ...] [variant "Tag" [field1: field1 field2: field2 ...]]]`
-        // causes a letrec self-reference. The inner payload dict `[field1: field1 ...]` enters
-        // a letrec scope that shadows the fn params with the SAME names. The resolver assigns
-        // level=0 (inner dict scope) to the VarRef references, making each dict value reference
-        // ITS OWN entry rather than the fn param → cycle error at runtime.
-        //
-        // The variadic form avoids this: `payload` is collected by bind_args_thunks into a
-        // materialized Dict BEFORE any inner dict is constructed in the body. The body
-        // `[variant "Tag" payload]` simply references the already-bound `payload` param.
-        //
-        // Generates: [fn [...payload] [variant "TypeName.CtorName" payload]]
+        // Generates: [fn [...payload] [variant-payload "TypeName.CtorName" payload]]
         // Callers use: `[Ctor field1: val1 field2: val2]`
+        //
+        // Uses `variant-payload` (the prelude's 2-arg wrapper around builtin-variant) because
+        // the prelude's `variant` only accepts 1 arg (tag only, no payload). The 2-arg form
+        // requires `variant-payload`.
 
-        // Build [variant "TypeName.CtorName" payload] — body references the variadic param
+        // Build [variant-payload "TypeName.CtorName" payload] — body references the variadic param
         let payload_ref = Arc::new(SurfaceNode {
             expr: SurfaceExpression::VarRef {
                 name: "payload".to_string(),
@@ -524,10 +535,10 @@ fn build_constructor_value(
             span: syn_span.clone(),
         });
 
-        // Build [variant "TypeName.CtorName" payload]
+        // Build [variant-payload "TypeName.CtorName" payload]
         let variant_call = Arc::new(SurfaceNode {
             expr: SurfaceExpression::Call {
-                func: variant_fn,
+                func: payload_variant_fn,
                 args: vec![tag_arg, payload_ref],
                 named_args: vec![],
                 implied: false,
@@ -545,7 +556,7 @@ fn build_constructor_value(
             syn_span.clone(),
         )];
 
-        // Build [fn [...payload] [variant "TypeName.CtorName" payload]]
+        // Build [fn [...payload] [variant-payload "TypeName.CtorName" payload]]
         Arc::new(SurfaceNode {
             expr: SurfaceExpression::Fn {
                 return_ann: None,

@@ -23,9 +23,9 @@
 
   # Function that takes a declared-union-type parameter and pattern-matches on it
   # Pattern [Ok v] extracts the payload; body uses it as-is.
-  # NOTE: After T-974, Ok = Variant("_result.Ok", None). The pattern [Ok v] has tag "Ok"
-  # which does NOT match "_result.Ok". Pattern matching fails (match exhaustion).
-  # This will work correctly once T-968 (elaboration pass to qualify pattern tags) lands.
+  # NOTE: After S-850, Ok = Function(payload) (injected constructor that creates Result.Ok).
+  # The pattern [Ok v] has tag "Ok" which does NOT match "Result.Ok" (qualified by T-974).
+  # Pattern matching fails (match exhaustion) — see B-341 for the coverage checker gap.
   unwrap: [fn [let r@Result]
     [match r
       [Ok v]: v

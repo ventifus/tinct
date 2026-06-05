@@ -265,8 +265,8 @@ pub(crate) fn builtin_macro_error(
     })
 }
 
-/// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[Ok value]`
-/// on success or `[Error message]` on failure.
+/// `try`: takes 1 arg (a zero-arg Function). Calls it. Returns `[Result.Ok value]`
+/// on success or `[Result.Error message]` on failure.
 /// Inherently materializing: must materialize body to catch errors.
 pub(crate) fn builtin_try(
     ctx_arg: BuiltinArgs,
@@ -347,11 +347,11 @@ pub(crate) fn builtin_try(
 
         match call_result {
             Ok(val) => {
-                // Success: return Value::Variant { tag: "Ok", payload: Some(value) }
+                // Success: return Value::Variant { tag: "Result.Ok", payload: Some(value) }
                 let payload_thunk_id = ctx.alloc_thunk(ok_val(val, call_span.clone())?);
                 ok_val(
                     Value::Variant {
-                        tag: "Ok".to_string(),
+                        tag: "Result.Ok".to_string(),
                         payload: Some(payload_thunk_id),
                     },
                     call_span,
@@ -364,12 +364,12 @@ pub(crate) fn builtin_try(
                 if let ErrorKind::ResourceLimitExceeded { .. } = &e.kind {
                     return Err(e);
                 }
-                // Error: return Value::Variant { tag: "Error", payload: Some(message) }
+                // Error: return Value::Variant { tag: "Result.Error", payload: Some(message) }
                 let msg_thunk_id =
                     ctx.alloc_thunk(ok_val(string_val(&e.kind.to_string()), call_span.clone())?);
                 ok_val(
                     Value::Variant {
-                        tag: "Error".to_string(),
+                        tag: "Result.Error".to_string(),
                         payload: Some(msg_thunk_id),
                     },
                     call_span,
@@ -1658,6 +1658,8 @@ pub(crate) fn builtin_expand(
                 })?;
                 // Desugar $_ patterns introduced by macros.
                 crate::desugar::desugar_surface_program(&mut new_surface_program);
+                // Inject ADT constructor bindings (must run after desugar, before resolve).
+                crate::desugar::inject_adt_constructors_surface_program(&mut new_surface_program);
 
                 // Re-compute resolution table for the expanded and desugared program
                 let new_resolutions = crate::resolve::resolve_surface_program(&new_surface_program);
@@ -2451,9 +2453,9 @@ pub(crate) fn builtin_eval_types(
 /// `include-cache-get`: look up the string-keyed include cache by blake3 key.
 ///
 /// Takes 1 positional arg (String key). Returns:
-/// - `[Missing]`       — key not in cache
-/// - `[Pending]`       — key is marked as in-progress (cycle detection)
-/// - `[Cached value]`  — cached result thunk
+/// - `IncludeCacheEntry.Missing`       — key not in cache
+/// - `IncludeCacheEntry.Pending`       — key is marked as in-progress (cycle detection)
+/// - `IncludeCacheEntry.Cached value`  — cached result thunk
 pub(crate) fn builtin_include_cache_get(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -2484,21 +2486,21 @@ pub(crate) fn builtin_include_cache_get(
         match entry {
             None => ok_val(
                 Value::Variant {
-                    tag: "Missing".to_string(),
+                    tag: "IncludeCacheEntry.Missing".to_string(),
                     payload: None,
                 },
                 call_span,
             ),
             Some(crate::eval::IncludeCacheEntry::Missing) => ok_val(
                 Value::Variant {
-                    tag: "Missing".to_string(),
+                    tag: "IncludeCacheEntry.Missing".to_string(),
                     payload: None,
                 },
                 call_span,
             ),
             Some(crate::eval::IncludeCacheEntry::Pending) => ok_val(
                 Value::Variant {
-                    tag: "Pending".to_string(),
+                    tag: "IncludeCacheEntry.Pending".to_string(),
                     payload: None,
                 },
                 call_span,
@@ -2507,7 +2509,7 @@ pub(crate) fn builtin_include_cache_get(
                 let payload_id = ctx.alloc_thunk(Arc::clone(&thunk));
                 ok_val(
                     Value::Variant {
-                        tag: "Cached".to_string(),
+                        tag: "IncludeCacheEntry.Cached".to_string(),
                         payload: Some(payload_id),
                     },
                     call_span,
@@ -2520,7 +2522,7 @@ pub(crate) fn builtin_include_cache_get(
 /// `include-cache-put`: insert or update the string-keyed include cache.
 ///
 /// Takes 2 positional args: String key and a value.
-/// The value must be a `[Missing]`, `[Pending]`, or `[Cached x]` Variant.
+/// The value must be an `IncludeCacheEntry.Missing`, `IncludeCacheEntry.Pending`, or `IncludeCacheEntry.Cached x` Variant.
 /// Returns the stored value (pass-through).
 pub(crate) fn builtin_include_cache_put(
     ctx_arg: BuiltinArgs,
@@ -2552,6 +2554,7 @@ pub(crate) fn builtin_include_cache_put(
             Value::Variant { tag, payload } => {
                 // Strip qualifier prefix ("IncludeCacheEntry.Pending" → "Pending") for
                 // compatibility with T-974 qualified variant tags from inject_adt_constructors_expr.
+                let original_tag = tag.as_str();
                 let tag_name = tag
                     .strip_prefix("IncludeCacheEntry.")
                     .unwrap_or(tag.as_str());
@@ -2564,8 +2567,8 @@ pub(crate) fn builtin_include_cache_put(
                             None => {
                                 return Err(EvalError::type_mismatch_ctx(
                                     "include-cache-put".to_string(),
-                                    "[Cached value]",
-                                    "[Cached]",
+                                    "IncludeCacheEntry.Cached value",
+                                    "IncludeCacheEntry.Cached (no payload)",
                                     args[1].span.clone(),
                                 )
                                 .into())
@@ -2577,11 +2580,11 @@ pub(crate) fn builtin_include_cache_put(
                             crate::ast::empty_type_annotation_table_arc(),
                         )
                     }
-                    other => {
+                    _ => {
                         return Err(EvalError::type_mismatch_ctx(
                             "include-cache-put".to_string(),
-                            "[Missing] | [Pending] | [Cached value]",
-                            &format!("[{other}]"),
+                            "IncludeCacheEntry.Missing | IncludeCacheEntry.Pending | IncludeCacheEntry.Cached value",
+                            original_tag,
                             args[1].span.clone(),
                         )
                         .into())
@@ -2591,7 +2594,7 @@ pub(crate) fn builtin_include_cache_put(
             _ => {
                 return Err(EvalError::type_mismatch_ctx(
                     "include-cache-put".to_string(),
-                    "[Missing] | [Pending] | [Cached value]",
+                    "IncludeCacheEntry.Missing | IncludeCacheEntry.Pending | IncludeCacheEntry.Cached value",
                     entry_val.type_name(),
                     args[1].span.clone(),
                 )

@@ -13,5 +13,5 @@
   circle: [Circle r: 5]
   square: [Square s: 10]
 ]
-=== error
-[E020] arity mismatch: expected 1 argument, got 2 (defined at 1:1-1:1)
+=== out
+Dict({"Shape": Variant(Shape, Null), "Circle": Function(payload), "Square": Function(payload), "circle": Variant(Circle, Dict({"r": Int(5)})), "square": Variant(Square, Dict({"s": Int(10)}))})

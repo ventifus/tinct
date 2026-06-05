@@ -335,7 +335,7 @@ pub(crate) fn builtin_get(
 /// `get?`: Rust primitive for optional dict key lookup.
 ///
 /// Takes 2 args: a key (Int or String) and a dict.
-/// Returns the value if the key exists, or Value::Dict(empty) (Null) if missing.
+/// Returns the value if the key exists, or `Absent.Absent` if missing.
 /// NO error on missing key (unlike `builtin-get` which errors).
 pub(crate) fn builtin_get_optional(
     ctx_arg: BuiltinArgs,
@@ -396,8 +396,14 @@ pub(crate) fn builtin_get_optional(
                 Ok(thunk)
             }
             None => {
-                // Return empty dict (Null) on missing key
-                ok_val(Value::Dict(IndexMap::new()), call_span)
+                // Return Absent.Absent on missing key
+                ok_val(
+                    Value::Variant {
+                        tag: "Absent.Absent".into(),
+                        payload: None,
+                    },
+                    call_span,
+                )
             }
         }
     })

@@ -142,17 +142,17 @@ pub async fn format_source_tinct_with_dir(
     .await
     .map_err(|e| format!("formatter eval error: {e}"))?;
 
-    // Materialize the result — should be [Ok String] or [Err msg].
+    // Materialize the result — should be [Result.Ok String] or [Result.Error msg].
     let result_val = eval::materialize(&formatter_thunk, None, &ctx)
         .await
         .map_err(|e| format!("formatter materialize error: {e}"))?;
 
-    // Unwrap [Ok s] / surface [Error msg].
+    // Unwrap [Result.Ok s] / surface [Result.Error msg].
     // The formatters return `[try [fn [] [format-file %]]]` which produces
-    // Value::Variant { tag: "Ok", payload: Some(string_thunk) } on success
-    // or Value::Variant { tag: "Error", payload: Some(msg_thunk) } on failure.
+    // Value::Variant { tag: "Result.Ok", payload: Some(string_thunk) } on success
+    // or Value::Variant { tag: "Result.Error", payload: Some(msg_thunk) } on failure.
     match result_val {
-        Value::Variant { tag, payload } if tag == "Ok" => {
+        Value::Variant { tag, payload } if tag == "Result.Ok" => {
             let payload_id = payload.ok_or_else(|| "formatter Ok has no payload".to_string())?;
             let payload_thunk = ctx.get_thunk(payload_id);
             let ok_val = eval::materialize(&payload_thunk, None, &ctx)
@@ -172,7 +172,7 @@ pub async fn format_source_tinct_with_dir(
                 }
             }
         }
-        Value::Variant { tag, payload } if tag == "Error" => {
+        Value::Variant { tag, payload } if tag == "Result.Error" => {
             let msg = if let Some(err_id) = payload {
                 let err_thunk = ctx.get_thunk(err_id);
                 let err_val = eval::materialize(&err_thunk, None, &ctx)
@@ -198,8 +198,8 @@ pub async fn format_source_tinct_with_dir(
 
 /// Format source using the tinct-hosted formatter script at `script_path`.
 ///
-/// The script receives the AST dict as `%` and must return `[Ok String]` on success
-/// or `[Err msg]` on failure (both formatters use `[try [fn [] [format-file %]]]`).
+/// The script receives the AST dict as `%` and must return `[Result.Ok String]` on success
+/// or `[Result.Error msg]` on failure (both formatters use `[try [fn [] [format-file %]]]`).
 ///
 /// `script_path` is the path to a `.llt` formatter script (e.g. `stdlib/cli/fmt/pretty.llt`).
 /// Whether to pass source/comment information is inferred from the script name:

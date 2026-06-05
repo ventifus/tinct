@@ -1,13 +1,14 @@
-# T-977: Exact-value match on named-field constructor (B-337 regression).
-# [Ok value: 1] fails E020 — named-arg calling convention issue.
-# Fix tracked in B-337 (blocked on S-850).
+# B-337: Exact-value match on named-field constructor.
+# Constructor [Ok value: a] generates [fn [let value] [variant "Result.Ok" [value: value]]].
+# Pattern [case [Ok value: 1] ...] matches a variant with tag "Result.Ok" and payload {value: 1}.
+# The scrutinee [Ok value: 1] matches the pattern exactly.
 [Result: [type [Ok value: a] [Error msg: Str]]]
 [result: [match [Ok value: 1]
   [case [Ok value: 1] "hit"]
   _: "miss"]]
-=== error
-[E020] arity mismatch: expected 1 argument, got 2 (defined at 1:1-1:1)
+=== out
+Dict({"result": String("hit")})
 
 === warn
-auto-indexed entries not supported in type expressions at 3:16-3:29
-undefined variable: Ok at 4:18-4:20
+auto-indexed entries not supported in type expressions at 4:16-4:29
+undefined variable: Ok at 5:18-5:20

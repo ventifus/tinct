@@ -1,13 +1,13 @@
-# T-977: Payload variant equality test (B-337 regression).
-# [Ok value: 1] fails E020 — named-arg calling convention issue.
-# Fix tracked in B-337 (blocked on S-850).
+# B-337: Payload variant equality test.
+# Constructor [Ok value: a] generates [fn [let value] [variant "Result.Ok" [value: value]]].
+# Two calls to [Ok value: 1] create identical variants with payload {value: 1}.
+# Variant equality compares both tag and payload.
 [Result: [type [Ok value: a] [Error msg: Str]]]
 [eq: [= [Ok value: 1] [Ok value: 1]]]
-=== error
-[E020] arity mismatch: expected 1 argument, got 2 (defined at 1:1-1:1)
-  in [= ...] at 4:6-4:37
+=== out
+Dict({"eq": Bool(true)})
 
 === warn
-auto-indexed entries not supported in type expressions at 3:16-3:29
-undefined variable: Ok at 4:10-4:12
-undefined variable: Ok at 4:24-4:26
+auto-indexed entries not supported in type expressions at 4:16-4:29
+undefined variable: Ok at 5:10-5:12
+undefined variable: Ok at 5:24-5:26

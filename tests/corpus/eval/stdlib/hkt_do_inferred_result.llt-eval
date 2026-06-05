@@ -7,3 +7,6 @@
   [do [x: [Ok 42]] [Ok x]]]]
 === out
 Dict({0: Function()})
+
+=== warn
+cannot infer monad for [do] — add an explicit monad argument (e.g., [do result ...]) at 6:3-6:27

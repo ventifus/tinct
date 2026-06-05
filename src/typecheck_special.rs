@@ -688,16 +688,9 @@ pub(crate) fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<
                 None
             }
         }
-        // NominalVariant — recognize Result and Maybe constructors.
-        // When [Ok 42] is typechecked, it produces NominalVariant("Ok", ...).
-        // Map these to the prelude monad dict name for do-inferred Rule 2.
-        // TODO: remove when TyConDef.constructors is populated and type-level resolution
-        // uses the constructor-to-TyCon mapping directly (T-1021).
-        Type::NominalVariant { tag, .. } => match tag.as_str() {
-            "Ok" | "Error" => Some("result".to_string()),
-            "Some" | "None" => Some("maybe".to_string()),
-            _ => None,
-        },
+        // NominalVariant types do not map to monad names directly.
+        // Monad resolution for nominal variants happens via the qualified tag in resolve_monad_from_surface.
+        Type::NominalVariant { .. } => None,
         // Record with ok and/or err fields — structural Result-like type
         Type::Record(row) => {
             if row.fields.contains_key("ok") || row.fields.contains_key("err") {
@@ -762,17 +755,6 @@ pub(crate) fn resolve_monad_from_surface(
                 }
                 _ => None,
             };
-
-            // Fallback for unqualified Result/Maybe constructors not yet in TyConDef.constructors.
-            // When TyConDef has constructors populated (T-1021), resolve_constructor_tag will
-            // return the qualified tag and this fallback can be removed.
-            if let Some(ref tag) = qualified_tag {
-                match tag.as_str() {
-                    "Ok" | "Error" => return Some("result".to_string()),
-                    "Some" | "None" => return Some("maybe".to_string()),
-                    _ => {}
-                }
-            }
 
             // Extract the TyCon name from the qualified tag by splitting at the last '.'.
             // "Result.Ok" → "result" (lowercase), "Ok" (unqualified) → not a qualified tag → None.

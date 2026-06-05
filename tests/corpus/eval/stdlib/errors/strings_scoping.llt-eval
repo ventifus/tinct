@@ -3,7 +3,7 @@
 
 [try [fn [] [pad-right "hi" 5 " "]]]
 === out
-Variant(Error, String("undefined variable: pad-right (did you mean the string \"pad-right\"? Use quotes.)"))
+Variant(Result.Error, String("undefined variable: pad-right (did you mean the string \"pad-right\"? Use quotes.)"))
 
 === warn
 undefined variable: pad-right at 3:14-3:23

@@ -1,0 +1,12 @@
+# S-850: null? checks for [] (empty collection); absent? checks for Absent.Absent.
+# The two predicates are NOT interchangeable after the Absent.Absent migration.
+# null? returns true only for [] (empty dict); Absent.Absent is a Variant, not a dict.
+# absent? returns true only for Absent.Absent; [] is an empty dict, not Absent.Absent.
+[
+  null-on-empty-dict: [null? []]
+  null-on-absent: [null? [get? "missing" []]]
+  absent-on-empty-dict: [absent? []]
+  absent-on-absent: [absent? [get? "missing" []]]
+]
+=== out
+Dict({"null-on-empty-dict": Bool(true), "null-on-absent": Bool(false), "absent-on-empty-dict": Bool(false), "absent-on-absent": Bool(true)})

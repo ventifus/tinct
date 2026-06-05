@@ -697,6 +697,11 @@ pub trait ValueVisitor {
     ) -> Result<Self::Output, Box<error::EvalError>>;
     fn visit_proxy(&self, span: ast::Span) -> Result<Self::Output, Box<error::EvalError>>;
     fn visit_variant(&self, tag: String, payload: Self::Output) -> Self::Output;
+    /// Called when the value is `Absent.Absent` (the canonical absent/missing value).
+    /// Default: delegates to `visit_null()`.
+    fn visit_absent(&self) -> Self::Output {
+        self.visit_null()
+    }
     fn visit_decimal(&self, v: rust_decimal::Decimal) -> Self::Output;
     fn visit_bigint(&self, v: &num_bigint::BigInt) -> Self::Output;
     fn visit_timestamp(
@@ -794,6 +799,10 @@ pub fn visit_value<V: ValueVisitor>(
             let head_out = visit_value(&head_val, ctx, depth + 1, visitor, head_span.clone())?;
             visitor.visit_seq_head(head_out, head_span)
         }
+        value::Value::Variant {
+            ref tag,
+            payload: None,
+        } if tag == "Absent.Absent" => Ok(visitor.visit_absent()),
         value::Value::Variant {
             ref tag,
             payload: None,
@@ -1025,6 +1034,10 @@ impl ValueVisitor for JsonVisitor {
     fn visit_variant(&self, tag: String, payload: String) -> String {
         format!("{{\"{}\":{}}}", escape_json_str(&tag), payload)
     }
+    fn visit_absent(&self) -> String {
+        // Absent.Absent is the canonical missing value — serialize as JSON null.
+        "null".to_string()
+    }
     fn visit_decimal(&self, v: rust_decimal::Decimal) -> String {
         // Serialize Decimal as JSON number string to preserve exact representation
         v.to_string()
@@ -1166,7 +1179,7 @@ pub fn json_pretty_print(s: &str) -> String {
 
 /// Maximum display recursion depth (5 levels).
 /// Prevents deep traversal of nested structures in error messages.
-/// Increased from 3 to 5 to accommodate Result-wrapped values (Variant(Ok, ...)).
+/// Increased from 3 to 5 to accommodate Result-wrapped values (Variant(Result.Ok, ...)).
 const MAX_DISPLAY_DEPTH: usize = 5;
 
 struct DisplayVisitor;
@@ -1232,6 +1245,9 @@ impl ValueVisitor for DisplayVisitor {
     }
     fn visit_variant(&self, tag: String, payload: String) -> String {
         format!("Variant({tag}, {payload})")
+    }
+    fn visit_absent(&self) -> String {
+        "Absent()".to_string()
     }
     fn visit_decimal(&self, v: rust_decimal::Decimal) -> String {
         format!("Decimal({v})")
@@ -2373,25 +2389,20 @@ mod tests {
     ///
     /// Desugars to `[result.bind [Ok 1] [fn [x] [Ok [+ x 1]]]]`
     /// = `[and-then [Ok 1] [fn [x] [Ok [+ x 1]]]]`
-    /// = `[Ok 2]`
+    /// = `[Result.Ok 2]`
     ///
-    /// KNOWN REGRESSION (T-974 / S-850): The prelude `and-then` matches `[Ok v]` (tag "Ok"),
-    /// but T-974 qualifies constructors so `[Ok 1]` now produces Variant("Result.Ok", ...).
-    /// The pattern no longer matches, causing E071 non-exhaustive match. The prelude migration
-    /// to qualified tag patterns is tracked in S-850.
+    /// After S-850 prelude migration, `and-then` matches `[Result.Ok v]` (qualified tag),
+    /// so this expression now succeeds with `Result.Ok` containing Int(2).
     #[test]
     fn test_do_macro_one_binding_step() {
         let result = eval_source("[do result [x: [Ok 1]] [Ok [+ x 1]]]");
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let output = result.unwrap();
         assert!(
-            result.is_err(),
-            "expected E071 regression error, got Ok: {:?}",
-            result
+            output.contains("Result.Ok"),
+            "expected Result.Ok in output, got: {output}"
         );
-        let err = result.unwrap_err();
-        assert!(
-            err.contains("non-exhaustive match"),
-            "expected non-exhaustive match error (E071), got: {err}"
-        );
+        assert!(output.contains('2'), "expected 2 in output, got: {output}");
     }
 
     /// `[do result]` — no steps, calls `result.pure []` → `Ok([])`.
@@ -2400,10 +2411,10 @@ mod tests {
         let result = eval_source("[do result]");
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
         let output = result.unwrap();
-        // result.pure is Ok, so [result.pure []] = [Ok []]
+        // result.pure is Result.Ok, so [result.pure []] = [Result.Ok []]
         assert!(
-            output.contains("Ok"),
-            "expected Ok in output, got: {output}"
+            output.contains("Result.Ok"),
+            "expected Result.Ok in output, got: {output}"
         );
     }
 
@@ -2424,23 +2435,18 @@ mod tests {
     /// Input: `[do [x: [Ok 1]] [Ok x]]`
     /// Desugars to: `[result.bind [Ok 1] [fn [x] [Ok x]]]`
     ///
-    /// KNOWN REGRESSION (T-974 / S-850): The prelude `and-then` matches `[Ok v]` (tag "Ok"),
-    /// but T-974 qualifies constructors so `[Ok 1]` now produces Variant("Result.Ok", ...).
-    /// The pattern no longer matches, causing E071 non-exhaustive match. The prelude migration
-    /// to qualified tag patterns is tracked in S-850.
+    /// After S-850 prelude migration, `and-then` matches `[Result.Ok v]` (qualified tag),
+    /// so the inferred form now succeeds and returns `Result.Ok` containing Int(1).
     #[test]
     fn test_do_macro_inferred_form_binding() {
         let result = eval_source("[do [x: [Ok 1]] [Ok x]]");
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let output = result.unwrap();
         assert!(
-            result.is_err(),
-            "expected E071 regression error, got Ok: {:?}",
-            result
+            output.contains("Result.Ok"),
+            "expected Result.Ok in output, got: {output}"
         );
-        let err = result.unwrap_err();
-        assert!(
-            err.contains("non-exhaustive match"),
-            "expected non-exhaustive match error (E071), got: {err}"
-        );
+        assert!(output.contains('1'), "expected 1 in output, got: {output}");
     }
 
     /// Inferred `[do]` form with single expression step passes through as-is.
@@ -2459,8 +2465,8 @@ mod tests {
         );
         let output = result.unwrap();
         assert!(
-            output.contains("Ok"),
-            "expected Ok(1) for [do [Ok 1]], got: {output}"
+            output.contains("Result.Ok"),
+            "expected Result.Ok for [do [Ok 1]], got: {output}"
         );
     }
 

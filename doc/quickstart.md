@@ -265,13 +265,13 @@ Sum types with payloads use `try` in the standard library:
 
 ```tinct
 [
-  # try returns Variant(Ok, value) on success, Variant(Error, msg) on failure
+  # try returns Variant(Result.Ok, value) on success, Variant(Result.Error, msg) on failure
   result: [try [fn [] [+ 1 2]]]
 
   # Pattern match on the result
   value: [match result
-    [Ok v]:    v     # → 3
-    [Error _]: 0]
+    [Result.Ok v]:    v     # → 3
+    [Result.Error _]: 0]
 ]
 ```
 
@@ -288,7 +288,7 @@ Sum types with payloads use `try` in the standard library:
   # Unit variant: bare name
   nothing: None
 
-  # Payload variant: call constructor with named field (B-337: named-field calling coming soon)
+  # Payload variant: call constructor with named field
   something: [Some value: 42]
 
   # Pattern match on variants — [Some v] binds v to the payload value
@@ -309,9 +309,6 @@ Sum types with payloads use `try` in the standard library:
 ```
 
 **Named-field variants** — the pattern binds the payload value:
-
-> Note: Named-field constructor calling (e.g., `[Some value: 42]`) is tracked in B-337 — coming in a
-> future release. The examples below show the intended syntax; the match pattern form already works.
 
 ```tinct
 [
@@ -402,20 +399,20 @@ Errors propagate automatically through the thunk graph. Unused values never erro
       port
       [raise [str "invalid port: " [str port]]]]]
 
-  # try catches runtime errors; returns Ok or Error
+  # try catches runtime errors; returns Result.Ok or Result.Error
   value:   [match [try [fn [] [+ 1 2]]]
-    [Ok v]:    v   # → 3
-    [Error _]: 0]
+    [Result.Ok v]:    v   # → 3
+    [Result.Error _]: 0]
 
   # match on try result for fallback pattern
   safe:    [match [try [fn [] [/ 1 0]]]
-              [Ok v]:    v
-              [Error _]: 0]
+              [Result.Ok v]:    v
+              [Result.Error _]: 0]
   # → 0 (division error caught)
 ]
 ```
 
-`try` catches runtime errors. When the body evaluates successfully, it returns `[Ok value]`. When it raises, it returns `[Error message]`. Note: `try` catches evaluation errors only — to demonstrate a type error caught by `try`, run it at eval time, not typecheck time.
+`try` catches runtime errors. When the body evaluates successfully, it returns `[Result.Ok value]`. When it raises, it returns `[Result.Error message]`. Note: `try` catches evaluation errors only — to demonstrate a type error caught by `try`, run it at eval time, not typecheck time.
 
 ---
 

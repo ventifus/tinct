@@ -739,14 +739,9 @@ Constructor patterns use the same dot syntax in pattern head position:
 
 Dot-access in pattern head position is syntactically assembled by the parser via `flatten_dot_access_to_tag` in `src/ast.rs`. Bare uppercase words in constructor patterns are also recognized and rewritten to their qualified form by `typecheck_match.rs`.
 
-**Common prelude aliases** — pure rebinding:
+**Constructor injection in expression position** — bare `Ok`, `Error`, `Some`, `None` work in expression position because `inject_adt_constructors_expr` (in `src/desugar.rs`) rewrites each `[type ...]` declaration to also inject its constructors as sibling dict entries. For example, declaring `Result: [type [Ok a] [Error String]]` causes `Ok` and `Error` to be injected as callable constructor functions alongside `Result` in the enclosing scope. No separate prelude aliases are needed — and none exist (adding them would cause E030 duplicate key). B-340 tracks the type-checker UX limitation that these injected names are not currently visible to the type checker, which produces spurious T002 "undefined variable" warnings for bare `Ok`/`Error`/`Some`/`None` in user code.
 
-```tinct
-Ok:    Result.Ok
-Error: Result.Error
-Some:  Maybe.Some
-None:  Maybe.None
-```
+Pattern position requires qualified forms: `[Result.Ok v]:`, `[Maybe.None]:`, etc.
 
 **Type alias entries are excluded from record fields.** A `[type ...]` entry registers in the type environment but contributes no field to the enclosing record's type.
 
@@ -795,7 +790,7 @@ absent?: [fn@Bool [let x@Unknown] [match x Absent.Absent: true  _: false]]
   _:              "present"]
 ```
 
-Builtins that return a missing value (`get?`, `env`, `head`, `get-in?`) return `Absent.Absent` rather than `[]`. Testing with `absent?` or pattern matching on `Absent.Absent` is correct; `null?` checks only for `[]` (empty collection) and is not interchangeable.
+Builtins that return a missing value (`get?`, `env`) return `Absent.Absent` rather than `[]`. Testing with `absent?` or pattern matching on `Absent.Absent` is correct; `null?` checks only for `[]` (empty collection) and is not interchangeable. Note: `head` raises [E034] on `Seq.Nil` rather than returning `Absent.Absent`. `get-in?` is not yet implemented; use nested `get?` calls in the interim (tracked for implementation).
 
 ### 16. Type Dict Schema
 

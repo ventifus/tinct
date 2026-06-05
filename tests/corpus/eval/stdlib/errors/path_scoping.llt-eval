@@ -4,7 +4,7 @@
 [try [fn [] [basename "/foo/bar.txt"]]]
 
 === out
-Variant(Error, String("undefined variable: basename (did you mean the string \"basename\"? Use quotes.)"))
+Variant(Result.Error, String("undefined variable: basename (did you mean the string \"basename\"? Use quotes.)"))
 
 === warn
 undefined variable: basename at 3:14-3:22

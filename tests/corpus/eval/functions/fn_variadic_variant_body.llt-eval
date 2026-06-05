@@ -1,0 +1,7 @@
+# Variadic fn whose body calls variant-payload with the collected named args as payload.
+# This mimics the ADT constructor pattern: [fn [...payload] [variant-payload "Tag" payload]]
+# called with named args should create a variant with dict payload.
+[f: [fn [let ...payload] [variant-payload "Box" payload]]
+ result: [f value: 42]]
+=== out
+Dict({"f": Function(payload), "result": Variant(Box, Dict({"value": Int(42)}))})

@@ -1,11 +1,11 @@
 # BAS S-ClsBot / I-Case3: Constructor match arms with disjoint variant tags.
-# [try [fn [] 42]] returns Variant(Ok, Int(42)). The I-Case3 rule in infer_match
-# accumulates negations: after the [Ok v] arm, remaining_scrutinee gains ~"Ok"
-# via Type::Negation. S-ClsBot: Intersection([scrutinee, "Ok"]) ∩ ~"Ok" = Never.
-# The [Error _] arm correctly matches an uninhabited scrutinee type.
+# [try [fn [] 42]] returns Variant(Result.Ok, Int(42)). The I-Case3 rule in infer_match
+# accumulates negations: after the [Result.Ok v] arm, remaining_scrutinee gains ~"Result.Ok"
+# via Type::Negation. S-ClsBot: Intersection([scrutinee, "Result.Ok"]) ∩ ~"Result.Ok" = Never.
+# The [Result.Error _] arm correctly matches an uninhabited scrutinee type.
 [result: [try [fn [] 42]]
  value: [match result
-   [Ok v]:  v
-   [Error _]: 0]]
+   [Result.Ok v]:  v
+   [Result.Error _]: 0]]
 === out
-Dict({"result": Variant(Ok, Int(42)), "value": Int(42)})
+Dict({"result": Variant(Result.Ok, Int(42)), "value": Int(42)})

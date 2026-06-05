@@ -4,16 +4,8 @@
   [x: [Ok 21]]
   [y: [Ok 2]]
   [Ok [* x y]]]
-=== error
-[E071] non-exhaustive match: no pattern matched the Variant value (defined at stdlib/prelude.llt:1574:5-1576:34)
-  --> stdlib/prelude.llt:1574:5-1576:34
-   |
-  1574 |     [match result
-  1575 |         [Ok v]: [f v]
-  1576 |         [Error msg]: [Error msg]]]
-       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [<dot-access> ...] at 2:1-5:16
-  in expansion of `do` at 2:1
+=== out
+Variant(Result.Ok, Int(42))
 
 === warn
 undefined variable: Ok at 3:8-3:10

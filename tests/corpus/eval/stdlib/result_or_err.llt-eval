@@ -1,14 +1,7 @@
 # result-or: use default when Error
 [result-or 99 [Error "bad"]]
-=== error
-[E071] non-exhaustive match: no pattern matched the Variant value (defined at stdlib/prelude.llt:1586:5-1588:28)
-  --> stdlib/prelude.llt:1586:5-1588:28
-   |
-  1586 |     [match result
-  1587 |         [Ok v]: v
-  1588 |         [Error _]: default]]
-       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [result-or ...] at 1:1-1:29
+=== out
+Int(99)
 
 === warn
 undefined variable: Error at 1:16-1:21

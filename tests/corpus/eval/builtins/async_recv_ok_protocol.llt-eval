@@ -1,4 +1,4 @@
-# recv returns [Ok v] on successful receive
+# recv returns [Result.Ok v] on successful receive
 # Phase 3: recv protocol redesign (T-811)
 #
 # Strategy: force send before recv by making result depend on sent.
@@ -12,7 +12,7 @@
 ]
 ---
 [match %.result
-  [Ok v]: v
+  [Result.Ok v]: v
   [Closed]: -1]
 === out
 Int(42)

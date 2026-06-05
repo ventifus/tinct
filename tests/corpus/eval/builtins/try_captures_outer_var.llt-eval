@@ -1,4 +1,4 @@
 # try: fn body can capture variables from outer dict scope (De Bruijn resolution)
 [x: 42  result: [try [fn [] $x]]]
 === out
-Dict({"x": Int(42), "result": Variant(Ok, Int(42))})
+Dict({"x": Int(42), "result": Variant(Result.Ok, Int(42))})

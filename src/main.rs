@@ -2133,6 +2133,8 @@ fn run_eval(
             .map_err(|e| format!("{e}"))?;
             // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
             tinct::desugar::desugar_surface_program(&mut program);
+            // Inject ADT constructor bindings (must run after desugar, before resolve).
+            tinct::desugar::inject_adt_constructors_surface_program(&mut program);
             // Variable resolution pass (Phase 1 of arena allocation strategy).
             let resolution_table =
                 std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));

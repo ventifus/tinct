@@ -1,4 +1,4 @@
-# try : successful evaluation returns [Ok value]
+# try : successful evaluation returns [Result.Ok value]
 [try [fn [] 42]]
 === out
-Variant(Ok, Int(42))
+Variant(Result.Ok, Int(42))

@@ -1,6 +1,6 @@
 # retry with 0 retries and a always-failing thunk exhausts immediately.
 # retry-impl with n=0: tries once, fails, n < 1 → raises "retry limit exceeded".
-# try captures the raised error as Variant(Error, ...).
+# try captures the raised error as Variant(Result.Error, ...).
 [result: [try [fn [] [retry 0 [fn [] [raise "always fail"]]]]]]
 === out
-Dict({"result": Variant(Error, String("retry limit exceeded"))})
+Dict({"result": Variant(Result.Error, String("retry limit exceeded"))})

@@ -1,4 +1,4 @@
-# select-once returns [Ok v] on successful receive
+# select-once returns [Result.Ok v] on successful receive
 # Phase 3: select-once protocol redesign (T-810)
 #
 # Strategy: force send before select-once by making result depend on sent.
@@ -14,7 +14,7 @@
 ]
 ---
 [match %.result
-  [Ok v]: v
+  [Result.Ok v]: v
   [Closed]: -1]
 === error
 [E010] type mismatch: expected Seq or Seq.Nil, got Dict (defined at 12:27-12:58) (called at 15:8-15:16)

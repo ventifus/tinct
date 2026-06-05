@@ -6746,9 +6746,9 @@ fn test_adt_type_assert_union_enforcement() {
 #[test]
 fn test_try_result_type() {
     // `try` builtin returns Top — not a structural union — because the runtime
-    // now returns nominal Value::Variant { tag: "Ok"/"Error" }. A structural union
+    // now returns nominal Value::Variant { tag: "Result.Ok"/"Result.Error" }. A structural union
     // {ok:T}|{err:Str} would cause T004 false positives when user code matches on
-    // constructor patterns [Ok v] / [Error msg]. Top avoids triggering coverage
+    // constructor patterns [Result.Ok v] / [Result.Error msg]. Top avoids triggering coverage
     // checking (infer_match only runs exhaustiveness when scrutinee is Type::Union).
     // See builtin-type-audit sprint: try return type (TODO.md)
     let env = crate::builtins::build_builtins_type_env();
@@ -7500,7 +7500,7 @@ fn test_collect_pattern_bindings_constructor_unknown_fallback() {
     let mut out = Vec::new();
     collect_pattern_bindings(
         &Pattern::Constructor {
-            tag: "Some".into(),
+            tag: "Maybe.Some".into(),
             binding: Some(Box::new(Spanned::new(
                 Pattern::Variable("v".into()),
                 Span::origin(),
@@ -8998,17 +8998,17 @@ fn test_do_infer_resolve_monad_from_expr_qualified_error_constructor() {
 }
 
 #[test]
-fn test_do_infer_resolve_monad_from_expr_unqualified_no_tycon_env() {
-    // Unqualified constructor [Ok x] resolves to "result" via hardcoded fallback.
-    // TODO(T-1021): remove hardcoded fallback once TyConDef.constructors is populated
-    // and resolve_constructor_tag returns a qualified tag for Ok/Error.
+fn test_do_infer_resolve_monad_from_expr_unqualified_empty_env_returns_none() {
+    // Unqualified constructor [Ok x] with empty TypeEnv returns None.
+    // After T-1036: TyConDef.constructors is populated, so resolve_constructor_tag
+    // would return a qualified tag IF the type constructor is in the TypeEnv.
+    // With an empty TypeEnv (no Result type registered), bare [Ok 1] cannot resolve.
     let node = crate::parser::parse_surface_expression("[Ok 1]").expect("parse failed");
     let env = crate::types::TypeEnv::new();
     let resolved = resolve_monad_from_surface(&node, &env);
     assert_eq!(
-        resolved,
-        Some("result".to_string()),
-        "[Ok ...] should resolve to 'result' via hardcoded fallback (T-1021: remove when constructors populated)"
+        resolved, None,
+        "[Ok ...] against empty TypeEnv should return None (no type constructor registered)"
     );
 }
 

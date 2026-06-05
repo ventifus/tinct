@@ -5,3 +5,4 @@
 # falls back to the whole file; this tests parse() accepts it (no expected section).
 ---
 [x: 1]
+

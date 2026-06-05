@@ -93,7 +93,10 @@ enum SurfaceDeclaration {
 The Surface AST is the parser's native output and the authoritative representation before lowering. Key characteristics:
 
 - **Arc-wrapped nodes:** `Arc<SurfaceNode>` enables shared ownership across multiple references without copying the AST.
-- **Side-table design:** Variable resolution (`ResolutionTable`) and type annotations (`TypeAnnotationTable`) are stored separately, keyed by `NodeId` (derived from `Arc` raw pointer). This replaces the old `RefCell<Option<...>>` in-node mutation pattern.
+- **Side-table design:** Variable resolution (`ResolutionTable`) and type annotations (`TypeAnnotationTable`) are stored separately. This replaces the old `RefCell<Option<...>>` in-node mutation pattern. `TypeAnnotationTable` has two maps:
+  - `node_types: HashMap<NodeId, Type>` — keyed by `NodeId` (derived from `Arc` raw pointer), used for `SurfaceExpression::TypeAssert` annotation nodes resolved during type checking.
+  - `pattern_types: HashMap<Span, Type>` — keyed by the annotation's `Span`, populated by `record_pattern_elaborations` in `src/typecheck.rs` for `Pattern::TypeAssertPending` elaborations. `lower_pattern` in `src/lower.rs` consumes this map to convert `TypeAssertPending` → `TypeAssert` with resolved types.
+  - `drain()` drains only `node_types` — callers that only use this method silently discard `pattern_types`. Prefer `drain_into()`, which drains both maps. External callers must use `drain_into()` to avoid losing pattern type information.
 - **Pipe is preserved:** `SurfaceExpression::Pipe` remains in the Surface AST. The **lowering pass** (`src/lower.rs`) eliminates Pipe by rewriting it to `Call` before evaluation (see §Pipe Desugaring below).
 - **Expr/Decl separation:** Documents contain `SurfaceItem` entries, which are either expressions (`SurfaceItem::Expr`) or declarations (`SurfaceItem::Decl`). This separates top-level declarations (TypeAlias, ClassDecl, etc.) from expressions at the type level.
 - **ParseOutput returns SurfaceProgram:** `parse()` returns `ParseOutput { program: SurfaceProgram, ... }`. The `.program` field is the native Surface AST.
@@ -108,7 +111,7 @@ After the Surface AST is resolved and type-checked, the **lowering pass** (`src/
 
 - **Pipe eliminated:** `SurfaceExpression::Pipe` is rewritten to nested `Call` expressions.
 - **Resolution baked in:** Variable references are resolved to de Bruijn indices or environment lookups.
-- **Type assertions removed:** Type checking happens before lowering; runtime evaluation uses `CoreExpr` without type information.
+- **Type assertions preserved with resolved types:** `TypeAssert` carries a `resolved_type: Type` from the `TypeAnnotationTable` set during type checking. For `[@Type expr]` patterns, `lower_pattern` converts `Pattern::TypeAssertPending` → `Pattern::TypeAssert` by looking up the annotation span in `TypeAnnotationTable.pattern_types`. The evaluator checks the resolved type at force time via `value_matches_type`. `TypeAssertPending` remains as a fallback path for `--no-typecheck` mode and macro-synthesized patterns.
 
 ```rust
 /// Source location

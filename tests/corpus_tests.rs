@@ -215,6 +215,8 @@ fn test_corpus_structure() {
         "tests/corpus/eval/underscore",
         "tests/corpus/eval/documents",
         "tests/corpus/eval/slow",
+        "tests/corpus/eval/constructors",
+        "tests/corpus/eval/absent",
         // Invalid corpus
         "tests/corpus/invalid/pipeline",
         "tests/corpus/invalid/semantic_errors",
@@ -295,6 +297,21 @@ fn test_corpus_structure() {
         "tests/corpus/typecheck/warnings/ has {} tests, expected at least {}",
         typecheck_warnings_count,
         TYPECHECK_WARNINGS_MIN
+    );
+
+    let constructors_count =
+        find_test_files(&manifest_dir.join("tests/corpus/eval/constructors")).len();
+    assert!(
+        constructors_count >= 1,
+        "tests/corpus/eval/constructors/ has {} tests, expected at least 1",
+        constructors_count
+    );
+
+    let absent_count = find_test_files(&manifest_dir.join("tests/corpus/eval/absent")).len();
+    assert!(
+        absent_count >= 1,
+        "tests/corpus/eval/absent/ has {} tests, expected at least 1",
+        absent_count
     );
 }
 

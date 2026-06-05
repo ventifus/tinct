@@ -1,10 +1,9 @@
-# T-977: Named-field constructor calling convention (B-337 regression).
-# inject_adt_constructors_expr generates [fn [...payload] [variant "Tag" payload]].
-# Calling [Boxed value: 42] with named args fails E020 — variadic positional params
-# don't collect named args. Fix tracked in B-337 (blocked on S-850).
+# B-337: Named-field constructor calling convention.
+# Constructor [Boxed value: Int] generates [fn [...payload] [variant-payload "Box.Boxed" payload]].
+# Calling [Boxed value: 42] passes the named arg correctly.
 [
   Box: [type [Boxed value: Int]]
   result: [Boxed value: 42]
 ]
-=== error
-[E020] arity mismatch: expected 1 argument, got 2 (defined at 1:1-1:1)
+=== out
+Dict({"Boxed": Function(payload), "result": Variant(Box.Boxed, Dict({"value": Int(42)}))})

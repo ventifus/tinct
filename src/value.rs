@@ -909,6 +909,8 @@ impl Value {
             // Seq.Cons is a non-empty sequence — TypeTag("Seq") patterns match it.
             // Seq.Nil is a unit variant — TypeTag patterns fall through to wildcard.
             Value::Variant { tag, .. } if tag == "Seq.Cons" => "Seq",
+            // Absent.Absent should display as "Absent" for type error messages
+            Value::Variant { tag, .. } if tag == "Absent.Absent" => "Absent",
             Value::Variant { .. } => "Variant",
             Value::Decimal(_) => "Decimal",
             Value::BigInt(_) => "BigInt",
@@ -1090,6 +1092,8 @@ impl fmt::Display for Value {
                     write!(f, "Seq(...)")
                 } else if tag == "Seq.Nil" {
                     write!(f, "Seq()")
+                } else if tag == "Absent.Absent" {
+                    write!(f, "Absent()")
                 } else if payload.is_some() {
                     write!(f, "{tag}(<payload>)")
                 } else {

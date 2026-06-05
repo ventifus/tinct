@@ -11,7 +11,7 @@
 # 1. Drain the emit channel concurrently, discarding all values.
 [drain: [task
   [loop-select [context]
-    [seq [ch: %emit-channel  handler: [fn [let v] []]] []]
+    [seq [ch: %emit-channel  handler: [fn [let v] []]] [builtin-variant "Seq.Nil"]]
     identity]]]
 
 # 2. Force % to drive the evaluation cascade (for side effects).

@@ -1453,7 +1453,7 @@ mod tests {
             file: None,
         };
         let pat = ast::Pattern::Constructor {
-            tag: "Some".to_string(),
+            tag: "Maybe.Some".to_string(),
             binding: Some(Box::new(Spanned {
                 node: ast::Pattern::Variable("x".to_string()),
                 span,
@@ -1463,7 +1463,7 @@ mod tests {
         assert_eq!(
             coverage,
             CoveragePattern::Constructor {
-                tag: ConstructorTag::Variant("Some".to_string()),
+                tag: ConstructorTag::Variant("Maybe.Some".to_string()),
                 sub_patterns: vec![CoveragePattern::Wildcard],
             }
         );

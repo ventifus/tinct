@@ -3051,11 +3051,11 @@ mod tests {
         }));
         match result {
             Value::Variant { tag, payload } => {
-                assert_eq!(tag, "Ok");
+                assert_eq!(tag, "Result.Ok");
                 let payload_val = mat_id(payload.expect("Ok should have payload"), &ctx);
                 assert_eq!(payload_val, Value::Int(42));
             }
-            _ => panic!("expected Variant(Ok, ...), got: {:?}", result),
+            _ => panic!("expected Variant(Result.Ok, ...), got: {:?}", result),
         }
     }
 
@@ -3071,11 +3071,11 @@ mod tests {
         }));
         match result {
             Value::Variant { tag, payload } => {
-                assert_eq!(tag, "Ok");
+                assert_eq!(tag, "Result.Ok");
                 let payload_val = mat_id(payload.expect("Ok should have payload"), &ctx);
                 assert_eq!(payload_val, string_val("hello".into()));
             }
-            _ => panic!("expected Variant(Ok, ...), got: {:?}", result),
+            _ => panic!("expected Variant(Result.Ok, ...), got: {:?}", result),
         }
     }
 
@@ -3092,8 +3092,8 @@ mod tests {
         }));
         match result {
             Value::Variant { tag, payload } => {
-                assert_eq!(tag, "Error");
-                let err_val = mat_id(payload.expect("Error should have payload"), &ctx);
+                assert_eq!(tag, "Result.Error");
+                let err_val = mat_id(payload.expect("Result.Error should have payload"), &ctx);
                 match err_val {
                     Value::String {
                         ref source,
@@ -3109,7 +3109,7 @@ mod tests {
                     _ => panic!("expected String error message"),
                 }
             }
-            _ => panic!("expected Variant(Error, ...), got: {:?}", result),
+            _ => panic!("expected Variant(Result.Error, ...), got: {:?}", result),
         }
     }
 
@@ -3185,11 +3185,11 @@ mod tests {
         }));
         match result {
             Value::Variant { tag, payload } => {
-                assert_eq!(tag, "Ok");
+                assert_eq!(tag, "Result.Ok");
                 let payload_val = mat_id(payload.expect("Ok should have payload"), &ctx);
                 assert_eq!(payload_val, Value::Int(99));
             }
-            _ => panic!("expected Variant(Ok, ...), got: {:?}", result),
+            _ => panic!("expected Variant(Result.Ok, ...), got: {:?}", result),
         }
     }
 
@@ -3218,11 +3218,11 @@ mod tests {
         }));
         match result {
             Value::Variant { tag, payload } => {
-                assert_eq!(tag, "Error");
-                let payload_val = mat_id(payload.expect("Error should have payload"), &ctx);
+                assert_eq!(tag, "Result.Error");
+                let payload_val = mat_id(payload.expect("Result.Error should have payload"), &ctx);
                 assert_eq!(payload_val, string_val("builtin error".into()));
             }
-            _ => panic!("expected Variant(Error, ...), got: {:?}", result),
+            _ => panic!("expected Variant(Result.Error, ...), got: {:?}", result),
         }
     }
 

@@ -488,16 +488,12 @@ fn typecheck_surface_document(
                         Ok(_) => {
                             // Drain TypeAnnotationTable entries produced during ClassDecl inference
                             // to prevent them from leaking into subsequent items.
-                            for (nid, ty) in state.type_annotation_table.drain() {
-                                table.insert(nid, ty);
-                            }
+                            state.type_annotation_table.drain_into(table);
                         }
                         Err(mut errs) => {
                             errors.append(&mut errs);
-                            // Drain TypeAssert entries from failed expression to prevent leaking into next iteration
-                            for (nid, ty) in state.type_annotation_table.drain() {
-                                table.insert(nid, ty);
-                            }
+                            // Drain entries from failed expression to prevent leaking into next iteration.
+                            state.type_annotation_table.drain_into(table);
                         }
                     }
                 }
@@ -514,16 +510,12 @@ fn typecheck_surface_document(
                         Ok(_) => {
                             // Drain TypeAnnotationTable entries produced during InstanceDecl inference
                             // to prevent them from leaking into subsequent items.
-                            for (nid, ty) in state.type_annotation_table.drain() {
-                                table.insert(nid, ty);
-                            }
+                            state.type_annotation_table.drain_into(table);
                         }
                         Err(mut errs) => {
                             errors.append(&mut errs);
-                            // Drain TypeAssert entries from failed expression to prevent leaking into next iteration
-                            for (nid, ty) in state.type_annotation_table.drain() {
-                                table.insert(nid, ty);
-                            }
+                            // Drain entries from failed expression to prevent leaking into next iteration.
+                            state.type_annotation_table.drain_into(table);
                         }
                     }
                 }
@@ -611,10 +603,9 @@ fn typecheck_surface_document(
                 infer_dict(entries, &env, state, type_map, surface_node.span.clone());
             errors.append(&mut dict_errs);
             table.insert(node_id(surface_node), dict_ty.clone());
-            // Merge nested TypeAssert entries from infer_dict into the document-level table
-            for (nid, ty) in state.type_annotation_table.drain() {
-                table.insert(nid, ty);
-            }
+            // Merge nested TypeAssert entries (node_types) and pattern elaborations
+            // (pattern_types) from infer_dict into the document-level table.
+            state.type_annotation_table.drain_into(table);
             if is_last {
                 result_type = dict_ty;
                 last_dict_schemes = Some(schemes);
@@ -639,10 +630,9 @@ fn typecheck_surface_document(
                 Ok(ty) => {
                     state.level = enclosing_level;
                     table.insert(node_id(surface_node), ty.clone());
-                    // Merge nested TypeAssert entries from infer_surface_expr into the document-level table
-                    for (nid, ty) in state.type_annotation_table.drain() {
-                        table.insert(nid, ty);
-                    }
+                    // Merge nested TypeAssert entries (node_types) and pattern elaborations
+                    // (pattern_types) from infer_surface_expr into the document-level table.
+                    state.type_annotation_table.drain_into(table);
                     if is_last {
                         result_type = ty.clone();
                         last_node = Some(Arc::clone(surface_node));
@@ -675,10 +665,8 @@ fn typecheck_surface_document(
                 Err(mut errs) => {
                     state.level = enclosing_level;
                     errors.append(&mut errs);
-                    // Drain TypeAssert entries from failed expression to prevent leaking into next iteration
-                    for (nid, ty) in state.type_annotation_table.drain() {
-                        table.insert(nid, ty);
-                    }
+                    // Drain entries from failed expression to prevent leaking into next iteration.
+                    state.type_annotation_table.drain_into(table);
                 }
             }
         }
@@ -925,6 +913,30 @@ fn collect_nominal_tags(ty: &Type) -> Vec<String> {
     }
 }
 
+/// Extract constructor information from a resolved type alias body.
+/// For nominal ADTs (unions of NominalVariants), returns Vec<(qualified_tag, payload_arity)>.
+/// - qualified_tag: "Result.Ok", "Maybe.Some", "Absent.Absent"
+/// - payload_arity: 0 if fields.is_empty() (unit constructor), 1 otherwise (has payload)
+///
+/// Examples:
+/// - `Result: [type [Ok a] [Error String]]` → `[("Result.Ok", 1), ("Result.Error", 1)]`
+/// - `Maybe: [type [Some a] [None]]` → `[("Maybe.Some", 1), ("Maybe.None", 0)]`
+/// - `Absent: [type Absent]` → `[("Absent.Absent", 0)]`
+fn extract_constructors_from_type(ty: &Type, type_name: &str) -> Vec<(String, usize)> {
+    match ty {
+        Type::NominalVariant { tag, fields } => {
+            let qualified_tag = format!("{}.{}", type_name, tag);
+            let payload_arity = if fields.fields.is_empty() { 0 } else { 1 };
+            vec![(qualified_tag, payload_arity)]
+        }
+        Type::Union(members) => members
+            .iter()
+            .flat_map(|m| extract_constructors_from_type(m, type_name))
+            .collect(),
+        _ => vec![],
+    }
+}
+
 fn register_type_aliases(
     node: &Arc<SurfaceNode>,
     target_env: &mut TypeEnv,
@@ -1139,10 +1151,17 @@ fn register_type_aliases(
                         .map(|(decl, inferred)| decl.unwrap_or(*inferred))
                         .collect();
 
+                    // Extract constructor information from the resolved type body.
+                    // For nominal ADTs (unions of NominalVariants), populate constructors.
+                    // constructors: Vec<(qualified_tag, payload_arity)>
+                    // - qualified_tag: "Result.Ok", "Maybe.Some", "Absent.Absent"
+                    // - payload_arity: 0 if fields.is_empty() (unit constructor), 1 otherwise
+                    let constructors = extract_constructors_from_type(&alias_ty, &name);
+
                     // Register TyConDef for TyCon identity checking and variance-directed subtyping.
                     let tycon_def = TyConDef {
                         variance: final_variances,
-                        constructors: vec![],
+                        constructors,
                         builtin_type: None,
                     };
                     target_env.insert_tycon_def(name.clone(), tycon_def.clone());
@@ -1190,6 +1209,129 @@ fn infer_if(
     let result_ty = Type::simplify_type(raw_union);
 
     Ok(result_ty)
+}
+
+/// Walk an elaborated pattern alongside the original unelaborated pattern, recording
+/// annotation-span → resolved type mappings in `table` for every `TypeAssertPending`
+/// that was resolved by `elaborate_pattern`.
+///
+/// `elaborated` is the output of `elaborate_pattern`; `original` is the unelaborated
+/// pattern from the stored AST (the one that will remain in the `SurfaceMatchArm`).
+///
+/// When we find a `TypeAssert` in `elaborated` that corresponds to a `TypeAssertPending`
+/// in `original`, we record `original.annotation.span → resolved_type` in `table`.
+/// This allows `lower.rs` to convert `TypeAssertPending → TypeAssert` when building
+/// `CoreMatchArm`, connecting the type checker's elaboration to the evaluator. (B-338)
+///
+/// Recursion mirrors the structure of `elaborate_pattern` exactly so the parallel walk
+/// stays in sync. Sub-patterns (inner, Or branches, Constructor binding, Dict fields,
+/// Seq head/tail) are walked in the same order as `elaborate_pattern`.
+fn record_pattern_elaborations(
+    elaborated: &Pattern,
+    original: &Pattern,
+    table: &mut TypeAnnotationTable,
+) {
+    match (elaborated, original) {
+        // The key case: TypeAssertPending was resolved to TypeAssert.
+        // Record the annotation span from the original TypeAssertPending so lower.rs can
+        // look it up by span when converting the stored SurfaceMatchArm pattern.
+        (
+            Pattern::TypeAssert {
+                resolved_type,
+                inner: elab_inner,
+            },
+            Pattern::TypeAssertPending {
+                annotation,
+                inner: orig_inner,
+            },
+        ) => {
+            table.insert_pattern(annotation.span.clone(), resolved_type.clone());
+            // Recurse into inner sub-pattern if present.
+            if let (Some(elab_box), Some(orig_box)) = (elab_inner, orig_inner) {
+                record_pattern_elaborations(&elab_box.node, &orig_box.node, table);
+            }
+        }
+
+        // TypeAssert in both: already elaborated — recurse into inner.
+        (
+            Pattern::TypeAssert {
+                inner: elab_inner, ..
+            },
+            Pattern::TypeAssert {
+                inner: orig_inner, ..
+            },
+        ) => {
+            if let (Some(elab_box), Some(orig_box)) = (elab_inner, orig_inner) {
+                record_pattern_elaborations(&elab_box.node, &orig_box.node, table);
+            }
+        }
+
+        // Constructor: builtin-type constructors may become TypeAssert in elaborated.
+        // Pattern::Constructor has no annotation span so nothing can be recorded in pattern_types.
+        // Recurse into inner binding to catch nested TypeAssertPending patterns.
+        (
+            Pattern::TypeAssert {
+                inner: elab_inner, ..
+            },
+            Pattern::Constructor {
+                binding: orig_binding,
+                ..
+            },
+        ) => {
+            if let (Some(elab_box), Some(orig_box)) = (elab_inner, orig_binding) {
+                record_pattern_elaborations(&elab_box.node, &orig_box.node, table);
+            }
+        }
+
+        // Constructor keeping its form: elaborate inner binding.
+        (
+            Pattern::Constructor {
+                binding: elab_binding,
+                ..
+            },
+            Pattern::Constructor {
+                binding: orig_binding,
+                ..
+            },
+        ) => {
+            if let (Some(elab_box), Some(orig_box)) = (elab_binding, orig_binding) {
+                record_pattern_elaborations(&elab_box.node, &orig_box.node, table);
+            }
+        }
+
+        // Or-pattern: walk each branch pair.
+        (Pattern::Or(elab_branches), Pattern::Or(orig_branches)) => {
+            for (elab_branch, orig_branch) in elab_branches.iter().zip(orig_branches.iter()) {
+                record_pattern_elaborations(&elab_branch.node, &orig_branch.node, table);
+            }
+        }
+
+        // Dict pattern: walk each field pair.
+        (
+            Pattern::Dict {
+                fields: elab_fields,
+                ..
+            },
+            Pattern::Dict {
+                fields: orig_fields,
+                ..
+            },
+        ) => {
+            for ((_, elab_spanned), (_, orig_spanned)) in elab_fields.iter().zip(orig_fields.iter())
+            {
+                record_pattern_elaborations(&elab_spanned.node, &orig_spanned.node, table);
+            }
+        }
+
+        // Seq pattern: walk head and tail.
+        (Pattern::Seq { head: eh, tail: et }, Pattern::Seq { head: oh, tail: ot }) => {
+            record_pattern_elaborations(&eh.node, &oh.node, table);
+            record_pattern_elaborations(&et.node, &ot.node, table);
+        }
+
+        // Leaf patterns (Variable, Wildcard, Literal, Pin, TypeTag): no sub-patterns.
+        _ => {}
+    }
 }
 
 /// Type-infer a SurfaceNode expression.
@@ -1737,6 +1879,16 @@ pub(crate) fn infer_surface_expr(
                 // (not the raw annotation) when computing variable types for arm body checking.
                 let elaborated_pat = elaborate_pattern(&arm.pattern.node, env, state)?;
 
+                // Persist elaboration: record annotation-span → resolved type in the
+                // TypeAnnotationTable so lower.rs can convert TypeAssertPending → TypeAssert
+                // in CoreMatchArm patterns (B-338 fix). Without this, the evaluator would
+                // see TypeAssertPending at runtime with only a fragile name-mapping fallback.
+                record_pattern_elaborations(
+                    &elaborated_pat,
+                    &arm.pattern.node,
+                    &mut state.type_annotation_table,
+                );
+
                 let mut pat_bindings: Vec<(String, Type)> = Vec::new();
                 collect_pattern_bindings(&elaborated_pat, &arm_scrutinee_ty, &mut pat_bindings);
                 let arm_env = if pat_bindings.is_empty() {
@@ -1806,8 +1958,10 @@ pub(crate) fn infer_surface_expr(
                 // User-defined type constructors: look up TyConDef.constructors in tycon_env.
                 // Handles both bare TyCon(name) scrutinees and App(TyCon(name), arg) forms
                 // (e.g., `Seq[Int]` or a user-defined parameterized type).
-                // TyConDef.constructors is empty until T-1003 populates it; in that case
-                // we return None so coverage checking is skipped (no false non-exhaustiveness).
+                // TyConDef.constructors is populated by T-1036 for nominal ADTs declared in
+                // prelude.llt. T-1003 (S-852) handles TypeEnv.tycon_defs population for
+                // user-defined [type ...] declarations. If constructors is empty, we return
+                // None so coverage checking is skipped (no false non-exhaustiveness warnings).
                 ty @ Type::TyCon(_) | ty @ Type::App(_, _) => {
                     // Extract the root TyCon name from TyCon(name) or App(TyCon(name), _).
                     let tycon_name = match ty {
@@ -1834,7 +1988,7 @@ pub(crate) fn infer_surface_expr(
                                 constructors: ctors,
                             })
                         }
-                        // Constructors not yet populated (pending T-1003) or TyCon not found —
+                        // TyCon not found in tycon_env or has no declared constructors —
                         // skip coverage checking to avoid false non-exhaustiveness warnings.
                         _ => None,
                     }

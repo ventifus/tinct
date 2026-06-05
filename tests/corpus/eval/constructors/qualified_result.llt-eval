@@ -1,0 +1,18 @@
+# S-850 / B-337: Named-field constructors with qualified tags.
+# Result: [type [let a] [Ok value: a] [Error msg: String]] injects Ok and Error
+# as constructor functions with qualified tags "Result.Ok" and "Result.Error".
+# Constructor calls use the unqualified injected name (Ok, Error).
+# Pattern match uses the qualified form (Result.Ok, Result.Error).
+[
+  Result: [type [let a] [Ok value: a] [Error msg: String]]
+  ok-val: [Ok value: 42]
+  err-val: [Error msg: "fail"]
+  ok-matched: [match [Ok value: 1]
+    [Result.Ok v]: v.value
+    [Result.Error e]: 0]
+]
+=== out
+Dict({"Ok": Function(payload), "Error": Function(payload), "ok-val": Variant(Result.Ok, Dict({"value": Int(42)})), "err-val": Variant(Result.Error, Dict({"msg": String("fail")})), "ok-matched": Int(1)})
+
+=== warn
+non-exhaustive match: missing coverage for [Ok _] at 9:15-11:25

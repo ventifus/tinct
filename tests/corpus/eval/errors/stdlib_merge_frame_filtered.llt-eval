@@ -4,12 +4,12 @@
     result: [public-fn 42]
 ]
 === error
-[E080] from helper-merge (defined at stdlib/prelude.llt:2050:28-2050:47)
-  --> stdlib/prelude.llt:2050:28-2050:47
+[E080] from helper-merge (defined at stdlib/prelude.llt:2066:28-2066:47)
+  --> stdlib/prelude.llt:2066:28-2066:47
    |
-  2050 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2066 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2050:28-2050:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2066:28-2066:47
    |
-  2050 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2066 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^

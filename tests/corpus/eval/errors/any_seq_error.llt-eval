@@ -1,20 +1,20 @@
 # any?: Seq input produces clear error message
 [any? [fn [let x] true] [range 0 3]]
 === error
-[E080] any?: expected Dict, got Seq -- collect the Seq first (defined at stdlib/prelude.llt:2050:28-2050:47)
-  --> stdlib/prelude.llt:2050:28-2050:47
+[E080] any?: expected Dict, got Seq -- collect the Seq first (defined at stdlib/prelude.llt:2066:28-2066:47)
+  --> stdlib/prelude.llt:2066:28-2066:47
    |
-  2050 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2066 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2050:28-2050:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2066:28-2066:47
    |
-  2050 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2066 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:666:5-668:53
+  in [builtin-if ...] at stdlib/prelude.llt:667:5-669:53
    |
-  666 |     [builtin-if [seq? xs]
-  667 |         [error "any?: expected Dict, got Seq -- collect the Seq first"]
-  668 |         [any?-impl pred xs [keys xs] 0 [length xs]]]]
+  667 |     [builtin-if [seq? xs]
+  668 |         [error "any?: expected Dict, got Seq -- collect the Seq first"]
+  669 |         [any?-impl pred xs [keys xs] 0 [length xs]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [any? ...] at 1:1-1:37
 

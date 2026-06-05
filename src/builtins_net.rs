@@ -2713,7 +2713,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let resp_id = ctx.alloc_thunk(ok_val(Value::Dict(inner), span.clone())?);
     ok_val(
         Value::Variant {
-            tag: "Ok".to_string(),
+            tag: "Result.Ok".to_string(),
             payload: Some(resp_id),
         },
         span,
@@ -2861,7 +2861,7 @@ fn http_request_h3(
     let resp_id = ctx.alloc_thunk(ok_val(Value::Dict(inner), span.clone())?);
     ok_val(
         Value::Variant {
-            tag: "Ok".to_string(),
+            tag: "Result.Ok".to_string(),
             payload: Some(resp_id),
         },
         span,
@@ -2877,7 +2877,7 @@ fn http_request_result_error(
     let msg_id = ctx.alloc_thunk(ok_val(string_val(&msg), span.clone())?);
     ok_val(
         Value::Variant {
-            tag: "Error".to_string(),
+            tag: "Result.Error".to_string(),
             payload: Some(msg_id),
         },
         span,

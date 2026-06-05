@@ -1,7 +1,7 @@
-# Test try result pattern matching - Error arm
-# try returns [Error message] on failure; pattern match uses default
+# Test try result pattern matching - Result.Error arm
+# try returns [Result.Error message] on failure; pattern match uses default
 [match [try [fn [] [/ 1 0]]]
-  [Ok v]: v
-  [Error _]: -1]
+  [Result.Ok v]: v
+  [Result.Error _]: -1]
 === out
 Int(-1)

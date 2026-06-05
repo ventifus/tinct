@@ -7,9 +7,8 @@
   int-str: [Pair first: 42  second: "hello"]
 ]
 int-str.first
-=== error
-[E020] arity mismatch: expected 1 argument, got 2 (defined at 1:1-1:1)
-  in materialized at 4:1-7:2
+=== out
+Int(42)
 
 === warn
 type alias 'Pair' expects 2 type parameter(s), got 0 at 5:25-5:51

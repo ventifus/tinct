@@ -2,13 +2,13 @@
 # Regression: after migration, head must check for Seq.Nil Variant (not empty Dict)
 [head [tail [range 1 2]]]
 === error
-[E034] head on empty collection (defined at stdlib/prelude.llt:2482:15-2482:32)
-  --> stdlib/prelude.llt:2482:15-2482:32
+[E034] head on empty collection (defined at stdlib/prelude.llt:2498:15-2498:32)
+  --> stdlib/prelude.llt:2498:15-2498:32
    |
-  2482 | """] [let xs] [builtin-head xs]]
+  2498 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
-  in [builtin-head ...] at stdlib/prelude.llt:2482:15-2482:32
+  in [builtin-head ...] at stdlib/prelude.llt:2498:15-2498:32
    |
-  2482 | """] [let xs] [builtin-head xs]]
+  2498 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [head ...] at 2:1-2:26

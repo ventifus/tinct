@@ -1,4 +1,4 @@
-# try: catching an error raised by $raise returns [Error message]
+# try: catching an error raised by $raise returns [Result.Error message]
 [try [fn [] [raise "caught"]]]
 === out
-Variant(Error, String("caught"))
+Variant(Result.Error, String("caught"))

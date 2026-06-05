@@ -6,7 +6,7 @@
   [match cfg [host h  port p]: [str h ":" [str p]]]
 ]
 === error
-[E020] arity mismatch: expected 1 argument, got 2 (defined at 1:1-1:1)
+[E099] syntax error at 5:30 (cannot evaluate error node) (defined at 5:30-5:31)
 
 === warn
 syntax error at 5:30 (cannot typecheck error node) at 5:30-5:31

@@ -276,11 +276,11 @@ pub(crate) fn typecheck_case_arm(
                             // as Type::Function { params: [(None, payload_ty)], ret: ... } when
                             // the type system has full constructor type information.
                             //
-                            // In the current implementation, ADT constructors are injected by the
-                            // desugar pass as `Ok: [variant "Ok"]` expressions, and their TypeEnv
-                            // entries may be Type::Top (from the `variant` builtin's return type)
-                            // rather than a precise function type. In that case, fall back to
-                            // Type::Unknown as the payload type (sound under gradual typing).
+                            // ADT constructors from `[type ...]` declarations are injected by the
+                            // desugar pass as `[builtin-variant "TypeName.CtorName"]` expressions.
+                            // Their TypeEnv entries may be Type::Top when constructor type information
+                            // is unavailable. In that case, fall back to Type::Unknown as the payload
+                            // type (sound under gradual typing).
                             // SAFETY: is_structural_test is only true when constructor_name_opt is Some.
                             let constructor_name = constructor_name_opt.unwrap();
 

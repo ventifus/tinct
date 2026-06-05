@@ -138,7 +138,7 @@ pub(crate) fn builtin_emit(
 }
 
 /// `env`: Read an environment variable by name.
-/// Returns the value as a String, or Null if not set or not allowed.
+/// Returns the value as a String, or `Absent.Absent` if not set or not allowed.
 /// Gated by ctx.env_allowed: None = all denied, Some(set) = only those allowed.
 pub(crate) fn builtin_env(
     ctx_arg: BuiltinArgs,
@@ -162,14 +162,26 @@ pub(crate) fn builtin_env(
         };
 
         if !allowed {
-            // Return Null if not allowed
-            return ok_val(Value::Dict(IndexMap::new()), call_span);
+            // Return Absent.Absent if not allowed
+            return ok_val(
+                Value::Variant {
+                    tag: "Absent.Absent".into(),
+                    payload: None,
+                },
+                call_span,
+            );
         }
 
         // Read env var
         match std::env::var(name) {
             Ok(value) => ok_val(string_val(&value), call_span),
-            Err(_) => ok_val(Value::Dict(IndexMap::new()), call_span), // Not set -> Null
+            Err(_) => ok_val(
+                Value::Variant {
+                    tag: "Absent.Absent".into(),
+                    payload: None,
+                },
+                call_span,
+            ), // Not set -> Absent.Absent
         }
     })
 }
