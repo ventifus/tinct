@@ -100,7 +100,7 @@ Config: [type [record
 **Storage model.** All annotations are stored as `IndexMap<String, Value>` — a uniform open dict. There are three storage sites:
 
 - **`Value::Function` values**: `FnAnnotation.extra: IndexMap<String, Value>` alongside existing `doc`, `return_type`, and params fields. Functions currently carry `FnAnnotation`; all annotation fields — well-known and custom — now live there uniformly.
-- **All other values** (`Value::String`, `Value::Int`, `Value::Dict`, etc.): A new `Value::Annotated { inner: Arc<Thunk>, annotation: Value /* dict */ }` wrapper carries the annotation. `annotation-of` dispatches on both `Value::Function` (reads `FnAnnotation`) and `Value::Annotated` (reads `.annotation`). Values without annotations return an empty dict.
+- **All other values** (`Value::String`, `Value::Int`, `Value::Dict`, etc.): A new `Value::Annotated { inner: ThunkId, annotation: Box<Value> }` wrapper carries the annotation. `inner` is lazy (ThunkId); `annotation` is materialized at annotation time. `annotation-of` dispatches on both `Value::Function` (reads `FnAnnotation`) and `Value::Annotated` (reads `.annotation`). Values without annotations return an empty dict.
 - **Type-level positions** (type alias declarations, record field type annotations): The annotation is part of the type representation. `TyConDef` gains `annotation: IndexMap<String, Value>`. Record field type annotations are stored in `TypeNode.Record.field_annotations: Map String TypeNode` (each entry maps a field name to its annotation dict TypeNode, alongside the type in `fields`).
 
 **`annotation-of` is a Rust builtin** that reads from all three storage sites uniformly, returning the annotation dict or an empty dict if no annotation is present. It is available at both runtime and in the type-stage evaluator.
@@ -282,7 +282,8 @@ TypeNode: [merge TypeNode [
 **`TypeNode-ctor t`** — returns the constructor function for a TypeNode value: `[get TypeNode [last [str-split "." [tag-of t]]]]`. This is the same expression already used inline in `children`, `as-type`, and `map-children`; it can be defined as a helper or inlined everywhere.
 
 **Constructor annotation dict** — `annotation-of(TypeNode-ctor t)` returns the constructor's complete annotation dict. This includes constructor-level keys (`as-type:`, `guarding:`) AND a `field-annotations:` key mapping each field name to its annotation dict. The `field-annotations:` entry is populated at desugar time when `@Child` field annotations are processed — the desugar pass reads the field's declared type and stores `{ "role": "Seq" }` (or `"One"` or `"MapValues"`) in `FnAnnotation.extra["field-annotations"]["field-name"]`. Example for `TypeNode.Union`:
-```
+
+```text
 annotation-of(TypeNode.Union) → {
   as-type:           <fn>,
   guarding:          false,
@@ -292,6 +293,7 @@ annotation-of(TypeNode.Union) → {
 ```
 
 **Helper functions** (`child-fields`, `child-role`, `child-field?`) use this unified annotation dict:
+
 ```tinct
 child-fields:  [fn [let ctor] [keys [annotation-of ctor | .field-annotations]]]
 child-role:    [fn [let ctor field] [[annotation-of ctor | .field-annotations | field] .role]]
@@ -765,7 +767,7 @@ Explicit `mu` in annotation positions uses `[fn [let self] ...]` with `self` as 
 
 1. `FnAnnotation` gains `extra: IndexMap<String, Value>` — all annotation fields are stored uniformly. Standard fields (`doc:`, `return:`, etc.) may continue to have dedicated typed fields for performance but are ALSO stored in `extra` for uniformity. `annotation-of` reads `extra` as the canonical annotation dict.
 
-2. New `Value::Annotated { inner: Arc<Thunk>, annotation: Value }` — wraps any non-function value with an annotation dict. `annotation-of` dispatches on both variants. All other Value operations unwrap `Annotated` transparently (pattern matching, equality, display).
+2. New `Value::Annotated { inner: ThunkId, annotation: Box<Value> }` — wraps any non-function value with an annotation dict. `annotation-of` dispatches on both variants. All other Value operations unwrap `Annotated` transparently (pattern matching, equality, display).
 
 3. `TyConDef` gains `annotation: IndexMap<String, Value>` — for type alias and type constructor declaration annotations. `annotation-of` on a TyConDef reference returns this dict.
 

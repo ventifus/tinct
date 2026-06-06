@@ -710,10 +710,20 @@ pub struct SurfaceEntry {
 }
 
 /// A named argument in a SurfaceExpression::Call.
+///
+/// `annotation` carries any `@[...]` annotation attached to the argument name
+/// in a field declaration context, e.g. `fields@Child: [Seq TypeNode]` inside a
+/// constructor bracket produces `SurfaceNamedArg { name: "fields", value: ...,
+/// annotation: Some(Simple("Child")) }`.
+///
+/// For ordinary named arguments (`field: value`) the annotation is `None`.
+/// The desugar pass (T-1053) reads this to populate `field-annotations:` in the
+/// constructor's `FnAnnotation.extra`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceNamedArg {
     pub name: String,
     pub value: Arc<SurfaceNode>,
+    pub annotation: Option<Spanned<Annotation>>,
 }
 
 /// A function parameter in a SurfaceExpression::Fn.

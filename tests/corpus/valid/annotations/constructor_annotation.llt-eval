@@ -1,0 +1,7 @@
+# Constructor annotation: ConstructorName@[...] in [type ...] body (T-1052)
+# Priority 2b: Union + ImmediateAt → Dict frame. The annotation PropertyDict is captured
+# on the constructor tag node in the AST as SurfaceExpression::Annotated.
+# Type resolution strips the annotation and uses "Union" as the constructor tag.
+[Color: [type [Union@[guarding: false]  types: String]]]
+=== out
+["Color": [type [Union@["guarding": false]  "types": String]]]

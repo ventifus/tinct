@@ -427,11 +427,11 @@ pub(crate) use crate::builtins_dict::{
 // json_to_value deleted in json-serde-removal sprint (from-json is now pure tinct in stdlib/codecs/json.llt)
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_meta::{
-    builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_cap_identity,
-    builtin_decimal, builtin_eval, builtin_eval_types, builtin_expand, builtin_force,
-    builtin_gensym, builtin_include_cache_get, builtin_include_cache_put, builtin_llt_repr,
-    builtin_load, builtin_macro_error, builtin_macro_injects, builtin_raise, builtin_tag_of,
-    builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
+    builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_types, builtin_expand,
+    builtin_force, builtin_gensym, builtin_include_cache_get, builtin_include_cache_put,
+    builtin_llt_repr, builtin_load, builtin_macro_error, builtin_macro_injects, builtin_raise,
+    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,

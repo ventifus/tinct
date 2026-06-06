@@ -1,13 +1,13 @@
 # collect: error when tail is non-empty dict (not Seq or terminal)
 [collect [seq 1 [x: 2]]]
 === error
-[E010] collect: expected Seq, got Dict (defined at stdlib/prelude.llt:2532:32-2532:34) (called at stdlib/prelude.llt:2532:15-2532:35)
-  --> stdlib/prelude.llt:2532:32-2532:34
+[E010] collect: expected Seq, got Dict (defined at stdlib/prelude.llt:2585:32-2585:34) (called at stdlib/prelude.llt:2585:15-2585:35)
+  --> stdlib/prelude.llt:2585:32-2585:34
    |
-  2532 | """] [let xs] [builtin-collect xs]]
+  2585 | """] [let xs] [builtin-collect xs]]
        |                                ^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2532:15-2532:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2585:15-2585:35
    |
-  2532 | """] [let xs] [builtin-collect xs]]
+  2585 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in [collect ...] at 1:1-1:25

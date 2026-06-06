@@ -1113,24 +1113,28 @@ fn test_fd_in_progress_terminates_mutual_recursion() {
 
     let mut state = InferState::new();
 
-    // Create a class with mutual FDs: (0) → (1) AND (1) → (0).
+    // Create a class with a single injective FD: (0) → (1).
+    // The injective flag enables reverse lookup: knowing t1=Str allows back-propagating t0=Int.
+    // The fd_in_progress guard prevents the cycle:
+    //   forward(t0=Int) → bind t1=Str → reverse(t1=Str) → try bind t0=Int → fd_in_progress skip.
+    // This tests the guard without requiring a bidirectional FD declaration,
+    // which would cause the second direction's forward lookup to fail (different det_positions).
     let my_class = Arc::new(ClassDecl {
         name: "BiDir".to_string(),
         params: vec![("a".to_string(), Kind::Type), ("b".to_string(), Kind::Type)],
         superclasses: vec![],
         determines: vec![
-            (vec![0], vec![1]), // a determines b
-            (vec![1], vec![0]), // b determines a (mutual)
+            (vec![0], vec![1]), // a determines b (forward only)
         ],
         resolver: None,
-        resolver_injective: true, // Both directions are injective
+        resolver_injective: true, // Enables reverse lookup: b=Str → a=Int
     });
 
     state.class_env.insert(ClassDecl {
         name: "BiDir".to_string(),
         params: vec![("a".to_string(), Kind::Type), ("b".to_string(), Kind::Type)],
         superclasses: vec![],
-        determines: vec![(vec![0], vec![1]), (vec![1], vec![0])],
+        determines: vec![(vec![0], vec![1])],
         resolver: None,
         resolver_injective: true,
     });
@@ -1146,7 +1150,7 @@ fn test_fd_in_progress_terminates_mutual_recursion() {
     let inst = InstanceDecl {
         class_name: "BiDir".to_string(),
         instance_type,
-        det_positions: vec![0, 1], // Both positions are determining
+        det_positions: vec![0], // Position 0 determines position 1 (forward FD)
         method_types: HashMap::new(),
     };
     state.instance_env.insert(inst).unwrap();
@@ -1178,7 +1182,9 @@ fn test_fd_in_progress_terminates_mutual_recursion() {
     );
 
     // Verify both variables were bound correctly.
-    let t0_bound = state.subst.apply(&Type::TypeVar("t0".to_string(), 0));
+    // t0 was bound in the outer `subst` (the direct unify call); FD-triggered bindings
+    // (t1=Str) go through state.subst via mem::take inside improve_functional_dependency.
+    let t0_bound = subst.apply(&Type::TypeVar("t0".to_string(), 0));
     let t1_bound = state.subst.apply(&Type::TypeVar("t1".to_string(), 0));
 
     assert!(
@@ -1247,6 +1253,8 @@ fn test_tycondef_construction() {
         variance: vec![Variance::Covariant],
         constructors: vec![("Maybe.Some".to_string(), 1), ("Maybe.None".to_string(), 0)],
         builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
     };
 
     assert_eq!(def.variance, vec![Variance::Covariant]);
@@ -1263,6 +1271,8 @@ fn test_tycondef_multi_variance() {
         variance: vec![Variance::Contravariant, Variance::Covariant],
         constructors: vec![],
         builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
     };
 
     assert_eq!(def.variance.len(), 2);
@@ -1277,6 +1287,8 @@ fn test_tycondef_builtin_type() {
         variance: vec![Variance::Covariant],
         constructors: vec![],
         builtin_type: Some("Seq".to_string()),
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
     };
 
     assert_eq!(def.builtin_type, Some("Seq".to_string()));
@@ -1384,18 +1396,24 @@ fn test_unify_uniform_inconsistent_named_field_type_errors() {
     let span = Span::origin();
 
     // Inconsistent: named field type does NOT match Uniform value type.
-    // {x: Int, _ : Str} ~ {x: Int, _ : Str} — should fail (Int does not conform to Str).
+    // {x: Int, _: Str} ~ {} — should fail because x:Int does not conform to Uniform(Str).
+    // Two non-identical records force unify_rows to run the UNIFY-UNIFORM check.
+    // Identical records would short-circuit via `a == b` in unify(), bypassing the check.
     let mut fields = HashMap::new();
     fields.insert("x".to_string(), Type::Int);
-    let row = crate::type_def::Row {
+    let row1 = crate::type_def::Row {
         fields,
         tail: crate::type_def::RowTail::Uniform {
             key: None,
             value: Box::new(Type::Str),
         },
     };
-    let rec1 = Type::Record(row.clone());
-    let rec2 = Type::Record(row);
+    let row2 = crate::type_def::Row {
+        fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Empty,
+    };
+    let rec1 = Type::Record(row1);
+    let rec2 = Type::Record(row2);
 
     let result = unify(&rec1, &rec2, &mut subst, &mut state, span);
 
@@ -1430,11 +1448,15 @@ fn test_tycondef_partialeq() {
         variance: vec![Variance::Invariant],
         constructors: vec![("X.A".to_string(), 0), ("X.B".to_string(), 1)],
         builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
     };
     let def2 = TyConDef {
         variance: vec![Variance::Invariant],
         constructors: vec![("X.A".to_string(), 0), ("X.B".to_string(), 1)],
         builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
     };
     assert_eq!(def1, def2);
 }
@@ -1446,11 +1468,15 @@ fn test_tycondef_partialeq_different_variance() {
         variance: vec![Variance::Covariant],
         constructors: vec![],
         builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
     };
     let def2 = TyConDef {
         variance: vec![Variance::Invariant],
         constructors: vec![],
         builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
     };
     assert_ne!(def1, def2);
 }

@@ -80,6 +80,23 @@ enum SurfaceExpression {
     // ... other variants (Sequential, Match, TypeAssert, Quote, Unquote, etc.)
 }
 
+/// A named argument in a SurfaceExpression::Call.
+///
+/// For ordinary calls: `[f field: value]` produces `SurfaceNamedArg { name: "field", value: ..., annotation: None }`.
+///
+/// For constructor record-field declarations in `[type ...]` bodies: `field@Child: Type` produces
+/// `SurfaceNamedArg { name: "field", value: <Type node>, annotation: Some(Simple("Child")) }`.
+/// The `annotation` field carries any `@[...]` or `@Word` annotation written between the field name
+/// and the `:`. This enables the desugar pass (T-1052/T-1053) to derive `@Child` traversal roles
+/// from field declarations without a separate AST node.
+///
+/// `annotation` is `None` for all ordinary named arguments outside `[type ...]` bodies.
+struct SurfaceNamedArg {
+    name: String,
+    value: Arc<SurfaceNode>,
+    annotation: Option<Spanned<Annotation>>,  // None for plain `field: value`; Some for `field@Ann: value`
+}
+
 /// Declarations (TypeAlias, ClassDecl, InstanceDecl, MacroDecl, etc.)
 enum SurfaceDeclaration {
     TypeAlias { params: Vec<String>, body: Arc<SurfaceNode> },

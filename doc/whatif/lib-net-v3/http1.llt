@@ -3,6 +3,9 @@
 
 [include %libdir "net.llt"]
 
+[type [Http1RequestCodec]]    # zero-payload codec tag — stateless RawRequest ↔ Bytes codec
+[type [Http1ResponseCodec]]   # zero-payload codec tag — stateless RawResponse ↔ Bytes codec
+
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
@@ -88,6 +91,16 @@
      headers: [Map String String]
      body:    Bytes]]
 
+  # Http1RequestCodec: codec for HTTP/1.1 request wire format (RFC 7230).
+  # encode: RawRequest → Bytes (request line + headers + CRLF + body)
+  # decode: Bytes → RawRequest (respond field is a no-op; use parse-request for live connections)
+  # Http1RequestCodec declared at top level (zero-payload type)
+
+  # Http1ResponseCodec: codec for HTTP/1.1 response wire format (RFC 7230).
+  # encode: RawResponse → Bytes (status line + headers + CRLF + body)
+  # decode: Bytes → RawResponse
+  # Http1ResponseCodec declared at top level (zero-payload type)
+
   ok:           [fn [let body@String]
     [RawResponse [status: 200  headers: ["content-type": "text/plain; charset=utf-8"]  body: [str-bytes body]]]]
   json-ok:      [fn [let body@Bytes]
@@ -164,3 +177,73 @@
   # Serve layer: 1:N — each incoming Handle yields its HTTP/1.1 request stream.
   http1-serve: [_ | [channel-flat-map http1-conn]]
 ]
+
+# Http1RequestCodec: RawRequest ↔ Bytes (RFC 7230 request wire format).
+# encode: produces "METHOD path?query HTTP/version\r\nheaders\r\n\r\nbody"
+# decode: parses request line + headers + body; respond field set to no-op fn.
+[instance [Codec Http1RequestCodec RawRequest Bytes]
+  encode: [fn [let _ req@RawRequest]
+    [target: [if [= req.query ""] req.path [str req.path "?" req.query]]]
+    [concat
+      [str-bytes [str req.method " " target " " req.version "\r\n"]]
+      [str-bytes [str "content-length: " [length req.body] "\r\n"]]
+      [reduce concat []
+        [map [fn [let e] [str-bytes [str e.key ": " e.value "\r\n"]]]
+         [entries req.headers]]]
+      [str-bytes "\r\n"]
+      req.body]]
+  decode: [fn [let _ data@Bytes]
+    [text:    [bytes-str data]]
+    [sep-pos: [str-index-of "\r\n\r\n" text]]
+    [if [< sep-pos 0] [error "HTTP/1.1: malformed request (no header terminator)"] null]
+    [header-str: [str-slice 0 sep-pos text]]
+    [lines:      [str-split "\r\n" header-str]]
+    [match lines
+      []: [error "HTTP/1.1: empty request"]
+      [let [request-line ...header-lines]]:
+        [parts:   [str-split " " request-line]]
+        [if [< [length parts] 3] [error [str "HTTP/1.1: bad request line: " request-line]] null]
+        [target:  [get parts 1]
+         headers: [parse-header-lines header-lines]
+         parts2:  [str-split "?" target]
+         path:    [get parts2 0]
+         query:   [if [> [length parts2] 1] [get parts2 1] ""]
+         cl:      [get? headers "content-length"]
+         body-start: [+ sep-pos 4]
+         body:    [if [null? cl] [slice data body-start [length data]]
+                    [slice data body-start [+ body-start [to-int cl]]]]
+         [RawRequest
+           [method:  [get parts 0]   path:    path
+            query:   query           version: [get parts 2]
+            headers: headers         body:    body
+            respond: [fn [let _] null]]]]]]]
+
+# Http1ResponseCodec: RawResponse ↔ Bytes (RFC 7230 response wire format).
+# encode: produces "HTTP/1.1 status text\r\nheaders\r\n\r\nbody"
+# decode: parses status line + headers + body.
+[instance [Codec Http1ResponseCodec RawResponse Bytes]
+  encode: [fn [let _ resp@RawResponse]
+    [concat
+      [str-bytes [str "HTTP/1.1 " resp.status " " [status->text resp.status] "\r\n"]]
+      [str-bytes [str "content-length: " [length resp.body] "\r\n"]]
+      [reduce concat []
+        [map [fn [let e] [str-bytes [str e.key ": " e.value "\r\n"]]]
+         [entries resp.headers]]]
+      [str-bytes "\r\n"]
+      resp.body]]
+  decode: [fn [let _ data@Bytes]
+    [text:    [bytes-str data]]
+    [sep-pos: [str-index-of "\r\n\r\n" text]]
+    [if [< sep-pos 0] [error "HTTP/1.1: malformed response (no header terminator)"] null]
+    [header-str: [str-slice 0 sep-pos text]]
+    [lines:      [str-split "\r\n" header-str]]
+    [match lines
+      []: [error "HTTP/1.1: empty response"]
+      [let [status-line ...header-lines]]:
+        [status:     [to-int [get [str-split " " status-line] 1]]]
+        [headers:    [parse-header-lines header-lines]]
+        [cl:         [get? headers "content-length"]]
+        [body-start: [+ sep-pos 4]]
+        [body:       [if [null? cl] [slice data body-start [length data]]
+                       [slice data body-start [+ body-start [to-int cl]]]]]
+        [RawResponse [status: status  headers: headers  body: body]]]]]

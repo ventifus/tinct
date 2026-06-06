@@ -117,13 +117,22 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
                 if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
                     if let SurfaceDeclaration::TypeAlias { body, .. } = decl.as_ref() {
                         // Extract type name from the dict entry key for tag qualification.
-                        // Only Str and VarRef keys give us a stable type name.
+                        // Recognised key forms:
+                        // - `Str(s)` — plain string key (resolver-phase name)
+                        // - `VarRef { name }` — bare identifier key (pre-resolution name)
+                        // - `Annotated { name, .. }` — annotated name key (T-1052):
+                        //   `TypeName@[doc: "..." ...]` — the annotation is on the alias name.
+                        //   The type name is extracted from the Annotated node; the annotation
+                        //   itself is processed by typecheck.rs register_type_aliases.
                         // Computed keys are skipped (no injection for that entry).
                         // Absent keys (positional type declarations) use unqualified tags.
                         let type_name: Option<String> = match &se.node.key {
                             Some(key_node) => match &key_node.expr {
                                 SurfaceExpression::Str(s) => Some(s.clone()),
                                 SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                                // `TypeName@[doc: "..." ...]` — annotated alias name (T-1052).
+                                // The annotation is on the alias declaration; name is the type name.
+                                SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
                                 _ => {
                                     // Computed key — skip injection for this entry entirely.
                                     // (Proceed to add the original entry below.)
@@ -183,6 +192,10 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
                             match &key_node.expr {
                                 SurfaceExpression::Str(s) => injected_names.contains(s),
                                 SurfaceExpression::VarRef { name, .. } => {
+                                    injected_names.contains(name)
+                                }
+                                // `TypeName@[...]` annotated alias key (T-1052).
+                                SurfaceExpression::Annotated { name, .. } => {
                                     injected_names.contains(name)
                                 }
                                 _ => false,
@@ -271,6 +284,7 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
                         SurfaceNamedArg {
                             name: na.node.name.clone(),
                             value: new_val,
+                            annotation: na.node.annotation.clone(),
                         },
                         na.span.clone(),
                     )
@@ -368,6 +382,56 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
     }
 }
 
+/// The traversal role of an `@Child`-annotated field in a TypeNode constructor.
+///
+/// Derived from the field's declared type expression:
+/// - `TypeNode`            → `One`       (single child, pass directly to `f`)
+/// - `[Seq TypeNode]`      → `Seq`       (sequence of children, map `f` over elements)
+/// - `[Map K TypeNode]`    → `MapValues` (map-keyed children, map `f` over values)
+///
+/// Intended to be stored in `field-annotations.{field}.role` inside `FnAnnotation.extra`
+/// so that `child-fields`, `child-role`, and `child-field?` can read it generically via
+/// `annotation-of` without per-constructor implementations. Population of the
+/// `field-annotations:` dict from `@Child`-annotated fields is aspirational pending T-1124
+/// (expression-valued annotation fields in `extract_fn_annotation_extra`).
+///
+/// Inferred from the field's declared type node: `TypeNode` → One, `[Seq TypeNode]` → Seq,
+/// `[Map K TypeNode]` → MapValues. Used by `infer_child_role_from_type_expr` (T-1052).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildRole {
+    One,
+    Seq,
+    MapValues,
+}
+
+impl ChildRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            ChildRole::One => "One",
+            ChildRole::Seq => "Seq",
+            ChildRole::MapValues => "MapValues",
+        }
+    }
+}
+
+/// An `@Child`-annotated field within a named-field constructor.
+///
+/// `@Child` marks fields whose declared type contains `TypeNode` children — the traversal
+/// role is inferred from the field type (`TypeNode` → One, `[Seq TypeNode]` → Seq,
+/// `[Map K TypeNode]` → MapValues). Fields without `@Child` are non-children and pass
+/// through unchanged in `map-children`.
+///
+/// Populated by `extract_surface_adt_ctors_from_expr` when a named arg carries a
+/// `@Child` annotation (`SurfaceNamedArg.annotation = Some(Simple("Child"))`), added
+/// by the parser in T-1052.
+#[derive(Debug, Clone)]
+struct ChildFieldAnnotation {
+    /// The field name (e.g., `"types"`, `"fields"`, `"body"`).
+    field_name: String,
+    /// Traversal role inferred from the declared field type.
+    role: ChildRole,
+}
+
 /// A constructor extracted from a TypeAlias body expression.
 #[derive(Debug)]
 struct AliasConstructor {
@@ -376,6 +440,71 @@ struct AliasConstructor {
     /// Named field names, in order, for named-field constructors.
     /// Empty for unit constructors (bare VarRef, zero-arg Call, or positional-arg Call).
     fields: Vec<String>,
+    /// Constructor-level annotation properties from `CtorName@[...]` syntax (T-1052).
+    ///
+    /// Each entry is a `(key, surface_node)` pair representing a key-value pair from the
+    /// annotation PropertyDict, stored as `SurfaceExpression` nodes to be embedded in `return_ann`.
+    /// Extracted from `SurfaceExpression::Annotated { annotation: PropertyDict([...]) }` by
+    /// `extract_surface_adt_ctors_from_expr`.
+    ctor_annotation_entries: Vec<(String, Arc<SurfaceNode>)>,
+    /// Per-field `@Child` annotations for traversal protocol derivation (T-1052).
+    ///
+    /// Only fields explicitly annotated with `@Child` appear here. Fields without `@Child`
+    /// are non-children and are not included in `field-annotations`.
+    /// Extracted from `SurfaceNamedArg.annotation = Some(Simple("Child"))` or from Dict-frame
+    /// keys `Annotated { name, annotation: Simple("Child") }`.
+    child_fields: Vec<ChildFieldAnnotation>,
+}
+
+/// Infer the traversal role of an `@Child`-annotated field from its declared type expression.
+///
+/// Called from the T-1052 scaffolding in `extract_surface_adt_ctors_from_expr` once the
+/// parser attaches `@Child` annotations to named args in constructor declarations.
+///
+/// The mapping is structural — it inspects the outermost Call node of the type expression:
+///
+/// - `TypeNode`                         → `ChildRole::One`       (bare name reference)
+/// - `[Seq TypeNode]`                   → `ChildRole::Seq`       (Seq applied to TypeNode)
+/// - `[Map K TypeNode]` (any K)         → `ChildRole::MapValues` (Map applied to key + TypeNode)
+///
+/// Any other type expression (including non-TypeNode arguments to Seq/Map) falls back to
+/// `ChildRole::One` because the annotation presence already signals it is a child — the
+/// role is the best conservative estimate from the structural shape.
+///
+/// Called from `extract_surface_adt_ctors_from_expr` when extracting `@Child`-annotated
+/// fields from constructor declarations. `SurfaceNamedArg.annotation` (added in T-1052)
+/// carries the `@Child` annotation; this function infers the traversal role from the value.
+fn infer_child_role_from_type_expr(type_expr: &SurfaceExpression) -> ChildRole {
+    match type_expr {
+        // `[Seq TypeNode]` or `[Map K TypeNode]` — a Call node with an uppercase func name.
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            implied: true,
+        } if named_args.is_empty() => {
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                match name.as_str() {
+                    "Seq" if args.len() == 1 => {
+                        // [Seq TypeNode] — Seq of children; role is Seq regardless of element type.
+                        return ChildRole::Seq;
+                    }
+                    "Map" if args.len() == 2 => {
+                        // [Map K TypeNode] — Map from keys to TypeNode children;
+                        // role is MapValues (traverse values, preserve keys).
+                        return ChildRole::MapValues;
+                    }
+                    _ => {}
+                }
+            }
+            // Other call forms — conservatively treat as One.
+            ChildRole::One
+        }
+        // Bare VarRef — `TypeNode` itself or any other simple type name → One.
+        SurfaceExpression::VarRef { .. } => ChildRole::One,
+        // Any other expression shape → One (conservative).
+        _ => ChildRole::One,
+    }
 }
 
 /// Extract all ADT constructors from a TypeAlias body expression.
@@ -395,19 +524,142 @@ struct AliasConstructor {
 ///
 /// Entries with named dict keys (i.e., `se.node.key.is_some()`) are skipped — those are
 /// record-body entries like `{value: Int next: Node}`, not constructor entries.
+///
+/// **Annotation extraction (T-1052 done, T-1053 done):** `ctor_annotation_entries` is
+/// populated for `CtorName@[...]` syntax; `child_fields` for `field@Child: Type` syntax.
 fn extract_surface_adt_ctors_from_expr(body: &SurfaceExpression) -> Vec<AliasConstructor> {
     let mut ctors = Vec::new();
 
     fn try_extract(expr: &SurfaceExpression, ctors: &mut Vec<AliasConstructor>) {
+        /// Extract annotation entries from an `Annotation::PropertyDict` into `(key, value_node)` pairs.
+        ///
+        /// Filters out entries without a Str key (only Str-keyed entries are annotation fields).
+        /// Returns an empty Vec for Simple and Annotated annotation forms — only PropertyDict
+        /// carries constructor-level metadata key-value pairs.
+        fn extract_ann_entries(ann: &Annotation) -> Vec<(String, Arc<SurfaceNode>)> {
+            match ann {
+                Annotation::PropertyDict(entries) => entries
+                    .iter()
+                    .filter_map(|e| {
+                        let key_node = e.node.key.as_ref()?;
+                        let key_str = match &key_node.expr {
+                            SurfaceExpression::Str(s) => s.clone(),
+                            _ => return None,
+                        };
+                        Some((key_str, Arc::clone(&e.node.value)))
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            }
+        }
+
         match expr {
-            // Bare uppercase VarRef → unit constructor
+            // Bare uppercase VarRef → unit constructor (no annotation)
             SurfaceExpression::VarRef { name, .. } if crate::eval::is_constructor_name(name) => {
                 ctors.push(AliasConstructor {
                     name: name.clone(),
                     fields: Vec::new(),
+                    ctor_annotation_entries: Vec::new(),
+                    child_fields: Vec::new(),
                 });
             }
+            // Annotated uppercase name → unit constructor with constructor-level annotation.
+            // `Union@[as-type: fn  guarding: false]` as a positional entry value in a
+            // `[type ...]` body — the annotation carries type-level metadata for T-1053.
+            SurfaceExpression::Annotated { name, annotation }
+                if crate::eval::is_constructor_name(name) =>
+            {
+                let ctor_annotation_entries = extract_ann_entries(&annotation.node);
+                ctors.push(AliasConstructor {
+                    name: name.clone(),
+                    fields: Vec::new(),
+                    ctor_annotation_entries,
+                    child_fields: Vec::new(),
+                });
+            }
+            // Dict form: `[Constructor@[...] field: Type ...]` — opened as a Dict by Priority 2b
+            // (Identifier + ImmediateAt in head position). The first positional entry is the
+            // annotated constructor tag; keyed entries are named fields.
+            //
+            // Also handles the plain `[Constructor field: Type ...]` form (VarRef first entry).
+            SurfaceExpression::Dict(entries) if !entries.is_empty() => {
+                // First entry must be positional (no key) and be a VarRef or Annotated constructor.
+                let first = &entries[0];
+                if first.node.key.is_some() {
+                    return; // No constructor tag in first position
+                }
+                let (ctor_name, ctor_annotation_entries) = match &first.node.value.expr {
+                    SurfaceExpression::VarRef { name, .. }
+                        if crate::eval::is_constructor_name(name) =>
+                    {
+                        (name.clone(), Vec::new())
+                    }
+                    SurfaceExpression::Annotated { name, annotation }
+                        if crate::eval::is_constructor_name(name) =>
+                    {
+                        let entries = extract_ann_entries(&annotation.node);
+                        (name.clone(), entries)
+                    }
+                    _ => return, // Not a constructor form
+                };
+
+                // Check whether any remaining entries are keyed (named fields).
+                let keyed_entries: Vec<_> = entries[1..]
+                    .iter()
+                    .filter(|e| e.node.key.is_some())
+                    .collect();
+                if keyed_entries.is_empty() {
+                    // No named fields — unit constructor
+                    ctors.push(AliasConstructor {
+                        name: ctor_name,
+                        fields: Vec::new(),
+                        ctor_annotation_entries,
+                        child_fields: Vec::new(),
+                    });
+                } else {
+                    // Named fields → named-field constructor.
+                    // Collect field names for the variadic fn wrapper.
+                    // For Dict-frame constructors, the key is either Str("field") or
+                    // Annotated { name: "field", annotation: Simple("Child") }.
+                    let fields: Vec<String> = keyed_entries
+                        .iter()
+                        .filter_map(|e| match e.node.key.as_ref().map(|k| &k.expr) {
+                            Some(SurfaceExpression::Str(s)) => Some(s.clone()),
+                            Some(SurfaceExpression::Annotated { name, .. }) => Some(name.clone()),
+                            _ => None,
+                        })
+                        .collect();
+
+                    // Populate child_fields from @Child-annotated field keys.
+                    let child_fields: Vec<ChildFieldAnnotation> = keyed_entries
+                        .iter()
+                        .filter_map(|e| {
+                            let key = e.node.key.as_ref()?;
+                            if let SurfaceExpression::Annotated { name, annotation } = &key.expr {
+                                // Check annotation is @Child (Simple("Child"))
+                                if matches!(&annotation.node, Annotation::Simple(s) if s == "Child")
+                                {
+                                    let role = infer_child_role_from_type_expr(&e.node.value.expr);
+                                    return Some(ChildFieldAnnotation {
+                                        field_name: name.clone(),
+                                        role,
+                                    });
+                                }
+                            }
+                            None
+                        })
+                        .collect();
+
+                    ctors.push(AliasConstructor {
+                        name: ctor_name,
+                        fields,
+                        ctor_annotation_entries,
+                        child_fields,
+                    });
+                }
+            }
             // Call with uppercase func → unit or named-field constructor
+            // (for non-annotated brackets parsed as Call by Priority 3)
             SurfaceExpression::Call {
                 func, named_args, ..
             } => {
@@ -418,14 +670,41 @@ fn extract_surface_adt_ctors_from_expr(body: &SurfaceExpression) -> Vec<AliasCon
                             ctors.push(AliasConstructor {
                                 name: name.clone(),
                                 fields: Vec::new(),
+                                ctor_annotation_entries: Vec::new(),
+                                child_fields: Vec::new(),
                             });
                         } else {
-                            // Named args → named-field constructor
+                            // Named args → named-field constructor.
+                            // Collect field names for the variadic fn wrapper.
                             let fields: Vec<String> =
                                 named_args.iter().map(|na| na.node.name.clone()).collect();
+
+                            // Populate child_fields from @Child-annotated named args (T-1052).
+                            // `SurfaceNamedArg.annotation` carries the @Child annotation when the
+                            // parser processes `field@Child: Type` syntax.
+                            let child_fields: Vec<ChildFieldAnnotation> = named_args
+                                .iter()
+                                .filter_map(|na| {
+                                    let annotation = na.node.annotation.as_ref()?;
+                                    if !matches!(
+                                        &annotation.node,
+                                        Annotation::Simple(s) if s == "Child"
+                                    ) {
+                                        return None;
+                                    }
+                                    let role = infer_child_role_from_type_expr(&na.node.value.expr);
+                                    Some(ChildFieldAnnotation {
+                                        field_name: na.node.name.clone(),
+                                        role,
+                                    })
+                                })
+                                .collect();
+
                             ctors.push(AliasConstructor {
                                 name: name.clone(),
                                 fields,
+                                ctor_annotation_entries: Vec::new(),
+                                child_fields,
                             });
                         }
                     }
@@ -437,12 +716,50 @@ fn extract_surface_adt_ctors_from_expr(body: &SurfaceExpression) -> Vec<AliasCon
 
     match body {
         SurfaceExpression::Dict(entries) => {
-            for entry in entries {
-                if entry.node.key.is_none() {
-                    // Positional entry in [type ...] body — may be a constructor
-                    try_extract(&entry.node.value.expr, &mut ctors);
+            // Detect the "annotated constructor with named fields" pattern:
+            // `[Union@[...] types: [Seq TypeNode]]` — first positional entry is a VarRef or
+            // Annotated constructor tag, at least one subsequent entry is keyed (named field).
+            // This is a single named-field constructor declaration, not a union of constructors.
+            // Treat the whole Dict as one constructor (via try_extract's Dict arm).
+            //
+            // vs. "union of constructors" pattern:
+            // `[[Ok a] [Err String]]` — all entries are positional; each is a constructor dict.
+            //
+            // Disambiguation: if the first positional entry value is a VarRef/Annotated constructor
+            // AND at least one of the remaining entries has a key → it's a constructor dict.
+            // Otherwise → it's a union (process each positional entry individually).
+            let is_constructor_dict = if let Some(first) = entries.first() {
+                if first.node.key.is_none() {
+                    let first_is_ctor = matches!(
+                        &first.node.value.expr,
+                        SurfaceExpression::VarRef { name, .. }
+                            if crate::eval::is_constructor_name(name)
+                    ) || matches!(
+                        &first.node.value.expr,
+                        SurfaceExpression::Annotated { name, .. }
+                            if crate::eval::is_constructor_name(name)
+                    );
+                    let has_keyed_entries = entries[1..].iter().any(|e| e.node.key.is_some());
+                    first_is_ctor && has_keyed_entries
+                } else {
+                    false
                 }
-                // Named-key entries are record-body type annotations, not constructors — skip.
+            } else {
+                false
+            };
+
+            if is_constructor_dict {
+                // Single constructor dict: treat the whole Dict as one constructor declaration.
+                try_extract(body, &mut ctors);
+            } else {
+                // Union of constructors: each positional entry is a separate constructor.
+                for entry in entries {
+                    if entry.node.key.is_none() {
+                        // Positional entry in [type ...] body — may be a constructor
+                        try_extract(&entry.node.value.expr, &mut ctors);
+                    }
+                    // Named-key entries are record-body type annotations, not constructors — skip.
+                }
             }
         }
         other => {
@@ -454,11 +771,137 @@ fn extract_surface_adt_ctors_from_expr(body: &SurfaceExpression) -> Vec<AliasCon
     ctors
 }
 
+/// Build the annotation entries to store in the constructor function's `return_ann`.
+///
+/// The `return_ann` of the injected `SurfaceExpression::Fn` carries the constructor's
+/// annotation data as a `PropertyDict`. When T-1049 lands, the evaluator will populate
+/// `FnAnnotation.extra` from the non-standard fields of this PropertyDict at function
+/// evaluation time.
+///
+/// **Layout of the PropertyDict entries:**
+///
+/// 1. **Constructor-level annotation fields** — from `CtorName@[key: val ...]` syntax
+///    (T-1052). These are plain key-value entries, e.g. `as-type: [fn ...]`, `guarding: false`.
+///    Copied verbatim from `ctor.ctor_annotation_entries`.
+///
+/// 2. **`field-annotations:` entry** — present only when at least one `@Child` field exists.
+///    A synthetic dict mapping each `@Child` field name to its annotation sub-dict:
+///    ```
+///    [field-name-1: [role: "Seq"] field-name-2: [role: "One"] ...]
+///    ```
+///    Consumed by `child-fields`, `child-role`, and `child-field?` helper functions via
+///    `annotation-of` — enabling the traversal protocol to be derived generically without
+///    per-constructor implementations.
+///
+/// Returns `None` when there is nothing to encode (no constructor-level annotation entries
+/// and no `@Child` fields). The evaluator treats `return_ann: None` as "no annotation",
+/// which is correct — the `FnAnnotation.extra` map will be empty by default (T-1049).
+///
+/// With T-1052 landed, `ctor.ctor_annotation_entries` is populated from `CtorName@[...]`
+/// syntax and `ctor.child_fields` is populated from `field@Child: Type` syntax. This
+/// function now produces non-trivial PropertyDict annotations for annotated constructors.
+fn build_constructor_return_ann(
+    ctor: &AliasConstructor,
+    syn_span: &Span,
+) -> Option<Spanned<Annotation>> {
+    // Collect all entries for the PropertyDict annotation.
+    let mut entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
+
+    // 1. Constructor-level annotation fields (from CtorName@[...] syntax, T-1052).
+    for (key, value_node) in &ctor.ctor_annotation_entries {
+        let key_node = Arc::new(SurfaceNode {
+            expr: SurfaceExpression::Str(key.clone()),
+            span: syn_span.clone(),
+        });
+        entries.push(Spanned::new(
+            SurfaceEntry {
+                key: Some(key_node),
+                value: Arc::clone(value_node),
+            },
+            syn_span.clone(),
+        ));
+    }
+
+    // 2. `field-annotations:` entry for @Child fields (from field@Child: Type syntax, T-1052).
+    //    Only included when at least one @Child field was found.
+    if !ctor.child_fields.is_empty() {
+        // Build the inner dict: [field-name-1: [role: "Seq"] field-name-2: [role: "One"] ...]
+        let field_ann_entries: Vec<Spanned<SurfaceEntry>> = ctor
+            .child_fields
+            .iter()
+            .map(|cf| {
+                // Build [role: "Seq"|"One"|"MapValues"] — the per-field annotation sub-dict.
+                let role_key = Arc::new(SurfaceNode {
+                    expr: SurfaceExpression::Str("role".to_string()),
+                    span: syn_span.clone(),
+                });
+                let role_val = Arc::new(SurfaceNode {
+                    expr: SurfaceExpression::Str(cf.role.as_str().to_string()),
+                    span: syn_span.clone(),
+                });
+                let role_entry = Spanned::new(
+                    SurfaceEntry {
+                        key: Some(role_key),
+                        value: role_val,
+                    },
+                    syn_span.clone(),
+                );
+                let field_ann_dict = Arc::new(SurfaceNode {
+                    expr: SurfaceExpression::Dict(vec![role_entry]),
+                    span: syn_span.clone(),
+                });
+
+                // Build the outer entry: field-name: [role: "..."]
+                let field_key = Arc::new(SurfaceNode {
+                    expr: SurfaceExpression::Str(cf.field_name.clone()),
+                    span: syn_span.clone(),
+                });
+                Spanned::new(
+                    SurfaceEntry {
+                        key: Some(field_key),
+                        value: field_ann_dict,
+                    },
+                    syn_span.clone(),
+                )
+            })
+            .collect();
+
+        // Build the `field-annotations` value: [field1: [role: "Seq"] field2: [role: "One"] ...]
+        let field_annotations_dict = Arc::new(SurfaceNode {
+            expr: SurfaceExpression::Dict(field_ann_entries),
+            span: syn_span.clone(),
+        });
+
+        // Add the `field-annotations:` key to the outer PropertyDict.
+        let fa_key = Arc::new(SurfaceNode {
+            expr: SurfaceExpression::Str("field-annotations".to_string()),
+            span: syn_span.clone(),
+        });
+        entries.push(Spanned::new(
+            SurfaceEntry {
+                key: Some(fa_key),
+                value: field_annotations_dict,
+            },
+            syn_span.clone(),
+        ));
+    }
+
+    if entries.is_empty() {
+        // No annotation data — leave return_ann as None.
+        return None;
+    }
+
+    Some(Spanned::new(
+        Annotation::PropertyDict(entries),
+        syn_span.clone(),
+    ))
+}
+
 /// Build the SurfaceExpression value for an injected constructor entry.
 ///
 /// - Unit constructor (`ctor.fields` is empty): `[variant "TypeName.CtorName"]`
 /// - Named-field constructor (`ctor.fields` non-empty):
-///   `[fn [...payload] [variant-payload "TypeName.CtorName" payload]]`
+///   `[fn@[...] [...payload] [variant-payload "TypeName.CtorName" payload]]`
 ///   A variadic `...payload` param collects all named args into a dict at runtime
 ///   (via bind_args_thunks B-277 / C-NAMED-VALID amended for variadics).
 ///   Callers use named args: `[Ctor field1: val1 field2: val2]`.
@@ -473,11 +916,24 @@ fn extract_surface_adt_ctors_from_expr(body: &SurfaceExpression) -> Vec<AliasCon
 ///   The variadic form avoids this: `payload` is collected by bind_args_thunks into a
 ///   materialized Dict BEFORE any inner dict is constructed in the body. The body
 ///   `[variant-payload "Tag" payload]` simply references the already-bound `payload` param.
+///
+/// **Annotation encoding (T-1053):** constructor-level `@[...]` entries and `field-annotations:`
+/// derived from `@Child` field annotations are encoded in `return_ann` as a `PropertyDict`.
+/// When T-1049 lands, the evaluator will read these from `return_ann` and populate
+/// `FnAnnotation.extra`, making them available via `annotation-of` on the constructor function.
+/// With T-1052 landed, `return_ann` carries the annotation data when the constructor
+/// is annotated (`CtorName@[...]`) or has `@Child`-annotated fields.
 fn build_constructor_value(
     ctor: &AliasConstructor,
     qualified_tag: &str,
     syn_span: &Span,
 ) -> Arc<SurfaceNode> {
+    // Build the annotation for the constructor Fn node (if any).
+    // This encodes constructor-level @[...] fields and field-annotations: from @Child fields.
+    // Returns None for unannotated constructors; Some(PropertyDict) when the constructor
+    // carries @[...] annotation entries or @Child field annotations (both require T-1052, done).
+    let constructor_return_ann = build_constructor_return_ann(ctor, syn_span);
+
     // For unit constructors: use the prelude's 1-arg `variant` wrapper.
     // For named-field constructors: use `variant-payload` (the 2-arg wrapper).
     // Both delegate to `builtin-variant`; split because the prelude's `variant`
@@ -503,6 +959,18 @@ fn build_constructor_value(
 
     if ctor.fields.is_empty() {
         // Unit constructor: [variant "TypeName.CtorName"]
+        //
+        // Unit constructors are a Call expression (not a Fn), so they cannot carry a
+        // return_ann directly. Constructor-level @[...] annotation on unit constructors
+        // requires Value::Annotated wrapping at eval time (T-1121). The Value::Annotated
+        // variant exists (T-1050 done), but wrapping unit constructors requires evaluating
+        // the annotation dict entries at runtime and wrapping the Call result — deferred to
+        // T-1121. Only named-field constructor Fn nodes currently carry annotations via
+        // return_ann.
+        //
+        // TODO(T-1121): Wrap unit constructor value in Value::Annotated when
+        // constructor_return_ann is Some.
+        let _ = constructor_return_ann; // annotation unused for unit constructors until T-1121
         Arc::new(SurfaceNode {
             expr: SurfaceExpression::Call {
                 func: unit_variant_fn,
@@ -519,7 +987,7 @@ fn build_constructor_value(
         // `field1: val1 field2: val2`) into a single Dict at runtime, via the B-277 extension
         // to bind_args_thunks (C-NAMED-VALID amended: unmatched named args flow into variadic).
         //
-        // Generates: [fn [...payload] [variant-payload "TypeName.CtorName" payload]]
+        // Generates: [fn@[...] [...payload] [variant-payload "TypeName.CtorName" payload]]
         // Callers use: `[Ctor field1: val1 field2: val2]`
         //
         // Uses `variant-payload` (the prelude's 2-arg wrapper around builtin-variant) because
@@ -556,10 +1024,13 @@ fn build_constructor_value(
             syn_span.clone(),
         )];
 
-        // Build [fn [...payload] [variant-payload "TypeName.CtorName" payload]]
+        // Build [fn@[...] [...payload] [variant-payload "TypeName.CtorName" payload]]
+        // return_ann carries the constructor annotation (constructor-level @[...] fields +
+        // field-annotations: from @Child). The evaluator reads return_ann via
+        // extract_fn_annotation_extra and populates FnAnnotation.extra (T-1049 done).
         Arc::new(SurfaceNode {
             expr: SurfaceExpression::Fn {
-                return_ann: None,
+                return_ann: constructor_return_ann,
                 params,
                 body: variant_call,
                 desugared: true, // Synthetic: suppress $_ auto-lambda wrapping

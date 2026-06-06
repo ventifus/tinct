@@ -36,6 +36,11 @@ pub struct FnAnnotation {
     pub source_file: Option<String>,
     /// Span of the `fn` expression itself — always available at eval time.
     pub source_span: crate::ast::Span,
+    /// All non-standard @[...] annotation fields, stored uniformly.
+    /// Well-known fields (doc:, return:) have dedicated typed fields above;
+    /// everything else lands here. `annotation-of` returns this dict as the
+    /// canonical annotation representation for Function values.
+    pub extra: IndexMap<String, Value>,
 }
 
 /// Arguments passed to built-in functions.
@@ -644,6 +649,21 @@ pub enum Value {
         socket: DatagramSocket,
         creation_span: Span,
     },
+    /// An annotated non-function value. Wraps any value with an @[...] annotation dict.
+    /// `annotation-of` returns the `annotation` field directly for this variant.
+    /// All other Value operations (pattern matching, equality, display) should unwrap
+    /// `inner` transparently — `annotation-of` is the only way to observe the annotation.
+    ///
+    /// `inner` is a ThunkId (lazy, arena-resident) so the wrapped value is not forced at
+    /// annotation time. `annotation` is a materialized `Value::Dict` carrying the annotation
+    /// fields as key-value pairs.
+    Annotated {
+        /// The annotated value, wrapped as a lazy thunk.
+        inner: ThunkId,
+        /// The annotation dict (Value::Dict). Materialized at annotation time.
+        annotation: Box<Value>,
+    },
+
     // DELETED: Value::RustRegistry (include-decomp-redelete sprint)
     // The %rust virtual module is now a plain Value::Dict injected into bootstrap_env.
     // See doc/whatif/include-decomposition.md.
@@ -935,6 +955,11 @@ impl Value {
             Value::OneshotReceiver(_) => "OneshotReceiver",
             Value::Context(_) => "Context",
             Value::ReactiveCell(_) => "ReactiveCell",
+            // Annotated is transparent — the type is the inner value's type.
+            // Since we cannot force inner without async context here, we return
+            // "Annotated" as a sentinel. Callers that need the true type must
+            // unwrap the annotation layer before calling type_name().
+            Value::Annotated { .. } => "Annotated",
         }
     }
 
@@ -1034,6 +1059,9 @@ impl fmt::Debug for Value {
             Value::BroadcastChannel(_) => write!(f, "BroadcastChannel"),
             Value::OneshotSender(_) => write!(f, "OneshotSender"),
             Value::OneshotReceiver(_) => write!(f, "OneshotReceiver"),
+            Value::Annotated { inner, .. } => {
+                write!(f, "Annotated({inner:?})")
+            }
         }
     }
 }
@@ -1139,6 +1167,8 @@ impl fmt::Display for Value {
             Value::BroadcastChannel(_) => write!(f, "<broadcast-channel>"),
             Value::OneshotSender(_) => write!(f, "<oneshot-sender>"),
             Value::OneshotReceiver(_) => write!(f, "<oneshot-receiver>"),
+            // Display the inner thunk id; the annotation is metadata, not the value proper.
+            Value::Annotated { inner, .. } => write!(f, "<annotated:{inner:?}>"),
         }
     }
 }

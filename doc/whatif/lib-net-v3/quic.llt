@@ -5,6 +5,8 @@
 [include %libdir "net.llt"]
 [include %include-dir "tls13.llt"]
 
+[type [QuicFrameCodec]]   # zero-payload codec tag — stateless QuicFrame ↔ Bytes codec
+
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
@@ -18,9 +20,9 @@
       [match [recv conns-ch]
         [Closed.Closed]: []
         [Result.Ok table]:
-          [if [get? table dcid]
+          [if [get? dcid table]
             # Existing connection — deliver datagram to its handler task.
-            [[send [get table dcid] dg]
+            [[send [get dcid table] dg]
              [send conns-ch table]   # put table back
              [step]]
             # New connection — register it and spawn handler task.
@@ -320,6 +322,11 @@
     [ConnectionClose  error@Int  frame-type@Int  reason@String]
     [HandshakeDone]]
 
+  # QuicFrameCodec: codec for QUIC frame wire format (RFC 9000 §12, §19).
+  # Frames are encoded as frame-type (varint) followed by type-specific TLV fields.
+  # This codec operates at the unencrypted frame level (inside QUIC packet payloads).
+  # QuicFrameCodec declared at top level (zero-payload type)
+
   QuicKeys: [type
     [send-key: [Bytes 32]  send-iv: [Bytes 12]
      recv-key: [Bytes 32]  recv-iv: [Bytes 12]
@@ -616,6 +623,141 @@
   # Stream adapter: open one QUIC stream per incoming connection.
   quic-stream-ch: [_ | [channel-map [fn [let c] [quic-open-stream c]]]]
 ]
+
+# QuicFrameCodec: QuicFrame ↔ Bytes (RFC 9000 §12, §19 frame wire format).
+# encode: QuicFrame → frame-type varint + type-specific TLV fields as Bytes.
+# decode: Bytes → QuicFrame by dispatching on frame-type varint.
+# Operates at the unencrypted frame level (inside decrypted QUIC packet payloads).
+[instance [Codec QuicFrameCodec QuicFrame Bytes]
+  encode: [fn [let _ frame@QuicFrame]
+    [match frame
+      [QuicFrame.Padding  n]:       [reduce [fn [let acc _] [concat acc [bytes 0]]] [] [range 0 n]]   # n PADDING bytes (0x00)
+      [QuicFrame.Ping]:             [encode-quic-varint 0x01]
+      [QuicFrame.Ack  largest delay ranges]:
+        [concat [encode-quic-varint 0x02]
+                [encode-quic-varint largest]
+                [encode-quic-varint delay]
+                [encode-quic-varint [length ranges]]
+                [apply concat [map [fn [let r] [concat [encode-quic-varint r.gap] [encode-quic-varint r.range]]] ranges]]]
+      [QuicFrame.ResetStream  id error final-size]:
+        [concat [encode-quic-varint 0x04]
+                [encode-quic-varint id]
+                [encode-quic-varint error]
+                [encode-quic-varint final-size]]
+      [QuicFrame.StopSending  id error]:
+        [concat [encode-quic-varint 0x05]
+                [encode-quic-varint id]
+                [encode-quic-varint error]]
+      [QuicFrame.Crypto  offset data]:
+        [concat [encode-quic-varint 0x06]
+                [encode-quic-varint offset]
+                [encode-quic-varint [length data]]
+                data]
+      [QuicFrame.NewToken  token]:
+        [concat [encode-quic-varint 0x07]
+                [encode-quic-varint [length token]]
+                token]
+      [QuicFrame.Stream  id offset fin data]:
+        # 0x08 base; set OFF bit (0x04) if offset>0; set LEN bit (0x02); set FIN bit (0x01)
+        [type-byte: [bor 0x08 [bor [if [> offset 0] 0x04 0x00] [bor 0x02 [if fin 0x01 0x00]]]]]
+        [concat [encode-quic-varint type-byte]
+                [encode-quic-varint id]
+                [if [> offset 0] [encode-quic-varint offset] []]
+                [encode-quic-varint [length data]]
+                data]
+      [QuicFrame.MaxData  max]:
+        [concat [encode-quic-varint 0x10]
+                [encode-quic-varint max]]
+      [QuicFrame.MaxStreamData  id max]:
+        [concat [encode-quic-varint 0x11]
+                [encode-quic-varint id]
+                [encode-quic-varint max]]
+      [QuicFrame.MaxStreams  bidi max]:
+        [concat [encode-quic-varint [if bidi 0x12 0x13]]
+                [encode-quic-varint max]]
+      [QuicFrame.DataBlocked  limit]:
+        [concat [encode-quic-varint 0x14]
+                [encode-quic-varint limit]]
+      [QuicFrame.ConnectionClose  error frame-type reason]:
+        [reason-bytes: [str-bytes reason]]
+        [concat [encode-quic-varint 0x1c]
+                [encode-quic-varint error]
+                [encode-quic-varint frame-type]
+                [encode-quic-varint [length reason-bytes]]
+                reason-bytes]
+      [QuicFrame.HandshakeDone]: [encode-quic-varint 0x1e]]]
+  decode: [fn [let _ data@Bytes]
+    [type-res: [decode-quic-varint data 0]]
+    [p:        type-res.next]
+    [match type-res.value
+      0x00: [QuicFrame.Padding [- [length data] p]]    # remaining bytes are padding
+      0x01: [QuicFrame.Ping]
+      0x02: # ACK
+        [lar-res:  [decode-quic-varint data p]]
+        [del-res:  [decode-quic-varint data lar-res.next]]
+        [cnt-res:  [decode-quic-varint data del-res.next]]
+        [fst-res:  [decode-quic-varint data cnt-res.next]]   # first ACK range
+        [let read-ranges [fn [i p acc]
+          [if [= i 0]
+            acc
+            [g-res: [decode-quic-varint data p]]
+            [r-res: [decode-quic-varint data g-res.next]]
+            [read-ranges [- i 1] r-res.next [append acc [list [AckRange gap: g-res.value  range: r-res.value]]]]]]]
+        [ranges: [read-ranges cnt-res.value fst-res.next []]]
+        [QuicFrame.Ack largest: lar-res.value  delay: del-res.value  ranges: ranges]
+      0x04: # RESET_STREAM
+        [id-res:  [decode-quic-varint data p]]
+        [err-res: [decode-quic-varint data id-res.next]]
+        [fs-res:  [decode-quic-varint data err-res.next]]
+        [QuicFrame.ResetStream id: id-res.value  error: err-res.value  final-size: fs-res.value]
+      0x05: # STOP_SENDING
+        [id-res:  [decode-quic-varint data p]]
+        [err-res: [decode-quic-varint data id-res.next]]
+        [QuicFrame.StopSending id: id-res.value  error: err-res.value]
+      0x06: # CRYPTO
+        [off-res: [decode-quic-varint data p]]
+        [len-res: [decode-quic-varint data off-res.next]]
+        [QuicFrame.Crypto offset: off-res.value
+                          data:   [slice data len-res.next [+ len-res.next len-res.value]]]
+      0x07: # NEW_TOKEN
+        [len-res: [decode-quic-varint data p]]
+        [QuicFrame.NewToken token: [slice data len-res.next [+ len-res.next len-res.value]]]
+      0x10: # MAX_DATA
+        [max-res: [decode-quic-varint data p]]
+        [QuicFrame.MaxData max: max-res.value]
+      0x11: # MAX_STREAM_DATA
+        [id-res:  [decode-quic-varint data p]]
+        [max-res: [decode-quic-varint data id-res.next]]
+        [QuicFrame.MaxStreamData id: id-res.value  max: max-res.value]
+      0x12: # MAX_STREAMS (bidi)
+        [max-res: [decode-quic-varint data p]]
+        [QuicFrame.MaxStreams bidi: true  max: max-res.value]
+      0x13: # MAX_STREAMS (uni)
+        [max-res: [decode-quic-varint data p]]
+        [QuicFrame.MaxStreams bidi: false  max: max-res.value]
+      0x14: # DATA_BLOCKED
+        [lim-res: [decode-quic-varint data p]]
+        [QuicFrame.DataBlocked limit: lim-res.value]
+      0x1c: # CONNECTION_CLOSE (QUIC layer)
+        [err-res: [decode-quic-varint data p]]
+        [ft-res:  [decode-quic-varint data err-res.next]]
+        [rl-res:  [decode-quic-varint data ft-res.next]]
+        [reason:  [bytes-str [slice data rl-res.next [+ rl-res.next rl-res.value]]]]
+        [QuicFrame.ConnectionClose error: err-res.value  frame-type: ft-res.value  reason: reason]
+      0x1e: [QuicFrame.HandshakeDone]
+      _: # STREAM frames 0x08..0x0f
+        [if [and [>= type-res.value 0x08] [<= type-res.value 0x0f]]
+          [off-bit: [= [band type-res.value 0x04] 0x04]]
+          [len-bit: [= [band type-res.value 0x02] 0x02]]
+          [fin-bit: [= [band type-res.value 0x01] 0x01]]
+          [id-res:  [decode-quic-varint data p]]
+          [off-res: [if off-bit [decode-quic-varint data id-res.next] [value: 0  next: id-res.next]]]
+          [len-res: [if len-bit [decode-quic-varint data off-res.next] [value: [- [length data] off-res.next]  next: off-res.next]]]
+          [QuicFrame.Stream id:     id-res.value
+                            offset: off-res.value
+                            fin:    fin-bit
+                            data:   [slice data len-res.next [+ len-res.next len-res.value]]]
+          [error [str "QuicFrameCodec: unknown frame type: " type-res.value]]]]]]
 
 # ── QuicLayer typeclass — bidirectional quic ──────────────────────────────────
 

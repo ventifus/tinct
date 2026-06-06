@@ -329,6 +329,13 @@
      send-n:     [Channel UInt64]   # 64-bit nonce counter (Noise spec §12)
      recv-n:     [Channel UInt64]]]
 
+  # NoiseTransportCodec: Bytes ↔ encrypted framed Bytes at the Noise transport layer.
+  # Carries the NoiseConnection for send/recv keys and nonce counters.
+  # encode: plaintext Bytes → 2-byte-length-prefixed AEAD ciphertext Bytes (noise-write format)
+  # decode: framed ciphertext Bytes → decrypted plaintext Bytes (noise-read format)
+  # Input/output are both Bytes — the codec sits at the plaintext/ciphertext boundary.
+  NoiseTransportCodec: [type [h] [conn: [NoiseConnection h]]]
+
   # Serve layer: promotes a Channel@ByteStream to Channel@NoiseConnection.
   # Lives here (not serve.llt) because it closes over NoiseConfig.
   noise-serve: [fn@[bind: [h]  constraint: [h: ByteStream]]
@@ -364,6 +371,31 @@
   noise-read: [fn [let conn@NoiseConnection wanted@Int]
     [noise-read-acc conn wanted []]]
 ]
+
+# NoiseTransportCodec: plaintext Bytes ↔ framed ciphertext Bytes (Noise transport layer).
+# encode: encrypts plaintext with send-key/send-n; prepends 2-byte length; returns framed ciphertext.
+# decode: reads 2-byte length prefix from data, decrypts with recv-key/recv-n; returns plaintext.
+# Nonce counters in conn advance atomically on each encode/decode call.
+[instance@[bind: [h]] [Codec [NoiseTransportCodec h] Bytes Bytes]
+  encode: [fn [let codec@[NoiseTransportCodec h] plaintext@Bytes]
+    [conn: codec.conn]
+    [match [recv conn.send-n]
+      [Closed.Closed]: [error "NoiseTransportCodec.encode: send-n channel closed"]
+      [Result.Ok n]:
+        [send conn.send-n [+ n 1]]
+        [ct: [chacha20-poly1305-seal conn.send-key [noise-nonce n] plaintext []]]
+        [concat [bytes BigEndian [@UInt16 [length ct]]] ct]]]
+  decode: [fn [let codec@[NoiseTransportCodec h] data@Bytes]
+    [conn:  codec.conn]
+    [ct-len: [uint16 BigEndian [slice data 0 2]]]
+    [ct:     [slice data 2 [+ 2 ct-len]]]
+    [match [recv conn.recv-n]
+      [Closed.Closed]: [error "NoiseTransportCodec.decode: recv-n channel closed"]
+      [Result.Ok n]:
+        [send conn.recv-n [+ n 1]]
+        [match [chacha20-poly1305-open conn.recv-key [noise-nonce n] ct []]
+          [Result.Ok p]:    p
+          [Result.Error _]: [error "NoiseTransportCodec.decode: decryption failed"]]]]]
 
 # ── NoiseLayer typeclass — bidirectional noise ────────────────────────────────
 

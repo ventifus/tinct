@@ -12,6 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
+use indexmap::IndexMap;
+
 use crate::ast::Span;
 
 // TypeError is defined in type_env.rs (will be moved to type_class.rs or kept in type_env.rs)
@@ -138,6 +140,23 @@ pub struct TyConDef {
     pub constructors: Vec<(String, usize)>,
     /// Optional builtin type discriminant (e.g., "Seq", "Map")
     pub builtin_type: Option<String>,
+    /// Annotation dict attached to the type constructor declaration via `@[...]` syntax.
+    ///
+    /// `None` until T-1122 populates it from `@[...]` annotations on `[type ...]`
+    /// declarations via eval_type_stage_expr. At type-check time, `annotation-of` on a
+    /// TyConDef reference reads this field.
+    ///
+    /// Uses `IndexMap` to preserve annotation key insertion order for user-facing output.
+    pub annotation: Option<IndexMap<String, crate::value::Value>>,
+    /// Field-level annotation dicts for record-type constructors, keyed by field name.
+    ///
+    /// Maps each annotated field name to its `@[...]` annotation dict (e.g.
+    /// `host@[required: true  doc: "hostname"]: String` → `{"host": {"required": true, "doc": "hostname"}}`).
+    /// Used by the TypeNode protocol to derive `children`/`map-children` roles from `@Child`
+    /// field annotations. Empty until T-1122 populates it.
+    ///
+    /// Both outer and inner maps use `IndexMap` to preserve annotation key insertion order.
+    pub field_annotations: IndexMap<String, IndexMap<String, crate::value::Value>>,
 }
 
 impl TyConDef {

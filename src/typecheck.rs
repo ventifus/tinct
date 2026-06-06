@@ -973,18 +973,41 @@ fn register_type_aliases(
         // Pass 2: Resolve actual bodies (now recursive references can be looked up)
 
         // Pass 1: Collect alias names and pre-register placeholders
-        // Each entry carries (alias_name, params, body_node, declaration_span).
+        // Each entry carries (alias_name, params, body_node, declaration_span, type_annotation).
         // params is Vec<(String, Option<Spanned<Annotation>>)>: (param_name, optional variance/class annotation).
+        // type_annotation is the @[...] annotation on the TypeName key (e.g. `JsonValue@[doc: "..."]`),
+        // captured as a cloned Annotation for population into TyConDef.annotation in Pass 2.
+        //
+        // T-1052 produces `SurfaceExpression::Annotated { name, annotation }` key nodes
+        // when a type alias has a top-level @[...] annotation (e.g. `JsonValue@[doc: "..."]: [type ...]`).
+        // Pass 1 recognises Annotated keys and passes the annotation through. Pass 2 evaluates
+        // the annotation in the type-stage evaluator (eval_type_stage_expr, T-1058, T-1053) and stores
+        // the resulting Value dict in TyConDef.annotation.
         #[allow(clippy::type_complexity)]
         let mut alias_entries: Vec<(
             String,
             Vec<(String, Option<crate::ast::Spanned<crate::ast::Annotation>>)>,
             Arc<SurfaceNode>,
             Span,
+            Option<crate::ast::Annotation>, // type-level @[...] annotation on the alias name
         )> = Vec::new();
         for entry in entries {
             if let Some(ref key) = entry.node.key {
-                if let SurfaceExpression::Str(name) = &key.expr {
+                // Recognise both plain `TypeName: [type ...]` and annotated `TypeName@[...]: [type ...]` keys.
+                // The latter produces SurfaceExpression::Annotated { name, annotation } once T-1052 lands.
+                let (alias_name, type_annotation): (
+                    Option<String>,
+                    Option<crate::ast::Annotation>,
+                ) = match &key.expr {
+                    SurfaceExpression::Str(name) => (Some(name.clone()), None),
+                    // T-1052: `TypeName@[doc: "..." ...]` — annotated alias declaration key.
+                    // The annotation is the type-alias-level @[...] dict from the entry key.
+                    SurfaceExpression::Annotated { name, annotation } => {
+                        (Some(name.clone()), Some(annotation.node.clone()))
+                    }
+                    _ => (None, None),
+                };
+                if let Some(name) = alias_name {
                     if let SurfaceExpression::Decl(decl_box) = &entry.node.value.expr {
                         if let SurfaceDeclaration::TypeAlias { params, body } = decl_box.as_ref() {
                             alias_entries.push((
@@ -992,6 +1015,7 @@ fn register_type_aliases(
                                 params.clone(),
                                 Arc::clone(body),
                                 entry.node.value.span.clone(),
+                                type_annotation,
                             ));
                             // Pre-register with placeholder body
                             // Gradual: Pre-register with placeholder during forward-reference resolution
@@ -1008,7 +1032,7 @@ fn register_type_aliases(
         }
 
         // Pass 2: Resolve actual bodies
-        for (name, params, body_node, decl_span) in alias_entries {
+        for (name, params, body_node, decl_span, type_annotation) in alias_entries {
             // [builtin-type "X"] detection (T-957): if the body is a `[builtin-type "X"]` call,
             // create a TyConDef with the builtin discriminant and skip normal body resolution.
             let builtin_type_discriminant: Option<String> = {
@@ -1042,10 +1066,16 @@ fn register_type_aliases(
 
             if let Some(discriminant) = builtin_type_discriminant {
                 let n_params = params.len();
+                // TODO(T-1122): type_annotation carries the @[...] annotation from the type
+                // alias key (e.g. `Seq@[doc: "..."]`) — T-1052 now produces this.
+                // T-1122 will evaluate via eval_type_stage_expr (T-1058) and store in TyConDef.annotation.
+                let _ = &type_annotation; // scaffolding: T-1122 will evaluate and store
                 let tycon_def = Arc::new(TyConDef {
                     variance: vec![Variance::Invariant; n_params],
                     constructors: vec![],
                     builtin_type: Some(discriminant),
+                    annotation: None,
+                    field_annotations: indexmap::IndexMap::new(),
                 });
                 target_env.insert_tycon_def(name.clone(), Arc::clone(&tycon_def));
                 state.tycon_env.insert(name.clone(), tycon_def);
@@ -1192,10 +1222,30 @@ fn register_type_aliases(
                     // Arc::new preserves pointer identity so UNIFY-TYCON can detect cross-scope
                     // shadowing via Arc::ptr_eq when two [type Foo ...] decls exist in different
                     // scopes (B-343).
+                    //
+                    // T-1122 annotation population:
+                    // `type_annotation` carries the @[...] annotation from the type alias key node
+                    // (e.g. `JsonValue@[doc: "..." schema-id: "json-value"]: [type ...]`) once
+                    // T-1052 parser changes land. When populated, it is evaluated in the type-stage
+                    // evaluator (eval_type_stage_expr, T-1058) and stored in TyConDef.annotation.
+                    //
+                    // TODO(T-1122): Evaluate type_annotation in the type-stage evaluator and
+                    // store in TyConDef.annotation. type_annotation is now produced by T-1052
+                    // (Annotated key nodes → annotation extracted). T-1122 activates evaluation:
+                    //
+                    //   let annotation: Option<IndexMap<String, Value>> =
+                    //       type_annotation.as_ref().and_then(|ann| {
+                    //           eval_type_stage_annotation(ann, target_env, state)
+                    //               .ok()
+                    //               .map(|val_dict| val_dict)
+                    //       });
+                    let _ = &type_annotation; // scaffolding: T-1122 will evaluate and store
                     let tycon_def = Arc::new(TyConDef {
                         variance: final_variances,
                         constructors: constructors.clone(),
                         builtin_type: None,
+                        annotation: None,
+                        field_annotations: indexmap::IndexMap::new(),
                     });
                     target_env.insert_tycon_def(name.clone(), Arc::clone(&tycon_def));
                     state.tycon_env.insert(name.clone(), tycon_def);

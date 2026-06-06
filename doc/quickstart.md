@@ -254,12 +254,13 @@ Type declarations and construction:
 [
   Color: [type Red Green Blue]   # dict-entry form; unit constructors are bare uppercase words
 
-  color: Color.Red   # access via dot notation on the type dict
+  color: Red   # injected short name; variant tag is "Color.Red" internally
 
   hex: [match color
     Color.Red:   "#ff0000"   # unit constructor patterns — qualified name, no brackets
     Color.Green: "#00ff00"
-    Color.Blue:  "#0000ff"]
+    Color.Blue:  "#0000ff"
+    _:           "unknown"]
   # → "#ff0000"
 ]
 ```
@@ -282,14 +283,14 @@ Sum types with payloads use `try` in the standard library:
 
 ## Nominal Variants
 
-`Name: [type ...]` declares a type and injects its constructors as bindings into the enclosing dict. Unit constructors are bare uppercase words; payload constructors are bracketed (`[CtorName field: Type ...]`). Constructors are also accessible via dot notation on the type name.
+`Name: [type ...]` declares a type and injects its constructors as bindings into the enclosing dict. Unit constructors are bare uppercase words; payload constructors are bracketed (`[CtorName field: Type ...]`). The injected binding names are short (e.g. `None`, `Red`); the internal variant tags are qualified (e.g. `Option.None`, `Color.Red`).
 
 ```tinct
 [
   Option: [type [let a]  [Some value: a]  None]   # parameterized; None is a bare unit constructor
 
-  # Constructors are injected into scope with qualified tags; also accessible via dot
-  nothing: Option.None
+  # Constructors are injected into scope as short names
+  nothing: None
 
   # Payload variant: call constructor (injected into scope from the type declaration)
   something: [Some value: 42]
@@ -297,17 +298,17 @@ Sum types with payloads use `try` in the standard library:
   # Pattern match — [Tag binding] binds the payload DICT; access named fields with dot
   n: [match something
         [Some p]: p.value   # p is the payload dict → p.value = 42
-        None:     0]        # unit constructor: bare name, no brackets
+        _:        0]        # wildcard fallback
 ]
 ```
 
-**Constructors are injected into the enclosing dict scope** with qualified tags (`Color.Red`, not `Red`). Access them via dot notation or directly by their injected name — both refer to the same value:
+**Constructors are injected into the enclosing dict scope** as short names (`Red`, not `Color.Red`). The internal variant tag is qualified (`Color.Red`), but the binding you reference in value position is the short name:
 
 ```tinct
 [
   Color: [type Red Green Blue]
-  c: Color.Red
-  is-red: [= c Color.Red]   # → true
+  c: Red
+  is-red: [= c Red]   # → true
 ]
 ```
 
@@ -321,7 +322,8 @@ Sum types with payloads use `try` in the standard library:
 
   desc: [match m
     [Length p]: [str "length=" [str p.r]]   # p is the payload dict; p.r is the Float → 2.5
-    Zero:       "zero"]                     # unit constructor: bare name, no brackets
+    Zero:       "zero"                      # unit constructor: bare name, no brackets
+    _:          "unknown"]
   # → "length=2.5"
 ]
 ```
@@ -364,13 +366,14 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
 ```tinct
 [
   Color: [type Red Green Blue]
-  color: Color.Red
+  color: Red   # injected short name; variant tag is "Color.Red" internally
 
   # Unit constructors — bare name or qualified dot notation, no brackets
   hex: [match color
     Color.Red:   "#ff0000"
     Color.Green: "#00ff00"
-    Color.Blue:  "#0000ff"]
+    Color.Blue:  "#0000ff"
+    _:           "unknown"]
   # → "#ff0000"
 
   # Payload constructors — [Tag binding] binds the payload dict; access fields with dot
@@ -379,7 +382,8 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
 
   area: [match sh
     [Shape.Circle p]: [* 3 [* p.r p.r]]   # p is the payload dict; p.r is the Int → 3*5*5 = 75
-    [Shape.Square p]: [* p.s p.s]]
+    [Shape.Square p]: [* p.s p.s]
+    _:                0]
   # → 75
 ]
 ```
@@ -461,7 +465,7 @@ These functions are always available — no `include` needed.
 
 **Logic:** `if`, `when`, `unless`, `and`, `or`, `not`, `=`, `<`, `>`, `<=`, `>=`
 
-**Types:** `int?`, `str?`, `dict?`, `fn?`, `seq?`, `null?`, `absent?`, `bool?`, `float?`, `bytes?`, `num?`
+**Types:** `int?`, `str?`, `dict?`, `fn?`, `seq?`, `null?`, `absent?`, `bool?`, `float?`, `bytes?`, `num?`, `annotation-of`
 
 **Math:** `+`, `-`, `*`, `/`, `mod`, `floor`, `round`, `min`, `max`, `abs`
 

@@ -1,0 +1,7 @@
+# annotation-of on a non-annotated function returns an empty dict
+# FnAnnotation.extra is empty when no @[...] fields are present.
+# After T-1051, annotation-of dispatches on Value::Function and reads extra: IndexMap.
+[f: [fn [let x] x]]
+[result: [annotation-of f]]
+=== out
+Dict({"result": Dict({})})

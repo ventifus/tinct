@@ -460,6 +460,8 @@ pub(crate) fn infer_dict(
                                 variance: vec![Variance::Invariant; n_params],
                                 constructors: vec![],
                                 builtin_type: Some(discriminant),
+                                annotation: None,
+                                field_annotations: indexmap::IndexMap::new(),
                             });
                             dict_env.insert_tycon_def(alias_name.clone(), Arc::clone(&tycon_def));
                             state.tycon_env.insert(alias_name.clone(), tycon_def);
@@ -531,6 +533,8 @@ pub(crate) fn infer_dict(
                                     variance: inferred_variances,
                                     constructors,
                                     builtin_type: None,
+                                    annotation: None,
+                                    field_annotations: indexmap::IndexMap::new(),
                                 });
                                 dict_env.insert_tycon_def(name.clone(), Arc::clone(&tycon_def));
                                 state.tycon_env.insert(name.clone(), tycon_def);

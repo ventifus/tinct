@@ -1,0 +1,20 @@
+# bor-all, band-all, bxor-all — n-ary bitwise operators
+# Identity elements: bor-all identity=0, band-all identity=-1, bxor-all identity=0
+[
+  # bor-all: zero-arg (identity=0), single-arg, multi-arg
+  bor-zero:  [bor-all]
+  bor-one:   [bor-all 5]
+  bor-multi: [bor-all 1 2 4]
+
+  # band-all: zero-arg (identity=-1), single-arg, multi-arg
+  band-zero:  [band-all]
+  band-one:   [band-all 7]
+  band-multi: [band-all 15 6]
+
+  # bxor-all: zero-arg (identity=0), single-arg, multi-arg
+  xor-zero:  [bxor-all]
+  xor-one:   [bxor-all 5]
+  xor-multi: [bxor-all 1 3 5]
+]
+=== out
+Dict({"bor-zero": Int(0), "bor-one": Int(5), "bor-multi": Int(7), "band-zero": Int(-1), "band-one": Int(7), "band-multi": Int(6), "xor-zero": Int(0), "xor-one": Int(5), "xor-multi": Int(7)})

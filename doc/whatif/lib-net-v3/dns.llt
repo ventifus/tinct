@@ -11,6 +11,12 @@
 [
   dnsQtype: [union [A] [AAAA] [CNAME] [MX] [NS] [TXT] [PTR] [SRV] [HTTPS] [SOA] [ANY]]
 
+  # DNS domain name: case-insensitive dot-separated labels (RFC 1035 §2.3.1).
+  # May be absolute (ends with ".") or relative. "." alone = root zone.
+  # Distinct from Hostname: may contain underscores, the root label, relative names,
+  # or SOA rname (email encoded as DNS name). Max 63 bytes/label, 253 bytes total.
+  dnsName: [type String]
+
   # RFC 9460 §2.3 SvcParams: a record of optional typed fields, one per SvcParamKey.
   # Each field uses [or T Absent] so absence of a param is distinct from an empty value.
   svcParams: [type
@@ -24,18 +30,18 @@
      other:           [Map Int Bytes]]]              # unknown SvcParamKeys (extensibility)
 
   dnsRecord: [union
-    [ARecord      addr@[Bytes 4]    ttl@Int]
-    [AAAARecord   addr@[Bytes 16]   ttl@Int]
-    [CNameRecord  name@String       ttl@Int]
-    [MxRecord     pref@Int  name@String  ttl@Int]
-    [NsRecord     name@String  ttl@Int]
-    [TxtRecord    strings@[Seq Bytes]  ttl@Int]
-    [PtrRecord    name@String  ttl@Int]
-    [SrvRecord    prio@Int  weight@Int  port@Int  target@String  ttl@Int]
-    [HttpsRecord  prio@Int  target@String  params@svcParams  ttl@Int]
-    [SoaRecord    mname@String  rname@String  serial@Int  refresh@Int
-                  retry@Int  expire@Int  minimum@Int  ttl@Int]
-    [UnknownRecord  qtype@Int  data@Bytes  ttl@Int]]
+    [ARecord      addr@IpAddress.Ipv4  ttl@Duration]   # wire bytes ARE the Ipv4 address; no conversion
+    [AAAARecord   addr@IpAddress.Ipv6  ttl@Duration]   # wire bytes ARE the Ipv6 address; no conversion
+    [CNameRecord  name@dnsName     ttl@Duration]        # canonical name (FQDN, often trailing ".")
+    [MxRecord     pref@Int  name@dnsName  ttl@Duration] # mail exchange hostname
+    [NsRecord     name@dnsName  ttl@Duration]           # authoritative nameserver hostname
+    [TxtRecord    strings@[Seq Bytes]  ttl@Duration]    # arbitrary bytes — NOT DnsName
+    [PtrRecord    name@dnsName  ttl@Duration]           # reverse-DNS target hostname
+    [SrvRecord    prio@Int  weight@Int  port@Int  target@dnsName  ttl@Duration]  # service target
+    [HttpsRecord  prio@Int  target@dnsName  params@svcParams  ttl@Duration]      # HTTPS TargetName
+    [SoaRecord    mname@dnsName  rname@dnsName  serial@UInt32   # rname = email as DNS name
+                  refresh@Duration  retry@Duration  expire@Duration  minimum@Duration  ttl@Duration]
+    [UnknownRecord  qtype@Int  data@Bytes  ttl@Duration]]
 
   dnsRcode: [union [NoError] [FormErr] [ServFail] [NXDomain] [NotImpl] [Refused]]
 
@@ -49,7 +55,7 @@
 
   dnsQuery: [type
     [id:        Int
-     name:      String
+     name:      DnsName    # the query name (e.g. "example.com." or "example.com")
      qtype:     dnsQtype
      recursive: Bool
      respond:   [or [Fn [dnsResponse] Null] Null]]]
@@ -172,8 +178,8 @@
       [error "DNS: CNAME chain too long (max 8)"]
       [flat-map [fn [let r]
         [match r
-          [dnsRecord.ARecord     addr: addr]: [if [= qtype dnsQtype.A]    [list IpAddress.Ipv4 addr] []]
-          [dnsRecord.AAAARecord  addr: addr]: [if [= qtype dnsQtype.AAAA] [list IpAddress.Ipv6 addr] []]
+          [dnsRecord.ARecord     addr: addr]: [if [= qtype dnsQtype.A]    [list addr] []]
+          [dnsRecord.AAAARecord  addr: addr]: [if [= qtype dnsQtype.AAAA] [list addr] []]
           [dnsRecord.CNameRecord name: name]:
             [match [try [dns-try-names cap %dns [list [str name "."]] qtype [+ cname-depth 1]]]
               [Result.Ok addrs]: addrs
@@ -196,19 +202,124 @@
         [Result.Ok r]:    r
         [Result.Error e]: [error [str "DoH decode: " e]]]]]
 
-  encode-rr: [fn [let r@dnsRecord]
+  # Helper: Duration → UInt32 seconds (clamped to 2^31-1 per RFC 2181 §8).
+  duration->ttl: [fn [let d@Duration]
+    [@UInt32 [min [seconds-of d] 2147483647]]]
+
+  # RFC 1035 §4.1.4: encode a DNS name with pointer compression.
+  # table: DnsName → Int (byte offset in message where that name begins).
+  # offset: current write position in the message (for registering new names).
+  # Returns {bytes: Bytes  table: [Map DnsName Int]} with the updated table.
+  encode-dns-name-compressed: [fn [let name@DnsName offset@Int table@[Map DnsName Int]]
+    [labels: [filter [fn [let s] [not [= s ""]]] [str-split "." name]]]
+    # Try each suffix (longest first) to find a compression pointer.
+    [let try-suffix [fn [i prefix-bytes prefix-offset]
+      [if [> i [length labels]]
+        # No suffix matched — emit root byte, register full name.
+        [full: [concat prefix-bytes [0x00]]]
+        [bytes: full  table: [set name prefix-offset table]]
+        # Try suffix starting at label i.
+        [suffix: [apply str [intersperse "." [append [slice labels i [length labels]] [list ""]]]]]
+        [match [get? table suffix]
+          [let ptr-off]:
+            # Found! Emit prefix labels + 2-byte pointer.
+            [ptr: [bytes BigEndian [@UInt16 [bor 0xC000 ptr-off]]]]
+            [full: [concat prefix-bytes ptr]]
+            [bytes: full  table: [set name prefix-offset table]]
+          [Absent.Absent]:
+            # Register this suffix for future compression, then try shorter.
+            [label:      [get labels i]]
+            [label-wire: [concat [bytes BigEndian [@UInt8 [length [str-bytes label]]]] [str-bytes label]]]
+            [new-prefix: [concat prefix-bytes label-wire]]
+            [new-off:    [+ prefix-offset [length label-wire]]]
+            [new-table:  [set suffix prefix-offset table]]
+            [try-suffix [+ i 1] new-prefix new-off new-table]]]]]
+    [try-suffix 0 [bytes 0] offset table]]
+
+  # Encode a name and return {bytes: Bytes  table: [Map DnsName Int]}.
+  # Wrapper that handles the empty/root name case.
+  enc-name: [fn [let name@DnsName offset@Int table@[Map DnsName Int]]
+    [if [or [= name ""] [= name "."]]
+      [bytes: [0x00]  table: table]
+      [encode-dns-name-compressed name offset table]]]
+
+  # Helper: build wire RR header + rdata, threading compression table.
+  # Returns {bytes: Bytes  table: [Map DnsName Int]}.
+  rr-wire-compressed: [fn [let rtype@Int ttl@Duration rdata@Bytes offset@Int table@[Map DnsName Int]]
+    # Owner name is "." (root) — single zero byte, no compression.
+    [owner:   [0x00]]
+    [header:  [concat owner
+                      [bytes BigEndian [@UInt16 rtype]]
+                      [bytes BigEndian [@UInt16 1]]          # class = IN
+                      [bytes BigEndian [duration->ttl ttl]]
+                      [bytes BigEndian [@UInt16 [length rdata]]]]]
+    [full: [concat header rdata]]
+    [bytes: full  table: table]]
+
+  # dnsRecord → {bytes: Bytes  table: [Map DnsName Int]} with name compression.
+  # offset: where this RR starts in the message (for registering name offsets).
+  # table:  compression table built up from previous RRs in the same message.
+  encode-rr-compressed: [fn [let r@dnsRecord offset@Int table@[Map DnsName Int]]
+    # rdata-base: byte offset where rdata starts (after 1-byte owner + 10-byte fixed header).
+    [rdata-base: [+ offset 11]]
     [match r
-      [dnsRecord.ARecord    addr: addr  ttl: ttl]:
-        [concat [encode-dns-name ""]
-                [bytes BigEndian [@UInt16 1]]   [bytes BigEndian [@UInt16 1]]
-                [bytes BigEndian [@UInt32 ttl]] [bytes BigEndian [@UInt16 4]]
-                addr]
-      [dnsRecord.AAAARecord addr: addr  ttl: ttl]:
-        [concat [encode-dns-name ""]
-                [bytes BigEndian [@UInt16 28]]  [bytes BigEndian [@UInt16 1]]
-                [bytes BigEndian [@UInt32 ttl]] [bytes BigEndian [@UInt16 16]]
-                addr]
-      _: [bytes 0]]]
+      [dnsRecord.ARecord addr: addr ttl: ttl]:
+        [rr-wire-compressed 1 ttl [match addr [IpAddress.Ipv4 b]: b] offset table]
+
+      [dnsRecord.AAAARecord addr: addr ttl: ttl]:
+        [rr-wire-compressed 28 ttl [match addr [IpAddress.Ipv6 b]: b] offset table]
+
+      [dnsRecord.CNameRecord name: name ttl: ttl]:
+        [nr: [enc-name name rdata-base table]]
+        [rr-wire-compressed 5 ttl nr.bytes offset nr.table]
+
+      [dnsRecord.MxRecord pref: pref name: name ttl: ttl]:
+        [nr: [enc-name name [+ rdata-base 2] table]]
+        [rr-wire-compressed 15 ttl [concat [bytes BigEndian [@UInt16 pref]] nr.bytes] offset nr.table]
+
+      [dnsRecord.NsRecord name: name ttl: ttl]:
+        [nr: [enc-name name rdata-base table]]
+        [rr-wire-compressed 2 ttl nr.bytes offset nr.table]
+
+      [dnsRecord.TxtRecord strings: strings ttl: ttl]:
+        [rdata: [apply concat [map [fn [let s]
+          [concat [bytes BigEndian [@UInt8 [length s]]] s]] strings]]]
+        [rr-wire-compressed 16 ttl rdata offset table]
+
+      [dnsRecord.PtrRecord name: name ttl: ttl]:
+        [nr: [enc-name name rdata-base table]]
+        [rr-wire-compressed 12 ttl nr.bytes offset nr.table]
+
+      [dnsRecord.SrvRecord prio: prio weight: weight port: port target: target ttl: ttl]:
+        [nr: [enc-name target [+ rdata-base 6] table]]
+        [rdata: [concat [bytes BigEndian [@UInt16 prio]]
+                        [bytes BigEndian [@UInt16 weight]]
+                        [bytes BigEndian [@UInt16 port]]
+                        nr.bytes]]
+        [rr-wire-compressed 33 ttl rdata offset nr.table]
+
+      [dnsRecord.SoaRecord mname: mname rname: rname serial: serial
+                           refresh: refresh retry: retry expire: expire minimum: minimum ttl: ttl]:
+        [mn: [enc-name mname rdata-base table]]
+        [rn: [enc-name rname [+ rdata-base [length mn.bytes]] mn.table]]
+        [times: [concat [bytes BigEndian serial]
+                        [bytes BigEndian [duration->ttl refresh]]
+                        [bytes BigEndian [duration->ttl retry]]
+                        [bytes BigEndian [duration->ttl expire]]
+                        [bytes BigEndian [duration->ttl minimum]]]]
+        [rr-wire-compressed 6 ttl [concat mn.bytes rn.bytes times] offset rn.table]
+
+      [dnsRecord.HttpsRecord prio: prio target: target params: _ ttl: ttl]:
+        [nr: [enc-name target [+ rdata-base 2] table]]
+        [rr-wire-compressed 65 ttl [concat [bytes BigEndian [@UInt16 prio]] nr.bytes] offset nr.table]
+
+      [dnsRecord.UnknownRecord qtype: qtype data: data ttl: ttl]:
+        [rr-wire-compressed qtype ttl data offset table]]]
+
+  # Encode a single record with compression (offset=0, fresh table).
+  encode-rr: [fn [let r@dnsRecord]
+    [result: [encode-rr-compressed r 0 []]]
+    result.bytes]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
@@ -218,10 +329,16 @@
   # (Defined with camelCase in the types dict above so internal helpers can access them.)
   # Note: runtime constructor tags carry the camelCase prefix (e.g. "dnsQtype.A") — see R-13.
   SvcParams:   svcParams     # RFC 9460 SvcParams record type
+  DnsName:     dnsName       # DNS domain name (RFC 1035 §2.3.1)
   DnsQtype:    dnsQtype
   DnsRecord:   dnsRecord
   DnsRcode:    dnsRcode
   DnsError:    dnsError
+
+  # Codec for a single DNS resource record.
+  # msg: the full DNS message bytes, needed for name decompression during decode.
+  # For bytes produced by encode (uncompressed names), pass the rr-bytes itself as msg.
+  DnsRecordCodec: [type [msg: Bytes]]
   DnsQuery:    dnsQuery
   DnsResponse: dnsResponse
   Nameserver:  nameserver
@@ -279,13 +396,13 @@
 
   # RFC 1035 §4.1.3: parse RDATA for a given type, returning a dnsRecord.
   # b: full message (for name decompression); offset: start of RDATA; rdlength: length.
-  parse-dns-rdata: [fn [let b@Bytes offset@Int rdlength@Int qtype@Int ttl@Int]
+  parse-dns-rdata: [fn [let b@Bytes offset@Int rdlength@Int qtype@Int ttl@Duration]
     [data-end: [+ offset rdlength]]
     [match qtype
-      1:  # A record — 4-byte IPv4 address
-        [dnsRecord.ARecord  addr: [slice b offset data-end]  ttl: ttl]
-      28: # AAAA record — 16-byte IPv6 address
-        [dnsRecord.AAAARecord  addr: [slice b offset data-end]  ttl: ttl]
+      1:  # A record — 4-byte IPv4 address (wire bytes are exactly IpAddress.Ipv4)
+        [dnsRecord.ARecord  addr: [IpAddress.Ipv4 [slice b offset data-end]]  ttl: ttl]
+      28: # AAAA record — 16-byte IPv6 address (wire bytes are exactly IpAddress.Ipv6)
+        [dnsRecord.AAAARecord  addr: [IpAddress.Ipv6 [slice b offset data-end]]  ttl: ttl]
       5:  # CNAME — compressed name
         [name-res: [parse-dns-name b offset 5]]
         [dnsRecord.CNameRecord  name: name-res.name  ttl: ttl]
@@ -317,11 +434,11 @@
         [mname-res: [parse-dns-name b offset 5]]
         [rname-res: [parse-dns-name b mname-res.next 5]]
         [p: rname-res.next]
-        [serial:  [uint32 BigEndian [slice b p          [+ p 4]]]]
-        [refresh: [uint32 BigEndian [slice b [+ p 4]    [+ p 8]]]]
-        [retry:   [uint32 BigEndian [slice b [+ p 8]    [+ p 12]]]]
-        [expire:  [uint32 BigEndian [slice b [+ p 12]   [+ p 16]]]]
-        [minimum: [uint32 BigEndian [slice b [+ p 16]   [+ p 20]]]]
+        [serial:  [@UInt32 [uint32 BigEndian [slice b p          [+ p 4]]]]]
+        [refresh: [seconds [uint32 BigEndian [slice b [+ p 4]    [+ p 8]]]]]
+        [retry:   [seconds [uint32 BigEndian [slice b [+ p 8]    [+ p 12]]]]]
+        [expire:  [seconds [uint32 BigEndian [slice b [+ p 12]   [+ p 16]]]]]
+        [minimum: [seconds [uint32 BigEndian [slice b [+ p 16]   [+ p 20]]]]]
         [dnsRecord.SoaRecord  mname: mname-res.name  rname: rname-res.name
                               serial: serial  refresh: refresh  retry: retry
                               expire: expire  minimum: minimum  ttl: ttl]
@@ -370,7 +487,7 @@
       [p:        name-res.next]
       [rtype:    [uint16 BigEndian [slice b p          [+ p 2]]]]
       [rclass:   [uint16 BigEndian [slice b [+ p 2]    [+ p 4]]]]
-      [ttl:      [uint32 BigEndian [slice b [+ p 4]    [+ p 8]]]]
+      [ttl:      [seconds [uint32 BigEndian [slice b [+ p 4] [+ p 8]]]]]  # RFC 1035: TTL in seconds
       [rdlen:    [uint16 BigEndian [slice b [+ p 8]    [+ p 10]]]]
       [rdata-off: [+ p 10]]
       [rr:       [parse-dns-rdata b rdata-off rdlen rtype ttl]]
@@ -407,20 +524,33 @@
         additional: ar-result.records
         truncated:  truncated]]]]
 
+  # Encode all records in one section, threading the compression table and offset.
+  # Returns {bytes: Bytes  offset: Int  table: [Map DnsName Int]}.
+  encode-section: [fn [let records offset@Int table@[Map DnsName Int]]
+    [reduce [fn [let acc r]
+      [result: [encode-rr-compressed r acc.offset acc.table]]
+      [offset: [+ acc.offset [length result.bytes]]
+       table:  result.table
+       bytes:  [concat acc.bytes result.bytes]]]
+     [offset: offset  table: table  bytes: [bytes 0]]
+     records]]
+
   encode-dns-response: [fn [let resp@DnsResponse]
     [rcode-int: [match resp.rcode
       [dnsRcode.NoError]: 0  [dnsRcode.FormErr]: 1  [dnsRcode.ServFail]: 2
       [dnsRcode.NXDomain]: 3 [dnsRcode.NotImpl]: 4  [dnsRcode.Refused]: 5  _: 2]]
-    [concat
+    [header: [concat
       [bytes BigEndian [@UInt16 resp.id]]
       [bytes BigEndian [@UInt16 [bor 0x8080 rcode-int]]]
       [bytes BigEndian [@UInt16 0]]
       [bytes BigEndian [@UInt16 [length resp.answers]]]
       [bytes BigEndian [@UInt16 [length resp.authority]]]
-      [bytes BigEndian [@UInt16 [length resp.additional]]]
-      [flat-map encode-rr resp.answers]
-      [flat-map encode-rr resp.authority]
-      [flat-map encode-rr resp.additional]]]
+      [bytes BigEndian [@UInt16 [length resp.additional]]]]]
+    # Thread compression table across all three sections — cross-section compression works.
+    [an: [encode-section resp.answers    [length header] []]]
+    [ns: [encode-section resp.authority  an.offset       an.table]]
+    [ar: [encode-section resp.additional ns.offset       ns.table]]
+    [concat header an.bytes ns.bytes ar.bytes]]
 
   dns-udp-resolver: [fn [let cap@NetCap addr@SocketAddress]
     [fn [let q@DnsQuery]
@@ -535,6 +665,24 @@
       dnsError.ServerFailure
       [dns-try-names cap config [candidate-names host config.search config.ndots] dnsQtype.A]]]
 ]
+
+# DnsRecordCodec: Codec dnsRecord ↔ full RR bytes (RFC 1035 §3.2.1) with name compression.
+# encode: dnsRecord → compressed RR bytes (within-record compression, offset=0, fresh table)
+# decode: compressed RR bytes → dnsRecord, using codec.msg for pointer decompression.
+#         Pass msg=[bytes 0] or rr-bytes to decode single self-contained records.
+# Round-trip: decode(DnsRecordCodec msg, encode(_, r)) = r for any dnsRecord r,
+#             because single-record encoding uses within-record compression with no cross-record
+#             pointers; the encoded bytes are self-contained and decode correctly with msg=rr-bytes.
+[instance [Codec DnsRecordCodec dnsRecord Bytes]
+  encode: [fn [let _ r] [encode-rr r]]   # encode-rr uses encode-rr-compressed offset=0 table=[]
+  decode: [fn [let codec rr-bytes]
+    [msg:     [if [empty? codec.msg] rr-bytes codec.msg]]
+    [name-res: [parse-dns-name msg 0 5]]
+    [p:       name-res.next]
+    [rtype:   [uint16 BigEndian [slice rr-bytes p [+ p 2]]]]
+    [ttl-raw: [uint32 BigEndian [slice rr-bytes [+ p 4] [+ p 8]]]]
+    [rdlen:   [uint16 BigEndian [slice rr-bytes [+ p 8] [+ p 10]]]]
+    [parse-dns-rdata msg [+ p 10] rdlen rtype [seconds ttl-raw]]]]
 
 # Transport typeclass instances — live here because they need dns-resolve.
 #

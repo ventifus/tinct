@@ -279,6 +279,13 @@
 
   TlsRecord: [type [content-type: ContentType  payload: Bytes]]
 
+  # TlsRecordCodec: stateful codec for TLS 1.3 record layer (RFC 8446 §5).
+  # Carries the TlsConnection for encryption keys, IVs, sequence counters, and cipher suite.
+  # encode: TlsRecord (plaintext) → encrypted TLSCiphertext Bytes (ApplicationData record wire bytes)
+  # decode: TLSCiphertext Bytes → TlsRecord (decrypted content-type + plaintext payload)
+  # Both directions advance the respective sequence counter in conn.
+  TlsRecordCodec: [type [h] [conn: [TlsConnection h]]]
+
   # TLS alert descriptions per RFC 8446 §6.2.
   TlsAlertDescription: [union
     [CloseNotify] [UnexpectedMessage] [BadRecordMac] [RecordOverflow]
@@ -735,6 +742,45 @@
                [let cfg@TlsServerConfig in-ch@[Channel h]]
     [channel-map [fn [let s@h] [tls-accept cfg s]] in-ch]]
 ]
+
+# TlsRecordCodec: TlsRecord ↔ encrypted Bytes (RFC 8446 §5.2 TLSCiphertext wire format).
+# encode: seals plaintext record using conn write-key/write-iv/write-seq; emits TLSCiphertext bytes.
+# decode: opens TLSCiphertext bytes using conn read-key/read-iv/read-seq; returns decrypted TlsRecord.
+# Sequence counters in conn advance atomically on each call (via write-seq / read-seq channels).
+[instance@[bind: [h]] [Codec [TlsRecordCodec h] TlsRecord Bytes]
+  encode: [fn [let codec@[TlsRecordCodec h] record@TlsRecord]
+    # Seal: inner = payload || content-type byte; ciphertext = AEAD(write-key, nonce, inner, aad)
+    # aad = 0x17 0x03 0x03 || ciphertext-length(2) per RFC 8446 §5.2
+    [conn: codec.conn]
+    [match [recv conn.write-seq]
+      [Closed.Closed]: [error "TlsRecordCodec.encode: write-seq channel closed"]
+      [Result.Ok seq]:
+        [send conn.write-seq [+ seq 1]]
+        [inner:      [concat record.payload [bytes [ct->int record.content-type]]]]
+        [ct-len:     [+ [length inner] 16]]
+        [aad:        [tls-record-aad ct-len]]
+        [ciphertext: [tls-seal conn inner [tls-nonce conn.write-iv seq] aad]]
+        # Wire format: 0x17 0x03 0x03 || length(2) || ciphertext
+        [concat [0x17] [0x03 0x03] [bytes BigEndian [@UInt16 ct-len]] ciphertext]]]
+  decode: [fn [let codec@[TlsRecordCodec h] data@Bytes]
+    # Wire format: content-type(1) 0x03 0x03 length(2) ciphertext
+    [conn:       codec.conn]
+    [ct-len:     [uint16 BigEndian [slice data 3 5]]]
+    [ciphertext: [slice data 5 [+ 5 ct-len]]]
+    [match [recv conn.read-seq]
+      [Closed.Closed]: [error "TlsRecordCodec.decode: read-seq channel closed"]
+      [Result.Ok seq]:
+        [send conn.read-seq [+ seq 1]]
+        [aad:    [tls-record-aad ct-len]]
+        [plain:  [tls-open conn ciphertext [tls-nonce conn.read-iv seq] aad]]
+        # RFC 8446 §5.2: TLSInnerPlaintext = content || content_type || zeros*.
+        # Scan from end to find last non-zero byte (the content-type byte).
+        [let find-ct-idx [fn [i]
+          [if [< i 0] [error "TlsRecordCodec.decode: all-zero decrypted record"]
+            [if [= [get plain i] 0] [find-ct-idx [- i 1]] i]]]]
+        [ct-idx:  [find-ct-idx [- [length plain] 1]]]
+        [TlsRecord content-type: [int->ct [get plain ct-idx]]
+                   payload:      [slice plain 0 ct-idx]]]]]
 
 # ── TlsLayer typeclass — bidirectional tls ────────────────────────────────────
 

@@ -594,6 +594,8 @@ impl InferState {
                 variance: vec![crate::type_def::Variance::Covariant],
                 constructors: vec![],
                 builtin_type: Some("Seq".to_string()),
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
             }),
         );
         tycon_env.insert(
@@ -605,6 +607,8 @@ impl InferState {
                 ],
                 constructors: vec![],
                 builtin_type: Some("Map".to_string()),
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
             }),
         );
         tycon_env.insert(
@@ -613,6 +617,8 @@ impl InferState {
                 variance: vec![crate::type_def::Variance::Covariant],
                 constructors: vec![],
                 builtin_type: Some("Handle".to_string()),
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
             }),
         );
 

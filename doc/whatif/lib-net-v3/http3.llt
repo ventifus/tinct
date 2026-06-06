@@ -4,6 +4,8 @@
 [include %include-dir "quic.llt"]
 [include %include-dir "http1.llt"]
 
+[type [H3FrameCodec]]   # zero-payload codec tag — stateless H3Frame ↔ Bytes codec
+
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
@@ -15,14 +17,8 @@
     [match prefix
       0: [band b0 0x3F]
       1: [bor [shl [band b0 0x3F] 8] [get [read-bytes h 1] 0]]
-      2: [bor [shl [band b0 0x3F] 24]
-              [shl [get [read-bytes h 1] 0] 16]
-              [bor [shl [get [read-bytes h 1] 0] 8]
-                       [get [read-bytes h 1] 0]]]
-      3: [let rest: [read-bytes h 7]]
-         [+ [shl [band b0 0x3F] 56]
-            [+ [shl [get rest 0] 48] [+ [shl [get rest 1] 40] [+ [shl [get rest 2] 32]
-               [+ [shl [get rest 3] 24] [+ [shl [get rest 4] 16] [+ [shl [get rest 5] 8] [get rest 6]]]]]]]]
+      2: [band [uint32 BigEndian [concat [bytes BigEndian [@UInt8 b0]] [read-bytes h 3]]] 0x3FFFFFFF]
+      3: [band [uint64 BigEndian [concat [bytes BigEndian [@UInt8 b0]] [read-bytes h 7]]] 0x3FFFFFFFFFFFFFFF]
       _: [error "unreachable"]]]
 
   # Encode n as QUIC variable-length integer. Chooses minimum-width encoding.
@@ -103,6 +99,11 @@
     [H3Data] [H3Headers] [H3CancelPush] [H3Settings] [H3PushPromise] [H3Goaway] [H3MaxPushId]]
 
   H3Frame: [type [type: H3FrameType  payload: Bytes]]
+
+  # H3FrameCodec: codec for HTTP/3 frame wire format (RFC 9114 §7).
+  # encode: H3Frame → varint(type) ++ varint(length) ++ payload bytes
+  # decode: Bytes → H3Frame by parsing type varint, length varint, then payload
+  # H3FrameCodec declared at top level (zero-payload type)
 
   # RFC 9114 §4 HTTP/3 SETTINGS parameters — a record of typed optional fields, not a map.
   Http3Settings: [type
@@ -352,6 +353,43 @@
   # Request-extraction: each Http3Connection yields its request substreams.
   http3-requests: [_ | [channel-flat-map http3-req-conn]]
 ]
+
+# H3FrameCodec: H3Frame ↔ Bytes (RFC 9114 §7 frame wire format).
+# encode: serializes H3Frame as varint(type) ++ varint(length) ++ payload
+# decode: parses bytes as QUIC varint(type) + QUIC varint(length) + payload → H3Frame
+# parse-varint-at: RFC 9000 §16 QUIC variable-length integer decode from Bytes at offset.
+# Returns {value next} where next is the offset of the first byte after the varint.
+[instance [Codec H3FrameCodec H3Frame Bytes]
+  encode: [fn [let _ frame@H3Frame]
+    [concat
+      [encode-varint [h3-frame-type->int frame.type]]
+      [encode-varint [length frame.payload]]
+      frame.payload]]
+  decode: [fn [let _ data@Bytes]
+    [let parse-varint-at [fn [b offset]
+      [b0:     [get b offset]]
+      [prefix: [shr [band b0 0xC0] 6]]
+      [match prefix
+        0: [value: [band b0 0x3F]  next: [+ offset 1]]
+        1: [value: [bor [shl [band b0 0x3F] 8] [get b [+ offset 1]]]  next: [+ offset 2]]
+        2: [value: [bor [shl [band b0 0x3F] 24]
+                        [bor [shl [get b [+ offset 1]] 16]
+                             [bor [shl [get b [+ offset 2]] 8] [get b [+ offset 3]]]]]
+                   next: [+ offset 4]]
+        3: [value: [bor [shl [band b0 0x3F] 56]
+                        [bor [shl [get b [+ offset 1]] 48]
+                             [bor [shl [get b [+ offset 2]] 40]
+                                  [bor [shl [get b [+ offset 3]] 32]
+                                       [bor [shl [get b [+ offset 4]] 24]
+                                            [bor [shl [get b [+ offset 5]] 16]
+                                                 [bor [shl [get b [+ offset 6]] 8] [get b [+ offset 7]]]]]]]]]
+                   next: [+ offset 8]]
+        _: [error "H3FrameCodec: unreachable varint prefix"]]]]
+    [type-res: [parse-varint-at data 0]]
+    [len-res:  [parse-varint-at data type-res.next]]
+    [H3Frame
+      [type:    [int->h3-frame-type type-res.value]
+       payload: [slice data len-res.next [+ len-res.next len-res.value]]]]]]]]
 
 # ── H3Layer typeclass — bidirectional h3 ─────────────────────────────────────
 

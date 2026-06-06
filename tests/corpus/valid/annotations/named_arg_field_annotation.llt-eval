@@ -1,0 +1,12 @@
+# Named arg with field annotation in a Call bracket (T-1052)
+# [Ctor fields@Child: val] where Ctor is an uppercase name in head position
+# → Priority 3 (Call frame). fields@Child sets pending_key with annotation.
+# The annotation is stored in SurfaceNamedArg.annotation (not displayed).
+# Display shows name: value (annotation stripped in display output).
+# This form is used for runtime constructor calls, not type declarations.
+[Union types@Child: "values"]
+=== out
+[Union types: "values"]
+
+=== warn
+undefined variable: Union at 6:2-6:7

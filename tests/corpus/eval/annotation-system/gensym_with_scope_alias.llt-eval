@@ -1,0 +1,11 @@
+# gensym-with-scope produces unique symbols with explicit scope character.
+# Prelude wrapper: [gensym-with-scope scope prefix] → calls [builtin-gensym scope prefix]
+# Format: "{scope}ꜱʏᴍ⧼{prefix}⧽{N}" where N is a global monotonic counter.
+# Two calls with the same scope+prefix must produce distinct strings (counter advances).
+# Counter values are NOT pinned: the global AtomicU64 is shared across all tests in
+# the binary. The test outputs only the uniqueness result, not the raw gensym strings.
+[a: [gensym-with-scope "ℊ" "test"]]
+[b: [gensym-with-scope "ℊ" "test"]]
+[not [= a b]]
+=== out
+Bool(true)

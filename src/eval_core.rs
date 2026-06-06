@@ -314,6 +314,7 @@ fn eval_quote_preprocess<'a>(
                         SurfaceNamedArg {
                             name: na.node.name.clone(),
                             value: processed_value,
+                            annotation: na.node.annotation.clone(),
                         },
                         na.span.clone(),
                     ));
@@ -485,6 +486,50 @@ async fn eval_quote_walk(
     )))
 }
 
+/// Extract non-standard annotation fields from a function `@[...]` annotation into an
+/// `IndexMap<String, Value>` for storage in `FnAnnotation.extra`.
+///
+/// Standard keys (`return`, `constraint`, `doc`, `bind`, `kinds`) are filtered out since
+/// they are consumed by the type system. Only `String`, `Int`, `Float`, and `Bool` literal
+/// values are extracted; expression-valued fields (function/dict/call) are silently dropped
+/// (they cannot be evaluated at function-definition time without a full eval context;
+/// see T-1124 "Support expression-valued @[...] annotation fields").
+///
+/// Called from both `eval_core.rs` (CoreExpr::Fn arm) and `eval.rs` (Fn arm) to avoid
+/// duplicating this logic. The two call sites are identical except for crate-path prefixes.
+pub(crate) fn extract_fn_annotation_extra(
+    return_ann: Option<&crate::ast::Spanned<crate::ast::Annotation>>,
+) -> IndexMap<String, Value> {
+    const STANDARD_ANN_KEYS: &[&str] = &["return", "constraint", "doc", "bind", "kinds"];
+    if let Some(ann_spanned) = return_ann {
+        if let crate::ast::Annotation::PropertyDict(entries) = &ann_spanned.node {
+            return entries
+                .iter()
+                .filter_map(|e| {
+                    let key_str = match e.node.key.as_ref()?.expr {
+                        crate::ast::SurfaceExpression::Str(ref s) => s.clone(),
+                        _ => return None,
+                    };
+                    if STANDARD_ANN_KEYS.contains(&key_str.as_str()) {
+                        return None;
+                    }
+                    let val = match &e.node.value.expr {
+                        crate::ast::SurfaceExpression::Str(s) => string_val(s),
+                        crate::ast::SurfaceExpression::Int(n) => Value::Int(*n),
+                        crate::ast::SurfaceExpression::Float(f) => Value::Float(*f),
+                        crate::ast::SurfaceExpression::Bool(b) => Value::Bool(*b),
+                        // Null: SurfaceExpression has no Null literal; [] is Dict, not an annotation value.
+                        // Function/Dict/Call: deferred (need full eval context; see FIX LATER tracker item).
+                        _ => return None,
+                    };
+                    Some((key_str, val))
+                })
+                .collect();
+        }
+    }
+    IndexMap::new()
+}
+
 /// Evaluate a CoreExpr to a thunk (transitional path for runtime-v2).
 ///
 /// This is the new CoreExpr evaluation entry point. It handles:
@@ -648,6 +693,9 @@ pub(crate) fn eval_core_expr<'a>(
                 let return_ann_clone: Option<crate::ast::Annotation> =
                     return_ann.as_ref().map(|a| a.node.clone());
 
+                // Populate extra from non-standard annotation fields (string/int/float literals).
+                let extra = extract_fn_annotation_extra(return_ann.as_ref());
+
                 // Always construct FnAnnotation — source_span is always available even for
                 // unannotated functions, enabling ast-of and LSP go-to-definition.
                 let annotation = Some(Box::new(crate::value::FnAnnotation {
@@ -655,6 +703,7 @@ pub(crate) fn eval_core_expr<'a>(
                     return_ann: return_ann_clone,
                     source_file: ctx.config.source_file.clone(),
                     source_span: span.clone(),
+                    extra,
                 }));
 
                 // Store the body directly as Arc<Spanned<CoreExpr>>.

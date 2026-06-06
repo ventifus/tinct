@@ -1,13 +1,13 @@
 # Unquote in nested call args: [quote [f [unquote (quote 1)]]] → call AST with arg value 1
 [= [get "value" [get 0 [get "args" [quote [f [unquote [quote 1]]]]]]] 1]
 === error
-[E010] builtin-get (key "args"): expected Dict, got Expression (defined at stdlib/prelude.llt:873:42-873:46) (called at stdlib/prelude.llt:873:25-873:47)
-  --> stdlib/prelude.llt:873:42-873:46
+[E010] builtin-get (key "args"): expected Dict, got Expression (defined at stdlib/prelude.llt:900:42-900:46) (called at stdlib/prelude.llt:900:25-900:47)
+  --> stdlib/prelude.llt:900:42-900:46
    |
-  873 | """] [let key@k dict@d] [builtin-get key dict]]
+  900 | """] [let key@k dict@d] [builtin-get key dict]]
       |                                          ^^^^
-  in [builtin-get ...] at stdlib/prelude.llt:873:25-873:47
+  in [builtin-get ...] at stdlib/prelude.llt:900:25-900:47
    |
-  873 | """] [let key@k dict@d] [builtin-get key dict]]
+  900 | """] [let key@k dict@d] [builtin-get key dict]]
       |                         ^^^^^^^^^^^^^^^^^^^^^^
   in [= ...] at 1:1-1:73

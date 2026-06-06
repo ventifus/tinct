@@ -75,6 +75,33 @@
   # [Cached value] — previously evaluated result
   IncludeCacheEntry: [type Missing Pending [Cached Any]]
 
+  # ============================================================================
+  # Type-Stage Utilities (equirecursive-annotation-system, S-857)
+  # ============================================================================
+
+  # object-map: map a function over the values of a dict, preserving keys.
+  # Used by TypeNode.map-children to reconstruct same-shaped TypeNode variants
+  # after applying a child-mapping function.
+  #
+  # Signature: obj@Dict -> f@[Fn [String Any] Any] -> Dict
+  #
+  # Args:
+  #   obj — the source dict
+  #   f   — called with (key, value), returns the new value for that key
+  #
+  # Example:
+  #   [object-map [a: 1  b: 2] [fn [let k v] [+ v 10]]] => [a: 11  b: 12]
+  #
+  # Implemented using only core builtins (builtin-reduce, builtin-merge,
+  # builtin-keys, builtin-get) so it is available in the type-stage evaluator,
+  # which does not have the runtime prelude in scope (no reduce/keys/get aliases).
+  # Uses [$k: v] dynamic key syntax to preserve string keys.
+  object-map: [fn [let obj f]
+    [builtin-reduce
+      [fn [let acc k] [builtin-merge acc [$k: [f k [builtin-get k obj]]]]]
+      []
+      [builtin-keys obj]]]
+
 ]
 
 --- uses: ["core"]
@@ -1120,6 +1147,22 @@ Example: [map-entries [fn [e] e.key] [x: 10 y: 20]] => [x: "x" y: "y"]
 Note: The function f receives the entry dict and must return the NEW VALUE (not a new entry dict). Keys are preserved unchanged. O(n) via build-dict.
 """] [let f@Fn xs@Dict]
   [build-dict [builtin-map [fn [let e] [key: e.key  value: [f e]]] [each-kv xs]]]]
+
+object-map: [fn@[return: Dict  doc: """
+Map a function over the values of a dict, passing (key, value) as two arguments.
+Keys are preserved; values are replaced by the function's return value.
+
+Args:
+  obj — source dict
+  f   — called as [f key value]; returns the new value for that key
+
+Example: [object-map [a: 1  b: 2] [fn [let k v] [+ v 10]]] => [a: 11  b: 12]
+
+Note: Counterpart to map-entries (which passes a single entry dict). Use object-map
+when f needs both key and value as separate parameters (e.g., TypeNode.map-children).
+O(n) via build-dict.
+"""] [let obj@Dict f@Fn]
+  [build-dict [builtin-map [fn [let e] [key: e.key  value: [f e.key e.value]]] [each-kv obj]]]]
 
 # Left fold: alias for reduce (Rust-native builtin, dual-dispatch on Dict/Seq).
 # Type: ((b -> a -> b) -> b -> Dict a -> b)
@@ -2204,8 +2247,7 @@ apply@[doc: "Apply function to a dict of arguments"]: builtin-apply
 type-of@[doc: "Return the type name of a value as a String"]: builtin-type-of
 ast-of@[doc: "Return the AST representation of an unevaluated expression as an Expression value"]: builtin-ast-of
 
-annotation-of@[doc: "Get the return annotation dict from ast-of result"]:
-  [fn [let val] [get "return-ann" [ast-of val]]]
+annotation-of@[doc: "Get the annotation dict from a function (FnAnnotation.extra + doc) or annotated value"]: builtin-annotation-of
 
 source-of@[doc: "Get the body AST dict from ast-of result. NOTE: only works for unevaluated thunks (macro/quote context), not for fully-evaluated Value::Function — use ast-of directly for functions."]:
   [fn [let val] [get "body" [ast-of val]]]
@@ -2456,6 +2498,17 @@ bxor@[doc: "Bitwise XOR of two Ints"]: builtin-bxor
 bnot@[doc: "Bitwise NOT of an Int (two's complement: ~n = -(n+1))"]: [fn [let n@Int] [- -1 n]]
 shl@[doc: "Left shift: value shl bits"]: builtin-shl
 shr@[doc: "Logical right shift (zero-fill): value shr bits"]: builtin-shr
+
+# N-ary bitwise operators — eliminate nested [bor a [bor b [bor c d]]] patterns.
+bor-all@[doc: "Bitwise OR of any number of Ints (identity: 0)"]:  [fn [let ...args] [reduce bor  0  args]]
+band-all@[doc: "Bitwise AND of any number of Ints (identity: -1)"]: [fn [let ...args] [reduce band -1 args]]
+bxor-all@[doc: "Bitwise XOR of any number of Ints (identity: 0)"]: [fn [let ...args] [reduce bxor 0  args]]
+
+# sub: offset+length slice. Subject last so it works with pipelines.
+# NOTE: slice itself is currently subject-first (tracked in T-1120 to fix).
+# Once slice is subject-last, sub becomes: [fn [let offset len s] [slice offset [+ offset len] s]]
+sub@[doc: "s[offset..offset+len] — subsequence of len elements starting at offset. Subject last."]:
+  [fn [let offset@Int len@Int s] [slice s offset [+ offset len]]]
 
 # ============================================================================
 # Type Conversion (builtin-privacy-operators-and-io sprint)

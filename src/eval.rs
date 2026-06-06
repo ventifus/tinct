@@ -29,6 +29,7 @@ use crate::ast::{
 };
 use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
+use crate::eval_core::extract_fn_annotation_extra;
 use crate::types::{Row, Type};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
@@ -1041,6 +1042,10 @@ pub fn ground_type_of(v: &Value) -> Type {
         // Builder is a transient construction artifact — produce Top (type mismatch error)
         // rather than panicking; Builder can reach TypeAssert via e.g. [@Int [make-builder]].
         Value::Builder(..) => Type::Top,
+        // TODO(T-1121): Value::Annotated should delegate to inner value's ground type by
+        // forcing the ThunkId. Currently falls to Top because ThunkId cannot be forced in
+        // the sync ground_type_of context. Fix in T-1121 (Value::Annotated transparency).
+        Value::Annotated { .. } => Type::Top,
         // All other runtime-only types (URI, async, crypto, etc.) → Top
         _ => Type::Top,
     }
@@ -1085,6 +1090,9 @@ fn extract_row(map: &IndexMap<Key, ThunkId>) -> Row {
 /// No fast-path bypasses for other types — the consistent subtyping relation handles everything
 /// uniformly. If primitive checks prove slow in profiling, optimize `is_consistent_subtype`
 /// itself, which benefits every call site across the codebase.
+// TODO(T-1121): Value::Annotated should unwrap to inner value before type-checking.
+// Currently ground_type_of(Value::Annotated) returns Type::Top (fails all type assertions).
+// Fix in T-1121: force ThunkId in async context or store inner ground type eagerly.
 pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalContext) -> bool {
     // Resolve the root TyCon name for TyCon and App types, then dispatch via TyConDef.
     let tycon_name: Option<&str> = match expected {
@@ -1591,6 +1599,7 @@ fn eval_quote_preprocess<'a>(
                         SurfaceNamedArg {
                             name: na.node.name.clone(),
                             value: processed_value,
+                            annotation: na.node.annotation.clone(),
                         },
                         na.span.clone(),
                     ));
@@ -1987,6 +1996,10 @@ fn eval_core_expr<'a>(
                 let return_ann_clone: Option<crate::ast::Annotation> =
                     return_ann.as_ref().map(|a| a.node.clone());
 
+                // Populate extra from non-standard annotation fields (string/int/float literals).
+                // Standard keys (return, constraint, doc, bind, kinds) are handled by the type system.
+                let extra = extract_fn_annotation_extra(return_ann.as_ref());
+
                 // Always construct FnAnnotation — source_span is always available even for
                 // unannotated functions, enabling ast-of and LSP go-to-definition.
                 let annotation = Some(Box::new(crate::value::FnAnnotation {
@@ -1994,6 +2007,7 @@ fn eval_core_expr<'a>(
                     return_ann: return_ann_clone,
                     source_file: ctx.config.source_file.clone(),
                     source_span: span.clone(),
+                    extra,
                 }));
 
                 // Store the body directly as Arc<Spanned<CoreExpr>>.
@@ -7881,6 +7895,8 @@ mod tests {
                 variance: vec![],
                 constructors: vec![],
                 builtin_type: Some("Int".to_string()),
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
             }),
         );
         ctx.set_tycon_env(env);
@@ -7903,6 +7919,8 @@ mod tests {
                 variance: vec![],
                 constructors: vec![],
                 builtin_type: Some("Dict".to_string()),
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
             }),
         );
         ctx.set_tycon_env(env);
@@ -7931,6 +7949,8 @@ mod tests {
                 variance: vec![],
                 constructors: vec![("Color.Red".to_string(), 0), ("Color.Green".to_string(), 0)],
                 builtin_type: None,
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
             }),
         );
         ctx.set_tycon_env(env);
@@ -7965,6 +7985,8 @@ mod tests {
                 variance: vec![],
                 constructors: vec![],
                 builtin_type: Some("Str".to_string()),
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
             }),
         );
         ctx.set_tycon_env(env);

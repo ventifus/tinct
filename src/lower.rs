@@ -400,6 +400,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                         crate::ast::SurfaceNamedArg {
                             name: na.node.name.clone(),
                             value: core_expr_to_surface_node(&na.node.value),
+                            annotation: None,
                         },
                         na.span.clone(),
                     )

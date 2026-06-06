@@ -67,8 +67,8 @@ Config: [type [record
 **Storage model.** All annotations are stored as `IndexMap<String, Value>` — a uniform open dict. There are three storage sites:
 
 - **`Value::Function` values**: `FnAnnotation.extra: IndexMap<String, Value>` alongside existing `doc`, `return_type`, and params fields. All annotation fields — well-known and custom — are stored here uniformly; `annotation-of` reads `extra` as the canonical annotation dict.
-- **All other values** (`Value::String`, `Value::Int`, `Value::Dict`, etc.): `Value::Annotated { inner: Arc<Thunk>, annotation: Value }` wraps any non-function value with its annotation dict. All other Value operations unwrap `Annotated` transparently.
-- **Type-level positions** (type alias declarations, record field type annotations): `TyConDef.annotation: IndexMap<String, Value>` for type-level positions. Record field type annotations are stored in `TypeNode.Record.field_annotations`. _(Forward spec: `TyConDef` currently carries only `variance`, `constructors`, and `builtin_type`; the `annotation` and `field_annotations` storage sites are planned for a future sprint.)_
+- **All other values** (`Value::String`, `Value::Int`, `Value::Dict`, etc.): `Value::Annotated { inner: ThunkId, annotation: Box<Value> }` wraps any non-function value with its annotation dict. All other Value operations unwrap `Annotated` transparently (T-1123 tracks making Display/Debug/to_tinct/value_to_json transparent).
+- **Type-level positions** (type alias declarations, record field type annotations): `TyConDef.annotation: IndexMap<String, Value>` for type-level positions. Record field type annotations are stored in `TypeNode.Record.field_annotations`. _(Current state: `TyConDef.annotation` and `field_annotations` fields exist but are always `None`/empty until T-1122 (eval_type_stage_expr evaluation) lands.)_
 
 **`annotation-of` is a Rust builtin** that reads from all three storage sites uniformly, returning the annotation dict or an empty dict when no annotation is present. It is available at both runtime and in the type-stage evaluator.
 
@@ -897,7 +897,7 @@ TypeNode.as-type: [fn [let t]
   [if [has? ann as-type] [[get ann as-type] t] t]]
 ```
 
-Helper functions (`child-fields`, `child-role`, `child-field?`) read the unified annotation dict produced from `@Child` processing.
+Helper functions (`child-fields`, `child-role`, `child-field?`) read the unified annotation dict produced from `@Child` processing. **Note:** retrieval of `field-annotations` via `annotation-of` on a constructor function requires T-1124 (support for expression-valued annotation fields in `extract_fn_annotation_extra`). Until T-1124 lands, `@Child` field roles are stored in `ChildFieldAnnotation` structs in the `AliasConstructor` at desugar time but are not materialized into `FnAnnotation.extra` because the `field-annotations:` entry value is a dict (an expression, not a scalar literal), which `extract_fn_annotation_extra` currently silently drops.
 
 **Adding a new TypeNode constructor** requires: (1) declare it with `@[as-type: fn  guarding: Bool]` on the constructor name and `@Child` on TypeNode-typed fields; (2) add explicit arms only to `is_subtype_inner`, `unify`, `Substitution::apply`, and `PartialEq` for the new constructor's semantics. All traversal walkers (`walk_type`, `collect_type_vars`, `has_inference_vars`, etc.) pick up the new constructor automatically via `TypeNode.children` — no Rust changes needed.
 
@@ -1245,13 +1245,13 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 ## Reference
 
 - **Kiselyov, O. (2013).** "Efficient and Insightful Generalization." — [levels-based let-generalization; TypeVar level assignment; `state.levels` is authoritative current level, payload carries creation-time level]
-- **Robinson, J.A. (1965).** "A Machine-Oriented Logic Based on the Resolution Principle." *JACM*, 12(1), 23–41. — [unification; substitution idempotence]
+- **Robinson, J.A. (1965).** "A Machine-Oriented Logic Based on the Resolution Principle." _JACM_, 12(1), 23–41. — [unification; substitution idempotence]
 - **Gaster, B.R. & Jones, M.P. (1996).** "A Polymorphic Type System for Extensible Records and Variants." — [named parameters in calling convention; names not part of principal type]
-- **Amadio, R.M. & Cardelli, L. (1993).** "Subtyping Recursive Types." *ACM TOPLAS*, 15(4), 575–631. — [foundational coinductive subtype algorithm; S-Assum/S-Hyp rules; equirecursive type equality]
+- **Amadio, R.M. & Cardelli, L. (1993).** "Subtyping Recursive Types." _ACM TOPLAS_, 15(4), 575–631. — [foundational coinductive subtype algorithm; S-Assum/S-Hyp rules; equirecursive type equality]
 - **Chau, T. & Parreaux, L. (2026).** "Boolean-Algebraic Subtyping with Equirecursive Types." §3.3.1. — [S-Exp + S-Assum framework proven sound for BAS union/intersection/negation; sigma threading through all arms]
-- **Pierce, B.C. (2002).** *Types and Programming Languages.* MIT Press. §21 "Recursive Types." — [equirecursive vs isorecursive; rational tree representation; simultaneous-opening for recursive type unification]
-- **Huet, G. (1976).** *Résolution d'Équations dans des Langages d'Ordre 1, 2, ..., ω.* Ph.D. thesis, Université Paris VII. — [rational tree unification; finite representation of infinite cyclic types]
-- **Jones, M.P. (1995).** *Qualified Types: Theory and Practice.* Cambridge. — [constraint schemes; processing order]
-- **Jones, M.P. (2000).** "Type Classes with Functional Dependencies." *ESOP 2000*. — [fundep improvement; MPTC constraint propagation]
+- **Pierce, B.C. (2002).** _Types and Programming Languages._ MIT Press. §21 "Recursive Types." — [equirecursive vs isorecursive; rational tree representation; simultaneous-opening for recursive type unification]
+- **Huet, G. (1976).** _Résolution d'Équations dans des Langages d'Ordre 1, 2, ..., ω._ Ph.D. thesis, Université Paris VII. — [rational tree unification; finite representation of infinite cyclic types]
+- **Jones, M.P. (1995).** _Qualified Types: Theory and Practice._ Cambridge. — [constraint schemes; processing order]
+- **Jones, M.P. (2000).** "Type Classes with Functional Dependencies." _ESOP 2000_. — [fundep improvement; MPTC constraint propagation]
 
 See [References](17-references.md) for complete citations.

@@ -52,12 +52,12 @@ use crate::builtins::{builtin_floor, builtin_round, builtin_to_float, builtin_to
 use crate::stream::builtin_to_tinct;
 // Meta/eval implementations.
 use crate::builtins_meta::{
-    builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3, builtin_builtin_module,
-    builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_types, builtin_expand,
-    builtin_force, builtin_gensym, builtin_include_cache_get, builtin_include_cache_put,
-    builtin_llt_repr, builtin_load, builtin_macro_error, builtin_macro_injects, builtin_program,
-    builtin_raise, builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate,
-    builtin_variant,
+    builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
+    builtin_builtin_module, builtin_cap_identity, builtin_decimal, builtin_eval,
+    builtin_eval_types, builtin_expand, builtin_force, builtin_gensym, builtin_include_cache_get,
+    builtin_include_cache_put, builtin_llt_repr, builtin_load, builtin_macro_error,
+    builtin_macro_injects, builtin_program, builtin_raise, builtin_tag_of, builtin_try,
+    builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 // I/O implementations.
 use crate::builtins_io::{
@@ -826,6 +826,11 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             "builtin-variant",
             builtin_variant,
             [Strictness::Seq, Strictness::Id]
+        ),
+        builtin!(
+            "builtin-annotation-of",
+            builtin_annotation_of,
+            [Strictness::Seq]
         ),
         builtin!("builtin-decimal", builtin_decimal, [Strictness::Seq]),
         builtin!("builtin-big-int", builtin_big_int, [Strictness::Seq]),
@@ -1905,6 +1910,15 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![],
             ret: Box::new(Type::Top),
             variadic: true,
+        },
+    );
+    // annotation-of: takes any value, returns its annotation dict (or {} if none).
+    env.insert(
+        "annotation-of".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top),
+            variadic: false,
         },
     );
     env.insert(
@@ -3743,6 +3757,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         ("builtin-decimal", "decimal"),
         ("builtin-big-int", "big-int"),
         ("builtin-variant", "variant"),
+        ("builtin-annotation-of", "annotation-of"),
         // I/O (bare-name forms)
         ("builtin-emit", "emit"),
         ("builtin-env", "env"),

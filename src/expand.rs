@@ -571,6 +571,7 @@ async fn expand_surface_expr_inner(
                         SurfaceNamedArg {
                             name: na.node.name.clone(),
                             value: expanded_value,
+                            annotation: na.node.annotation.clone(),
                         },
                         na.span.clone(),
                     ));

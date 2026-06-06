@@ -684,8 +684,12 @@ enum StackFrame {
         /// Whether this is an implied call ([f x]) or explicit call ([call f x])
         implied: bool,
         args: Vec<CallArg>,
-        /// Pending key for named args (Identifier before colon)
-        pending_key: Option<(String, Span)>,
+        /// Pending key for named args (Identifier before colon).
+        ///
+        /// The third element is the optional annotation from `name@Ann:` syntax — `Some(...)`
+        /// when the argument name had a `@[...]` annotation (e.g. `fields@Child:`), `None`
+        /// for plain `name:` named arguments.
+        pending_key: Option<(String, Span, Option<Spanned<Annotation>>)>,
         span_start: Position,
     },
     /// Function definition: `[fn [let params...] body]` or `[fn@Type [let params...] body]`
@@ -800,8 +804,16 @@ enum StackFrame {
     LetDecl {
         bindings: Vec<Arc<SurfaceNode>>,
         /// Pending left-hand-side node for `lhs: rhs` syntax.
-        /// Holds the last binding popped when `:` is seen; consumed when the rhs arrives.
+        /// Holds the last binding popped when `:` is seen; consumed when the rhs is committed.
         pending_key: Option<Arc<SurfaceNode>>,
+        /// Pending right-hand-side node for `lhs: rhs` syntax.
+        /// Holds the first expression received after `pending_key` is set. Stored here rather
+        /// than immediately committed to `bindings` so that the dot-access handler can pop it
+        /// (via `pop_last_value_from_frame`) and extend it into a qualified name like `Result.Ok`.
+        /// Committed to `bindings` (as an `Annotated` node) when:
+        ///   - the close bracket arrives, or
+        ///   - the next new binding or colon arrives (signalling the end of the RHS).
+        pending_rhs: Option<Arc<SurfaceNode>>,
         span_start: Position,
     },
     /// Match arm with explicit scoping: `[case [let v: Ok] v]`
@@ -826,7 +838,11 @@ enum StackFrame {
 #[derive(Debug, Clone, PartialEq)]
 enum CallArg {
     Positional(Arc<SurfaceNode>),
-    Named(String, Arc<SurfaceNode>),
+    /// Named argument, with optional field annotation from `field@Child: value` syntax.
+    ///
+    /// The annotation is `Some(...)` when the argument name was written as `name@Ann:`,
+    /// and `None` for ordinary `name:` named arguments.
+    Named(String, Arc<SurfaceNode>, Option<Spanned<Annotation>>),
 }
 
 /// Parse output: AST plus comment side-channels for the formatter.
@@ -999,7 +1015,7 @@ fn recover_from_bracket_error(
                     // Explicit call: try to extract func from args[0]
                     match &args[0] {
                         CallArg::Positional(f) => Some(Arc::clone(f)),
-                        CallArg::Named(_, _) => None, // Invalid
+                        CallArg::Named(_, _, _) => None, // Invalid
                     }
                 } else {
                     None
@@ -1019,10 +1035,14 @@ fn recover_from_bracket_error(
                     for arg in args_iter {
                         match arg {
                             CallArg::Positional(expr) => positional_args.push(expr),
-                            CallArg::Named(name, expr) => {
+                            CallArg::Named(name, expr, ann) => {
                                 let expr_span = expr.span.clone();
                                 named_args.push(Spanned::new(
-                                    SurfaceNamedArg { name, value: expr },
+                                    SurfaceNamedArg {
+                                        name,
+                                        value: expr,
+                                        annotation: ann,
+                                    },
                                     expr_span,
                                 ));
                             }
@@ -1276,6 +1296,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     stack.push(StackFrame::LetDecl {
                         bindings: Vec::new(),
                         pending_key: None,
+                        pending_rhs: None,
                         span_start: span.start,
                     });
                     i += 1; // Consume the OpenBracket
@@ -1583,12 +1604,19 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         i += 1;
                         continue;
                     }
-                    Some((Token::Let, _keyword_idx)) => {
+                    Some((Token::Let, keyword_idx))
+                        if !matches!(
+                            peek_next_horizontal(&token_vec, keyword_idx),
+                            Some((Token::Colon, _))
+                        ) =>
+                    {
                         // LetDecl form: [let x@Int y@Float z: default]
+                        // (Not a let form if the keyword is followed by colon: [let: x] is a dict.)
                         // (depth already checked above)
                         stack.push(StackFrame::LetDecl {
                             bindings: Vec::new(),
                             pending_key: None,
+                            pending_rhs: None,
                             span_start: span.start,
                         });
                         i += 1; // Consume the OpenBracket
@@ -1602,8 +1630,14 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         i += 1;
                         continue;
                     }
-                    Some((Token::Case, _keyword_idx)) => {
+                    Some((Token::Case, keyword_idx))
+                        if !matches!(
+                            peek_next_horizontal(&token_vec, keyword_idx),
+                            Some((Token::Colon, _))
+                        ) =>
+                    {
                         // CaseArm form: [case [let v: Ok] v]
+                        // (Not a case form if the keyword is followed by colon: [case: x] is a dict.)
                         // (depth already checked above)
                         stack.push(StackFrame::CaseDecl {
                             pattern: None,
@@ -1933,7 +1967,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         span_start,
                     } => {
                         // If there's a pending key, that's an error — named arg without value
-                        if let Some((key, key_span)) = pending_key {
+                        if let Some((key, key_span, _)) = pending_key {
                             close_bracket_recover!(ParseError {
                                 message: format!("named argument `{}` without value", key),
                                 span: Some(key_span),
@@ -1954,7 +1988,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 // Explicit call: func is args[0]
                                 match &args[0] {
                                     CallArg::Positional(expr) => Ok(expr.clone()),
-                                    CallArg::Named(name, _) => Err(ParseError {
+                                    CallArg::Named(name, _, _) => Err(ParseError {
                                         message: format!(
                                             "call function cannot be a named argument (got `{name}:`)",
                                         ),
@@ -1981,10 +2015,14 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     for arg in args_iter {
                                         match arg {
                                             CallArg::Positional(expr) => positional_args.push(expr),
-                                            CallArg::Named(name, expr) => {
+                                            CallArg::Named(name, expr, ann) => {
                                                 let expr_span = expr.span.clone();
                                                 named_args.push(Spanned::new(
-                                                    SurfaceNamedArg { name, value: expr },
+                                                    SurfaceNamedArg {
+                                                        name,
+                                                        value: expr,
+                                                        annotation: ann,
+                                                    },
                                                     expr_span,
                                                 ));
                                             }
@@ -2592,13 +2630,24 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     }
 
                     StackFrame::LetDecl {
-                        bindings,
+                        mut bindings,
                         pending_key,
+                        pending_rhs,
                         span_start,
                     } => {
-                        // If there's an unmatched pending key (e.g., `z: ` with no value),
-                        // add a VarRef binding for the key name (best-effort recovery).
-                        let _ = pending_key; // Drop any pending key without a value
+                        // Commit any pending `key: rhs` pair that was not yet flushed.
+                        // This is the normal exit path for `[let v: Result.Ok]` — the pair is
+                        // only committed here, after the full RHS (including any dot-access
+                        // extension like `.Ok`) has been assembled.
+                        if let (Some(key_node), Some(rhs_node)) = (pending_key, pending_rhs) {
+                            if let Err(push_err) =
+                                commit_let_pending(key_node, rhs_node, &mut bindings)
+                            {
+                                close_bracket_recover!(push_err);
+                            }
+                        }
+                        // Any `pending_key` without a `pending_rhs` (e.g. `z: ]`) is dropped
+                        // as a best-effort recovery — the incomplete pair is silently discarded.
                         let spanned_let = Arc::new(SurfaceNode {
                             expr: SurfaceExpression::LetDecl { bindings },
                             span: dict_span(span_start),
@@ -3096,7 +3145,8 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             });
                             // If the annotated expression is immediately followed by ':', treat
                             // it as a dict key candidate (e.g. [x@Number: 42]) or match pattern
-                            // candidate (e.g. [n@Int: body]).
+                            // candidate (e.g. [n@Int: body]), or a named arg with field annotation
+                            // in a call frame (e.g. [Constructor fields@Child: Type]).
                             // After parse_annotation, `i` points to the token right after the
                             // annotation type, so check token_vec[i] directly (not +1).
                             let next_is_colon =
@@ -3118,6 +3168,29 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                         *pending_pattern_expr = Some(expr);
                                         last_significant_span = Some(full_span);
                                         continue;
+                                    }
+                                    Some(StackFrame::Call {
+                                        ref mut pending_key,
+                                        ..
+                                    }) => {
+                                        // `field@Ann:` inside a call/constructor bracket.
+                                        // Store the name and annotation as the pending key so
+                                        // the following value becomes a named arg carrying the
+                                        // field-level annotation (e.g. `fields@Child: Type`).
+                                        if let SurfaceExpression::Annotated {
+                                            ref name,
+                                            ref annotation,
+                                        } = expr.expr
+                                        {
+                                            *pending_key = Some((
+                                                name.clone(),
+                                                full_span.clone(),
+                                                Some(annotation.clone()),
+                                            ));
+                                            last_significant_span = Some(full_span);
+                                            continue;
+                                        }
+                                        // Fallthrough: not Annotated (should not happen) — push as value
                                     }
                                     _ => {}
                                 }
@@ -3184,8 +3257,8 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ref mut pending_key,
                             ..
                         }) => {
-                            // Named arg key — store the string name
-                            *pending_key = Some((s.clone(), span.clone()));
+                            // Named arg key — store the string name (no annotation for plain `name:`)
+                            *pending_key = Some((s.clone(), span.clone(), None));
                             last_significant_span = Some(span);
                             i += 1;
                             continue;
@@ -4299,7 +4372,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ..
                         }) => {
                             // Named arg key
-                            *pending_key = Some((keyword_str.to_string(), span.clone()));
+                            *pending_key = Some((keyword_str.to_string(), span.clone(), None));
                             last_significant_span = Some(span);
                             i += 1;
                             continue;
@@ -4543,6 +4616,31 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
     })
 }
 
+/// Extract a fully-qualified dot-path name from a surface expression node.
+///
+/// Returns `Some("A.B.C")` for a chain of DotAccess nodes rooted at a VarRef,
+/// where every field is an `Ident`. Returns `None` for any other shape.
+///
+/// Used to recognise qualified constructor names like `Result.Ok` in structural
+/// test annotations (`[let v: Result.Ok]`), where the RHS arrives as a
+/// `DotAccess` node after the parser resolves the `.` postfix.
+fn dot_path_name(node: &SurfaceNode) -> Option<String> {
+    match &node.expr {
+        SurfaceExpression::VarRef {
+            name,
+            escaped: false,
+        } => Some(name.clone()),
+        SurfaceExpression::DotAccess { expr, field } => {
+            let prefix = dot_path_name(expr)?;
+            match field {
+                crate::ast::DotKey::Ident(ident) => Some(format!("{}.{}", prefix, ident)),
+                crate::ast::DotKey::Int(_) => None, // e.g. `A.0` is not a constructor name
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Helper: pop the last value from the current frame for postfix operator transformation.
 /// This is used by dot access and other postfix operators that need to retroactively
 /// transform the previously-pushed expression.
@@ -4606,10 +4704,12 @@ fn pop_last_value_from_frame(
             }
             match args.pop().unwrap() {
                 CallArg::Positional(expr) => Ok(expr),
-                CallArg::Named(name, expr) => {
-                    // Restore the name as pending_key so the transformed value will be re-associated
-                    // with the same name. This allows `[foo bar: baz.field]` to work correctly.
-                    *pending_key = Some((name, span));
+                CallArg::Named(name, expr, ann) => {
+                    // Restore the name and annotation as pending_key so the transformed value
+                    // will be re-associated with the same name (and annotation, if present).
+                    // This allows `[foo bar: baz.field]` and `[Ctor field@Ann: baz.field]`
+                    // to work correctly with dot-access on the value side.
+                    *pending_key = Some((name, span, ann));
                     Ok(expr)
                 }
             }
@@ -4722,10 +4822,31 @@ fn pop_last_value_from_frame(
             message: "dot access is not valid inside pattern form".to_string(),
             span: Some(span),
         }),
-        Some(StackFrame::LetDecl { .. }) => Err(ParseError {
-            message: "dot access is not valid inside let declaration".to_string(),
-            span: Some(span),
-        }),
+        Some(StackFrame::LetDecl {
+            ref mut pending_key,
+            ref mut pending_rhs,
+            ..
+        }) => {
+            // Dot access is valid on the RHS of a structural-test annotation (v: Type.Constructor).
+            // `pending_rhs` holds the partial RHS while `pending_key` is set; pop it so the dot
+            // handler can extend it into a qualified name (e.g. `Result` → `Result.Ok`).
+            if pending_key.is_some() {
+                if let Some(rhs) = pending_rhs.take() {
+                    Ok(rhs)
+                } else {
+                    Err(ParseError {
+                        message: "dot access requires a target before '.' in let structural test"
+                            .to_string(),
+                        span: Some(span),
+                    })
+                }
+            } else {
+                Err(ParseError {
+                    message: "dot access is not valid inside let declaration".to_string(),
+                    span: Some(span),
+                })
+            }
+        }
         Some(StackFrame::CaseDecl {
             ref mut pattern,
             ref mut body,
@@ -5756,144 +5877,43 @@ fn push_expr_to_parent(
             Some(StackFrame::LetDecl {
                 ref mut bindings,
                 ref mut pending_key,
+                ref mut pending_rhs,
                 ..
             }) => {
                 // LetDecl collects binding expressions.
                 // Each element can be: VarRef (bare binding), Annotated (typed binding),
                 // Rest (variadic), structural test (name: Constructor or [a b]: Constructor),
                 // or named-param-with-default (name: default_value).
+                //
+                // `pending_rhs` defers commitment of `pending_key: rhs` pairs until the RHS is
+                // fully assembled. This allows `Result.Ok` (which arrives as VarRef "Result"
+                // followed by a dot-access step building `DotAccess(Result, Ok)`) to be
+                // committed as a single qualified name rather than prematurely as just "Result".
                 if let Some(key_node) = pending_key.take() {
-                    let combined_span = Span {
-                        start: key_node.span.start,
-                        end: node.span.end,
-                        file: None,
-                    };
-
-                    // Detect structural test: RHS is an uppercase VarRef (constructor name).
-                    // Per unified-bindings.md §Design, `:` inside [let ...] means either:
-                    //   - structural test: RHS is an uppercase VarRef (constructor name)
-                    //   - named-param-with-default: RHS is any other expression (LHS must be VarRef)
-                    let constructor_name = match &node.expr {
-                        SurfaceExpression::VarRef {
-                            name,
-                            escaped: false,
-                        } if name.starts_with(|c: char| c.is_uppercase()) => Some(name.clone()),
-                        _ => None,
-                    };
-
-                    match (key_node.expr.clone(), constructor_name) {
-                        // Case 1: `name: Constructor` — single-name structural test.
-                        // Encoded as Annotated { name: "name", annotation: PropertyDict([_constructor: "Constructor"]) }.
-                        // The sentinel key "_constructor" distinguishes structural test bindings from
-                        // typed bindings (which use Simple or other annotation forms).
-                        // At typecheck time: check for PropertyDict with "_constructor" key.
-                        // At eval time: same sentinel check for tag matching.
-                        (SurfaceExpression::VarRef { name: key_name, .. }, Some(ctor_name)) => {
-                            let sentinel_key = Arc::new(SurfaceNode {
-                                expr: SurfaceExpression::Str("_constructor".to_string()),
-                                span: node.span.clone(),
-                            });
-                            let ctor_val = Arc::new(SurfaceNode {
-                                expr: SurfaceExpression::Str(ctor_name),
-                                span: node.span.clone(),
-                            });
-                            let ann = Spanned::new(
-                                Annotation::PropertyDict(vec![Spanned::new(
-                                    SurfaceEntry {
-                                        key: Some(sentinel_key),
-                                        value: ctor_val,
-                                    },
-                                    node.span.clone(),
-                                )]),
-                                node.span.clone(),
-                            );
-                            let annotated = Arc::new(SurfaceNode {
-                                expr: SurfaceExpression::Annotated {
-                                    name: key_name,
-                                    annotation: ann,
-                                },
-                                span: combined_span,
-                            });
-                            bindings.push(annotated);
-                        }
-
-                        // Case 2: `[a b]: Constructor` — multi-payload structural test.
-                        // The inner LetDecl carries the binding group; the constructor name
-                        // is the annotation. Store as a Dict with a synthetic `_constructor`
-                        // key for now — full eval support requires typecheck/eval changes.
-                        //
-                        // TODO(unified-bindings-structural-tests): The AST representation for
-                        // multi-payload structural tests `[let [a b]: Pair]` is not yet finalized.
-                        // The parser correctly produces the inner LetDecl node AND the constructor
-                        // name here. However, the downstream representation (how to encode the
-                        // binding group + constructor name as a single AST node in the LetDecl
-                        // bindings list) requires a dedicated variant or a new SurfaceExpression
-                        // wrapper. The current `Annotated { name: String, annotation }` shape
-                        // cannot hold a nested LetDecl as the "name" side.
-                        //
-                        // Current workaround: store as the inner LetDecl node unchanged (which
-                        // typecheck_case_arm already handles by binding each element to Unknown).
-                        // This silently drops the constructor test at typecheck/eval time.
-                        //
-                        // Proper fix: add `SurfaceExpression::StructuralGroup { bindings: Vec<Arc<SurfaceNode>>, constructor: String }`
-                        // or a similar dedicated variant, and handle it in typecheck and eval.
-                        // See doc/whatif/unified-bindings.md §Multi-Payload Constructor Representation.
-                        (SurfaceExpression::LetDecl { .. }, Some(_ctor_name)) => {
-                            // For now: push the inner LetDecl as-is (without the constructor
-                            // annotation). The constructor test is silently dropped.
-                            // This is a known limitation; see TODO above.
-                            bindings.push(key_node);
-                        }
-
-                        // Case 3: `name: default_value` — named param with default.
-                        // Only valid when LHS is a bare VarRef (not a nested binding group).
-                        (SurfaceExpression::VarRef { name: key_name, .. }, None) => {
-                            // Represent as Annotated { name: key_name, annotation: PropertyDict([default: node]) }
-                            let key_span = key_node.span.clone();
-                            let surf_key = Arc::new(SurfaceNode {
-                                expr: SurfaceExpression::Str("default".to_string()),
-                                span: key_span,
-                            });
-                            let ann = Spanned::new(
-                                Annotation::PropertyDict(vec![Spanned::new(
-                                    SurfaceEntry {
-                                        key: Some(surf_key),
-                                        value: Arc::clone(&node),
-                                    },
-                                    node.span.clone(),
-                                )]),
-                                combined_span.clone(),
-                            );
-                            let annotated = Arc::new(SurfaceNode {
-                                expr: SurfaceExpression::Annotated {
-                                    name: key_name,
-                                    annotation: ann,
-                                },
-                                span: combined_span,
-                            });
-                            bindings.push(annotated);
-                        }
-
-                        // Case 4: `[a b]: default_value` — binding group with non-constructor RHS.
-                        // This is a type error: the `:` after a binding group must be followed by
-                        // a constructor name (uppercase identifier). Default values for binding
-                        // groups are not supported — only structural tests are.
-                        (SurfaceExpression::LetDecl { .. }, None) => {
-                            return Err(ParseError {
-                                message: "binding group `[...]` before `:` requires a constructor name (uppercase identifier) for multi-payload structural test".to_string(),
-                                span: Some(node.span.clone()),
-                            });
-                        }
-
-                        // Case 5: Other LHS forms — should not arise from valid parse paths.
-                        _ => {
-                            return Err(ParseError {
-                                message: "unexpected form before `:` in [let ...] binding"
-                                    .to_string(),
-                                span: Some(key_node.span.clone()),
-                            });
-                        }
+                    // A pending_key exists: this incoming node is the RHS (or would be the start
+                    // of a new binding if pending_rhs is also set — the latter case is handled
+                    // by the else branch below after committing the previous pair).
+                    if let Some(prev_rhs) = pending_rhs.take() {
+                        // `pending_rhs` is already set, meaning the previous `key: rhs` pair was
+                        // not yet committed (the RHS was still being assembled via dot-access).
+                        // The arrival of a new expression signals the previous RHS is complete.
+                        // Commit it, then handle the incoming node as a new binding.
+                        commit_let_pending(key_node, prev_rhs, bindings)?;
+                        // Incoming node starts a new binding (no pending_key now).
+                        bindings.push(node);
+                    } else {
+                        // First token of the RHS — store it in pending_rhs rather than committing
+                        // immediately. The dot-access handler may pop it and extend it into a
+                        // qualified name (e.g. `Result` → `Result.Ok`).
+                        *pending_key = Some(key_node); // Restore: not consumed yet
+                        *pending_rhs = Some(node);
                     }
+                } else if let Some(prev_rhs) = pending_rhs.take() {
+                    // No pending_key but pending_rhs is set — this shouldn't happen in a valid
+                    // parse path (pending_rhs is only set while pending_key is also set).
+                    // Drop the orphan rhs and treat the incoming node as a new binding.
+                    let _ = prev_rhs;
+                    bindings.push(node);
                 } else {
                     bindings.push(node);
                 }
@@ -5942,6 +5962,114 @@ fn push_expr_to_parent(
             }
             None => unreachable!("stack.is_empty() was false but last_mut returned None"),
         }
+    }
+}
+
+/// Commit a `pending_key: pending_rhs` pair in a LetDecl frame into `bindings`.
+///
+/// Called from two sites:
+///   1. `push_value` for LetDecl — when a new expression arrives while `pending_key` and
+///      `pending_rhs` are both set, signalling that the RHS is complete (the next binding
+///      or a new `:` has started).
+///   2. The close-bracket handler — flush any remaining pending pair before building the
+///      `LetDecl` node.
+///
+/// Returns `Ok(())` on success or a `ParseError` for invalid LHS/RHS combinations.
+fn commit_let_pending(
+    key_node: Arc<SurfaceNode>,
+    rhs_node: Arc<SurfaceNode>,
+    bindings: &mut Vec<Arc<SurfaceNode>>,
+) -> Result<(), ParseError> {
+    let combined_span = Span {
+        start: key_node.span.start,
+        end: rhs_node.span.end,
+        file: None,
+    };
+
+    // Detect structural test: RHS is an uppercase constructor name (bare or qualified).
+    let constructor_name =
+        dot_path_name(&rhs_node).filter(|s| s.starts_with(|c: char| c.is_uppercase()));
+
+    match (key_node.expr.clone(), constructor_name) {
+        // Case 1: `name: Constructor` or `name: Type.Constructor` — structural test.
+        // Encoded as Annotated { name: "name", annotation: PropertyDict([_constructor: "Ctor"]) }.
+        (SurfaceExpression::VarRef { name: key_name, .. }, Some(ctor_name)) => {
+            let sentinel_key = Arc::new(SurfaceNode {
+                expr: SurfaceExpression::Str("_constructor".to_string()),
+                span: rhs_node.span.clone(),
+            });
+            let ctor_val = Arc::new(SurfaceNode {
+                expr: SurfaceExpression::Str(ctor_name),
+                span: rhs_node.span.clone(),
+            });
+            let ann = Spanned::new(
+                Annotation::PropertyDict(vec![Spanned::new(
+                    SurfaceEntry {
+                        key: Some(sentinel_key),
+                        value: ctor_val,
+                    },
+                    rhs_node.span.clone(),
+                )]),
+                rhs_node.span.clone(),
+            );
+            let annotated = Arc::new(SurfaceNode {
+                expr: SurfaceExpression::Annotated {
+                    name: key_name,
+                    annotation: ann,
+                },
+                span: combined_span,
+            });
+            bindings.push(annotated);
+            Ok(())
+        }
+
+        // Case 2: `[a b]: Constructor` — multi-payload structural test.
+        // TODO(unified-bindings-structural-tests): constructor test is silently dropped;
+        // see the longer comment in the original push_value handler.
+        (SurfaceExpression::LetDecl { .. }, Some(_ctor_name)) => {
+            bindings.push(key_node);
+            Ok(())
+        }
+
+        // Case 3: `name: default_value` — named param with default.
+        (SurfaceExpression::VarRef { name: key_name, .. }, None) => {
+            let key_span = key_node.span.clone();
+            let surf_key = Arc::new(SurfaceNode {
+                expr: SurfaceExpression::Str("default".to_string()),
+                span: key_span,
+            });
+            let ann = Spanned::new(
+                Annotation::PropertyDict(vec![Spanned::new(
+                    SurfaceEntry {
+                        key: Some(surf_key),
+                        value: Arc::clone(&rhs_node),
+                    },
+                    rhs_node.span.clone(),
+                )]),
+                combined_span.clone(),
+            );
+            let annotated = Arc::new(SurfaceNode {
+                expr: SurfaceExpression::Annotated {
+                    name: key_name,
+                    annotation: ann,
+                },
+                span: combined_span,
+            });
+            bindings.push(annotated);
+            Ok(())
+        }
+
+        // Case 4: `[a b]: default_value` — invalid; binding group requires a constructor.
+        (SurfaceExpression::LetDecl { .. }, None) => Err(ParseError {
+            message: "binding group `[...]` before `:` requires a constructor name (uppercase identifier) for multi-payload structural test".to_string(),
+            span: Some(rhs_node.span.clone()),
+        }),
+
+        // Case 5: Other LHS forms — should not arise from valid parse paths.
+        _ => Err(ParseError {
+            message: "unexpected form before `:` in [let ...] binding".to_string(),
+            span: Some(key_node.span.clone()),
+        }),
     }
 }
 
@@ -6006,9 +6134,9 @@ fn push_value(
             ref mut pending_key,
             ..
         }) => {
-            if let Some((name, _)) = pending_key.take() {
-                // This value completes a named argument
-                args.push(CallArg::Named(name, node));
+            if let Some((name, _, ann)) = pending_key.take() {
+                // This value completes a named argument (ann is Some for `field@Ann: val` syntax)
+                args.push(CallArg::Named(name, node, ann));
             } else if func.is_none() && args.is_empty() {
                 // The function expression is being set/restored (e.g., after dot-access
                 // on the function position: `[net.http-get ...]` pops `net` from func,

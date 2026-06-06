@@ -71,6 +71,13 @@
     [underlying:  Handle
      server-side: Bool]]
 
+  # WsFrameCodec: codec for WebSocket frame wire format (RFC 6455 §5).
+  # client-side: Bool — true applies masking on encode (client→server); false skips mask (server→client).
+  # encode: WsFrame → framed Bytes (FIN=1 | opcode, len, [mask-key], [masked] payload)
+  # decode: framed Bytes → WsFrame (strips framing, unmasks payload, dispatches by opcode)
+  # Errors surface as tinct runtime errors (not [or WsFrame WsError]).
+  WsFrameCodec: [type [client-side: Bool]]
+
   # WebSocket error type — distinct from normal Close frame (WsFrame.Close = graceful peer closure).
   WsError: [union
     [ConnectionClosed]                           # underlying TCP connection closed without WS Close frame
@@ -149,3 +156,38 @@
   # Serve layer: promote each incoming Handle to a WebSocketConnection.
   ws-serve: [_ | [channel-map ws-accept]]
 ]
+
+# WsFrameCodec: WsFrame ↔ Bytes (RFC 6455 §5 frame wire format).
+# encode: serializes WsFrame to framed bytes; applies masking when codec.client-side is true.
+# decode: parses framed bytes to WsFrame; unmasks payload when mask bit is set.
+# Errors (protocol violations, unknown opcodes) surface as tinct runtime errors.
+[instance [Codec WsFrameCodec WsFrame Bytes]
+  encode: [fn [let codec@WsFrameCodec frame@WsFrame]
+    [result:  [ws-frame->opcode-payload frame]]
+    [opcode:  result.opcode]
+    [payload: result.payload]
+    [len:     [length payload]]
+    [client:  codec.client-side]
+    [mask-bit: [if client 0x80 0x00]]
+    [len-bytes: [if [<= len 125]
+      [bytes [bor len mask-bit]]
+      [concat [bytes [bor 126 mask-bit]] [bytes [/ len 256]] [bytes [mod len 256]]]]]
+    [mask-key:       [if client [crypto-random 4] []]]
+    [masked-payload: [if client [bytes-xor-mask payload mask-key] payload]]
+    [concat [bytes [bor 0x80 opcode]] len-bytes mask-key masked-payload]]
+  decode: [fn [let _ data@Bytes]
+    [b0:     [get data 0]]
+    [b1:     [get data 1]]
+    [opcode: [band b0 0x0F]]
+    [masked: [= [band b1 0x80] 0x80]]
+    [len1:   [band b1 0x7F]]
+    [payload-off: [if [= len1 126] 4 [if [= len1 127] [error "WsFrameCodec: 64-bit lengths not supported"] 2]]]
+    [payload-len: [match len1
+      126: [+ [* [get data 2] 256] [get data 3]]
+      127: [error "WsFrameCodec: 64-bit frame lengths not supported"]
+      _:   len1]]
+    [mask-key: [if masked [slice data payload-off [+ payload-off 4]] []]]
+    [data-off: [if masked [+ payload-off 4] payload-off]]
+    [raw:      [slice data data-off [+ data-off payload-len]]]
+    [payload:  [if masked [bytes-xor-mask raw mask-key] raw]]
+    [int->ws-frame opcode payload]]]

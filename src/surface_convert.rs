@@ -529,7 +529,14 @@ fn dict_to_surface_named_arg(
 
     let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
 
-    Ok(Spanned::new(SurfaceNamedArg { name, value }, span))
+    Ok(Spanned::new(
+        SurfaceNamedArg {
+            name,
+            value,
+            annotation: None,
+        },
+        span,
+    ))
 }
 
 /// Convert a dict to a `Spanned<SurfaceParam>`.

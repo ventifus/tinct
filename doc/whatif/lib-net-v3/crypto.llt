@@ -6,107 +6,15 @@
 --- uses: ["crypto"]
 
 [include %libdir "net.llt"]
+[include %libdir "asn1.llt"]   # AsnValue, parse-der, parse-der-seq, oid->string
 
 # Hash algorithm selectors for HKDF (used by TLS, WireGuard, Noise, etc.)
 # Defined here — not in tls.llt — because they are crypto primitives, not TLS-specific.
 [type [Sha256]] [type [Sha384]] [type [Sha512]] [type [Blake2s]]
 
-# AsnValue: recursive DER/BER type tree. Declared before the internal dict so der-parse-one
-# can construct AsnValue.* values. Re-exported under the same name in the Public API dict.
-# (camelCase private name avoided here — asnValue.AsnSeq would be confusing; instead we
-# declare it early at file scope so the internal dict can reference it directly.)
-#
-# Note: runtime tags will be "asnValue.*" if a camelCase alias is used; here we declare
-# with the canonical name directly at file scope. The internal dict can reference AsnValue
-# because this expression is evaluated before the internal dict.
-[
-  asnValue: [union
-    [AsnBool     Bool]
-    [AsnInt      Bytes]
-    [AsnBitStr   Bytes]
-    [AsnOctetStr Bytes]
-    [AsnNull]
-    [AsnOid      [Seq Int]]
-    [AsnStr      String]
-    [AsnSeq      [Seq asnValue]]   # recursive — letrec within this dict handles it
-    [AsnSet      [Seq asnValue]]
-    [AsnTime     String]
-    [AsnRaw      tag@Int  data@Bytes]]
-]
-
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
-  decode-be-int: [fn [let b@Bytes offset@Int len@Int]
-    [reduce [fn [let acc i] [+ [* acc 256] [get b [+ offset i]]]] 0 [range 0 len]]]
-
-  der-parse-one: [fn [let b@Bytes offset@Int]
-    [tag-byte:    [get b offset]]
-    [constructed: [= [band tag-byte 0x20] 0x20]]
-    [tag-num:     [band tag-byte 0x1F]]
-    [if [= tag-num 31] [error "DER: long-form tag not supported"] null]
-    [len-byte:    [get b [+ offset 1]]]
-    [len-result:
-      [if [= [band len-byte 0x80] 0]
-        [len: len-byte  value-offset: [+ offset 2]]
-        [n-len-bytes: [band len-byte 0x7F]
-         big-len:     [decode-be-int b [+ offset 2] n-len-bytes]
-         len:         big-len
-         value-offset: [+ offset 2 n-len-bytes]]]]
-    [raw: [slice len-result.value-offset [+ len-result.value-offset len-result.len] b]]
-    [value:
-      [if constructed
-        # Then: sequence/set — bind children via immediately-invoked lambda (single if-arg).
-        [[fn [let children]
-           [match tag-num
-             16: asnValue.AsnSeq children
-             17: asnValue.AsnSet children
-             _:  asnValue.AsnSeq children]]   # context-constructed treated as sequence
-         [der-parse-seq raw 0 []]]
-        # Else: primitive tag dispatch.
-        [match tag-num
-          1:  [asnValue.AsnBool  [not [= [get raw 0] 0]]]
-          2:  [asnValue.AsnInt   raw]
-          3:  [asnValue.AsnBitStr raw]
-          4:  [asnValue.AsnOctetStr raw]
-          5:  asnValue.AsnNull
-          6:  [asnValue.AsnOid  [decode-oid raw]]
-          12: [asnValue.AsnStr  [bytes-str raw]]
-          19: [asnValue.AsnStr  [bytes-str raw]]
-          22: [asnValue.AsnStr  [bytes-str raw]]
-          23: [asnValue.AsnTime [bytes-str raw]]
-          24: [asnValue.AsnTime [bytes-str raw]]
-          _:  [asnValue.AsnRaw  tag-num raw]]]]
-    [value: value  next: [+ len-result.value-offset len-result.len]]]
-
-  der-parse-seq: [fn [let b@Bytes offset@Int acc@[Seq AsnValue]]
-    [if [>= offset [length b]]
-      acc
-      # Else: parse one node, recurse — immediately-invoked lambda binds result.
-      [[fn [let result]
-         [der-parse-seq b result.next [append [list result.value] acc]]]
-       [der-parse-one b offset]]]]
-
-  decode-oid: [fn [let b@Bytes]
-    [if [= [length b] 0] [error "DER: empty OID"] null]
-    [first-byte: [get b 0]]
-    # X.680 §B.8: first-byte = 40*arc1 + arc2 for arc1 < 2;
-    # for arc1 = 2: first-byte = 80 + arc2 (arc2 may exceed 39).
-    [arc1: [if [< first-byte 80] [/ first-byte 40] 2]]
-    [arc2: [if [< first-byte 80] [mod first-byte 40] [- first-byte 80]]]
-    [cons arc1 [cons arc2 [decode-oid-arcs b 1 []]]]]
-
-  decode-oid-arcs: [fn [let b@Bytes offset@Int acc@[Seq Int]]
-    [if [>= offset [length b]] acc
-      [arc-result: [decode-oid-arc b offset 0]]
-      [decode-oid-arcs b arc-result.next [append [list arc-result.arc] acc]]]]]
-
-  decode-oid-arc: [fn [let b@Bytes offset@Int acc@Int]
-    [byte:    [get b offset]]
-    [new-acc: [+ [* acc 128] [band byte 0x7F]]]
-    [if [= [band byte 0x80] 0]
-      [arc: new-acc  next: [+ offset 1]]
-      [decode-oid-arc b [+ offset 1] new-acc]]]
 
   # X.509 TBSCertificate per RFC 5280 §4.1.
   # cert is the outer Certificate SEQUENCE: [tbsCertificate signatureAlgorithm signatureValue]
@@ -215,8 +123,7 @@
   # The four [type [X]] top-level declarations above define Sha256/Sha384/Sha512/Blake2s.
   HkdfHash: [union [Sha256] [Sha384] [Sha512] [Blake2s]]
 
-  # Re-export AsnValue (declared before the internal dict as `asnValue`).
-  AsnValue: asnValue
+  # AsnValue is exported by asn1.llt (included above) — no re-export needed here.
 
   parse-cert: [fn [let der@Bytes]
     [result: [der-parse-one der 0]]

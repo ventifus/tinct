@@ -1465,6 +1465,7 @@ impl TypeEnv {
             ("builtin-llt-repr", "llt-repr"),
             ("builtin-tag-of", "tag-of"),
             ("builtin-variant", "variant"),
+            ("builtin-annotation-of", "annotation-of"),
             ("builtin-decimal", "decimal"),
             ("builtin-big-int", "big-int"),
             ("builtin-proxy", "proxy"),

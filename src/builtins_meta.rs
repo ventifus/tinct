@@ -1189,6 +1189,79 @@ pub(crate) fn builtin_tag_of(
     })
 }
 
+/// `annotation-of`: return the annotation dict for a value.
+///
+/// - `Value::Function { annotation, .. }` — returns a `Value::Dict` built from the
+///   `FnAnnotation`: `doc:` (string, if present) plus all fields from `annotation.extra`.
+///   `return_ann` is an AST-level construct, not a plain Value; it is intentionally omitted
+///   from the runtime dict. Callers that need the return annotation should use `ast-of`.
+/// - `Value::Annotated { annotation, .. }` — returns the annotation dict directly.
+/// - All other values — returns an empty dict `{}`.
+///
+/// This builtin does NOT force its argument beyond WHNF (pos_strictness[0] = Seq).
+/// The annotation dict is available after WHNF without further forcing.
+pub(crate) fn builtin_annotation_of(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg(
+            "annotation-of",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+
+        match val {
+            Value::Function { annotation, .. } => {
+                // Build the annotation dict from FnAnnotation fields.
+                // `doc` is a well-known field; `extra` holds all custom fields.
+                let mut entries: IndexMap<Key, ThunkId> = IndexMap::new();
+
+                if let Some(ann) = annotation.as_deref() {
+                    // Include `doc` field if present
+                    if let Some(ref doc_str) = ann.doc {
+                        entries.insert(
+                            Key::String("doc".into()),
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                string_val(doc_str),
+                                call_span.clone(),
+                            ))),
+                        );
+                    }
+                    // Flatten all extra fields into the dict
+                    for (key, extra_val) in &ann.extra {
+                        entries.insert(
+                            Key::String(key.as_str().into()),
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                extra_val.clone(),
+                                call_span.clone(),
+                            ))),
+                        );
+                    }
+                }
+
+                ok_val(Value::Dict(entries), call_span)
+            }
+            Value::Annotated { annotation, .. } => {
+                // Return the annotation value directly — no materialization needed,
+                // it was stored materialized at annotation construction time.
+                ok_val(*annotation, call_span)
+            }
+            _ => {
+                // All other values have no annotation — return empty dict.
+                ok_val(Value::Dict(IndexMap::new()), call_span)
+            }
+        }
+    })
+}
+
 /// `variant`: Create a variant with the given tag and optional payload.
 ///
 /// Forms:
@@ -1384,6 +1457,7 @@ fn type_name(val: &Value) -> String {
         Value::BroadcastChannel(_) => "BroadcastChannel",
         Value::OneshotSender(_) => "OneshotSender",
         Value::OneshotReceiver(_) => "OneshotReceiver",
+        Value::Annotated { .. } => "Annotated",
     }
     .to_string()
 }

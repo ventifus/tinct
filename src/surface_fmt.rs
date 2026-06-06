@@ -1690,6 +1690,9 @@ impl Value {
             Value::BroadcastChannel(_) | Value::OneshotSender(_) | Value::OneshotReceiver(_) => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
+            Value::Annotated { .. } => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
         }
     }
 }

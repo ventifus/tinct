@@ -1,0 +1,9 @@
+# annotation-of on non-function values returns empty dict (the fallback branch in
+# builtin_annotation_of). Value::Annotated is never constructed until T-1121 (unit
+# constructor wrapping) or T-1119 (dict-key annotation syntax). Until then this test
+# exercises the else branch: non-function, non-Annotated values → empty dict.
+#
+# annotation-of 42 → Dict({}) since Int has no annotation.
+[result: [annotation-of 42]]
+=== out
+Dict({"result": Dict({})})

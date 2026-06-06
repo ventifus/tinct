@@ -1088,24 +1088,6 @@ pub(crate) fn resolve_fn_metadata(
         }
     }
 
-    // Step 4: Check for unknown keys
-    const VALID_KEYS: &[&str] = &["return", "constraint", "doc", "bind", "kinds"];
-    for entry in entries {
-        if let Some(key_expr) = &entry.node.key {
-            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
-                if !VALID_KEYS.contains(&key_name.as_str()) {
-                    return Err(TypeError::new(
-                        format!(
-                            "unknown function annotation key '{}' (valid keys: return, constraint, doc, bind, kinds)",
-                            key_name
-                        ),
-                        key_expr.span.clone(),
-                    ));
-                }
-            }
-        }
-    }
-
     // If no return: key, default to Unknown (infer from body)
     let ret = return_type.unwrap_or(Type::Unknown);
 
@@ -2382,6 +2364,10 @@ fn resolve_type_dict_with_guard(
             let key = match &entry.node.key {
                 Some(k) => match &k.expr {
                     SurfaceExpression::Str(s) => s.clone(),
+                    // Field with annotation: `field@Child: Type` (T-1052).
+                    // The annotation is stored in the SurfaceNode for T-1053 to process;
+                    // type resolution uses only the field name.
+                    SurfaceExpression::Annotated { name, .. } => name.clone(),
                     _ => {
                         return Err(TypeError::new(
                             "type record keys must be bare words",
@@ -3147,21 +3133,34 @@ pub(crate) fn resolve_type_dict(
         if let Some(first) = entries.first() {
             // Check if first entry is positional (auto-indexed)
             if first.node.key.is_none() {
-                if let SurfaceExpression::VarRef { name: tag, .. } = &first.node.value.expr {
+                // Extract the constructor tag name from VarRef or Annotated (T-1052).
+                // `[Constructor field: Type ...]` — first entry is VarRef.
+                // `[Constructor@[as-type: fn  guarding: false] field: Type ...]` — first entry
+                // is Annotated { name: "Constructor", annotation: PropertyDict([...]) }.
+                // The annotation carries type-level metadata; the name is the constructor tag.
+                // Both forms resolve identically for type-checking purposes; T-1053 reads
+                // the annotation from the SurfaceNode tree to populate FnAnnotation.extra.
+                let tag_opt: Option<String> = match &first.node.value.expr {
+                    SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                    SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
+                    _ => None,
+                };
+                if let Some(tag) = tag_opt {
+                    // `tag` is an owned String; pass as &str where needed.
                     // Check if tag is uppercase (constructor name).
                     // BUT: builtin type names (Int, Float, String, Bool, Number, etc.) also
                     // start with uppercase and must NOT be treated as NominalVariant.
                     // Resolve builtin type names through resolve_type_name first.
-                    let is_builtin_type = is_builtin_type_name(tag);
+                    let is_builtin_type = is_builtin_type_name(&tag);
                     if is_builtin_type && entries.len() == 1 && first.node.key.is_none() {
                         // Single positional entry that is a builtin type name: [Int] → Type::Int.
                         // This handles annotations like @[Int] which should resolve to Int,
                         // not to NominalVariant { tag: "Int" }.
                         let row_ref: Option<&HashMap<String, String>> =
                             row_ann_mapping.as_ref().map(|m| &**m);
-                        return resolve_type_name(tag, env, span, state, ann_mapping, &row_ref);
+                        return resolve_type_name(&tag, env, span, state, ann_mapping, &row_ref);
                     }
-                    if crate::eval::is_constructor_name(tag) && !is_builtin_type {
+                    if crate::eval::is_constructor_name(&tag) && !is_builtin_type {
                         // Case 1: Pure positional — [Constructor] or [Constructor PayloadType]
                         let all_remaining_positional =
                             entries[1..].iter().all(|e| e.node.key.is_none());
@@ -3169,7 +3168,7 @@ pub(crate) fn resolve_type_dict(
                             if entries.len() == 1 {
                                 // Unit constructor: [None]
                                 return Ok(Type::NominalVariant {
-                                    tag: tag.clone(),
+                                    tag: tag.to_string(),
                                     fields: Row {
                                         fields: HashMap::new(),
                                         tail: crate::type_def::RowTail::Empty,
@@ -3188,7 +3187,7 @@ pub(crate) fn resolve_type_dict(
                                 let mut fields = HashMap::new();
                                 fields.insert("0".to_string(), payload_ty);
                                 return Ok(Type::NominalVariant {
-                                    tag: tag.clone(),
+                                    tag: tag.to_string(),
                                     fields: Row {
                                         fields,
                                         tail: crate::type_def::RowTail::Empty,
@@ -3208,8 +3207,16 @@ pub(crate) fn resolve_type_dict(
                             for field_entry in &entries[1..] {
                                 match &field_entry.node.key {
                                     Some(k) => {
+                                        // Field name from bare word key or annotated key (T-1052).
+                                        // `field: Type` → key is Str("field").
+                                        // `field@Child: Type` → key is Annotated { name: "field", ... }.
+                                        // The annotation is stored in the SurfaceNode tree for T-1053;
+                                        // type resolution uses only the name.
                                         let field_name = match &k.expr {
                                             SurfaceExpression::Str(s) => s.clone(),
+                                            SurfaceExpression::Annotated { name, .. } => {
+                                                name.clone()
+                                            }
                                             _ => return Err(TypeError::new(
                                                 "nominal variant field names must be bare words",
                                                 k.span.clone(),
@@ -3233,7 +3240,7 @@ pub(crate) fn resolve_type_dict(
                                 }
                             }
                             return Ok(Type::NominalVariant {
-                                tag: tag.clone(),
+                                tag: tag.to_string(),
                                 fields: Row {
                                     fields: variant_fields,
                                     tail: crate::type_def::RowTail::Empty,
@@ -3387,6 +3394,9 @@ pub(crate) fn resolve_type_dict(
         let key = match &entry.node.key {
             Some(k) => match &k.expr {
                 SurfaceExpression::Str(s) => s.clone(),
+                // Annotated field key: `field@Child: Type` (T-1052).
+                // The annotation is metadata for T-1053; type resolution uses only the name.
+                SurfaceExpression::Annotated { name, .. } => name.clone(),
                 _ => {
                     return Err(TypeError::new(
                         "type record keys must be bare words",

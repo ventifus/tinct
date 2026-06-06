@@ -629,6 +629,34 @@ NamedHosts: [type [Map [String: Config]]] # lookup: name → Config
 
 Type aliases are resolved at type-check time — they have no runtime cost.
 
+**Nominal type declarations — `[type ...]` with constructors.** When the body of `[type ...]` contains uppercase names (with or without `[let ...]` parameter lists), it declares a nominal sum type:
+
+```tinct
+Color: [type Red Green Blue]                # unit constructors
+Option: [type [let a]  [Some value: a]  None]   # parameterized; Some has a payload field
+
+# Annotating constructors with @[...]: place the annotation immediately after the constructor name
+TreeNode: [type
+  [Node@[as-type: fn  guarding: Bool]
+    left@Child: TreeNode
+    value: Int
+    right@Child: TreeNode]
+  Leaf]
+
+# Annotation fields on constructor names (CtorName@[key: val ...]):
+#   - Placed immediately after the constructor name (ImmediateAt syntax)
+#   - Parsed into SurfaceExpression::Annotated { name, annotation }
+#   - At desugar time, stored in the constructor function's FnAnnotation.extra
+#   - annotation-of on the constructor function returns these fields as a dict
+
+# Annotation on record field type declarations (field@Child: Type):
+#   - Parsed into SurfaceNamedArg { name: "field", value: Type, annotation: Some(...) }
+#   - @Child marks the field as a child node for traversal protocol (T-1052)
+#   - Annotation is stored in FnAnnotation.extra under "field-annotations:" key (pending T-1124)
+```
+
+The `@[...]` annotation on a constructor name follows the `ImmediateAt` lexer token (no whitespace between name and `@`). String, Int, Float, and Bool literal annotation fields are stored in `FnAnnotation.extra` and readable via `annotation-of`. Expression-valued fields (function refs, nested dicts) require T-1124 to be stored at function-definition time.
+
 **Type constructor application.** Type constructors like `Seq` and `Map` are applied in annotation positions using the syntax:
 
 ```tinct
@@ -954,12 +982,32 @@ special_form = call_form | fn_form | type_form | let_form | case_form | match_fo
 call_form    = keyword_call ~ value ~ call_args
 call_implied = identifier ~ call_args     // identifier not a keyword, not followed by ":"
 fn_form      = keyword_fn ~ fn_annotation? ~ param_list ~ value
-type_form    = keyword_type ~ value
+type_form    = keyword_type ~ type_body
+type_body    = type_param_list? ~ type_ctor*      // sum type (constructors) or alias (single value)
+             | value                               // type alias: [type String], [type [Map K V]]
+type_param_list = "[" ~ "let" ~ param+ ~ "]"
+type_ctor    = ctor_unit | ctor_payload
+ctor_unit    = ctor_name ~ fn_annotation?          // bare name, optional @[...] annotation
+ctor_payload = "[" ~ ctor_name ~ fn_annotation? ~ ctor_field* ~ "]"
+ctor_name    = UPPERCASE ~ ident_cont*             // constructor name must start uppercase
+ctor_field   = field_name ~ fn_annotation? ~ ":" ~ value   // field@[...]: Type
+field_name   = ident_start ~ ident_cont*           // lowercase field name
+let_form     = keyword_let ~ param+
+case_form    = keyword_case ~ value ~ value
 
 keyword_call = "call" ~ !ident_char ~ !colon_ahead
 keyword_fn   = "fn" ~ !ident_char ~ !colon_ahead
 keyword_type = "type" ~ !ident_char ~ !colon_ahead
+keyword_let  = "let" ~ !colon_ahead       // Token::Let; !ident_char not needed (reserved token)
+keyword_case = "case" ~ !colon_ahead      // Token::Case; !ident_char not needed (reserved token)
 
+// Colon-ahead guard: ALL keyword dispatch arms check !colon_ahead before pushing a special-form
+// frame. This ensures that [let: x], [case: x], [fn: x], [call: x], etc. are parsed as Dict
+// entries (key "let"/"case"/"fn"/"call" with value x), not as special forms. The guard uses
+// peek_next_horizontal in the iterative parser, which scans past spaces and tabs only — so
+// "let\n:" (newline before colon) is NOT a dict entry (it is a LetDecl), matching the PEG
+// grammar's `colon_ahead = ws_chars* ~ ":"` where ws_chars excludes newlines.
+//
 // Lookahead: optional horizontal whitespace then colon.
 // ws_chars matches only spaces and tabs (not newlines), so "call\n:" is a Call expression, not a Dict entry.
 colon_ahead = ws_chars* ~ ":"

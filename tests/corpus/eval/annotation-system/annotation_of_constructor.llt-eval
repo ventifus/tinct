@@ -1,0 +1,14 @@
+# annotation-of on a named-field constructor function with a scalar @[...] annotation.
+# Tests the T-1049/T-1051/T-1052/T-1053 integration path:
+#   - T-1052: parser captures Ctor@[role: "primary"] in SurfaceExpression::Annotated
+#   - T-1053: build_constructor_return_ann embeds annotation into constructor fn return_ann
+#   - T-1049: extract_fn_annotation_extra stores string literal fields in FnAnnotation.extra
+#   - T-1051: annotation-of reads FnAnnotation.extra from the constructor Value::Function
+#
+# The annotation field `role: "primary"` is a string literal, so it passes through
+# extract_fn_annotation_extra (which only captures scalar literals; see T-1125 for dict values).
+# annotation-of Ctor → Dict({"role": String("primary")})
+[MyType: [type [Ctor@[role: "primary"] val: Int]]]
+[result: [= [get "role" [annotation-of Ctor]] "primary"]]
+=== out
+Dict({"result": Bool(true)})

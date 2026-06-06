@@ -98,6 +98,12 @@
      rx-key:     [Bytes 32]
      tx-nonce:   [Channel UInt64]]]  # 64-bit little-endian counter (WireGuard §5.4.6)
 
+  # WgDataCodec: Bytes ↔ WireGuard data message Bytes (WireGuard §5.4.6).
+  # Carries the WireguardConnection for tx/rx keys and the tx-nonce counter.
+  # encode: plaintext Bytes → WireGuard type-4 data message Bytes
+  # decode: WireGuard type-4 data message Bytes → plaintext Bytes
+  WgDataCodec: [type [h] [conn: [WireguardConnection h]]]
+
   # Serve layer: promotes a Channel@ByteStream to Channel@WireguardConnection.
   # Lives here (not serve.llt) because it closes over WireguardConfig.
   wireguard-serve: [fn@[bind: [h]  constraint: [h: ByteStream]]
@@ -359,6 +365,35 @@
       [Result.Ok plain]:    [slice 0 n plain]
       [Result.Error _]:     [error "WireGuard: decryption failed"]]]
 ]
+
+# WgDataCodec: plaintext Bytes ↔ WireGuard data message Bytes (WireGuard §5.4.6).
+# encode: encrypts plaintext with tx-key/tx-nonce counter; frames as type-4 data message.
+#   Wire format: type(1)=4 reserved(3) receiver-index(4) nonce(8) ciphertext
+# decode: validates type byte; extracts nonce from header; decrypts ciphertext with rx-key.
+# Single-writer invariant on tx-nonce: do not encode concurrently (see WireguardConnection docstring).
+[instance@[bind: [h]] [Codec [WgDataCodec h] Bytes Bytes]
+  encode: [fn [let codec@[WgDataCodec h] plaintext@Bytes]
+    [conn: codec.conn]
+    [match [recv conn.tx-nonce]
+      [Closed.Closed]: [error "WgDataCodec.encode: tx-nonce channel closed"]
+      [Result.Ok nonce]:
+        [if [= nonce 18446744073709551615] [error "WgDataCodec.encode: nonce exhausted — rekey required"] null]
+        [send conn.tx-nonce [+ nonce 1]]
+        [nonce-bytes: [bytes LittleEndian nonce]]
+        [ciphertext:  [chacha20-poly1305-seal conn.tx-key [concat [0 0 0 0] nonce-bytes] plaintext []]]
+        # type(1)=4, reserved(3)=0, receiver-index(4)=0 (simplified; index negotiated in handshake),
+        # nonce(8) little-endian, ciphertext
+        [concat [bytes 4] [0 0 0] [0 0 0 0] nonce-bytes ciphertext]]]
+  decode: [fn [let codec@[WgDataCodec h] data@Bytes]
+    [conn:    codec.conn]
+    [pkt-type: [get data 0]]
+    [if [not [= pkt-type 4]] [error [str "WgDataCodec.decode: expected type 4, got " pkt-type]] null]
+    # nonce is bytes 8..16 (after type(1) reserved(3) receiver-index(4))
+    [nonce12: [concat [0 0 0 0] [slice data 8 16]]]
+    [ct:      [slice data 16 [length data]]]
+    [match [chacha20-poly1305-open conn.rx-key nonce12 ct []]
+      [Result.Ok plain]:    plain
+      [Result.Error _]:     [error "WgDataCodec.decode: decryption failed"]]]]
 
 # ── WireguardLayer typeclass — bidirectional wireguard ────────────────────────
 #

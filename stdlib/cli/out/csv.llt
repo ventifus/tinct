@@ -56,7 +56,7 @@ csv-row: [fn@String [let row@Dict ks@Dict i@Int acc@String]
             [do [if [= [cell-get columns] []]
                   [cell-set columns [recv header-rx]]
                   []]
-                [write-handle %stdout [csv-row v [cell-get columns] 0 ""]]]]]]]] []]
+                [write-handle %stdout [csv-row v [cell-get columns] 0 ""]]]]]]] []]
       identity]]
 ]
 

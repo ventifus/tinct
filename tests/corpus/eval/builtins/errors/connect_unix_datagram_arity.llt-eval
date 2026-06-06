@@ -3,10 +3,10 @@
 [connect %cwd UnixDatagram]
 
 === error
-[E002] undefined variable: builtin-connect (defined at stdlib/prelude.llt:2320:60-2320:75) (called at 2:1-2:28)
-  --> stdlib/prelude.llt:2320:60-2320:75
+[E002] undefined variable: builtin-connect (defined at stdlib/prelude.llt:2362:60-2362:75) (called at 2:1-2:28)
+  --> stdlib/prelude.llt:2362:60-2362:75
    |
-  2320 | connect@[doc: "Open a TCP/UDP connection under a NetCap"]: builtin-connect
+  2362 | connect@[doc: "Open a TCP/UDP connection under a NetCap"]: builtin-connect
        |                                                            ^^^^^^^^^^^^^^^
   in [connect ...] at 2:1-2:28
 

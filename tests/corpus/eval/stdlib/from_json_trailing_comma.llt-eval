@@ -2,36 +2,36 @@
 [json: [include %libdir "codecs/json.llt"]]
 [json.from-json "[1, 2,]"]
 === error
-[E080] JSON: unexpected character: ] (defined at stdlib/prelude.llt:2083:28-2083:47)
-  --> stdlib/prelude.llt:2083:28-2083:47
+[E080] JSON: unexpected character: ] (defined at stdlib/prelude.llt:2126:28-2126:47)
+  --> stdlib/prelude.llt:2126:28-2126:47
    |
-  2083 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2126 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2083:28-2083:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2126:28-2126:47
    |
-  2083 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2126 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:207:5-211:50
+  in materialized at stdlib/prelude.llt:234:5-238:50
    |
-  207 |     [builtin-if [builtin-gte i [builtin-length pairs]]
-  208 |         []
-  209 |         [builtin-if [builtin-get i pairs].0
-  210 |             [builtin-get i pairs].1
-  211 |             [cond-impl pairs [builtin-add i 1]]]]]
+  234 |     [builtin-if [builtin-gte i [builtin-length pairs]]
+  235 |         []
+  236 |         [builtin-if [builtin-get i pairs].0
+  237 |             [builtin-get i pairs].1
+  238 |             [cond-impl pairs [builtin-add i 1]]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:209:9-211:49
+  in [builtin-if ...] at stdlib/prelude.llt:236:9-238:49
    |
-  209 |         [builtin-if [builtin-get i pairs].0
-  210 |             [builtin-get i pairs].1
-  211 |             [cond-impl pairs [builtin-add i 1]]]]]
+  236 |         [builtin-if [builtin-get i pairs].0
+  237 |             [builtin-get i pairs].1
+  238 |             [cond-impl pairs [builtin-add i 1]]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:207:5-211:50
+  in [builtin-if ...] at stdlib/prelude.llt:234:5-238:50
    |
-  207 |     [builtin-if [builtin-gte i [builtin-length pairs]]
-  208 |         []
-  209 |         [builtin-if [builtin-get i pairs].0
-  210 |             [builtin-get i pairs].1
-  211 |             [cond-impl pairs [builtin-add i 1]]]]]
+  234 |     [builtin-if [builtin-gte i [builtin-length pairs]]
+  235 |         []
+  236 |         [builtin-if [builtin-get i pairs].0
+  237 |             [builtin-get i pairs].1
+  238 |             [cond-impl pairs [builtin-add i 1]]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in materialized at 448:3-458:81
   in [if ...] at 448:3-458:81

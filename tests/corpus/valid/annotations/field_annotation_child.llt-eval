@@ -1,0 +1,8 @@
+# Field annotation: field@Child in constructor body (T-1052)
+# @Child marks fields whose declared type contains TypeNode children.
+# Priority 2b: Record + ImmediateAt → Dict frame. The field key is
+# SurfaceExpression::Annotated { name: "fields", annotation: Simple("Child") }.
+# Type resolution strips @Child and uses "fields" as the field name.
+[Color: [type [Record@[guarding: true]  fields@Child: String  open: Bool]]]
+=== out
+["Color": [type [Record@["guarding": true]  fields@Child: String  "open": Bool]]]

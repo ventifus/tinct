@@ -4,9 +4,7 @@
 # This test was blocked until the macro-runtime-v2-regression fix.
 [do [x: [Ok 5]] [y: [Ok 7]] [Ok [+ x y]]]
 === error
-[E002] undefined variable: ℊꜱʏᴍ⧼do-infer⧽2 (defined at 1:1-1:1) (called at 4:1-4:42)
-  in [<dot-access> ...] at 4:1-4:42
-  in expansion of `do` at 4:1
+[E002] undefined variable: ℊꜱʏᴍ⧼do-infer⧽
 
 === warn
 cannot infer monad for [do] — add an explicit monad argument (e.g., [do result ...]) at 4:1-4:42

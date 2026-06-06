@@ -1,7 +1,5 @@
-# Error: unknown key 'foo' in fn@[...] metadata dict
+# Non-standard keys in fn@[...] metadata dict are stored in FnAnnotation.extra (no warning).
+# Standard keys: return, constraint, doc, bind, kinds. Extra keys are passed through.
 [fn@[return: Int  foo: "bar"] [] 42]
 === out
 Function()
-
-=== warn
-unknown function annotation key 'foo' (valid keys: return, constraint, doc, bind, kinds) at 1:19-1:22
