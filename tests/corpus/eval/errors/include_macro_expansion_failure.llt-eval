@@ -8,72 +8,72 @@
   lib: [include %cwd "tests/corpus/eval/macros/macro_lib.llt"]
 ]
 === error
-[E080] expand: macro expansion error: macro 'my-add' transformer call failed: arity mismatch: expected 1 argument, got 2 (defined at stdlib/prelude.llt:2428:28-2428:47)
-  --> stdlib/prelude.llt:2428:28-2428:47
+[E080] expand: macro expansion error: macro 'my-add' transformer call failed: arity mismatch: expected 1 argument, got 2 (defined at stdlib/prelude.llt:2447:28-2447:47)
+  --> stdlib/prelude.llt:2447:28-2447:47
    |
-  2428 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2447 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2428:28-2428:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2447:28-2447:47
    |
-  2428 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2447 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:3320:24-3324:13
+  in materialized at stdlib/prelude.llt:3351:24-3355:13
    |
-  3320 | include-cache-failure: [fn@[return: Never  doc: """
-  3321 | Reset include cache entry on error and re-raise. Internal helper for include.
-  3322 | """] [let hash e]
-  3323 |   [builtin-include-cache-put hash Missing]
-  3324 |   [raise e]]
+  3351 | include-cache-failure: [fn@[return: Never  doc: """
+  3352 | Reset include cache entry on error and re-raise. Internal helper for include.
+  3353 | """] [let hash e]
+  3354 |   [builtin-include-cache-put hash Missing]
+  3355 |   [raise e]]
        | ^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:3342:3-3344:56
+  in materialized at stdlib/prelude.llt:3373:3-3375:56
    |
-  3342 |   [match [try [fn [let] [eval-file [expand program] [] cap]]]
-  3343 |     [Result.Ok result]: [include-cache-success hash result]
-  3344 |     [Result.Error e]:   [include-cache-failure hash e]]]
+  3373 |   [match [try [fn [let] [eval-file [expand program] [] cap]]]
+  3374 |     [Result.Ok result]: [include-cache-success hash result]
+  3375 |     [Result.Error e]:   [include-cache-failure hash e]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:3329:29-3344:57
+  in materialized at stdlib/prelude.llt:3360:29-3375:57
    |
-  3329 | include-evaluate-and-cache: [fn@[return: Any  doc: """
-  3330 | Evaluate a file and update the content-addressed include cache.
-  3331 | 
-  3332 | source:         source text string
-  3333 | path:           file path string (for error spans)
-  3334 | hash:           content cache key (blake3(cap-identity + "|" + source))
-  3335 | cap:            DirCap — passed as %include-dir; included files start with % = []
-  3336 | integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
-  3337 | """] [let source path hash cap integrity-hash@[default: Absent]]
-  3338 |   [builtin-include-cache-put hash Pending]
-  3339 |   [program: [if [absent? integrity-hash]
-  3340 |     [load source name: path]
-  3341 |     [load source name: path hash: integrity-hash]]]
-  3342 |   [match [try [fn [let] [eval-file [expand program] [] cap]]]
-  3343 |     [Result.Ok result]: [include-cache-success hash result]
-  3344 |     [Result.Error e]:   [include-cache-failure hash e]]]
-       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:3369:3-3372:121
-   |
-  3369 |   [match [builtin-include-cache-get hash]
-  3370 |     [IncludeCacheEntry.Cached result]: result
-  3371 |     [IncludeCacheEntry.Pending]:       [error [str "circular include: " path]]
-  3372 |     [IncludeCacheEntry.Missing]:       [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
-       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:3356:10-3372:122
-   |
-  3356 | include: [fn@[return: Any  doc: """
-  3357 | Load, expand, and evaluate a tinct file from a DirCap.
-  3358 | 
-  3359 | cap:            DirCap — confines filesystem access; injected as %include-dir
-  3360 | path:           String — file path relative to cap
-  3361 | integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
+  3360 | include-evaluate-and-cache: [fn@[return: Any  doc: """
+  3361 | Evaluate a file and update the content-addressed include cache.
   3362 | 
-  3363 | Uses content-addressed memoization: blake3(cap-identity + "|" + source).
-  3364 | Detects circular includes via Pending cache state.
-  3365 | Included files start with % = [] (fresh pipeline input).
-  3366 | """] [let cap@DirCap path@String integrity-hash@[default: Absent]]
-  3367 |   [source: [builtin-read-all [open cap path Readable]]]
-  3368 |   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
-  3369 |   [match [builtin-include-cache-get hash]
-  3370 |     [IncludeCacheEntry.Cached result]: result
-  3371 |     [IncludeCacheEntry.Pending]:       [error [str "circular include: " path]]
-  3372 |     [IncludeCacheEntry.Missing]:       [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
+  3363 | source:         source text string
+  3364 | path:           file path string (for error spans)
+  3365 | hash:           content cache key (blake3(cap-identity + "|" + source))
+  3366 | cap:            DirCap — passed as %include-dir; included files start with % = []
+  3367 | integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
+  3368 | """] [let source path hash cap integrity-hash@[default: Absent]]
+  3369 |   [builtin-include-cache-put hash Pending]
+  3370 |   [program: [if [absent? integrity-hash]
+  3371 |     [load source name: path]
+  3372 |     [load source name: path hash: integrity-hash]]]
+  3373 |   [match [try [fn [let] [eval-file [expand program] [] cap]]]
+  3374 |     [Result.Ok result]: [include-cache-success hash result]
+  3375 |     [Result.Error e]:   [include-cache-failure hash e]]]
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:3400:3-3403:121
+   |
+  3400 |   [match [builtin-include-cache-get hash]
+  3401 |     [IncludeCacheEntry.Cached result]: result
+  3402 |     [IncludeCacheEntry.Pending]:       [error [str "circular include: " path]]
+  3403 |     [IncludeCacheEntry.Missing]:       [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
+       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:3387:10-3403:122
+   |
+  3387 | include: [fn@[return: Any  doc: """
+  3388 | Load, expand, and evaluate a tinct file from a DirCap.
+  3389 | 
+  3390 | cap:            DirCap — confines filesystem access; injected as %include-dir
+  3391 | path:           String — file path relative to cap
+  3392 | integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
+  3393 | 
+  3394 | Uses content-addressed memoization: blake3(cap-identity + "|" + source).
+  3395 | Detects circular includes via Pending cache state.
+  3396 | Included files start with % = [] (fresh pipeline input).
+  3397 | """] [let cap@DirCap path@String integrity-hash@[default: Absent]]
+  3398 |   [source: [builtin-read-all [open cap path Readable]]]
+  3399 |   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
+  3400 |   [match [builtin-include-cache-get hash]
+  3401 |     [IncludeCacheEntry.Cached result]: result
+  3402 |     [IncludeCacheEntry.Pending]:       [error [str "circular include: " path]]
+  3403 |     [IncludeCacheEntry.Missing]:       [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

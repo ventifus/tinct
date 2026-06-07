@@ -1,13 +1,13 @@
 # sort: Seq input produces descriptive error
 [sort [range 0 10]]
 === error
-[E010] sort: expected Int, Float, String, or Bool (homogeneous collection), got Seq and Int (defined at stdlib/prelude.llt:3002:15-3002:32)
-  --> stdlib/prelude.llt:3002:15-3002:32
+[E010] sort: expected Int, Float, String, or Bool (homogeneous collection), got Seq and Int (defined at stdlib/prelude.llt:3033:15-3033:32)
+  --> stdlib/prelude.llt:3033:15-3033:32
    |
-  3002 | """] [let xs] [builtin-sort xs]]
+  3033 | """] [let xs] [builtin-sort xs]]
        |               ^^^^^^^^^^^^^^^^^
-  in [builtin-sort ...] at stdlib/prelude.llt:3002:15-3002:32
+  in [builtin-sort ...] at stdlib/prelude.llt:3033:15-3033:32
    |
-  3002 | """] [let xs] [builtin-sort xs]]
+  3033 | """] [let xs] [builtin-sort xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [sort ...] at 1:1-1:20

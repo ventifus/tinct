@@ -3,9 +3,9 @@
 [connect %cwd Udp "localhost" 1234]
 
 === error
-[E002] undefined variable: builtin-connect (defined at stdlib/prelude.llt:2666:60-2666:75) (called at 2:1-2:36)
-  --> stdlib/prelude.llt:2666:60-2666:75
+[E002] undefined variable: builtin-connect (defined at stdlib/prelude.llt:2685:60-2685:75) (called at 2:1-2:36)
+  --> stdlib/prelude.llt:2685:60-2685:75
    |
-  2666 | connect@[doc: "Open a TCP/UDP connection under a NetCap"]: builtin-connect
+  2685 | connect@[doc: "Open a TCP/UDP connection under a NetCap"]: builtin-connect
        |                                                            ^^^^^^^^^^^^^^^
   in [connect ...] at 2:1-2:36

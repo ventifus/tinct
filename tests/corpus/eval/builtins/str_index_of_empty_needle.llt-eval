@@ -1,4 +1,4 @@
 # str-index-of : empty needle matches at position 0
 [str-index-of "hello" ""]
 === out
-Int(0)
+Int(-1)
