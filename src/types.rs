@@ -13,6 +13,8 @@
 // Focused submodules (top-level for circular dependency avoidance)
 pub use crate::type_class::*;
 pub use crate::type_def::*;
+// type_errors re-export deferred until T-1107 migration completes
+// pub use crate::type_errors::*;
 pub use crate::type_infer::*;
 
 // Existing submodules (keep as-is — they use `super::*` internally)

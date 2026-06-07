@@ -50,6 +50,8 @@ pub(crate) mod type_class;
 pub(crate) mod type_def;
 pub(crate) mod type_infer;
 pub(crate) mod type_normalize;
+// Typed TypeError infrastructure (per-error structs and discriminated enum).
+pub mod type_errors;
 // Type system façade (re-exports from all type modules)
 pub(crate) mod types;
 pub(crate) mod value;
@@ -2437,24 +2439,20 @@ mod tests {
     /// Input: `[do [x: [Ok 1]] [Ok x]]`
     /// Desugars to: `[sentinel.bind [Ok 1] [fn [x] [Ok x]]]` where sentinel is a gensym.
     ///
-    /// Note: The type checker cannot currently resolve the monad from `[Ok 1]` when
-    /// `Ok` is an unqualified constructor — `resolve_constructor_tag("Ok")` needs a populated
-    /// TypeEnv from the prelude. Pre-existing limitation (visible at HEAD before S-857).
-    /// Tracked for fix; use explicit monad form `[do result ...]` as workaround.
+    /// The type checker resolves the monad from `[Ok 1]` via the AST fallback
+    /// (resolve_monad_from_surface recognizes the "Ok" constructor and maps to "result").
     #[test]
     fn test_do_macro_inferred_form_binding() {
         let result = eval_source("[do [x: [Ok 1]] [Ok x]]");
-        // Pre-existing: inferred do form cannot resolve Result monad from [Ok ...] constructor.
-        // The type checker emits "cannot infer monad for [do]" and leaves the sentinel unresolved.
         assert!(
-            result.is_err(),
-            "expected inferred [do] to fail (pre-existing limitation), got: {:?}",
+            result.is_ok(),
+            "inferred [do] with [Ok 1] should resolve Result monad, got: {:?}",
             result
         );
-        let err = result.unwrap_err();
+        let output = result.unwrap();
         assert!(
-            err.contains("undefined variable") && err.contains("do-infer"),
-            "expected do-infer undefined variable error, got: {err}"
+            output.contains("Result.Ok") && output.contains("Int(1)"),
+            "expected Result.Ok with Int(1), got: {output}"
         );
     }
 
