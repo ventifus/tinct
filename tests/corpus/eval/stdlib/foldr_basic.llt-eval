@@ -1,7 +1,5 @@
 # foldr: right fold (fold over reversed list)
 # f receives (accumulator, element) just like reduce
-[foldr [fn [acc x] [append x acc]] [] [1 2 3]]
-=== error
-[E020] arity mismatch: expected 3 arguments, got 4 (defined at 2:1-2:47)
-  in [foldr ...] at 2:1-2:47
-  in [foldr ...] at 2:1-2:47
+[foldr [fn [let acc x] [append x acc]] [] [1 2 3]]
+=== out
+Dict({0: Int(3), 1: Int(2), 2: Int(1)})

@@ -29,15 +29,14 @@ fn llt_position_to_lsp(line: usize, col: usize, source: &str) -> lsp_types::Posi
         }
     };
 
-    // LLT column is a 1-indexed byte offset; convert to 0-indexed.
-    let byte_offset_in_line = col.saturating_sub(1);
-
-    // Extract the line text up to the target column (in bytes).
+    // LLT column is a 1-indexed Unicode scalar count; convert to UTF-16 code units for LSP.
+    // Iterate chars (not bytes) to avoid byte-boundary panics on multi-byte characters.
     let line_text = source[line_start_offset..].lines().next().unwrap_or("");
-    let prefix = &line_text[..byte_offset_in_line.min(line_text.len())];
-
-    // Count UTF-16 code units in the prefix.
-    let utf16_col = prefix.encode_utf16().count() as u32;
+    let utf16_col = line_text
+        .chars()
+        .take(col.saturating_sub(1))
+        .map(|c| c.len_utf16() as u32)
+        .sum::<u32>();
 
     lsp_types::Position {
         line: lsp_line,
@@ -162,9 +161,9 @@ mod tests {
     #[test]
     fn test_llt_to_lsp_utf8_multibyte() {
         // "é" is 2 bytes in UTF-8, 1 code unit in UTF-16.
-        // "[x: é]" is 7 bytes but 6 UTF-16 code units.
+        // "[x: é]" is 6 Unicode scalars → end column 7 (1-indexed scalar count).
         let source = "[x: é]";
-        let span = make_span(1, 1, 1, 8); // LLT column 8 = one past the 7-byte string
+        let span = make_span(1, 1, 1, 7); // LLT column 7 = one past the 6-scalar string
         let range = llt_span_to_lsp_range(&span, source);
 
         assert_eq!(range.start.line, 0);
@@ -175,13 +174,14 @@ mod tests {
 
     #[test]
     fn test_llt_to_lsp_emoji() {
-        // "😀" is 4 bytes in UTF-8, 2 code units in UTF-16 (surrogate pair).
+        // "😀" is 4 bytes in UTF-8 but 1 Unicode scalar and 2 UTF-16 code units.
+        // "[x: 😀]" — emoji is scalar 5, "]" is scalar 6.
         let source = "[x: 😀]";
-        let span = make_span(1, 5, 1, 9); // "😀" occupies bytes 4-8 (1-indexed: cols 5-9)
+        let span = make_span(1, 5, 1, 6); // scalars 5..6 covers just the emoji
         let range = llt_span_to_lsp_range(&span, source);
 
         assert_eq!(range.start.line, 0);
-        assert_eq!(range.start.character, 4); // after "[x: "
+        assert_eq!(range.start.character, 4); // after "[x: " (4 scalars = 4 UTF-16 units)
         assert_eq!(range.end.line, 0);
         assert_eq!(range.end.character, 6); // after "😀" (2 UTF-16 code units)
     }

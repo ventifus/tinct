@@ -140,7 +140,7 @@ struct Span {
 struct Position {
     offset: usize,  // byte offset
     line: usize,    // 1-based
-    column: usize,  // 1-based
+    column: usize,  // 1-based Unicode scalar count
 }
 
 /// A node with source span

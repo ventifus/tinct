@@ -3,9 +3,7 @@
 # so monad inference should fail with T_DO_INFER.
 [do [x: some_var] [Ok x]]
 === error
-[E002] undefined variable: ℊꜱʏᴍ⧼do-infer⧽6 (defined at 1:1-1:1) (called at 3:1-3:26)
-  in [<dot-access> ...] at 3:1-3:26
-  in expansion of `do` at 3:1
+[E002] undefined variable: ℊꜱʏᴍ⧼do-infer⧽
 
 === warn
 cannot infer monad for [do] — add an explicit monad argument (e.g., [do result ...]) at 3:1-3:26

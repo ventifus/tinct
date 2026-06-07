@@ -217,6 +217,12 @@ fn test_corpus_structure() {
         "tests/corpus/eval/slow",
         "tests/corpus/eval/constructors",
         "tests/corpus/eval/absent",
+        "tests/corpus/eval/annotation-system",
+        "tests/corpus/eval/ast_dict",
+        "tests/corpus/eval/let_binding",
+        "tests/corpus/eval/seq_migration",
+        "tests/corpus/eval/typenode-adt",
+        "tests/corpus/eval/tycondef-merge",
         // Invalid corpus
         "tests/corpus/invalid/pipeline",
         "tests/corpus/invalid/semantic_errors",

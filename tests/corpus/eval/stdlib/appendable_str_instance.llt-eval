@@ -8,9 +8,7 @@
   init: inst.empty
 ]
 === error
-[E002] undefined variable: inst (did you mean the string "inst"? Use quotes.) (defined at 6:12-6:16) (accessed at 6:11-6:45)
-  in accessing .append-one at 6:12-6:27
-  in [<dot-access> ...] at 6:11-6:45
+[E099] syntax error at 4:36 (cannot evaluate error node) (defined at 4:36-4:37)
 
 === warn
 instance arm pattern must be a [pattern [...]] or [let ...] declaration at 4:17-4:37

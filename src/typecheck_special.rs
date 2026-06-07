@@ -744,10 +744,26 @@ pub(crate) fn resolve_monad_from_surface(
             let qualified_tag: Option<String> = match &func.expr {
                 SurfaceExpression::VarRef { name, .. } => {
                     // VarRef-headed call: [Ok ...], [Error ...], etc.
-                    // Look up the name in type_env to get the qualified tag, or use the name as-is.
-                    type_env
-                        .resolve_constructor_tag(name)
-                        .or_else(|| Some(name.clone()))
+                    // Look up the name in type_env to get the qualified tag.
+                    type_env.resolve_constructor_tag(name).or_else(|| {
+                        // Hardcoded fallback for known Result constructors when type_env has not
+                        // yet registered the corresponding TyCon (e.g., in the corpus eval path
+                        // before the prelude type env is fully populated).  This matches the
+                        // original do-hkt-inference behavior documented in the mempalace —
+                        // bare [Ok ...] / [Error ...] always resolve to the "result" monad dict.
+                        // Only Result constructors are hardcoded here because the "result" monad
+                        // dict IS defined in prelude.llt. Other monads (maybe, seq) are NOT added
+                        // here because the corresponding monad dicts are not yet available at
+                        // runtime in the inferred path — adding them would convert T_DO_INFER into
+                        // a runtime E002 for "undefined variable: maybe", which is harder to
+                        // diagnose and breaks existing corpus tests.
+                        // TODO(T-1144): eliminate this once the prelude type env is always
+                        // available to check_do_infer in every eval pipeline path.
+                        match name.as_str() {
+                            "Ok" | "Error" => Some("Result.Ok".to_string()),
+                            _ => None,
+                        }
+                    })
                 }
                 SurfaceExpression::DotAccess { .. } => {
                     // DotAccess-headed call: [Result.Ok ...], [Net.Transport.Tcp ...], etc.

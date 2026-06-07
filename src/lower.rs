@@ -198,13 +198,22 @@ fn lower_expr(
         SurfaceExpression::Dict(entries) => {
             let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::with_capacity(entries.len());
             for se in entries {
-                // All Decl forms (TypeAlias, ClassDecl, InstanceDecl, MacroDecl) are skipped
-                // at runtime. Constructor injection is handled entirely by the desugar pass
-                // (inject_adt_constructors_expr), which synthesises SurfaceExpression entries
-                // before this lowering step runs. The type checker handles Decl entries via
-                // Pass 0c (typecheck_dict.rs).
-                if matches!(&se.node.value.expr, SurfaceExpression::Decl(_)) {
-                    continue;
+                // Most Decl forms (TypeAlias, ClassDecl, MacroDecl) are skipped at runtime.
+                // Constructor injection is handled by the desugar pass; the type checker
+                // handles Decl entries via Pass 0c (typecheck_dict.rs).
+                //
+                // EXCEPTION (B-353): InstanceDecl with a non-empty arm is NOT skipped —
+                // it produces a method dict so that `MonadResult.bind` etc. work at runtime.
+                // The SurfaceExpression::Decl arm in lower() handles the actual lowering.
+                if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
+                    let is_instance = matches!(
+                        decl.as_ref(),
+                        crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. }
+                            if !arms.is_empty()
+                    );
+                    if !is_instance {
+                        continue;
+                    }
                 }
                 let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
                 let value = Arc::new(lower(&se.node.value, res, types));
@@ -342,7 +351,43 @@ fn lower_expr(
         // Declaration forms embedded in expression position (e.g., dict entry values).
         // At runtime these produce Placeholder (an error when forced); the type checker
         // registers them via Pass 0c before evaluation occurs.
-        SurfaceExpression::Decl(_) => CoreExpr::Placeholder,
+        //
+        // EXCEPTION: InstanceDecl produces a method dict as its runtime value (B-353).
+        // This enables instance method access at runtime (e.g., MonadResult.bind).
+        SurfaceExpression::Decl(decl) => match decl.as_ref() {
+            crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } if !arms.is_empty() => {
+                // Lower the methods from the first arm to a dict.
+                //
+                // Single-arm assumption: InstanceDecl lowering here only fires for instances
+                // that appear as dict entry VALUES (expression position), e.g.:
+                //   `MonadResult: [instance Monad [let m@Result]: [bind: ...]]`
+                // All such instances in the prelude have exactly one [let ...] arm, so
+                // arms[0] is always the correct and only arm.
+                //
+                // Multi-arm instances (e.g., `Addable` with four `[let a@T b@U c]` arms)
+                // are declared at the top level as SurfaceItem::Decl, not as dict entry
+                // values, and therefore never reach this code path.
+                //
+                // If a future multi-arm instance were declared in dict entry position,
+                // arms[1..N] would be silently dropped. To support that case, the lowering
+                // pass would need to know which arm applies (type-directed dispatch at
+                // runtime), or all arms' methods would need to be merged into a single dict
+                // (only valid when method names are disjoint across arms). The correct
+                // long-term architecture is to transform instances in the desugar pass
+                // (alongside inject_adt_constructors_surface_program) rather than here.
+                let method_entries = &arms[0].1;
+                let core_entries: Vec<Spanned<CoreEntry>> = method_entries
+                    .iter()
+                    .map(|se| {
+                        let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
+                        let value = Arc::new(lower(&se.node.value, res, types));
+                        Spanned::new(CoreEntry { key, value }, se.span.clone())
+                    })
+                    .collect();
+                CoreExpr::Dict(core_entries)
+            }
+            _ => CoreExpr::Placeholder,
+        },
 
         SurfaceExpression::Error(span) => CoreExpr::Error(span.clone()),
     }

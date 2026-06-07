@@ -1,6 +1,4 @@
 # and-then: fn-first order. If Ok, apply f to the value.
-[and-then [fn [x] [Ok [* x 2]]] [Ok 21]]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-1:41)
-  in [and-then ...] at 1:1-1:41
-  in [and-then ...] at 1:1-1:41
+[and-then [fn [let x] [Ok [* x 2]]] [Ok 21]]
+=== out
+Variant(Result.Ok, Int(42))

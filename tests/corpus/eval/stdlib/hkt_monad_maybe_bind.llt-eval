@@ -2,11 +2,9 @@
 # MonadMaybe is defined in prelude.llt as an instance of the Monad typeclass.
 # The type checker does not know about MonadMaybe (no prelude type env seeding),
 # so it warns "undefined variable: MonadMaybe", but the evaluator succeeds.
-[MonadMaybe.bind [Some 42] [fn [x] [Some [+ x 1]]]]
-=== error
-[E002] undefined variable: MonadMaybe (defined at 4:2-4:12) (accessed at 4:1-4:52)
-  in accessing .bind at 4:2-4:17
-  in [<dot-access> ...] at 4:1-4:52
+[MonadMaybe.bind [Some 42] [fn [let x] [Some [+ x 1]]]]
+=== out
+Variant(Maybe.Some, Int(43))
 
 === warn
 expected record type, got <error> at 4:2-4:17

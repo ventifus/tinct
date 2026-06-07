@@ -1,6 +1,4 @@
 # result-map: transform Ok value
-[result-map [fn [x] [* x 3]] [Ok 14]]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-1:38)
-  in [result-map ...] at 1:1-1:38
-  in [result-map ...] at 1:1-1:38
+[result-map [fn [let x] [* x 3]] [Ok 14]]
+=== out
+Variant(Result.Ok, Int(42))

@@ -1,8 +1,7 @@
 # until with increment
-[until [fn [x] [>= x 10]] [fn [x] [+ x 1]] 0]
-=== error
-[E020] arity mismatch: expected 3 arguments, got 5 (defined at 1:1-1:46)
-  in [until ...] at 1:1-1:46
+[until [fn [let x] [>= x 10]] [fn [let x] [+ x 1]] 0]
+=== out
+Int(10)
 
 === warn
 undefined variable: until at 1:2-1:7

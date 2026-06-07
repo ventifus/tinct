@@ -4,12 +4,7 @@
 [
   sum: [+ 40 2]
   safe: [try [fn [] [raise "expected-error"]]]
-  doubled: [map [fn [x] [+ x 1]] [10 20 30]]
+  doubled: [map [fn [let x] [+ x 1]] [10 20 30]]
 ]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 6:12-6:45)
-  in [map ...] at 6:12-6:45
-  in [map ...] at 6:12-6:45
-
-=== warn
-arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 6:12-6:45
+=== out
+Dict({"sum": Int(42), "safe": Variant(Result.Error, String("expected-error")), "doubled": Dict({0: Int(11), 1: Int(21), 2: Int(31)})})

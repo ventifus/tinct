@@ -1,6 +1,4 @@
 # and-then: fn-first order. If Error, pass through unchanged.
-[and-then [fn [x] [Ok [* x 2]]] [Error "bad"]]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-1:47)
-  in [and-then ...] at 1:1-1:47
-  in [and-then ...] at 1:1-1:47
+[and-then [fn [let x] [Ok [* x 2]]] [Error "bad"]]
+=== out
+Variant(Result.Error, String("bad"))

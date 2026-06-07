@@ -1,9 +1,4 @@
 # any? - returns true when at least one element matches predicate
-[any? [fn [x] [> x 3]] [1 2 5]]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-1:32)
-  in [any? ...] at 1:1-1:32
-  in [any? ...] at 1:1-1:32
-
-=== warn
-arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 1:1-1:32
+[any? [fn [let x] [> x 3]] [1 2 5]]
+=== out
+Bool(true)

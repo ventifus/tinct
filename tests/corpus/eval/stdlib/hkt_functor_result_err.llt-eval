@@ -1,10 +1,8 @@
 # Test: FunctorResult.fmap on Error value (passes through)
-[FunctorResult.fmap [fn [x] [+ x 1]] [Error "fail"]]
+[FunctorResult.fmap [fn [let x] [+ x 1]] [Error "fail"]]
 
-=== error
-[E002] undefined variable: FunctorResult (defined at 1:2-1:15) (accessed at 1:1-1:53)
-  in accessing .fmap at 1:2-1:20
-  in [<dot-access> ...] at 1:1-1:53
+=== out
+Variant(Result.Error, String("fail"))
 
 === warn
 expected record type, got <error> at 1:2-1:20

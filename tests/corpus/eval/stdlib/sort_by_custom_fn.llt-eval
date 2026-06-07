@@ -1,6 +1,4 @@
 # sort-by with custom comparator function (sort by absolute value)
-[sort-by [fn [a b] [< [abs a] [abs b]]] [-3 1 -2 4]]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-1:53)
-  in [sort-by ...] at 1:1-1:53
-  in [sort-by ...] at 1:1-1:53
+[sort-by [fn [let a b] [< [abs a] [abs b]]] [-3 1 -2 4]]
+=== out
+Dict({0: Int(1), 1: Int(-2), 2: Int(-3), 3: Int(4)})

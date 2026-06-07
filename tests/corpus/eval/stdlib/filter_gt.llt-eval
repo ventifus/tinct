@@ -1,9 +1,4 @@
 # filter: keep elements > 2 — verifies Mappable annotation still works after class migration
-[filter [fn [x] [> x 2]] [1 2 3]]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-1:34)
-  in [filter ...] at 1:1-1:34
-  in [filter ...] at 1:1-1:34
-
-=== warn
-arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 1:1-1:34
+[filter [fn [let x] [> x 2]] [1 2 3]]
+=== out
+Seq(Int(3), ...)

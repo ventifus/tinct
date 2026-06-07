@@ -9014,17 +9014,18 @@ fn test_do_infer_resolve_monad_from_expr_qualified_error_constructor() {
 }
 
 #[test]
-fn test_do_infer_resolve_monad_from_expr_unqualified_empty_env_returns_none() {
-    // Unqualified constructor [Ok x] with empty TypeEnv returns None.
-    // After T-1036: TyConDef.constructors is populated, so resolve_constructor_tag
-    // would return a qualified tag IF the type constructor is in the TypeEnv.
-    // With an empty TypeEnv (no Result type registered), bare [Ok 1] cannot resolve.
+fn test_do_infer_resolve_monad_from_expr_unqualified_empty_env_returns_result() {
+    // Unqualified constructor [Ok x] with empty TypeEnv uses the hardcoded fallback.
+    // The hardcoded "Ok" | "Error" → "Result.Ok" → rfind('.') → "result" path (T-1030)
+    // means bare [Ok 1] always resolves to "result" regardless of TypeEnv state.
+    // This is intentional: the inferred [do] path for Result works without prelude seeding.
     let node = crate::parser::parse_surface_expression("[Ok 1]").expect("parse failed");
     let env = crate::types::TypeEnv::new();
     let resolved = resolve_monad_from_surface(&node, &env);
     assert_eq!(
-        resolved, None,
-        "[Ok ...] against empty TypeEnv should return None (no type constructor registered)"
+        resolved,
+        Some("result".to_string()),
+        "[Ok ...] should resolve to 'result' via hardcoded fallback (T-1030)"
     );
 }
 
@@ -9054,48 +9055,6 @@ fn test_do_infer_resolve_monad_from_expr_explicit_call_no_match() {
         resolved, None,
         "[call $Ok 1] (explicit call, implied: false) must not resolve — only implied constructor syntax triggers surface fallback"
     );
-}
-
-#[test]
-fn test_do_infer_corpus_diagnostics() {
-    // Diagnostic test: record actual outputs for inferred [do] corpus test cases.
-    // This test always passes but records findings via assert_ne (panics with context).
-    // The findings are used to calibrate corpus test expected values.
-
-    // Case 1: annotation-based (Rule 1) — should succeed with Variant(Ok, Int(42))
-    let result1 = crate::eval_source("[[fn@[ok: Int  err: Str] [] [do [x: [Ok 42]] [Ok x]]]]");
-    let tc1 = crate::typecheck_source_errors_only(
-        "[[fn@[ok: Int  err: Str] [] [do [x: [Ok 42]] [Ok x]]]]",
-    );
-    let _out1 = result1
-        .as_ref()
-        .map(|s| s.as_str())
-        .unwrap_or_else(|_e| "ERR");
-    let _warn1 = tc1.as_ref().err().map(|e| e.as_str()).unwrap_or("OK");
-    // case1 state for debugging: eval={result1:?} warn={tc1:?}
-    let _ = (&result1, &tc1); // keep bindings live
-
-    // Case 2: [Ok 1] first binding — Rule 2 fails (Variant type) → T_DO_INFER → E002
-    let result2 = crate::eval_source("[do [x: [Ok 1]] x]");
-    let tc2 = crate::typecheck_source_errors_only("[do [x: [Ok 1]] x]");
-
-    // Case 3: Int first binding — Rule 2 fails → T_DO_INFER → E002
-    let result3 = crate::eval_source("[do [x: 42] x]");
-    let tc3 = crate::typecheck_source_errors_only("[do [x: 42] x]");
-
-    // Case 4: Maybe first binding — Rule 2 fails (Variant type) → T_DO_INFER → E002
-    let result4 = crate::eval_source("[do [x: [Some 42]] [Some [+ x 1]]]");
-    let tc4 = crate::typecheck_source_errors_only("[do [x: [Some 42]] [Some [+ x 1]]]");
-
-    // Write results to stderr for inspection
-    let out = format!(
-        "=== case1 (annotation Rule 1) ===\n  eval: {:?}\n  warn: {:?}\n\
-             === case2 ([Ok 1] first binding) ===\n  eval: {:?}\n  warn: {:?}\n\
-             === case3 (42 unresolvable) ===\n  eval: {:?}\n  warn: {:?}\n\
-             === case4 ([Some 42] maybe) ===\n  eval: {:?}\n  warn: {:?}\n",
-        result1, tc1, result2, tc2, result3, tc3, result4, tc4
-    );
-    eprintln!("{}", out);
 }
 
 // -- Arithmetic MPTC FD (Addable/Subtractable/Multipliable/Divisible): return-type refinement --
@@ -9640,25 +9599,18 @@ Note: Takes a list of condition-result pairs.
 
 #[test]
 fn test_prelude_cond_type_after_fix() {
-    // After all fixes, cond should be correctly typed in the prelude env.
-    // If this test fails, investigate why cond is Error-typed.
-    let _ = crate::imports::build_prelude_env();
-    let mut state = crate::types::InferState::new();
-    crate::imports::seed_infer_state_from_prelude_cache(&mut state);
-    // Build env with prelude
+    // After all fixes, cond should be correctly typed in the prelude env as Function, not Error.
     let env = crate::imports::build_prelude_env();
     let cond_scheme = env.get("cond");
-    eprintln!(
-        "cond scheme: {:?}",
-        cond_scheme.map(|s| format!("{}", s.body))
+    assert!(
+        cond_scheme.is_some(),
+        "cond should be present in prelude env"
     );
-    // cond body should be a Function, not Error
-    if let Some(scheme) = cond_scheme {
-        if matches!(scheme.body, crate::types::Type::Error) {
-            eprintln!("cond is Error-typed! This means the prelude's cond annotation failed.");
-            eprintln!("Check if fn@[return: [a Null] doc: \"...\"] resolves correctly.");
-        }
-    }
+    let scheme = cond_scheme.unwrap();
+    assert!(
+        !matches!(scheme.body, crate::types::Type::Error),
+        "cond should be Function-typed, not Error-typed — check fn@[return: ...] annotation in prelude.llt"
+    );
 }
 
 #[test]

@@ -1,13 +1,8 @@
 # sorted-by: sort with custom comparator comparing by age field
-[sorted-by [fn [a b] [< [get "age" a] [get "age" b]]] [
+[sorted-by [fn [let a b] [< [get "age" a] [get "age" b]]] [
   [name: "Alice" age: 30]
   [name: "Bob" age: 25]
   [name: "Carol" age: 35]
 ]]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-5:3)
-  in [sorted-by ...] at 1:1-5:3
-  in [sorted-by ...] at 1:1-5:3
-
-=== warn
-arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 1:1-5:3
+=== out
+Dict({0: Dict({"name": String("Bob"), "age": Int(25)}), 1: Dict({"name": String("Alice"), "age": Int(30)}), 2: Dict({"name": String("Carol"), "age": Int(35)})})

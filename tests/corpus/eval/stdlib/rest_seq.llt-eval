@@ -1,23 +1,4 @@
 # rest on Seq returns O(1) tail
-[collect [take 3 [rest [iterate [fn [x] [+ x 1]] 0]]]]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:24-1:52) (called at stdlib/prelude.llt:2947:15-2947:32)
-  in [iterate ...] at 1:24-1:52
-  in [iterate ...] at 1:24-1:52
-  in [builtin-rest ...] at stdlib/prelude.llt:2947:15-2947:32
-   |
-  2947 | """] [let xs] [builtin-rest xs]]
-       |               ^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2408:57-2408:76
-   |
-  2408 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
-       |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-take ...] at stdlib/prelude.llt:2408:57-2408:76
-   |
-  2408 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
-       |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2859:15-2859:35
-   |
-  2859 | """] [let xs] [builtin-collect xs]]
-       |               ^^^^^^^^^^^^^^^^^^^^
-  in [collect ...] at 1:1-1:55
+[collect [take 3 [rest [iterate [fn [let x] [+ x 1]] 0]]]]
+=== out
+Dict({0: Int(1), 1: Int(2), 2: Int(3)})

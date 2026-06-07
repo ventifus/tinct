@@ -1,10 +1,8 @@
 # Test: MonadMaybe.bind on Some value
-[MonadMaybe.bind [Some 42] [fn [x] [Some [+ x 1]]]]
+[MonadMaybe.bind [Some 42] [fn [let x] [Some [+ x 1]]]]
 
-=== error
-[E002] undefined variable: MonadMaybe (defined at 1:2-1:12) (accessed at 1:1-1:52)
-  in accessing .bind at 1:2-1:17
-  in [<dot-access> ...] at 1:1-1:52
+=== out
+Variant(Maybe.Some, Int(43))
 
 === warn
 expected record type, got <error> at 1:2-1:17

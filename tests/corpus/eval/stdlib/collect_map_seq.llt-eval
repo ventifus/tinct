@@ -1,11 +1,4 @@
 # collect: materialize a mapped Seq into a Dict
-[collect [map [fn [x] [* x 2]] [range 0 5]]]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:10-1:44)
-  in [map ...] at 1:10-1:44
-  in [map ...] at 1:10-1:44
-  in [builtin-collect ...] at stdlib/prelude.llt:2859:15-2859:35
-   |
-  2859 | """] [let xs] [builtin-collect xs]]
-       |               ^^^^^^^^^^^^^^^^^^^^
-  in [collect ...] at 1:1-1:45
+[collect [map [fn [let x] [* x 2]] [range 0 5]]]
+=== out
+Dict({0: Int(0), 1: Int(2), 2: Int(4), 3: Int(6), 4: Int(8)})

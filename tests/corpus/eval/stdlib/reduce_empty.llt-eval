@@ -1,9 +1,4 @@
 # reduce on empty dict returns init
-[reduce [fn [acc x] [+ acc x]] 0 []]
-=== error
-[E020] arity mismatch: expected 3 arguments, got 4 (defined at 1:1-1:37)
-  in [reduce ...] at 1:1-1:37
-  in [reduce ...] at 1:1-1:37
-
-=== warn
-arity mismatch: expected 3 argument(s), got 4 (4 positional, 0 named) at 1:1-1:37
+[reduce [fn [let acc x] [+ acc x]] 0 []]
+=== out
+Int(0)

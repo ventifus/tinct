@@ -1,9 +1,4 @@
 # find-first-or: not found - returns default
-[find-first-or [fn [x] [> x 100]] 99 [1 2 3 4 5]]
-=== error
-[E020] arity mismatch: expected 3 arguments, got 4 (defined at 1:1-1:50)
-  in [find-first-or ...] at 1:1-1:50
-  in [find-first-or ...] at 1:1-1:50
-
-=== warn
-arity mismatch: expected 3 argument(s), got 4 (4 positional, 0 named) at 1:1-1:50
+[find-first-or [fn [let x] [> x 100]] 99 [1 2 3 4 5]]
+=== out
+Int(99)

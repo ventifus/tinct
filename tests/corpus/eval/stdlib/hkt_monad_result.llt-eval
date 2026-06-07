@@ -1,10 +1,8 @@
 # Test: MonadResult.bind on Ok value
-[MonadResult.bind [Ok 1] [fn [x] [Ok [+ x 1]]]]
+[MonadResult.bind [Ok 1] [fn [let x] [Ok [+ x 1]]]]
 
-=== error
-[E002] undefined variable: MonadResult (defined at 1:2-1:13) (accessed at 1:1-1:48)
-  in accessing .bind at 1:2-1:18
-  in [<dot-access> ...] at 1:1-1:48
+=== out
+Variant(Result.Ok, Int(2))
 
 === warn
 expected record type, got <error> at 1:2-1:18

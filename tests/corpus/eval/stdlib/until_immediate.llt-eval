@@ -1,8 +1,7 @@
 # until immediate (predicate already true)
-[until [fn [x] [>= x 5]] [fn [x] [* x 2]] 10]
-=== error
-[E020] arity mismatch: expected 3 arguments, got 5 (defined at 1:1-1:46)
-  in [until ...] at 1:1-1:46
+[until [fn [let x] [>= x 5]] [fn [let x] [* x 2]] 10]
+=== out
+Int(10)
 
 === warn
 undefined variable: until at 1:2-1:7

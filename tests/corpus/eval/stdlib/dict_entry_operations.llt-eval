@@ -1,21 +1,13 @@
 [
   from_entries_basic: [from-entries [entries [a: 1 b: 2]]]
   from_entries_empty: [from-entries []]
-  from_entries_seq: [from-entries [map [fn [x] [key: x value: [builtin-mul x x]]] [range 0 3]]]
+  from_entries_seq: [from-entries [map [fn [let x] [key: x value: [builtin-mul x x]]] [range 0 3]]]
 
-  with_entries_basic: [with-entries [fn [e] [key: e.key  value: [* e.value 10]]] [a: 1  b: 2  c: 3]]
-  with_entries_empty: [with-entries [fn [e] [key: e.key  value: e.value]] []]
+  with_entries_basic: [with-entries [fn [let e] [key: e.key  value: [* e.value 10]]] [a: 1  b: 2  c: 3]]
+  with_entries_empty: [with-entries [fn [let e] [key: e.key  value: e.value]] []]
 ]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 4:35-4:95) (called at stdlib/prelude.llt:1308:18-1308:36)
-  in [map ...] at 4:35-4:95
-  in [map ...] at 4:35-4:95
-  in [build-dict ...] at stdlib/prelude.llt:1308:18-1308:36
-   |
-  1308 | """] [let pairs] [build-dict pairs]]
-       |                  ^^^^^^^^^^^^^^^^^^
+=== out
+Dict({"from_entries_basic": Dict({0: Dict({"key": String("a"), "value": Int(1)}), 1: Dict({"key": String("b"), "value": Int(2)})}), "from_entries_empty": Dict({}), "from_entries_seq": Dict({0: Int(0), 1: Int(1), 2: Int(4)}), "with_entries_basic": Dict({0: Dict({"key": String("a"), "value": Int(10)}), 1: Dict({"key": String("b"), "value": Int(20)}), 2: Dict({"key": String("c"), "value": Int(30)})}), "with_entries_empty": Dict({})})
 
 === warn
-arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 4:35-4:95
-arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 6:23-6:101
-arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 7:23-7:78
+undefined variable: builtin-mul at 4:68-4:79

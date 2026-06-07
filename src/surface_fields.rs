@@ -52,7 +52,7 @@ pub fn surface_expr_tag(expr: &SurfaceExpression) -> &'static str {
         SurfaceExpression::LetDecl { .. } => "LetDecl",
         SurfaceExpression::CaseArm { .. } => "CaseArm",
         SurfaceExpression::Placeholder => "Placeholder",
-        SurfaceExpression::Decl(_) => "Placeholder", // Treats embedded decl as Placeholder at runtime
+        SurfaceExpression::Decl(_) => "Placeholder", // Tag name for macro/AST round-trip; InstanceDecl lowers to Dict at runtime (B-353), other Decl forms to Placeholder
         SurfaceExpression::Error(_) => "Error",
     }
 }

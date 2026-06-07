@@ -391,6 +391,60 @@ A keyword followed by `:` is a dict entry, not a special form: `[call: something
 
 ---
 
+## 5a. Subject-Last Partial Application
+
+Three language features share a single semantic rule: **evaluate an expression to produce a function, then call it with a subject value appended as the last positional argument**. Recognizing this common pattern avoids learning three different mechanisms.
+
+### The `|` Pipeline Operator
+
+`lhs | rhs` appends `lhs` as the last positional argument to the call expression `rhs`:
+
+```tinct
+[nums | [map [* _ 2]]]       # → [map [* _ 2] nums]
+[x | [filter [> _ 0]]]      # → [filter [> _ 0] x]
+[x | f]                      # → [f x]  (bare name: subject is the only arg)
+```
+
+Pipeline is desugared at parse time — no runtime overhead.
+
+### The `_` Shorthand
+
+`_` inside a bracket call desugars to a single-argument lambda — the `_` parameter stands for an implied argument, placed explicitly wherever it appears in the expression:
+
+```tinct
+[* _ 2]          # → [fn [_] [* _ 2]]
+[> _.age 30]     # → [fn [_] [> _.age 30]]
+[>= _ 0]         # → [fn [_] [>= _ 0]]   # explicit position control
+```
+
+Because `_` desugars to a single-arg lambda, combining it with the pipeline or `is:` produces a natural subject-last call: the lambda's single parameter is filled by the subject.
+
+### The `is:` Type Predicate
+
+The `is:` key in a type annotation takes a predicate — any 1-argument function. It is called with the value being validated as its sole argument at runtime:
+
+```tinct
+UInt8:  [type Int@[is: [between 0 255]   repr: u8]]   # [between 0 255 subject]
+UInt64: [type Int@[is: [>= _ 0]         repr: u64]]   # [>= subject 0]
+Port:   [type Int@[is: [between 1 65535] repr: u16]]
+```
+
+**Why `[>= _ 0]` and not `[>= 0]`:** `[>= 0]` partially applied subject-last gives `[>= 0 subject]` = "0 >= subject" (backwards). The `_` shorthand positions the subject correctly: `[>= _ 0]` → `[fn [_] [>= _ 0]]` → `[>= subject 0]` = "subject >= 0". Use `_` whenever the natural partial-application order would give the wrong operand arrangement.
+
+### Unified Rule
+
+All three features apply the same rule at their respective evaluation stage:
+
+| Feature | Stage | Subject position |
+|---------|-------|-----------------|
+| `\|` pipeline | Parse-time desugar | Appended as last positional arg of the call |
+| `_` shorthand | Parse-time desugar | Wherever `_` appears in the lambda body |
+| `is:` predicate | Runtime (TypeAssert) | Sole argument to the predicate function |
+
+The `_` shorthand is the universal escape valve: when subject-last would place the subject in the wrong operand position, use `_` to place it explicitly.
+
+---
+
 ## 6. Function Definitions
 
 Functions are defined with `fn`. Parameters are always wrapped in a `[let ...]` binding declaration list:

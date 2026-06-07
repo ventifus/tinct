@@ -1,8 +1,7 @@
 # until - iterate function until predicate holds
-[until [fn [x] [>= x 100]] [fn [x] [* x 2]] 1]
-=== error
-[E020] arity mismatch: expected 3 arguments, got 5 (defined at 1:1-1:47)
-  in [until ...] at 1:1-1:47
+[until [fn [let x] [>= x 100]] [fn [let x] [* x 2]] 1]
+=== out
+Int(128)
 
 === warn
 undefined variable: until at 1:2-1:7
