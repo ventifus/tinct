@@ -1700,7 +1700,82 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
         }
     }
 
+    // T-1068: Pre-intern primitive TypeNode thunks into the type-stage env.
+    //
+    // The 7 payload-free TypeNode leaf constructors are created here as pre-materialized
+    // Arc<Thunk> values and inserted into the type-stage env under their canonical names.
+    // This ensures the common case — resolving a primitive type annotation like `@Int` or
+    // `@Bool` — does not call eval_type_stage_expr at all: `primitive_node("Int")` returns
+    // the cached Arc<Thunk> with a single atomic reference-count bump, no heap allocation.
+    //
+    // Insertion happens AFTER the prelude evaluation loop so that if the prelude already
+    // inserted a binding under the same name, we do not overwrite it — the prelude's binding
+    // is the authoritative one when available. We only add entries that are ABSENT so the
+    // prelude has priority. If the prelude loop has already produced the binding (e.g. `Int`
+    // is registered by the first type-stage dict), we skip it silently.
+    //
+    // Each primitive is represented as `Value::Variant { tag: "TypeNode.X", payload: None }` —
+    // a unit variant matching the TypeNode ADT declaration in the prelude.
+    for (name, typenode_tag) in [
+        ("Int", "TypeNode.Int"),
+        ("Float", "TypeNode.Float"),
+        ("Bool", "TypeNode.Bool"),
+        ("Never", "TypeNode.Never"),
+        // Prelude registers the type-stage alias as "Str" (not "String"), mirroring the
+        // source-level alias `Str: [builtin-variant "TypeNode.String"]`.
+        // We pre-intern both names so lookup succeeds regardless of which name is used.
+        ("Str", "TypeNode.String"),
+        ("String", "TypeNode.String"),
+        // "Any" is the prelude alias for Unknown in the type-stage env.
+        // Pre-intern both so either lookup works.
+        ("Any", "TypeNode.Unknown"),
+        ("Unknown", "TypeNode.Unknown"),
+        // "Absent" is not registered in the type-stage prelude section (it lives in the
+        // runtime section as `Absent: [type Absent]`). Pre-intern it here so callers that
+        // ask for the TypeNode.Absent primitive get a valid thunk without resorting to
+        // eval_type_stage_expr.
+        ("Absent", "TypeNode.Absent"),
+    ] {
+        let variant = Value::Variant {
+            tag: typenode_tag.to_string(),
+            payload: None,
+        };
+        let thunk = Arc::new(Thunk::new_materialized(variant, Span::origin()));
+        let mut env_write = type_stage_env.write().unwrap();
+        // Only insert if absent — prelude binding takes priority.
+        if env_write.get(name).is_none() {
+            env_write.insert(name.to_string(), thunk);
+        }
+    }
+
     Ok(type_stage_env)
+}
+
+/// Return the pre-interned `Arc<Thunk>` for a primitive TypeNode constructor by name.
+///
+/// Returns the cached thunk for primitive type-stage names (`"Int"`, `"Float"`, `"Bool"`,
+/// `"Str"`, `"String"`, `"Never"`, `"Any"`, `"Unknown"`). The thunk holds a pre-materialized
+/// `Value::Variant { tag: "TypeNode.X", payload: None }` — the unit variant for each primitive.
+///
+/// This is the T-1068 performance path: callers that need a primitive TypeNode value use this
+/// function rather than `eval_type_stage_expr`, avoiding the overhead of building an EvalContext,
+/// creating a surface thunk, and materializing it. The returned `Arc<Thunk>` is an atomic
+/// reference-count bump on a shared pre-interned value — no heap allocation.
+///
+/// Returns `None` if:
+/// - The type-stage env is unavailable (bootstrap recursion guard fired).
+/// - `name` is not a known primitive (use `eval_type_stage_expr` for compound type-stage exprs).
+#[allow(dead_code)] // S-860 CheckerType migration
+pub fn primitive_node(name: &str) -> Option<Arc<Thunk>> {
+    // Only handle the primitive type-stage names; reject anything else immediately so callers
+    // can distinguish "unknown primitive" from "env unavailable".
+    match name {
+        "Int" | "Float" | "Bool" | "Str" | "String" | "Never" | "Any" | "Unknown" | "Absent" => {}
+        _ => return None,
+    }
+    let env = crate::imports::build_type_stage_env()?;
+    let thunk = env.read().ok()?.get(name);
+    thunk
 }
 
 /// Return the builtin list for a named module, or None if the name is unknown.

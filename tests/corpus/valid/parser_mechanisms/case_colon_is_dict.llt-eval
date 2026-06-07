@@ -1,0 +1,5 @@
+# "case" followed by ":" is a dict key, not the case special form.
+# The parser only treats "case" as a keyword when it is NOT followed by ":".
+[case: "x"]
+=== out
+["case": "x"]

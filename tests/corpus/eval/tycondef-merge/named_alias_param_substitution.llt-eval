@@ -1,0 +1,17 @@
+# T-1066 param substitution: a zero-param structural alias declared with a record body.
+# BoxRecord: [type [let a] [id: a]] has one param `a`, body [id: a].
+# After param substitution with Int, body becomes [id: Int] — a concrete record type.
+# body_contains_tycon_ref([id: a]) = false (no TyCon refs, only a param TypeVar),
+# so after substitution the expanded body is a plain record type.
+#
+# At runtime: BoxRecord TypeAlias is skipped (named-key body, no constructor injection).
+# Only `f` and `result` appear in the dict output.
+#
+# At typecheck: no warnings — structural alias with one param, clean annotation site.
+[
+  BoxRecord: [type [let a] [id: a]]
+  f: [fn [let x] x.id]
+  result: [f [id: 42]]
+]
+=== out
+Dict({"f": Function(x), "result": Int(42)})

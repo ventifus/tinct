@@ -9,6 +9,3 @@
 int-str.first
 === out
 Int(42)
-
-=== warn
-type alias 'Pair' expects 2 type parameter(s), got 0 at 5:25-5:51

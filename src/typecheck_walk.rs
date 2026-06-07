@@ -274,10 +274,7 @@ where
     }
 
     // Determine the tag (unwrapping Annotated wrappers).
-    let tag = match typenode_tag(node) {
-        Some(t) => t,
-        None => return None, // Non-Variant — no children to walk.
-    };
+    let tag = typenode_tag(node)?; // Non-Variant — no children to walk.
 
     match tag {
         // ── Union / Intersect: `types@Child: [Seq TypeNode]` ──────────────────

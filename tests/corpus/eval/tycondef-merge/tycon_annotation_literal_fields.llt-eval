@@ -1,0 +1,22 @@
+# T-1122: TyConDef.annotation population from @[...] on a type alias declaration key.
+# eval_type_annotation_property_dict extracts literal values (strings, ints, floats, bools)
+# from the type-alias-level @[...] PropertyDict and stores them in TyConDef.annotation.
+#
+# For a named-field constructor with @[...], the annotation is populated into
+# TyConDef.annotation (type-checker layer). At runtime, the constructor function itself
+# carries the annotation via FnAnnotation.extra (set up by build_constructor_return_ann,
+# T-1052/T-1053), so annotation-of on the constructor returns the annotation dict.
+#
+# This test exercises T-1122 by declaring a named-field constructor with:
+#   - A string annotation field (role: "primary") — captured as String value
+#   - An int annotation field (priority: 1) — captured as Int value
+# Both are literal values and pass through eval_type_annotation_property_dict.
+#
+# annotation-of(Widget) returns {"role": "primary", "priority": 1}.
+# The test verifies both fields are present with correct values.
+# Absence of === warn asserts the named-field constructor annotation path is clean.
+[MyLibType: [type [Widget@[role: "primary"  priority: 1] name: String]]]
+[ann: [annotation-of Widget]]
+[result: [and [= [get "role" ann] "primary"] [= [get "priority" ann] 1]]]
+=== out
+Dict({"result": Bool(true)})

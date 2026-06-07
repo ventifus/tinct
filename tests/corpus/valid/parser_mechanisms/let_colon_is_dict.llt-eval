@@ -1,0 +1,5 @@
+# "let" followed by ":" is a dict key, not the let special form.
+# The parser only treats "let" as a keyword when it is NOT followed by ":".
+[let: "x"]
+=== out
+["let": "x"]

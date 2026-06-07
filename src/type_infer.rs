@@ -591,6 +591,9 @@ impl InferState {
         tycon_env.insert(
             "Seq".to_string(),
             Arc::new(crate::type_def::TyConDef {
+                params: vec!["a".to_string()],
+                body: crate::type_def::Type::Unknown,
+                constraints: vec![],
                 variance: vec![crate::type_def::Variance::Covariant],
                 constructors: vec![],
                 builtin_type: Some("Seq".to_string()),
@@ -601,6 +604,9 @@ impl InferState {
         tycon_env.insert(
             "Map".to_string(),
             Arc::new(crate::type_def::TyConDef {
+                params: vec!["k".to_string(), "v".to_string()],
+                body: crate::type_def::Type::Unknown,
+                constraints: vec![],
                 variance: vec![
                     crate::type_def::Variance::Invariant,
                     crate::type_def::Variance::Covariant,
@@ -614,9 +620,67 @@ impl InferState {
         tycon_env.insert(
             "Handle".to_string(),
             Arc::new(crate::type_def::TyConDef {
+                params: vec!["cap".to_string()],
+                body: crate::type_def::Type::Unknown,
+                constraints: vec![],
                 variance: vec![crate::type_def::Variance::Covariant],
                 constructors: vec![],
                 builtin_type: Some("Handle".to_string()),
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
+            }),
+        );
+
+        // T-1068: Register primitive zero-param types as TyConDef entries.
+        //
+        // These are the 7 payload-free TypeNode leaf constructors. Registering them here enables
+        // the future unified `expand_named` path (equirecursive-types sprint) to look up all named
+        // types — primitives and structural aliases alike — through a single `tycon_env` lookup
+        // instead of the `is_builtin_type_name` fast-path string-match in resolve_type_dict.
+        //
+        // `builtin_type: Some(name)` marks each entry as opaque: `expand_named` will return a
+        // bare TypeConstructor leaf without structural expansion (same treatment as Seq/Map/Handle).
+        // `body` holds the concrete primitive `Type` — not `Unknown` — so that callers which read
+        // `TyConDef.body` directly (e.g., type display) see the correct underlying type.
+        // `params: vec![]` — zero type parameters; `variance: vec![]` — no parameters to vary.
+        for (name, body) in [
+            ("Int", crate::type_def::Type::Int),
+            ("Float", crate::type_def::Type::Float),
+            // User annotation name is "String"; runtime alias is "Str". Both names resolve
+            // to Type::Str via resolve_type_name; we register the canonical annotation name.
+            ("String", crate::type_def::Type::Str),
+            ("Bool", crate::type_def::Type::Bool),
+            ("Unknown", crate::type_def::Type::Unknown),
+            ("Never", crate::type_def::Type::Never),
+        ] {
+            tycon_env.insert(
+                name.to_string(),
+                Arc::new(crate::type_def::TyConDef {
+                    params: vec![],
+                    body,
+                    constraints: vec![],
+                    variance: vec![],
+                    constructors: vec![],
+                    builtin_type: Some(name.to_string()),
+                    annotation: None,
+                    field_annotations: indexmap::IndexMap::new(),
+                }),
+            );
+        }
+        // Absent is the empty closed record type (same as Null/[]). Registered separately because
+        // its body is a Record, not a simple Type variant.
+        tycon_env.insert(
+            "Absent".to_string(),
+            Arc::new(crate::type_def::TyConDef {
+                params: vec![],
+                body: crate::type_def::Type::Record(crate::type_def::Row {
+                    fields: HashMap::new(),
+                    tail: crate::type_def::RowTail::Empty,
+                }),
+                constraints: vec![],
+                variance: vec![],
+                constructors: vec![],
+                builtin_type: Some("Absent".to_string()),
                 annotation: None,
                 field_annotations: indexmap::IndexMap::new(),
             }),

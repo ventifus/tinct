@@ -22,9 +22,9 @@
 === error
 [E013] no instance for Addable (Dict, Dict) (defined at 20:6-20:15)
   in [+ ...] at 20:6-20:15
-  in [builtin-get ...] at stdlib/prelude.llt:1169:25-1169:47
+  in [builtin-get ...] at stdlib/prelude.llt:1172:25-1172:47
    |
-  1169 | """] [let key@k dict@d] [builtin-get key dict]]
+  1172 | """] [let key@k dict@d] [builtin-get key dict]]
        |                         ^^^^^^^^^^^^^^^^^^^^^^
   in [get ...] at 20:1-20:18
 

@@ -3,14 +3,14 @@
 ---
 [call %.str-substr 3 5 "hello"]
 === error
-[E080] str-substr: end position 8 exceeds string length 5 (defined at stdlib/prelude.llt:2395:28-2395:47)
-  --> stdlib/prelude.llt:2395:28-2395:47
+[E080] str-substr: end position 8 exceeds string length 5 (defined at stdlib/prelude.llt:2398:28-2398:47)
+  --> stdlib/prelude.llt:2398:28-2398:47
    |
-  2395 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2398 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2395:28-2395:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2398:28-2398:47
    |
-  2395 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2398 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in materialized at 88:5-94:43
   in [if ...] at 92:13-94:41

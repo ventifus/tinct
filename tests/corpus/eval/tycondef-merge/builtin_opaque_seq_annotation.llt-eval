@@ -1,0 +1,21 @@
+# T-1066 Step 3: is_builtin_opaque — builtin type constructors (Seq, Map) stay as
+# TypeApplication leaves after expand_named. They have builtin_type = Some("Seq") /
+# Some("Map"), so expand_named returns TypeApplication(TypeConstructor(name), args)
+# without structural expansion.
+#
+# `f` is annotated `@Seq` — a bare Seq annotation. The annotation resolver calls
+# expand_named("Seq", [], ...) which detects is_builtin_opaque = true and returns
+# TypeApplication(TypeConstructor("Seq"), []) — no structural expansion of Seq.
+#
+# A user-defined type alias that has Seq as its body (references a builtin-opaque TyCon)
+# also takes the is_builtin_opaque path when expand_all_tycon_apps encounters Seq.
+# This is a regression test: S-859 must not break Seq annotation handling.
+#
+# At runtime: `f` takes any sequence and returns its head element.
+# `result` is the first of [1 2 3]. No === warn section asserts zero type warnings.
+[
+  f: [fn [let xs@Seq] [head xs]]
+  result: [f [each [1 2 3]]]
+]
+=== out
+Dict({"f": Function(xs), "result": Int(1)})

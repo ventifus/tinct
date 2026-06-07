@@ -9,7 +9,7 @@ use crate::ast::{Span, Spanned, SurfaceDeclaration, SurfaceEntry, SurfaceExpress
 use crate::type_def::{TyConDef, Variance};
 use crate::types::{
     generalize_with_doc, unify, ClassEnv, InferState, InstanceEnv, Row, Substitution, Type,
-    TypeAlias, TypeEnv, TypeError, TypeScheme,
+    TypeEnv, TypeError, TypeScheme,
 };
 
 /// Inject NominalVariant constructor function types into `dict_env` for ADT constructor scoping.
@@ -456,7 +456,12 @@ pub(crate) fn infer_dict(
                         // is not applicable for opaque builtins).
                         if let Some(alias_name) = key_name {
                             let n_params = params.len();
+                            let param_names: Vec<String> =
+                                params.iter().map(|(n, _)| n.clone()).collect();
                             let tycon_def = Arc::new(TyConDef {
+                                params: param_names,
+                                body: Type::TyCon(alias_name.clone()),
+                                constraints: vec![],
                                 variance: vec![Variance::Invariant; n_params],
                                 constructors: vec![],
                                 builtin_type: Some(discriminant),
@@ -465,14 +470,8 @@ pub(crate) fn infer_dict(
                             });
                             dict_env.insert_tycon_def(alias_name.clone(), Arc::clone(&tycon_def));
                             state.tycon_env.insert(alias_name.clone(), tycon_def);
-                            // Register a zero-param type alias so annotation resolution
-                            // can find the name (e.g., `@Int` → Type::TyCon("Int")).
-                            dict_env.insert_type_alias(
-                                alias_name.clone(),
-                                TypeAlias::new(vec![], Type::TyCon(alias_name.clone())),
-                            );
                         }
-                        continue; // Skip normal body resolution for builtin-type declarations.
+                        continue; // Skip normal body resolution for builtin-type declarations (T-1064: type_aliases eliminated).
                     }
 
                     let mut alias_ann_map: HashMap<String, String> = HashMap::new();
@@ -508,10 +507,6 @@ pub(crate) fn infer_dict(
                                 .iter()
                                 .map(|(p, _)| alias_ann_map.get(p).cloned().unwrap())
                                 .collect();
-                            dict_env.insert_type_alias(
-                                name.clone(),
-                                TypeAlias::new(remapped_params.clone(), alias_ty.clone()),
-                            );
 
                             // B-344: Register in tycon_env when key_name is a valid type identifier
                             // (starts with alphabetic — indicates a proper type name extracted by the
@@ -530,6 +525,9 @@ pub(crate) fn infer_dict(
                                 let constructors =
                                     super::extract_constructors_from_type(&alias_ty, name);
                                 let tycon_def = Arc::new(TyConDef {
+                                    params: remapped_params.clone(),
+                                    body: alias_ty.clone(),
+                                    constraints: vec![],
                                     variance: inferred_variances,
                                     constructors,
                                     builtin_type: None,

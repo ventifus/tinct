@@ -4,8 +4,8 @@
 [E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:10-1:44)
   in [map ...] at 1:10-1:44
   in [map ...] at 1:10-1:44
-  in [builtin-collect ...] at stdlib/prelude.llt:2856:15-2856:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2859:15-2859:35
    |
-  2856 | """] [let xs] [builtin-collect xs]]
+  2859 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in [collect ...] at 1:1-1:45

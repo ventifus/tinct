@@ -326,14 +326,17 @@
     # (LetDecl is only valid as a multi-body sequential step, not inside if arms).
     map-children: [fn [let f t]
       [let ctor [TypeNode-ctor t]]
-      [builtin-variant [builtin-tag-of t]
-        [object-map t [fn [let field val]
-          [if [child-field? ctor field]
-            [match [child-role ctor field]
-              "One":       [f val]
-              "Seq":       [builtin-map f val]
-              "MapValues": [object-map val [fn [let k v] [f v]]]]
-            val]]]]]
+      [let fields [child-fields ctor]]
+      [if [= [builtin-length fields] 0]
+        t
+        [builtin-variant [builtin-tag-of t]
+          [object-map t [fn [let field val]
+            [if [child-field? ctor field]
+              [match [child-role ctor field]
+                "One":       [f val]
+                "Seq":       [builtin-map f val]
+                "MapValues": [object-map val [fn [let k v] [f v]]]]
+              val]]]]]]
 
     # as-type: normalize a TypeNode value using its constructor's as-type annotation.
     # The as-type annotation function (set at TypeNode declaration time on each constructor)

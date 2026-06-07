@@ -1,0 +1,24 @@
+# T-1066 expansion stack: mutually recursive type aliases.
+# EvenList and OddList reference each other — neither is self-referential alone.
+# The expansion stack cycle detection (expand_named Steps 4-5) handles this:
+#   1. Push (arc_EvenList, fresh_var_even) to stack; begin expanding EvenList body
+#   2. Body references OddList — push (arc_OddList, fresh_var_odd); expand OddList body
+#   3. OddList body references EvenList — Arc::ptr_eq finds it in stack → RecursiveRef(var_even)
+#   4. Pop OddList: body has no var_odd → no Recursive wrap (OddList is NOT the cycle origin)
+#   5. Pop EvenList: body contains var_even → wrap in Recursive (EvenList IS the cycle origin)
+#
+# This test verifies that the expansion stack does not diverge (infinite loop) on
+# mutually recursive aliases — the correct structural representation terminates.
+#
+# At runtime: both are structural [or ...] aliases — TypeAlias entries are skipped.
+# No constructor injection (the or-form bodies are not named constructors).
+# Only `result` appears in the dict output.
+#
+# At typecheck: no warnings — the recursive alias is well-formed (record body is guarded).
+[
+  EvenList: [type [or Absent [head: Int  tail: OddList]]]
+  OddList:  [type [or Absent [head: Int  tail: EvenList]]]
+  result: true
+]
+=== out
+Dict({"result": Bool(true)})

@@ -134,6 +134,18 @@ pub enum Variance {
 /// Stores variance information and constructor tags for user-defined types.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TyConDef {
+    /// Type parameter names (e.g., ["a", "k", "v"]). Empty for zero-parameter types.
+    /// Migrated from TypeAlias.params (T-1064).
+    pub params: Vec<String>,
+
+    /// Type body. For structural aliases, this is the expanded type; for nominal ADTs,
+    /// this is typically a Union of NominalVariants. Migrated from TypeAlias.body (T-1064).
+    pub body: Type,
+
+    /// Class constraints on type parameters, populated when params carry `@ClassName` annotations.
+    /// Empty for unconstrained aliases. Migrated from TypeAlias.constraints (T-1064).
+    pub constraints: Vec<crate::type_class::Constraint>,
+
     /// Variance for each type parameter
     pub variance: Vec<Variance>,
     /// Constructors as (tag, arity) pairs
@@ -161,7 +173,7 @@ pub struct TyConDef {
 
 impl TyConDef {
     pub fn arity(&self) -> usize {
-        self.variance.len()
+        self.params.len()
     }
 }
 

@@ -1,0 +1,30 @@
+# TypeConstructor qualified leaf preservation: nominal ADT constructors carry qualified
+# tags that preserve nominal identity through alias expansion.
+#
+# expand_all_tycon_apps distinguishes two forms of TypeConstructor:
+#   - Bare (transient): TypeConstructor { name } where !name.contains('.') — expand
+#   - Qualified (leaf): TypeConstructor { name } where name.contains('.') — preserve as-is
+#
+# Qualified constructor leaves (e.g., "Color.Red") stay after normalization.
+# `TypeConstructor "Color.Red" <: TypeConstructor "Direction.Red"` is false by name inequality —
+# nominal identity is preserved through the dot-qualified name in the expanded union body.
+#
+# At runtime: ADT constructors are injected as Variant values with qualified tags.
+# Matching on them via `match` uses the qualified tag (Color.Red, Color.Green, Color.Blue).
+# The runtime result verifies the correct variant was selected.
+[
+  Color: [type Red Green Blue]
+
+  label: [fn [let c]
+    [match c
+      Color.Red:   "red"
+      Color.Green: "green"
+      Color.Blue:  "blue"
+      _:           "unknown"]]
+
+  r: [label Red]
+  g: [label Green]
+  b: [label Blue]
+]
+=== out
+Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null), "label": Function(c), "r": String("red"), "g": String("green"), "b": String("blue")})

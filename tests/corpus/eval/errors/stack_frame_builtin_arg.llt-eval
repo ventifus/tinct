@@ -1,12 +1,12 @@
 [+ 1 [head []]]
 === error
-[E010] head: expected Seq, got Dict (defined at stdlib/prelude.llt:2840:15-2840:32)
-  --> stdlib/prelude.llt:2840:15-2840:32
+[E010] head: expected Seq, got Dict (defined at stdlib/prelude.llt:2843:15-2843:32)
+  --> stdlib/prelude.llt:2843:15-2843:32
    |
-  2840 | """] [let xs] [builtin-head xs]]
+  2843 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
-  in [builtin-head ...] at stdlib/prelude.llt:2840:15-2840:32
+  in [builtin-head ...] at stdlib/prelude.llt:2843:15-2843:32
    |
-  2840 | """] [let xs] [builtin-head xs]]
+  2843 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [+ ...] at 1:1-1:16

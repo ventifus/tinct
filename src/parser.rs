@@ -2855,7 +2855,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     }
                     _ => Some(ParseError {
                         message:
-                            "`:` can only appear in dict, call, class, instance, match, or syntax-class forms"
+                            "`:` can only appear in dict, call, class, instance, match, let, or syntax-class forms"
                                 .to_string(),
                         span: Some(span.clone()),
                     }),
@@ -7088,7 +7088,7 @@ mod tests {
     #[test]
     fn test_colon_outside_dict_call() {
         // [fn :] — "fn" not followed by colon directly → Fn form.
-        // Then ":" in Fn frame → "`:` can only appear in dict, call, class, instance, or match forms" (recovered).
+        // Then ":" in Fn frame → "`:` can only appear in dict, call, class, instance, match, let, or syntax-class forms" (recovered).
         let output = parse("[fn :]").expect("recovery should succeed");
         assert!(
             !output.errors.is_empty(),
@@ -7099,7 +7099,7 @@ mod tests {
                 || output.errors[0].message.contains("`:` without a key")
                 || output.errors[0]
                     .message
-                    .contains("`:` can only appear in dict, call, class, instance, or match forms"),
+                    .contains("`:` can only appear in dict, call, class, instance, match, let, or syntax-class forms"),
             "expected key-related error for [fn :], got: {}",
             output.errors[0].message
         );
@@ -7111,7 +7111,7 @@ mod tests {
         );
         assert!(
             output2.errors[0].message.contains(
-                "`:` can only appear in dict, call, class, instance, match, or syntax-class forms"
+                "`:` can only appear in dict, call, class, instance, match, let, or syntax-class forms"
             ),
             "expected error about colon in wrong context for [type x :], got: {}",
             output2.errors[0].message

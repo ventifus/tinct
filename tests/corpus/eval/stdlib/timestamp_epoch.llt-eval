@@ -2,9 +2,9 @@
 # timestamp-nanos: Unix epoch (0 nanoseconds)
 [timestamp-nanos 0]
 === error
-[E002] undefined variable: builtin-timestamp-nanos (did you mean the string "builtin-timestamp-nanos"? Use quotes.) (defined at stdlib/prelude.llt:3389:18-3389:41) (called at 3:1-3:20)
-  --> stdlib/prelude.llt:3389:18-3389:41
+[E002] undefined variable: builtin-timestamp-nanos (did you mean the string "builtin-timestamp-nanos"? Use quotes.) (defined at stdlib/prelude.llt:3392:18-3392:41) (called at 3:1-3:20)
+  --> stdlib/prelude.llt:3392:18-3392:41
    |
-  3389 | timestamp-nanos: builtin-timestamp-nanos
+  3392 | timestamp-nanos: builtin-timestamp-nanos
        |                  ^^^^^^^^^^^^^^^^^^^^^^^
   in [timestamp-nanos ...] at 3:1-3:20

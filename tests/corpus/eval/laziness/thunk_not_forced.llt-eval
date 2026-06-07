@@ -3,13 +3,13 @@
 [unused: [raise "dead binding remains lazy"]  used: 42]
 [result: used]
 === error
-[E080] dead binding remains lazy (defined at stdlib/prelude.llt:2395:28-2395:47)
-  --> stdlib/prelude.llt:2395:28-2395:47
+[E080] dead binding remains lazy (defined at stdlib/prelude.llt:2398:28-2398:47)
+  --> stdlib/prelude.llt:2398:28-2398:47
    |
-  2395 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2398 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2395:28-2395:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2398:28-2398:47
    |
-  2395 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2398 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in materialized at 2:1-2:56

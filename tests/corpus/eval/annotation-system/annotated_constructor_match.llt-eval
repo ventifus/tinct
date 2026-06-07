@@ -1,0 +1,18 @@
+# Match on an annotated unit constructor must succeed (S-859 bug fix).
+# Pattern::Constructor must peel Value::Annotated wrappers before matching the inner Variant.
+# Red@[category: "primary"] evaluates to Value::Annotated { inner: Variant("MyType.Red", None), .. }.
+# Before the fix, the Constructor arm fell through to _ => Ok(None), causing the wildcard to fire.
+# After the fix, Value::Annotated is peeled and the inner Variant tag "MyType.Red" is matched.
+# The typecheck warning "undefined variable: Red" is a pre-existing limitation tracked in T-1048.
+[
+  MyType:  [type Red@[category: "primary"]]
+  matched: [match Red
+    MyType.Red: "matched"
+    _:          "wildcard"]
+  result:  [= matched "matched"]
+]
+=== out
+Dict({"Red": Variant(MyType.Red, Null), "matched": String("matched"), "result": Bool(true)})
+
+=== warn
+undefined variable: Red at 8:19-8:22

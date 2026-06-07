@@ -1,0 +1,17 @@
+# T-1066 Step 2b fast-path: zero-param alias with no TyCon references in body.
+# expand_named returns the body directly (Arc::clone) without pushing to the
+# expansion stack or calling expand_all_tycon_apps.
+#
+# body_contains_tycon_ref returns false for a record body [id: Int] (no bare
+# TyCon references). The fast-path short-circuits all expansion work.
+#
+# At runtime: structural record alias entries are skipped (TypeAlias with named-key
+# body is not evaluated into the dict). Only `result` appears in output.
+#
+# At typecheck: clean — no type warnings.
+[
+  IdRecord: [type [id: Int]]
+  result: 42
+]
+=== out
+Dict({"result": Int(42)})

@@ -2770,7 +2770,7 @@ pub(crate) fn resolve_type_expr(
                     }
 
                     // Build substitution and apply to body
-                    return instantiate_type_alias(alias, &type_args, state);
+                    return instantiate_type_alias(&alias, &type_args, state);
                 }
             }
 
@@ -3058,7 +3058,7 @@ pub(crate) fn resolve_type_dict(
                                     span,
                                 ));
                             }
-                            return instantiate_type_alias(alias, &type_args, state);
+                            return instantiate_type_alias(&alias, &type_args, state);
                         }
                     }
                 }
@@ -4174,7 +4174,7 @@ pub(crate) fn eval_type_stage_expr(
         // Call TypeNode.as-type(typenode_val) to normalize and convert to Type.
         // eval_type_stage_value handles: call fn → materialize → typenode_value_to_type.
         // Returns None on failure (non-function value, eval error, unrecognized result).
-        eval_type_stage_value(&as_type_fn, &[typenode_val.clone()], state).ok()
+        eval_type_stage_value(&as_type_fn, std::slice::from_ref(&typenode_val), state).ok()
     })();
 
     // If as-type dispatch succeeded, return its result (the normalized Type).
@@ -4193,6 +4193,393 @@ pub(crate) fn eval_type_stage_expr(
             node_span,
         )
     })
+}
+
+// ============================================================================
+// Alias Expansion: T-1066 expand_named / T-1067 expand_all_tycon_apps
+// ============================================================================
+
+/// An entry on the expansion stack used by `expand_named` / `expand_all_tycon_apps`.
+///
+/// Each entry carries a cloned `Arc<TyConDef>` (preserving pointer identity for
+/// `Arc::ptr_eq` cycle detection) and the pre-assigned binder name that will be
+/// used if a recursive reference to this entry is found during expansion.
+///
+/// The binder name is generated via `gensym_fresh('𝜇', alias_name)` before the body
+/// is expanded, so that any self-reference in the body can return the pre-assigned name
+/// rather than an uninitialized one.
+// Scaffolding for equirecursive types (S-860 CheckerType migration)
+#[allow(dead_code)]
+pub(crate) type ExpansionStack = Vec<(Arc<crate::type_def::TyConDef>, String)>;
+
+/// Returns `true` if `ty` contains any bare (unexpanded) type constructor references.
+///
+/// A "bare" type constructor reference is one of:
+/// - `Type::TyCon(name)` — a named type constructor waiting to be expanded
+/// - `Type::App(Type::TyCon(_), _)` — a type constructor application
+/// - Any nested occurrence of the above
+///
+/// Used by `expand_named` Step 2b as a fast-path: if the alias body has no TyCon
+/// references, it can be returned directly without further expansion.
+#[allow(dead_code)] // S-860 CheckerType migration will use this
+pub(crate) fn body_contains_tycon_ref(ty: &Type) -> bool {
+    match ty {
+        Type::TyCon(_) => true,
+        Type::App(f, arg) => body_contains_tycon_ref(f) || body_contains_tycon_ref(arg),
+        Type::Record(row) => {
+            if row.fields.values().any(body_contains_tycon_ref) {
+                return true;
+            }
+            if let crate::type_def::RowTail::Uniform { key, value } = &row.tail {
+                if let Some(k) = key {
+                    if body_contains_tycon_ref(k) {
+                        return true;
+                    }
+                }
+                body_contains_tycon_ref(value)
+            } else {
+                false
+            }
+        }
+        Type::Function { params, ret, .. } => {
+            params.iter().any(|(_, p)| body_contains_tycon_ref(p)) || body_contains_tycon_ref(ret)
+        }
+        Type::Union(members) | Type::Intersection(members) => {
+            members.iter().any(body_contains_tycon_ref)
+        }
+        Type::Negation(inner) => body_contains_tycon_ref(inner),
+        Type::NominalVariant { fields, .. } => fields.fields.values().any(body_contains_tycon_ref),
+        _ => false,
+    }
+}
+
+/// Returns `true` if `ty` contains a `TypeVar` with the given name.
+///
+/// Used by `expand_named` Step 8 to determine whether the expanded body actually
+/// contains a self-reference (making this a genuinely recursive type). If the
+/// binder variable does not appear in the expanded body, the type is non-recursive
+/// and no `Recursive` wrapper is needed.
+#[allow(dead_code)] // S-860 CheckerType migration
+pub(crate) fn contains_recvar(ty: &Type, var: &str) -> bool {
+    match ty {
+        Type::TypeVar(name, _) => name == var,
+        Type::App(f, arg) => contains_recvar(f, var) || contains_recvar(arg, var),
+        Type::Record(row) => {
+            if row.fields.values().any(|t| contains_recvar(t, var)) {
+                return true;
+            }
+            if let crate::type_def::RowTail::Uniform { key, value } = &row.tail {
+                if let Some(k) = key {
+                    if contains_recvar(k, var) {
+                        return true;
+                    }
+                }
+                contains_recvar(value, var)
+            } else {
+                false
+            }
+        }
+        Type::Function { params, ret, .. } => {
+            params.iter().any(|(_, p)| contains_recvar(p, var)) || contains_recvar(ret, var)
+        }
+        Type::Union(members) | Type::Intersection(members) => {
+            members.iter().any(|m| contains_recvar(m, var))
+        }
+        Type::Negation(inner) => contains_recvar(inner, var),
+        Type::NominalVariant { fields, .. } => {
+            fields.fields.values().any(|t| contains_recvar(t, var))
+        }
+        _ => false,
+    }
+}
+
+/// Expand a named type alias to its fully-expanded `Type`.
+///
+/// Implements the 6-step algorithm from the equirecursive-types design (§Annotation Resolver):
+///
+/// 1. Look up the `TyConDef` for `name` from the `TypeEnv`.
+/// 2. Fast path: if the body is a primitive type and contains no `TyCon` references,
+///    return the body directly (no expansion needed).
+/// 3. Builtin-opaque path: if `builtin_type` is `Some`, return
+///    `Type::App(Type::TyCon(name), args[0])` (or `Type::TyCon(name)` for zero-arg)
+///    without structural expansion.
+/// 4. Cycle detection: if the expansion stack already contains this `Arc<TyConDef>`
+///    (via `Arc::ptr_eq`), this is a recursive reference. Return a `TypeVar` with
+///    the pre-assigned binder name from the stack entry.
+/// 5. Param substitution: build a `HashMap<String, Type>` from `params` → `args` and
+///    apply it to the body via `apply_type_alias_substitution`.
+/// 6. Recursive expansion: push a new stack entry (with a fresh gensym'd binder name),
+///    call `expand_all_tycon_apps` on the substituted body, then pop.
+///
+/// Returns `None` if the name is not registered in the `TypeEnv`.
+///
+/// **Cycle origin detection (Step 8 / wrap rule):** after expansion, if the expanded
+/// body contains a `TypeVar` matching the pre-assigned binder name, this alias IS the
+/// cycle origin. In the current `Type` representation (no `Recursive` variant), the
+/// TypeVar is left in place — it acts as the unification target for callers that detect
+/// the recursive structure. The full `TypeNode.Recursive` wrapping is deferred to the
+/// equirecursive CheckerType migration (future sprint).
+#[allow(dead_code)] // S-860 CheckerType migration
+pub(crate) fn expand_named(
+    name: &str,
+    args: &[Type],
+    stack: &mut ExpansionStack,
+    env: &TypeEnv,
+    state: &mut InferState,
+) -> Option<Type> {
+    // Step 1: look up the TyConDef.
+    let def_arc = env.lookup_tycon_def(name)?;
+    let def = Arc::clone(def_arc);
+
+    // Arity check: number of args must match declared params.
+    if args.len() != def.params.len() {
+        // Arity mismatch — cannot expand. Fall back to a TyCon application so that
+        // callers can still produce a type error message. Build the App chain.
+        let base = Type::TyCon(name.to_string());
+        if args.is_empty() {
+            return Some(base);
+        }
+        let mut result = base;
+        for arg in args {
+            result = Type::App(Box::new(result), Box::new(arg.clone()));
+        }
+        return Some(result);
+    }
+
+    // Step 2b: fast path for zero-param types with no TyCon references in body.
+    // Primitives (Int, Float, etc.) have no params and no TyCon references — return
+    // the body directly without pushing to the stack or calling expand_all_tycon_apps.
+    if def.params.is_empty() && !body_contains_tycon_ref(&def.body) {
+        return Some(def.body.clone());
+    }
+
+    // Step 3: builtin-opaque types — do not structurally expand.
+    // Return App(TyCon(name), args) so that UNIFY-TYCON handles them by name equality
+    // and variance-directed comparison, not by structural equivalence.
+    if def.builtin_type.is_some() {
+        let base = Type::TyCon(name.to_string());
+        if args.is_empty() {
+            return Some(base);
+        }
+        let mut result = base;
+        for arg in args {
+            result = Type::App(Box::new(result), Box::new(arg.clone()));
+        }
+        return Some(result);
+    }
+
+    // Step 4: cycle detection via Arc::ptr_eq.
+    // If the same Arc<TyConDef> is already on the stack, this is a self-referential
+    // (recursive) type. Return a TypeVar with the pre-assigned binder name so that the
+    // caller receives a stable type identity for the recursive position.
+    for (stack_def, binder_name) in stack.iter() {
+        if Arc::ptr_eq(stack_def, &def) {
+            return Some(Type::TypeVar(binder_name.clone(), 0));
+        }
+    }
+
+    // Step 5: param substitution.
+    // Build a HashMap from parameter name → concrete arg type and apply it to the body.
+    // Uses `apply_type_alias_substitution` which handles all Type variants including
+    // TypeVar (for parameter tokens), Record, Function, Union, App, etc.
+    let body_substituted = if def.params.is_empty() {
+        def.body.clone()
+    } else {
+        let mut param_subst: HashMap<String, Type> = HashMap::new();
+        for (param, arg) in def.params.iter().zip(args.iter()) {
+            param_subst.insert(param.clone(), arg.clone());
+        }
+        apply_type_alias_substitution(&def.body, &param_subst, state)
+    };
+
+    // Step 6: push to stack with a fresh binder name, expand, then pop.
+    // The binder name is pre-assigned BEFORE expansion so that Step 4 above can return
+    // it when the body self-references this alias.
+    let binder_name = crate::builtins_meta::gensym_fresh('𝜇', name);
+    stack.push((def, binder_name.clone()));
+
+    let expanded = expand_all_tycon_apps(&body_substituted, stack, env, state);
+
+    stack.pop();
+
+    // Wrap rule: if the expanded body contains a TypeVar matching the binder name,
+    // this alias was recursive (the binder is live). In the current Type system (no
+    // Recursive variant), the TypeVar is left in place as the recursive reference.
+    // Future equirecursive migration will wrap in TypeNode.Recursive here.
+    Some(expanded)
+}
+
+/// Recursively expand all `Type::TyCon` and `Type::App(TyCon, _)` references in `ty`.
+///
+/// This is the structural walker that drives alias expansion. It calls `expand_named`
+/// for each named type constructor it encounters, passing the current expansion stack
+/// for cycle detection.
+///
+/// - `Type::TyCon(name)` → `expand_named(name, &[], stack, env, state)`
+/// - `Type::App(Type::TyCon(name), arg)` → expand arg first, then
+///   `expand_named(name, &[expanded_arg], stack, env, state)`
+/// - Nested `Type::App(Type::App(TyCon, a), b)` chains → collect all args in order,
+///   call `expand_named(name, &[a, b, ...], stack, env, state)` (curried left-assoc)
+/// - All other type forms → recurse structurally into children
+///
+/// Returns the expanded type. Falls back to the original type node when expansion
+/// fails (e.g., unknown alias name — the TyCon is preserved for downstream error
+/// reporting).
+#[allow(dead_code)] // S-860 CheckerType migration
+pub(crate) fn expand_all_tycon_apps(
+    ty: &Type,
+    stack: &mut ExpansionStack,
+    env: &TypeEnv,
+    state: &mut InferState,
+) -> Type {
+    match ty {
+        // Bare TyCon — zero-arg application.
+        Type::TyCon(name) => {
+            expand_named(name, &[], stack, env, state).unwrap_or_else(|| ty.clone())
+        }
+
+        // App chain: collect the root TyCon name and all args, then expand.
+        // App is left-associative: App(App(TyCon("Map"), Str), Int) = Map[Str][Int].
+        // We collect args right-to-left while peeling left-associative Apps, then reverse.
+        Type::App(f, arg) => {
+            // Expand the argument first (args are always expanded before the ctor).
+            let expanded_arg = expand_all_tycon_apps(arg, stack, env, state);
+
+            // Check whether `f` is a TyCon or another App(TyCon, ...) chain.
+            // Collect the root name and all preceding args by peeling the App spine.
+            let (root_name, preceding_args) = collect_app_spine(f);
+
+            match root_name {
+                Some(name) => {
+                    // Expand preceding args first, then append the current expanded_arg.
+                    let mut all_args: Vec<Type> = preceding_args
+                        .iter()
+                        .map(|a| expand_all_tycon_apps(a, stack, env, state))
+                        .collect();
+                    all_args.push(expanded_arg);
+
+                    expand_named(name, &all_args, stack, env, state).unwrap_or_else(|| {
+                        // Unknown alias — rebuild the App chain with the expanded args.
+                        let base = Type::TyCon(name.to_string());
+                        all_args
+                            .into_iter()
+                            .fold(base, |acc, a| Type::App(Box::new(acc), Box::new(a)))
+                    })
+                }
+                None => {
+                    // `f` is not a TyCon chain (e.g., App(TypeVar, arg)) — recurse into f.
+                    let expanded_f = expand_all_tycon_apps(f, stack, env, state);
+                    Type::App(Box::new(expanded_f), Box::new(expanded_arg))
+                }
+            }
+        }
+
+        // Structural recursion for all other type forms.
+        Type::Record(row) => {
+            let new_fields: HashMap<String, Type> = row
+                .fields
+                .iter()
+                .map(|(k, v)| (k.clone(), expand_all_tycon_apps(v, stack, env, state)))
+                .collect();
+            let new_tail = match &row.tail {
+                crate::type_def::RowTail::Uniform { key, value } => {
+                    crate::type_def::RowTail::Uniform {
+                        key: key
+                            .as_ref()
+                            .map(|k| Box::new(expand_all_tycon_apps(k, stack, env, state))),
+                        value: Box::new(expand_all_tycon_apps(value, stack, env, state)),
+                    }
+                }
+                other => other.clone(),
+            };
+            Type::Record(Row {
+                fields: new_fields,
+                tail: new_tail,
+            })
+        }
+
+        Type::Function {
+            params,
+            ret,
+            variadic,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|(name, p)| (name.clone(), expand_all_tycon_apps(p, stack, env, state)))
+                .collect(),
+            ret: Box::new(expand_all_tycon_apps(ret, stack, env, state)),
+            variadic: *variadic,
+        },
+
+        Type::Union(members) => Type::normalize_union(
+            members
+                .iter()
+                .map(|m| expand_all_tycon_apps(m, stack, env, state))
+                .collect(),
+        ),
+
+        Type::Intersection(members) => Type::normalize_intersection(
+            members
+                .iter()
+                .map(|m| expand_all_tycon_apps(m, stack, env, state))
+                .collect(),
+        ),
+
+        Type::Negation(inner) => {
+            Type::Negation(Box::new(expand_all_tycon_apps(inner, stack, env, state)))
+        }
+
+        Type::NominalVariant { tag, fields } => {
+            let new_fields: HashMap<String, Type> = fields
+                .fields
+                .iter()
+                .map(|(k, v)| (k.clone(), expand_all_tycon_apps(v, stack, env, state)))
+                .collect();
+            let new_tail = match &fields.tail {
+                crate::type_def::RowTail::Uniform { key, value } => {
+                    crate::type_def::RowTail::Uniform {
+                        key: key
+                            .as_ref()
+                            .map(|k| Box::new(expand_all_tycon_apps(k, stack, env, state))),
+                        value: Box::new(expand_all_tycon_apps(value, stack, env, state)),
+                    }
+                }
+                other => other.clone(),
+            };
+            Type::NominalVariant {
+                tag: tag.clone(),
+                fields: Row {
+                    fields: new_fields,
+                    tail: new_tail,
+                },
+            }
+        }
+
+        // Atomic types (primitives, TypeVar, Unknown, Top, etc.) — no TyCon children.
+        _ => ty.clone(),
+    }
+}
+
+/// Collect the root `TyCon` name and all intermediate argument types from a left-associative
+/// `App` spine.
+///
+/// Given `App(App(TyCon("Map"), Str), Int)`, returns `(Some("Map"), [Str, Int])`.
+/// Given `App(TypeVar("a"), Int)`, returns `(None, [])` — no TyCon root.
+///
+/// The returned `preceding_args` are in left-to-right order (first arg first).
+#[allow(dead_code)] // S-860 CheckerType migration
+fn collect_app_spine(ty: &Type) -> (Option<&str>, Vec<&Type>) {
+    match ty {
+        Type::TyCon(name) => (Some(name.as_str()), vec![]),
+        Type::App(f, arg) => {
+            let (root, mut args) = collect_app_spine(f);
+            if root.is_some() {
+                args.push(arg.as_ref());
+            }
+            (root, args)
+        }
+        _ => (None, vec![]),
+    }
 }
 
 /// Detect `[Fn@Return [ParamTypes]]` -- a Dict with two auto-indexed entries

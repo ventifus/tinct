@@ -1250,6 +1250,9 @@ fn test_variance_is_copy() {
 #[test]
 fn test_tycondef_construction() {
     let def = TyConDef {
+        params: vec!["a".to_string()],
+        body: Type::Unknown,
+        constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![("Maybe.Some".to_string(), 1), ("Maybe.None".to_string(), 0)],
         builtin_type: None,
@@ -1268,6 +1271,9 @@ fn test_tycondef_construction() {
 #[test]
 fn test_tycondef_multi_variance() {
     let def = TyConDef {
+        params: vec!["a".to_string(), "b".to_string()],
+        body: Type::Unknown,
+        constraints: vec![],
         variance: vec![Variance::Contravariant, Variance::Covariant],
         constructors: vec![],
         builtin_type: None,
@@ -1284,6 +1290,9 @@ fn test_tycondef_multi_variance() {
 #[test]
 fn test_tycondef_builtin_type() {
     let def = TyConDef {
+        params: vec!["a".to_string()],
+        body: Type::Unknown,
+        constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![],
         builtin_type: Some("Seq".to_string()),
@@ -1445,6 +1454,9 @@ fn test_variance_clone() {
 #[test]
 fn test_tycondef_partialeq() {
     let def1 = TyConDef {
+        params: vec![],
+        body: Type::Unknown,
+        constraints: vec![],
         variance: vec![Variance::Invariant],
         constructors: vec![("X.A".to_string(), 0), ("X.B".to_string(), 1)],
         builtin_type: None,
@@ -1452,6 +1464,9 @@ fn test_tycondef_partialeq() {
         field_annotations: indexmap::IndexMap::new(),
     };
     let def2 = TyConDef {
+        params: vec![],
+        body: Type::Unknown,
+        constraints: vec![],
         variance: vec![Variance::Invariant],
         constructors: vec![("X.A".to_string(), 0), ("X.B".to_string(), 1)],
         builtin_type: None,
@@ -1465,6 +1480,9 @@ fn test_tycondef_partialeq() {
 #[test]
 fn test_tycondef_partialeq_different_variance() {
     let def1 = TyConDef {
+        params: vec![],
+        body: Type::Unknown,
+        constraints: vec![],
         variance: vec![Variance::Covariant],
         constructors: vec![],
         builtin_type: None,
@@ -1472,6 +1490,9 @@ fn test_tycondef_partialeq_different_variance() {
         field_annotations: indexmap::IndexMap::new(),
     };
     let def2 = TyConDef {
+        params: vec![],
+        body: Type::Unknown,
+        constraints: vec![],
         variance: vec![Variance::Invariant],
         constructors: vec![],
         builtin_type: None,

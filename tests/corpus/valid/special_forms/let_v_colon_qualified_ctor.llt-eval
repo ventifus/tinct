@@ -1,0 +1,8 @@
+# [let v: Result.Ok] — pending_rhs qualified constructor path.
+# The parser must defer committing the `v: ...` pair until the full dot-access
+# RHS (Result.Ok) has been assembled, so the qualified name is preserved whole.
+# Verifies no parse error occurs (pending_rhs handles DotAccess correctly).
+[let v: Result.Ok]
+
+=== warn
+binding declaration [let ...] is not valid in expression position

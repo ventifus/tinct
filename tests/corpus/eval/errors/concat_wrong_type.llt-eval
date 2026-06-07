@@ -1,13 +1,13 @@
 # concat: error when first argument is not a sequence
 [concat 42 [1 2 3]]
 === error
-[E010] concat: expected Dict or Seq, got Int (defined at stdlib/prelude.llt:2916:34-2916:36) (called at stdlib/prelude.llt:2916:18-2916:40)
-  --> stdlib/prelude.llt:2916:34-2916:36
+[E010] concat: expected Dict or Seq, got Int (defined at stdlib/prelude.llt:2919:34-2919:36) (called at stdlib/prelude.llt:2919:18-2919:40)
+  --> stdlib/prelude.llt:2919:34-2919:36
    |
-  2916 | """] [let xs ys] [builtin-concat xs ys]]
+  2919 | """] [let xs ys] [builtin-concat xs ys]]
        |                                  ^^
-  in [builtin-concat ...] at stdlib/prelude.llt:2916:18-2916:40
+  in [builtin-concat ...] at stdlib/prelude.llt:2919:18-2919:40
    |
-  2916 | """] [let xs ys] [builtin-concat xs ys]]
+  2919 | """] [let xs ys] [builtin-concat xs ys]]
        |                  ^^^^^^^^^^^^^^^^^^^^^^
   in [concat ...] at 1:1-1:20

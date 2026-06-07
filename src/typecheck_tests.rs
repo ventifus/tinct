@@ -9203,6 +9203,319 @@ fn test_arithmetic_add_int_int_through_prelude_refinement() {
     );
 }
 
+// ============================================================================
+// T-1066 / T-1067: expand_named / expand_all_tycon_apps unit tests
+// ============================================================================
+
+/// Build a minimal InferState and TypeEnv for expansion tests.
+fn make_expand_env() -> (crate::types::TypeEnv, crate::types::InferState) {
+    let env = crate::types::TypeEnv::new();
+    let state = crate::types::InferState::new();
+    (env, state)
+}
+
+/// Helper: construct a zero-param TyConDef with a given body type.
+fn make_tycon_def_zero(body: Type) -> Arc<crate::type_def::TyConDef> {
+    Arc::new(crate::type_def::TyConDef {
+        params: vec![],
+        body,
+        constraints: vec![],
+        variance: vec![],
+        constructors: vec![],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+    })
+}
+
+/// Helper: construct a one-param TyConDef with given param name and body type.
+fn make_tycon_def_one(param: &str, body: Type) -> Arc<crate::type_def::TyConDef> {
+    Arc::new(crate::type_def::TyConDef {
+        params: vec![param.to_string()],
+        body,
+        constraints: vec![],
+        variance: vec![crate::type_def::Variance::Covariant],
+        constructors: vec![],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+    })
+}
+
+/// Helper: construct a builtin-opaque TyConDef.
+fn make_builtin_tycon(param: &str, discriminant: &str) -> Arc<crate::type_def::TyConDef> {
+    Arc::new(crate::type_def::TyConDef {
+        params: vec![param.to_string()],
+        body: Type::Unknown,
+        constraints: vec![],
+        variance: vec![crate::type_def::Variance::Covariant],
+        constructors: vec![],
+        builtin_type: Some(discriminant.to_string()),
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+    })
+}
+
+/// T-1066a: body_contains_tycon_ref returns false for primitive types.
+#[test]
+fn test_body_contains_tycon_ref_primitives() {
+    assert!(!body_contains_tycon_ref(&Type::Int));
+    assert!(!body_contains_tycon_ref(&Type::Float));
+    assert!(!body_contains_tycon_ref(&Type::Str));
+    assert!(!body_contains_tycon_ref(&Type::Bool));
+    assert!(!body_contains_tycon_ref(&Type::Unknown));
+    assert!(!body_contains_tycon_ref(&Type::TypeVar(
+        "_t0".to_string(),
+        0
+    )));
+}
+
+/// T-1066b: body_contains_tycon_ref returns true for bare TyCon.
+#[test]
+fn test_body_contains_tycon_ref_tycyon() {
+    assert!(body_contains_tycon_ref(&Type::TyCon("Seq".to_string())));
+}
+
+/// T-1066c: body_contains_tycon_ref returns true for App(TyCon, _).
+#[test]
+fn test_body_contains_tycon_ref_app_tycyon() {
+    let ty = Type::App(
+        Box::new(Type::TyCon("Seq".to_string())),
+        Box::new(Type::Int),
+    );
+    assert!(body_contains_tycon_ref(&ty));
+}
+
+/// T-1066d: body_contains_tycon_ref walks Union members.
+#[test]
+fn test_body_contains_tycon_ref_union() {
+    // Union([Int, TyCon("Foo")]) → true
+    let ty = Type::normalize_union(vec![Type::Int, Type::TyCon("Foo".to_string())]);
+    assert!(body_contains_tycon_ref(&ty));
+
+    // Union([Int, Str]) → false
+    let ty2 = Type::normalize_union(vec![Type::Int, Type::Str]);
+    assert!(!body_contains_tycon_ref(&ty2));
+}
+
+/// T-1066e: contains_recvar detects TypeVar with matching name.
+#[test]
+fn test_contains_recvar_basic() {
+    let var = "𝜇ꜱʏᴍ⧼List⧽42";
+    assert!(contains_recvar(&Type::TypeVar(var.to_string(), 0), var));
+    assert!(!contains_recvar(&Type::TypeVar("_t0".to_string(), 0), var));
+    assert!(!contains_recvar(&Type::Int, var));
+}
+
+/// T-1066f: contains_recvar walks nested structures.
+#[test]
+fn test_contains_recvar_nested() {
+    let var = "𝜇ꜱʏᴍ⧼List⧽42";
+    // Union containing the recvar
+    let ty = Type::normalize_union(vec![Type::Int, Type::TypeVar(var.to_string(), 0)]);
+    assert!(contains_recvar(&ty, var));
+}
+
+/// T-1066g: expand_named returns None for unknown type name.
+#[test]
+fn test_expand_named_unknown_type() {
+    let (env, mut state) = make_expand_env();
+    let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
+    let result = expand_named("UnknownType", &[], &mut stack, &env, &mut state);
+    assert!(result.is_none(), "Unknown type name should return None");
+}
+
+/// T-1066h: expand_named returns the body directly for a zero-param, no-TyCon alias.
+#[test]
+fn test_expand_named_zero_param_primitive_body() {
+    let (mut env, mut state) = make_expand_env();
+    // Register "MyInt" as an alias for Type::Int
+    let def = make_tycon_def_zero(Type::Int);
+    env.insert_tycon_def("MyInt".to_string(), def);
+
+    let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
+    let result = expand_named("MyInt", &[], &mut stack, &env, &mut state);
+    assert_eq!(result, Some(Type::Int), "MyInt should expand to Int");
+}
+
+/// T-1066i: expand_named expands a zero-param alias with a TyCon body.
+#[test]
+fn test_expand_named_zero_param_tycyon_body() {
+    let (mut env, mut state) = make_expand_env();
+    // Register "Wrapper" as an alias for Int (via a TyCon body that resolves)
+    // Register "Inner" as alias for Int
+    let inner_def = make_tycon_def_zero(Type::Int);
+    env.insert_tycon_def("Inner".to_string(), inner_def);
+
+    // Register "Wrapper" as alias for TyCon("Inner")
+    let wrapper_def = make_tycon_def_zero(Type::TyCon("Inner".to_string()));
+    env.insert_tycon_def("Wrapper".to_string(), wrapper_def);
+
+    let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
+    let result = expand_named("Wrapper", &[], &mut stack, &env, &mut state);
+    // Wrapper's body is TyCon("Inner"), which expands to Int
+    assert_eq!(
+        result,
+        Some(Type::Int),
+        "Wrapper should expand through Inner to Int"
+    );
+}
+
+/// T-1066j: expand_named handles builtin-opaque types (no structural expansion).
+#[test]
+fn test_expand_named_builtin_opaque() {
+    let (mut env, mut state) = make_expand_env();
+    let def = make_builtin_tycon("a", "Seq");
+    env.insert_tycon_def("Seq".to_string(), def);
+
+    let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
+    // Seq[Int] — builtin opaque, returns App(TyCon("Seq"), Int)
+    let result = expand_named("Seq", &[Type::Int], &mut stack, &env, &mut state);
+    let expected = Type::App(
+        Box::new(Type::TyCon("Seq".to_string())),
+        Box::new(Type::Int),
+    );
+    assert_eq!(
+        result,
+        Some(expected),
+        "Seq[Int] should stay as App(TyCon(Seq), Int)"
+    );
+}
+
+/// T-1066k: expand_named detects cycles via Arc::ptr_eq and returns TypeVar sentinel.
+#[test]
+fn test_expand_named_cycle_detection() {
+    let (mut env, mut state) = make_expand_env();
+
+    // Register "List" as alias for Union([Int, TyCon("List")])
+    // This is a self-referential type: List = Int | List
+    // We need the Arc to be the SAME one registered in env, so we clone it.
+    let placeholder_def = make_tycon_def_zero(Type::Int); // placeholder body
+    let arc_for_env = Arc::clone(&placeholder_def);
+    // Create the actual recursive body using TyCon("List")
+    // but we'll push the same arc onto the stack and test cycle detection.
+    env.insert_tycon_def("List".to_string(), arc_for_env);
+
+    // Retrieve the exact arc that's registered (Arc::ptr_eq-comparable)
+    let registered_arc = env.lookup_tycon_def("List").unwrap().clone();
+
+    // Pre-push to the stack to simulate being mid-expansion of "List"
+    let binder_name = "𝜇ꜱʏᴍ⧼List⧽99".to_string();
+    let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
+    stack.push((registered_arc, binder_name.clone()));
+
+    // Now expand "List" — should detect the cycle and return TypeVar(binder_name)
+    let result = expand_named("List", &[], &mut stack, &env, &mut state);
+    assert_eq!(
+        result,
+        Some(Type::TypeVar(binder_name, 0)),
+        "expand_named should return the binder TypeVar on cycle detection"
+    );
+}
+
+/// T-1066l: expand_named with one param substitution.
+#[test]
+fn test_expand_named_one_param() {
+    let (mut env, mut state) = make_expand_env();
+
+    // Register "Box" as alias for param "a" — i.e., `type Box = [let a] a`
+    // In the current representation, param "a" appears as TypeVar("a", 0) in the body
+    let def = make_tycon_def_one("a", Type::TypeVar("a".to_string(), 0));
+    env.insert_tycon_def("Box".to_string(), def);
+
+    let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
+    // Box[Int] should expand to Int (param "a" substituted with Int)
+    let result = expand_named("Box", &[Type::Int], &mut stack, &env, &mut state);
+    assert_eq!(result, Some(Type::Int), "Box[Int] should expand to Int");
+}
+
+/// T-1067a: expand_all_tycon_apps is a no-op for primitive types.
+#[test]
+fn test_expand_all_tycon_apps_primitive() {
+    let (env, mut state) = make_expand_env();
+    let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
+
+    assert_eq!(
+        expand_all_tycon_apps(&Type::Int, &mut stack, &env, &mut state),
+        Type::Int
+    );
+    assert_eq!(
+        expand_all_tycon_apps(&Type::Str, &mut stack, &env, &mut state),
+        Type::Str
+    );
+    assert_eq!(
+        expand_all_tycon_apps(&Type::Bool, &mut stack, &env, &mut state),
+        Type::Bool
+    );
+}
+
+/// T-1067b: expand_all_tycon_apps expands a TyCon that is registered.
+#[test]
+fn test_expand_all_tycon_apps_registered_tycyon() {
+    let (mut env, mut state) = make_expand_env();
+    let def = make_tycon_def_zero(Type::Int);
+    env.insert_tycon_def("MyInt".to_string(), def);
+
+    let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
+    let result = expand_all_tycon_apps(
+        &Type::TyCon("MyInt".to_string()),
+        &mut stack,
+        &env,
+        &mut state,
+    );
+    assert_eq!(result, Type::Int, "TyCon(MyInt) should expand to Int");
+}
+
+/// T-1067c: expand_all_tycon_apps preserves unknown TyCon (fallback).
+#[test]
+fn test_expand_all_tycon_apps_unknown_tycyon_preserved() {
+    let (env, mut state) = make_expand_env();
+    let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
+    // UnknownType not in env — should be preserved as-is
+    let ty = Type::TyCon("UnknownType".to_string());
+    let result = expand_all_tycon_apps(&ty, &mut stack, &env, &mut state);
+    assert_eq!(result, ty, "Unknown TyCon should be preserved");
+}
+
+/// T-1067d: expand_all_tycon_apps expands App(TyCon, arg).
+#[test]
+fn test_expand_all_tycon_apps_app_tycyon() {
+    let (mut env, mut state) = make_expand_env();
+
+    // Register "Wrapper" as a one-param alias for the param itself
+    let def = make_tycon_def_one("a", Type::TypeVar("a".to_string(), 0));
+    env.insert_tycon_def("Wrapper".to_string(), def);
+
+    let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
+    let ty = Type::App(
+        Box::new(Type::TyCon("Wrapper".to_string())),
+        Box::new(Type::Int),
+    );
+    // Wrapper[Int] should expand to Int
+    let result = expand_all_tycon_apps(&ty, &mut stack, &env, &mut state);
+    assert_eq!(result, Type::Int, "App(Wrapper, Int) should expand to Int");
+}
+
+/// T-1067e: expand_all_tycon_apps recurses into Union members.
+#[test]
+fn test_expand_all_tycon_apps_union() {
+    let (mut env, mut state) = make_expand_env();
+
+    // Register "MyFloat" as alias for Float
+    let def = make_tycon_def_zero(Type::Float);
+    env.insert_tycon_def("MyFloat".to_string(), def);
+
+    let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
+    let ty = Type::normalize_union(vec![Type::Int, Type::TyCon("MyFloat".to_string())]);
+    let result = expand_all_tycon_apps(&ty, &mut stack, &env, &mut state);
+    // Union([Int, TyCon(MyFloat)]) → Union([Int, Float])
+    let expected = Type::normalize_union(vec![Type::Int, Type::Float]);
+    assert_eq!(
+        result, expected,
+        "Union members with TyCon should be expanded"
+    );
+}
+
 #[test]
 fn test_arithmetic_mul_number_float_returns_float() {
     // [* n 1.0] where n@Number: Number * Float → Float (not Number).

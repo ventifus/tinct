@@ -6,6 +6,3 @@
 [@[Pair Int] [Pair first: 1  second: 2]]
 === out
 Variant(Pair.Pair, Dict({"first": Int(1), "second": Int(2)}))
-
-=== warn
-type alias 'Pair' expects 2 type parameter(s), got 0 at 4:24-4:50

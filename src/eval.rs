@@ -3649,6 +3649,17 @@ pub(crate) fn match_pattern<'a>(
                 }
             }
             Pattern::Constructor { tag, binding } => {
+                // Peel Value::Annotated wrappers before matching.
+                // Unit constructors declared with @[...] annotations evaluate to
+                // Value::Annotated { inner: Variant(...), annotation: {...} }.
+                // Annotations are metadata-only — pattern matching sees only the inner value.
+                let value = {
+                    let mut v = value;
+                    while let Value::Annotated { inner, .. } = v {
+                        v = inner.as_ref();
+                    }
+                    v
+                };
                 // Constructor pattern: match Value::Variant by tag, bind payload if present
                 match value {
                     Value::Variant {
@@ -7901,6 +7912,9 @@ mod tests {
         env.insert(
             "MyInt".to_string(),
             Arc::new(TyConDef {
+                params: vec![],
+                body: Type::Unknown,
+                constraints: vec![],
                 variance: vec![],
                 constructors: vec![],
                 builtin_type: Some("Int".to_string()),
@@ -7925,6 +7939,9 @@ mod tests {
         env.insert(
             "MyDict".to_string(),
             Arc::new(TyConDef {
+                params: vec![],
+                body: Type::Unknown,
+                constraints: vec![],
                 variance: vec![],
                 constructors: vec![],
                 builtin_type: Some("Dict".to_string()),
@@ -7955,6 +7972,9 @@ mod tests {
         env.insert(
             "Color".to_string(),
             Arc::new(TyConDef {
+                params: vec![],
+                body: Type::Unknown,
+                constraints: vec![],
                 variance: vec![],
                 constructors: vec![("Color.Red".to_string(), 0), ("Color.Green".to_string(), 0)],
                 builtin_type: None,
@@ -7991,6 +8011,9 @@ mod tests {
         env.insert(
             "MySeq".to_string(),
             Arc::new(TyConDef {
+                params: vec![],
+                body: Type::Unknown,
+                constraints: vec![],
                 variance: vec![],
                 constructors: vec![],
                 builtin_type: Some("Str".to_string()),

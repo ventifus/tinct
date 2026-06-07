@@ -1212,7 +1212,6 @@ impl TypeAlias {
 #[derive(Debug, Clone)]
 pub struct TypeEnv {
     bindings: HashMap<String, TypeScheme>,
-    type_aliases: HashMap<String, TypeAlias>,
     tycon_defs: HashMap<String, Arc<TyConDef>>,
     parent: Option<Rc<TypeEnv>>,
 }
@@ -1221,7 +1220,6 @@ impl TypeEnv {
     pub fn new() -> Self {
         Self {
             bindings: HashMap::new(),
-            type_aliases: HashMap::new(),
             tycon_defs: HashMap::new(),
             parent: None,
         }
@@ -1230,7 +1228,6 @@ impl TypeEnv {
     pub fn with_parent(parent: &Rc<TypeEnv>) -> Self {
         Self {
             bindings: HashMap::new(),
-            type_aliases: HashMap::new(),
             tycon_defs: HashMap::new(),
             parent: Some(Rc::clone(parent)),
         }
@@ -1249,8 +1246,22 @@ impl TypeEnv {
         self.bindings.get(name)
     }
 
-    pub fn get_type_alias(&self, name: &str) -> Option<&TypeAlias> {
-        self.lookup_type_alias(name).map(|(alias, _)| alias)
+    /// Get a type alias by name (T-1064: now reads from TyConDef).
+    ///
+    /// This is a compatibility wrapper that constructs a TypeAlias view from TyConDef data.
+    /// Returns None if the type constructor doesn't exist.
+    ///
+    /// NOTE: annotation and field_annotations fields are not exposed via TypeAlias; callers
+    /// needing these must use TyConDef directly via `lookup_tycon_def`.
+    ///
+    /// Temporary compatibility shim — tracked for deletion in T-1133.
+    pub fn get_type_alias(&self, name: &str) -> Option<TypeAlias> {
+        let def = self.lookup_tycon_def(name)?;
+        Some(TypeAlias {
+            params: def.params.clone(),
+            body: def.body.clone(),
+            constraints: def.constraints.clone(),
+        })
     }
 
     pub(crate) fn lookup(&self, name: &str) -> Option<(&TypeScheme, &HashMap<String, TypeScheme>)> {
@@ -1267,20 +1278,6 @@ impl TypeEnv {
         None
     }
 
-    fn lookup_type_alias(&self, name: &str) -> Option<(&TypeAlias, &HashMap<String, TypeAlias>)> {
-        if let Some(alias) = self.type_aliases.get(name) {
-            return Some((alias, &self.type_aliases));
-        }
-        let mut current = self.parent.as_deref();
-        while let Some(env) = current {
-            if let Some(alias) = env.type_aliases.get(name) {
-                return Some((alias, &env.type_aliases));
-            }
-            current = env.parent.as_deref();
-        }
-        None
-    }
-
     pub fn insert(&mut self, name: String, ty: Type) {
         self.bindings.insert(name, TypeScheme::mono(ty));
     }
@@ -1289,8 +1286,24 @@ impl TypeEnv {
         self.bindings.insert(name, scheme);
     }
 
+    /// Insert a type alias (T-1064: now creates and inserts a TyConDef).
+    ///
+    /// This is a compatibility wrapper that creates a TyConDef from TypeAlias data.
+    /// Variance is left empty and will be inferred at usage sites.
+    ///
+    /// Temporary compatibility shim — tracked for deletion in T-1133.
     pub fn insert_type_alias(&mut self, name: String, alias: TypeAlias) {
-        self.type_aliases.insert(name, alias);
+        let def = Arc::new(TyConDef {
+            params: alias.params,
+            body: alias.body,
+            constraints: alias.constraints,
+            variance: vec![],     // Will be inferred or populated by caller
+            constructors: vec![], // Will be populated by extract_constructors_from_type
+            builtin_type: None,
+            annotation: None,
+            field_annotations: indexmap::IndexMap::new(),
+        });
+        self.tycon_defs.insert(name, def);
     }
 
     /// Insert a type constructor definition.
@@ -1391,12 +1404,22 @@ impl TypeEnv {
         }
     }
 
-    /// Collect only the binding names defined in THIS frame (no parent walk).
+    /// Collect only the type alias names defined in THIS frame (no parent walk).
     ///
     /// Used by `imports::collect_names_above_baseline` to identify names introduced
     /// by the prelude (rather than inherited from the builtin baseline).
-    pub fn own_type_aliases(&self) -> impl Iterator<Item = (&str, &TypeAlias)> {
-        self.type_aliases.iter().map(|(k, v)| (k.as_str(), v))
+    /// T-1064: now reads from tycon_defs and constructs TypeAlias views on the fly.
+    pub fn own_type_aliases(&self) -> impl Iterator<Item = (String, TypeAlias)> + '_ {
+        self.tycon_defs.iter().map(|(k, def)| {
+            (
+                k.clone(),
+                TypeAlias {
+                    params: def.params.clone(),
+                    body: def.body.clone(),
+                    constraints: def.constraints.clone(),
+                },
+            )
+        })
     }
 
     pub fn collect_own_names(&self, names: &mut std::collections::HashSet<String>) {
@@ -1413,20 +1436,18 @@ impl TypeEnv {
         self.parent.as_ref()
     }
 
-    /// Copy all bindings and type aliases from `other` into `self`.
+    /// Copy all bindings and type constructors from `other` into `self`.
     ///
-    /// Copies only the own (non-parent) bindings and type aliases from `other`.
+    /// Copies only the own (non-parent) bindings and tycon_defs from `other`.
     /// Parent chains are not traversed. Existing entries in `self` with the same
     /// name are overwritten by entries from `other`.
     ///
     /// Used by `build_builtins_type_env()` to combine per-module type environments
     /// (core, datetime, net) into a single flat environment.
+    /// T-1064: type_aliases eliminated; only tycon_defs are merged.
     pub fn merge(&mut self, other: TypeEnv) {
         for (name, scheme) in other.bindings {
             self.bindings.insert(name, scheme);
-        }
-        for (name, alias) in other.type_aliases {
-            self.type_aliases.insert(name, alias);
         }
         for (name, def) in other.tycon_defs {
             self.tycon_defs.insert(name, def);

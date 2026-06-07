@@ -14,8 +14,8 @@ use crate::ast::{
 // No Expr bridge needed — tests use parse_surface_expression directly.
 use crate::coverage;
 use crate::types::{
-    generalize, instantiate_scheme, unify, InferState, Row, TyConDef, Type, TypeAlias, TypeEnv,
-    TypeError, TypeScheme, Variance,
+    generalize, instantiate_scheme, unify, InferState, Row, TyConDef, Type, TypeEnv, TypeError,
+    TypeScheme, Variance,
 };
 
 // Split modules — annotation resolution and dict inference
@@ -63,6 +63,126 @@ pub type DocMap = HashMap<String, String>;
 
 /// Re-export SchemeMap from types for LSP consumers.
 pub use crate::types::SchemeMap;
+
+/// Evaluate a PropertyDict annotation to an IndexMap<String, Value> for TyConDef.annotation.
+///
+/// Type-level annotations (on type aliases, constructors, fields) are evaluated at typecheck time
+/// and stored in TyConDef.annotation / field_annotations. Only literal values are supported:
+/// strings, ints, floats, bools. Non-literal entries (type names, function expressions) are
+/// silently skipped — they are type metadata, not runtime annotation values.
+///
+/// This is distinct from runtime annotation evaluation (eval_annotation_property_dict in eval_dict.rs),
+/// which runs in the evaluator with full EvalContext and supports thunked expressions.
+fn eval_type_annotation_property_dict(
+    annotation: &crate::ast::Annotation,
+) -> Option<indexmap::IndexMap<String, crate::value::Value>> {
+    use crate::ast::SurfaceExpression;
+    use crate::value::{string_val, Value};
+
+    match annotation {
+        crate::ast::Annotation::PropertyDict(entries) => {
+            let mut result = indexmap::IndexMap::new();
+            for entry in entries {
+                // Extract key as a string
+                let key_str = if let Some(key_node) = &entry.node.key {
+                    match &key_node.expr {
+                        SurfaceExpression::Str(s) => s.clone(),
+                        SurfaceExpression::VarRef { name, .. } => name.clone(),
+                        SurfaceExpression::Int(n) => n.to_string(),
+                        _ => continue, // Skip complex keys
+                    }
+                } else {
+                    // Auto-indexed entries are not meaningful for type-level annotations
+                    continue;
+                };
+
+                // Extract value as a literal
+                let value = match &entry.node.value.expr {
+                    SurfaceExpression::Str(s) => string_val(s),
+                    SurfaceExpression::Int(n) => Value::Int(*n),
+                    SurfaceExpression::Float(f) => Value::Float(*f),
+                    SurfaceExpression::Bool(b) => Value::Bool(*b),
+                    _ => {
+                        // Non-literal annotation values (type names, function expressions, etc.)
+                        // are skipped — they are type metadata, not runtime annotation values.
+                        continue;
+                    }
+                };
+
+                result.insert(key_str, value);
+            }
+            Some(result)
+        }
+        _ => None,
+    }
+}
+
+/// Extract field annotations from a type alias body for TyConDef.field_annotations.
+///
+/// Walks the body SurfaceNode and collects `@[...]` annotations from named fields in constructor
+/// declarations. For example, in `[Circle r@[required: true]: Float]`, extracts `{"r": {"required": true}}`.
+///
+/// Only processes literal annotation values (strings, ints, floats, bools) — type metadata
+/// (type names, function expressions) is skipped, similar to `eval_type_annotation_property_dict`.
+fn extract_field_annotations_from_body(
+    body_node: &Arc<SurfaceNode>,
+) -> indexmap::IndexMap<String, indexmap::IndexMap<String, crate::value::Value>> {
+    use crate::ast::SurfaceExpression;
+    use crate::value::Value;
+
+    let mut result = indexmap::IndexMap::new();
+
+    fn walk_expr(
+        expr: &SurfaceExpression,
+        result: &mut indexmap::IndexMap<String, indexmap::IndexMap<String, Value>>,
+    ) {
+        match expr {
+            // Constructor call with named args: extract field annotations
+            SurfaceExpression::Call { named_args, .. } => {
+                for named_arg in named_args {
+                    // Check if the field name is annotated
+                    if let Some(ref field_annotation) = named_arg.node.annotation {
+                        // Extract field name from the key
+                        let field_name = named_arg.node.name.clone();
+
+                        // Evaluate the annotation PropertyDict to literal values
+                        if let Some(annotation_map) =
+                            eval_type_annotation_property_dict(&field_annotation.node)
+                        {
+                            result.insert(field_name, annotation_map);
+                        }
+                    }
+                }
+            }
+            // Dict with entries: check for annotated keys (record type fields)
+            SurfaceExpression::Dict(entries) => {
+                for entry in entries {
+                    if let Some(ref key_node) = entry.node.key {
+                        // Extract field name and annotation from annotated keys
+                        match &key_node.expr {
+                            SurfaceExpression::Annotated { name, annotation } => {
+                                // Evaluate the annotation PropertyDict to literal values
+                                if let Some(annotation_map) =
+                                    eval_type_annotation_property_dict(&annotation.node)
+                                {
+                                    result.insert(name.clone(), annotation_map);
+                                }
+                            }
+                            _ => {
+                                // Non-annotated key: walk the value in case it's a nested type
+                                walk_expr(&entry.node.value.expr, result);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    walk_expr(&body_node.expr, &mut result);
+    result
+}
 
 /// Type-check a SurfaceProgram and return a TypeAnnotationTable.
 ///
@@ -1020,14 +1140,21 @@ fn register_type_aliases(
                                 entry.node.value.span.clone(),
                                 type_annotation,
                             ));
-                            // Pre-register with placeholder body
+                            // Pre-register with placeholder body (T-1064: now in TyConDef)
                             // Gradual: Pre-register with placeholder during forward-reference resolution
                             let param_names: Vec<String> =
                                 params.iter().map(|(n, _)| n.clone()).collect();
-                            target_env.insert_type_alias(
-                                name.clone(),
-                                TypeAlias::new(param_names, Type::Unknown),
-                            );
+                            let placeholder_tycon = Arc::new(TyConDef {
+                                params: param_names.clone(),
+                                body: Type::Unknown,
+                                constraints: vec![],
+                                variance: vec![],
+                                constructors: vec![],
+                                builtin_type: None,
+                                annotation: None,
+                                field_annotations: indexmap::IndexMap::new(),
+                            });
+                            target_env.insert_tycon_def(name.clone(), placeholder_tycon);
                         }
                     }
                 }
@@ -1069,25 +1196,24 @@ fn register_type_aliases(
 
             if let Some(discriminant) = builtin_type_discriminant {
                 let n_params = params.len();
-                // TODO(T-1122): type_annotation carries the @[...] annotation from the type
-                // alias key (e.g. `Seq@[doc: "..."]`) — T-1052 now produces this.
-                // T-1122 will evaluate via eval_type_stage_expr (T-1058) and store in TyConDef.annotation.
-                let _ = &type_annotation; // scaffolding: T-1122 will evaluate and store
+                // T-1122: Evaluate type-level annotation from the alias key (e.g. `Seq@[doc: "..."]`)
+                // and store in TyConDef.annotation for runtime access via annotation-of builtin.
+                let annotation = type_annotation
+                    .as_ref()
+                    .and_then(eval_type_annotation_property_dict);
                 let tycon_def = Arc::new(TyConDef {
+                    params: params.iter().map(|(s, _)| s.clone()).collect(),
+                    body: Type::TyCon(name.clone()),
+                    constraints: vec![],
                     variance: vec![Variance::Invariant; n_params],
                     constructors: vec![],
                     builtin_type: Some(discriminant),
-                    annotation: None,
+                    annotation,
                     field_annotations: indexmap::IndexMap::new(),
                 });
                 target_env.insert_tycon_def(name.clone(), Arc::clone(&tycon_def));
                 state.tycon_env.insert(name.clone(), tycon_def);
-                // Register a zero-param type alias for annotation resolution.
-                target_env.insert_type_alias(
-                    name.clone(),
-                    TypeAlias::new(vec![], Type::TyCon(name.clone())),
-                );
-                continue; // Skip normal body resolution for builtin-type declarations.
+                continue; // Skip normal body resolution for builtin-type declarations (T-1064: type_aliases eliminated).
             }
 
             // Use a fresh per-alias mapping so annotation names within one type
@@ -1197,11 +1323,7 @@ fn register_type_aliases(
                         .iter()
                         .map(|(p, _)| alias_ann_map.get(p).cloned().unwrap())
                         .collect();
-                    // Update with actual body
-                    target_env.insert_type_alias(
-                        name.clone(),
-                        TypeAlias::new(remapped_params.clone(), alias_ty.clone()),
-                    );
+                    // (T-1064: type_aliases eliminated; body stored in TyConDef below)
 
                     // Polarity analysis (T-952): infer variance for each param from the alias body.
                     // Then merge with declared variances from @X annotations (declared wins).
@@ -1228,27 +1350,25 @@ fn register_type_aliases(
                     //
                     // T-1122 annotation population:
                     // `type_annotation` carries the @[...] annotation from the type alias key node
-                    // (e.g. `JsonValue@[doc: "..." schema-id: "json-value"]: [type ...]`) once
-                    // T-1052 parser changes land. When populated, it is evaluated in the type-stage
-                    // evaluator (eval_type_stage_expr, T-1058) and stored in TyConDef.annotation.
+                    // (e.g. `JsonValue@[doc: "..." schema-id: "json-value"]: [type ...]`) and is
+                    // evaluated to literal values (strings, ints, floats, bools) and stored in
+                    // TyConDef.annotation for runtime access via annotation-of builtin.
                     //
-                    // TODO(T-1122): Evaluate type_annotation in the type-stage evaluator and
-                    // store in TyConDef.annotation. type_annotation is now produced by T-1052
-                    // (Annotated key nodes → annotation extracted). T-1122 activates evaluation:
-                    //
-                    //   let annotation: Option<IndexMap<String, Value>> =
-                    //       type_annotation.as_ref().and_then(|ann| {
-                    //           eval_type_stage_annotation(ann, target_env, state)
-                    //               .ok()
-                    //               .map(|val_dict| val_dict)
-                    //       });
-                    let _ = &type_annotation; // scaffolding: T-1122 will evaluate and store
+                    // `field_annotations` are extracted from @[...] annotations on constructor fields
+                    // (e.g., `[Circle r@[required: true]: Float]` → `{"r": {"required": true}}`).
+                    let annotation = type_annotation
+                        .as_ref()
+                        .and_then(eval_type_annotation_property_dict);
+                    let field_annotations = extract_field_annotations_from_body(&body_node);
                     let tycon_def = Arc::new(TyConDef {
+                        params: remapped_params.clone(),
+                        body: alias_ty.clone(),
+                        constraints: vec![],
                         variance: final_variances,
                         constructors: constructors.clone(),
                         builtin_type: None,
-                        annotation: None,
-                        field_annotations: indexmap::IndexMap::new(),
+                        annotation,
+                        field_annotations,
                     });
                     target_env.insert_tycon_def(name.clone(), Arc::clone(&tycon_def));
                     state.tycon_env.insert(name.clone(), tycon_def);
