@@ -4,57 +4,57 @@
 === error
 [E010] <: expected Int, Float, String, or Bool (same or compatible types), got Dict and Int (defined at 2:36-2:37) (called at 2:33-2:42)
   in [< ...] at 2:33-2:42
-  in materialized at stdlib/prelude.llt:670:14-674:101
+  in materialized at stdlib/prelude.llt:700:14-704:101
    |
-  670 |         Seq: [builtin-if dropping
-  671 |             [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
-  672 |                 [drop-while-seq pred [builtin-tail entries] true]
-  673 |                 [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
-  674 |             [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
+  700 |         Seq: [builtin-if dropping
+  701 |             [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
+  702 |                 [drop-while-seq pred [builtin-tail entries] true]
+  703 |                 [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
+  704 |             [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:671:13-673:105
+  in [builtin-if ...] at stdlib/prelude.llt:701:13-703:105
    |
-  671 |             [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
-  672 |                 [drop-while-seq pred [builtin-tail entries] true]
-  673 |                 [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
+  701 |             [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
+  702 |                 [drop-while-seq pred [builtin-tail entries] true]
+  703 |                 [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:670:14-674:101
+  in [builtin-if ...] at stdlib/prelude.llt:700:14-704:101
    |
-  670 |         Seq: [builtin-if dropping
-  671 |             [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
-  672 |                 [drop-while-seq pred [builtin-tail entries] true]
-  673 |                 [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
-  674 |             [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
+  700 |         Seq: [builtin-if dropping
+  701 |             [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
+  702 |                 [drop-while-seq pred [builtin-tail entries] true]
+  703 |                 [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
+  704 |             [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:669:5-675:42
+  in materialized at stdlib/prelude.llt:699:5-705:42
    |
-  669 |     [match entries
-  670 |         Seq: [builtin-if dropping
-  671 |             [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
-  672 |                 [drop-while-seq pred [builtin-tail entries] true]
-  673 |                 [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
-  674 |             [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
-  675 |         _:   [builtin-variant "Seq.Nil"]]]
+  699 |     [match entries
+  700 |         Seq: [builtin-if dropping
+  701 |             [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
+  702 |                 [drop-while-seq pred [builtin-tail entries] true]
+  703 |                 [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
+  704 |             [builtin-seq [builtin-head entries] [drop-while-seq pred [builtin-tail entries] false]]]
+  705 |         _:   [builtin-variant "Seq.Nil"]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:1409:5-1411:62
+  in materialized at stdlib/prelude.llt:1439:5-1441:62
    |
-  1409 |     [builtin-if [seq? xs]
-  1410 |         [error "drop-while: expected Dict, got Seq -- collect the Seq first"]
-  1411 |         [build-dict [drop-while-seq pred [each-kv xs] true]]]]
+  1439 |     [builtin-if [seq? xs]
+  1440 |         [error "drop-while: expected Dict, got Seq -- collect the Seq first"]
+  1441 |         [build-dict [drop-while-seq pred [each-kv xs] true]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [build-dict ...] at stdlib/prelude.llt:1411:9-1411:61
+  in [build-dict ...] at stdlib/prelude.llt:1441:9-1441:61
    |
-  1411 |         [build-dict [drop-while-seq pred [each-kv xs] true]]]]
+  1441 |         [build-dict [drop-while-seq pred [each-kv xs] true]]]]
        |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:1409:5-1411:62
+  in [builtin-if ...] at stdlib/prelude.llt:1439:5-1441:62
    |
-  1409 |     [builtin-if [seq? xs]
-  1410 |         [error "drop-while: expected Dict, got Seq -- collect the Seq first"]
-  1411 |         [build-dict [drop-while-seq pred [each-kv xs] true]]]]
+  1439 |     [builtin-if [seq? xs]
+  1440 |         [error "drop-while: expected Dict, got Seq -- collect the Seq first"]
+  1441 |         [build-dict [drop-while-seq pred [each-kv xs] true]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-length ...] at stdlib/prelude.llt:2421:20-2421:39
+  in [builtin-length ...] at stdlib/prelude.llt:2451:20-2451:39
    |
-  2421 | """]: [fn [let xs] [builtin-length xs]]
+  2451 | """]: [fn [let xs] [builtin-length xs]]
        |                    ^^^^^^^^^^^^^^^^^^^
   in [length ...] at 2:1-2:47
 

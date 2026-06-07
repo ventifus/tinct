@@ -3,9 +3,9 @@
 # 1577836800500000000 = 2020-01-01T00:00:00.5Z
 [timestamp-nanos 1577836800500000000]
 === error
-[E002] undefined variable: builtin-timestamp-nanos (did you mean the string "builtin-timestamp-nanos"? Use quotes.) (defined at stdlib/prelude.llt:3392:18-3392:41) (called at 4:1-4:38)
-  --> stdlib/prelude.llt:3392:18-3392:41
+[E002] undefined variable: builtin-timestamp-nanos (did you mean the string "builtin-timestamp-nanos"? Use quotes.) (defined at stdlib/prelude.llt:3422:18-3422:41) (called at 4:1-4:38)
+  --> stdlib/prelude.llt:3422:18-3422:41
    |
-  3392 | timestamp-nanos: builtin-timestamp-nanos
+  3422 | timestamp-nanos: builtin-timestamp-nanos
        |                  ^^^^^^^^^^^^^^^^^^^^^^^
   in [timestamp-nanos ...] at 4:1-4:38

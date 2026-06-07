@@ -675,6 +675,274 @@ fn test_types_are_disjoint_function_vs_record() {
     );
 }
 
+// ============================================================================
+// S-861: equirecursive-checker tests (T-1076 + T-1077)
+// ============================================================================
+
+/// T-1077: apply_type on Recursive recurses into body, does not look up var in subst.
+/// Given μvar.body, applying a substitution {x → Int} should substitute through the body
+/// but leave the μ-binder name (var) unchanged even if var coincidentally equals x.
+#[test]
+fn test_apply_type_recursive_does_not_bind_var_name() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // Create a TypeVar _t0 and bind it to Int
+    state.levels.insert("_t0".to_string(), 0);
+    let tv = Type::TypeVar("_t0".to_string(), 0);
+    let _ = unify(&tv, &Type::Int, &mut subst, &mut state, span);
+
+    // Recursive type: μμ_var.{head: _t0, tail: TypeVar(μ_var, 0)}
+    // The body contains _t0 which should be substituted to Int
+    // The binder "μ_var" is a μ-name, not in subst.type_map
+    let rec_ty = Type::Recursive {
+        var: "μ_var".to_string(),
+        body: Box::new(Type::Record(Row {
+            fields: {
+                let mut m = HashMap::new();
+                m.insert("elem".to_string(), Type::TypeVar("_t0".to_string(), 0));
+                m.insert("self".to_string(), Type::TypeVar("μ_var".to_string(), 0));
+                m
+            },
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+
+    let applied = subst.apply(&rec_ty);
+
+    // The Recursive wrapper must survive — binder name unchanged
+    match &applied {
+        Type::Recursive { var, body } => {
+            assert_eq!(var, "μ_var", "μ-binder name must not change after apply");
+            // _t0 inside body should be substituted to Int
+            let body_record = match body.as_ref() {
+                Type::Record(r) => r,
+                other => panic!("Expected Record body, got {:?}", other),
+            };
+            let elem_ty = body_record.fields.get("elem").expect("elem field missing");
+            assert_eq!(
+                *elem_ty,
+                Type::Int,
+                "_t0 in body should be substituted to Int"
+            );
+        }
+        other => panic!("Expected Recursive after apply, got {:?}", other),
+    }
+}
+
+/// T-1076 Arm 3: unify(Recursive{va, ba}, Recursive{vb, bb}) opens both with a shared fresh var.
+/// Two isomorphic recursive types (same shape, different binder names) should unify.
+#[test]
+fn test_unify_recursive_recursive_isomorphic() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // μ_a. {head: Int, tail: TypeVar("_a", 0)}
+    let rec_a = Type::Recursive {
+        var: "_a".to_string(),
+        body: Box::new(Type::Record(Row {
+            fields: {
+                let mut m = HashMap::new();
+                m.insert("head".to_string(), Type::Int);
+                m.insert("tail".to_string(), Type::TypeVar("_a".to_string(), 0));
+                m
+            },
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+
+    // μ_b. {head: Int, tail: TypeVar("_b", 0)} — same shape, different binder name
+    let rec_b = Type::Recursive {
+        var: "_b".to_string(),
+        body: Box::new(Type::Record(Row {
+            fields: {
+                let mut m = HashMap::new();
+                m.insert("head".to_string(), Type::Int);
+                m.insert("tail".to_string(), Type::TypeVar("_b".to_string(), 0));
+                m
+            },
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+
+    let result = unify(&rec_a, &rec_b, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_ok(),
+        "Two isomorphic recursive types should unify, got error: {:?}",
+        result.unwrap_err()
+    );
+}
+
+/// T-1076 Arm 3: unify(Recursive{..}, Recursive{..}) with different field types should fail.
+#[test]
+fn test_unify_recursive_recursive_incompatible_fields() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // μ_a. {head: Int, tail: TypeVar("_a", 0)}
+    let rec_int = Type::Recursive {
+        var: "_a".to_string(),
+        body: Box::new(Type::Record(Row {
+            fields: {
+                let mut m = HashMap::new();
+                m.insert("head".to_string(), Type::Int);
+                m.insert("tail".to_string(), Type::TypeVar("_a".to_string(), 0));
+                m
+            },
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+
+    // μ_b. {head: Str, tail: TypeVar("_b", 0)} — different head type
+    let rec_str = Type::Recursive {
+        var: "_b".to_string(),
+        body: Box::new(Type::Record(Row {
+            fields: {
+                let mut m = HashMap::new();
+                m.insert("head".to_string(), Type::Str);
+                m.insert("tail".to_string(), Type::TypeVar("_b".to_string(), 0));
+                m
+            },
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+
+    let result = unify(&rec_int, &rec_str, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_err(),
+        "Recursive types with different field types should NOT unify"
+    );
+}
+
+/// T-1076 Ordering: TypeVar arm fires before Recursive arms.
+/// unify(TypeVar, Recursive) must bind the TypeVar to the full Recursive type,
+/// not unfold the Recursive first.
+#[test]
+fn test_unify_typevar_binds_to_recursive_type() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    state.levels.insert("_t0".to_string(), 1);
+
+    let tv = Type::TypeVar("_t0".to_string(), 1);
+    let rec_ty = Type::Recursive {
+        var: "_μ".to_string(),
+        body: Box::new(Type::Record(Row {
+            fields: {
+                let mut m = HashMap::new();
+                m.insert("x".to_string(), Type::Int);
+                m.insert("self".to_string(), Type::TypeVar("_μ".to_string(), 0));
+                m
+            },
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+
+    let result = unify(&tv, &rec_ty, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_ok(),
+        "TypeVar should unify with Recursive type: {:?}",
+        result.unwrap_err()
+    );
+
+    // After unification, applying the substitution to _t0 should yield the Recursive type
+    let applied = subst.apply(&tv);
+    assert!(
+        matches!(applied, Type::Recursive { .. }),
+        "TypeVar should be bound to the full Recursive type, not its opened body; got {:?}",
+        applied
+    );
+}
+
+/// T-1076 Arm 4: unify(Recursive, concrete) opens left side.
+/// μa.{x: Int, tail: a} unified with {x: Int, tail: Unknown} should succeed
+/// (Unknown is consistent with any type — but here we use a record without tail
+/// to test the opening behavior gives a coherent result).
+#[test]
+fn test_unify_recursive_left_with_typevar_right() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    state.levels.insert("_t42".to_string(), 1);
+
+    // μ_r. {x: Int}  — a trivial "recursive" type whose body doesn't reference the var
+    // This is non-contractive in the full sense, but valid for testing Arm 4 mechanics:
+    // the opened body is just {x: Int}, which unifies with the right side.
+    let rec_ty = Type::Recursive {
+        var: "_r".to_string(),
+        body: Box::new(Type::Record(Row {
+            fields: {
+                let mut m = HashMap::new();
+                m.insert("x".to_string(), Type::Int);
+                m
+            },
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+
+    let record_ty = Type::Record(Row {
+        fields: {
+            let mut m = HashMap::new();
+            m.insert("x".to_string(), Type::Int);
+            m
+        },
+        tail: crate::type_def::RowTail::Empty,
+    });
+
+    let result = unify(&rec_ty, &record_ty, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_ok(),
+        "Recursive(body={{x:Int}}) should unify with {{x:Int}}: {:?}",
+        result.unwrap_err()
+    );
+}
+
+/// T-1076 Arm 5: symmetric of Arm 4 (concrete on left, Recursive on right).
+#[test]
+fn test_unify_concrete_left_with_recursive_right() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    let record_ty = Type::Record(Row {
+        fields: {
+            let mut m = HashMap::new();
+            m.insert("x".to_string(), Type::Int);
+            m
+        },
+        tail: crate::type_def::RowTail::Empty,
+    });
+
+    let rec_ty = Type::Recursive {
+        var: "_r".to_string(),
+        body: Box::new(Type::Record(Row {
+            fields: {
+                let mut m = HashMap::new();
+                m.insert("x".to_string(), Type::Int);
+                m
+            },
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+
+    let result = unify(&record_ty, &rec_ty, &mut subst, &mut state, span);
+
+    assert!(
+        result.is_ok(),
+        "{{x:Int}} should unify with Recursive(body={{x:Int}}): {:?}",
+        result.unwrap_err()
+    );
+}
+
 #[test]
 fn test_types_are_disjoint_function_vs_seq() {
     let fn_ty = Type::Function {

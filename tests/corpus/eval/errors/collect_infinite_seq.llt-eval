@@ -1,13 +1,13 @@
 # collect: error on infinite sequence (resource limit exceeded)
 [collect [range 0]]
 === error
-[E043] collect: exceeded maximum collection size (1000000). Use $take to limit infinite sequences before collecting. (defined at stdlib/prelude.llt:2859:15-2859:35)
-  --> stdlib/prelude.llt:2859:15-2859:35
+[E043] collect: exceeded maximum collection size (1000000). Use $take to limit infinite sequences before collecting. (defined at stdlib/prelude.llt:2889:15-2889:35)
+  --> stdlib/prelude.llt:2889:15-2889:35
    |
-  2859 | """] [let xs] [builtin-collect xs]]
+  2889 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2859:15-2859:35
+  in [builtin-collect ...] at stdlib/prelude.llt:2889:15-2889:35
    |
-  2859 | """] [let xs] [builtin-collect xs]]
+  2889 | """] [let xs] [builtin-collect xs]]
        |               ^^^^^^^^^^^^^^^^^^^^
   in [collect ...] at 1:1-1:20

@@ -4,51 +4,51 @@
 === error
 [E010] <: expected Int, Float, String, or Bool (same or compatible types), got Dict and Int (defined at 2:36-2:37) (called at 2:33-2:42)
   in [< ...] at 2:33-2:42
-  in materialized at stdlib/prelude.llt:659:14-663:41
+  in materialized at stdlib/prelude.llt:689:14-693:41
    |
-  659 |         Seq: [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
-  660 |             [builtin-seq
-  661 |                 [builtin-head entries]
-  662 |                 [take-while-seq pred [builtin-tail entries]]]
-  663 |             [builtin-variant "Seq.Nil"]]
+  689 |         Seq: [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
+  690 |             [builtin-seq
+  691 |                 [builtin-head entries]
+  692 |                 [take-while-seq pred [builtin-tail entries]]]
+  693 |             [builtin-variant "Seq.Nil"]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:659:14-663:41
+  in [builtin-if ...] at stdlib/prelude.llt:689:14-693:41
    |
-  659 |         Seq: [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
-  660 |             [builtin-seq
-  661 |                 [builtin-head entries]
-  662 |                 [take-while-seq pred [builtin-tail entries]]]
-  663 |             [builtin-variant "Seq.Nil"]]
+  689 |         Seq: [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
+  690 |             [builtin-seq
+  691 |                 [builtin-head entries]
+  692 |                 [take-while-seq pred [builtin-tail entries]]]
+  693 |             [builtin-variant "Seq.Nil"]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:658:5-664:42
+  in materialized at stdlib/prelude.llt:688:5-694:42
    |
-  658 |     [match entries
-  659 |         Seq: [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
-  660 |             [builtin-seq
-  661 |                 [builtin-head entries]
-  662 |                 [take-while-seq pred [builtin-tail entries]]]
-  663 |             [builtin-variant "Seq.Nil"]]
-  664 |         _:   [builtin-variant "Seq.Nil"]]]
+  688 |     [match entries
+  689 |         Seq: [builtin-if [pred [builtin-get "value" [builtin-head entries]]]
+  690 |             [builtin-seq
+  691 |                 [builtin-head entries]
+  692 |                 [take-while-seq pred [builtin-tail entries]]]
+  693 |             [builtin-variant "Seq.Nil"]]
+  694 |         _:   [builtin-variant "Seq.Nil"]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:1398:5-1400:57
+  in materialized at stdlib/prelude.llt:1428:5-1430:57
    |
-  1398 |     [builtin-if [seq? xs]
-  1399 |         [error "take-while: expected Dict, got Seq -- collect the Seq first"]
-  1400 |         [build-dict [take-while-seq pred [each-kv xs]]]]]
+  1428 |     [builtin-if [seq? xs]
+  1429 |         [error "take-while: expected Dict, got Seq -- collect the Seq first"]
+  1430 |         [build-dict [take-while-seq pred [each-kv xs]]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [build-dict ...] at stdlib/prelude.llt:1400:9-1400:56
+  in [build-dict ...] at stdlib/prelude.llt:1430:9-1430:56
    |
-  1400 |         [build-dict [take-while-seq pred [each-kv xs]]]]]
+  1430 |         [build-dict [take-while-seq pred [each-kv xs]]]]]
        |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:1398:5-1400:57
+  in [builtin-if ...] at stdlib/prelude.llt:1428:5-1430:57
    |
-  1398 |     [builtin-if [seq? xs]
-  1399 |         [error "take-while: expected Dict, got Seq -- collect the Seq first"]
-  1400 |         [build-dict [take-while-seq pred [each-kv xs]]]]]
+  1428 |     [builtin-if [seq? xs]
+  1429 |         [error "take-while: expected Dict, got Seq -- collect the Seq first"]
+  1430 |         [build-dict [take-while-seq pred [each-kv xs]]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-length ...] at stdlib/prelude.llt:2421:20-2421:39
+  in [builtin-length ...] at stdlib/prelude.llt:2451:20-2451:39
    |
-  2421 | """]: [fn [let xs] [builtin-length xs]]
+  2451 | """]: [fn [let xs] [builtin-length xs]]
        |                    ^^^^^^^^^^^^^^^^^^^
   in [length ...] at 2:1-2:47
 

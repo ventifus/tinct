@@ -838,9 +838,10 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             builtin_make_annotated,
             [Strictness::Seq, Strictness::Seq]
         ),
-        // S-860: equirecursive-types-core — contractiveness check for mu combinator.
+        // S-861: equirecursive-checker — contractiveness check for mu combinator.
         // Used by stdlib/prelude.llt type-stage `mu` to validate TypeNode.Recursive bodies.
-        // S-861 will also call this from expand_named in typecheck_annot.rs.
+        // Also called from expand_named in typecheck_annot.rs (wired in S-861, both still
+        // dead code pending annotation resolver wiring in S-862).
         builtin!(
             "builtin-is-contractive",
             builtin_is_contractive,

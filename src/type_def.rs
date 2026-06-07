@@ -315,11 +315,11 @@ pub enum Type {
     /// This is the S-860 equirecursive-types-core wrapping: produced by `expand_named` after
     /// alias expansion when the body contains a self-reference (`contains_recvar` check).
     ///
-    /// The `var` name serves as the coinductive sigma key in S-Exp + S-Assum subtype checking
-    /// (future sprint). For the current sprint, it is scaffolding — the Recursive wrapper is
-    /// constructed here but not yet consumed by `is_subtype` (deferred to S-861).
+    /// The `var` name serves as the coinductive sigma key in S-Exp + S-Assum subtype checking.
+    /// S-861 implemented `is_subtype` with S-Exp + S-Assum for Recursive types.
+    /// `expand_named` wiring into the annotation resolver is deferred to S-862.
     ///
-    // S-860: equirecursive-types-core — scaffolding; wired in by S-861
+    // S-861: equirecursive-checker — is_subtype done; expand_named wiring deferred to S-862
     #[allow(dead_code)]
     Recursive {
         /// Globally unique μ-binder name (e.g., `"𝜇ꜱʏᴍ⧼IntList⧽42"`).
@@ -403,10 +403,10 @@ impl PartialEq for Type {
                     fields: fields2,
                 },
             ) => tag1 == tag2 && fields1 == fields2,
-            // S-860: equirecursive-types-core — Recursive equality: same binder name and same body.
+            // S-861: equirecursive-checker — Recursive equality: same binder name and same body.
             // Globally unique gensym var names mean two Recursive values are equal iff they are the
-            // same logical type. Alpha-equivalence (different var names, same body shape) is NOT
-            // tested here — that requires the coinductive S-Assum algorithm (deferred to S-861).
+            // same logical type. Alpha-equivalence (different var names, same body shape) is tested
+            // by is_subtype (S-Exp + S-Assum coinductive algorithm, done in S-861), not by PartialEq.
             (Type::Recursive { var: v1, body: b1 }, Type::Recursive { var: v2, body: b2 }) => {
                 v1 == v2 && b1 == b2
             }
@@ -503,6 +503,135 @@ impl std::hash::Hash for Type {
 /// Prevents stack overflow on pathological recursive types (defense-in-depth).
 const MAX_SUBTYPE_DEPTH: usize = 256;
 
+// S-861: equirecursive-checker
+
+/// Replace all `TypeVar(var_name, _)` occurrences in `ty` with `replacement`.
+///
+/// Used by `unfold_once` (and by unification arms in `type_unify.rs`) to substitute
+/// the recursive variable throughout the body. Only replaces `TypeVar` nodes whose name
+/// matches `var_name` exactly; all other forms are recursed into structurally.
+///
+/// This function is capture-avoiding for the μ-binder: if `ty` is
+/// `Type::Recursive { var, body }` and `var == var_name`, the inner binder shadows
+/// the outer, so we do NOT recurse into the body (the inner occurrence of `var_name`
+/// is bound by the inner binder, not the one being substituted).
+///
+/// Under the gensym-uniqueness invariant (μ-binder names are globally unique), inner
+/// binders can never actually shadow an outer one. The guard documents this invariant
+/// and makes the function semantically correct in the general case.
+pub(crate) fn substitute_recvar(ty: &Type, var_name: &str, replacement: &Type) -> Type {
+    match ty {
+        // S-861: equirecursive-checker — the recursive self-reference is represented as a
+        // TypeVar whose name is the globally-unique μ-binder name produced by
+        // gensym_fresh. When we find it, substitute with the full Recursive type.
+        Type::TypeVar(name, _) if name == var_name => replacement.clone(),
+
+        // Inner Recursive binder shadows: do not substitute into body if the inner var
+        // has the same name as what we are substituting (capture avoidance).
+        // The binder `var` re-binds `var_name` in this sub-scope, so occurrences of
+        // `TypeVar(var_name, _)` inside `body` refer to the inner binder, not the outer one.
+        Type::Recursive { var, .. } if var == var_name => ty.clone(),
+
+        // Recursive types with a different binder: recurse into the body.
+        Type::Recursive { var, body } => Type::Recursive {
+            var: var.clone(),
+            body: Box::new(substitute_recvar(body, var_name, replacement)),
+        },
+
+        // Compound types: recurse structurally into all sub-terms.
+        Type::Record(row) => Type::Record(substitute_recvar_row(row, var_name, replacement)),
+        Type::Function {
+            params,
+            ret,
+            variadic,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|(name, ty)| (name.clone(), substitute_recvar(ty, var_name, replacement)))
+                .collect(),
+            ret: Box::new(substitute_recvar(ret, var_name, replacement)),
+            variadic: *variadic,
+        },
+        Type::Union(members) => Type::Union(
+            members
+                .iter()
+                .map(|m| substitute_recvar(m, var_name, replacement))
+                .collect(),
+        ),
+        Type::Intersection(members) => Type::Intersection(
+            members
+                .iter()
+                .map(|m| substitute_recvar(m, var_name, replacement))
+                .collect(),
+        ),
+        Type::Negation(inner) => {
+            Type::Negation(Box::new(substitute_recvar(inner, var_name, replacement)))
+        }
+        Type::App(f, a) => Type::App(
+            Box::new(substitute_recvar(f, var_name, replacement)),
+            Box::new(substitute_recvar(a, var_name, replacement)),
+        ),
+        Type::TypeStageApp { fn_name, args } => Type::TypeStageApp {
+            fn_name: fn_name.clone(),
+            args: args
+                .iter()
+                .map(|a| substitute_recvar(a, var_name, replacement))
+                .collect(),
+        },
+        Type::NominalVariant { tag, fields } => Type::NominalVariant {
+            tag: tag.clone(),
+            fields: substitute_recvar_row(fields, var_name, replacement),
+        },
+        // All other variants (primitives, capabilities, leaf constructors, TypeVar with
+        // a different name, Operator) contain no type variable positions — clone as-is.
+        _ => ty.clone(),
+    }
+}
+
+/// Row-level substitution helper for `substitute_recvar`.
+///
+/// Substitutes `TypeVar(var_name, _)` → `replacement` in all field values and the
+/// row tail of a `Row`. Shared by the Record and NominalVariant arms.
+pub(crate) fn substitute_recvar_row(row: &Row, var_name: &str, replacement: &Type) -> Row {
+    Row {
+        fields: row
+            .fields
+            .iter()
+            .map(|(k, v)| (k.clone(), substitute_recvar(v, var_name, replacement)))
+            .collect(),
+        tail: match &row.tail {
+            RowTail::Empty => RowTail::Empty,
+            RowTail::Uniform { key, value } => RowTail::Uniform {
+                key: key
+                    .as_ref()
+                    .map(|k| Box::new(substitute_recvar(k, var_name, replacement))),
+                value: Box::new(substitute_recvar(value, var_name, replacement)),
+            },
+        },
+    }
+}
+
+/// Unfold a recursive type one step: replace all `TypeVar(var, _)` occurrences in `body`
+/// with the full `Recursive` type. This is the standard equirecursive unfolding operation.
+///
+/// `μvar.body[var]` → `body[μvar.body/var]`
+///
+/// After unfolding, the former recursive positions in `body` hold the full `Recursive`
+/// type again. When `is_subtype_inner` encounters those positions, S-Assum fires
+/// immediately — the hypothesis `(v1, v2)` is already in sigma.
+///
+/// `unfold_once` is used only in subtype checking (S-Exp arm), where S-Assum prevents
+/// divergence. It is NOT used in unification (which uses simultaneous opening instead).
+///
+/// If `rec` is not a `Type::Recursive`, it is returned unchanged (defensive).
+// S-861: equirecursive-checker
+pub fn unfold_once(rec: &Type) -> Type {
+    match rec {
+        Type::Recursive { var, body } => substitute_recvar(body, var, rec),
+        _ => rec.clone(),
+    }
+}
+
 /// Extract the root TyCon name and ordered argument list from a curried App chain.
 ///
 /// `App(App(TyCon("Map"), K), V)` → `Some(("Map", [&K, &V]))`
@@ -540,24 +669,83 @@ impl Type {
     /// Post gradual-typing-split (B2): Top is the true supertype (τ <: Top for all τ). Unknown
     /// is NOT in the subtype lattice — Unknown relates to other types via consistency (~), not
     /// subtyping (<:). See is_consistent() for the consistency relation.
+    ///
+    /// S-861: equirecursive-checker — allocates the coinductive sigma context (Chau & Parreaux
+    /// 2026, S-Exp + S-Assum) once per top-level call and threads it through all recursive
+    /// calls via `is_subtype_inner`. The sigma set records `(a.var, b.var)` pairs for
+    /// `Recursive` types already under comparison — S-Assum fires (returns `true`) when the
+    /// same pair is encountered again, preventing divergence on cyclic types.
     pub fn is_subtype(
         sub: &Type,
         sup: &Type,
         tycon_env: Option<&crate::type_def::TyConEnv>,
     ) -> bool {
-        Self::is_subtype_inner(sub, sup, tycon_env, 0)
+        // S-861: equirecursive-checker — allocate sigma once; threaded through all sub-calls.
+        let mut sigma: HashSet<(String, String)> = HashSet::new();
+        Self::is_subtype_inner(sub, sup, tycon_env, 0, &mut sigma)
     }
 
+    /// Recursive worker for `is_subtype`.
+    ///
+    /// `sigma` is the coinductive hypothesis set: `(a.var, b.var)` pairs for
+    /// `Type::Recursive` types currently under comparison (S-Exp + S-Assum, Chau &
+    /// Parreaux 2026). Every recursive call MUST pass `sigma` — the Rust borrow checker
+    /// enforces this structurally (missing `sigma` is a compile error).
+    // S-861: equirecursive-checker
     fn is_subtype_inner(
         sub: &Type,
         sup: &Type,
         tycon_env: Option<&crate::type_def::TyConEnv>,
         depth: usize,
+        sigma: &mut HashSet<(String, String)>,
     ) -> bool {
         // Depth guard: prevent unbounded recursion on pathological recursive types
         if depth >= MAX_SUBTYPE_DEPTH {
             return false;
         }
+
+        // S-861: equirecursive-checker — S-Assum + S-Exp (Chau & Parreaux 2026 §3.3.1).
+        //
+        // These arms must come BEFORE Error/Top/Never/Unknown guards: a `Recursive` type
+        // is not Error/Top/Never/Unknown, so the guards would pass through — but placing
+        // S-Assum first makes the structure explicit and avoids any ordering surprises as
+        // new early guards are added in future sprints.
+        //
+        // [S-Assum]: if both sides are Recursive and (sub.var, sup.var) ∈ sigma,
+        // return `true` immediately (coinductive hypothesis).  Insert the pair before
+        // continuing so that sub-checks triggered by S-Exp can use it.
+        if let (Type::Recursive { var: v1, .. }, Type::Recursive { var: v2, .. }) = (sub, sup) {
+            let key = (v1.clone(), v2.clone());
+            if sigma.contains(&key) {
+                return true;
+            }
+            sigma.insert(key);
+            // Both sides are Recursive: unfold both and recurse.  The hypothesis is now in
+            // sigma, so any re-encounter of (v1, v2) terminates via S-Assum above.
+            // [S-Exp left + right]
+            return Self::is_subtype_inner(
+                &unfold_once(sub),
+                &unfold_once(sup),
+                tycon_env,
+                depth + 1,
+                sigma,
+            );
+        }
+        // [S-Exp left]: only sub is Recursive; sup is concrete — unfold sub once and recurse.
+        // Termination: guaranteed by the depth guard and structural induction on the concrete
+        // sup (each recursive call either makes progress matching a field of sup, or fails).
+        // sigma does not independently protect the asymmetric case — it only contains pairs
+        // inserted by the symmetric S-Assum arm (where both sides were Recursive). If
+        // S-Assum previously inserted (sub.var, _) from an ancestor call, it remains in
+        // sigma but plays no role here; the depth guard is the actual backstop.
+        if matches!(sub, Type::Recursive { .. }) {
+            return Self::is_subtype_inner(&unfold_once(sub), sup, tycon_env, depth + 1, sigma);
+        }
+        // [S-Exp right]: only sup is Recursive — unfold sup once and recurse.
+        if matches!(sup, Type::Recursive { .. }) {
+            return Self::is_subtype_inner(sub, &unfold_once(sup), tycon_env, depth + 1, sigma);
+        }
+
         // Error is not a subtype of anything (not even itself), and nothing is a subtype of Error.
         // It is a sentinel for failed inference and should not satisfy any constraint.
         if matches!(sub, Type::Error) || matches!(sup, Type::Error) {
@@ -576,6 +764,17 @@ impl Type {
         if matches!(sub, Type::Unknown) || matches!(sup, Type::Unknown) {
             return false;
         }
+
+        // S-861: equirecursive-checker — TypeVar on either side → true (gradual typing).
+        // An unresolved TypeVar represents an inference variable that will be constrained
+        // elsewhere (unlike `Unknown`, which is the gradual `?` type and returns `false`
+        // from `is_subtype`). Returning `true` defers rejection to runtime or to the
+        // unification constraint solver — consistent with tinct's gradual typing guarantee.
+        // This fires only after S-Exp, so TypeVar is never mistaken for a Recursive binder.
+        if matches!(sub, Type::TypeVar(_, _)) || matches!(sup, Type::TypeVar(_, _)) {
+            return true;
+        }
+
         match (sub, sup) {
             (a, b) if a == b => true,
             // App(f1, a1) <: App(f2, a2): variance-directed via TyConEnv when available.
@@ -608,12 +807,14 @@ impl Type {
                                             sup_arg,
                                             tycon_env,
                                             depth + 1,
+                                            sigma,
                                         ),
                                         Variance::Contravariant => Self::is_subtype_inner(
                                             sup_arg,
                                             sub_arg,
                                             tycon_env,
                                             depth + 1,
+                                            sigma,
                                         ),
                                         Variance::Invariant => sub_arg == sup_arg,
                                         Variance::Phantom => true,
@@ -631,8 +832,8 @@ impl Type {
                 }
                 // Different TyCons, or non-TyCon App (e.g., type-function application):
                 // recurse structurally on both components.
-                Self::is_subtype_inner(f1, f2, tycon_env, depth + 1)
-                    && Self::is_subtype_inner(a1, a2, tycon_env, depth + 1)
+                Self::is_subtype_inner(f1, f2, tycon_env, depth + 1, sigma)
+                    && Self::is_subtype_inner(a1, a2, tycon_env, depth + 1, sigma)
             }
             (Type::TyCon(n1), Type::TyCon(n2)) => n1 == n2,
             (Type::IntLiteral(_), Type::Int | Type::Number) => true,
@@ -641,7 +842,7 @@ impl Type {
             // [UNION-INJ-L] and [UNION-INJ-R]: any member is a subtype of the union
             (sub_ty, Type::Union(sup_members)) => sup_members
                 .iter()
-                .any(|member| Self::is_subtype_inner(sub_ty, member, tycon_env, depth + 1)),
+                .any(|member| Self::is_subtype_inner(sub_ty, member, tycon_env, depth + 1, sigma)),
             // [S-RcdTop] (BAS width subtyping): A union of closed single-field records with
             // disjoint field names is equivalent to Top in the BAS lattice.  The union
             // `{x: τ} | {y: π}` cannot be refined further by structural subtyping — together
@@ -658,7 +859,7 @@ impl Type {
             // [UNION-ELIM]: union is a subtype iff ALL members are subtypes
             (Type::Union(sub_members), sup_ty) => sub_members
                 .iter()
-                .all(|member| Self::is_subtype_inner(member, sup_ty, tycon_env, depth + 1)),
+                .all(|member| Self::is_subtype_inner(member, sup_ty, tycon_env, depth + 1, sigma)),
             // [S-ClsBot] (nominal disjointness / structural annihilation): An intersection of
             // two or more closed single-field records with DIFFERENT field names is uninhabited
             // — no value can simultaneously be `{x: τ}` (exactly field x) and `{y: π}`
@@ -671,15 +872,15 @@ impl Type {
             // [INTERSECT-INTRO]: intersection is a subtype of any of its members
             (Type::Intersection(sub_members), sup_ty) => sub_members
                 .iter()
-                .any(|member| Self::is_subtype_inner(member, sup_ty, tycon_env, depth + 1)),
+                .any(|member| Self::is_subtype_inner(member, sup_ty, tycon_env, depth + 1, sigma)),
             // [INTERSECT-ELIM]: type is a subtype of intersection iff it's a subtype of ALL members
             (sub_ty, Type::Intersection(sup_members)) => sup_members
                 .iter()
-                .all(|member| Self::is_subtype_inner(sub_ty, member, tycon_env, depth + 1)),
+                .all(|member| Self::is_subtype_inner(sub_ty, member, tycon_env, depth + 1, sigma)),
             // Negation: A <: ~B iff A and B are disjoint (for now, conservative: only reflexive negation)
             // Full BAS subtyping requires RDNF normalization — this is a placeholder
             (Type::Negation(t1), Type::Negation(t2)) => {
-                Self::is_subtype_inner(t2, t1, tycon_env, depth + 1) // contravariant
+                Self::is_subtype_inner(t2, t1, tycon_env, depth + 1, sigma) // contravariant
             }
             // Negation subtyping: T <: ~A iff T and A are disjoint (no values in common).
             // Full BAS uses RDNF normalization to compute T ∩ A = Never, but we use a
@@ -701,7 +902,8 @@ impl Type {
                 for (k, sup_ty) in &sup_row.fields {
                     match sub_row.fields.get(k) {
                         Some(sub_ty) => {
-                            if !Self::is_subtype_inner(sub_ty, sup_ty, tycon_env, depth + 1) {
+                            if !Self::is_subtype_inner(sub_ty, sup_ty, tycon_env, depth + 1, sigma)
+                            {
                                 return false;
                             }
                         }
@@ -739,7 +941,13 @@ impl Type {
                     ) => {
                         // sub's named fields must all be subtypes of sup_v
                         for sub_field_ty in sub_row.fields.values() {
-                            if !Self::is_subtype_inner(sub_field_ty, sup_v, tycon_env, depth + 1) {
+                            if !Self::is_subtype_inner(
+                                sub_field_ty,
+                                sup_v,
+                                tycon_env,
+                                depth + 1,
+                                sigma,
+                            ) {
                                 return false;
                             }
                         }
@@ -749,7 +957,7 @@ impl Type {
                             value: sub_v,
                         } = sub_tail
                         {
-                            if !Self::is_subtype_inner(sub_v, sup_v, tycon_env, depth + 1) {
+                            if !Self::is_subtype_inner(sub_v, sup_v, tycon_env, depth + 1, sigma) {
                                 return false;
                             }
                             // Key compatibility: if sup has a key constraint, sub must have one too
@@ -763,6 +971,7 @@ impl Type {
                                             sup_k,
                                             tycon_env,
                                             depth + 1,
+                                            sigma,
                                         ) {
                                             return false;
                                         }
@@ -817,7 +1026,15 @@ impl Type {
                     match (&**sub_r, &**sup_r) {
                         (Type::Unknown, Type::Unknown) => return true,
                         _ if sub_r == sup_r => return true,
-                        _ => return Self::is_subtype_inner(sub_r, sup_r, tycon_env, depth + 1),
+                        _ => {
+                            return Self::is_subtype_inner(
+                                sub_r,
+                                sup_r,
+                                tycon_env,
+                                depth + 1,
+                                sigma,
+                            )
+                        }
                     }
                 }
 
@@ -837,10 +1054,10 @@ impl Type {
                     && sub_p.len() == sup_p.len()
                     && sub_p.iter().zip(sup_p.iter()).all(
                         |((_sp_name, sp_ty), (_pp_name, pp_ty))| {
-                            Self::is_subtype_inner(pp_ty, sp_ty, tycon_env, depth + 1)
+                            Self::is_subtype_inner(pp_ty, sp_ty, tycon_env, depth + 1, sigma)
                         },
                     )
-                    && Self::is_subtype_inner(sub_r, sup_r, tycon_env, depth + 1)
+                    && Self::is_subtype_inner(sub_r, sup_r, tycon_env, depth + 1, sigma)
             }
             // Operator variables are treated like TypeVars for subtyping purposes.
             (Type::Operator(m1), Type::Operator(m2)) => m1 == m2,
@@ -865,7 +1082,8 @@ impl Type {
                 for (k, sup_ty) in &fields2.fields {
                     match fields1.fields.get(k) {
                         Some(sub_ty) => {
-                            if !Self::is_subtype_inner(sub_ty, sup_ty, tycon_env, depth + 1) {
+                            if !Self::is_subtype_inner(sub_ty, sup_ty, tycon_env, depth + 1, sigma)
+                            {
                                 return false;
                             }
                         }

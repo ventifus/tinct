@@ -1,0 +1,9 @@
+# T-1159: mu combinator corpus tests — deferred to S-862
+# These tests require expand_named to be wired into the annotation resolver,
+# which happens in S-862. Once wired, inline mu annotations like:
+#   [fn [let xs@[mu [fn [let self] [record head: Int tail: self]]]] xs.head]
+# should typecheck and run correctly.
+# See T-1159 in the tracker for the specific test cases.
+[r: "pending-s862"]
+=== out
+Dict({"r": String("pending-s862")})

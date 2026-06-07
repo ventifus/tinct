@@ -10194,3 +10194,126 @@ fn test_b275_letrec_typevar_does_not_shadow_prelude_function() {
          the bug may be fixed; remove #[ignore] and flip assertion to is_ok()"
     );
 }
+
+// -- T-1078: equirecursive checker unit tests (S-861) --
+// Tests for is_subtype S-Assum/S-Exp termination and unfold_once correctness.
+// These tests exercise Type::Recursive and unfold_once in type_def.rs.
+// is_subtype(sub, sup, None): None = no TyConEnv (no variance lookup needed for these
+// pure structural tests). The sigma coinductive hypothesis set is allocated internally.
+
+/// T-1078a: μa.{x: a} <: μb.{x: b} — isomorphic recursive types are subtypes
+/// and the check TERMINATES (S-Assum prevents infinite loop via the sigma set).
+#[test]
+fn test_is_subtype_recursive_isomorphic_terminates() {
+    // μa.{x: a} — infinite record {x: {x: {x: ...}}}
+    let rec_a = Type::Recursive {
+        var: "a".to_string(),
+        body: Box::new(Type::Record(crate::type_def::Row {
+            fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+    // μb.{x: b} — same structure, different binder name
+    let rec_b = Type::Recursive {
+        var: "b".to_string(),
+        body: Box::new(Type::Record(crate::type_def::Row {
+            fields: [("x".to_string(), Type::TypeVar("b".to_string(), 0))].into(),
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+    // S-Assum fires on the re-encounter of (a, b) after S-Exp unfolds both sides once.
+    // Without S-Assum this would loop forever.
+    let result = Type::is_subtype(&rec_a, &rec_b, None);
+    assert!(
+        result,
+        "μa.{{x: a}} <: μb.{{x: b}} must hold (isomorphic recursive record types are subtypes)"
+    );
+}
+
+/// T-1078b: Type::Recursive on either side of TypeVar — gradual typing arm returns true.
+/// The TypeVar arm fires AFTER S-Exp, so a Recursive type paired with a TypeVar goes
+/// through S-Exp first (unfolding the Recursive), then hits the TypeVar arm.
+#[test]
+fn test_is_subtype_recursive_vs_typevar_gradual() {
+    // μa.Int — a trivially-guarding recursive type (body is a leaf)
+    let rec = Type::Recursive {
+        var: "a".to_string(),
+        body: Box::new(Type::Int),
+    };
+    let tv = Type::TypeVar("_t0".to_string(), 0);
+    // Recursive <: TypeVar: S-Exp unfolds rec to Int, then TypeVar arm fires.
+    assert!(
+        Type::is_subtype(&rec, &tv, None),
+        "Recursive <: TypeVar must be true (gradual typing)"
+    );
+    // TypeVar <: Recursive: S-Exp-right fires first (sup is Recursive), unfolding rec to Int,
+    // then the TypeVar arm fires in the recursive call (sub = TypeVar, sup = Int).
+    assert!(
+        Type::is_subtype(&tv, &rec, None),
+        "TypeVar <: Recursive must be true (gradual typing)"
+    );
+}
+
+/// T-1078a-2: μa.(Int | {x: a}) <: μb.(Int | {x: b}) — union-body recursive types
+/// are subtypes and the check TERMINATES (S-Assum prevents divergence on the union body).
+#[test]
+fn test_is_subtype_recursive_union_terminates() {
+    // μa.(Int | {x: a})
+    let rec_a = Type::Recursive {
+        var: "a".to_string(),
+        body: Box::new(Type::Union(vec![
+            Type::Int,
+            Type::Record(crate::type_def::Row {
+                fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
+                tail: crate::type_def::RowTail::Empty,
+            }),
+        ])),
+    };
+    // μb.(Int | {x: b})
+    let rec_b = Type::Recursive {
+        var: "b".to_string(),
+        body: Box::new(Type::Union(vec![
+            Type::Int,
+            Type::Record(crate::type_def::Row {
+                fields: [("x".to_string(), Type::TypeVar("b".to_string(), 0))].into(),
+                tail: crate::type_def::RowTail::Empty,
+            }),
+        ])),
+    };
+    // S-Assum fires on the re-encounter of (a, b) after unfolding into the union members.
+    // Without S-Assum this would loop forever on the Record member's x-field.
+    let result = Type::is_subtype(&rec_a, &rec_b, None);
+    assert!(
+        result,
+        "μa.(Int | {{x: a}}) <: μb.(Int | {{x: b}}) must hold (isomorphic union-body recursive types)"
+    );
+}
+
+/// T-1078c: unfold_once(μa.{x: a}) = {x: μa.{x: a}}
+/// The self-reference TypeVar is replaced by the full Recursive type — one unfolding step.
+#[test]
+fn test_unfold_once_basic() {
+    let rec = Type::Recursive {
+        var: "a".to_string(),
+        body: Box::new(Type::Record(crate::type_def::Row {
+            fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+    let unfolded = crate::type_def::unfold_once(&rec);
+    // Must be a Record (one unfold), not Recursive.
+    match &unfolded {
+        Type::Record(row) => {
+            let x_ty = row
+                .fields
+                .get("x")
+                .expect("x field must exist after unfold");
+            // The x field must itself be the full Recursive type (the self-reference is expanded).
+            assert!(
+                matches!(x_ty, Type::Recursive { var, .. } if var == "a"),
+                "unfold_once: x field must be Type::Recursive{{var: \"a\", ..}}, got: {x_ty:?}"
+            );
+        }
+        other => panic!("unfold_once(μa.{{x: a}}) must be a Record, got: {other:?}"),
+    }
+}

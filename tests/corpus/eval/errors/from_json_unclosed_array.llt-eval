@@ -4,32 +4,32 @@
 === error
 [E099] str-slice: end index 1 out of bounds (string has 0 characters) (defined at 277:3-277:26)
   in [str-slice ...] at 277:3-277:26
-  in materialized at stdlib/prelude.llt:508:21-508:44
+  in materialized at stdlib/prelude.llt:538:21-538:44
    |
-  508 |         [builtin-if [builtin-get i pairs].0
+  538 |         [builtin-if [builtin-get i pairs].0
       |                     ^^^^^^^^^^^^^^^^^^^^^^^
   in [= ...] at 410:6-410:33
-  in materialized at stdlib/prelude.llt:506:5-510:50
+  in materialized at stdlib/prelude.llt:536:5-540:50
    |
-  506 |     [builtin-if [builtin-gte i [builtin-length pairs]]
-  507 |         []
-  508 |         [builtin-if [builtin-get i pairs].0
-  509 |             [builtin-get i pairs].1
-  510 |             [cond-impl pairs [builtin-add i 1]]]]]
+  536 |     [builtin-if [builtin-gte i [builtin-length pairs]]
+  537 |         []
+  538 |         [builtin-if [builtin-get i pairs].0
+  539 |             [builtin-get i pairs].1
+  540 |             [cond-impl pairs [builtin-add i 1]]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:508:9-510:49
+  in [builtin-if ...] at stdlib/prelude.llt:538:9-540:49
    |
-  508 |         [builtin-if [builtin-get i pairs].0
-  509 |             [builtin-get i pairs].1
-  510 |             [cond-impl pairs [builtin-add i 1]]]]]
+  538 |         [builtin-if [builtin-get i pairs].0
+  539 |             [builtin-get i pairs].1
+  540 |             [cond-impl pairs [builtin-add i 1]]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:506:5-510:50
+  in [builtin-if ...] at stdlib/prelude.llt:536:5-540:50
    |
-  506 |     [builtin-if [builtin-gte i [builtin-length pairs]]
-  507 |         []
-  508 |         [builtin-if [builtin-get i pairs].0
-  509 |             [builtin-get i pairs].1
-  510 |             [cond-impl pairs [builtin-add i 1]]]]]
+  536 |     [builtin-if [builtin-gte i [builtin-length pairs]]
+  537 |         []
+  538 |         [builtin-if [builtin-get i pairs].0
+  539 |             [builtin-get i pairs].1
+  540 |             [cond-impl pairs [builtin-add i 1]]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in materialized at 404:25-412:59
   in materialized at 417:3-419:50

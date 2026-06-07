@@ -4297,7 +4297,23 @@ pub(crate) fn body_contains_tycon_ref(ty: &Type) -> bool {
             members.iter().any(body_contains_tycon_ref)
         }
         Type::Negation(inner) => body_contains_tycon_ref(inner),
-        Type::NominalVariant { fields, .. } => fields.fields.values().any(body_contains_tycon_ref),
+        Type::NominalVariant { fields, .. } => {
+            // B-366: Check both fields.fields AND fields.tail for TyCon refs.
+            // Matches the pattern from the Record arm and B-356's apply_type_alias_substitution fix.
+            if fields.fields.values().any(body_contains_tycon_ref) {
+                return true;
+            }
+            if let crate::type_def::RowTail::Uniform { key, value } = &fields.tail {
+                if let Some(k) = key {
+                    if body_contains_tycon_ref(k) {
+                        return true;
+                    }
+                }
+                body_contains_tycon_ref(value)
+            } else {
+                false
+            }
+        }
         // S-860: equirecursive-types-core — a Recursive body may contain unexpanded TyCon refs.
         Type::Recursive { body, .. } => body_contains_tycon_ref(body),
         _ => false,
@@ -4342,13 +4358,71 @@ pub(crate) fn contains_recvar(ty: &Type, var: &str) -> bool {
         }
         Type::Negation(inner) => contains_recvar(inner, var),
         Type::NominalVariant { fields, .. } => {
-            fields.fields.values().any(|t| contains_recvar(t, var))
+            // T-1160: Check both fields.fields AND fields.tail for recursive var refs.
+            // Matches the pattern from the Record arm.
+            if fields.fields.values().any(|t| contains_recvar(t, var)) {
+                return true;
+            }
+            if let crate::type_def::RowTail::Uniform { key, value } = &fields.tail {
+                if let Some(k) = key {
+                    if contains_recvar(k, var) {
+                        return true;
+                    }
+                }
+                contains_recvar(value, var)
+            } else {
+                false
+            }
         }
         // S-860: equirecursive-types-core — recurse into the body of a nested Recursive.
         // Globally unique gensym var names guarantee no shadowing: an inner Recursive will
         // never carry the same `var` name as an outer one, so recursion is always safe.
         Type::Recursive { body, .. } => contains_recvar(body, var),
         _ => false,
+    }
+}
+
+/// Returns `true` if `ty` is contractive with respect to `var`.
+///
+/// A type is contractive if it does NOT permit a bare self-reference to appear at the root
+/// or inside a Union/Intersection without a guarding constructor. This ensures that recursive
+/// types are well-founded and can be unfolded finitely.
+///
+/// **Contractiveness rules:**
+/// 1. `TypeVar(var, _)` where `var` matches → NOT contractive (bare self-ref)
+/// 2. `Union(members)` or `Intersection(members)` → ALL members must be contractive
+/// 3. All other forms (Record, Function, App, TyCon, etc.) → contractive (guarding constructors)
+///
+/// Used by `expand_named` (T-1162) to verify that a recursive type alias body is well-formed
+/// before wrapping it in `Type::Recursive`. Non-contractive types are infinite without a
+/// guarding constructor and cannot be soundly expanded.
+///
+/// Example:
+/// - `type Bad a = a` → NOT contractive (bare TypeVar)
+/// - `type Bad a = [A a | B a]` → contractive (Union with guarding constructors A/B)
+/// - `type Bad a = [a | a]` → NOT contractive (Union of bare self-refs)
+/// - `type Good = [x: Int next: Good]` → contractive (Record guarding constructor)
+pub(crate) fn is_contractive_type(ty: &Type, var: &str) -> bool {
+    match ty {
+        // Rule 1: Bare self-reference → NOT contractive.
+        Type::TypeVar(name, _) if name == var => false,
+
+        // Rule 2: Union/Intersection → ALL members must be contractive.
+        Type::Union(members) | Type::Intersection(members) => {
+            members.iter().all(|m| is_contractive_type(m, var))
+        }
+
+        // Rule 3: All other forms are guarding constructors → contractive.
+        // This includes:
+        // - Record (structural guard)
+        // - Function (arrow constructor)
+        // - App (type application)
+        // - TyCon (named type constructor)
+        // - NominalVariant (variant constructor)
+        // - Negation (type operator)
+        // - Recursive (nested recursive type)
+        // - Primitives (Int, Float, Str, Bool, etc.)
+        _ => true,
     }
 }
 
@@ -4377,10 +4451,10 @@ pub(crate) fn contains_recvar(ty: &Type, var: &str) -> bool {
 /// cycle origin — the body is wrapped in `Type::Recursive { var: binder_name, body }`.
 /// Non-recursive aliases are returned as-is (no wrapper needed).
 ///
-/// The `Type::Recursive` produced here is scaffolding — the S-Exp + S-Assum coinductive
-/// subtype algorithm that consumes it is deferred to S-861. Until then, `is_subtype`
-/// falls through to `_ => false` when it encounters a `Recursive` type.
-#[allow(dead_code)] // S-860 CheckerType migration
+/// The `Type::Recursive` produced here is consumed by `is_subtype` via the S-Exp + S-Assum
+/// coinductive algorithm implemented in S-861. Wiring `expand_named` into the annotation
+/// resolver (so that named recursive types reach `is_subtype` at runtime) is deferred to S-862.
+#[allow(dead_code)] // S-860 scaffolding — wired into annotation resolver in S-862
 pub(crate) fn expand_named(
     name: &str,
     args: &[Type],
@@ -4477,11 +4551,28 @@ pub(crate) fn expand_named(
     // doc/whatif/equirecursive-types.md: "wrap `Recursive` only when popping the stack
     // entry whose fresh name appears in the expanded body."
     //
-    // The full S-Exp + S-Assum coinductive subtype algorithm that CONSUMES `Type::Recursive`
-    // is deferred to S-861. For now, `Type::Recursive` is produced here (scaffolding) but
-    // not yet interpreted by `is_subtype` — callers that encounter it fall through to the
-    // `_ => false` arm in `is_subtype_inner`.
+    // The S-Exp + S-Assum coinductive subtype algorithm that CONSUMES `Type::Recursive`
+    // was implemented in S-861 (`is_subtype_inner` in type_def.rs). `Type::Recursive` is
+    // produced here and will be consumed by `is_subtype` once `expand_named` is wired into
+    // the annotation resolver in S-862.
     if contains_recvar(&expanded, &binder_name) {
+        // T-1162: Contractiveness check BEFORE wrapping in Type::Recursive.
+        // A recursive type must be contractive — the self-reference must appear under a
+        // guarding constructor (Record, Function, App, etc.), NOT as a bare TypeVar or
+        // inside a Union/Intersection of bare self-refs.
+        //
+        // Non-contractive types are infinite without a guarding constructor and cannot be
+        // soundly expanded. Example: `type Bad a = a` → infinite regress.
+        //
+        // If the expanded body is NOT contractive, return it as-is WITHOUT wrapping.
+        // This lets the caller handle the non-recursive (or malformed) type downstream.
+        if !is_contractive_type(&expanded, &binder_name) {
+            // Non-contractive recursive type — do NOT wrap in Recursive.
+            // Return the expanded body as-is. Downstream type checking will likely produce
+            // an error when it encounters the bare TypeVar sentinel.
+            return Some(expanded);
+        }
+
         // Recursive alias: wrap in Type::Recursive with the pre-assigned binder name.
         // TypeVar(binder_name, 0) in `expanded` marks the recursive positions (self-refs).
         Some(Type::Recursive {
@@ -4795,17 +4886,17 @@ fn try_resolve_fn_type_expr(
 /// `Type` enum representation and makes TypeNode values directly walkable by
 /// `TypeNode.children` without any Rust-side dispatch.
 ///
-/// ## Current state (S-860 scaffolding)
+/// ## Current state (S-860/S-861 scaffolding)
 ///
 /// This struct and its associated functions are not yet wired into the active
-/// type-checking pipeline. S-861 will:
+/// type-checking pipeline. S-862 will:
 /// - Migrate annotation resolution to produce `CheckerType` instead of `Type`
 /// - Give the type-checker arena access so `fresh_type_var` and payload-carrying
 ///   conversions in `from_type` can construct proper
 ///   `Value::Variant { payload: Some(ThunkId) }` dicts
 /// - Retire the parallel `Type` enum
 ///
-/// Until S-861, all payload-carrying TypeNode conversions fall back to
+/// Until S-862, all payload-carrying TypeNode conversions fall back to
 /// `TypeNode.Unknown`. Leaf (unit) constructors are fully correct: they produce
 /// `Value::Variant { tag: "TypeNode.X", payload: None }` which requires no arena.
 ///
@@ -4818,7 +4909,7 @@ fn try_resolve_fn_type_expr(
 /// the payload. All generalization and level-comparison code MUST read
 /// `state.levels`, not the payload. See `doc/whatif/equirecursive-types.md
 /// §TypeNode` ("collect_type_vars reads level from state.levels[name]").
-#[allow(dead_code)] // S-860 scaffolding — wired in S-861
+#[allow(dead_code)] // S-860 scaffolding — wired in S-862
 #[derive(Clone, Debug)]
 pub(crate) struct CheckerType(pub(crate) Value);
 
@@ -4847,25 +4938,25 @@ impl CheckerType {
     /// | `Bool`                | `TypeNode.Bool`          | leaf, correct                          |
     /// | `Unknown`             | `TypeNode.Unknown`       | leaf, correct                          |
     /// | `Never`               | `TypeNode.Never`         | leaf, correct                          |
-    /// | `TypeVar(name, lvl)`  | `TypeNode.Unknown`       | TODO(S-861): needs arena for payload   |
-    /// | `Function { .. }`     | `TypeNode.Unknown`       | TODO(S-861): needs arena for payload   |
-    /// | `Record(_)`           | `TypeNode.Unknown`       | TODO(S-861): needs arena for payload   |
-    /// | `Union(_)`            | `TypeNode.Unknown`       | TODO(S-861): needs arena for payload   |
-    /// | all others            | `TypeNode.Unknown`       | TODO(S-861): map remaining variants    |
+    /// | `TypeVar(name, lvl)`  | `TypeNode.Unknown`       | TODO(S-862): needs arena for payload   |
+    /// | `Function { .. }`     | `TypeNode.Unknown`       | TODO(S-862): needs arena for payload   |
+    /// | `Record(_)`           | `TypeNode.Unknown`       | TODO(S-862): needs arena for payload   |
+    /// | `Union(_)`            | `TypeNode.Unknown`       | TODO(S-862): needs arena for payload   |
+    /// | all others            | `TypeNode.Unknown`       | TODO(S-862): map remaining variants    |
     ///
     /// ## Why payload-carrying types fall back to `TypeNode.Unknown`
     ///
     /// `Value::Variant { payload: Some(ThunkId) }` requires insertion into a `ThunkArena`
     /// (via `EvalContext::alloc_thunk`). The type-checker does not currently hold arena
-    /// access — arenas are owned by the evaluation pipeline (`EvalContext`). Until S-861
+    /// access — arenas are owned by the evaluation pipeline (`EvalContext`). Until S-862
     /// threads arena access into the type-checker (or introduces a dedicated checker-local
     /// arena), we cannot construct well-formed payload dicts. Returning `TypeNode.Unknown`
-    /// is safe for scaffolding: callers in S-861 will replace these paths with fully-wired
+    /// is safe for scaffolding: callers in S-862 will replace these paths with fully-wired
     /// arena-backed constructors.
     ///
-    /// `_state: &InferState` is accepted now (unused) so S-861 can add level lookups
+    /// `_state: &InferState` is accepted now (unused) so S-862 can add level lookups
     /// without changing the signature.
-    #[allow(dead_code)] // S-860 scaffolding — wired in S-861
+    #[allow(dead_code)] // S-860 scaffolding — wired in S-862
     pub(crate) fn from_type(ty: &Type, _state: &InferState) -> Self {
         match ty {
             // ── Leaf primitives — no payload required ─────────────────────────
@@ -4876,9 +4967,9 @@ impl CheckerType {
             Type::Unknown => Self::unit_variant("TypeNode.Unknown"),
             Type::Never => Self::unit_variant("TypeNode.Never"),
 
-            // ── Payload-carrying types — TODO(S-861) ──────────────────────────
+            // ── Payload-carrying types — TODO(S-862) ──────────────────────────
             // These variants require a ThunkArena to construct their payload dicts.
-            // S-861 will thread arena access into the type-checker and complete these arms.
+            // S-862 will thread arena access into the type-checker and complete these arms.
             //
             // Intended final forms:
             //   TypeVar(name, lvl) → TypeNode.TypeVar { name: name, level: state.levels[name] }
@@ -4894,7 +4985,7 @@ impl CheckerType {
             // Duration, ClockCap, Timezone, QuicSession, Http2Session, Http3Session,
             // QuicDatagramHandle, DatagramHandle, Intersection, Negation, App, TyCon,
             // Operator, TypeStageApp, NominalVariant, Proxy.
-            // TODO(S-861): map remaining variants to their TypeNode equivalents.
+            // TODO(S-862): map remaining variants to their TypeNode equivalents.
             _ => Self::unit_variant("TypeNode.Unknown"),
         }
     }
@@ -4910,13 +5001,13 @@ impl CheckerType {
     /// the payload is a `Value::Dict { "name" → String(name), "level" → Int(level) }`.
     ///
     /// Constructing the payload dict requires inserting it into a `ThunkArena` — which
-    /// the type-checker does not currently hold. S-861 will add arena access and complete
+    /// the type-checker does not currently hold. S-862 will add arena access and complete
     /// this constructor.
     ///
     /// ## Current stub (S-860)
     ///
     /// Returns `TypeNode.Unknown` (a unit variant, no arena needed) as a placeholder.
-    /// `_name` and `_level` are accepted so S-861 can fill in the implementation without
+    /// `_name` and `_level` are accepted so S-862 can fill in the implementation without
     /// changing call sites.
     ///
     /// ## `state.levels` remains authoritative
@@ -4926,9 +5017,9 @@ impl CheckerType {
     /// The `level` argument here is the creation-time level to embed in the TypeNode
     /// payload; `state.levels` may lower it subsequently. All level comparisons during
     /// generalization MUST read `state.levels`, not this embedded value.
-    #[allow(dead_code)] // S-860 scaffolding — wired in S-861
+    #[allow(dead_code)] // S-860 scaffolding — wired in S-862
     pub(crate) fn fresh_type_var(_name: String, _level: u32) -> Self {
-        // TODO(S-861): Replace with:
+        // TODO(S-862): Replace with:
         //
         //   use indexmap::IndexMap;
         //   use crate::value::Key;
@@ -5032,7 +5123,7 @@ mod checker_type_tests {
         assert!(is_unit_variant(&ct));
     }
 
-    /// TypeVar falls back to Unknown until S-861 wires arena access for payload dicts.
+    /// TypeVar falls back to Unknown until S-862 wires arena access for payload dicts.
     #[test]
     fn from_type_typevar_falls_back_to_unknown_until_s861() {
         let state = dummy_state();

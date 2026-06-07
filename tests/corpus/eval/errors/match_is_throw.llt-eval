@@ -2,12 +2,12 @@
 [match 42
   x@[is: [fn [let v] [raise "boom"]]]: "yes"]
 === error
-[E080] boom (defined at stdlib/prelude.llt:2398:28-2398:47)
-  --> stdlib/prelude.llt:2398:28-2398:47
+[E080] boom (defined at stdlib/prelude.llt:2428:28-2428:47)
+  --> stdlib/prelude.llt:2428:28-2428:47
    |
-  2398 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2428 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2398:28-2398:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2428:28-2428:47
    |
-  2398 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2428 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^

@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ast::Span;
+use crate::type_def::substitute_recvar;
 
 use super::*;
 
@@ -1562,10 +1563,11 @@ impl Substitution {
                 })
             }
             Type::TyCon(_) => Cow::Borrowed(ty), // TyCon is always concrete, no substitution needed
-            // S-860: equirecursive-types-core — recurse into the body.
+            // S-860 / T-1077 (S-861): apply_type for Recursive — recurse into the body.
             // The `var` binder name is a gensym'd μ-binder, not a unification variable, and
             // must NOT be looked up in the substitution. The body may contain TypeVar sentinels
             // placed by expand_named cycle detection (Step 4) that need substitution applied.
+            // T-1077 specifies: var is NOT in the substitution namespace; recurse into body only.
             Type::Recursive { var, body } => {
                 let applied_body = self.apply_type(body, depth + 1, visited_types);
                 match applied_body {
@@ -1932,6 +1934,11 @@ fn unify_rows(
 
     Ok(())
 }
+
+// S-861: equirecursive-checker
+// substitute_recvar and substitute_recvar_row are pub(crate) in type_def.rs (canonical
+// location, next to unfold_once). Imported here via `use super::*` (type_def re-exports
+// everything from the parent module). No local copy needed.
 
 /// Lower levels of all type/row variables in `ty` to min(their level, cap_level).
 /// Performs occurs check simultaneously: returns true if `occurs_name` appears in the tree.
@@ -2407,6 +2414,62 @@ pub fn unify(
             }
             subst.check_size(span)?;
             Ok(())
+        }
+
+        // S-861: equirecursive-checker — Recursive type unification arms.
+        //
+        // ORDERING IS CRITICAL: these three arms must appear AFTER the TypeVar arms above
+        // (U-VAR-LEVEL and U-VAR-LEVEL-SYM) and BEFORE the structural arms below.
+        //
+        // Without this ordering, `unify(Recursive{..}, TypeVar)` would hit Arm 4
+        // (open-left), unfold the Recursive, and bind the TypeVar to the opened body —
+        // losing the recursive structure. With the correct ordering, the TypeVar arm above
+        // fires first and binds the TypeVar to the full `Type::Recursive` value.
+        //
+        // Termination argument (Pierce 2002 §21.8 simultaneous-opening):
+        //  - Arm 3 (Recursive+Recursive): after substitute_recvar, the binder positions
+        //    in both opened bodies hold `fresh` (a TypeVar), not another Recursive. When
+        //    unification descends to those positions, a TypeVar arm fires and binds —
+        //    no further Recursive arm fires on that branch.
+        //  - Arms 4 and 5 (asymmetric): substitute_recvar replaces `TypeVar(var, 0)` with
+        //    `fresh`. All former recursive positions now hold a TypeVar. When unification
+        //    descends and encounters `fresh` paired against any type, a TypeVar arm fires
+        //    and binds — no further Recursive arm fires on that branch.
+        //  - `other` may contain Recursive sub-terms (e.g., `Union([Recursive{v3,...}, Int])`).
+        //    Those are handled with fresh TypeVars for their own binder (v3), not the current
+        //    one. Structural induction: each arm firing eliminates one Recursive from the top
+        //    of one side without re-introducing Recursive at the top of either side.
+
+        // Arm 3 (Recursive+Recursive, symmetric): open BOTH sides with ONE shared fresh TypeVar.
+        //
+        // Why one shared var, not two sequential opens? Two sequential opens produce
+        // `fresh_a → fresh_b` in the substitution — an extra indirection that surfaces
+        // in error messages and type display. The shared fresh var produces a direct result:
+        // `μ_t0.T[_t0]` where `_t0` is immediately the representative. Both approaches
+        // produce the same principal type; the shared fresh var is more direct.
+        (Type::Recursive { var: va, body: ba }, Type::Recursive { var: vb, body: bb }) => {
+            let fresh = state.fresh_type_var();
+            let opened_a = substitute_recvar(ba, va, &fresh);
+            let opened_b = substitute_recvar(bb, vb, &fresh);
+            unify(&opened_a, &opened_b, subst, state, span)
+        }
+
+        // Arm 4 (open-left): left is Recursive, right is a concrete type (not TypeVar — that
+        // was caught by the U-VAR-LEVEL-SYM arm above; not Recursive — caught by Arm 3 above).
+        // Open the left side with a fresh TypeVar and unify the opened body with the right.
+        (Type::Recursive { var: va, body: ba }, _) => {
+            let fresh = state.fresh_type_var();
+            let opened_a = substitute_recvar(ba, va, &fresh);
+            unify(&opened_a, &b, subst, state, span)
+        }
+
+        // Arm 5 (open-right): right is Recursive, left is a concrete type (not TypeVar — caught
+        // above; not Recursive — caught by Arm 3 above).
+        // Open the right side with a fresh TypeVar and unify with the left.
+        (_, Type::Recursive { var: vb, body: bb }) => {
+            let fresh = state.fresh_type_var();
+            let opened_b = substitute_recvar(bb, vb, &fresh);
+            unify(&a, &opened_b, subst, state, span)
         }
 
         // Literal type promotion shortcuts (performance optimization over U-SUBSUME).
