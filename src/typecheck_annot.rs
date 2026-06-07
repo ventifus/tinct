@@ -3640,13 +3640,28 @@ fn variant_payload_dict(
     }
 }
 
-/// Collect a tinct Seq (lazy linked list of `Seq.Cons`/`Seq.Nil` Variants) into a Vec.
+/// Collect a tinct Seq (lazy linked list of `Seq.Cons`/`Seq.Nil` Variants) into a Vec of `Type`.
 ///
 /// Each element is passed through `typenode_value_to_type` to convert it to a `Type`.
 /// Returns `None` if any element fails to convert or the spine is malformed.
 ///
 /// Used by `typenode_value_to_type` to process `TypeNode.Union.types`,
 /// `TypeNode.Intersect.types`, `TypeNode.Arrow.params`, and `TypeNode.TypeApplication.args`.
+///
+/// ## Why this is distinct from `typecheck_walk::collect_seq_sync`
+///
+/// `collect_seq_sync` (in `typecheck_walk.rs`) collects Seq elements as raw `Value`s — it
+/// is a generic walker that does not know about Types. This function differs in two ways:
+///
+/// 1. **Return type**: `Option<Vec<Type>>` vs `Vec<Value>` — this function converts each
+///    element immediately via `typenode_value_to_type`, failing the entire collection if any
+///    element is unrepresentable as a `Type`.
+/// 2. **Failure semantics**: returns `None` on any malformed element (hard error — the caller
+///    needs all elements to proceed). `collect_seq_sync` silently stops on errors (soft
+///    degradation — partial results are acceptable for traversal).
+///
+/// These distinct contracts mean consolidation would force one to adopt the other's semantics.
+/// Both implementations are intentional and must remain separate.
 fn collect_typenode_seq(seq_val: Value, ctx: &Arc<crate::eval::EvalContext>) -> Option<Vec<Type>> {
     let mut result = Vec::new();
     let mut current = seq_val;
@@ -3744,16 +3759,11 @@ fn collect_typenode_seq(seq_val: Value, ctx: &Arc<crate::eval::EvalContext>) -> 
 
 /// Convert a TypeNode `Value` to a `Type`.
 ///
-/// Handles two formats produced by the type-stage evaluator:
+/// Handles TypeNode Variant values produced by the type-stage evaluator:
 ///
-/// 1. **Old-style kind-keyed dicts** — `{kind: "named", name: "Int"}`. The prelude
-///    combinators are fully migrated (T-1061), but user code may still construct kind-keyed
-///    dicts directly. Delegated to `crate::type_normalize::dict_to_type` as a fallback.
-///    Will be retired when `dict_to_type` is removed in a future cleanup sprint.
-///
-/// 2. **TypeNode Variant values** — `Variant { tag: "TypeNode.Int" }`, `Variant { tag:
-///    "TypeNode.Union", payload: ... }` etc., produced by the TypeNode ADT declared in the
-///    type-stage prelude (T-1058/T-1061). Matched by tag prefix `"TypeNode."`.
+/// **TypeNode Variant values** — `Variant { tag: "TypeNode.Int" }`, `Variant { tag:
+/// "TypeNode.Union", payload: ... }` etc., produced by the TypeNode ADT declared in the
+/// type-stage prelude (T-1058/T-1061). Matched by tag prefix `"TypeNode."`.
 ///
 /// Returns `None` if the value cannot be recognized as a Type.
 ///
@@ -3773,13 +3783,6 @@ pub(crate) fn typenode_value_to_type_pub(
 
 fn typenode_value_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Option<Type> {
     match val {
-        // Old-style kind-keyed dict fallback (type_normalize::dict_to_type).
-        // T-1061: prelude combinators are fully migrated to TypeNode Variants.
-        // This path handles any user code that still constructs kind:-keyed dicts
-        // directly (e.g. `[kind: "named" name: "Int"]`). It will be retired when
-        // dict_to_type is removed in a future cleanup sprint.
-        Value::Dict(_) => crate::type_normalize::dict_to_type(val, ctx),
-
         // Annotated wrapper — TypeNode constructors with @[...] annotations on their
         // constructor names (e.g. `[Int@[as-type: [fn [let t] t]  guarding: true]]`) are
         // wrapped in Value::Annotated at runtime. The inner value is the bare Variant;

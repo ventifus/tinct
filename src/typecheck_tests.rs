@@ -10317,3 +10317,128 @@ fn test_unfold_once_basic() {
         other => panic!("unfold_once(μa.{{x: a}}) must be a Record, got: {other:?}"),
     }
 }
+
+// -- T-1165: Negative is_subtype tests for recursive types (S-862) --
+// These tests verify that is_subtype CORRECTLY RETURNS FALSE when recursive types
+// have incompatible structure or field types, ensuring S-Assum terminates with the
+// right answer (not just any answer).
+
+/// T-1165a: μa.{x: Int, y: a} NOT <: μb.{x: Str, y: b} — different field types.
+/// S-Assum should terminate and return false (Int incompatible with Str).
+#[test]
+fn test_is_subtype_recursive_incompatible_returns_false() {
+    // μa.{x: Int, y: a}
+    let rec_a = Type::Recursive {
+        var: "a".to_string(),
+        body: Box::new(Type::Record(crate::type_def::Row {
+            fields: [
+                ("x".to_string(), Type::Int),
+                ("y".to_string(), Type::TypeVar("a".to_string(), 0)),
+            ]
+            .into(),
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+    // μb.{x: Str, y: b}
+    let rec_b = Type::Recursive {
+        var: "b".to_string(),
+        body: Box::new(Type::Record(crate::type_def::Row {
+            fields: [
+                ("x".to_string(), Type::Str),
+                ("y".to_string(), Type::TypeVar("b".to_string(), 0)),
+            ]
+            .into(),
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+    // S-Assum must terminate AND return false (Int is not a subtype of Str).
+    let result = Type::is_subtype(&rec_a, &rec_b, None);
+    assert!(
+        !result,
+        "μa.{{x: Int, y: a}} <: μb.{{x: Str, y: b}} must be FALSE (incompatible field types)"
+    );
+}
+
+/// T-1165b: μa.Int NOT <: μb.{x: b} — completely different structure.
+/// S-Assum should terminate and return false (leaf type vs record type).
+#[test]
+fn test_is_subtype_recursive_structural_mismatch_returns_false() {
+    // μa.Int — wraps a leaf type
+    let rec_a = Type::Recursive {
+        var: "a".to_string(),
+        body: Box::new(Type::Int),
+    };
+    // μb.{x: b} — wraps a record
+    let rec_b = Type::Recursive {
+        var: "b".to_string(),
+        body: Box::new(Type::Record(crate::type_def::Row {
+            fields: [("x".to_string(), Type::TypeVar("b".to_string(), 0))].into(),
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+    // S-Assum must terminate AND return false (Int is not a subtype of Record).
+    let result = Type::is_subtype(&rec_a, &rec_b, None);
+    assert!(
+        !result,
+        "μa.Int <: μb.{{x: b}} must be FALSE (structural mismatch: leaf vs record)"
+    );
+}
+
+// -- T-1166: Negative is_contractive_type unit tests (S-862) --
+// These tests verify the 3-rule contractiveness check for recursive type alias bodies.
+// The function is in src/typecheck_annot.rs; it's called at type alias construction time
+// to reject non-contractive definitions like `type Bad a = a` (infinite regress).
+
+/// T-1166a: is_contractive_type(&Type::TypeVar("a"), "a") → false
+/// Rule 1: bare self-reference μa.a is NOT contractive.
+#[test]
+fn test_is_contractive_type_bare_selfref_false() {
+    let ty = Type::TypeVar("a".to_string(), 0);
+    let result = crate::typecheck::typecheck_annot::is_contractive_type(&ty, "a");
+    assert!(
+        !result,
+        "is_contractive_type(TypeVar(\"a\"), \"a\") must be false (Rule 1: bare self-ref μa.a)"
+    );
+}
+
+/// T-1166b: is_contractive_type(&Type::Union([TypeVar("a"), Int]), "a") → false
+/// Rule 2: union with a bare self-reference member is NOT contractive.
+#[test]
+fn test_is_contractive_type_union_with_selfref_false() {
+    let ty = Type::Union(vec![Type::TypeVar("a".to_string(), 0), Type::Int]);
+    let result = crate::typecheck::typecheck_annot::is_contractive_type(&ty, "a");
+    assert!(
+        !result,
+        "is_contractive_type(Union([TypeVar(\"a\"), Int]), \"a\") must be false \
+         (Rule 2: union member is bare self-ref)"
+    );
+}
+
+/// T-1166c: is_contractive_type(&Type::Union([Int, Str]), "a") → true
+/// Rule 2: union with NO self-reference is contractive (vacuously true).
+#[test]
+fn test_is_contractive_type_union_no_selfref_true() {
+    let ty = Type::Union(vec![Type::Int, Type::Str]);
+    let result = crate::typecheck::typecheck_annot::is_contractive_type(&ty, "a");
+    assert!(
+        result,
+        "is_contractive_type(Union([Int, Str]), \"a\") must be true \
+         (Rule 2: no self-ref in union → vacuously contractive)"
+    );
+}
+
+/// T-1166d: is_contractive_type(&Type::Record({x: TypeVar("a")}), "a") → true
+/// Rule 3: Record is a guarding constructor, so even with a self-ref field it's contractive.
+#[test]
+fn test_is_contractive_type_record_with_selfref_true() {
+    let ty = Type::Record(crate::type_def::Row {
+        fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
+        tail: crate::type_def::RowTail::Empty,
+    });
+    let result = crate::typecheck::typecheck_annot::is_contractive_type(&ty, "a");
+    assert!(
+        result,
+        "is_contractive_type(Record({{x: TypeVar(\"a\")}}), \"a\") must be true \
+         (Rule 3: Record is a guarding constructor)"
+    );
+}

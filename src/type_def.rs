@@ -691,6 +691,25 @@ impl Type {
     /// `Type::Recursive` types currently under comparison (S-Exp + S-Assum, Chau &
     /// Parreaux 2026). Every recursive call MUST pass `sigma` — the Rust borrow checker
     /// enforces this structurally (missing `sigma` is a compile error).
+    ///
+    /// ## Sigma representation: `HashSet<(String, String)>`
+    ///
+    /// Sigma stores pairs of μ-binder names (e.g. `"𝜇ꜱʏᴍ⧼IntList⧽42"`).
+    /// `HashSet<(String, String)>` is the correct representation here for two reasons:
+    ///
+    /// 1. **Short-lived**: sigma is allocated once per top-level `is_subtype` call and
+    ///    dropped immediately after. It does not persist between calls, so there is no
+    ///    cross-call sharing that would benefit from interning.
+    /// 2. **O(depth) entries**: recursive types in practice have shallow depth (bounded by
+    ///    `MAX_SUBTYPE_DEPTH`). The set is never large — O(depth) entries at most, where
+    ///    depth is the nesting level of μ-binders. `String` cloning at insertion is not a
+    ///    bottleneck.
+    ///
+    /// `Arc<str>` interning would only help if the same binder names were looked up across
+    /// many long-lived sigma sets — not the case here.
+    ///
+    /// TODO(T-1167): if recursive types become common after S-862 migration and profiling
+    /// shows sigma allocation in hot paths, consider interning var names via `Arc<str>`.
     // S-861: equirecursive-checker
     fn is_subtype_inner(
         sub: &Type,

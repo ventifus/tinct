@@ -59,6 +59,21 @@ use crate::value::{Key, Value};
 /// Materializes each `Seq.Cons` payload synchronously. Iteration is bounded by the length
 /// of the sequence; infinite sequences will hang the type checker (never constructed from
 /// finite type annotations in practice).
+///
+/// ## Why this is distinct from `typecheck_annot::collect_typenode_seq`
+///
+/// `collect_typenode_seq` (in `typecheck_annot.rs`) collects Seq elements and immediately
+/// converts each one to a `Type` via `typenode_value_to_type`, returning `Option<Vec<Type>>`.
+/// This function differs in two ways:
+///
+/// 1. **Return type**: `Vec<Value>` vs `Option<Vec<Type>>` — this function is a generic
+///    walker that leaves elements as raw Values, suitable for any Seq traversal.
+/// 2. **Failure semantics**: silently stops iteration on any materialization error (soft
+///    degradation — partial results are acceptable for traversal). `collect_typenode_seq`
+///    returns `None` on any malformed element (hard error — the caller needs all elements).
+///
+/// These distinct contracts mean consolidation would force one to adopt the other's semantics.
+/// Both implementations are intentional and must remain separate.
 fn collect_seq_sync(seq: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Vec<Value> {
     let mut result = Vec::new();
     let mut current = seq.clone();
