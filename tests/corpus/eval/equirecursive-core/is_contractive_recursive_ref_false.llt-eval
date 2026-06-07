@@ -1,0 +1,13 @@
+# builtin-is-contractive returns false for a TypeNode.RecursiveRef variant.
+# This is Case 1 of the contractiveness algorithm: a bare RecursiveRef at the root
+# represents the non-contractive type μa.a (direct self-reference, no structural wrapper).
+# builtin-variant constructs the Variant value; builtin-is-contractive checks it.
+# Both are internal builtins, accessible at runtime but not registered in the type env.
+[ref-node: [builtin-variant "TypeNode.RecursiveRef" [name: "a"]]]
+[result: [builtin-is-contractive ref-node]]
+=== out
+Dict({"result": Bool(false)})
+
+=== warn
+undefined variable: builtin-variant at 5:13-5:28
+undefined variable: builtin-is-contractive at 6:11-6:33

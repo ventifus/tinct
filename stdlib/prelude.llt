@@ -374,6 +374,36 @@
     [instance TypeNodeResolve
       [let t@TypeNode]: [as-type: [fn [let t] t]]]
 
+  # ============================================================================
+  # mu: inline recursive type combinator (S-860: equirecursive-types-core)
+  # ============================================================================
+  #
+  # mu constructs a TypeNode.Recursive value from a body function.
+  # Usage:
+  #   [mu [fn [let self] [record head: Int tail: self]]]
+  #   [mu [fn [let self] [or Absent [record head: Int tail: self]]]]
+  #
+  # f receives a TypeNode.RecursiveRef sentinel (to mark recursive positions).
+  # f is called EAGERLY: the result is a concrete TypeNode, not a deferred Fn.
+  # mu checks contractiveness before returning the Recursive node.
+  #
+  # Contractiveness: a recursive type μa.T is contractive iff every path from
+  # the root to a RecursiveRef passes through at least one guarding constructor
+  # (Record, Arrow, TypeApplication, or any TypeNode with guarding: true).
+  # Non-contractive types (μa.a, μa.(a | Int)) are rejected at construction time
+  # with a clear error rather than silently producing a diverging type.
+  #
+  # is-contractive is a Rust builtin (builtin-is-contractive, registered in
+  # builtins_core.rs) because it must inspect TypeNode Value structure directly.
+  # The type-stage alias is-contractive is registered alongside the other
+  # type-stage utilities via builtin_module("core").
+  mu: [fn [let f]
+    [let var  [builtin-gensym "𝜇" "rec"]]
+    [let body [f [RecursiveRef name: var]]]
+    [if [builtin-is-contractive body]
+      [Recursive var: var  body: body]
+      [builtin-raise [builtin-str "non-contractive recursive type: immediate recursion without structural container (binder: " var ")"]]]]
+
 ]
 
 --- uses: ["core"]

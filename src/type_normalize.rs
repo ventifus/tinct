@@ -652,6 +652,20 @@ impl fmt::Display for Type {
                 }
                 write!(f, ")")
             }
+            // S-860: equirecursive-types-core
+            // Display as `μVarName.Body`, extracting the human-readable alias name from the
+            // gensym'd binder (e.g., "𝜇ꜱʏᴍ⧼IntList⧽42" → displayed as "μIntList").
+            // This matches the notation used in doc/whatif/equirecursive-types.md.
+            Type::Recursive { var, body } => {
+                // Extract the alias name from the gensym tag: "𝜇ꜱʏᴍ⧼NAME⧽N" → "NAME".
+                // Falls back to the full var name if the format doesn't match.
+                let display_name = var
+                    .strip_prefix('𝜇')
+                    .and_then(|s| s.strip_prefix("ꜱʏᴍ⧼"))
+                    .and_then(|s| s.find('⧽').map(|i| &s[..i]))
+                    .unwrap_or(var.as_str());
+                write!(f, "μ{}.{}", display_name, body)
+            }
         }
     }
 }

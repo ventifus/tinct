@@ -1,0 +1,14 @@
+# builtin-is-contractive returns true for a TypeNode.Union variant with no payload.
+# The Union/Intersect branch (Case 3) tries to inspect the `types` child Seq.
+# When the payload is absent (unit variant), it cannot be inspected — the algorithm
+# returns true conservatively: "no self-references we can see = trivially contractive".
+# This is a robustness property: malformed or incomplete TypeNode values never
+# incorrectly trigger a contractiveness rejection.
+[union-node: [builtin-variant "TypeNode.Union"]]
+[result: [builtin-is-contractive union-node]]
+=== out
+Dict({"result": Bool(true)})
+
+=== warn
+undefined variable: builtin-variant at 6:15-6:30
+undefined variable: builtin-is-contractive at 7:11-7:33

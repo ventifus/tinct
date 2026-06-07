@@ -308,6 +308,25 @@ pub enum Type {
         tag: String,
         fields: Row,
     },
+    /// Equirecursive type — `μvar.body`, where `var` is a globally-unique gensym'd binder
+    /// name (produced by `gensym_fresh('𝜇', alias_name)`) and `body` is the expanded type
+    /// body that may contain `TypeVar(var, 0)` at recursive positions.
+    ///
+    /// This is the S-860 equirecursive-types-core wrapping: produced by `expand_named` after
+    /// alias expansion when the body contains a self-reference (`contains_recvar` check).
+    ///
+    /// The `var` name serves as the coinductive sigma key in S-Exp + S-Assum subtype checking
+    /// (future sprint). For the current sprint, it is scaffolding — the Recursive wrapper is
+    /// constructed here but not yet consumed by `is_subtype` (deferred to S-861).
+    ///
+    // S-860: equirecursive-types-core — scaffolding; wired in by S-861
+    #[allow(dead_code)]
+    Recursive {
+        /// Globally unique μ-binder name (e.g., `"𝜇ꜱʏᴍ⧼IntList⧽42"`).
+        var: String,
+        /// Expanded type body; `TypeVar(var, 0)` marks recursive positions.
+        body: Box<Type>,
+    },
 }
 
 // Manual PartialEq for Type: TypeVar compares name only, level ignored
@@ -384,6 +403,13 @@ impl PartialEq for Type {
                     fields: fields2,
                 },
             ) => tag1 == tag2 && fields1 == fields2,
+            // S-860: equirecursive-types-core — Recursive equality: same binder name and same body.
+            // Globally unique gensym var names mean two Recursive values are equal iff they are the
+            // same logical type. Alpha-equivalence (different var names, same body shape) is NOT
+            // tested here — that requires the coinductive S-Assum algorithm (deferred to S-861).
+            (Type::Recursive { var: v1, body: b1 }, Type::Recursive { var: v2, body: b2 }) => {
+                v1 == v2 && b1 == b2
+            }
             _ => false,
         }
     }
@@ -461,6 +487,13 @@ impl std::hash::Hash for Type {
                 field_vec.sort_by_key(|(k, _)| *k);
                 field_vec.hash(state);
                 fields.tail.hash(state);
+            }
+            // S-860: equirecursive-types-core
+            // Hash the binder name (globally unique) and the body.
+            // The globally-unique gensym var name is sufficient for identity.
+            Type::Recursive { var, body } => {
+                var.hash(state);
+                body.hash(state);
             }
         }
     }
@@ -1404,6 +1437,9 @@ impl Type {
                 }
             }
             Type::TyCon(_) => {} // TyCon has no type variables
+            // S-860: equirecursive-types-core — recurse into the body.
+            // TypeVars inside a Recursive body must be collected for generalization.
+            Type::Recursive { var: _, body } => body.collect_type_vars(vars),
             _ => {}
         }
     }
@@ -1444,6 +1480,9 @@ impl Type {
                 fields.fields.values().any(|ty| ty.has_inference_vars())
             }
             Type::Proxy => false,
+            // S-860: equirecursive-types-core — recurse into the body.
+            // A Recursive type with inference vars in the body is not yet fully concrete.
+            Type::Recursive { var: _, body } => body.has_inference_vars(),
             _ => false,
         }
     }
@@ -1479,6 +1518,8 @@ impl Type {
             Type::NominalVariant { tag: _, fields } => {
                 fields.fields.values().any(|ty| ty.has_type_stage_app())
             }
+            // S-860: equirecursive-types-core — recurse into the body.
+            Type::Recursive { var: _, body } => body.has_type_stage_app(),
             _ => false,
         }
     }
@@ -1544,6 +1585,9 @@ impl Type {
                     ty.collect_all_vars(type_vars);
                 }
             }
+            // S-860: equirecursive-types-core — recurse into the body.
+            // TypeVars inside a Recursive body must be collected for generalization/instantiation.
+            Type::Recursive { var: _, body } => body.collect_all_vars(type_vars),
             _ => {}
         }
     }
@@ -1633,6 +1677,12 @@ impl Type {
                 found
             }
             Type::TyCon(_) => false, // TyCon has no type variables
+            // S-860: equirecursive-types-core — recurse into the body.
+            // The `var` binder is a μ-binder, not an inference var, and must not
+            // be checked for `occurs_name` or added to `type_vars`.
+            Type::Recursive { var: _, body } => {
+                body.collect_all_vars_check_occurs(occurs_name, type_vars)
+            }
             _ => false,
         }
     }
@@ -1698,6 +1748,14 @@ impl Type {
                 for ty in fields.fields.values() {
                     ty.collect_all_vars_vec(type_vars);
                 }
+            }
+            // S-860: equirecursive-types-core — recurse into the body.
+            // The `var` binder name is a gensym'd μ-binder, NOT an inference TypeVar, and
+            // must NOT be added to `type_vars`. Only the body is walked for TypeVars.
+            // Not recursing would make TypeVars inside a Recursive body invisible to
+            // generalization — a soundness gap per the design review (agent_type-theorist).
+            Type::Recursive { var: _, body } => {
+                body.collect_all_vars_vec(type_vars);
             }
             // Exhaustive leaf enumeration — no wildcard to prevent silently missing new compound variants
             Type::Int
@@ -1781,6 +1839,8 @@ impl Type {
                 }
             }
             Type::TyCon(_) => {} // TyCon is a concrete constructor, not an Operator variable
+            // S-860: equirecursive-types-core — recurse into the body.
+            Type::Recursive { var: _, body } => body.collect_operator_names(operator_names),
             _ => {}
         }
     }
@@ -2141,6 +2201,11 @@ impl Type {
                     },
                 }
             }
+            // S-860: equirecursive-types-core — recurse into the body.
+            Type::Recursive { var, body } => Type::Recursive {
+                var,
+                body: Box::new(Type::simplify_type(*body)),
+            },
             _ => ty,
         }
     }
@@ -2240,6 +2305,8 @@ fn type_order(ty: &Type) -> u8 {
         Type::Operator(_) => 36,
         Type::TypeStageApp { .. } => 37,
         Type::NominalVariant { .. } => 38,
+        // S-860: equirecursive-types-core
+        Type::Recursive { .. } => 39,
     }
 }
 

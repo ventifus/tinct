@@ -1,0 +1,11 @@
+# builtin-is-contractive returns true for a plain Dict value.
+# A Dict is not a TypeNode.RecursiveRef and not a TypeNode.Union/Intersect variant,
+# so it falls to the default arm (Case 2) and is treated as contractive.
+# This covers the case where the argument is a Record-like structural container:
+# μa.{head: Int, tail: a} — the Record wrapper shields the RecursiveRef.
+[result: [builtin-is-contractive [head: "Int"  tail: "RecursiveRef"]]]
+=== out
+Dict({"result": Bool(true)})
+
+=== warn
+undefined variable: builtin-is-contractive at 5:11-5:33

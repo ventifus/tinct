@@ -1,0 +1,17 @@
+# builtin-is-contractive returns true for TypeNode.Union where all children are guarding.
+# Case 3: Union/Intersect recurse into their `types` Seq. Each child is checked.
+# A plain Int value (or any non-Union/Intersect/RecursiveRef value) is guarding — Case 2.
+# If ALL children of a Union/Intersect are guarding, the Union as a whole is contractive.
+#
+# This represents μa.(Int | {val: a}) where the Record wrapper around a shields the
+# recursive position — the Union's Int branch is also trivially guarding.
+# Since no child of this Union is a bare RecursiveRef, the result is true.
+[int-node:   42]
+[union-node: [builtin-variant "TypeNode.Union" [types: [0: int-node]]]]
+[result:     [builtin-is-contractive union-node]]
+=== out
+Dict({"result": Bool(true)})
+
+=== warn
+undefined variable: builtin-variant at 9:15-9:30
+undefined variable: builtin-is-contractive at 10:15-10:37

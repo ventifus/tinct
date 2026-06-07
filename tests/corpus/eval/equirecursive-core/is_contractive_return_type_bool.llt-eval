@@ -1,0 +1,22 @@
+# builtin-is-contractive return type is Bool: both true and false branches return Bool.
+# This pins the return type contract — the builtin always returns a Bool value,
+# not a Variant or other type, regardless of whether the input is contractive.
+#
+# Two calls: one on a plain Int (contractive → Bool(true)), one on a
+# TypeNode.RecursiveRef (non-contractive → Bool(false)).
+# The `and` of the first with `[not false]` of the second gives Bool(true).
+[
+  leaf-node: 42
+  ref-node:  [builtin-variant "TypeNode.RecursiveRef" [name: "x"]]
+  leaf-ok:   [builtin-is-contractive leaf-node]
+  ref-ok:    [not [builtin-is-contractive ref-node]]
+  both:      [and leaf-ok ref-ok]
+]
+both
+=== out
+Bool(true)
+
+=== warn
+undefined variable: builtin-variant at 9:15-9:30
+undefined variable: builtin-is-contractive at 10:15-10:37
+undefined variable: builtin-is-contractive at 11:20-11:42

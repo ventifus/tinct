@@ -1,0 +1,11 @@
+# builtin-is-contractive returns true for a plain Int value.
+# The contractiveness check falls to the default arm (Case 2): any value that is
+# neither TypeNode.RecursiveRef nor TypeNode.Union/Intersect is treated as guarding.
+# This represents the leaf case — primitive TypeNode constructors (Int, Float, Bool,
+# String, etc.) are all guarding, so any path through them to a RecursiveRef is safe.
+[result: [builtin-is-contractive 42]]
+=== out
+Dict({"result": Bool(true)})
+
+=== warn
+undefined variable: builtin-is-contractive at 5:11-5:33

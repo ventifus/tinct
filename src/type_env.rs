@@ -146,6 +146,13 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
             tag: tag.clone(),
             fields: rename_single_type_var_in_row(fields, old_name, fresh_name, level),
         },
+        // S-860: equirecursive-types-core — recurse into the body.
+        // The `var` μ-binder name uses a distinct gensym namespace (𝜇ꜱʏᴍ⧼...⧽N) from TypeVar
+        // names (_tN), so renaming old_name within the body is always safe.
+        Type::Recursive { var, body } => Type::Recursive {
+            var: var.clone(),
+            body: Box::new(rename_single_type_var(body, old_name, fresh_name, level)),
+        },
         // Primitives, Any, Error, Number, Proxy: no type variables inside.
         _ => ty.clone(),
     }

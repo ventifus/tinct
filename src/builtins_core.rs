@@ -55,9 +55,10 @@ use crate::builtins_meta::{
     builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
     builtin_builtin_module, builtin_cap_identity, builtin_decimal, builtin_eval,
     builtin_eval_types, builtin_expand, builtin_force, builtin_gensym, builtin_include_cache_get,
-    builtin_include_cache_put, builtin_llt_repr, builtin_load, builtin_macro_error,
-    builtin_macro_injects, builtin_make_annotated, builtin_program, builtin_raise, builtin_tag_of,
-    builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_include_cache_put, builtin_is_contractive, builtin_llt_repr, builtin_load,
+    builtin_macro_error, builtin_macro_injects, builtin_make_annotated, builtin_program,
+    builtin_raise, builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate,
+    builtin_variant,
 };
 // I/O implementations.
 use crate::builtins_io::{
@@ -836,6 +837,14 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             "builtin-make-annotated",
             builtin_make_annotated,
             [Strictness::Seq, Strictness::Seq]
+        ),
+        // S-860: equirecursive-types-core — contractiveness check for mu combinator.
+        // Used by stdlib/prelude.llt type-stage `mu` to validate TypeNode.Recursive bodies.
+        // S-861 will also call this from expand_named in typecheck_annot.rs.
+        builtin!(
+            "builtin-is-contractive",
+            builtin_is_contractive,
+            [Strictness::Seq]
         ),
         builtin!("builtin-decimal", builtin_decimal, [Strictness::Seq]),
         builtin!("builtin-big-int", builtin_big_int, [Strictness::Seq]),

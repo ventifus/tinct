@@ -223,6 +223,7 @@ fn test_corpus_structure() {
         "tests/corpus/eval/seq_migration",
         "tests/corpus/eval/typenode-adt",
         "tests/corpus/eval/tycondef-merge",
+        "tests/corpus/eval/equirecursive-core",
         // Invalid corpus
         "tests/corpus/invalid/pipeline",
         "tests/corpus/invalid/semantic_errors",

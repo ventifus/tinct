@@ -5087,6 +5087,78 @@ fn test_parameterized_type_alias_nested_usage() {
 }
 
 #[test]
+#[ignore = "pre-existing regression from runtime-v2 merge: parser rejects [type ...] in expression position"]
+fn test_apply_type_alias_substitution_nominal_variant() {
+    // B-356: apply_type_alias_substitution must recurse into NominalVariant fields
+    // [type [let t] [Some value: t]] with t=Int should substitute Int for t in the field type
+    let env = doc_env(
+        "[Option: [type [let t] [Some value: t] | None]
+         x: [Some value: 42]]",
+    );
+    let opt_alias = env
+        .get_type_alias("Option")
+        .expect("Option alias should exist");
+    // Alias body should be Union([NominalVariant { tag: "Option.Some", fields: {value: TypeVar("t")} }, ...])
+    // When instantiated with [@[Option Int] ...], the TypeVar("t") should be replaced with Int
+    match &opt_alias.body {
+        Type::Union(members) => {
+            let some_variant = members
+                .iter()
+                .find(|m| matches!(m, Type::NominalVariant { tag, .. } if tag == "Option.Some"));
+            assert!(
+                some_variant.is_some(),
+                "Option alias body should contain Some variant"
+            );
+            match some_variant.unwrap() {
+                Type::NominalVariant { tag, fields } => {
+                    assert_eq!(tag, "Option.Some");
+                    // Before B-356 fix, the field type would be TypeVar("t") here
+                    // After substitution with Int, it should be Int (but this test just checks structure)
+                    assert!(
+                        fields.fields.contains_key("value"),
+                        "Some variant should have value field"
+                    );
+                }
+                _ => panic!("expected NominalVariant"),
+            }
+        }
+        other => panic!("expected Union body, got {other:?}"),
+    }
+}
+
+#[test]
+#[ignore = "pre-existing regression from runtime-v2 merge: parser rejects [type ...] in expression position"]
+fn test_apply_type_alias_substitution_preserves_row_tail_uniform() {
+    // B-356: apply_type_alias_substitution must preserve RowTail::Uniform (not hardcode Empty)
+    // [type [let k v] {_@k: v}] should preserve the Uniform tail through substitution
+    use crate::type_def::RowTail;
+
+    let env = doc_env("[MapLike: [type [let k v] [open: true  _@k: v]]]");
+    let alias = env
+        .get_type_alias("MapLike")
+        .expect("MapLike alias should exist");
+
+    // Alias body should be a Record with RowTail::Uniform
+    match &alias.body {
+        Type::Record(row) => {
+            // Before B-356 fix, tail would be Empty (hardcoded)
+            // After fix, tail should be Uniform with TypeVar placeholders
+            match &row.tail {
+                RowTail::Uniform { key, value: _ } => {
+                    assert!(key.is_some(), "Uniform tail should have key type");
+                    // The key and value should be TypeVars (or substituted types after instantiation)
+                    // This test just verifies the structure is preserved
+                }
+                RowTail::Empty => {
+                    panic!("B-356 regression: RowTail::Uniform was dropped during substitution")
+                }
+            }
+        }
+        other => panic!("expected Record body, got {other:?}"),
+    }
+}
+
+#[test]
 fn test_check_call_forward_ref_result_type() {
     // [fn [x] $x] has Unknown unannotated param. Calling it with 42 returns Unknown
     // (gradual semantics: Unknown propagates through calls).
@@ -9473,6 +9545,143 @@ fn test_expand_all_tycon_apps_union() {
         result, expected,
         "Union members with TyCon should be expanded"
     );
+}
+
+// ============================================================================
+// B-358: Map TyConDef body uses TypeVar("k")/TypeVar("v") not Unknown
+// ============================================================================
+
+/// B-358: Map TyConDef registered by builtins uses TypeVar("k", 0)/TypeVar("v", 0) in body.
+///
+/// Regression guard: if builtins_core.rs Map registration ever reverts to Unknown placeholders,
+/// expand_named Step 5 param substitution would silently fail for Map[K, V] annotations.
+#[test]
+fn test_map_tycondef_body_uses_typevars_not_unknown() {
+    let env = crate::builtins::build_builtins_type_env();
+
+    let def = env
+        .lookup_tycon_def("Map")
+        .expect("Map TyConDef must be registered in builtins env");
+
+    // Map must declare exactly two params: "k" and "v"
+    assert_eq!(
+        def.params,
+        vec!["k".to_string(), "v".to_string()],
+        "Map TyConDef must have params [\"k\", \"v\"]"
+    );
+
+    // Body must be App(App(TyCon("Map"), TypeVar("k", 0)), TypeVar("v", 0)) —
+    // i.e., the curried Map[k, v] structure, NOT Unknown placeholders.
+    let expected_body = Type::map(
+        Type::TypeVar("k".to_string(), 0),
+        Type::TypeVar("v".to_string(), 0),
+    );
+    assert_eq!(
+        def.body, expected_body,
+        "Map TyConDef body must use TypeVar(\"k\", 0)/TypeVar(\"v\", 0), not Unknown"
+    );
+}
+
+// ============================================================================
+// T-1072: expand_named Step 8 wrapping rule + mutual recursion
+// ============================================================================
+
+/// T-1072a: expand_named produces Type::Recursive wrapper when body self-references the alias.
+///
+/// Verifies the wrap rule: a self-referential alias expands to
+/// `Type::Recursive { var, body }` where `body` contains `TypeVar(var, 0)` at the
+/// recursive position.
+#[test]
+fn test_expand_named_produces_recursive_wrapper() {
+    let (mut env, mut state) = make_expand_env();
+
+    // Register "Self" as an alias with body Union([Int, TyCon("Self")]).
+    // This creates a self-referential type: Self = Int | Self.
+    // We need to register it so that expand_named can find the same Arc for cycle detection.
+    let arc_self = Arc::new(crate::type_def::TyConDef {
+        params: vec![],
+        body: Type::Union(vec![Type::Int, Type::TyCon("Self".to_string())]),
+        constraints: vec![],
+        variance: vec![],
+        constructors: vec![],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+    });
+    env.insert_tycon_def("Self".to_string(), Arc::clone(&arc_self));
+
+    let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
+    let result = expand_named("Self", &[], &mut stack, &env, &mut state);
+
+    match result {
+        Some(Type::Recursive { var, body }) => {
+            // The binder name must be non-empty (gensym'd)
+            assert!(!var.is_empty(), "Recursive binder var must be non-empty");
+            // The body must contain TypeVar(var, 0) at the recursive position
+            assert!(
+                contains_recvar(&body, &var),
+                "Recursive body must contain TypeVar(var, 0) sentinel at self-reference position"
+            );
+        }
+        other => panic!(
+            "expand_named on self-referential alias must produce Type::Recursive, got: {other:?}"
+        ),
+    }
+}
+
+/// T-1072b: expand_named mutual recursion — expanding EvenList (referencing OddList)
+/// produces Type::Recursive at the origin entry.
+///
+/// EvenList = Int | OddList, OddList = Int | EvenList (mutual recursion).
+/// expand_named("EvenList", ...) must produce Type::Recursive (not a bare union) because
+/// the expansion of OddList will cycle back to EvenList via Arc::ptr_eq.
+#[test]
+fn test_expand_named_mutual_recursion_wraps_at_origin() {
+    let (mut env, mut state) = make_expand_env();
+
+    // Register two mutually-recursive aliases:
+    //   EvenList = Int | TyCon("OddList")
+    //   OddList  = Int | TyCon("EvenList")
+    // The body of each references the other by name (TyCon lookup).
+    let even_arc = Arc::new(crate::type_def::TyConDef {
+        params: vec![],
+        body: Type::Union(vec![Type::Int, Type::TyCon("OddList".to_string())]),
+        constraints: vec![],
+        variance: vec![],
+        constructors: vec![],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+    });
+    let odd_arc = Arc::new(crate::type_def::TyConDef {
+        params: vec![],
+        body: Type::Union(vec![Type::Int, Type::TyCon("EvenList".to_string())]),
+        constraints: vec![],
+        variance: vec![],
+        constructors: vec![],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+    });
+    env.insert_tycon_def("EvenList".to_string(), Arc::clone(&even_arc));
+    env.insert_tycon_def("OddList".to_string(), Arc::clone(&odd_arc));
+
+    let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
+    let result = expand_named("EvenList", &[], &mut stack, &env, &mut state);
+
+    match result {
+        Some(Type::Recursive { var, body }) => {
+            assert!(!var.is_empty(), "Recursive binder var must be non-empty");
+            // The body must contain TypeVar(var, 0) — the cycle sentinel for EvenList
+            assert!(
+                contains_recvar(&body, &var),
+                "Mutual recursion: EvenList body must contain binder TypeVar(var, 0) at EvenList position"
+            );
+        }
+        other => panic!(
+            "expand_named on mutually-recursive alias must produce Type::Recursive at origin, got: {other:?}"
+        ),
+    }
 }
 
 #[test]

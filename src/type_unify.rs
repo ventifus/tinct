@@ -1562,6 +1562,20 @@ impl Substitution {
                 })
             }
             Type::TyCon(_) => Cow::Borrowed(ty), // TyCon is always concrete, no substitution needed
+            // S-860: equirecursive-types-core — recurse into the body.
+            // The `var` binder name is a gensym'd μ-binder, not a unification variable, and
+            // must NOT be looked up in the substitution. The body may contain TypeVar sentinels
+            // placed by expand_named cycle detection (Step 4) that need substitution applied.
+            Type::Recursive { var, body } => {
+                let applied_body = self.apply_type(body, depth + 1, visited_types);
+                match applied_body {
+                    Cow::Borrowed(_) => Cow::Borrowed(ty), // body unchanged — no clone needed
+                    Cow::Owned(new_body) => Cow::Owned(Type::Recursive {
+                        var: var.clone(),
+                        body: Box::new(new_body),
+                    }),
+                }
+            }
             Type::Operator(name) => {
                 // Look up Operator variable in substitution map (local frame + parent chain)
                 if visited_types.contains(name) {
@@ -2040,6 +2054,16 @@ fn lower_levels_check_occurs(
                 found |= lower_levels_check_occurs(value, occurs_name, cap_level, state);
             }
             found
+        }
+        // S-860: equirecursive-types-core — recurse into the body.
+        // The `var` binder name is a gensym'd μ-binder (not a unification variable), so it
+        // never appears in `state.levels` and must not be treated as an occurs-check target.
+        // Level lowering and occurs checking must recurse into the body because the body may
+        // contain TypeVar inference variables (e.g., in a partially-inferred recursive type).
+        // NOT recursing would leave TypeVars inside a Recursive body invisible to level
+        // lowering — a soundness gap per the design review (agent_type-theorist mempalace).
+        Type::Recursive { var: _, body } => {
+            lower_levels_check_occurs(body, occurs_name, cap_level, state)
         }
     }
 }

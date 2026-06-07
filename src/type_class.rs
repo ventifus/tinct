@@ -1010,6 +1010,8 @@ fn count_unresolved_vars(ty: &Type, subst: &crate::types::Substitution) -> usize
             .values()
             .map(|field_ty| count_unresolved_vars(field_ty, subst))
             .sum(),
+        // S-860: equirecursive-types-core — recurse into the body.
+        Type::Recursive { var: _, body } => count_unresolved_vars(body, subst),
         // Concrete types: Int, Float, Str, Bool, Number, Unknown, Top, Error, etc.
         _ => 0,
     }

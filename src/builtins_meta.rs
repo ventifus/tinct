@@ -3160,6 +3160,210 @@ fn validate_value(
     })
 }
 
+/// `builtin-is-contractive`: check whether a TypeNode value is contractive.
+///
+/// A TypeNode is contractive iff every path from the root to a `TypeNode.RecursiveRef`
+/// node passes through at least one *guarding* constructor. Guarding constructors are
+/// those with `guarding: true` in their `@[...]` constructor annotation. In practice:
+/// `Record`, `Arrow`, `TypeApplication`, `TypeConstructor`, and the leaf primitives
+/// (`Int`, `Float`, `String`, `Bool`, `Absent`, `Unknown`, `Never`) are all guarding.
+/// `Union` and `Intersect` are **not** guarding — they are logical combinators that do
+/// not structurally interpose between a binder and its reference.
+/// `Recursive` itself IS guarding — an inner `μb.T` shields the outer var from any
+/// `RecursiveRef` nodes inside `T`.
+///
+/// Three-case algorithm (from `doc/whatif/equirecursive-types.md §Contractiveness`):
+///
+/// 1. If the node is `TypeNode.RecursiveRef` → **not contractive** (bare self-reference).
+/// 2. If the node's tag is guarding (see list above) → **contractive** (any RecursiveRef
+///    underneath is safely separated by a structural layer).
+/// 3. Otherwise (Union, Intersect) → recurse into the `types` child Seq; all children
+///    must be contractive.
+///
+/// This builtin takes a single positional arg (the TypeNode value) and returns a `Bool`.
+/// Named args are rejected. Pre-materialized by `pos_strictness = [Strictness::Seq]`.
+///
+/// Used exclusively by `mu` in `stdlib/prelude.llt` (type-stage section) to gate
+/// construction of `TypeNode.Recursive` values.
+///
+/// # Registered as
+///
+/// `builtin-is-contractive` in `core_builtins()` / `builtins_core.rs`.
+/// S-861 will call this from `expand_named` at the annotation resolver level.
+// S-860: equirecursive-types-core
+pub(crate) fn builtin_is_contractive(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+
+        reject_named("builtin-is-contractive", named.as_ref(), call_span.clone())?;
+
+        let body_val = crate::builtins::expect_one_arg(
+            "builtin-is-contractive",
+            &args,
+            // named already checked above; pass None so expect_one_arg doesn't re-check
+            None,
+            &ctx,
+            call_span.clone(),
+        )?;
+
+        let result = is_contractive_value(&body_val, &ctx);
+        ok_val(Value::Bool(result), call_span)
+    })
+}
+
+/// Recursively check contractiveness of a TypeNode value.
+///
+/// Returns `true` iff the node is contractive — i.e., every path to a
+/// `TypeNode.RecursiveRef` passes through at least one guarding constructor.
+///
+/// The three-case rule from `equirecursive-types.md §Contractiveness`:
+///
+/// - `TypeNode.RecursiveRef` → false (bare self-reference at this position)
+/// - Guarding tag → true (any RecursiveRef below is safely guarded)
+/// - `TypeNode.Union` / `TypeNode.Intersect` → recurse into `types` child Seq
+///
+/// New TypeNode constructors declare `guarding: true` or `guarding: false` in their
+/// `@[...]` constructor annotation. This Rust implementation hard-codes the canonical
+/// split: Union and Intersect are non-guarding; all others (including Recursive itself)
+/// are guarding. S-861 should replace the hard-coded list with annotation-of lookup
+/// once the annotation resolver is wired.
+fn is_contractive_value(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> bool {
+    // Unwrap Value::Annotated transparently — annotations do not affect contractiveness.
+    let val = match val {
+        Value::Annotated { inner, .. } => inner.as_ref(),
+        other => other,
+    };
+
+    match val {
+        // Case 1: bare RecursiveRef — non-contractive.
+        Value::Variant { tag, .. } if tag == "TypeNode.RecursiveRef" => false,
+
+        // Case 3: Union and Intersect are non-guarding — recurse into all children.
+        Value::Variant { tag, payload }
+            if tag == "TypeNode.Union" || tag == "TypeNode.Intersect" =>
+        {
+            // Extract the `types` field from the payload dict.
+            // A non-guarding node with a malformed payload is treated as contractive
+            // (conservative: don't reject types we can't inspect).
+            let payload_id = match payload {
+                Some(id) => *id,
+                None => return true,
+            };
+            let payload_thunk = ctx.get_thunk(payload_id);
+            let payload_val = match materialize_sync(&payload_thunk, None, ctx) {
+                Ok(v) => v,
+                Err(_) => return true,
+            };
+            let types_thunk_id = match &payload_val {
+                Value::Dict(d) => match d.get(&crate::value::Key::String("types".into())) {
+                    Some(id) => *id,
+                    None => return true,
+                },
+                _ => return true,
+            };
+            // Walk the `types` Seq spine and check each member.
+            is_contractive_seq(types_thunk_id, ctx)
+        }
+
+        // Case 2: all other TypeNode constructors are guarding (including Recursive,
+        // Record, Arrow, TypeApplication, TypeConstructor, TypeVar, and the leaf
+        // primitives Int/Float/String/Bool/Absent/Unknown/Never).
+        // A RecursiveRef underneath is safely separated by this structural layer.
+        _ => true,
+    }
+}
+
+/// Walk a `types` Seq spine and check that every element is contractive.
+///
+/// Returns `true` iff all elements are contractive. An empty Seq or malformed
+/// spine is considered contractive (conservative: no self-references = trivially contractive).
+fn is_contractive_seq(
+    types_thunk_id: crate::arena::ThunkId,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> bool {
+    let mut current_id = types_thunk_id;
+    // Depth limit to guard against malformed cycles.
+    let mut depth = 0usize;
+    const MAX_DEPTH: usize = 256;
+
+    loop {
+        if depth >= MAX_DEPTH {
+            // Treat an overlong Seq as contractive — should never occur with valid TypeNode values.
+            return true;
+        }
+        depth += 1;
+
+        let thunk = ctx.get_thunk(current_id);
+        let val = match materialize_sync(&thunk, None, ctx) {
+            Ok(v) => v,
+            Err(_) => return true,
+        };
+
+        match &val {
+            // Seq.Nil — all elements checked successfully; Seq is contractive.
+            Value::Variant { tag, payload: None } if tag == "Seq.Nil" => return true,
+
+            // Seq.Cons { head, tail } — check the head element, then continue on tail.
+            Value::Variant {
+                tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
+                let payload_thunk = ctx.get_thunk(*payload_id);
+                let payload_val = match materialize_sync(&payload_thunk, None, ctx) {
+                    Ok(v) => v,
+                    Err(_) => return true,
+                };
+                let (head_id, tail_id) = match &payload_val {
+                    Value::Dict(d) => {
+                        let head = d.get(&crate::value::Key::String("head".into())).copied();
+                        let tail = d.get(&crate::value::Key::String("tail".into())).copied();
+                        match (head, tail) {
+                            (Some(h), Some(t)) => (h, t),
+                            _ => return true,
+                        }
+                    }
+                    _ => return true,
+                };
+                let head_thunk = ctx.get_thunk(head_id);
+                let head_val = match materialize_sync(&head_thunk, None, ctx) {
+                    Ok(v) => v,
+                    Err(_) => return true,
+                };
+                if !is_contractive_value(&head_val, ctx) {
+                    return false;
+                }
+                // Tail-recursion: advance current_id to the tail ThunkId.
+                current_id = tail_id;
+            }
+
+            // Collected integer-keyed Dict (from [builtin-collect types]) — iterate over values.
+            Value::Dict(d) => {
+                for (_k, &v_id) in d {
+                    let v_thunk = ctx.get_thunk(v_id);
+                    let v_val = match materialize_sync(&v_thunk, None, ctx) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    if !is_contractive_value(&v_val, ctx) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            // Unknown shape — treat as contractive.
+            _ => return true,
+        }
+    }
+}
+
 /// Walk a Seq spine and validate each element against `items_schema`.
 ///
 /// Separated from `validate_value` so both can be async-recursive without
