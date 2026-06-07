@@ -5108,8 +5108,8 @@ fn surface_node_to_pattern_with_guard(
         SurfaceExpression::Str(s) => (Pattern::Literal(LiteralPattern::Str(s.clone())), None),
         SurfaceExpression::Dict(entries) => {
             // Dict pattern: [key1: pat1  key2: pat2] or [key: pat ...]
-            // Note: [seq h t] always parses as an implied Call (never a Dict), so seq patterns
-            // are handled exclusively in the Call branch below via ("seq", 2) arm.
+            // Note: [Seq h t] always parses as an implied Call (never a Dict), so Seq patterns
+            // are handled exclusively in the Call branch below via ("Seq", 2) arm.
 
             // Regular dict pattern
             let mut fields = Vec::new();
@@ -5163,11 +5163,11 @@ fn surface_node_to_pattern_with_guard(
             named_args,
             ..
         } if named_args.is_empty() => {
-            // Check if this is a special pattern form: [seq h t] or [Constructor payload]
+            // Check if this is a special pattern form: [Seq h t] or [Constructor payload]
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 match (name.as_str(), args.len()) {
-                    ("seq", 2) => {
-                        // [seq h t] — seq pattern
+                    ("Seq", 2) => {
+                        // [Seq h t] — seq destructure pattern
                         let head_pat = surface_node_to_pattern(Arc::clone(&args[0]))?;
                         let tail_pat = surface_node_to_pattern(Arc::clone(&args[1]))?;
                         (

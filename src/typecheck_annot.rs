@@ -1126,8 +1126,7 @@ fn resolve_fn_type(
                 if let Some(ref key) = e.node.key {
                     matches!(&key.expr,
                         SurfaceExpression::Str(s)
-                            if matches!(s.as_str(),
-                                "return" | "constraint" | "doc" | "bind" | "kinds"))
+                            if crate::ast::STANDARD_ANN_KEYS.contains(&s.as_str()))
                 } else {
                     false
                 }
@@ -1135,8 +1134,11 @@ fn resolve_fn_type(
             // Check if all entries are keyed (no positional entries)
             let all_keyed = surface_entries.iter().all(|e| e.node.key.is_some());
 
-            if has_fn_key {
-                // Mixed keys validation: if we have fn annotation keys, all entries must be keyed
+            if has_fn_key || all_keyed {
+                // If any entry has a standard key, or if ALL entries are keyed (custom
+                // annotation keys like `[cache: true]`), treat as fn metadata dict.
+                // B-355: fn@[only-custom-keys: val] was previously misinterpreted as a
+                // return type because has_fn_key was false; now all_keyed triggers this path.
                 if !all_keyed {
                     return Err(TypeError::new(
                         "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both",

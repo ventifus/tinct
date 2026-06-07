@@ -8,6 +8,12 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+/// Standard annotation keys processed by the type system.
+/// These keys are skipped by the runtime annotation evaluator (eval_core.rs)
+/// and handled by the type checker (typecheck_annot.rs, typecheck_match.rs).
+/// Consolidated from 3 locations — do not duplicate this list.
+pub const STANDARD_ANN_KEYS: &[&str] = &["return", "constraint", "doc", "bind", "kinds"];
+
 /// Source file with path and content, shared across all spans from the same file.
 #[derive(Debug, Clone)]
 pub struct SourceFile {

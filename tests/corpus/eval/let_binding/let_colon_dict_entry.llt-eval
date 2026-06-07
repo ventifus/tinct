@@ -1,0 +1,4 @@
+# Verify [let: x] as a dict entry (colon-ahead) is treated as a string key, not a keyword
+[let: 42  value: "test"]
+=== out
+Dict({"let": Int(42), "value": String("test")})

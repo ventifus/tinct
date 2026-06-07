@@ -4,7 +4,7 @@
 #   - retry: succeeds on first attempt
 #   - await-all: wraps map-await (tested via identity since no async runtime)
 #
-# Note: loop-select, recv-all, await-all, and shutdown stubs (exit,
+# Note: select, recv-all, await-all, and shutdown stubs (exit,
 # graceful-exit) are not tested here because they require either a live
 # async runtime or builtins not yet implemented.
 

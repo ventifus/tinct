@@ -3,3 +3,6 @@
 [await [task [fn [] 42]]]
 === out
 Int(42)
+
+=== warn
+undefined variable: builtin-task at 4026:13-4026:25

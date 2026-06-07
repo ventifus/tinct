@@ -504,8 +504,6 @@ pub(crate) async fn extract_fn_annotation_extra(
     env: &Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<IndexMap<String, Value>> {
-    const STANDARD_ANN_KEYS: &[&str] = &["return", "constraint", "doc", "bind", "kinds"];
-
     let Some(ann_spanned) = return_ann else {
         return Ok(IndexMap::new());
     };
@@ -526,7 +524,7 @@ pub(crate) async fn extract_fn_annotation_extra(
         };
 
         // Skip standard annotation keys processed by the type system
-        if STANDARD_ANN_KEYS.contains(&key_str.as_str()) {
+        if crate::ast::STANDARD_ANN_KEYS.contains(&key_str.as_str()) {
             continue;
         }
 

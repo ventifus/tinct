@@ -868,7 +868,7 @@ pub(crate) fn builtin_str_bytes(
 
 /// `str-index-of`: Find the byte index of the first occurrence of needle in haystack.
 ///
-/// Takes 2 args: `haystack` (String), `needle` (String).
+/// Takes 2 args: `needle` (String), `haystack` (String) — subject-last for pipeline use.
 /// Returns the byte index of the first occurrence as an Int, or -1 if not found.
 /// Note: returns a *byte* index (not a character index). For ASCII strings, byte
 /// index equals character index. The stdlib `str-find` delegates to this builtin.
@@ -890,15 +890,15 @@ pub(crate) fn builtin_str_index_of(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        let haystack_val = args[0]
+        let needle_val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let needle_val = args[1]
+        let haystack_val = args[1]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        let haystack = require_string("str-index-of", haystack_val, args[0].span.clone())?;
-        let needle = require_string("str-index-of", needle_val, args[1].span.clone())?;
+        let needle = require_string("str-index-of", needle_val, args[0].span.clone())?;
+        let haystack = require_string("str-index-of", haystack_val, args[1].span.clone())?;
 
         let index: i64 = match haystack.find(needle.as_str()) {
             Some(byte_idx) => i64::try_from(byte_idx).map_err(|_| {

@@ -1,7 +1,7 @@
 # PM11: Seq tail matched by Wildcard should not be forced at all.
 # The tail contains a raise — a wildcard discards the tail without evaluating it.
 [match [seq 42 [raise "tail must not be forced"]]
-    [seq h _]:  h
+    [Seq h _]:  h
     _:          0]
 === out
 Int(42)

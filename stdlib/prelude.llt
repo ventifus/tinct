@@ -771,17 +771,17 @@ retry-impl: [fn [let n@Int thunk@Fn]
                        [retry-impl [builtin-sub n 1] thunk]
                        [builtin-raise "retry limit exceeded"]]]]
 
-# loop-select-impl: recursive event-loop body.
+# select-impl: recursive event-loop body.
 # Calls select-once on sources, passes result to handler, then loops.
 # Stops when select-once returns [Closed] (channel closed).
 # Checks ctx cancellation before each iteration so callers can bound the loop.
 # Tail-recursive with TCO support (O(1) stack depth in the CEK machine).
-loop-select-impl: [fn [let ctx sources@Seq handler@Fn]
+select-impl: [fn [let ctx sources@Seq handler@Fn]
     [builtin-if [builtin-cancelled-q ctx]
         []
         [match [builtin-select-once ctx sources]
             [case [let v: Result.Ok]
-                [[fn [let item] [handler item] [loop-select-impl ctx sources handler]] v]]
+                [[fn [let item] [handler item] [select-impl ctx sources handler]] v]]
             [case [let _: Closed]
                 [variant "Closed"]]]]]
 
@@ -2408,11 +2408,30 @@ Note: Returns true if condition is true; raises an error with the given message 
 <@[doc: "Less than"]: [fn@[return: Bool constraint: [a: Comparable]] [let x@a y@a] [builtin-lt x y]]
 =@[doc: "Equality"]: [fn@[return: Bool constraint: [a: Equatable]] [let x@a y@a] [builtin-eq x y]]
 
-# Arithmetic operators
-+@[doc: "Addition"]: [fn@Number [let a@Number b@Number] [builtin-add a b]]
--@[doc: "Subtraction"]: [fn@Number [let a@Number b@Number] [builtin-sub a b]]
-*@[doc: "Multiplication"]: [fn@Number [let a@Number b@Number] [builtin-mul a b]]
-/@[doc: "Division"]: [fn@Number [let a@Number b@Number] [builtin-div a b]]
+# Arithmetic operators — variadic (left fold)
+# [+] → 0, [+ n] → n, [+ a b] → a+b, [+ a b c] → (a+b)+c
+# [*] → 1, [* n] → n, [* a b] → a*b, [* a b c] → (a*b)*c
+# [- n] → -n (unary negation), [- a b] → a-b, [- a b c] → (a-b)-c
+# [/ a b] → a/b, [/ a b c] → (a/b)/c (requires at least 2 args)
++@[doc: "Addition (variadic: 0+ args, left fold, identity 0)"]:
+  [fn@Number [let ...args]
+    [if [empty? args] 0
+      [if [= 1 [length args]] [head args]
+        [reduce builtin-add [head args] [tail args]]]]]
+-@[doc: "Subtraction (variadic: 1+ args, left fold; unary = negation)"]:
+  [fn@Number [let ...args]
+    [if [empty? args] [raise "- requires at least 1 argument"]
+      [if [= 1 [length args]] [builtin-sub 0 [head args]]
+        [reduce builtin-sub [head args] [tail args]]]]]
+*@[doc: "Multiplication (variadic: 0+ args, left fold, identity 1)"]:
+  [fn@Number [let ...args]
+    [if [empty? args] 1
+      [if [= 1 [length args]] [head args]
+        [reduce builtin-mul [head args] [tail args]]]]]
+/@[doc: "Division (variadic: 2+ args, left fold)"]:
+  [fn@Number [let ...args]
+    [if [< [length args] 2] [raise "/ requires at least 2 arguments"]
+      [reduce builtin-div [head args] [tail args]]]]
 
 # Control flow
 if@[doc: "Conditional (select branch by condition)"]: [fn [let c t e] [builtin-if c t e]]
@@ -2461,13 +2480,13 @@ collect-kv@[doc: "Reconstruct dict from key-value pairs"]: [fn@Dict [let xs] [bu
 # assert: [str-contains? "world" "hello world"] => true
 # assert: [str-contains? "xyz" "hello"] => false
 str-contains?@[doc: "Check if haystack contains needle"]: [fn@Bool [let needle@Stringing haystack@Stringing]
-  [builtin-gte [str-index-of haystack needle] 0]]
+  [builtin-gte [str-index-of needle haystack] 0]]
 
 # starts-with?: String -> String -> Bool
 # assert: [starts-with? "he" "hello"] => true
 # assert: [starts-with? "lo" "hello"] => false
 starts-with?@[doc: "Check if string starts with prefix"]: [fn@Bool [let prefix@Stringing s@Stringing]
-  [= [str-index-of s prefix] 0]]
+  [= [str-index-of prefix s] 0]]
 
 # ends-with?: String -> String -> Bool
 # assert: [ends-with? "lo" "hello"] => true
@@ -2492,7 +2511,7 @@ str-repeat@[doc: "Repeat string n times"]: [fn@Stringing [let n@Int s@Stringing]
 # assert: [str-find "x" "hello world"] => -1
 # assert: [str-find "" "abc"] => 0
 str-find@[doc: "Find first occurrence of needle in haystack; returns byte index or -1"]: [fn@Int [let needle@Stringing haystack@Stringing]
-  [str-index-of haystack needle]]
+  [str-index-of needle haystack]]
 
 # Split a string by a separator into a dict of substrings (integer-keyed list).
 # Delegates to the Rust builtin via the builtin-split alias (from [include %rust "core"]).
@@ -2634,8 +2653,8 @@ open@[doc: "Open a file under a DirCap. Returns a Handle."]: builtin-open
 list-dir@[doc: "List directory entries under a DirCap. Returns a Seq of {name: String, type: String} dicts."]: builtin-list-dir
 
 # Filesystem operations
-write@[doc: "Write a string to a file under a DirCap"]: builtin-write
-write-atomic@[doc: "Atomically write a string to a file (via temp file + rename)"]: builtin-write-atomic
+write-file@[doc: "Write a string to a file under a DirCap"]: builtin-write
+write-file-atomic@[doc: "Atomically write a string to a file (via temp file + rename)"]: builtin-write-atomic
 write-handle@[doc: "Write to a WriteHandle, returns the handle for chaining"]: builtin-write-handle
 flush@[doc: "Flush a WriteHandle buffer"]: builtin-flush
 close@[doc: "Close a WriteHandle"]: builtin-close
@@ -2770,7 +2789,7 @@ str-bytes@[doc: "Return a Bytes value from a string (UTF-8 bytes)"]: builtin-str
 bytes-str@[doc: "Return a String decoded from a Bytes value (UTF-8)"]: builtin-bytes-str
 
 # String search
-str-index-of@[doc: "Return the byte index of the first occurrence of needle in haystack, or -1 if not found"]: builtin-str-index-of
+str-index-of@[doc: "Return the byte index of the first occurrence of needle in haystack, or -1 if not found. Args: needle haystack (subject-last)."]: builtin-str-index-of
 
 # String trimming (per-side)
 trim-start@[doc: "Remove leading whitespace from a string"]: builtin-trim-start
@@ -2808,11 +2827,18 @@ bor-all@[doc: "Bitwise OR of any number of Ints (identity: 0)"]:  [fn [let ...ar
 band-all@[doc: "Bitwise AND of any number of Ints (identity: -1)"]: [fn [let ...args] [reduce band -1 args]]
 bxor-all@[doc: "Bitwise XOR of any number of Ints (identity: 0)"]: [fn [let ...args] [reduce bxor 0  args]]
 
+# read-int: arbitrary-width integer decode with explicit byte order.
+# For fixed-width reads, prefer uint16/uint32/uint64 (builtin, faster).
+# Byte order: "big" for big-endian, "little" for little-endian.
+read-int@[doc: "Decode integer from b[offset..offset+len] with explicit byte order."]:
+  [fn [let order@String b@Bytes offset@Int len@Int]
+    [if [= order "big"]
+      [reduce [fn [let acc i] [bor [shl acc 8] [get [+ offset i] b]]] 0 [range 0 len]]
+      [reduce [fn [let acc i] [bor acc [shl [get [+ offset i] b] [* i 8]]]] 0 [range 0 len]]]]
+
 # sub: offset+length slice. Subject last so it works with pipelines.
-# NOTE: slice itself is currently subject-first (tracked in T-1120 to fix).
-# Once slice is subject-last, sub becomes: [fn [let offset len s] [slice offset [+ offset len] s]]
 sub@[doc: "s[offset..offset+len] — subsequence of len elements starting at offset. Subject last."]:
-  [fn [let offset@Int len@Int s] [slice s offset [+ offset len]]]
+  [fn [let offset@Int len@Int s] [slice offset [+ offset len] s]]
 
 # ============================================================================
 # Type Conversion (builtin-privacy-operators-and-io sprint)
@@ -2941,12 +2967,17 @@ Note: Converts each element to a string, then concatenates with separator betwee
 """] [let sep@String xs] [builtin-join sep xs]]
 
 concat: [fn@[return: Unknown  doc: """
-Concatenate two collections.
+Concatenate two or more collections.
 
 Example: [concat [1 2] [3 4]] => [1 2 3 4]
+Example: [concat [1 2] [3 4] [5 6]] => [1 2 3 4 5 6]
 
-Note: Works on Dict (reindexed), Seq (lazy), or String (concatenate). Return type matches inputs.
-"""] [let xs ys] [builtin-concat xs ys]]
+Note: Works on Dict (reindexed), Seq (lazy), String, or Bytes. Return type matches inputs.
+Accepts 0 args (empty dict), 1 arg (identity), or 2+ args (left fold).
+"""] [let ...args]
+  [if [empty? args]
+    []
+    [reduce builtin-concat [head args] [tail args]]]]
 
 first: [fn@[return: Unknown  doc: """
 First element of a collection.
@@ -3427,7 +3458,7 @@ duration-nanos: builtin-duration-nanos
 # ============================================================================
 # Async concurrency primitives
 #
-# Async utilities (loop-select, retry, finally, await-all, recv-all, par-map,
+# Async utilities (select, retry, finally, await-all, recv-all, par-map,
 # par-filter, exit, graceful-exit) live in this prelude — stdlib/async.llt was
 # deleted and its contents merged here in the builtin-privacy-stdlib sprint.
 # Bare-name wrappers over builtin-* stable aliases are also re-exported here.
@@ -3452,7 +3483,8 @@ CancelHandle: [type [child-ctx: Context  cancel: Context]]  # return value of wi
 # SelectSource: [type [let t r] [SelectSource  ch: [Channel t]  handler: [Fn@r [t]]]]  — one source entry for select-once
 
 # Task lifecycle
-task:          builtin-task
+# task is now a [macro ...] (below) supporting multi-body [task e1 e2 e3].
+# Single-arg [task e] passes through to builtin-task directly.
 await:         builtin-await
 par:           builtin-par
 par-map:       builtin-par-map
@@ -3500,7 +3532,7 @@ exit-now:      builtin-exit-now
 # ============================================================================
 #
 # High-level async utilities built on the async builtins above.
-# Private helpers (retry-impl, loop-select-impl) are in the private dict.
+# Private helpers (retry-impl, select-impl) are in the private dict.
 
 # await-all: wait for all tasks in parallel, return a Seq of results.
 # Each element of tasks must be a Task value produced by [task ...].
@@ -3569,29 +3601,29 @@ If drain times out, exits immediately without waiting for remaining tasks.
   [try [fn [] [with-context [with-timeout [context] timeout-ms] [drain]]]]
   [exit-now code]]
 
-# loop-select: repeatedly call select-once on sources until the context is
+# select: repeatedly call select-once on sources until the context is
 # cancelled. On each iteration the handler is called with the received value.
 # Tail-recursive implementation with O(1) stack depth via TCO.
 #
 # Type: (Context -> [Seq {ch: Channel  handler: Fn}] -> Fn -> Null)
 # Example:
-#   [loop-select [context]
+#   [select [context]
 #     [seq [ch: sig-ch  handler: [fn [let _] [exit 0]]] []]
 #     identity]
-loop-select@[doc: """
+select@[doc: """
 Repeatedly select from channels until the context is cancelled.
 
 Sources must be a Seq of dicts with `ch:` (Channel) and `handler:` (Fn) fields.
 
 Example:
-  [loop-select [context]
+  [select [context]
     [seq [ch: sig-ch   handler: [fn [let _] [exit 0]]]
      [seq [ch: req-ch  handler: [fn [let req] [task [handle req]]]] []]]
     identity]
 
 Note: Tail-recursive with O(1) stack depth. TCO was implemented in tco-proper sprint.
 """]: [fn [let ctx sources@Seq handler@Fn]
-    [loop-select-impl ctx sources handler]]
+    [select-impl ctx sources handler]]
 
 # retry: run thunk; on error, retry up to n more times.
 # Returns the first successful value, or raises "retry limit exceeded" after
@@ -3978,5 +4010,20 @@ do-desugar-inferred: [fn [let steps]
 # >> is an alias for begin — Haskell's monadic sequence operator semantics:
 # "evaluate left for side effect, discard, return right"
 >>: begin
+
+# block macro transformer: lazy multi-body in expression position.
+# [block e1 e2 e3] desugars to [[fn [let] e1 e2 e3]] — an immediately-invoked
+# zero-arg lambda. The fn [let] body provides lazy sequential multi-body scoping
+# (intermediate dicts create bindings visible to subsequent expressions).
+[macro block [let ...body]
+  [quote [[fn [let] [unquote-splice body]]]]]
+
+# task macro transformer: multi-body task support.
+# [task e1 e2 e3] desugars to [builtin-task [block e1 e2 e3]].
+# Single-arg [task e] passes through to builtin-task directly.
+[macro task [let first ...rest]
+  [if [= [builtin-tag-of rest] "Seq.Nil"]
+    [quote [builtin-task [unquote first]]]
+    [quote [builtin-task [block [unquote first] [unquote-splice rest]]]]]]
 
 ]

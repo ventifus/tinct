@@ -46,9 +46,9 @@
   1429 |         [error "take-while: expected Dict, got Seq -- collect the Seq first"]
   1430 |         [build-dict [take-while-seq pred [each-kv xs]]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-length ...] at stdlib/prelude.llt:2451:20-2451:39
+  in [builtin-length ...] at stdlib/prelude.llt:2470:20-2470:39
    |
-  2451 | """]: [fn [let xs] [builtin-length xs]]
+  2470 | """]: [fn [let xs] [builtin-length xs]]
        |                    ^^^^^^^^^^^^^^^^^^^
   in [length ...] at 2:1-2:47
 

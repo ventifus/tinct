@@ -1,7 +1,7 @@
-# [seq h t] pattern: bind tail and use it — tail is a lazy Seq.Cons
+# [Seq h t] pattern: bind tail and use it — tail is a lazy Seq.Cons
 # Regression: tail binding must remain unevaluated (lazy), head accessible via further pattern
 [match [range 10 13]
-    [seq h t]: [match t [seq h2 _]: [+ h h2] _: 0]
+    [Seq h t]: [match t [Seq h2 _]: [+ h h2] _: 0]
     _:         0]
 === out
 Int(21)

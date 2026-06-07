@@ -633,14 +633,14 @@ pub(crate) fn infer_fn(
                     // Check for function metadata keys directly on SurfaceEntries (no bridge needed for this check)
                     let has_fn_key = surface_entries.iter().any(|e| {
                         e.node.key.as_ref().is_some_and(|k| {
-                            matches!(&k.expr, SurfaceExpression::Str(s) if matches!(s.as_str(), "return" | "constraint" | "doc" | "bind" | "kinds"))
+                            matches!(&k.expr, SurfaceExpression::Str(s) if crate::ast::STANDARD_ANN_KEYS.contains(&s.as_str()))
                         })
                     });
                     // Check if all entries are keyed (no positional entries)
                     let all_keyed = surface_entries.iter().all(|e| e.node.key.is_some());
 
-                    if has_fn_key {
-                        // Mixed keys validation: if we have fn annotation keys, all entries must be keyed
+                    if has_fn_key || all_keyed {
+                        // B-355: all-keyed dicts (including custom-only keys) are fn metadata.
                         if !all_keyed {
                             return Err(vec![TypeError::new(
                                 "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both",
