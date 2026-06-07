@@ -215,6 +215,7 @@ impl SurfaceResolver {
 
             // Terminals with no child expressions
             SurfaceExpression::Int(_)
+            | SurfaceExpression::U64(_)
             | SurfaceExpression::Float(_)
             | SurfaceExpression::Bool(_)
             | SurfaceExpression::Str(_)
@@ -369,7 +370,8 @@ pub fn resolve_surface_program(program: &SurfaceProgram) -> ResolutionTable {
 }
 
 /// Extract static string-keyed names from a SurfaceExpression::Dict's entries.
-/// Same logic as the old resolver's `dict_static_keys` but for SurfaceEntry.
+/// Bare identifier keys are normalized to `Str` by the parser's `push_value` before this
+/// function is reached, so only `Str` and `Annotated` arms are needed here.
 fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
     entries
         .iter()

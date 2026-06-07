@@ -223,6 +223,8 @@ pub enum Pattern {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LiteralPattern {
     Int(i64),
+    /// Unsigned 64-bit integer (from `42u` literal patterns)
+    U64(u64),
     Float(f64),
     Bool(bool),
     Str(String),
@@ -289,6 +291,7 @@ impl fmt::Display for SurfaceExpression {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SurfaceExpression::Int(n) => write!(f, "{n}"),
+            SurfaceExpression::U64(n) => write!(f, "{n}u"),
             SurfaceExpression::Float(n) => {
                 let s = n.to_string();
                 if !s.contains('.') && !s.contains('e') && !s.contains('E') {
@@ -554,6 +557,7 @@ impl fmt::Display for LiteralPattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LiteralPattern::Int(n) => write!(f, "{n}"),
+            LiteralPattern::U64(n) => write!(f, "{n}u"),
             LiteralPattern::Float(n) => {
                 let s = n.to_string();
                 if !s.contains('.') && !s.contains('e') && !s.contains('E') {
@@ -610,6 +614,8 @@ pub fn node_id(arc: &Arc<SurfaceNode>) -> NodeId {
 pub enum SurfaceExpression {
     // Literals
     Int(i64),
+    /// Unsigned 64-bit integer (from `42u`, `0xFFu` literals)
+    U64(u64),
     Float(f64),
     Bool(bool),
     Str(String),
@@ -1005,6 +1011,8 @@ pub fn empty_type_annotation_table_arc() -> std::sync::Arc<TypeAnnotationTable> 
 pub enum CoreExpr {
     // Literals
     Int(i64),
+    /// Unsigned 64-bit integer (from `42u`, `0xFFu` literals)
+    U64(u64),
     Float(f64),
     Bool(bool),
     Str(String),

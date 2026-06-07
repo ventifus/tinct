@@ -31,6 +31,7 @@ use crate::ast::{
 pub fn surface_expr_tag(expr: &SurfaceExpression) -> &'static str {
     match expr {
         SurfaceExpression::Int(_) => "IntLiteral",
+        SurfaceExpression::U64(_) => "U64Literal",
         SurfaceExpression::Float(_) => "FloatLiteral",
         SurfaceExpression::Bool(_) => "BoolLiteral",
         SurfaceExpression::Str(_) => "StrLiteral",
@@ -99,6 +100,7 @@ pub fn surface_program_tag(_prog: &SurfaceProgram) -> &'static str {
 pub fn surface_expr_field_names(expr: &SurfaceExpression) -> &'static [&'static str] {
     match expr {
         SurfaceExpression::Int(_) => &["value", "span"],
+        SurfaceExpression::U64(_) => &["value", "span"],
         SurfaceExpression::Float(_) => &["value", "span"],
         SurfaceExpression::Bool(_) => &["value", "span"],
         SurfaceExpression::Str(_) => &["value", "span"],
@@ -153,6 +155,9 @@ pub fn surface_node_get_field(
 
         // --- IntLiteral ---
         (SurfaceExpression::Int(n), "value") => Value::Int(*n),
+
+        // --- U64Literal ---
+        (SurfaceExpression::U64(n), "value") => Value::U64(*n),
 
         // --- FloatLiteral ---
         (SurfaceExpression::Float(n), "value") => Value::Float(*n),

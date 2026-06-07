@@ -997,6 +997,8 @@ impl EvalContext {
 pub fn ground_type_of(v: &Value) -> Type {
     match v {
         Value::Int(_) => Type::Int,
+        // U64 values have Int ground type — no dedicated Type::U64 yet (see typecheck.rs).
+        Value::U64(_) => Type::Int,
         Value::Float(_) => Type::Float,
         Value::Bool(_) => Type::Bool,
         Value::String { .. } => Type::Str,
@@ -1352,6 +1354,7 @@ fn value_to_surface_node(
     };
     match value {
         Value::Int(n) => Ok(make_node(SurfaceExpression::Int(*n))),
+        Value::U64(n) => Ok(make_node(SurfaceExpression::U64(*n))),
         Value::Float(f) => Ok(make_node(SurfaceExpression::Float(*f))),
         Value::Bool(b) => Ok(make_node(SurfaceExpression::Bool(*b))),
         Value::String { source, start, end } => Ok(make_node(SurfaceExpression::Str(
@@ -1853,6 +1856,10 @@ fn eval_core_expr<'a>(
             // Fast path: literals materialize directly without wrapping in Unevaluated
             CoreExpr::Int(n) => Ok(Arc::new(Thunk::new_materialized(
                 Value::Int(*n),
+                span.clone(),
+            ))),
+            CoreExpr::U64(n) => Ok(Arc::new(Thunk::new_materialized(
+                Value::U64(*n),
                 span.clone(),
             ))),
             CoreExpr::Float(f) => Ok(Arc::new(Thunk::new_materialized(
@@ -3380,6 +3387,7 @@ pub(crate) fn match_pattern<'a>(
                 // Literal matches if the value equals the literal
                 let matches = match (lit, value) {
                     (LiteralPattern::Int(n), Value::Int(v)) => n == v,
+                    (LiteralPattern::U64(n), Value::U64(v)) => n == v,
                     (LiteralPattern::Float(f), Value::Float(v)) => f == v,
                     (LiteralPattern::Bool(b), Value::Bool(v)) => b == v,
                     (

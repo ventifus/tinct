@@ -422,6 +422,10 @@ impl<'a> Formatter<'a> {
     fn format_expr(&mut self, expr: &Arc<SurfaceNode>, _in_bracket: bool) {
         match &expr.expr {
             SurfaceExpression::Int(n) => self.output.push_str(&n.to_string()),
+            SurfaceExpression::U64(n) => {
+                self.output.push_str(&n.to_string());
+                self.output.push('u');
+            }
             SurfaceExpression::Float(f) => {
                 let s = f.to_string();
                 self.output.push_str(&s);
@@ -704,6 +708,7 @@ impl<'a> Formatter<'a> {
                     n.to_string().len()
                 }
             }
+            SurfaceExpression::U64(n) => n.to_string().len() + 1, // trailing 'u'
             SurfaceExpression::Float(f) => {
                 let s = f.to_string();
                 if !s.contains('.') && !s.contains('e') && !s.contains('E') {
@@ -898,6 +903,7 @@ impl<'a> Formatter<'a> {
             }
             Pattern::Literal(lit) => match lit {
                 LiteralPattern::Int(n) => n.to_string().len(),
+                LiteralPattern::U64(n) => n.to_string().len() + 1, // trailing 'u'
                 LiteralPattern::Float(f) => {
                     let s = f.to_string();
                     if !s.contains('.') && !s.contains('e') && !s.contains('E') {
@@ -1275,6 +1281,10 @@ impl<'a> Formatter<'a> {
             }
             Pattern::Literal(lit) => match lit {
                 LiteralPattern::Int(n) => self.output.push_str(&n.to_string()),
+                LiteralPattern::U64(n) => {
+                    self.output.push_str(&n.to_string());
+                    self.output.push('u');
+                }
                 LiteralPattern::Float(f) => {
                     let s = f.to_string();
                     self.output.push_str(&s);
@@ -1409,6 +1419,7 @@ impl<'a> Formatter<'a> {
                     n.to_string().chars().next()
                 }
             }
+            SurfaceExpression::U64(n) => n.to_string().chars().next(),
             SurfaceExpression::Float(_) => Some('0'), // approximate
             SurfaceExpression::Bool(b) => Some(if *b { 't' } else { 'f' }),
             SurfaceExpression::Str(_) => {

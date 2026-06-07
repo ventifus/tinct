@@ -158,6 +158,7 @@ fn lower_expr(
 ) -> CoreExpr {
     match expr {
         SurfaceExpression::Int(n) => CoreExpr::Int(*n),
+        SurfaceExpression::U64(n) => CoreExpr::U64(*n),
         SurfaceExpression::Float(n) => CoreExpr::Float(*n),
         SurfaceExpression::Bool(b) => CoreExpr::Bool(*b),
         SurfaceExpression::Str(s) => CoreExpr::Str(s.clone()),
@@ -416,6 +417,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
     use crate::ast::{CoreExpr, SurfaceMatchArm};
     match core {
         CoreExpr::Int(n) => SurfaceExpression::Int(*n),
+        CoreExpr::U64(n) => SurfaceExpression::U64(*n),
         CoreExpr::Float(f) => SurfaceExpression::Float(*f),
         CoreExpr::Bool(b) => SurfaceExpression::Bool(*b),
         CoreExpr::Str(s) => SurfaceExpression::Str(s.clone()),

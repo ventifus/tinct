@@ -668,6 +668,8 @@ fn hover_at_surface_node(
             )
         )),
 
+        SurfaceExpression::U64(n) => Some(format!("U64: {n}u")),
+
         SurfaceExpression::Error(error_span) => Some(format!(
             "Parse error at {}:{}",
             error_span.start.line, error_span.start.column
@@ -937,6 +939,7 @@ fn name_at_offset(node: &Arc<SurfaceNode>, offset: usize) -> Option<String> {
 
         // Literals, Error, Rest, Annotated, Placeholder, Decl: no VarRef to extract.
         SurfaceExpression::Int(_)
+        | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
@@ -1022,6 +1025,7 @@ fn find_key_definition(node: &Arc<SurfaceNode>, name: &str) -> Option<Span> {
 
         // Literals, VarRef, Error, Rest, Annotated, Placeholder, Decl: no definitions here.
         SurfaceExpression::Int(_)
+        | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
@@ -1343,6 +1347,7 @@ fn collect_var_refs_spanned(
 
         // Literals, Error, Rest, Annotated, Placeholder, Decl: no VarRef children.
         SurfaceExpression::Int(_)
+        | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
@@ -3171,6 +3176,7 @@ fn collect_rename_edits_spanned(
         }
 
         SurfaceExpression::Int(_)
+        | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)

@@ -89,6 +89,7 @@ fn eval_type_annotation_property_dict(
                         SurfaceExpression::Str(s) => s.clone(),
                         SurfaceExpression::VarRef { name, .. } => name.clone(),
                         SurfaceExpression::Int(n) => n.to_string(),
+                        SurfaceExpression::U64(n) => n.to_string(),
                         _ => continue, // Skip complex keys
                     }
                 } else {
@@ -100,6 +101,7 @@ fn eval_type_annotation_property_dict(
                 let value = match &entry.node.value.expr {
                     SurfaceExpression::Str(s) => string_val(s),
                     SurfaceExpression::Int(n) => Value::Int(*n),
+                    SurfaceExpression::U64(n) => Value::U64(*n),
                     SurfaceExpression::Float(f) => Value::Float(*f),
                     SurfaceExpression::Bool(b) => Value::Bool(*b),
                     _ => {
@@ -1588,6 +1590,10 @@ pub(crate) fn infer_surface_expr(
 ) -> Result<Type, Vec<TypeError>> {
     let result = match &node.expr {
         SurfaceExpression::Int(n) => Ok(Type::IntLiteral(*n)),
+        // U64 literals: no dedicated U64 type yet — treated as Int at the type level.
+        // Values that exceed i64::MAX are only representable as U64 at runtime; the type
+        // system does not distinguish signedness. Tracked for future Type::U64 addition.
+        SurfaceExpression::U64(_) => Ok(Type::Int),
         SurfaceExpression::Float(_) => Ok(Type::Float),
         SurfaceExpression::Bool(_) => Ok(Type::Bool),
         SurfaceExpression::Str(s) => Ok(Type::StringLiteral(s.clone())),

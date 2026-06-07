@@ -514,6 +514,8 @@ impl Clone for Builder {
 pub enum Value {
     /// 64-bit signed integer
     Int(i64),
+    /// Unsigned 64-bit integer (from `42u`, `0xFFu` literals)
+    U64(u64),
     /// 64-bit IEEE 754 float
     Float(f64),
     /// UTF-8 string (from bare words or quoted literals).
@@ -912,6 +914,7 @@ impl Value {
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Int(_) => "Int",
+            Value::U64(_) => "U64",
             Value::Float(_) => "Float",
             Value::String { .. } => "String",
             Value::Bool(_) => "Bool",
@@ -981,6 +984,7 @@ impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(n) => f.debug_tuple("Int").field(n).finish(),
+            Value::U64(n) => f.debug_tuple("U64").field(n).finish(),
             Value::Float(n) => f.debug_tuple("Float").field(n).finish(),
             Value::String { source, start, end } => {
                 let s = &source[*start..*end];
@@ -1066,6 +1070,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{n}"),
+            Value::U64(n) => write!(f, "{n}u"),
             Value::Float(n) => write!(f, "{n}"),
             Value::String { source, start, end } => {
                 let s = &source[*start..*end];
@@ -1204,6 +1209,7 @@ impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::U64(a), Value::U64(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             (
                 Value::String {

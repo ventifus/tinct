@@ -742,6 +742,15 @@ pub fn visit_value<V: ValueVisitor>(
     }
     match val {
         value::Value::Int(n) => Ok(visitor.visit_int(*n)),
+        // U64 values: for serialization, emit as Int when they fit in i64,
+        // otherwise serialize as BigInt equivalent. The visitor uses visit_bigint.
+        value::Value::U64(n) => {
+            if let Ok(i) = i64::try_from(*n) {
+                Ok(visitor.visit_int(i))
+            } else {
+                Ok(visitor.visit_bigint(&num_bigint::BigInt::from(*n)))
+            }
+        }
         value::Value::Float(f) => visitor.visit_float(*f, span),
         value::Value::String {
             ref source,

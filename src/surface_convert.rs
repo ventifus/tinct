@@ -125,6 +125,10 @@ fn dict_to_surface_node_inner(
                     let value = get_int_field(&dict, "value", &["kind"], ctx)?;
                     SurfaceExpression::Int(value)
                 }
+                "u64" => {
+                    let value = get_u64_field(&dict, "value", &["kind"], ctx)?;
+                    SurfaceExpression::U64(value)
+                }
                 "float" => {
                     let value = get_float_field(&dict, "value", &["kind"], ctx)?;
                     SurfaceExpression::Float(value)
@@ -693,6 +697,7 @@ fn dict_to_pattern(
             let value_val = get_field(dict, "value", path, ctx)?;
             let lit = match value_val {
                 Value::Int(n) => LiteralPattern::Int(n),
+                Value::U64(n) => LiteralPattern::U64(n),
                 Value::Float(f) => LiteralPattern::Float(f),
                 Value::Bool(b) => LiteralPattern::Bool(b),
                 Value::String {
@@ -702,7 +707,8 @@ fn dict_to_pattern(
                 } => LiteralPattern::Str(source[start..end].to_string()),
                 _ => {
                     return Err(AstError {
-                        message: "literal pattern value must be Int, Float, Bool, or String".into(),
+                        message: "literal pattern value must be Int, U64, Float, Bool, or String"
+                            .into(),
                         field_path: path.iter().map(|s| s.to_string()).collect(),
                     })
                 }
@@ -885,6 +891,22 @@ fn get_int_field(
         Value::Int(n) => Ok(n),
         _ => Err(AstError {
             message: format!("field '{}' must be Int", key),
+            field_path: path.iter().map(|s| s.to_string()).collect(),
+        }),
+    }
+}
+
+fn get_u64_field(
+    dict: &IndexMap<Key, ThunkId>,
+    key: &str,
+    path: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<u64, AstError> {
+    let val = get_field(dict, key, path, ctx)?;
+    match val {
+        Value::U64(n) => Ok(n),
+        _ => Err(AstError {
+            message: format!("field '{}' must be U64", key),
             field_path: path.iter().map(|s| s.to_string()).collect(),
         }),
     }
@@ -1462,6 +1484,7 @@ fn pattern_to_thunk_id(
             );
             let value = match lit {
                 LiteralPattern::Int(n) => Value::Int(*n),
+                LiteralPattern::U64(n) => Value::U64(*n),
                 LiteralPattern::Float(f) => Value::Float(*f),
                 LiteralPattern::Bool(b) => Value::Bool(*b),
                 LiteralPattern::Str(s) => string_val(s),
@@ -1688,6 +1711,9 @@ pub(crate) fn annotation_to_thunk_id(
                         )),
                         crate::ast::SurfaceExpression::Int(n) => ctx.alloc_thunk(Arc::new(
                             Thunk::new_materialized(Value::Int(*n), e.node.value.span.clone()),
+                        )),
+                        crate::ast::SurfaceExpression::U64(n) => ctx.alloc_thunk(Arc::new(
+                            Thunk::new_materialized(Value::U64(*n), e.node.value.span.clone()),
                         )),
                         _ => {
                             surface_node_to_thunk_id(&e.node.value, &AstToDictOpts::default(), ctx)?
@@ -2170,7 +2196,10 @@ fn surface_node_to_thunk_id(
     let span = node.span.clone();
 
     let capacity = match expr {
-        SurfaceExpression::Int(_) | SurfaceExpression::Float(_) | SurfaceExpression::Bool(_) => 2,
+        SurfaceExpression::Int(_)
+        | SurfaceExpression::U64(_)
+        | SurfaceExpression::Float(_)
+        | SurfaceExpression::Bool(_) => 2,
         SurfaceExpression::Str(_) => 3,
         SurfaceExpression::VarRef { .. } => 1,
         SurfaceExpression::DotAccess { .. } => 2,
@@ -2209,6 +2238,24 @@ fn surface_node_to_thunk_id(
                 Key::String("value".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Int(*n),
+                    span.clone(),
+                ))),
+            );
+        }
+
+        SurfaceExpression::U64(n) => {
+            variant_tag = "Literal";
+            dict.insert(
+                Key::String("kind".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("u64"),
+                    span.clone(),
+                ))),
+            );
+            dict.insert(
+                Key::String("value".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::U64(*n),
                     span.clone(),
                 ))),
             );

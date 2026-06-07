@@ -1,0 +1,4 @@
+# Underscore separators in integer and float literals
+[1_000 1_000_000 1_000.5]
+=== out
+[1000  1000000  1000.5]

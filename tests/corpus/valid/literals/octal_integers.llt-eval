@@ -1,0 +1,4 @@
+# Octal integer literals: 0o prefix and leading-zero form
+[0o77 0o0 0755 0644]
+=== out
+[63  0  493  420]

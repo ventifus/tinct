@@ -1,0 +1,4 @@
+# Scientific notation float literals
+[1e6 1.5e3 1.5e-3]
+=== out
+[1000000.0  1500.0  0.0015]

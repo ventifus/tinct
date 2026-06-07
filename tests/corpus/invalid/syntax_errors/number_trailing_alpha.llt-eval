@@ -1,0 +1,4 @@
+# Number literal followed by unexpected alphabetic character
+[42abc]
+=== out
+unexpected character `a` after number

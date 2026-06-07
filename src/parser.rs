@@ -97,13 +97,12 @@ fn key_to_string(expr: &SurfaceExpression) -> Option<String> {
     match expr {
         SurfaceExpression::Str(s) => Some(s.clone()),
         SurfaceExpression::Int(n) => Some(n.to_string()),
+        SurfaceExpression::U64(n) => Some(n.to_string()),
         SurfaceExpression::Float(n) => Some(n.to_string()),
         SurfaceExpression::Bool(b) => Some(b.to_string()),
-        SurfaceExpression::VarRef { name, .. } => {
-            // In new syntax, variable references display as the bare name (no $ prefix).
-            // Both bare-word identifiers and $escaped-refs store the name without sigil.
-            Some(name.clone())
-        }
+        // VarRef is no longer expected here: bare identifier keys are normalized to Str
+        // in push_value before key_to_string is called. Escaped VarRef keys ($foo:) are
+        // computed keys whose string representation isn't known at parse time → None.
         _ => None,
     }
 }
@@ -323,29 +322,18 @@ fn adjust_surface_entries(
     entries: Vec<Spanned<crate::ast::SurfaceEntry>>,
     base: Position,
 ) -> Vec<Spanned<crate::ast::SurfaceEntry>> {
-    use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode};
+    use crate::ast::{SurfaceEntry, SurfaceNode};
     entries
         .into_iter()
         .map(|se| Spanned {
             span: adjust_span(se.span, base),
             node: SurfaceEntry {
                 key: se.node.key.map(|k| {
-                    // Normalize annotation dict keys: convert VarRef identifiers to Str literals.
-                    // Annotation dict keys from re-parsed prelude annotations (e.g., `return:`,
-                    // `constraint:`, `doc:`, `bind:`) are parsed as identifier VarRef nodes, but
-                    // the type checker expects them as Str literal keys. This normalization ensures
-                    // both user code (may use quoted keys) and prelude code (uses identifier keys)
-                    // are handled uniformly by `resolve_fn_metadata` and `has_fn_key`.
-                    let normalized_expr = match &k.expr {
-                        SurfaceExpression::VarRef {
-                            name,
-                            escaped: false,
-                        } => SurfaceExpression::Str(name.clone()),
-                        other => other.clone(),
-                    };
+                    // Bare identifier keys are already normalized to Str by push_value at parse
+                    // time, so no VarRef→Str conversion is needed here — only span adjustment.
                     std::sync::Arc::new(SurfaceNode {
                         span: adjust_span(k.span.clone(), base),
-                        expr: normalized_expr,
+                        expr: k.expr.clone(),
                     })
                 }),
                 value: std::sync::Arc::new(SurfaceNode {
@@ -2919,6 +2907,31 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 continue;
             }
 
+            Token::U64Lit(n) => {
+                let expr = Arc::new(SurfaceNode {
+                    expr: SurfaceExpression::U64(*n),
+                    span: span.clone(),
+                });
+                if let Err(push_err) = push_value(&mut stack, &mut current_document_items, expr) {
+                    if !stack.is_empty() {
+                        i = recover_from_bracket_error(
+                            push_err,
+                            span,
+                            &token_vec,
+                            i + 1,
+                            &mut stack,
+                            &mut current_document_items,
+                            &mut recovered_errors,
+                        );
+                        continue;
+                    }
+                    return Err(push_err);
+                }
+                last_significant_span = Some(span);
+                i += 1;
+                continue;
+            }
+
             Token::Float(f) => {
                 let expr = Arc::new(SurfaceNode {
                     expr: SurfaceExpression::Float(*f),
@@ -5103,6 +5116,7 @@ fn surface_node_to_pattern_with_guard(
             });
         }
         SurfaceExpression::Int(n) => (Pattern::Literal(LiteralPattern::Int(*n)), None),
+        SurfaceExpression::U64(n) => (Pattern::Literal(LiteralPattern::U64(*n)), None),
         SurfaceExpression::Float(f) => (Pattern::Literal(LiteralPattern::Float(*f)), None),
         SurfaceExpression::Bool(b) => (Pattern::Literal(LiteralPattern::Bool(*b)), None),
         SurfaceExpression::Str(s) => (Pattern::Literal(LiteralPattern::Str(s.clone())), None),
@@ -6092,6 +6106,20 @@ fn push_value(
             ..
         }) => {
             if let Some(key) = pending_key.take() {
+                // Normalize bare identifier keys to Str at parse time.
+                // VarRef { escaped: false } means the key was written as a bare word (e.g., `foo:`);
+                // it is semantically a string key, not a variable reference.
+                // VarRef { escaped: true } means `$foo:` — a computed key — and passes through.
+                let key = match &key.expr {
+                    SurfaceExpression::VarRef {
+                        name,
+                        escaped: false,
+                    } => Arc::new(SurfaceNode {
+                        span: key.span.clone(),
+                        expr: SurfaceExpression::Str(name.clone()),
+                    }),
+                    _ => key,
+                };
                 // Check for duplicate key (literal keys only)
                 if let Some(key_str) = key_to_string(&key.expr) {
                     if seen_keys.contains(&key_str) {
@@ -6373,6 +6401,7 @@ fn stamp_node(node: &mut Arc<SurfaceNode>, file: &Arc<SourceFile>) {
 fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
     match expr {
         SurfaceExpression::Int(_)
+        | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)

@@ -610,6 +610,45 @@ pub(crate) enum Action {
     },
 }
 
+/// Apply a predicate function to a subject value.
+///
+/// Wraps both `predicate` and `subject` as materialized thunks, then constructs a
+/// `PendingCall` thunk that will invoke `predicate(subject)` when forced.  The
+/// returned thunk is **not** yet materialized — callers must drive it through the
+/// CEK machine (e.g., by emitting `Action::Materialize`).
+///
+/// Used by:
+/// - `Cont::PredicateCheck` — `is:` predicate checks in TypeAssert annotations.
+/// - Predicate match patterns (T-1140).
+///
+/// The helper is intentionally synchronous: it only constructs thunks, never
+/// forces evaluation.
+pub(crate) fn apply_predicate_to_subject(
+    predicate: Value,
+    subject: Value,
+    pred_span: Span,
+    subj_span: Span,
+    env: &Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+) -> Arc<Thunk> {
+    let subject_thunk = Arc::new(Thunk::new_materialized(subject, subj_span));
+    let pred_thunk = Arc::new(Thunk::new_materialized(predicate, pred_span.clone()));
+    Arc::new(Thunk::new_pending_call(
+        pred_thunk,
+        vec![subject_thunk],
+        IndexMap::new(),
+        pred_span.clone(),
+        Arc::clone(env),
+        pred_span.clone(),
+        None,
+        Arc::clone(ctx),
+        Arc::new(Spanned {
+            node: CoreExpr::Int(0),
+            span: pred_span,
+        }),
+    ))
+}
+
 /// Process one thunk and return either a result or a sub-thunk to force.
 /// This mirrors the logic of `materialize()` but pushes continuations instead of recursing.
 pub(crate) async fn force_step(
@@ -3588,31 +3627,15 @@ pub(crate) async fn apply_cont(
                     // iteratively via the CEK machine rather than block_on_anywhere.
                     if !callable_invoked {
                         if let Value::Function { .. } | Value::Builtin(_) = &predicate_value {
-                            // Create a thunk for the value being checked
-                            let value_thunk = Arc::new(Thunk::new_materialized(
-                                value.clone(),
-                                thunk_span.clone(),
-                            ));
-                            // Create a thunk for the predicate callable
-                            let pred_thunk = Arc::new(Thunk::new_materialized(
+                            // Build a PendingCall thunk for predicate(value) via the helper.
+                            let call_thunk = apply_predicate_to_subject(
                                 predicate_value,
+                                value.clone(),
                                 expr_span.clone(),
-                            ));
-                            // Create a PendingCall thunk for predicate(value)
-                            let call_thunk = Arc::new(Thunk::new_pending_call(
-                                pred_thunk,
-                                vec![value_thunk],
-                                IndexMap::new(),
-                                expr_span.clone(),
-                                Arc::clone(&env),
-                                expr_span.clone(),
-                                None,
-                                Arc::clone(&ctx),
-                                Arc::new(Spanned {
-                                    node: CoreExpr::Int(0),
-                                    span: expr_span.clone(),
-                                }),
-                            ));
+                                thunk_span.clone(),
+                                &env,
+                                &ctx,
+                            );
                             // Push PredicateCheck again with callable_invoked=true to receive
                             // the call result, then return Materialize to drive the call
                             // iteratively through the CEK loop (no block_on_anywhere).

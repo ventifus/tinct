@@ -1,0 +1,4 @@
+# Unsigned 64-bit integer literals with u suffix
+[42u 0u 0xFFu]
+=== out
+[42u  0u  255u]

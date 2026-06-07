@@ -1,0 +1,4 @@
+# Hexadecimal literal with invalid digit
+[0xg]
+=== out
+invalid digit

@@ -1,0 +1,4 @@
+# Binary integer literals: 0b and 0B prefix
+[0b1010 0b0 0B1111]
+=== out
+[10  0  15]

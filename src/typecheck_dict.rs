@@ -252,6 +252,7 @@ fn collect_dependencies(
                 }
             }
             SurfaceExpression::Int(_)
+            | SurfaceExpression::U64(_)
             | SurfaceExpression::Float(_)
             | SurfaceExpression::Str(_)
             | SurfaceExpression::Bool(_) => {}
@@ -1202,6 +1203,7 @@ pub(crate) fn entry_key_name(
         Some(key_node) => match &key_node.expr {
             SurfaceExpression::Str(s) => Some(s.clone()),
             SurfaceExpression::Int(n) => Some(n.to_string()),
+            SurfaceExpression::U64(n) => Some(n.to_string()),
             // Annotated key: name@[doc: "..."] — extract name directly
             SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
             _ => match infer_surface_expr(key_node, env, state, type_map) {

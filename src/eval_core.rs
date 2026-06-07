@@ -596,6 +596,10 @@ pub(crate) fn eval_core_expr<'a>(
                 Value::Int(*n),
                 span.clone(),
             ))),
+            CoreExpr::U64(n) => Ok(Arc::new(Thunk::new_materialized(
+                Value::U64(*n),
+                span.clone(),
+            ))),
             CoreExpr::Float(f) => Ok(Arc::new(Thunk::new_materialized(
                 Value::Float(*f),
                 span.clone(),

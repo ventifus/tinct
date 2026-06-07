@@ -1,0 +1,4 @@
+# Hexadecimal integer literals: 0x and 0X prefix
+[0xFF 0xff 0xAB 0x0]
+=== out
+[255  255  171  0]

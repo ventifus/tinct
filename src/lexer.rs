@@ -38,6 +38,8 @@ pub enum Token {
     Comment(String),
     /// Integer literal
     Int(i64),
+    /// Unsigned 64-bit integer literal (`42u`, `0xFFu`)
+    U64Lit(u64),
     /// Float literal
     Float(f64),
     /// Identifier (bare word — variable reference in value position)
@@ -90,6 +92,7 @@ impl fmt::Display for Token {
             Token::Newline => write!(f, "\\n"),
             Token::Comment(text) => write!(f, "# {text}"),
             Token::Int(n) => write!(f, "{n}"),
+            Token::U64Lit(n) => write!(f, "{n}u"),
             Token::Float(n) => write!(f, "{n}"),
             Token::Identifier(s) => write!(f, "{s}"),
             Token::QuotedString(s) => write!(f, "\"{s}\""),
@@ -1149,73 +1152,474 @@ impl<'a> Lexer<'a> {
         word_start: usize,
         in_access_field: bool,
     ) -> Result<(), LexError> {
-        // Collect digits
-        while let Some(c) = self.peek_char() {
-            if c.is_ascii_digit() {
-                self.advance();
-            } else {
-                break;
+        // Determine sign: word_start points to '-' if negative, or to first digit.
+        // lex_bare_word_or_number advanced past '-' (if present), then verified peek_char()
+        // is a digit and called us — the digit is still current (not yet consumed).
+        let is_negative = self.input.as_bytes().get(word_start) == Some(&b'-');
+
+        // Peek at first digit to check for radix prefix or leading-zero octal.
+        let first_digit = self.peek_char().unwrap(); // caller guarantees a digit is here
+
+        if first_digit == '0' && !is_negative {
+            // Peek ahead one char to see if this is a radix prefix
+            match self.peek_ahead(1) {
+                Some('x') | Some('X') => {
+                    return self.lex_radix_number(start, 16, "0x", in_access_field);
+                }
+                Some('b') | Some('B') => {
+                    return self.lex_radix_number(start, 2, "0b", in_access_field);
+                }
+                Some('o') | Some('O') => {
+                    return self.lex_radix_number(start, 8, "0o", in_access_field);
+                }
+                Some(c) if c.is_ascii_digit() => {
+                    // Leading-zero octal: 0755, 0644, etc.
+                    return self.lex_octal_leading_zero(start, in_access_field);
+                }
+                _ => {
+                    // Plain '0' — fall through to normal decimal handling
+                }
             }
         }
 
-        // Check for float (decimal point followed by digits).
-        // Suppressed when in_access_field is true: in `$a.0.1`, the `.` after `0`
-        // is a field-access dot, not a decimal separator. Without this guard,
-        // `$a.0.1` would lex the `0.1` fragment as a Float token.
-        if !in_access_field && self.peek_char() == Some('.') {
-            let next = self.peek_ahead(1);
-            if next.is_some() && next.unwrap().is_ascii_digit() {
-                self.advance(); // skip '.'
-                while let Some(c) = self.peek_char() {
-                    if c.is_ascii_digit() {
+        // ── Decimal integer or float (possibly with underscore separators) ─────────
+        // Advance past the first digit (already verified by caller to be ascii_digit).
+        self.advance();
+
+        // Collect remaining decimal digits, allowing underscore separators.
+        loop {
+            match self.peek_char() {
+                Some('_') => {
+                    // Underscore separator — peek ahead to ensure it is followed by a digit.
+                    match self.peek_ahead(1) {
+                        Some(c) if c.is_ascii_digit() => {
+                            self.advance(); // consume '_'
+                        }
+                        _ => {
+                            // Trailing underscore or double-underscore: error.
+                            self.advance(); // consume the bad '_'
+                            let end = self.current_position();
+                            return Err(LexError::new(
+                                "invalid number literal: underscore must be followed by a digit",
+                                Span::new(start, end),
+                            ));
+                        }
+                    }
+                }
+                Some(c) if c.is_ascii_digit() => {
+                    self.advance();
+                }
+                _ => break,
+            }
+        }
+
+        // Check for float: decimal point followed by a digit (suppressed in access fields).
+        let has_dot = !in_access_field
+            && self.peek_char() == Some('.')
+            && self
+                .peek_ahead(1)
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false);
+
+        if has_dot {
+            self.advance(); // consume '.'
+                            // Collect fractional digits (underscore separators allowed)
+            loop {
+                match self.peek_char() {
+                    Some('_') => {
+                        match self.peek_ahead(1) {
+                            Some(c) if c.is_ascii_digit() => {
+                                self.advance(); // consume '_'
+                            }
+                            _ => {
+                                self.advance();
+                                let end = self.current_position();
+                                return Err(LexError::new(
+                                    "invalid number literal: underscore must be followed by a digit",
+                                    Span::new(start, end),
+                                ));
+                            }
+                        }
+                    }
+                    Some(c) if c.is_ascii_digit() => {
                         self.advance();
-                    } else {
-                        break;
                     }
-                }
-
-                let word_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
-                let word = &self.input[word_start..word_end];
-                let end = self.current_position();
-
-                match word.parse::<f64>() {
-                    Ok(n) => {
-                        self.tokens
-                            .push(Spanned::new(Token::Float(n), Span::new(start, end)));
-                        self.last_was_identifier = false;
-                        Ok(())
-                    }
-                    Err(e) => Err(LexError::new(
-                        format!("invalid float literal: {e}"),
-                        Span::new(start, end),
-                    )),
-                }
-            } else {
-                // Dot not followed by digit, treat as integer followed by bare word
-                let word_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
-                let word = &self.input[word_start..word_end];
-                let end = self.current_position();
-
-                match word.parse::<i64>() {
-                    Ok(n) => {
-                        self.tokens
-                            .push(Spanned::new(Token::Int(n), Span::new(start, end)));
-                        self.last_was_identifier = false;
-                        Ok(())
-                    }
-                    Err(e) => Err(LexError::new(
-                        format!("invalid integer literal: {e}"),
-                        Span::new(start, end),
-                    )),
+                    _ => break,
                 }
             }
-        } else {
-            // Integer
-            let word_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
-            let word = &self.input[word_start..word_end];
-            let end = self.current_position();
 
-            match word.parse::<i64>() {
+            // Optional exponent: 'e'/'E' followed by optional sign and digits.
+            self.maybe_consume_exponent(start)?;
+
+            return self.emit_float(start, word_start);
+        }
+
+        // No decimal point — check for scientific notation (e.g., 1e6, 1e-3) without a dot.
+        // 'e'/'E' here always produces a Float (not Int).
+        if matches!(self.peek_char(), Some('e') | Some('E')) {
+            // Peek ahead to confirm valid exponent form: optional sign then digit.
+            let after_e = match self.peek_ahead(1) {
+                Some('+') | Some('-') => self.peek_ahead(2),
+                other => other,
+            };
+            if after_e.map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                self.maybe_consume_exponent(start)?;
+                return self.emit_float(start, word_start);
+            }
+            // Not a valid exponent — treat 'e...' as end of number (identifier follows).
+        }
+
+        // Integer. Check for trailing suffix (disallow trailing identifier chars).
+        self.emit_integer(start, word_start, is_negative)
+    }
+
+    /// Consume an exponent suffix `e[+-]?digits` at the current position.
+    /// Called when `peek_char()` is 'e' or 'E'.
+    fn maybe_consume_exponent(&mut self, start: Position) -> Result<(), LexError> {
+        match self.peek_char() {
+            Some('e') | Some('E') => {
+                self.advance(); // consume 'e'/'E'
+                                // Optional sign
+                if matches!(self.peek_char(), Some('+') | Some('-')) {
+                    self.advance();
+                }
+                // Must have at least one digit
+                if !matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
+                    let end = self.current_position();
+                    return Err(LexError::new(
+                        "invalid number literal: expected digit after exponent",
+                        Span::new(start, end),
+                    ));
+                }
+                while matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
+                    self.advance();
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Emit a `Token::Float` by stripping underscore separators from `self.input[word_start..current]`
+    /// and parsing with `str::parse::<f64>`.
+    fn emit_float(&mut self, start: Position, word_start: usize) -> Result<(), LexError> {
+        // Reject trailing `u` suffix on floats (not meaningful).
+        if self.peek_char() == Some('u') {
+            self.advance();
+            let end = self.current_position();
+            return Err(LexError::new(
+                "invalid number literal: `u` suffix is not valid on float literals",
+                Span::new(start, end),
+            ));
+        }
+
+        // Guard: no trailing identifier characters (e.g., 1.5abc).
+        self.check_no_trailing_ident_chars(start)?;
+
+        let word_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
+        let raw = &self.input[word_start..word_end];
+        // Strip underscore separators for parsing.
+        let clean: String = raw.chars().filter(|&c| c != '_').collect();
+        let end = self.current_position();
+
+        match clean.parse::<f64>() {
+            Ok(n) => {
+                self.tokens
+                    .push(Spanned::new(Token::Float(n), Span::new(start, end)));
+                self.last_was_identifier = false;
+                Ok(())
+            }
+            Err(e) => Err(LexError::new(
+                format!("invalid float literal: {e}"),
+                Span::new(start, end),
+            )),
+        }
+    }
+
+    /// Emit a `Token::Int` or `Token::U64Lit` for a decimal integer starting at `word_start`.
+    fn emit_integer(
+        &mut self,
+        start: Position,
+        word_start: usize,
+        is_negative: bool,
+    ) -> Result<(), LexError> {
+        // Check for `u` suffix → Token::U64Lit.
+        let is_u64 = self.peek_char() == Some('u');
+        if is_u64 {
+            if is_negative {
+                self.advance();
+                let end = self.current_position();
+                return Err(LexError::new(
+                    "invalid number literal: `u` suffix cannot be used with negative numbers",
+                    Span::new(start, end),
+                ));
+            }
+            self.advance(); // consume 'u'
+        }
+
+        // Guard: no trailing identifier characters (e.g., 42abc).
+        self.check_no_trailing_ident_chars(start)?;
+
+        let word_end = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
+        // Slice excludes the trailing 'u' because we already advanced past it.
+        let raw = &self.input[word_start..word_end];
+        // Strip 'u' suffix from the raw slice if still present (shouldn't be, but guard).
+        let without_suffix = raw.trim_end_matches('u');
+        // Strip underscore separators.
+        let clean: String = without_suffix.chars().filter(|&c| c != '_').collect();
+        let end = self.current_position();
+
+        if is_u64 {
+            match clean.parse::<u64>() {
+                Ok(n) => {
+                    self.tokens
+                        .push(Spanned::new(Token::U64Lit(n), Span::new(start, end)));
+                    self.last_was_identifier = false;
+                    Ok(())
+                }
+                Err(e) => Err(LexError::new(
+                    format!("invalid u64 literal: {e}"),
+                    Span::new(start, end),
+                )),
+            }
+        } else {
+            match clean.parse::<i64>() {
+                Ok(n) => {
+                    self.tokens
+                        .push(Spanned::new(Token::Int(n), Span::new(start, end)));
+                    self.last_was_identifier = false;
+                    Ok(())
+                }
+                Err(e) => Err(LexError::new(
+                    format!("invalid integer literal: {e}"),
+                    Span::new(start, end),
+                )),
+            }
+        }
+    }
+
+    /// Guard: the character immediately after the number must not be a bare-word identifier
+    /// character (to prevent `42abc` from silently lexing as `42` + `abc`).
+    fn check_no_trailing_ident_chars(&self, start: Position) -> Result<(), LexError> {
+        if let Some(c) = self.peek_char() {
+            // Characters that are valid bare-word chars but not valid number suffixes
+            // (excluding 'u' which is handled by the caller, 'e'/'E' handled by exponent logic,
+            // and '.' handled by float logic).
+            if c.is_ascii_alphabetic() && c != 'u' && c != 'e' && c != 'E' {
+                // Peek ahead: if this alphabetic char is part of a longer identifier
+                // (the character itself plus what follows is an identifier-like sequence),
+                // it's an error. We already know 'u'/'e'/'E' are handled, so any other
+                // ASCII alphabetic here is a trailing-identifier error.
+                let end = self.current_position();
+                return Err(LexError::new(
+                    format!("invalid number literal: unexpected character `{c}` after number"),
+                    Span::new(start, end),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Lex a radix-prefixed integer: `0x...` (hex), `0b...` (binary), `0o...` (octal).
+    /// On entry, current is pointing at `0`; `prefix` is "0x", "0b", or "0o".
+    fn lex_radix_number(
+        &mut self,
+        start: Position,
+        radix: u32,
+        prefix: &str,
+        _in_access_field: bool,
+    ) -> Result<(), LexError> {
+        self.advance(); // consume '0'
+        self.advance(); // consume 'x'/'b'/'o' (or uppercase variant)
+
+        let digit_start = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
+
+        // Collect digits appropriate for this radix, with underscore separators.
+        let mut digit_count = 0usize;
+        loop {
+            match self.peek_char() {
+                Some('_') => {
+                    match self.peek_ahead(1) {
+                        Some(c) if self.is_radix_digit(c, radix) => {
+                            self.advance(); // consume '_'
+                        }
+                        _ => {
+                            self.advance();
+                            let end = self.current_position();
+                            return Err(LexError::new(
+                                "invalid number literal: underscore must be followed by a digit",
+                                Span::new(start, end),
+                            ));
+                        }
+                    }
+                }
+                Some(c) if self.is_radix_digit(c, radix) => {
+                    self.advance();
+                    digit_count += 1;
+                }
+                Some(c) if c.is_ascii_alphanumeric() && c != 'u' => {
+                    // Invalid digit for this radix (e.g., '2' in binary, '9' in octal, 'g' in hex)
+                    self.advance();
+                    let end = self.current_position();
+                    return Err(LexError::new(
+                        format!(
+                            "invalid digit `{c}` in {} literal",
+                            match radix {
+                                2 => "binary",
+                                8 => "octal",
+                                16 => "hexadecimal",
+                                _ => "radix",
+                            }
+                        ),
+                        Span::new(start, end),
+                    ));
+                }
+                _ => break,
+            }
+        }
+
+        if digit_count == 0 {
+            let end = self.current_position();
+            return Err(LexError::new(
+                format!("invalid number literal: expected digits after `{prefix}`"),
+                Span::new(start, end),
+            ));
+        }
+
+        // Check for `u` suffix.
+        let is_u64 = self.peek_char() == Some('u');
+        if is_u64 {
+            self.advance(); // consume 'u'
+        }
+
+        // Guard: no trailing identifier characters.
+        self.check_no_trailing_ident_chars(start)?;
+
+        let digit_end = if is_u64 {
+            // digit_end excludes 'u'; current has already advanced past 'u'.
+            self.current.map(|(i, _)| i).unwrap_or(self.input.len()) - 1
+        } else {
+            self.current.map(|(i, _)| i).unwrap_or(self.input.len())
+        };
+
+        // Reconstruct digits (no prefix, no suffix, no underscores).
+        let raw = &self.input[digit_start..digit_end];
+        let clean: String = raw.chars().filter(|&c| c != '_').collect();
+        let end = self.current_position();
+
+        if is_u64 {
+            match u64::from_str_radix(&clean, radix) {
+                Ok(n) => {
+                    self.tokens
+                        .push(Spanned::new(Token::U64Lit(n), Span::new(start, end)));
+                    self.last_was_identifier = false;
+                    Ok(())
+                }
+                Err(e) => Err(LexError::new(
+                    format!("invalid u64 literal: {e}"),
+                    Span::new(start, end),
+                )),
+            }
+        } else {
+            match i64::from_str_radix(&clean, radix) {
+                Ok(n) => {
+                    self.tokens
+                        .push(Spanned::new(Token::Int(n), Span::new(start, end)));
+                    self.last_was_identifier = false;
+                    Ok(())
+                }
+                Err(e) => Err(LexError::new(
+                    format!("invalid integer literal: {e}"),
+                    Span::new(start, end),
+                )),
+            }
+        }
+    }
+
+    /// Returns true if `c` is a valid digit for `radix`.
+    fn is_radix_digit(&self, c: char, radix: u32) -> bool {
+        match radix {
+            2 => matches!(c, '0' | '1'),
+            8 => matches!(c, '0'..='7'),
+            10 => c.is_ascii_digit(),
+            16 => c.is_ascii_hexdigit(),
+            _ => false,
+        }
+    }
+
+    /// Lex a leading-zero octal literal: `0755`, `0644`, etc.
+    /// On entry, current is on `0` and peek_ahead(1) is a decimal digit.
+    fn lex_octal_leading_zero(
+        &mut self,
+        start: Position,
+        _in_access_field: bool,
+    ) -> Result<(), LexError> {
+        self.advance(); // consume '0'
+
+        let digit_start = self.current.map(|(i, _)| i).unwrap_or(self.input.len());
+        let mut digit_count = 0usize;
+
+        loop {
+            match self.peek_char() {
+                Some('0'..='7') => {
+                    self.advance();
+                    digit_count += 1;
+                }
+                Some(c) if matches!(c, '8' | '9') => {
+                    // Invalid octal digit
+                    self.advance();
+                    let end = self.current_position();
+                    return Err(LexError::new(
+                        format!("invalid digit `{c}` in octal literal"),
+                        Span::new(start, end),
+                    ));
+                }
+                _ => break,
+            }
+        }
+
+        if digit_count == 0 {
+            // Just '0' with no following octal digits — plain zero.
+            let end = self.current_position();
+            self.tokens
+                .push(Spanned::new(Token::Int(0), Span::new(start, end)));
+            self.last_was_identifier = false;
+            return Ok(());
+        }
+
+        // Check for `u` suffix.
+        let is_u64 = self.peek_char() == Some('u');
+        if is_u64 {
+            self.advance();
+        }
+
+        // Guard: no trailing identifier characters.
+        self.check_no_trailing_ident_chars(start)?;
+
+        let digit_end = if is_u64 {
+            self.current.map(|(i, _)| i).unwrap_or(self.input.len()) - 1
+        } else {
+            self.current.map(|(i, _)| i).unwrap_or(self.input.len())
+        };
+
+        let raw = &self.input[digit_start..digit_end];
+        let end = self.current_position();
+
+        if is_u64 {
+            match u64::from_str_radix(raw, 8) {
+                Ok(n) => {
+                    self.tokens
+                        .push(Spanned::new(Token::U64Lit(n), Span::new(start, end)));
+                    self.last_was_identifier = false;
+                    Ok(())
+                }
+                Err(e) => Err(LexError::new(
+                    format!("invalid u64 literal: {e}"),
+                    Span::new(start, end),
+                )),
+            }
+        } else {
+            match i64::from_str_radix(raw, 8) {
                 Ok(n) => {
                     self.tokens
                         .push(Spanned::new(Token::Int(n), Span::new(start, end)));
@@ -1245,6 +1649,12 @@ impl<'a> Lexer<'a> {
 /// Format an integer as a tinct literal.
 pub(crate) fn fmt_int(n: i64) -> String {
     n.to_string()
+}
+
+#[allow(dead_code)] // Used by Display impls for U64 literals
+/// Format an unsigned 64-bit integer as a tinct literal (with `u` suffix).
+pub(crate) fn fmt_u64(n: u64) -> String {
+    format!("{n}u")
 }
 
 /// Format a float as a tinct literal.
@@ -1362,6 +1772,124 @@ mod tests {
             assert_eq!(tok("3.14"), vec![Token::Float(3.14)]);
         }
         assert_eq!(tok("-2.5"), vec![Token::Float(-2.5)]);
+    }
+
+    #[test]
+    fn test_hex_literals() {
+        assert_eq!(tok("0xFF"), vec![Token::Int(255)]);
+        assert_eq!(tok("0xff"), vec![Token::Int(255)]);
+        assert_eq!(tok("0XFF"), vec![Token::Int(255)]);
+        assert_eq!(tok("0x0"), vec![Token::Int(0)]);
+        assert_eq!(tok("0x1A2B"), vec![Token::Int(0x1A2B)]);
+        assert_eq!(tok("0xFFu"), vec![Token::U64Lit(255)]);
+        assert_eq!(tok("0x1_0"), vec![Token::Int(0x10)]);
+    }
+
+    #[test]
+    fn test_binary_literals() {
+        assert_eq!(tok("0b1010"), vec![Token::Int(0b1010)]);
+        assert_eq!(tok("0b0"), vec![Token::Int(0)]);
+        assert_eq!(tok("0B1"), vec![Token::Int(1)]);
+        assert_eq!(tok("0b1010u"), vec![Token::U64Lit(0b1010)]);
+        assert_eq!(tok("0b1_0"), vec![Token::Int(0b10)]);
+    }
+
+    #[test]
+    fn test_octal_prefix_literals() {
+        assert_eq!(tok("0o77"), vec![Token::Int(0o77)]);
+        assert_eq!(tok("0O77"), vec![Token::Int(0o77)]);
+        assert_eq!(tok("0o0"), vec![Token::Int(0)]);
+        assert_eq!(tok("0o77u"), vec![Token::U64Lit(0o77)]);
+        assert_eq!(tok("0o7_7"), vec![Token::Int(0o77)]);
+    }
+
+    #[test]
+    fn test_octal_leading_zero() {
+        // POSIX-style leading-zero octal: 0755 = 493
+        assert_eq!(tok("0755"), vec![Token::Int(0o755)]);
+        assert_eq!(tok("0644"), vec![Token::Int(0o644)]);
+        assert_eq!(tok("0"), vec![Token::Int(0)]);
+    }
+
+    #[test]
+    fn test_underscore_separators() {
+        assert_eq!(tok("1_000"), vec![Token::Int(1000)]);
+        assert_eq!(tok("1_000_000"), vec![Token::Int(1_000_000)]);
+        assert_eq!(tok("1_000_000u"), vec![Token::U64Lit(1_000_000)]);
+        #[allow(clippy::approx_constant)]
+        {
+            // 1_000.5 → Float(1000.5)
+            assert_eq!(tok("1_000.5"), vec![Token::Float(1000.5)]);
+        }
+    }
+
+    #[test]
+    fn test_scientific_notation() {
+        assert_eq!(tok("1e6"), vec![Token::Float(1_000_000.0)]);
+        assert_eq!(tok("1E6"), vec![Token::Float(1_000_000.0)]);
+        assert_eq!(tok("1.5e3"), vec![Token::Float(1500.0)]);
+        assert_eq!(tok("1.5e-3"), vec![Token::Float(0.0015)]);
+        assert_eq!(tok("1.5e+3"), vec![Token::Float(1500.0)]);
+        // Negative base with scientific notation
+        assert_eq!(tok("-1e6"), vec![Token::Float(-1_000_000.0)]);
+    }
+
+    #[test]
+    fn test_u64_suffix() {
+        assert_eq!(tok("42u"), vec![Token::U64Lit(42)]);
+        assert_eq!(tok("0u"), vec![Token::U64Lit(0)]);
+        // u64 max fits
+        assert_eq!(tok("18446744073709551615u"), vec![Token::U64Lit(u64::MAX)]);
+    }
+
+    #[test]
+    fn test_number_error_invalid_digit() {
+        // Binary: 2 is invalid
+        assert!(tok_err("0b2").contains("invalid digit `2` in binary literal"));
+        // Octal: 9 is invalid
+        assert!(tok_err("0o9").contains("invalid digit `9` in octal literal"));
+        // Octal: 8 is invalid
+        assert!(tok_err("0789").contains("invalid digit `8` in octal literal"));
+        // Hex with invalid char is ok — 'g' is invalid
+        assert!(tok_err("0xg").contains("invalid digit"));
+    }
+
+    #[test]
+    fn test_number_error_trailing_chars() {
+        // Trailing alphabetic chars that are not a valid suffix
+        assert!(tok_err("42abc").contains("unexpected character `a` after number"));
+        // 42w — 'w' is not 'u' suffix or 'e'/'E' exponent
+        assert!(tok_err("42w").contains("unexpected character `w` after number"));
+        // 0w — octal-looking but 'w' is invalid prefix
+        assert!(tok_err("0w0").contains("unexpected character `w` after number"));
+    }
+
+    #[test]
+    fn test_number_error_trailing_underscore() {
+        // Trailing underscore is invalid
+        assert!(tok_err("1_").contains("underscore must be followed by a digit"));
+        // Double underscore
+        assert!(tok_err("1__0").contains("underscore must be followed by a digit"));
+    }
+
+    #[test]
+    fn test_number_error_radix_no_digits() {
+        // Radix prefix with no following digits
+        assert!(tok_err("0x").contains("expected digits after `0x`"));
+        assert!(tok_err("0b").contains("expected digits after `0b`"));
+        assert!(tok_err("0o").contains("expected digits after `0o`"));
+    }
+
+    #[test]
+    fn test_number_error_negative_u64() {
+        // Negative u64 is invalid
+        assert!(tok_err("-1u").contains("`u` suffix cannot be used with negative numbers"));
+    }
+
+    #[test]
+    fn test_number_error_float_u_suffix() {
+        // Float with u suffix is invalid
+        assert!(tok_err("1.5u").contains("`u` suffix is not valid on float literals"));
     }
 
     #[test]
@@ -1757,13 +2285,11 @@ mod tests {
 
     #[test]
     fn test_float_overflow() {
-        // Scientific notation is not supported by the lexer
-        // 1e309 tokenizes as integer 1 followed by bare word "e309"
-        // This documents current behavior - scientific notation may be added later
+        // 1e309 is a float literal with scientific notation. The value overflows f64 to infinity.
+        // The lexer parses it as a float; downstream code may reject infinities.
         let tokens = tok("1e309");
-        assert_eq!(tokens.len(), 2);
-        assert_eq!(tokens[0], Token::Int(1));
-        assert_eq!(tokens[1], Token::Identifier("e309".into()));
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], Token::Float(f64::INFINITY));
     }
 
     #[test]

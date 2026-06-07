@@ -1,0 +1,4 @@
+# Octal literal with invalid digit (9 is not octal)
+[0o9]
+=== out
+invalid digit `9` in octal literal

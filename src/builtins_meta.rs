@@ -1095,6 +1095,7 @@ pub(crate) fn builtin_ast_of(
 
             let synthetic_node = match val {
                 crate::value::Value::Int(n) => make_node(SurfaceExpression::Int(n)),
+                crate::value::Value::U64(n) => make_node(SurfaceExpression::U64(n)),
                 crate::value::Value::Float(f) => make_node(SurfaceExpression::Float(f)),
                 crate::value::Value::Bool(b) => make_node(SurfaceExpression::Bool(b)),
                 crate::value::Value::String { source, start, end } => {
@@ -1509,6 +1510,7 @@ fn type_name(val: &Value) -> String {
         Value::BroadcastChannel(_) => "BroadcastChannel",
         Value::OneshotSender(_) => "OneshotSender",
         Value::OneshotReceiver(_) => "OneshotReceiver",
+        Value::U64(_) => "U64",
         // Annotated is transparent — delegate to inner value's type_name.
         Value::Annotated { inner, .. } => return type_name(inner),
     }

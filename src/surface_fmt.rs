@@ -264,6 +264,7 @@ fn collect_free_vars(
     match expr {
         // Leaves — no variable references
         CoreExpr::Int(_)
+        | CoreExpr::U64(_)
         | CoreExpr::Float(_)
         | CoreExpr::Bool(_)
         | CoreExpr::Str(_)
@@ -534,6 +535,7 @@ fn collect_free_vars_in_quote(
         }
         // Leaves — nothing to do even inside quotes
         CoreExpr::Int(_)
+        | CoreExpr::U64(_)
         | CoreExpr::Float(_)
         | CoreExpr::Bool(_)
         | CoreExpr::Str(_)
@@ -604,6 +606,7 @@ fn core_expr_to_tinct(
     match expr {
         // Literals — direct serialization
         CoreExpr::Int(n) => Ok(fmt_int(*n)),
+        CoreExpr::U64(n) => Ok(format!("{n}u")),
         CoreExpr::Float(f) => fmt_float(*f),
         CoreExpr::Bool(b) => Ok(fmt_bool(*b).to_string()),
         CoreExpr::Str(s) => Ok(fmt_string(s)),
@@ -1019,6 +1022,7 @@ fn core_expr_to_tinct_raw(
 ) -> Result<String, String> {
     match expr {
         CoreExpr::Int(n) => Ok(fmt_int(*n)),
+        CoreExpr::U64(n) => Ok(format!("{n}u")),
         CoreExpr::Float(f) => fmt_float(*f),
         CoreExpr::Bool(b) => Ok(fmt_bool(*b).to_string()),
         CoreExpr::Str(s) => Ok(fmt_string(s)),
@@ -1298,6 +1302,7 @@ fn serialize_pattern(pattern: &Pattern) -> Result<String, String> {
         Pattern::Pin(name) => Ok(format!("${}", name)),
         Pattern::Literal(lit) => match lit {
             LiteralPattern::Int(n) => Ok(fmt_int(*n)),
+            LiteralPattern::U64(n) => Ok(format!("{n}u")),
             LiteralPattern::Float(f) => fmt_float(*f),
             LiteralPattern::Bool(b) => Ok(fmt_bool(*b).to_string()),
             LiteralPattern::Str(s) => Ok(fmt_string(s)),
@@ -1345,6 +1350,7 @@ pub fn fmt_expression(node: &Arc<crate::ast::SurfaceNode>) -> Result<String, Str
     match &node.expr {
         // Literals — delegate to lexer formatters
         SurfaceExpression::Int(n) => Ok(fmt_int(*n)),
+        SurfaceExpression::U64(n) => Ok(format!("{n}u")),
         SurfaceExpression::Float(f) => fmt_float(*f),
         SurfaceExpression::Bool(b) => Ok(fmt_bool(*b).to_string()),
         SurfaceExpression::Str(s) => Ok(fmt_string(s)),
@@ -1690,6 +1696,7 @@ impl Value {
             Value::BroadcastChannel(_) | Value::OneshotSender(_) | Value::OneshotReceiver(_) => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
+            Value::U64(n) => Ok(format!("{n}u")),
             // Annotated is transparent — delegate to inner value.
             Value::Annotated { inner, .. } => inner.to_tinct(ctx),
         }
