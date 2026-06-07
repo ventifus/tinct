@@ -498,6 +498,9 @@ fn collect_pattern_bindings(pattern: &Pattern, out: &mut Vec<String>) {
                 }
             }
         }
+        Pattern::Predicate(_) => {
+            // T-1140: Predicate patterns introduce no variable bindings.
+        }
     }
 }
 

@@ -433,6 +433,28 @@ pub(crate) struct MatchGuardCheckData {
     pub(crate) callable_invoked: bool,
 }
 
+/// Payload for Cont::MatchPredicateCheck (T-1140). Boxed to keep the Cont enum ≤96 bytes.
+///
+/// After the predicate expression evaluates to a Value::Fn or Value::Builtin,
+/// `apply_predicate_to_subject` constructs a PendingCall thunk and we materialize it.
+/// On the second entry (callable_invoked=true), the result is the predicate call's
+/// return value, and we check truthiness.
+pub(crate) struct MatchPredicateCheckData {
+    /// Current arm index (for continuing to next arm if predicate fails)
+    pub(crate) arm_idx: usize,
+    pub(crate) arms: Arc<Vec<crate::ast::CoreMatchArm>>,
+    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) ctx: Arc<EvalContext>,
+    pub(crate) match_span: Span,
+    /// The scrutinee value (passed as last arg to the predicate, and re-used on success)
+    pub(crate) scrutinee_value: Value,
+    /// The arm body to evaluate if predicate returns true
+    pub(crate) body: Arc<Spanned<CoreExpr>>,
+    /// True when the predicate was a callable and has already been invoked via the CEK machine.
+    /// On the second entry, `result` is the call's return value; check Bool(true) directly.
+    pub(crate) callable_invoked: bool,
+}
+
 /// Payload for Cont::PredicateCheck. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct PredicateCheckData {
     /// The value being checked (already materialized and type-validated)
@@ -518,6 +540,10 @@ pub(crate) enum Cont {
     /// After materializing the predicate result, checks truthiness and either returns
     /// the original value (predicate passed) or evaluates the default expression / fails.
     PredicateCheck(Box<PredicateCheckData>),
+    /// T-1140: Check the result of a predicate pattern evaluation in a Match arm.
+    /// After materializing the predicate call result, checks if it equals Bool(true).
+    /// If true, evaluates the arm body; otherwise continues to the next arm.
+    MatchPredicateCheck(Box<MatchPredicateCheckData>),
 }
 
 // Compile-time assertion: Cont must be ≤96 bytes to fit in one cache line.
@@ -3320,6 +3346,98 @@ pub(crate) async fn apply_cont(
                     for i in arm_idx..arms.len() {
                         let arm = &arms[i];
 
+                        // T-1140: Predicate patterns require CEK machine evaluation.
+                        // Intercept Pattern::Predicate before match_pattern (which would panic).
+                        //
+                        // Design: the predicate SurfaceNode is a call-expression template.
+                        // The scrutinee is appended as the last positional argument to form
+                        // the complete call (e.g., `[starts-with? "foo"]` + scrutinee →
+                        // `[starts-with? "foo" %pred_subj]`). For non-Call predicates
+                        // (e.g., `[fn [let x] body]`), the predicate expression is evaluated
+                        // as a function value, then called with the scrutinee via
+                        // apply_predicate_to_subject (callable_invoked=false path).
+                        //
+                        // Scrutinee injection: a gensym name `%pred_subj` is inserted into a
+                        // child env bound to the scrutinee value. A FreeVar(`%pred_subj`)
+                        // core expression is appended as the final arg. The % prefix is
+                        // reserved and cannot appear in user-written identifiers.
+                        if let crate::ast::Pattern::Predicate(pred_node) = &arm.pattern.node {
+                            let lowered_pred = crate::lower::lower(
+                                pred_node,
+                                crate::ast::empty_resolution_table(),
+                                crate::ast::empty_type_annotation_table(),
+                            );
+                            let pred_span = lowered_pred.span.clone();
+                            // Check if the lowered predicate is a Call expression.
+                            // If so, extend its arg list with a FreeVar referencing the scrutinee.
+                            // If not (e.g., a Fn literal), evaluate it first and call the result.
+                            let (eval_expr, eval_env) = match lowered_pred.node {
+                                crate::ast::CoreExpr::Call {
+                                    func,
+                                    mut args,
+                                    named_args,
+                                    implied,
+                                } => {
+                                    // Insert scrutinee into a child env under a gensym name.
+                                    let subj_name = "%pred_subj".to_string();
+                                    let child_env = Arc::new(RwLock::new(
+                                        Environment::with_parent(Arc::clone(&env)),
+                                    ));
+                                    let scrutinee_thunk = Arc::new(Thunk::new_materialized(
+                                        scrutinee_value.clone(),
+                                        pred_span.clone(),
+                                    ));
+                                    child_env
+                                        .write()
+                                        .unwrap()
+                                        .insert(subj_name.clone(), scrutinee_thunk);
+                                    // Append FreeVar(`%pred_subj`) as the final positional arg.
+                                    args.push(Arc::new(Spanned::new(
+                                        crate::ast::CoreExpr::FreeVar(subj_name),
+                                        pred_span.clone(),
+                                    )));
+                                    let extended_call = Arc::new(Spanned::new(
+                                        crate::ast::CoreExpr::Call {
+                                            func,
+                                            args,
+                                            named_args,
+                                            implied,
+                                        },
+                                        pred_span,
+                                    ));
+                                    (extended_call, child_env)
+                                }
+                                other => {
+                                    // Non-Call predicate (e.g., Fn literal): evaluate as a function,
+                                    // then apply_predicate_to_subject will call it with scrutinee.
+                                    // MatchPredicateCheck (callable_invoked=false) handles this path.
+                                    (Arc::new(Spanned::new(other, pred_span)), Arc::clone(&env))
+                                }
+                            };
+                            let is_call_path =
+                                matches!(&eval_expr.node, crate::ast::CoreExpr::Call { .. });
+                            stack.push(Cont::MatchPredicateCheck(Box::new(
+                                MatchPredicateCheckData {
+                                    arm_idx: i,
+                                    arms: Arc::clone(&arms),
+                                    env: Arc::clone(&env),
+                                    ctx: Arc::clone(&ctx),
+                                    match_span: match_span.clone(),
+                                    scrutinee_value: scrutinee_value.clone(),
+                                    body: Arc::clone(&arm.body),
+                                    // For the Call path, the result of EvalCore IS the predicate
+                                    // result (Bool). For the non-Call path, the result is a function
+                                    // value that must still be called with the scrutinee.
+                                    callable_invoked: is_call_path,
+                                },
+                            )));
+                            return Action::EvalCore {
+                                expr: eval_expr,
+                                env: eval_env,
+                                ctx,
+                            };
+                        }
+
                         // Try the pattern. Since apply_cont is async, we can .await directly
                         // here without block_on_anywhere — this keeps async state on the heap
                         // rather than the Rust stack, preventing stack overflow on deeply
@@ -3596,6 +3714,110 @@ pub(crate) async fn apply_cont(
                         }
                     } else {
                         // Guard failed — try the next arm
+                        stack.push(Cont::MatchDispatch(Box::new(MatchDispatchData {
+                            arm_idx: arm_idx + 1,
+                            arms,
+                            env,
+                            ctx: Arc::clone(&ctx),
+                            match_span: match_span.clone(),
+                        })));
+                        Action::Continue(Ok(scrutinee_value))
+                    }
+                }
+            }
+        }
+
+        // T-1140: Handle predicate pattern arm evaluation.
+        // Receives the result of evaluating the predicate expression (or the predicate call).
+        // If callable_invoked=false: the result is the predicate function; invoke it with scrutinee.
+        // If callable_invoked=true: the result is Bool(true/false); dispatch accordingly.
+        Cont::MatchPredicateCheck(data) => {
+            let MatchPredicateCheckData {
+                arm_idx,
+                arms,
+                env,
+                ctx,
+                match_span,
+                scrutinee_value,
+                body,
+                callable_invoked,
+            } = *data;
+
+            match result {
+                Err(e) => Action::Continue(Err(e)),
+                Ok(predicate_value) => {
+                    if !callable_invoked {
+                        if let Value::Function { .. } | Value::Builtin(_) = &predicate_value {
+                            // Build a PendingCall thunk: predicate(scrutinee).
+                            // apply_predicate_to_subject appends the scrutinee as the last arg.
+                            let call_thunk = apply_predicate_to_subject(
+                                predicate_value,
+                                scrutinee_value.clone(),
+                                match_span.clone(),
+                                match_span.clone(),
+                                &env,
+                                &ctx,
+                            );
+                            // Push MatchPredicateCheck again with callable_invoked=true to receive
+                            // the call result, then return Materialize to drive the call
+                            // iteratively through the CEK loop (no block_on_anywhere).
+                            stack.push(Cont::MatchPredicateCheck(Box::new(
+                                MatchPredicateCheckData {
+                                    arm_idx,
+                                    arms,
+                                    env,
+                                    ctx: Arc::clone(&ctx),
+                                    match_span: match_span.clone(),
+                                    scrutinee_value,
+                                    body,
+                                    callable_invoked: true,
+                                },
+                            )));
+                            return Action::Materialize {
+                                thunk: call_thunk,
+                                mat_span: Some(match_span),
+                            };
+                        }
+                    }
+
+                    // Check: predicate result must be Bool(true) to match.
+                    // Unlike guards (which treat any truthy value as passing),
+                    // predicate patterns require an explicit Bool(true) return.
+                    // This matches the task spec: "If the result is `true`, the arm matches."
+                    let matched = match &predicate_value {
+                        Value::Bool(b) => *b,
+                        _ => false,
+                    };
+
+                    if matched {
+                        // Predicate returned true — arm matches.
+                        // If the arm also has a guard, evaluate it before accepting the match.
+                        // Predicate patterns bind no variables, so use `env` (not arm_env).
+                        if let Some(guard_expr) = &arms[arm_idx].guard {
+                            stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
+                                arm_idx,
+                                arms: Arc::clone(&arms),
+                                env: Arc::clone(&env),
+                                ctx: Arc::clone(&ctx),
+                                match_span: match_span.clone(),
+                                arm_env: Arc::clone(&env), // no bindings from predicate pattern
+                                scrutinee_value,
+                                body,
+                                callable_invoked: false,
+                            })));
+                            return Action::EvalCore {
+                                expr: Arc::clone(guard_expr),
+                                env,
+                                ctx,
+                            };
+                        }
+                        Action::EvalCore {
+                            expr: body,
+                            env,
+                            ctx,
+                        }
+                    } else {
+                        // Predicate returned false (or non-Bool) — skip to next arm.
                         stack.push(Cont::MatchDispatch(Box::new(MatchDispatchData {
                             arm_idx: arm_idx + 1,
                             arms,

@@ -217,6 +217,18 @@ pub enum Pattern {
     /// Or-pattern — matches if any sub-pattern matches
     /// Both branches must bind the same set of variables
     Or(Vec<Spanned<Pattern>>),
+    /// Predicate pattern — a call expression whose head is a lowercase name or operator.
+    ///
+    /// At runtime, the full call expression is evaluated as a function, then called with
+    /// the match scrutinee as its last positional argument. If the result is `Value::Bool(true)`,
+    /// the arm matches; otherwise the arm is skipped.
+    ///
+    /// `[contains? "ob"]` in pattern position → `Predicate(SurfaceNode for [contains? "ob"])`.
+    /// At match time: `[contains? "ob" scrutinee]` is evaluated.
+    ///
+    /// Predicate patterns do not introduce any variable bindings and do not count toward
+    /// exhaustiveness analysis (treated as wildcard for coverage purposes).
+    Predicate(Arc<SurfaceNode>),
 }
 
 /// Literal pattern values
@@ -549,6 +561,7 @@ impl fmt::Display for Pattern {
                 }
                 Ok(())
             }
+            Pattern::Predicate(_) => write!(f, "<predicate>"),
         }
     }
 }

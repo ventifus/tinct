@@ -647,6 +647,8 @@ pub(crate) fn collect_pattern_bindings(
                 collect_pattern_bindings(&first.node, scrutinee_ty, out);
             }
         }
+        // T-1140: Predicate patterns introduce no variable bindings.
+        Pattern::Predicate(_) => {}
     }
 }
 

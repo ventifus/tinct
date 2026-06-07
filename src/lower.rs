@@ -147,6 +147,11 @@ fn lower_pattern(pat: &Pattern, types: &TypeAnnotationTable) -> Pattern {
         | Pattern::Literal(_)
         | Pattern::Pin(_)
         | Pattern::TypeTag(_) => pat.clone(),
+
+        // T-1140: Predicate patterns carry a SurfaceNode — passed through unchanged.
+        // The SurfaceNode is lowered on demand inside MatchDispatch at eval time,
+        // using empty resolution/type tables (same as other surface-in-core eval sites).
+        Pattern::Predicate(_) => pat.clone(),
     }
 }
 

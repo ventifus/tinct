@@ -587,6 +587,8 @@ fn collect_pattern_bindings(pattern: &Pattern, scope: &mut HashSet<String>) {
                 collect_pattern_bindings(&inner_pat.node, scope);
             }
         }
+        // T-1140: Predicate patterns introduce no variable bindings.
+        Pattern::Predicate(_) => {}
     }
 }
 
@@ -1335,6 +1337,9 @@ fn serialize_pattern(pattern: &Pattern) -> Result<String, String> {
                 alts.iter().map(|a| serialize_pattern(&a.node)).collect();
             Ok(parts?.join(" | "))
         }
+        // T-1140: Predicate patterns — serialize as <predicate> placeholder.
+        // The SurfaceNode is not available for round-trip serialization in this context.
+        Pattern::Predicate(_) => Ok("<predicate>".to_string()),
     }
 }
 

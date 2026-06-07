@@ -3198,6 +3198,8 @@ fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(Str
                 collect_pattern_variable_names(branch, out);
             }
         }
+        // T-1140: Predicate patterns introduce no variable bindings.
+        Pattern::Predicate(_) => {}
     }
 }
 
@@ -3768,6 +3770,18 @@ pub(crate) fn match_pattern<'a>(
                 }
                 // None of the sub-patterns matched
                 Ok(None)
+            }
+            Pattern::Predicate(_) => {
+                // T-1140: Predicate patterns must be intercepted in MatchDispatch before
+                // reaching match_pattern. This arm exists as a safety guard — it should
+                // never be reached in correctly structured evaluation paths.
+                Err(EvalError::internal(
+                    "Pattern::Predicate reached match_pattern directly; \
+                     must be handled in MatchDispatch before calling match_pattern"
+                        .to_string(),
+                    value_span.clone(),
+                )
+                .into())
             }
         }
     }) // end Box::pin(async move {

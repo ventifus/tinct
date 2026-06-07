@@ -1604,6 +1604,18 @@ fn pattern_to_thunk_id(
                 ))),
             );
         }
+        // T-1140: Predicate patterns — serialize as { type: "predicate" }.
+        // The SurfaceNode cannot be round-tripped through the thunk-dict format;
+        // only the type discriminant is preserved.
+        Pattern::Predicate(_) => {
+            dict.insert(
+                Key::String("type".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("predicate"),
+                    span.clone(),
+                ))),
+            );
+        }
     }
 
     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))

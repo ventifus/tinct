@@ -1,0 +1,13 @@
+# T-1140: Predicate pattern with a partial call expression.
+# [starts-with? "foo"] in pattern position becomes [starts-with? "foo" scrutinee].
+# The predicate returns Bool(true), so the first arm matches.
+[
+  word: "foobar"
+  result: [match word
+    [starts-with? "foo"]: "yes"
+    _:                    "no"]
+]
+---
+%.result
+=== out
+String("yes")

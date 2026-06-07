@@ -953,6 +953,8 @@ impl<'a> Formatter<'a> {
                 }
                 width
             }
+            // T-1140: Predicate patterns — use placeholder width
+            Pattern::Predicate(_) => 13, // "<predicate>" is 13 chars
         }
     }
 
@@ -1361,6 +1363,10 @@ impl<'a> Formatter<'a> {
                     }
                     self.format_pattern(pat);
                 }
+            }
+            // T-1140: Predicate patterns — format as placeholder
+            Pattern::Predicate(_) => {
+                self.output.push_str("<predicate>");
             }
         }
     }

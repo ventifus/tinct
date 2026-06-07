@@ -2122,6 +2122,9 @@ pub(crate) fn infer_surface_expr(
                         remaining_scrutinee.clone()
                     }
                     Pattern::Wildcard | Pattern::Variable(_) => remaining_scrutinee.clone(),
+                    // T-1140: Predicate patterns — no static scrutinee narrowing.
+                    // The predicate is opaque; we cannot determine what types it accepts.
+                    Pattern::Predicate(_) => remaining_scrutinee.clone(),
                     _ => scrutinee_ty.clone(),
                 };
 

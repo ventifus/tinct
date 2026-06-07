@@ -446,8 +446,8 @@ pub fn ast_pattern_to_coverage(pat: &ast::Pattern) -> CoveragePattern {
         ast::Pattern::Literal(lit) => {
             let tag = match lit {
                 LiteralPattern::Int(n) => ConstructorTag::LiteralInt(*n),
-                LiteralPattern::Float(_) => {
-                    // Float literals are not suitable for exhaustiveness
+                LiteralPattern::U64(_) | LiteralPattern::Float(_) => {
+                    // U64 and float literals are not suitable for exhaustiveness
                     // (infinite domain) — treat as wildcard
                     return CoveragePattern::Wildcard;
                 }
@@ -519,6 +519,9 @@ pub fn ast_pattern_to_coverage(pat: &ast::Pattern) -> CoveragePattern {
                 .collect();
             CoveragePattern::Or(alts)
         }
+        // T-1140: Predicate patterns are opaque to coverage analysis (Karachalias et al. 2015, §2.4).
+        // Like guards, they depend on runtime values and cannot be statically analyzed.
+        ast::Pattern::Predicate(_) => CoveragePattern::Wildcard,
     }
 }
 
